@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>/grill-me, /to-tickets, /implement vs Mission Control</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117; --surface: #151b23; --line: #2b3544;
+    --text: #eef2f7; --muted: #a6b0bf; --blue: #6ca7ff; --cyan: #50d5c8;
+    --amber: #ffb454; --red: #ff7b72; --green: #56d89c;
+    --box-a: #16263d; --box-b: #1d2a1f; --box-c: #2e2412;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8; --surface: #ffffff; --line: #d5dce5;
+      --text: #152033; --muted: #4f5d70; --blue: #1768d3; --cyan: #087d75;
+      --amber: #8a5100; --red: #b3332b; --green: #087a4c;
+      --box-a: #e3edfb; --box-b: #e4f3e7; --box-c: #fbf0dc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.6; }
+  main { max-width: 1080px; margin: 0 auto; padding: 48px 28px 90px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 30px; }
+  .eyebrow { margin: 0 0 10px; color: var(--cyan); font: 600 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  h1 { margin: 0 0 12px; font-size: 30px; line-height: 1.2; }
+  h2 { margin: 46px 0 12px; font-size: 22px; border-top: 1px solid var(--line); padding-top: 26px; }
+  h3 { margin: 24px 0 8px; font-size: 17px; }
+  .q { color: var(--muted); margin: 0 0 18px; }
+  .answer { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 8px; padding: 18px 22px; }
+  .answer p { margin: 0 0 10px; } .answer p:last-child { margin: 0; }
+  .answer ul { margin: 4px 0 10px; }
+  code { font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre { font-family: var(--mono); font-size: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); margin: 12px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; }
+  ul { padding-left: 22px; } li { margin: 4px 0; }
+  a { color: var(--blue); }
+  nav ol { color: var(--muted); columns: 2; }
+  .ok { color: var(--green); font-weight: 600; } .warn { color: var(--amber); font-weight: 600; } .bad { color: var(--red); font-weight: 600; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin: 12px 0; }
+  .card h3 { margin-top: 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .fig { overflow-x: auto; margin: 16px 0; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Deep dive + proposal · 2026-09-25</p>
+  <h1>/grill-me, /to-tickets and /implement, compared with Mission Control</h1>
+  <p class="q">Question as asked: take the three mattpocock-skills I use most, compare each in depth with what Mission Control offers, and propose how to use them inside Mission Control.</p>
+  <div class="answer">
+    <p><strong>Short answer.</strong> Each skill lines up with one stage of Mission Control's own plan-to-ship pipeline, and at each stage the two sides are strong in different places:</p>
+    <ul>
+      <li><strong><code>/grill-me</code> ↔ plan-task decisions.</strong> Pocock's interview technique is much better than anything Mission Control has. But it asks its questions in prose, and inside Mission Control a turn that ends in prose is the least visible and least safe place for a question. Mission Control's <code>request_plan_decisions</code> is the ideal way to deliver each round.</li>
+      <li><strong><code>/to-tickets</code> ↔ <code>phased-plan</code>.</strong> These overlap directly and slice work in opposite directions: many thin end-to-end tickets versus the fewest merge-safe phases. <code>to-tickets</code> asks you to approve the breakdown; <code>phased-plan</code> doesn't. <code>phased-plan</code> creates tasks that are actually gated and launched; <code>to-tickets</code> only files tickets. The obvious bridge (GitHub issues → task source) <span class="bad">drops the blocking links</span>.</li>
+      <li><strong><code>/implement</code> ↔ ship task + After-work workflow.</strong> <code>/implement</code> is five lines. Four of them fit a ship task. The last one, "commit your work", <span class="bad">directly conflicts</span> with the ship contract. And its <code>/tdd</code> step expects a human to confirm the test seams, which nobody may be watching for in an autopilot session.</li>
+    </ul>
+    <p><strong>Proposal:</strong> keep Pocock's techniques and Mission Control's plumbing. Concretely: (1) a Mission Control grilling variant that sends each round through <code>request_plan_decisions</code>; (2) teach <code>phased-plan</code> Pocock's slicing rules and add an "approve the breakdown" step; (3) have the GitHub task source import blocking links; (4) a short note on running <code>/implement</code> inside a ship task. Items 1, 2 and 4 are only skill-text changes. Item 3 is a code change. <a href="#proposal">Details in §5.</a></p>
+  </div>
+</header>
+
+<nav><ol>
+  <li><a href="#pipeline">The two pipelines side by side</a></li>
+  <li><a href="#grill">/grill-me</a></li>
+  <li><a href="#tickets">/to-tickets</a></li>
+  <li><a href="#implement">/implement</a></li>
+  <li><a href="#proposal">Proposal</a></li>
+  <li><a href="#limits">What this did not establish</a></li>
+</ol></nav>
+
+<h2 id="pipeline">1. The two pipelines side by side</h2>
+<div class="fig">
+<svg width="1000" height="230" viewBox="0 0 1000 230" role="img" aria-label="Pocock flow grill, to-tickets, implement mapped against Mission Control plan task, phased-plan, ship task plus workflow">
+  <defs><marker id="ar" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>
+  <text x="10" y="22" style="fill:var(--text)" font-size="13" font-weight="700">mattpocock</text>
+  <rect x="120" y="8" width="230" height="56" rx="8" style="fill:var(--box-b);stroke:var(--green)"/>
+  <text x="135" y="32" style="fill:var(--text)" font-size="14" font-weight="700">/grill-me</text>
+  <text x="135" y="52" style="fill:var(--text)" font-size="12">rounds of prose questions</text>
+  <rect x="410" y="8" width="230" height="56" rx="8" style="fill:var(--box-b);stroke:var(--green)"/>
+  <text x="425" y="32" style="fill:var(--text)" font-size="14" font-weight="700">/to-tickets</text>
+  <text x="425" y="52" style="fill:var(--text)" font-size="12">tickets in GitHub / Linear / .scratch</text>
+  <rect x="700" y="8" width="280" height="56" rx="8" style="fill:var(--box-b);stroke:var(--green)"/>
+  <text x="715" y="32" style="fill:var(--text)" font-size="14" font-weight="700">/implement</text>
+  <text x="715" y="52" style="fill:var(--text)" font-size="12">tdd → code-review → commit</text>
+  <line x1="350" y1="36" x2="406" y2="36" style="stroke:var(--muted)" marker-end="url(#ar)"/>
+  <line x1="640" y1="36" x2="696" y2="36" style="stroke:var(--muted)" marker-end="url(#ar)"/>
+
+  <text x="10" y="172" style="fill:var(--text)" font-size="13" font-weight="700">Mission</text>
+  <text x="10" y="190" style="fill:var(--text)" font-size="13" font-weight="700">Control</text>
+  <rect x="120" y="150" width="230" height="64" rx="8" style="fill:var(--box-a);stroke:var(--blue)"/>
+  <text x="135" y="174" style="fill:var(--text)" font-size="14" font-weight="700">plan task</text>
+  <text x="135" y="194" style="fill:var(--text)" font-size="12">html-plans + request_plan_decisions</text>
+  <rect x="410" y="150" width="230" height="64" rx="8" style="fill:var(--box-a);stroke:var(--blue)"/>
+  <text x="425" y="174" style="fill:var(--text)" font-size="14" font-weight="700">phased-plan</text>
+  <text x="425" y="194" style="fill:var(--text)" font-size="12">backlog tasks, released on merge</text>
+  <rect x="700" y="150" width="280" height="64" rx="8" style="fill:var(--box-a);stroke:var(--blue)"/>
+  <text x="715" y="174" style="fill:var(--text)" font-size="14" font-weight="700">ship task + After-work workflow</text>
+  <text x="715" y="194" style="fill:var(--text)" font-size="12">no commit → Foreman → gate → PR</text>
+  <line x1="350" y1="182" x2="406" y2="182" style="stroke:var(--muted)" marker-end="url(#ar)"/>
+  <line x1="640" y1="182" x2="696" y2="182" style="stroke:var(--muted)" marker-end="url(#ar)"/>
+
+  <line x1="235" y1="66" x2="235" y2="148" style="stroke:var(--amber)" stroke-dasharray="5 4"/>
+  <text x="243" y="112" style="fill:var(--text)" font-size="12">questions in prose vs in the dashboard</text>
+  <line x1="525" y1="66" x2="525" y2="148" style="stroke:var(--amber)" stroke-dasharray="5 4"/>
+  <text x="533" y="112" style="fill:var(--text)" font-size="12">thin slices vs few phases</text>
+  <line x1="840" y1="66" x2="840" y2="148" style="stroke:var(--amber)" stroke-dasharray="5 4"/>
+  <text x="848" y="112" style="fill:var(--text)" font-size="12">commit vs don't commit</text>
+</svg>
+</div>
+<p>The stages line up one for one, which is why the skills can be adopted into Mission Control rather than run beside it. Each dashed line is the friction point covered in the sections below.</p>
+
+<h2 id="grill">2. <code>/grill-me</code> in depth</h2>
+<p class="meta">Source: <code>skills/productivity/grill-me/SKILL.md</code> is a one-liner ("Run a <code>/grilling</code> session") with <code>disable-model-invocation: true</code>; the method lives in <code>skills/productivity/grilling/SKILL.md</code>, which the model can invoke itself.</p>
+<h3>What it actually does</h3>
+<ul>
+  <li>Maps the decision as a <strong>design tree</strong>. Each round asks the whole <strong>frontier</strong>, meaning every question whose prerequisites are already settled, numbered, each with a recommended answer (<code>❓ Q1 … ➡️ recommendation</code>).</li>
+  <li><strong>Facts are the agent's job, decisions are yours.</strong> It sends subagents to look things up instead of asking you, and it doesn't hold back the questions that don't depend on those lookups.</li>
+  <li>It ends only when the frontier is empty, and it doesn't act until you confirm you understand each other.</li>
+</ul>
+<h3>Against Mission Control</h3>
+<div class="scroll"><table>
+<thead><tr><th>Aspect</th><th>/grill-me</th><th>Mission Control today</th></tr></thead>
+<tbody>
+<tr><td>Method</td><td>Design tree, frontier rounds, a recommendation per question, subagents gather facts. A complete interviewing discipline</td><td>None as such. <code>html-plans</code> says "present choices as options", but the plan is written first and the questions come afterwards</td></tr>
+<tr><td>When the questions come</td><td>Before anything is written</td><td>After the draft plan exists (<code>request_plan_decisions</code> sends the plan together with its decisions)</td></tr>
+<tr><td>How you answer</td><td>Prose in the chat; the turn ends and waits</td><td>Structured: radio buttons and checkboxes, "Other" free text, Submit or Dismiss, in the dashboard, with a notification. The call blocks until you answer</td></tr>
+<tr><td>Foreman</td><td>Not aware of it. A turn that ends on prose questions in a <em>ship</em> task looks like an idle session to Foreman, and its "keep pre-PR ship tasks moving" nudge (20-min quiet window) can push the work on without your answers</td><td>A plan-decisions review can't be approved by Foreman: <code>classifyPending</code> gives any non-input review <code>canSend: false</code> and says "You cannot auto-approve" (<code>src/server/foreman/pending.ts:143</code>). For a <code>request_input</code>, Foreman may draft an answer, but the form stays the only place to send one</td></tr>
+<tr><td>Record</td><td>Only in the transcript</td><td>Decisions are replayed as a form in the conversation and applied to <code>plan.md</code> before <code>phased-plan</code> runs</td></tr>
+</tbody></table></div>
+<p><span class="ok">Verdict:</span> Pocock's method is better and Mission Control's channel is better. The grilling round format maps almost field for field onto <code>request_plan_decisions</code> decisions: question → <code>question</code>, choices → <code>options</code>, ➡️ → <code>recommended: true</code>, open answer → <code>allowOther</code>.</p>
+
+<h2 id="tickets">3. <code>/to-tickets</code> in depth</h2>
+<p class="meta">Source: <code>skills/engineering/to-tickets/SKILL.md</code> (user-invoked only). Compared with <code>skills/phased-plan/SKILL.md</code> in this repo.</p>
+<div class="scroll"><table>
+<thead><tr><th>Aspect</th><th>/to-tickets</th><th>phased-plan</th></tr></thead>
+<tbody>
+<tr><td>How work is sliced</td><td><strong>Tracer-bullet vertical slices</strong>, each a complete path through every layer that can be shown or verified on its own and fits in one fresh context window. Refactor first, then change ("make the change easy, then make the easy change")</td><td><strong>Fewest coherent phases.</strong> Estimate lines of production code; ≤200 lines means exactly one phase. Any extra phase must be justified. Also vertical, with no layer-only phases</td></tr>
+<tr><td>Typical output size</td><td>Many small tickets</td><td>Usually one to a few phases</td></tr>
+<tr><td>Wide refactors</td><td>Explicit <strong>expand–contract</strong> recipe: expand, then migrate in batches sized by how many call sites each touches, then contract; optionally an integration branch</td><td>Not addressed specifically. Generic rules: foundations first, and every phase must leave the repository working</td></tr>
+<tr><td>Detail level</td><td>Behaviour plus acceptance criteria; <em>no file paths or code</em> because they go stale</td><td>Phase files carry file-level steps, a cross-phase audit and handoff contracts. The task text stays at goal level and only points at the files</td></tr>
+<tr><td>You approve the breakdown?</td><td><span class="ok">Yes.</span> Numbered list, then questions on granularity, blocking links, and merge/split. Repeats until you approve</td><td><span class="warn">No.</span> Approval happens once, at the plan's "Create phased implementation plan" option. The phase graph itself is scheduled without being shown to you first</td></tr>
+<tr><td>Where the work goes</td><td>GitHub / Linear issues (native blocking links, <code>ready-for-agent</code> label) or <code>.scratch/&lt;slug&gt;/issues/NN-*.md</code></td><td>Mission Control backlog via <code>create_task</code>, with <code>dependsOnTaskIds</code> + <code>dependsOnCurrentSession</code></td></tr>
+<tr><td>Dependency release</td><td>Informal: a person or agent picks work "whose blockers are all done"</td><td>Enforced: a task becomes runnable only when its prerequisite's PR <em>merges</em>. The backlog autopilot dispatches it</td></tr>
+<tr><td>Safeguards</td><td>Doesn't touch the parent issue</td><td>Artifacts are committed and pushed before tasks exist; paths are re-verified before merge; cross-phase compatibility audit</td></tr>
+</tbody></table></div>
+<h3>The bridge that looks like it works, but doesn't</h3>
+<p><code>to-tickets</code> → GitHub issues labelled <code>ready-for-agent</code> → a Mission Control GitHub task source filtering on that label → backlog. This files the tickets, but <strong>the blocking links are lost</strong>: the source asks <code>gh</code> for <code>number,title,body,url,labels,assignees,updatedAt</code> only (<code>src/server/task-sources/github-issues.ts:40</code>), so every ticket arrives with no dependencies. With autopilot allowed on that source, blocked tickets could be dispatched in parallel. With autopilot off (the default), you have to re-enter the links by hand (Edit N tasks → dependencies). Linear isn't a task source at all (only GitHub and Jira), and <code>.scratch</code> tickets aren't read.</p>
+<p><span class="ok">Verdict:</span> for work Mission Control will run, <code>phased-plan</code> is the better destination because its tasks are gated and launched automatically. <code>to-tickets</code> is better at <em>deciding the slices</em> and at getting your approval of them. The two gaps worth closing are both in Mission Control.</p>
+
+<h2 id="implement">4. <code>/implement</code> in depth</h2>
+<p class="meta">Source: <code>skills/engineering/implement/SKILL.md</code>, five instructions, user-invoked only. Compared with the ship completion contract in <code>src/shared/task-completion.ts:63</code> and <code>src/server/task-contract.ts:84</code>.</p>
+<div class="scroll"><table>
+<thead><tr><th>/implement says</th><th>A Mission Control ship task says</th><th>Fit</th></tr></thead>
+<tbody>
+<tr><td>Implement the spec or tickets</td><td>Implement the task intent (goal + pointers to phase files)</td><td><span class="ok">Compatible</span></td></tr>
+<tr><td>Use <code>/tdd</code> at <em>pre-agreed seams</em>. <code>tdd</code> says "confirm them with the user; no test is written at an unconfirmed seam"</td><td>Run the focused tests the change needs. The session may be running unwatched under autopilot</td><td><span class="warn">Needs a human.</span> Seam confirmation becomes a question mid-task. That's fine through <code>request_input</code>, but risky as prose (Foreman's nudge, §2)</td></tr>
+<tr><td>Typecheck regularly; full suite once at the end</td><td>Verification the change needs; the workflow gate then runs typecheck, test and lint again</td><td><span class="ok">Compatible</span> (some repeated work)</td></tr>
+<tr><td>Then <code>/code-review</code></td><td>The After-work workflow reviews (e.g. No-Mistakes: 8 Persona judges plus repair rounds)</td><td><span class="ok">Complementary.</span> A cheap self-review before the expensive gate. It reads the checkout; the Personas can't</td></tr>
+<tr><td><strong>Commit your work to the current branch</strong></td><td>"During this initial task turn, do not commit, push, create or update a pull request…" Foreman or the workflow sends that instruction later</td><td><span class="bad">Conflicts.</span> Two instructions in the same turn contradict each other, so the result depends on which one the model follows</td></tr>
+</tbody></table></div>
+<p>Note: <code>implement</code>, <code>to-tickets</code> and <code>grill-me</code> all set <code>disable-model-invocation: true</code>, so only a typed slash command runs them. In a dispatched task the intent is the opening prompt. Whether an intent that <em>starts with</em> <code>/implement</code> triggers the skill in the terminal and Agent SDK runtimes is <strong>unverified</strong>. The model-invocable pieces (<code>grilling</code>, <code>tdd</code>, <code>code-review</code>) can be triggered by asking in plain words.</p>
+<p><span class="ok">Verdict:</span> <code>/implement</code> adds little on top of a ship task beyond its <code>tdd</code> discipline and the self-review. It's worth keeping for exactly those two, minus the commit.</p>
+
+<h2 id="proposal">5. Proposal</h2>
+<div class="fig">
+<svg width="1000" height="150" viewBox="0 0 1000 150" role="img" aria-label="Proposed flow: plan task with grilling rounds via request_plan_decisions, then phased-plan with tracer-bullet slicing and breakdown approval, then ship tasks using tdd and code-review, then workflow gate">
+  <defs><marker id="ar2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>
+  <rect x="10" y="20" width="220" height="110" rx="8" style="fill:var(--box-a);stroke:var(--blue)"/>
+  <text x="24" y="44" style="fill:var(--text)" font-size="14" font-weight="700">Plan task</text>
+  <text x="24" y="66" style="fill:var(--text)" font-size="12">grilling rounds, each one a</text>
+  <text x="24" y="84" style="fill:var(--text)" font-size="12">request_plan_decisions call</text>
+  <text x="24" y="106" style="fill:var(--text)" font-size="12">→ plan.md / plan.html</text>
+  <rect x="265" y="20" width="240" height="110" rx="8" style="fill:var(--box-a);stroke:var(--blue)"/>
+  <text x="279" y="44" style="fill:var(--text)" font-size="14" font-weight="700">phased-plan (amended)</text>
+  <text x="279" y="66" style="fill:var(--text)" font-size="12">tracer-bullet + expand–contract</text>
+  <text x="279" y="84" style="fill:var(--text)" font-size="12">breakdown approved via decisions</text>
+  <text x="279" y="106" style="fill:var(--text)" font-size="12">→ gated backlog tasks</text>
+  <rect x="540" y="20" width="220" height="110" rx="8" style="fill:var(--box-b);stroke:var(--green)"/>
+  <text x="554" y="44" style="fill:var(--text)" font-size="14" font-weight="700">Ship task</text>
+  <text x="554" y="66" style="fill:var(--text)" font-size="12">implement: tdd at seams,</text>
+  <text x="554" y="84" style="fill:var(--text)" font-size="12">self code-review,</text>
+  <text x="554" y="106" style="fill:var(--text)" font-size="12">no commit</text>
+  <rect x="795" y="20" width="195" height="110" rx="8" style="fill:var(--box-c);stroke:var(--amber)"/>
+  <text x="809" y="44" style="fill:var(--text)" font-size="14" font-weight="700">After-work workflow</text>
+  <text x="809" y="66" style="fill:var(--text)" font-size="12">checks + Personas</text>
+  <text x="809" y="84" style="fill:var(--text)" font-size="12">→ commit, PR, CI</text>
+  <text x="809" y="106" style="fill:var(--text)" font-size="12">→ merge releases next</text>
+  <line x1="230" y1="75" x2="261" y2="75" style="stroke:var(--muted)" marker-end="url(#ar2)"/>
+  <line x1="505" y1="75" x2="536" y2="75" style="stroke:var(--muted)" marker-end="url(#ar2)"/>
+  <line x1="760" y1="75" x2="791" y2="75" style="stroke:var(--muted)" marker-end="url(#ar2)"/>
+</svg>
+</div>
+<p>Pocock's techniques go into the stages Mission Control already owns. Nothing new runs beside the pipeline, and none of Mission Control's gates are bypassed.</p>
+
+<div class="card">
+<h3>P0 · Use them today, no changes (recipe)</h3>
+<ul>
+  <li><strong>Grill:</strong> do it in a <strong>chat</strong> dispatch (ends only when you end it, no ship contract) or at the start of a <strong>plan</strong> task ("grill me before writing the plan"). Don't grill inside a ship task.</li>
+  <li><strong>Tickets:</strong> for work Mission Control will run, keep using the plan → <code>phased-plan</code> path. Use <code>/to-tickets</code> when the tickets are meant for people or other tools on GitHub or Linear. If you do sweep them in, keep autopilot off on that source and re-add the dependencies.</li>
+  <li><strong>Implement:</strong> write the ship intent as "…use tdd at the seams and run a code-review before finishing; <em>do not commit</em>, Mission Control handles delivery". That keeps the useful parts and drops the conflict.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>P1 · A grilling mode delivered through the dashboard <span class="meta">(skill text only)</span></h3>
+<p>Add a <code>grill</code> section to <code>skills/html-plans/SKILL.md</code>, or a small new <code>skills/grill/SKILL.md</code>, that keeps Pocock's method and changes the channel: each frontier round is <em>one</em> <code>request_plan_decisions</code> call. The draft plan so far goes in as <code>plan</code>; each question becomes a decision with the recommended option first, <code>recommended: true</code>, and <code>allowOther: true</code>. Subagents still look up the facts. Stop when the frontier is empty, then write <code>plan.md</code> and run the normal review, which already ends with the <code>phased-plan</code> follow-up.</p>
+<p class="meta">Why this channel: Foreman can't approve a plan-decisions review (verified in <code>pending.ts</code>); you get a notification; answers are recorded as a form; and a dismissal clearly means "stop". Credit Pocock's <code>grilling</code> (MIT) in the skill.</p>
+</div>
+
+<div class="card">
+<h3>P2 · Tracer bullets and breakdown approval in <code>phased-plan</code> <span class="meta">(skill text only)</span></h3>
+<ul>
+  <li>Take over <code>to-tickets</code>' vertical-slice rules, "refactor first", and the <strong>expand–contract</strong> recipe for wide refactors. That recipe is the one clear gap in <code>phased-plan</code>'s sizing rules.</li>
+  <li>Before <code>create_task</code>, show the phase graph (title, blocked-by, what it delivers) through <code>request_plan_decisions</code> with the <code>to-tickets</code> questions: is the granularity right, are the blocking links right, should anything merge or split. Schedule only on Submit. This closes the approval gap in §3.</li>
+  <li>Keep the ≤200-line single-phase rule. It pulls against "many thin tickets", but the rule exists because each Mission Control phase costs a full workflow and PR cycle, which a Pocock ticket doesn't.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>P3 · The GitHub task source imports blocking links <span class="meta">(code change: <code>src/server/task-sources/</code>)</span></h3>
+<p>When a swept issue lists blocking issues, map them onto <code>dependsOnTaskIds</code> between the tasks that source filed, so the <code>/to-tickets</code> → GitHub → autopilot path keeps its order. Optionally add a "local tickets" source kind that reads <code>.scratch/&lt;slug&gt;/issues/*.md</code>.</p>
+<p class="meta">Open questions before planning this: how GitHub exposes issue blocking links through <code>gh</code> (not checked); what happens when a blocker is closed upstream but has no Mission Control task; and whether cross-source links should be allowed. Worth taking to a plan task, not straight to implementation.</p>
+</div>
+
+<div class="card">
+<h3>Not recommended</h3>
+<ul>
+  <li><strong>Importing these skills as Personas.</strong> Persona calls have no tools, and all three skills need tools and a conversation.</li>
+  <li><strong>A new task kind for "grill".</strong> Chat and plan already cover it; a new kind means a new contract, dispatch rules and tests for no new capability.</li>
+  <li><strong>Letting <code>/implement</code> commit</strong> by loosening the ship contract. That contract is what lets Foreman and the workflow own delivery.</li>
+</ul>
+</div>
+<p><strong>Suggested order:</strong> P0 now, then P1 and P2 together (one small PR changing only skill text), then P3 as its own plan task.</p>
+
+<h2 id="limits">6. What this did not establish</h2>
+<ul>
+  <li>I read every word of <code>grill-me</code>, <code>grilling</code>, <code>to-tickets</code>, <code>implement</code> and the first part of <code>tdd</code> (v1.2.3 in the plugin cache), plus Mission Control's <code>html-plans</code> and <code>phased-plan</code> skills, the ship contract code, the GitHub task source's field list, and Foreman's <code>classifyPending</code>.</li>
+  <li><strong>Not verified:</strong> whether a dispatched intent starting with <code>/implement</code> or <code>/grill-me</code> triggers the skill in either runtime; how GitHub's issue-dependency data is exposed through <code>gh</code>; and whether Foreman's pre-PR nudge fires for a ship task that ended on prose questions in practice. That last one follows from the documented gates, which require a settled-idle cycle and exclude "a human ask", but prose isn't a structured ask. I didn't reproduce it.</li>
+  <li>No runs were done. The proposals are untested designs, and none of them has been implemented.</li>
+</ul>
+</main>
+</body>
+</html>
