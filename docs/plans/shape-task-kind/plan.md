@@ -64,8 +64,8 @@ flowchart LR
   PR merges.
 - Default After-work workflow: **Plan Validation**.
 - Grilling is never skipped: at least one round, even for a detailed intent.
-- `push_task` is added to the kind's pre-approved Mission MCP tools, next to
-  `request_plan_decisions` and `create_task`.
+- The kind pre-approves `request_plan_decisions` and `create_task`. `push_task` joins that list
+  in ticket 5, the ticket that creates the tool, so no ticket ever names an unregistered tool.
 
 ### 3. Grilling (`skills/grill`)
 
@@ -126,13 +126,21 @@ Pocock's `grilling` method (MIT, credited), with the delivery channel swapped:
   any source kind whose `canPush` is true. The push draft gains
   `blockedBy` refs (only blockers that already have items) and a `parent` ref (from the shape
   task's source link). A kind with `canRelate` writes them; GitHub maps them to `--blocked-by`
-  and `--parent`. It still writes the ledger row and the link in one
+  and `--parent`.
+- Ticket 5 also adds `push_task` to the shape kind's pre-approved Mission MCP tools, next to
+  `request_plan_decisions` and `create_task`.
+- `canRelate` and the push-draft `blockedBy` / `parent` fields are **defined once, by ticket 7**
+  (section 6). Ticket 5 only consumes them: it fills the draft fields and implements GitHub's
+  push-side flags. It never adds a second definition, which is why ticket 5 is blocked by
+  ticket 7. It still writes the ledger row and the link in one
   transaction, so sweeps never re-file the issue.
 
 ### 6. Recovery through task sources (generic seam, GitHub first)
 
 A new task-source capability, **`canRelate`**, next to `canPush` / `canAnnotate` /
-`canResolve`. Call sites reach it through the registry and never branch on the kind:
+`canResolve`. Ticket 7 owns its definition: the flag, the candidate fields below, and the
+push-draft `blockedBy` / `parent` fields that ticket 5 later consumes. Call sites reach it
+through the registry and never branch on the kind:
 
 - A sweep candidate carries `blockedBy: TaskSourceRef[]` and `parent?: TaskSourceRef`.
 - The existing linked read (`readLinked`) reports each ref's state as `open`, `completed` or
@@ -185,12 +193,13 @@ The GitHub implementation:
 | 2 | Foreman drafts on decision forms | 1 | In invited sessions, Foreman's draft selection and Other text appear with a revert button. Accepted drafts are marked in the answer and the record. |
 | 3 | Shape kind with grilling | None | Dispatch a shape task (form + guided `s`). It grills in rounds, drafts plan.md/html, and requests the plan review. Skill gating, completion contract and Plan Validation default included. |
 | 4 | Tickets: breakdown review → MC tasks | 3 | Create tickets → breakdown review → tickets.md + `create_task` (with labels/kind) per ticket, with edges and the planning-session gate. Adopting an existing backlog task works. |
-| 5 | Mirror tickets to a task source (GitHub first) | 4 | Push drafts carry blockedBy/parent refs. GitHub writes them. The breakdown's mirror choice pushes each ticket through the new `push_task`, with partial-failure handling. |
+| 5 | Mirror tickets to a task source (GitHub first) | 4, 7 | Push drafts carry blockedBy/parent refs. GitHub writes them. The breakdown's mirror choice pushes each ticket through the new `push_task`, with partial-failure handling. |
 | 6 | Shape this + task-source default kind | 3 | A backlog task converts to shape keeping its source link. Any task source can file items as shape tasks. |
 | 7 | Recover blocking links through task sources (GitHub first) | None | The `canRelate` capability + `source` edge. GitHub sweeps arrive with task or source edges, which release on completed close and show "stopped" on not_planned. |
 | 8 | Keep dependencies in sync | 7 | A generic dependencies group in keep-updated. A changed blockedBy upstream updates edges, with conflicts surfaced. Pushed tasks are included. |
 
-Tickets 1, 3 and 7 can start immediately and run in parallel. Tickets 1-4 and 6 need no task
+Tickets 1, 3 and 7 can start immediately and run in parallel. Ticket 5 waits for both chains:
+it needs ticket 4's breakdown review and ticket 7's `canRelate` definition. Tickets 1-4 and 6 need no task
 source; 5, 7 and 8 each add their generic seam together with its GitHub implementation (one
 vertical slice each). Every UI-visible ticket ships its
 Playwright spec (AGENTS.md rule) and its docs update (`docs/dispatch-and-backlog.md`,
@@ -222,6 +231,15 @@ All work happens on `ramiro314/mission-control` (public, Issues enabled).
 - `gh repo set-default ramiro314/mission-control`, so PRs target the fork's `main`.
 - This planning PR and every ticket task target the fork. Merging the planning PR on the fork
   releases the ticket tasks.
+- **`gh pr create` fails on the fork today.** gh looks up the fork's parent
+  (`teamupstart/mission-control`), and teamupstart's SAML SSO rejects the operator's token
+  (`GraphQL: Resource protected by organization SAML enforcement ... (repository.parent)`).
+  This was reproduced while opening this plan's own PR. Every ticket task's PR step uses
+  `gh pr create`, so before any ticket reaches it, the operator authorizes the token for
+  teamupstart SSO (`gh auth refresh`, or the printed authorize link). The fallback that
+  worked is the REST call `gh api repos/ramiro314/mission-control/pulls -f head=<branch>
+  -f base=main ...`. `gh repo set-default` failed the same way and was replaced by
+  `git config remote.origin.gh-resolved base`.
 - Upstream sync is manual (`git fetch upstream` and merge into the fork's `main`), when wanted.
 
 ## Risks
@@ -232,6 +250,8 @@ All work happens on `ramiro314/mission-control` (public, Issues enabled).
   unsatisfied (Data section).
 - **Grilling length** on a trivial intent. At least one round is required by design; the round
   can be short.
+- **Fork PR creation blocked by SSO** (see Delivery). Mitigation: authorize the token before
+  the first ticket's PR step; REST fallback documented.
 - **Re-pointing `origin`** affects other sessions in the same worktree pool that are working on
   teamupstart. Check none are mid-PR before switching.
 - **Assumption:** harness coverage for the shape kind matches today's plan kind (Claude, Codex,
