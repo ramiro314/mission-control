@@ -1921,7 +1921,10 @@ The MCP tools are:
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer
+  dismisses that decision set without an answer. An option marked `recommended` preselects:
+  the form opens with it selected, a line beside **Submit** names every selection it will send,
+  and an untouched Submit returns exactly the recommendation. A radio group preselects its
+  first recommended option; a checkbox group preselects all of them
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
   dependsOnCurrentSession?)` - add a ship task to the backlog with the default
@@ -1939,7 +1942,8 @@ The MCP tools are:
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer
+  can be dismissed without sending an answer. A `recommended` option preselects, as it does
+  for `request_plan_decisions`
 - `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
   the session to report Mission Control feedback, publishes a public GitHub issue automatically
   and returns its URL without a second dashboard approval. The tool prepares the daemon preview

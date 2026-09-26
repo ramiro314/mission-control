@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
-import { formatResponse } from "@shared/review-item.ts";
+import { formatResponse, selectedOptions } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -32,6 +32,39 @@ function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDec
       other: a?.other.trim() ? a.other.trim() : null,
     };
   });
+}
+
+/**
+ * The form's opening state: each decision's `recommended` option(s) already selected.
+ *
+ * An untouched submit therefore returns exactly the agent's recommendation. A radio group
+ * takes only its first recommended option, since it can hold one; a checkbox group takes all
+ * of them. A decision with no recommendation opens empty, as before, so Submit stays gated on
+ * the human choosing.
+ */
+export function recommendedAnswers(decisions: PlanDecision[]): Answers {
+  const answers: Answers = {};
+  for (const d of decisions) {
+    const ids = d.options.filter((o) => o.recommended).map((o) => o.id);
+    if (ids.length) answers[d.id] = { selected: d.multiSelect ? ids : ids.slice(0, 1), other: "" };
+  }
+  return answers;
+}
+
+/**
+ * What Submit would send, as one line a person can read before pressing it.
+ *
+ * Needed because the form now opens preselected: without it an untouched Submit sends a
+ * choice the human may never have looked at. Null when nothing is chosen yet.
+ */
+function selectionSummary(decisions: PlanDecision[], payload: PlanDecisionAnswer[]): string | null {
+  const parts = decisions.flatMap((d, i) => {
+    const a = payload[i];
+    const labels = selectedOptions(d, a).map((o) => o.label);
+    if (a?.other) labels.push(`Other: ${a.other}`);
+    return labels.length ? [labels.join(", ")] : [];
+  });
+  return parts.length ? `Selected: ${parts.join(" · ")}` : null;
 }
 
 /**
@@ -97,7 +130,7 @@ export function DecisionForm({
    */
   foremanRecommended?: ReadonlySet<string>;
 }): React.JSX.Element {
-  const [answers, setAnswers] = useState<Answers>({});
+  const [answers, setAnswers] = useState<Answers>(() => recommendedAnswers(decisions));
 
   function get(id: string): { selected: string[]; other: string } {
     return answers[id] ?? { selected: [], other: "" };
@@ -129,6 +162,7 @@ export function DecisionForm({
   // button's enabled state is decided over exactly the payload it would send.
   const payload = toDecisionAnswers(decisions, answers);
   const complete = decisions.length > 0 && decisions.every((d, i) => isAnswered(d, payload[i]));
+  const summary = selectionSummary(decisions, payload);
 
   return (
     <div className="decisions">
@@ -185,12 +219,18 @@ export function DecisionForm({
             </button>
           </Tooltip>
         )}
+        {summary && (
+          <p className="decisions-selected" id={`${namePrefix}-selected`} aria-live="polite">
+            {summary}
+          </p>
+        )}
         <Tooltip
           label={complete ? "Send these decisions back to the agent" : "Answer every decision above first"}
         >
           <button
             className="btn btn-approve"
             disabled={busy || !complete}
+            aria-describedby={summary ? `${namePrefix}-selected` : undefined}
             onClick={() => onSubmit(formatResponse(decisions, payload, lead), payload)}
           >
             Submit

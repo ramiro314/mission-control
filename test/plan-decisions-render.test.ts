@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
+import { DecisionForm, recommendedAnswers } from "../src/web/components/PlanDecisions.tsx";
 import type { PlanDecision } from "../src/shared/types.ts";
 import { hasTooltip } from "./helpers/markup.ts";
 
@@ -94,4 +94,71 @@ test("zero decisions leave Submit disabled rather than vacuously complete", () =
   // answered" is trivially true for none of them, so Submit must be gated on having
   // something to submit or the agent unblocks on a content-free response.
   assert.match(render([]), /<button[^>]*disabled[^>]*>Submit<\/button>/);
+});
+
+// Preselection: a form opens with the agent's `recommended` option(s) already chosen, so an
+// untouched Submit returns exactly the recommendation.
+
+const allRecommended: PlanDecision[] = [
+  {
+    id: "store",
+    question: "Where should sessions live?",
+    options: [
+      { id: "redis", label: "Use Redis" },
+      { id: "pg", label: "Postgres table", recommended: true },
+      { id: "sqlite", label: "SQLite", recommended: true },
+    ],
+  },
+  {
+    id: "providers",
+    question: "Which providers ship first?",
+    options: [
+      { id: "google", label: "Google", recommended: true },
+      { id: "github", label: "GitHub" },
+      { id: "gitlab", label: "GitLab", recommended: true },
+    ],
+    multiSelect: true,
+    allowOther: true,
+  },
+];
+
+/** The `value`-less input for one option label, as rendered. */
+function inputFor(html: string, label: string): string {
+  const at = html.indexOf(label);
+  assert.ok(at > 0, `${label} is rendered`);
+  const open = html.lastIndexOf("<input", at);
+  return html.slice(open, html.indexOf(">", open) + 1);
+}
+
+test("recommendedAnswers preselects the first recommended radio and every recommended checkbox", () => {
+  assert.deepEqual(recommendedAnswers(allRecommended), {
+    store: { selected: ["pg"], other: "" },
+    providers: { selected: ["google", "gitlab"], other: "" },
+  });
+  // A decision with no recommendation contributes nothing and opens empty.
+  assert.deepEqual(recommendedAnswers([decisions[1]!]), {});
+});
+
+test("the form opens with recommended options checked, radio and multi-select alike", () => {
+  const html = render(allRecommended);
+  assert.match(inputFor(html, "Postgres table"), /checked/);
+  assert.doesNotMatch(inputFor(html, "SQLite"), /checked/, "a radio holds one recommendation");
+  assert.doesNotMatch(inputFor(html, "Use Redis"), /checked/);
+  assert.match(inputFor(html, "Google"), /checked/);
+  assert.match(inputFor(html, "GitLab"), /checked/);
+  assert.doesNotMatch(inputFor(html, "GitHub"), /checked/);
+});
+
+test("a fully recommended form can be submitted untouched and says what it will send", () => {
+  const html = render(allRecommended);
+  assert.doesNotMatch(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);
+  assert.match(html, /Selected: Postgres table · Google, GitLab/);
+  assert.match(html, /<button[^>]*aria-describedby="d-selected[ "][^>]*>Submit<\/button>/);
+});
+
+test("a form without any recommendation opens as before: nothing checked, no summary", () => {
+  const html = render([decisions[1]!]);
+  assert.doesNotMatch(html, /checked/);
+  assert.doesNotMatch(html, /Selected:/);
+  assert.match(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);
 });
