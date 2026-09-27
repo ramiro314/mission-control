@@ -39,7 +39,7 @@ function gitRepo(name = "repo"): string {
 
 async function createTaskRequest(
   app: ReturnType<typeof buildApp>,
-  path: "/mcp/tasks" | "/mcp/v2/tasks",
+  path: "/mcp/tasks" | "/mcp/v2/tasks" | "/mcp/v3/tasks",
   repoRoot: string,
   body: Record<string, unknown> = {},
 ): Promise<Response> {
@@ -355,4 +355,199 @@ test("MCP create_task never files a shape task, on either route", async () => {
     assert.equal(created.kind, "ship", `${path} must not create a shape task`);
   }
   assert.ok(tasks.list().every((task) => task.kind !== "shape"));
+});
+
+// ---------------------------------------------------------------------------
+// Ticket sets: a shape task's breakdown filed through create_task (the v3 route)
+// ---------------------------------------------------------------------------
+
+/** A live planning session in `repo` whose agent session id MCP calls can name. */
+function planningSession(
+  registry: InstanceType<typeof Registry>,
+  repo: string,
+  name: string,
+  agentSessionId: string,
+): string {
+  registry.applyDiscovery([{
+    syntheticId: `${name}-synthetic`,
+    agent: "claude",
+    name,
+    nameSource: "process",
+    cwd: repo,
+    gitBranch: "plan/tickets",
+    gitRoot: repo,
+    repoRoot: repo,
+    pid: 303,
+    tty: null,
+    terminals: [],
+    startedAt: Date.now(),
+  }]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: agentSessionId,
+    cwd: repo,
+    transcriptPath: null,
+    env: {},
+  });
+  const session = registry.snapshot().sessions.find((candidate) => candidate.name === name);
+  assert.ok(session);
+  return session.id;
+}
+
+function ticketHarness(name: string) {
+  const repo = gitRepo(name);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const sessionId = planningSession(registry, repo, `shape ${name}`, `${name}-agent`);
+  const file = async (body: Record<string, unknown>) => {
+    const response = await createTaskRequest(app, "/mcp/v3/tasks", repo, {
+      sessionId: `${name}-agent`,
+      dependsOnCurrentSession: true,
+      ...body,
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  const count = () => tasks.list().filter((task) => task.repoRoot === repo).length;
+  return { repo, registry, tasks, app, sessionId, file, count };
+}
+
+const edgesOf = (task: { dependencies: ReadonlyArray<{ type: string; taskId?: string; sessionId?: string | null }> }) =>
+  task.dependencies.map((dependency) =>
+    dependency.type === "task" ? `task:${dependency.taskId}` : `${dependency.type}:${dependency.sessionId}`);
+
+test("a ticket set files in dependency order with kind, labels, edges and the planning-session gate", async () => {
+  const { sessionId, file, count } = ticketHarness("ticket-set");
+
+  const first = await file({
+    title: "Refactor the export seam",
+    intent: "**What to build:** the seam.",
+    kind: "ship",
+    labels: ["shape-exports", " Shape-Exports ", "refactor"],
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.kind, "ship");
+  assert.deepEqual(first.body.labels, ["shape-exports", "refactor"], "labels are normalized");
+  assert.deepEqual(edgesOf(first.body), [`session:${sessionId}`]);
+
+  const second = await file({
+    title: "Export a crash report",
+    intent: "**What to build:** the fix.",
+    kind: "bugfix",
+    labels: ["shape-exports"],
+    dependsOnTaskIds: [first.body.id],
+  });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.kind, "bugfix");
+  assert.equal(second.body.status, "backlog");
+  assert.deepEqual(edgesOf(second.body), [`task:${first.body.id}`, `session:${sessionId}`]);
+  // The human's approval of the breakdown is the consent: ticket tasks are autopilot-eligible.
+  assert.equal(second.body.enabled, true);
+  assert.equal(count(), 2);
+});
+
+test("create_task files implementation kinds only", async () => {
+  const { file, count } = ticketHarness("ticket-kind");
+  for (const kind of ["shape", "plan", "scout", "chat"]) {
+    const refused = await file({ title: `A ${kind} ticket`, intent: "No.", kind });
+    assert.equal(refused.status, 400, `${kind} is refused`);
+  }
+  assert.equal(count(), 0);
+  const defaulted = await file({ title: "Default kind", intent: "Yes.", labels: ["x"] });
+  assert.equal(defaulted.body.kind, "ship");
+});
+
+test("adopting a backlog task only adds the ticket's edges to it", async () => {
+  const { repo, tasks, sessionId, file, count } = ticketHarness("ticket-adopt");
+  const existing = tasks.create({
+    repoRoot: repo,
+    intent: "The operator's own brief, which the ticket must not overwrite.",
+    title: "Existing export work",
+    kind: "bugfix",
+    agent: "claude",
+    labels: ["operator"],
+    backlog: true,
+  });
+  const blocker = await file({ title: "Refactor the export seam", intent: "The seam." });
+
+  const adopted = await file({
+    title: "Ticket title that must not land",
+    intent: "Ticket body that must not land",
+    kind: "ship",
+    labels: ["ticket"],
+    dependsOnTaskIds: [blocker.body.id],
+    adoptTaskId: existing.id,
+  });
+  assert.equal(adopted.status, 200);
+  assert.equal(adopted.body.id, existing.id);
+  assert.equal(adopted.body.adopted, true);
+  const stored = tasks.list().find((task) => task.id === existing.id)!;
+  assert.equal(stored.title, "Existing export work");
+  assert.equal(stored.intent, "The operator's own brief, which the ticket must not overwrite.");
+  assert.equal(stored.kind, "bugfix");
+  assert.deepEqual(stored.labels, ["operator"]);
+  assert.deepEqual(edgesOf(stored), [`task:${blocker.body.id}`, `session:${sessionId}`]);
+  assert.equal(count(), 2, "adopting creates nothing");
+
+  // A ticket blocked by the adopted one waits on the adopted task.
+  const dependent = await file({ title: "Export UI", intent: "UI.", dependsOnTaskIds: [existing.id] });
+  assert.deepEqual(edgesOf(dependent.body), [`task:${existing.id}`, `session:${sessionId}`]);
+
+  // Adopting again with the same edges is a no-op, not a duplicate edge.
+  const again = await file({ title: "t", intent: "i", dependsOnTaskIds: [blocker.body.id], adoptTaskId: existing.id });
+  assert.equal(again.status, 200);
+  assert.equal(tasks.list().find((task) => task.id === existing.id)!.dependencies.length, 2);
+});
+
+test("an adoption that would close a dependency cycle is refused and changes nothing", async () => {
+  const { repo, tasks, file } = ticketHarness("ticket-cycle");
+  const adoptable = tasks.create({
+    repoRoot: repo, intent: "A", title: "A", kind: "ship", agent: "claude", backlog: true,
+  });
+  // B already waits on A, so making A wait on B would deadlock both.
+  const waiting = await file({ title: "B", intent: "B", dependsOnTaskIds: [adoptable.id] });
+  assert.equal(waiting.status, 200);
+
+  const cycle = await file({ title: "A", intent: "A", dependsOnTaskIds: [waiting.body.id], adoptTaskId: adoptable.id });
+  assert.equal(cycle.status, 409);
+  assert.match(cycle.body.error, /cycle/);
+  assert.deepEqual(tasks.list().find((task) => task.id === adoptable.id)!.dependencies, []);
+});
+
+test("only an existing backlog task can be adopted", async () => {
+  const { file, count } = ticketHarness("ticket-adopt-missing");
+  const missing = await file({ title: "t", intent: "i", adoptTaskId: "no-such-task" });
+  assert.equal(missing.status, 404);
+  assert.match(missing.body.error, /no such task to adopt/);
+  assert.equal(count(), 0, "a failed adoption never falls back to creating");
+});
+
+test("list_backlog_tasks returns the calling repository's open backlog only", async () => {
+  const { repo, tasks, app, file } = ticketHarness("ticket-list");
+  const other = gitRepo("ticket-list-other");
+  const mine = await file({ title: "Mine", intent: "m", labels: ["a"] });
+  const dependent = await file({ title: "Dependent", intent: "d", dependsOnTaskIds: [mine.body.id] });
+  tasks.create({ repoRoot: other, intent: "o", title: "Other repo", kind: "ship", agent: "claude", backlog: true });
+
+  const response = await app.request("/mcp/backlog", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ env: {}, cwd: repo, repoRoot: repo }),
+  });
+  assert.equal(response.status, 200);
+  const listed = await response.json();
+  assert.equal(listed.repository, repo);
+  assert.deepEqual(
+    listed.tasks.map((task: { title: string }) => task.title).sort(),
+    ["Dependent", "Mine"],
+  );
+  const row = listed.tasks.find((task: { id: string }) => task.id === dependent.body.id);
+  assert.deepEqual(row, {
+    id: dependent.body.id,
+    title: "Dependent",
+    kind: "ship",
+    labels: [],
+    dependsOnTaskIds: [mine.body.id],
+  });
 });

@@ -18,7 +18,12 @@ import {
 import { STATE_DIR, mcpServerPath } from "./config.ts";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL } from "./plans/tools.ts";
+import {
+  BACKLOG_LIST_TOOL,
+  PLAN_DECISIONS_TOOL,
+  PLAN_SCHEDULING_TOOL,
+  PLAN_PUBLICATION_TOOL,
+} from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
@@ -67,6 +72,7 @@ export const MISSION_MCP_TOOLS = [
   "report_product_feedback",
   "report_product_issue",
   "report_status",
+  "list_backlog_tasks",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`
   // scrapes `registerTool("...")` out of the server and compares the two lists by value, and
   // `scripts/smoke-bundles.mjs` resolves any CONSTANT here through a hand-written name-to-module
@@ -131,11 +137,10 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   plan: PLANNING_MISSION_MCP_TOOLS,
   pipeline: [],
   chat: [],
-  // Grilling rounds and the plan review are `request_plan_decisions` forms. The list also
-  // grants `create_task` (`PLAN_SCHEDULING_TOOL`), as the plan's kind contract specifies, but
-  // today's shape contract never calls it: filing tickets as tasks arrives with the tickets
-  // skill in a later ticket, and until then the contract tells the agent not to improvise it.
-  shape: PLANNING_MISSION_MCP_TOOLS,
+  // Grilling rounds, the plan review and the breakdown review are `request_plan_decisions`
+  // forms; the approved tickets are filed with `create_task`, and `list_backlog_tasks` finds
+  // the open tasks a ticket may adopt instead.
+  shape: [...PLANNING_MISSION_MCP_TOOLS, BACKLOG_LIST_TOOL],
 };
 
 /**

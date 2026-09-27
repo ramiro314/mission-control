@@ -7,6 +7,7 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
+  MCP_TASK_KINDS,
   TASK_KIND_BACKLOG_REFUSAL,
   TASK_KIND_SCHEDULE_REFUSAL,
   TASK_PRIORITIES,
@@ -817,6 +818,39 @@ export const McpCreateTaskV2Schema = McpCreateTaskBaseSchema.extend({
     .default([]),
 }).refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
 export type McpCreateTaskV2 = z.infer<typeof McpCreateTaskV2Schema>;
+
+/**
+ * Ticket-bearing MCP task creation: the v2 selectors plus `kind`, `labels` and `adoptTaskId`.
+ *
+ * Its own route for the reason v2 has one. An older daemon would strip these fields and answer
+ * 200, and a stripped `adoptTaskId` is not a harmless loss: it files a duplicate of the task the
+ * human chose to adopt. A daemon that does not know this route answers 404 and creates nothing.
+ *
+ * `adoptTaskId` names an existing backlog task that stands in for this ticket. Only the
+ * dependency edges are added to it; its title, intent, kind and labels are left as they are, so
+ * `title`, `intent`, `kind`, `labels` and the repository selectors are not applied when adopting.
+ */
+export const McpCreateTaskV3Schema = McpCreateTaskBaseSchema.extend({
+  targetRepository: z.string().trim().min(1).optional(),
+  additionalRepositories: z
+    .array(z.string().trim().min(1))
+    .max(MAX_TASK_EXTRA_REPOS)
+    .optional()
+    .default([]),
+  kind: z.enum(MCP_TASK_KINDS).optional().default("ship"),
+  labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
+  adoptTaskId: z.string().min(1).optional(),
+}).refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
+export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
+
+/** MCP `list_backlog_tasks`: the calling repository's open backlog, for a ticket to adopt. */
+export const McpListBacklogSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().min(1),
+  repoRoot: z.string().min(1),
+});
+export type McpListBacklog = z.infer<typeof McpListBacklogSchema>;
 
 /** The MCP tool exposes only the provider slug; its launch capability carries identity. */
 export const McpAdoptPipelineRunSchema = z.object({

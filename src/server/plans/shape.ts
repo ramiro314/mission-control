@@ -1,7 +1,7 @@
 import { PLAN_PAGE_FILENAME, PLAN_SOURCE_PATH_SHAPE } from "@shared/plans.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
 import { PLAN_HTML_SKILL_ID } from "./prompt.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL } from "./tools.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL } from "./tools.ts";
 
 /**
  * The delivery contract of a `shape` task: grill first, then plan.
@@ -25,6 +25,9 @@ export const SHAPE_APPENDIX_MARKER = "--- Mission Control shape ---";
  */
 export const SHAPE_GRILL_SKILL_ID = "grill";
 
+/** The bundled slicing skill, `skills/tickets/SKILL.md`: breakdown review, then tasks. */
+export const SHAPE_TICKETS_SKILL_ID = "tickets";
+
 /** The follow-up decision that closes a shape task's plan review. */
 export const SHAPE_FOLLOW_UP_DECISION_ID = "shape-follow-up";
 
@@ -34,6 +37,8 @@ export interface ShapeSkillInvocations {
   grill: string;
   /** `html-plans`: how the plan is written, rendered, and opened for review. */
   htmlPlans: string;
+  /** `tickets`: how the approved plan is sliced, reviewed as a breakdown, and filed as tasks. */
+  tickets: string;
 }
 
 export function shapeContractAppendix(skills: ShapeSkillInvocations, workflowBound = false): string {
@@ -54,8 +59,13 @@ export function shapeContractAppendix(skills: ShapeSkillInvocations, workflowBou
     `   \`${SHAPE_FOLLOW_UP_DECISION_ID}\`, "What should happen after this plan is approved?", with the options`,
     "   `create-tickets` (Create tickets, recommended) and `stop` (Stop). It replaces the skill's phased",
     "   implementation follow-up; do not offer that one here.",
-    "5. On Stop, keep the approved plan and finish. On Create tickets, record the choice in the plan and",
-    "   finish; filing the tickets as tasks is not available on this build yet, so do not improvise it.",
+    "5. On Stop, keep the approved plan and finish without tickets.",
+    `6. On Create tickets, invoke the ${SHAPE_TICKETS_SKILL_ID} skill. It slices the plan into tickets and opens the`,
+    `   breakdown review, one \`${PLAN_DECISIONS_TOOL}\` form that is the human's final approval. Nothing is`,
+    `   written or created before that form is submitted, and a dismissed breakdown creates nothing. On submit`,
+    `   it writes the tickets file, commits and pushes it, then files each ticket with \`${PLAN_SCHEDULING_TOOL}\``,
+    "   in dependency order, gated on this session. On this harness:",
+    `   ${skills.tickets}`,
     "",
     `Before publication, call \`${PLAN_PUBLICATION_TOOL}\` to refresh who owns the pull request. A failed or unavailable read is not permission to publish directly.`,
   ];

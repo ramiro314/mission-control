@@ -25,6 +25,7 @@ import {
   readScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
+import { MAX_LABELS, MCP_TASK_KINDS } from "@shared/task.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -326,19 +327,34 @@ server.registerTool(
   },
 );
 
+/**
+ * Whether a 404 means the daemon does not know the route at all, as an older build answers,
+ * rather than a route that ran and reported a missing session or task as a JSON `error`.
+ */
+async function isUnknownRoute(res: Response): Promise<boolean> {
+  if (res.status !== 404) return false;
+  try {
+    return typeof ((await res.clone().json()) as { error?: unknown }).error !== "string";
+  } catch {
+    return true;
+  }
+}
+
 server.registerTool(
   "create_task",
   {
     title: "Schedule an implementation task",
     description:
-      "Create one ship task in the Mission Control backlog. It targets the current repository " +
-      "unless an absolute local checkout path or unique repository directory name is supplied, " +
-      "and it can attach additional local repositories to the same task. " +
-      "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
+      "Create one ship (or bugfix) task in the Mission Control backlog. It targets the current " +
+      "repository unless an absolute local checkout path or unique repository directory name is " +
+      "supplied, and it can attach additional local repositories to the same task. " +
+      "The task uses the kind's default agent, model, and reasoning effort. Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
-      "prerequisites keep the new task backlogged until their pull requests merge. Repository " +
+      "prerequisites keep the new task backlogged until their pull requests merge. Pass " +
+      "adoptTaskId to have an existing backlog task stand in for this one instead: only the " +
+      "dependency edges are added to it, and a cycle is refused. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id and canonical repository set.",
+      "authority later. Returns the task id and canonical repository set.",
     inputSchema: {
       title: z
         .string()
@@ -384,6 +400,24 @@ server.registerTool(
         .boolean()
         .default(false)
         .describe("Make the session calling this tool a direct prerequisite of the new task"),
+      kind: z
+        .enum(MCP_TASK_KINDS)
+        .optional()
+        .describe("ship (the default) builds a change; bugfix fixes a defect"),
+      labels: z
+        .array(z.string().min(1))
+        .max(MAX_LABELS)
+        .optional()
+        .describe("Backlog labels for the card. Priority is left for the human to set"),
+      adoptTaskId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Id of an existing backlog task (from list_backlog_tasks) that stands in for this one. " +
+            "Nothing is created: the dependency edges are added to that task and its title, intent, " +
+            "kind and labels stay as they are",
+        ),
     },
   },
   async ({
@@ -393,10 +427,18 @@ server.registerTool(
     additionalRepositories,
     dependsOnTaskIds,
     dependsOnCurrentSession,
+    kind,
+    labels,
+    adoptTaskId,
   }) => {
     try {
       const explicitRepositories =
         repository !== undefined || Boolean(additionalRepositories?.length);
+      // A kind, labels or an adoption must reach a daemon that knows them. The v3 route is
+      // unknown to an older daemon, so it answers 404 rather than stripping the fields and
+      // filing a plain ship task - or a duplicate of the task the human chose to adopt.
+      const ticketFields =
+        kind !== undefined || Boolean(labels?.length) || adoptTaskId !== undefined;
       const body = {
         env: ENV,
         sessionId: SESSION_ID,
@@ -407,21 +449,32 @@ server.registerTool(
         dependsOnTaskIds,
         dependsOnCurrentSession,
       };
+      const path = ticketFields ? "/mcp/v3/tasks" : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks";
       const res = await http(
-        explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks",
+        path,
         "POST",
-        explicitRepositories
+        ticketFields
           ? {
               ...body,
               targetRepository: repository,
               additionalRepositories: additionalRepositories ?? [],
+              kind,
+              labels,
+              adoptTaskId,
             }
-          : body,
+          : explicitRepositories
+            ? {
+                ...body,
+                targetRepository: repository,
+                additionalRepositories: additionalRepositories ?? [],
+              }
+            : body,
       );
-      if (explicitRepositories && res.status === 404) {
+      if (path !== "/mcp/tasks" && (await isUnknownRoute(res))) {
         return textResult(
-          "Could not create task: this Mission Control daemon does not support repository " +
-            "selectors. Update or restart Mission Control and retry; no task was created.",
+          "Could not create task: this Mission Control daemon does not support " +
+            (ticketFields ? "task kinds, labels or adoption" : "repository selectors") +
+            ". Update or restart Mission Control and retry; no task was created.",
           true,
         );
       }
@@ -433,8 +486,11 @@ server.registerTool(
         id: string;
         title: string;
         status: string;
+        kind: string;
+        labels: string[];
         repoRoot: string;
         extraRepos: Array<{ repoRoot: string }>;
+        adopted?: boolean;
       };
       return textResult(
         JSON.stringify(
@@ -442,6 +498,9 @@ server.registerTool(
             id: task.id,
             title: task.title,
             status: task.status,
+            kind: task.kind,
+            labels: task.labels,
+            ...(task.adopted ? { adopted: true } : {}),
             repository: task.repoRoot,
             additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
             dependsOnTaskIds,
@@ -451,6 +510,41 @@ server.registerTool(
           2,
         ),
       );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "list_backlog_tasks",
+  {
+    title: "List the repository's open backlog",
+    description:
+      "List the open backlog tasks of the calling session's repository: id, title, kind, labels, " +
+      "and the task ids each one already depends on. Read-only. Use it to offer an existing task " +
+      "a ticket could adopt through create_task's adoptTaskId.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/backlog", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        repoRoot: process.cwd(),
+      });
+      if (await isUnknownRoute(res)) {
+        return textResult(
+          "Could not list the backlog: this Mission Control daemon does not support it. Update " +
+            "or restart Mission Control and retry.",
+          true,
+        );
+      }
+      if (!res.ok) {
+        return textResult(`Could not list the backlog (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify(await res.json(), null, 2));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

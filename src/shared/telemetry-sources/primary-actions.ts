@@ -20,6 +20,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/tasks", "task.create", "tasks"],
   ["POST", "/mcp/tasks", "task.create", "tasks"],
   ["POST", "/mcp/v2/tasks", "task.create", "tasks"],
+  ["POST", "/mcp/v3/tasks", "task.create", "tasks"],
   ["POST", "/api/tasks/:id/update", "task.edit", "tasks"],
   ["POST", "/api/tasks/bulk-update", "task.bulk_edit", "tasks"],
   ["POST", "/api/tasks/bulk-delete", "task.bulk_delete", "tasks"],

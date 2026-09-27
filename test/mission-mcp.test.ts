@@ -175,7 +175,7 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
 });
 
-test("create_task publishes bounded repository selectors and never falls back to legacy", () => {
+test("create_task publishes bounded repository selectors and ticket fields, and never falls back to legacy", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const start = source.indexOf('server.registerTool(\n  "create_task"');
   const end = source.indexOf("// This is the replacement", start);
@@ -190,14 +190,19 @@ test("create_task publishes bounded repository selectors and never falls back to
     /repository !== undefined \|\| Boolean\(additionalRepositories\?\.length\)/,
     "an explicitly empty attachment list keeps the legacy current-repository route",
   );
-  assert.match(registration, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
+  assert.match(
+    registration,
+    /ticketFields \? "\/mcp\/v3\/tasks" : explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/,
+    "a kind, labels or adoption reaches only the route that knows them",
+  );
+  assert.match(registration, /kind !== undefined \|\| Boolean\(labels\?\.length\) \|\| adoptTaskId !== undefined/);
   assert.match(registration, /targetRepository: repository/);
-  assert.match(registration, /res\.status === 404/);
+  assert.match(registration, /isUnknownRoute\(res\)/);
   assert.match(registration, /no task was created/);
   assert.doesNotMatch(
     registration,
-    /res\.status === 404[\s\S]*http\("\/mcp\/tasks"/,
-    "a selector-bearing call must not be retried after an old daemon's 404",
+    /isUnknownRoute\(res\)[\s\S]*http\("\/mcp\/(v2\/)?tasks"/,
+    "a selector- or ticket-bearing call must not be retried after an old daemon's 404",
   );
   assert.match(registration, /repository: task\.repoRoot/);
   assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);

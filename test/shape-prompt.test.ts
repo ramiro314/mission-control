@@ -13,6 +13,7 @@ import {
   SHAPE_APPENDIX_MARKER,
   SHAPE_FOLLOW_UP_DECISION_ID,
   SHAPE_GRILL_SKILL_ID,
+  SHAPE_TICKETS_SKILL_ID,
   shapeContractAppendix,
 } from "../src/server/plans/shape.ts";
 import {
@@ -21,7 +22,12 @@ import {
   planningSkillsForAgent,
   planningSkillsForSession,
 } from "../src/server/plans/skills.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL } from "../src/server/plans/tools.ts";
+import {
+  BACKLOG_LIST_TOOL,
+  PLAN_DECISIONS_TOOL,
+  PLAN_PUBLICATION_TOOL,
+  PLAN_SCHEDULING_TOOL,
+} from "../src/server/plans/tools.ts";
 import {
   requiredSkillCommand,
   skillInvocationForAgent,
@@ -67,7 +73,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
-const CLAUDE_SKILLS = { grill: "/grill", htmlPlans: "/html-plans" };
+const CLAUDE_SKILLS = { grill: "/grill", htmlPlans: "/html-plans", tickets: "/tickets" };
 
 /** The shape kind's skills, read from the one table that owns them. */
 const SHAPE_SKILL_IDS: string[] = Object.values(PLANNING_SKILLS.shape);
@@ -145,6 +151,44 @@ test("the plan review's follow-up is Create tickets / Stop, replacing the phased
   assert.ok(!appendix.includes("/phased-plan"), "a shape task is never told to phase");
 });
 
+test("Create tickets hands the approved plan to the tickets skill, and nothing precedes the breakdown", () => {
+  const appendix = shapeContractAppendix(CLAUDE_SKILLS);
+  const html = appendix.indexOf("/html-plans");
+  const tickets = appendix.indexOf("/tickets");
+  assert.ok(tickets > html, "tickets is invoked after the plan is written");
+  assert.match(appendix, /On Stop, keep the approved plan and finish without tickets/);
+  assert.match(appendix, new RegExp(`On Create tickets, invoke the ${SHAPE_TICKETS_SKILL_ID} skill`));
+  assert.match(appendix, /breakdown review/);
+  assert.match(appendix, /Nothing is\s+written or created before that form is submitted, and a dismissed breakdown creates nothing/);
+  assert.match(appendix, new RegExp(`files each ticket with \`${escape(PLAN_SCHEDULING_TOOL)}\``));
+  assert.match(appendix, /in dependency order, gated on this session/);
+  assert.doesNotMatch(appendix, /not available on this build/);
+});
+
+test("the bundled tickets skill slices, reviews, and files the way the contract promises", () => {
+  const skill = src(`skills/${SHAPE_TICKETS_SKILL_ID}/SKILL.md`);
+  assert.match(skill, new RegExp(`^---\\nname: ${SHAPE_TICKETS_SKILL_ID}\\n`));
+  assert.match(skill, /tracer bullet/i);
+  assert.match(skill, /one fresh context window/i);
+  assert.match(skill, /[Rr]efactoring first|[Pp]refactor/);
+  assert.match(skill, /expand-contract/);
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, BACKLOG_LIST_TOOL]) {
+    assert.match(skill, new RegExp(escape(tool)));
+  }
+  for (const field of ["dependsOnTaskIds", "dependsOnCurrentSession", "adoptTaskId", "labels", "kind"]) {
+    assert.match(skill, new RegExp(`\`${field}`), `the skill names ${field}`);
+  }
+  assert.match(skill, /tickets\.md/);
+  assert.match(skill, /3000 characters/);
+  assert.match(skill, /[Nn]o file paths/);
+  assert.match(skill, /\*\*Dismissed:\*\*/);
+  // Credited, and standalone: it must not lean on the mattpocock-skills plugin being installed.
+  assert.match(skill, /Matt Pocock/);
+  assert.match(skill, /MIT License/);
+  assert.doesNotMatch(skill, /mattpocock-skills:/);
+  assert.match(src("NOTICE"), /skills\/tickets[\s\S]*Copyright \(c\) 2026 Matt Pocock/);
+});
+
 test("a shape task takes the plan's completion handoff when a workflow is bound", () => {
   const bound = withTaskKindContract(mkTask({ workflowId: "wf" }), "shape it", { planSkills: CLAUDE_SKILLS });
   assert.match(bound, /## Shape task completion handoff/);
@@ -185,16 +229,16 @@ test("the bundled grill skill asks rounds the way the contract promises", () => 
 
 test("every shape launch pre-approves the tools its prompt names", () => {
   const appendix = shapeContractAppendix(CLAUDE_SKILLS);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL]) {
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL]) {
     assert.ok(appendix.includes(tool), `the prompt names ${tool}`);
   }
   const required = kindMissionMcpRequirement(mkTask(), null);
-  const expected = [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL];
+  const expected = [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, BACKLOG_LIST_TOOL];
   for (const tool of expected) assert.ok(([...MISSION_MCP_TOOLS] as string[]).includes(tool));
   assert.deepEqual([...(required?.tools ?? [])].sort(), [...expected].sort());
 });
 
-test("dispatch is refused, naming the toggle, when either shape skill is off", () => {
+test("dispatch is refused, naming the toggle, when any shape skill is off", () => {
   for (const off of SHAPE_SKILL_IDS) {
     const block = planDispatchBlock(mkTask(), (_agent, id) =>
       id === off
@@ -205,13 +249,13 @@ test("dispatch is refused, naming the toggle, when either shape skill is off", (
     assert.match(block, /A shape task's intent invokes the planning skills/);
     assert.match(block, /Settings → Skills/);
   }
-  // A shape task does not need phased-plan: only its own two skills are asked for.
+  // A shape task does not need phased-plan: only its own three skills are asked for, in order.
   const asked: string[] = [];
   planDispatchBlock(mkTask(), (_agent, id) => {
     asked.push(id);
     return { ok: true, command: `/${id}` };
   });
-  assert.deepEqual(asked, [SHAPE_GRILL_SKILL_ID, PLAN_HTML_SKILL_ID]);
+  assert.deepEqual(asked, [SHAPE_GRILL_SKILL_ID, PLAN_HTML_SKILL_ID, SHAPE_TICKETS_SKILL_ID]);
 });
 
 test("the launch resolver renders each harness's own invocation", () => {
@@ -219,7 +263,7 @@ test("the launch resolver renders each harness's own invocation", () => {
   assert.deepEqual(planningSkillsForAgent("claude", "shape", forAgent), { ok: true, commands: CLAUDE_SKILLS });
   assert.deepEqual(planningSkillsForAgent("pi", "shape", forAgent), {
     ok: true,
-    commands: { grill: "/skill:grill", htmlPlans: "/skill:html-plans" },
+    commands: { grill: "/skill:grill", htmlPlans: "/skill:html-plans", tickets: "/skill:tickets" },
   });
   const off = planningSkillsForAgent("claude", "shape", (agent, id) =>
     skillInvocationForAgent(agent, id, deps({ config: () => ({ ...config, enabled: false }) })));
@@ -250,7 +294,10 @@ test("each delivery seam resolves planning skills through the one shared resolve
 
 test("one table names every planning kind's skills, and a kind's invocations never satisfy another", () => {
   assert.deepEqual(Object.keys(PLANNING_SKILLS).sort(), ["plan", "shape"]);
-  assert.deepEqual(Object.values(PLANNING_SKILLS.shape), [SHAPE_GRILL_SKILL_ID, PLAN_HTML_SKILL_ID]);
+  assert.deepEqual(
+    Object.values(PLANNING_SKILLS.shape),
+    [SHAPE_GRILL_SKILL_ID, PLAN_HTML_SKILL_ID, SHAPE_TICKETS_SKILL_ID],
+  );
   // A shape task handed plan's invocations is refused rather than delivered with a hole in it.
   assert.throws(
     () => withTaskKindContract(mkTask(), "shape it", {

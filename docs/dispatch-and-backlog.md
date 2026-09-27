@@ -345,15 +345,28 @@ option it recommends listed first and a free-text **Other**. Facts it can look u
 asked. Rounds continue until nothing is left to ask, and there is always at least one, however
 detailed the request. Dismissing a round stops the session without a plan. Once the interview
 is done it writes `plan.md` and `plan.html` and requests the plan review, whose follow-up is
-**Create tickets** or **Stop** instead of plan's phased follow-up. Turning the plan into ticket
-tasks is not available yet; choosing Create tickets records the choice in the plan.
+**Create tickets** or **Stop** instead of plan's phased follow-up.
 
-A shape task needs **Grill and HTML Plans both switched on**. With either one off the dispatch
-is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
+**Create tickets** hands the approved plan to the bundled [Tickets skill](skills-and-settings.md).
+It slices the plan into tickets (one ticket is one task is one pull request) and opens the
+**breakdown review**, your final approval: one `request_plan_decisions` form listing every
+ticket with what blocks it and what it delivers, and, per ticket, **New task** or **Adopt** one of
+the repository's open backlog tasks. Nothing exists before you submit it, and dismissing it files
+nothing. On submit the agent writes `docs/plans/<name>/tickets.md` (and its HTML page), commits
+and pushes it, then files each ticket through `create_task` in dependency order: each waits on
+its blocking tickets and on the shape session, so none starts before the planning pull request
+merges. Adopting a backlog task only adds those edges to it; its title, intent, kind and labels
+stay yours. A ticket task can be `ship` or `bugfix` and carry labels; its priority is left for
+you. Ticket tasks are created switched on, so the backlog autopilot may start them once their
+dependencies release: approving the breakdown is that consent. `tickets.md` maps each ticket to
+its task id, or to the task it adopted. No task source is needed for any of this.
+
+A shape task needs **Grill, HTML Plans and Tickets switched on**. With any of them off the
+dispatch is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
 ownership rules and archive capture, and its default After work is **Plan Validation**. It can
 be added to the backlog and filed by a task source, but Foreman's backlog autopilot never
 launches one, because the interview needs you there to answer it. Recurring Missions and the
-MCP `create_task` tool cannot create shape tasks. The plan kind is unchanged.
+MCP `create_task` tool cannot create shape tasks; `create_task` files only `ship` and `bugfix`. The plan kind is unchanged.
 
 **pipeline** hands the whole run to the enabled external engine. It preselects **None** for
 After work because Mission Control has no task worktree or agent completion boundary to hand

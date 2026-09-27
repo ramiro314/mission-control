@@ -10,7 +10,7 @@ import {
   PLAN_PHASED_SKILL_ID,
   type PlanSkillInvocations,
 } from "./prompt.ts";
-import { SHAPE_GRILL_SKILL_ID, type ShapeSkillInvocations } from "./shape.ts";
+import { SHAPE_GRILL_SKILL_ID, SHAPE_TICKETS_SKILL_ID, type ShapeSkillInvocations } from "./shape.ts";
 
 /**
  * Whether a plan task can be honoured at all, and the invocations it will be told to use.
@@ -55,7 +55,7 @@ export const PLANNING_SKILLS: {
   [K in PlanningTaskKind]: { readonly [F in keyof PlanningSkillInvocationsByKind[K]]: string };
 } = {
   plan: { htmlPlans: PLAN_HTML_SKILL_ID, phasedPlan: PLAN_PHASED_SKILL_ID },
-  shape: { grill: SHAPE_GRILL_SKILL_ID, htmlPlans: PLAN_HTML_SKILL_ID },
+  shape: { grill: SHAPE_GRILL_SKILL_ID, htmlPlans: PLAN_HTML_SKILL_ID, tickets: SHAPE_TICKETS_SKILL_ID },
 };
 
 export type PlanningSkillResolution<K extends PlanningTaskKind = PlanningTaskKind> =
@@ -92,7 +92,7 @@ function refusal(problem: string, kind: TaskKind = "plan"): string {
   return (
     `${problem} A ${kind} task's intent invokes the planning skills rather than restating them, `
     + "so it would reach an agent that cannot load the procedure it was told to follow. "
-    + "Both skills live under Settings → Skills."
+    + "Its skills live under Settings → Skills."
   );
 }
 

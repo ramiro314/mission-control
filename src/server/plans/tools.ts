@@ -27,3 +27,6 @@ export const PLAN_SCHEDULING_TOOL = "create_task" as const;
 
 /** Live workflow authority before the skill takes its direct publication path. */
 export const PLAN_PUBLICATION_TOOL = "get_plan_publication_context" as const;
+
+/** How a shape task's breakdown finds the open backlog tasks a ticket could adopt. */
+export const BACKLOG_LIST_TOOL = "list_backlog_tasks" as const;
