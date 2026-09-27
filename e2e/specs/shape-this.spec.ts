@@ -149,25 +149,27 @@ test("every task source kind can file its items as shape tasks", async ({ page, 
   ]);
 
   await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
-  // One editor at a time, opened from the directory; each kind's picker offers shape.
+  // One editor at a time, opened from the directory. Each kind's picker offers shape, and each
+  // takes it: the saved default is read back from the daemon, and the editor is captured.
   const kind = page.getByRole("combobox", { name: "Kind", exact: true });
-  for (const name of ["Platform queue", "Demo issues"]) {
+  for (const [id, name] of [["jira", "Platform queue"], ["gh", "Demo issues"]] as const) {
     await page.locator("button.ts-directory-row").filter({ hasText: name }).click();
     await expect(page.locator("button.ts-directory-row").filter({ hasText: name })).toHaveAttribute("aria-current", "true");
     await expect(kind.locator("option[value=shape]")).toHaveText("shape - shape work into a reviewed plan");
+    await kind.selectOption("shape");
+    await expect.poll(async () => {
+      const config = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json() as {
+        sources: Array<{ id: string; defaults: { kind: string } }>;
+      };
+      return config.sources.find((s) => s.id === id)?.defaults.kind;
+    }).toBe("shape");
+    await expect(kind).toHaveValue("shape");
+    await kind.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    await shoot(page, `03-${id}-source-kind-shape`);
   }
 
-  // The GitHub source (open now) files shape tasks from here on.
-  await kind.selectOption("shape");
-  await expect.poll(async () => {
-    const config = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json() as {
-      sources: Array<{ id: string; defaults: { kind: string } }>;
-    };
-    return config.sources.find((s) => s.id === "gh")?.defaults.kind;
-  }).toBe("shape");
-  await kind.scrollIntoViewIfNeeded();
-  await shoot(page, "03-task-source-kind-shape");
-
+  // The GitHub source now files shape tasks.
   await sweep(page, daemon, "gh");
   const filed = await tasks(page, daemon);
   expect(filed).toMatchObject([{
