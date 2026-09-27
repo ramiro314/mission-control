@@ -241,6 +241,25 @@ test("a source that cannot push is never offered, and never pushed to", async ()
   assert.equal(mirror.unavailable, "This repository's task sources (demo jira) cannot receive pushed tasks.");
 });
 
+test("with two sources that can receive the task, an omitted sourceId is refused, naming both", async () => {
+  configure(GITHUB, { ...GITHUB, id: "src-gh-2", label: "second issues" });
+  const { pushTask } = setup();
+  const res = await pushTask("ticket-1");
+  assert.equal(res.status, 409);
+  assert.equal(
+    (await res.json() as { error: string }).error,
+    "more than one task source can receive this task; name one as sourceId (src-gh, src-gh-2)",
+  );
+  assert.equal(ghCalls().length, 0, "neither source was picked for it");
+  assert.equal(getTask("ticket-1")!.source, null);
+
+  // Naming one resolves it, and files into that source only.
+  const named = await pushTask("ticket-1", "src-gh-2");
+  assert.equal(named.status, 200);
+  assert.equal(getTask("ticket-1")!.source?.sourceId, "src-gh-2");
+  assert.equal(ghCalls().length, 1);
+});
+
 test("list_backlog_tasks reports the mirror choice from the registry", async () => {
   const { backlog } = setup();
   const none = await (await backlog()).json() as { mirror: { sources: unknown[]; unavailable: string | null } };
