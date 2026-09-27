@@ -130,6 +130,18 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
+  // The same reasoning for the binaries the suite fakes by putting a script first on `PATH`.
+  // `ghBin()` and `jiraBin()` prefer an explicit `*_GH_BIN` / `*_JIRA_BIN` over `PATH`, so an
+  // operator who exports one (a wrapper, a fork) sends every such test to the REAL binary:
+  // the fake never runs, a sweep's gate never opens, and a GitHub read answers 404 against a
+  // repository that only exists in a fixture. Worse, `gh issue create` publishes and a Jira
+  // write-back moves a ticket. Cleared under every alias; a test that wants its own fake
+  // sets the variable in its file body, which runs after this and wins.
+  for (const prefix of ["MISSION_", "FLEET_", "HARNESS_"]) {
+    delete process.env[`${prefix}GH_BIN`];
+    delete process.env[`${prefix}JIRA_BIN`];
+  }
+
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.
