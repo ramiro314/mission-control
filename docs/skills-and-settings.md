@@ -129,9 +129,21 @@ left to ask. It adapts Matt Pocock's `grilling` skill (MIT, credited in the skil
 `NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills plugin. The
 procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
 
-**A `shape` task depends on Grill and HTML Plans**, under the same rule as plan: with either row
-switched off, or the master switch off, the dispatch is refused with a message naming the
-toggle. Backlogging one is always allowed. Phased Plan is not required for shape.
+The **Tickets** row carries what a shape task does after its plan review chooses **Create
+tickets**. It slices the approved plan the `/to-tickets` way: tracer-bullet vertical slices, each
+sized to one fresh context window, refactoring first, and expand-contract for a wide refactor.
+Each ticket body (what to build, acceptance criteria, blocked by, test seams, and a pointer to the
+plan; no other file paths, under 3000 characters) becomes the task's intent. It then opens the
+**breakdown review**, your final approval, as one `request_plan_decisions` form. Only after you
+submit it does it write `docs/plans/<name>/tickets.md` and its HTML page, commit and push them,
+and file each ticket with `create_task`; a dismissed breakdown files nothing. It adapts Matt
+Pocock's `to-tickets` skill (MIT, credited in the skill and in `NOTICE`) and does not depend on the
+mattpocock-skills plugin. The procedure lives in
+[`skills/tickets/SKILL.md`](../skills/tickets/SKILL.md).
+
+**A `shape` task depends on Grill, HTML Plans and Tickets**, under the same rule as plan: with
+any of those rows switched off, or the master switch off, the dispatch is refused with a message
+naming the toggle. Backlogging one is always allowed. Phased Plan is not required for shape.
 
 The **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or

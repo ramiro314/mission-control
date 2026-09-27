@@ -66,7 +66,7 @@ test("a dispatched shape task is told to grill first, then plan, and to offer Cr
   dashboard,
   daemon,
 }) => {
-  await setSkills(daemon, { grill: true, "html-plans": true });
+  await setSkills(daemon, { grill: true, "html-plans": true, tickets: true });
 
   const dialog = await openDispatch(dashboard, daemon);
   await kindSelect(dialog).selectOption("shape");
@@ -83,9 +83,10 @@ test("a dispatched shape task is told to grill first, then plan, and to offer Cr
   const card = dashboard.locator(".console-detail");
   await expect(card).toContainText(TASK, { timeout: 30_000 });
   await expect(card).toContainText("Mission Control shape");
-  // The two skills, in this harness's own syntax, and the grilling rules the kind exists for.
+  // The three skills, in this harness's own syntax, and the grilling rules the kind exists for.
   await expect(card).toContainText("/grill");
   await expect(card).toContainText("/html-plans");
+  await expect(card).toContainText("/tickets");
   await expect(card).toContainText("request_plan_decisions");
   await expect(card).toContainText("Ask at least one round");
   await expect(card).toContainText("A dismissed round ends the work");
@@ -103,7 +104,7 @@ test("a dispatched shape task is told to grill first, then plan, and to offer Cr
 });
 
 test("the guided pass takes shape on s", async ({ dashboard, daemon }) => {
-  await setSkills(daemon, { grill: true, "html-plans": true });
+  await setSkills(daemon, { grill: true, "html-plans": true, tickets: true });
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByRole("switch", { name: "Guided" }).click();
@@ -129,7 +130,7 @@ test("a shape dispatch with the grill skill off is refused on the form, naming t
   dashboard,
   daemon,
 }) => {
-  await setSkills(daemon, { grill: false, "html-plans": true });
+  await setSkills(daemon, { grill: false, "html-plans": true, tickets: true });
 
   const dialog = await openDispatch(dashboard, daemon);
   await kindSelect(dialog).selectOption("shape");

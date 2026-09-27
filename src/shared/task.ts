@@ -314,6 +314,13 @@ export function taskHasNoProvisionedResources(task: Task): boolean {
   );
 }
 
+/**
+ * The kinds an agent may file through MCP `create_task`: implementation work only. A ticket
+ * is built by a ship agent, or by a bugfix agent when it fixes a defect. Planning, scouting
+ * and interview kinds stay human-chosen.
+ */
+export const MCP_TASK_KINDS = ["ship", "bugfix"] as const satisfies readonly TaskKind[];
+
 /** Task kinds offered by surfaces that can only create or edit backlog work. */
 export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
 
@@ -492,7 +499,7 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
  * What the task pill should draw for a session.
  *
  * Both parts are usually silent, and for different reasons. Every automated writer
- * defaults to `ship` - the MCP `create_task` tool cannot produce anything else - so a
+ * defaults to `ship` - the MCP `create_task` tool produces only `ship` or `bugfix` - so a
  * badge rendered unconditionally reads `SHIP` in almost every session, is not
  * colour-differentiated in the console header, is frozen once the task leaves `backlog`,
  * and repeats the chip on the Board tile you clicked through. Only a kind somebody deliberately

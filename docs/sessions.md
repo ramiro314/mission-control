@@ -1929,9 +1929,18 @@ The MCP tools are:
   never submits the form (see [Foreman drafts](foreman.md#drafts-on-plan-decisions-forms))
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
-  dependsOnCurrentSession?)` - add a ship task to the backlog with the default
-  agent/model/effort, returning its id and canonical repository set so later tasks can carry
-  durable dependency edges. Omit the selectors to keep the calling repository as primary.
+  dependsOnCurrentSession?, kind?, labels?, adoptTaskId?)` - add a task to the backlog with the
+  kind's default agent/model/effort, returning its id and canonical repository set so later
+  tasks can carry durable dependency edges. `kind` is `ship` (the default) or `bugfix`; `labels`
+  are normalized like the dispatch form's, and priority is never set. `adoptTaskId` names an
+  existing backlog task that stands in for this one instead: nothing is created, the dependency
+  edges are added to that task through the same checks a dependency edit gets (a cycle is
+  refused with 409), and its title, intent, kind and labels are left alone. An adoption carries
+  only its edges: `title` and `intent` are required otherwise, and a `title`, `intent`, `kind`,
+  `labels` or repository selector sent beside `adoptTaskId` is refused with 400 rather than
+  ignored. A call carrying
+  `kind`, `labels` or `adoptTaskId` uses its own versioned route, so an older daemon answers 404
+  and creates nothing rather than filing a plain ship task or a duplicate of the adopted one. Omit the selectors to keep the calling repository as primary.
   Otherwise, each selector is an absolute local checkout path or a unique repository directory
   name; `repository` changes the primary and `additionalRepositories` attaches the rest. A linked
   worktree resolves to the **repo that owns it**, including an absolute path outside the configured
@@ -1941,6 +1950,9 @@ The MCP tools are:
   creation route, so an older daemon returns 404 and creates nothing instead of ignoring the new
   fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `list_backlog_tasks()` - read the calling repository's open backlog: each task's id, title,
+  kind, labels and the task ids it already depends on. Read-only; a shape task's breakdown
+  review offers these as tasks a ticket may adopt
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape

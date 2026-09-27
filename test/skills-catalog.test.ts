@@ -338,8 +338,8 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(tool, /additionalRepositories:/);
   assert.match(tool, /MAX_TASK_EXTRA_REPOS/);
   assert.match(tool, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
-  assert.match(tool, /res\.status === 404/);
-  assert.doesNotMatch(tool, /404[\s\S]*http\("\/mcp\/tasks"/, "selectors never retry legacy");
+  assert.match(tool, /isUnknownRoute\(res\)/);
+  assert.doesNotMatch(tool, /isUnknownRoute\(res\)[\s\S]*http\("\/mcp\/tasks"/, "selectors never retry legacy");
   assert.doesNotMatch(tool, /\n\s*agent:/, "omission preserves the dispatch default agent");
   assert.doesNotMatch(tool, /\n\s*effort:/, "omission preserves the harness default effort");
 });

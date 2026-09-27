@@ -1,6 +1,7 @@
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
@@ -64,7 +65,10 @@ import {
   McpCreateTaskSchema,
   McpPlanPublicationSchema,
   McpCreateTaskV2Schema,
-  type McpCreateTaskV2,
+  McpCreateTaskV3Schema,
+  type McpAdoptTicket,
+  type McpCreateTicket,
+  McpListBacklogSchema,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
@@ -4519,18 +4523,34 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ id: review.id, sessionId: session.id });
   });
 
+  /**
+   * The edges an MCP task call asks for: its named prerequisites, plus the calling session
+   * when it asked to be gated on itself. A Response when that session cannot be found.
+   */
+  function mcpTaskDependencies(
+    c: Context,
+    data: Pick<McpAdoptTicket, "env" | "sessionId" | "cwd" | "dependsOnTaskIds" | "dependsOnCurrentSession">,
+  ): TaskDependencyInput[] | Response {
+    const dependencies: TaskDependencyInput[] = data.dependsOnTaskIds.map((taskId) => ({
+      type: "task",
+      taskId,
+    }));
+    if (data.dependsOnCurrentSession) {
+      const session = registry.findSessionByEnv(data.env, data.sessionId, data.cwd);
+      if (!session) return c.json({ error: "no matching active session" }, 404);
+      dependencies.push({ type: "session", sessionId: session.id });
+    }
+    return dependencies;
+  }
+
   async function createMcpTask(
     c: Context,
-    data: McpCreateTaskV2,
+    data: McpCreateTicket,
     allowShortNames: boolean,
   ) {
-    const {
-      env,
-      sessionId,
-      cwd,
-      dependsOnTaskIds,
-      dependsOnCurrentSession,
-    } = data;
+    const dependencies = mcpTaskDependencies(c, data);
+    if (dependencies instanceof Response) return dependencies;
+
     const shortNameSelectors = !allowShortNames
       ? "none"
       : data.targetRepository === undefined
@@ -4539,20 +4559,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const prepared = await prepareTaskRepositories({
       primary: data.targetRepository ?? data.repoRoot,
       extras: data.additionalRepositories,
-      kind: "ship",
+      kind: data.kind,
       shortNameSelectors,
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
-
-    const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
-      type: "task",
-      taskId,
-    }));
-    if (dependsOnCurrentSession) {
-      const session = registry.findSessionByEnv(env, sessionId, cwd);
-      if (!session) return c.json({ error: "no matching active session" }, 404);
-      dependencies.push({ type: "session", sessionId: session.id });
-    }
 
     try {
       const task = tasks.create({
@@ -4560,10 +4570,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         extraRepoRoots: prepared.extraRepoRoots,
         title: data.title,
         intent: data.intent,
-        kind: "ship",
+        kind: data.kind,
         // Resolved during repository preparation so the capability check and stored pin
-        // cannot observe different ship-kind defaults.
+        // cannot observe different kind defaults.
         agent: prepared.agent,
+        labels: data.labels,
         backlog: true,
         dependencies,
       });
@@ -4574,6 +4585,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   }
 
+  /**
+   * A ticket adopting an existing backlog task: the ticket's edges are ADDED to that task and
+   * nothing else about it changes - `McpAdoptTicketSchema` carries nothing else to change. It
+   * goes through the same single-task edit a person makes (`TaskManager.update`), so the
+   * backlog-only rule, the new-edge refusals and the cycle check are the ones every other
+   * dependency edit gets. Adopting is the one way `create_task` can close a cycle: the task
+   * already exists, so something may already wait on it.
+   */
+  async function adoptMcpTask(c: Context, data: McpAdoptTicket) {
+    const dependencies = mcpTaskDependencies(c, data);
+    if (dependencies instanceof Response) return dependencies;
+    const task = registry.getTask(data.adoptTaskId);
+    if (!task) return c.json({ error: "no such task to adopt" }, 404);
+    if (task.status !== "backlog") {
+      return c.json({ error: `the task to adopt is ${task.status}, not in the backlog` }, 409);
+    }
+    const share = bulkTaskPatch(task, { set: {}, dependencies: { add: dependencies, remove: [] } });
+    if (!share.ok) return c.json({ error: `the task to adopt ${share.error}` }, 409);
+    if (share.patch.dependencies === undefined) return c.json({ ...task, adopted: true });
+    const result = await tasks.update(task.id, { dependencies: share.patch.dependencies });
+    if (!result.ok) return c.json({ error: result.error }, 409);
+    return c.json({ ...result.task!, adopted: true });
+  }
+
   app.post("/mcp/tasks", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpCreateTaskSchema);
@@ -4582,7 +4617,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // walks a pooled worktree back to its main checkout through the shared preparation door.
     return createMcpTask(
       c,
-      { ...parsed.data, targetRepository: undefined, additionalRepositories: [] },
+      { ...parsed.data, targetRepository: undefined, additionalRepositories: [], kind: "ship", labels: [] },
       false,
     );
   });
@@ -4591,7 +4626,41 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpCreateTaskV2Schema);
     if (!parsed.ok) return parsed.res;
-    return createMcpTask(c, parsed.data, true);
+    return createMcpTask(c, { ...parsed.data, kind: "ship", labels: [] }, true);
+  });
+
+  app.post("/mcp/v3/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskV3Schema);
+    if (!parsed.ok) return parsed.res;
+    return "adoptTaskId" in parsed.data
+      ? adoptMcpTask(c, parsed.data)
+      : createMcpTask(c, parsed.data, true);
+  });
+
+  /**
+   * The calling repository's open backlog, so a ticket breakdown can offer each ticket the
+   * existing task it might adopt. Read-only, and only the fields that choice needs: the
+   * intent itself stays on the board.
+   */
+  app.post("/mcp/backlog", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListBacklogSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+    const backlog = tasks
+      .list()
+      .filter((task) => task.status === "backlog" && task.repoRoot === resolved.repoRoot)
+      .map((task) => ({
+        id: task.id,
+        title: task.title,
+        kind: task.kind,
+        labels: task.labels,
+        dependsOnTaskIds: task.dependencies.flatMap((dependency) =>
+          dependency.type === "task" ? [dependency.taskId] : []),
+      }));
+    return c.json({ repository: resolved.repoRoot, tasks: backlog });
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
