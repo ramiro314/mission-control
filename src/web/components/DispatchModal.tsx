@@ -23,6 +23,7 @@ import {
   type HarnessesConfig,
   type TaskDependencyInput,
 } from "@shared/protocol.ts";
+import { dependencyInputOf, dependencyKey } from "@shared/task-dependency.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
@@ -1241,8 +1242,6 @@ function DispatchModal({
         ? undefined
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
-  const dependencyKey = (dependency: TaskDependencyInput): string =>
-    dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
     for (const task of tasks) {
@@ -1275,25 +1274,27 @@ function DispatchModal({
     }
     // Keep disappeared targets visible in an edit. They remain blocking until removed,
     // but hiding them from the select would also make them impossible to remove.
+    // An external item a task source linked is listed under its tracker id: it can be
+    // removed here, and only the source's sweep adds one.
     for (const dependency of editing?.dependencies ?? []) {
-      const input: TaskDependencyInput = dependency.type === "task"
-        ? { type: "task", taskId: dependency.taskId }
-        : { type: "session", sessionId: dependency.sessionId };
+      const input = dependencyInputOf(dependency);
       const key = dependencyKey(input);
-      if (!out.has(key)) out.set(key, { input, label: `${dependency.title} (unavailable)`, group: "session" });
+      const label =
+        dependency.type === "source"
+          ? `${dependency.title} (${dependency.externalId})`
+          : `${dependency.title} (unavailable)`;
+      if (!out.has(key)) out.set(key, { input, label, group: "session" });
     }
     return out;
   }, [editing, sessions, tasks]);
   const unmetDependencyCount = draft.dependencies.filter((dependency) => {
     const stored = editing?.dependencies.find(
-      (candidate) =>
-        dependencyKey(
-          candidate.type === "task"
-            ? { type: "task", taskId: candidate.taskId }
-            : { type: "session", sessionId: candidate.sessionId },
-        ) === dependencyKey(dependency),
+      (candidate) => dependencyKey(candidate) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
+    // Only the source's sweep can satisfy an external item, and nothing satisfies an edge
+    // this build does not know.
+    if (dependency.type === "source" || dependency.type === "unknown") return true;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }

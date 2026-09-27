@@ -93,6 +93,7 @@ import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/g
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
+import { isWorkDependency } from "@shared/task-dependency.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -3839,7 +3840,7 @@ export class Registry extends EventEmitter {
     const episodeKeys = new Set<string>();
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "task") {
           if (dependency.episodeId === null) legacyTaskIds.add(dependency.taskId);
           else if (dependency.sessionId !== null) {
@@ -3962,6 +3963,7 @@ export class Registry extends EventEmitter {
       const dependencies = task.dependencies.map((dependency) => {
         if (
           dependency.satisfiedAt !== null ||
+          !isWorkDependency(dependency) ||
           dependency.sessionId !== previous.sessionId ||
           dependency.episodeId !== previous.episodeId ||
           dependency.agentSessionId !== previous.agentSessionId ||
@@ -5202,7 +5204,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "session") {
           if (dependency.prUrl) urls.add(dependency.prUrl);
           continue;
@@ -5320,7 +5322,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "session") {
           if (
             !dependency.prUrl ||

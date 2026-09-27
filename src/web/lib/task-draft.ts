@@ -11,6 +11,7 @@
 
 import type { Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
+import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
 
@@ -142,11 +143,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     effort: t.effort ?? "",
     workflowId: t.workflowId,
     enabled: t.enabled,
-    dependencies: t.dependencies.map((dependency) =>
-      dependency.type === "task"
-        ? { type: "task" as const, taskId: dependency.taskId }
-        : { type: "session" as const, sessionId: dependency.sessionId },
-    ),
+    dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
   };
 }
@@ -185,10 +182,6 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
   );
-}
-
-function dependencyInputKey(dependency: TaskDependencyInput): string {
-  return dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
 }
 
 function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[]): boolean {
@@ -255,11 +248,7 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
     patch.workflowId = draft.workflowId;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
-  const storedDependencies: TaskDependencyInput[] = task.dependencies.map((dependency) =>
-    dependency.type === "task"
-      ? { type: "task", taskId: dependency.taskId }
-      : { type: "session", sessionId: dependency.sessionId },
-  );
+  const storedDependencies: TaskDependencyInput[] = task.dependencies.map(dependencyInputOf);
   if (!dependencyInputsEqual(draft.dependencies, storedDependencies)) {
     patch.dependencies = draft.dependencies;
   }

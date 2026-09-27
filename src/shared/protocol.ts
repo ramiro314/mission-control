@@ -25,6 +25,7 @@ import {
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
@@ -916,6 +917,17 @@ const TASK_TRIAGE_FIELDS = {
 export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task"), taskId: z.string().min(1) }),
   z.object({ type: z.literal("session"), sessionId: z.string().min(1) }),
+  // An item in a task source's tracker. A task source's sweep is what creates these; an
+  // edit names an existing one to keep it.
+  z.object({
+    type: z.literal("source"),
+    sourceId: z.string().min(1).max(64),
+    externalId: z.string().min(1).max(500),
+    url: z.string().max(2000).nullable().optional(),
+    title: z.string().max(500).optional(),
+  }),
+  // An edge a newer build wrote. It can only be kept, never created.
+  z.object({ type: z.literal("unknown"), key: z.string().min(1).max(20_000) }),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
@@ -926,7 +938,7 @@ const TaskDependenciesSchema = z
     const seen = new Set<string>();
     for (let i = 0; i < dependencies.length; i++) {
       const dependency = dependencies[i]!;
-      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      const key = dependencyInputKey(dependency);
       if (seen.has(key)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i], message: "duplicate task dependency" });
       }

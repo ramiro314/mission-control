@@ -863,6 +863,14 @@ Opening it names the stopped prerequisite and offers two ways out:
 Either action targets the *dead* task, so resolving it once frees every dependent behind
 it, not just the card you clicked from.
 
+A dependency can also be an **item in an external tracker** that a [task
+source](#blocking-links-become-dependencies) recovered from a blocking link. It is satisfied
+when the item closes as completed. Closed as **not planned** (on GitHub, a duplicate counts as
+not planned too), it is stopped in exactly the sense above, and the same warning button names
+it with its tracker id and a link to it. Mission Control cannot reschedule or complete
+somebody else's issue, so its way out is **Remove dependency**, which drops that edge from the
+task that holds it - possibly a task up the chain rather than the card you clicked from.
+
 ### The backlog order is the one you set
 
 The backlog has **one order, and it is yours.** Foreman takes the highest ready item in
@@ -1139,6 +1147,10 @@ works in that checkout, the source works.
 
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
+
+Blocking links come with it: the sweep asks `gh` for each issue's `blockedBy` and `parent`,
+and the issues blocking it arrive as the task's dependencies. See [Blocking links become
+dependencies](#blocking-links-become-dependencies).
 
 #### Sweeping the public product-feedback tracker
 
@@ -1476,6 +1488,37 @@ Two limits worth knowing before turning it on:
   it uses its own credentials - so on a host the token may not reach, the comment still goes
   through the CLI and the remote link says why it did not.
 
+
+### Blocking links become dependencies
+
+A source whose kind can report blocking links (GitHub issues can; Jira cannot yet) files each
+item with the items blocking it as [dependencies](#resolve-a-stopped-dependency), on the same
+insert, so a swept task is never visible unblocked:
+
+- A blocker that is already one of your tasks, still backlogged or running under a live session,
+  becomes an ordinary task dependency (the same rule that decides what you can select by hand). It follows that task to its merge like one you selected yourself. Blockers
+  filed by the same sweep are filed first, so the order issues are listed in does not matter.
+- Any other blocker - outside the source's filter, in another repository, or linked to a task
+  that is still starting, already finished, or stopped - becomes a **source dependency** on the
+  external item. It
+  is released when the item closes as completed. Closed as not planned, the card shows the
+  [stopped-dependency warning](#resolve-a-stopped-dependency).
+- A **parent** (sub-issue) link is never a dependency. A parent is the larger piece of work an
+  item belongs to, not something it waits on.
+
+Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
+`gh issue view` each), at most 25 per sweep, least recently checked first. A failed read
+changes nothing. Whether the source is enabled or not, **Sweep now** runs the same re-check.
+The links are read when an item is first filed; a blocking link added or removed upstream
+afterwards does not change the task's dependencies yet. The usual rules still hold: a
+dependency that would close a cycle is refused, and removing one in the task editor or from
+the warning is permanent. Only a sweep creates a source dependency: the task editor and the
+task API can keep or remove one, never add one.
+
+A source dependency is stored in the task's existing dependency list, so no migration is
+involved. A build that does not recognize an edge's type keeps it, treats it as unsatisfied,
+and writes it back unchanged, so running an older build never releases work a newer one was
+holding back.
 
 ### A task you delete stays deleted
 

@@ -5,6 +5,7 @@ import {
   type AgentType,
   type TaskKind,
   type TaskPriority,
+  type TaskSourceItemState,
 } from "./types.ts";
 import {
   MAX_LABELS,
@@ -100,6 +101,24 @@ export interface TaskCandidate {
   agent?: AgentType;
   priority?: TaskPriority | null;
   labels?: string[];
+  /**
+   * The items that block this one upstream, when the kind can say (`canRelate`).
+   *
+   * Ingest turns each into a dependency edge: a task edge when the item is already one of
+   * our tasks, a `source` edge otherwise. A kind whose `canRelate` is false never sets it,
+   * and ingest ignores it for such a kind even if it did.
+   */
+  blockedBy?: TaskSourceRef[];
+  /**
+   * The item this one is a sub-issue of, for display. Never an edge: a parent is the
+   * larger piece of work this one belongs to, not a prerequisite of it.
+   */
+  parent?: TaskSourceRef;
+  /**
+   * The item's state, when the kind can say. `readLinked` reports it for `canRelate`
+   * kinds, which is how the sweep learns that a blocking item closed and how.
+   */
+  state?: TaskSourceItemState;
 }
 
 /** The outcome of one sweep. */
@@ -349,6 +368,16 @@ export interface TaskSourceKindInfo<C = unknown> {
    */
   canResolve: boolean;
   /**
+   * This kind reports blocking links between its items.
+   *
+   * True means two promises, both read through the registry (`canRelateTo`): a sweep
+   * candidate carries `blockedBy` (and `parent`, for display), and `readLinked` reports
+   * each item's `state` - open, completed or not planned - which is how the sweep
+   * re-checks the external items `source` dependency edges wait on. Ingest ignores
+   * `blockedBy` from a kind that says false, so the flag, not the payload, decides.
+   */
+  canRelate: boolean;
+  /**
    * Validates and defaults this kind's config blob. The panel renders from it too.
    *
    * Input is `unknown`, not `C`: what is parsed is whatever the `app_config` blob holds,
@@ -582,6 +611,8 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // everything else here - so the write-back direction adds no token and no new secret.
     canAnnotate: true,
     canResolve: true,
+    // `gh --json blockedBy,parent` on the sweep, and `state,stateReason` on the linked read.
+    canRelate: true,
     configSchema: GithubIssuesConfigSchema,
   },
   jira: {
@@ -604,6 +635,9 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // verbs exist: `test/task-source-contract.test.ts` refuses to compile past a kind that
     // advertises either one without implementing it.
     canResolve: true,
+    // Jira's issue links are typed per site ("blocks", "is blocked by", or whatever a
+    // project renamed them to), so reading them is a mapping of its own. Not yet.
+    canRelate: false,
     configSchema: JiraConfigSchema,
   },
 };
