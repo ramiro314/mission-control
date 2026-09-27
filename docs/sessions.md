@@ -1952,7 +1952,16 @@ The MCP tools are:
   remain where Git and the repository host enforce write authority.
 - `list_backlog_tasks()` - read the calling repository's open backlog: each task's id, title,
   kind, labels and the task ids it already depends on. Read-only; a shape task's breakdown
-  review offers these as tasks a ticket may adopt
+  review offers these as tasks a ticket may adopt. Its `mirror` field lists the task sources the
+  tickets could be pushed to (`sources`), or says why there are none (`unavailable`)
+- `push_task(taskId, sourceId?)` - mirror one task the calling session filed or adopted to a task
+  source, the way the task editor's [Push](dispatch-and-backlog.md#push-a-task-to-github) does,
+  with the same ledger row and link. `sourceId` may be omitted when exactly one source can receive
+  the task. A source that can relate items links the new item to the items of the task's pushed
+  blockers and to its planning task's item. A task already pushed to that source returns its
+  item with `alreadyPushed: true` instead of filing another; a failure flagged `outcomeUnknown`
+  means the item may exist, so check the tracker before retrying. A task that does not wait on the
+  calling session is refused. The shape kind pre-approves it
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape

@@ -27,6 +27,7 @@ import {
   PLAN_DECISIONS_TOOL,
   PLAN_PUBLICATION_TOOL,
   PLAN_SCHEDULING_TOOL,
+  PUSH_TASK_TOOL,
 } from "../src/server/plans/tools.ts";
 import {
   requiredSkillCommand,
@@ -162,6 +163,7 @@ test("Create tickets hands the approved plan to the tickets skill, and nothing p
   assert.match(appendix, /Nothing is\s+written or created before that form is submitted, and a dismissed breakdown creates nothing/);
   assert.match(appendix, new RegExp(`files each ticket with \`${escape(PLAN_SCHEDULING_TOOL)}\``));
   assert.match(appendix, /in dependency order, gated on this session/);
+  assert.match(appendix, new RegExp(`mirror the tickets[\\s\\S]*\`${escape(PUSH_TASK_TOOL)}\`, blockers first`));
   assert.doesNotMatch(appendix, /not available on this build/);
 });
 
@@ -172,9 +174,13 @@ test("the bundled tickets skill slices, reviews, and files the way the contract 
   assert.match(skill, /one fresh context window/i);
   assert.match(skill, /[Rr]efactoring first|[Pp]refactor/);
   assert.match(skill, /expand-contract/);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, BACKLOG_LIST_TOOL]) {
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL]) {
     assert.match(skill, new RegExp(escape(tool)));
   }
+  // The mirror choice: offered from what the daemon reports, never from a guess about the kind.
+  assert.match(skill, /`mirror`/);
+  assert.match(skill, /mirror\.unavailable/);
+  assert.match(skill, /outcomeUnknown/);
   for (const field of ["dependsOnTaskIds", "dependsOnCurrentSession", "adoptTaskId", "labels", "kind"]) {
     assert.match(skill, new RegExp(`\`${field}`), `the skill names ${field}`);
   }
@@ -229,11 +235,11 @@ test("the bundled grill skill asks rounds the way the contract promises", () => 
 
 test("every shape launch pre-approves the tools its prompt names", () => {
   const appendix = shapeContractAppendix(CLAUDE_SKILLS);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL]) {
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL]) {
     assert.ok(appendix.includes(tool), `the prompt names ${tool}`);
   }
   const required = kindMissionMcpRequirement(mkTask(), null);
-  const expected = [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, BACKLOG_LIST_TOOL];
+  const expected = [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL];
   for (const tool of expected) assert.ok(([...MISSION_MCP_TOOLS] as string[]).includes(tool));
   assert.deepEqual([...(required?.tools ?? [])].sort(), [...expected].sort());
 });

@@ -246,6 +246,29 @@ export function writeGhWritebackScript(home: string, script: FakeGhWritebackScri
 }
 
 /**
+ * How `FAKE_GH` should answer a task-source `gh issue create`.
+ *
+ * Absent, every create prints issue 123 - what every push spec before mirroring expects. A
+ * spec that pushes several tasks into one repository sets `next`, and each create then mints
+ * the next number, so the issues it asserts on (and the `--blocked-by` URLs between them) are
+ * distinct. `refuseTitles` refuses the create for a task with that title, the retry-safe
+ * failure a partial mirror is built from.
+ */
+export interface FakeGhIssueCreateScript {
+  next?: number;
+  refuseTitles?: string[];
+}
+
+/** Where a spec scripts `FAKE_GH`'s task-source issue creates for one daemon. */
+export function ghIssueCreateScriptPath(home: string): string {
+  return join(home, "gh-issue-create-script.json");
+}
+
+export function writeGhIssueCreateScript(home: string, script: FakeGhIssueCreateScript): void {
+  writeFileSync(ghIssueCreateScriptPath(home), JSON.stringify(script, null, 2));
+}
+
+/**
  * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
  *
  * cmux, not tmux, and the choice is structural. tmux availability is a question about a
@@ -706,7 +729,22 @@ if (argv[0] === "--version") {
   const requested = repoIndex >= 0 ? argv[repoIndex + 1] : "acme/demo-repo";
   const parts = requested.split("/");
   const host = parts.length === 3 ? parts.shift() : "github.com";
-  process.stdout.write("https://" + host + "/" + parts.join("/") + "/issues/123\\n");
+  // A scripted create (see \`writeGhIssueCreateScript\`): refuse a named title, or mint the
+  // next number and remember it. Absent, issue 123 as always.
+  const scriptPath = process.env.MC_E2E_GH_ISSUE_CREATE;
+  let script = null;
+  try { script = JSON.parse(require("node:fs").readFileSync(scriptPath, "utf8")); } catch {}
+  const title = argv[argv.indexOf("--title") + 1];
+  if (script && (script.refuseTitles || []).includes(title)) {
+    process.stderr.write("could not create issue: HTTP 502 (fake)\\n");
+    process.exit(1);
+  }
+  let number = 123;
+  if (script && typeof script.next === "number") {
+    number = script.next;
+    require("node:fs").writeFileSync(scriptPath, JSON.stringify({ ...script, next: number + 1 }));
+  }
+  process.stdout.write("https://" + host + "/" + parts.join("/") + "/issues/" + number + "\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);

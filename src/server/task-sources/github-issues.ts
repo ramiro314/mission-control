@@ -327,6 +327,24 @@ export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): st
     draft.intent,
     ...(cfg.repo ? ["--repo", cfg.repo] : []),
     ...cfg.labelsAny.flatMap((l) => ["--label", l]),
+    ...relationArgs(draft),
+  ];
+}
+
+/**
+ * The draft's relations as `gh issue create` flags (gh 2.101: `--blocked-by`, `--parent`).
+ *
+ * Both take issue numbers or URLs; the URL is passed because it is what a ref always carries
+ * and it names the repository too, so nothing here re-derives a number from an external id.
+ * A ref with no URL is skipped rather than guessed at. gh links them after it creates the
+ * issue, so a link that fails still prints the new issue's URL, and `pushResultFrom` reads
+ * that as created - the one outcome a retry must not repeat.
+ */
+function relationArgs(draft: PushDraft): string[] {
+  const blockers = (draft.blockedBy ?? []).flatMap((ref) => (ref.url ? [ref.url] : []));
+  return [
+    ...(blockers.length > 0 ? ["--blocked-by", blockers.join(",")] : []),
+    ...(draft.parent?.url ? ["--parent", draft.parent.url] : []),
   ];
 }
 

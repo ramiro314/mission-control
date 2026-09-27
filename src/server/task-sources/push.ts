@@ -5,10 +5,11 @@ import type {
   TaskSourceInstance,
   TaskSourceRef,
 } from "@shared/task-source.ts";
+import { isPlanningTaskKind } from "@shared/task.ts";
 import type { Task } from "@shared/types.ts";
 import { inTransaction, recordTaskSourceSeen } from "../db.ts";
 import type { TaskManager } from "../tasks.ts";
-import { canPushTo, pushToSource } from "./index.ts";
+import { canPushTo, canRelateTo, pushToSource } from "./index.ts";
 
 // The outward twin of `ingest.ts`, and the only thing on the push path that writes to our
 // database. A source implementation publishes and returns the ref it minted; what becomes
@@ -69,12 +70,64 @@ export interface PushDeps {
  *    blind - the route's 504, and the reason this type is not three kinds.
  */
 export type PushTaskOutcome =
-  | { ok: true; task: Task }
+  | {
+      ok: true;
+      task: Task;
+      /** The relations the draft carried, so a caller can report the links it asked for. */
+      relations: Pick<PushDraft, "blockedBy" | "parent">;
+    }
   | {
       ok: false;
       kind: "unpushable" | "conflict" | "upstream" | "unknown-outcome";
       error: string;
     };
+
+/**
+ * The draft one task becomes, with its relations to items this source already holds.
+ *
+ * Relations are read off the task's own dependency edges, so a ticket filed by a shape task
+ * carries exactly the edges Mission Control holds for it:
+ *
+ *  - a `task` edge to a planning task (plan or shape) is the gate on the session that sliced
+ *    this ticket. That task's item is the `parent`, and never a blocker: the plan is the larger
+ *    piece of work the ticket belongs to, not a prerequisite of it;
+ *  - any other `task` edge is a blocker, and so is a `source` edge on this source.
+ *
+ * Only items that already exist in THIS source are named. A blocker with no item yet, or with
+ * one in another source, is left out rather than guessed at, which is why a mirror pushes
+ * blockers before the tickets they block. `relates` is the kind's `canRelate`; a kind that
+ * cannot write links gets the plain draft, so no call site has to ask which kind it holds.
+ */
+export function pushDraftFor(
+  inst: Pick<TaskSourceInstance, "id">,
+  task: Task,
+  lookup: (taskId: string) => Task | undefined,
+  relates: boolean,
+): PushDraft {
+  const draft: PushDraft = { title: task.title, intent: task.intent };
+  if (!relates) return draft;
+  const blockedBy = new Map<string, TaskSourceRef>();
+  let parent: TaskSourceRef | undefined;
+  for (const edge of task.dependencies) {
+    if (edge.type === "source") {
+      if (edge.sourceId === inst.id) {
+        blockedBy.set(edge.externalId, { sourceId: edge.sourceId, externalId: edge.externalId, url: edge.url });
+      }
+      continue;
+    }
+    if (edge.type !== "task") continue;
+    const blocker = lookup(edge.taskId);
+    const item = blocker?.source;
+    if (!blocker || !item || item.sourceId !== inst.id) continue;
+    if (isPlanningTaskKind(blocker.kind)) parent ??= item;
+    else blockedBy.set(item.externalId, item);
+  }
+  return {
+    ...draft,
+    ...(blockedBy.size > 0 ? { blockedBy: [...blockedBy.values()] } : {}),
+    ...(parent ? { parent } : {}),
+  };
+}
 
 /**
  * Task ids with a push in flight right now.
@@ -180,11 +233,12 @@ export async function pushTask(
     //    push that has already reached GitHub cannot be un-sent by observing one. The real
     //    bounds on a wedged push are the implementation's own subprocess timeout and the
     //    in-flight claim above, which the finally releases either way.
+    const draft = pushDraftFor(inst, task, (id) => tasks.get(id), canRelateTo(inst));
     let result: PushResult;
     try {
       result = await push(
         inst,
-        { title: task.title, intent: task.intent },
+        draft,
         { sourceId: inst.id, repoRoot: inst.repoRoot, signal: new AbortController().signal },
       );
     } catch (err) {
@@ -283,7 +337,14 @@ export async function pushTask(
     }
 
     log(`${inst.label || inst.id}: pushed "${task.title}" as ${ref.externalId}`);
-    return { ok: true, task: attached.task };
+    return {
+      ok: true,
+      task: attached.task,
+      relations: {
+        ...(draft.blockedBy ? { blockedBy: draft.blockedBy } : {}),
+        ...(draft.parent ? { parent: draft.parent } : {}),
+      },
+    };
   } finally {
     inFlight.delete(task.id);
   }

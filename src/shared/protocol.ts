@@ -868,6 +868,20 @@ export const McpListBacklogSchema = z.object({
 });
 export type McpListBacklog = z.infer<typeof McpListBacklogSchema>;
 
+/**
+ * MCP `push_task`: mirror one task this session filed to a task source, through the same
+ * push the edit modal's Push makes. `sourceId` may be omitted when exactly one configured
+ * source can receive the task.
+ */
+export const McpPushTaskSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().min(1),
+  taskId: z.string().min(1),
+  sourceId: z.string().min(1).optional(),
+}).strict();
+export type McpPushTask = z.infer<typeof McpPushTaskSchema>;
+
 /** The MCP tool exposes only the provider slug; its launch capability carries identity. */
 export const McpAdoptPipelineRunSchema = z.object({
   slug: z.string().trim().min(1),

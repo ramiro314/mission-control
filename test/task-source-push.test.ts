@@ -39,7 +39,7 @@ const { openDb, countTaskSourceSeen, getTask, recordTaskSourceSeen, inTransactio
   await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { pushTask } = await import("../src/server/task-sources/push.ts");
+const { pushTask, pushDraftFor } = await import("../src/server/task-sources/push.ts");
 const { getSourceSync } = await import("../src/server/task-sources/sync-store.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -162,6 +162,90 @@ test("the draft carries the task's saved title and intent, and nothing else", as
   assert.deepEqual(s.calls, [
     { title: "Fix the parser", intent: "the parser drops trailing commas" },
   ]);
+});
+
+// ---- relations: the draft names only items that already exist in this source ----
+
+/** A task edge as the dependency resolver stores it, gated (or not) on a session. */
+function taskEdge(taskId: string, sessionId: string | null = null): Task["dependencies"][number] {
+  return {
+    type: "task", taskId, title: taskId, sessionId, episodeId: null, agentSessionId: null,
+    branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null,
+  };
+}
+
+const item = (n: number, sourceId = "src-1"): TaskSourceRef => ({
+  sourceId,
+  externalId: `acme/demo#${n}`,
+  url: `https://github.com/acme/demo/issues/${n}`,
+});
+
+/**
+ * A shape task with an item, two ticket blockers (one pushed, one not), a blocker pushed to a
+ * DIFFERENT source, and a recovered `source` edge - then the ticket that waits on all of them.
+ */
+function relationsFixture() {
+  const { registry, tasks } = setup({ id: "unused", status: "done" });
+  const shape = mkTask({ id: "shape", kind: "shape", status: "running", source: item(1) });
+  const pushed = mkTask({ id: "b-pushed", status: "backlog", source: item(3) });
+  const unpushed = mkTask({ id: "b-unpushed", status: "backlog" });
+  const elsewhere = mkTask({ id: "b-elsewhere", status: "backlog", source: item(9, "src-other") });
+  for (const t of [shape, pushed, unpushed, elsewhere]) registry.upsertTask(t);
+  const ticket = mkTask({
+    id: "ticket",
+    title: "Export archives as CSV",
+    intent: "**What to build:** a CSV download.",
+    status: "backlog",
+    repoRoot: "/repo",
+    dependencies: [
+      taskEdge("b-pushed"),
+      taskEdge("b-unpushed"),
+      taskEdge("b-elsewhere"),
+      taskEdge("shape", "shape-session"),
+      {
+        type: "source", sourceId: "src-1", externalId: "acme/demo#5",
+        url: "https://github.com/acme/demo/issues/5", title: "upstream blocker", state: "open",
+        checkedAt: null, selectedAt: 1, satisfiedAt: null,
+      },
+    ],
+  });
+  registry.upsertTask(ticket);
+  return { tasks, ticket };
+}
+
+test("the draft is blocked by pushed blockers only, and filed under its planning task's item", () => {
+  const { tasks, ticket } = relationsFixture();
+  const draft = pushDraftFor(mkSource(), ticket, (id) => tasks.get(id), true);
+  assert.deepEqual(draft, {
+    title: "Export archives as CSV",
+    intent: "**What to build:** a CSV download.",
+    // The unpushed blocker and the one pushed elsewhere have no item HERE, so they are left
+    // out; the shape task is the parent, never a blocker.
+    blockedBy: [item(3), { sourceId: "src-1", externalId: "acme/demo#5", url: "https://github.com/acme/demo/issues/5" }],
+    parent: item(1),
+  });
+});
+
+test("a kind that cannot relate gets the plain draft, whatever the edges say", () => {
+  const { tasks, ticket } = relationsFixture();
+  assert.deepEqual(pushDraftFor(mkSource(), ticket, (id) => tasks.get(id), false), {
+    title: "Export archives as CSV",
+    intent: "**What to build:** a CSV download.",
+  });
+});
+
+test("pushTask hands the relations to the source through the registry and reports them", async () => {
+  const { tasks, ticket } = relationsFixture();
+  const s = spy({ ref: item(12), error: null, outcomeUnknown: false });
+  // github-issues says canRelate, so the registry lets the relations through.
+  const r = await pushTask(mkSource(), ticket, tasks, { push: s.push });
+  assert.equal(r.ok, true);
+  assert.deepEqual(s.calls[0]!.blockedBy?.map((ref) => ref.externalId), ["acme/demo#3", "acme/demo#5"]);
+  assert.equal(s.calls[0]!.parent?.externalId, "acme/demo#1");
+  assert.deepEqual(r.ok && r.relations, { blockedBy: s.calls[0]!.blockedBy, parent: item(1) });
+  // The link and the seen row still land together.
+  assert.deepEqual(getTask("ticket")!.source, item(12));
+  assert.equal(countTaskSourceSeen("src-1"), 1);
 });
 
 // ---- refusal vs unknown outcome: the distinction that prevents a double-created issue ----

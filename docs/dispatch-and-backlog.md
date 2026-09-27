@@ -361,6 +361,19 @@ you. Ticket tasks are created switched on, so the backlog autopilot may start th
 dependencies release: approving the breakdown is that consent. `tickets.md` maps each ticket to
 its task id, or to the task it adopted. No task source is needed for any of this.
 
+The breakdown review ends with one more choice: **mirror the tickets to a task source**, yes or no.
+It opens on **yes** when the repository has a source that can [receive a pushed
+task](#push-a-task-to-github), and on **no** otherwise, with the reason beside it (no source is
+configured, or the configured ones cannot receive tasks). A source kind that cannot push is never
+offered. On yes, right after the tickets are filed, the agent [pushes](#push-a-task-to-github) each
+one with the `push_task` tool, blockers first, and `tickets.md` records each issue's URL. When the
+source can relate items, as GitHub can, each issue is marked **blocked by** the issues of the
+tickets that block it, and filed as a **sub-issue** of the shape task's own issue when the shape
+task came from one. If a push fails, the Mission Control tasks stay, the tickets that depend on the
+failed one are not pushed, and the failure is reported. Retrying is safe: a ticket that already has
+an issue is never filed again, and a push whose outcome is unknown is not retried until someone has
+checked the tracker.
+
 A shape task needs **Grill, HTML Plans and Tickets switched on**. With any of them off the
 dispatch is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
 ownership rules and archive capture, and its default After work is **Plan Validation**. It can
@@ -1241,6 +1254,15 @@ Three rules worth knowing before you press it:
 
 Save your edits first: the issue is composed from the task **as the daemon holds it**, so
 the button is disabled (and says why) while the form has unsaved changes.
+
+The issue also carries the task's **relations**, when the source can write them (GitHub can,
+through `gh issue create --blocked-by` and `--parent`). Each blocker task that already has an
+issue in the same source, and each blocking issue a sweep recovered, becomes a **blocked by**
+link. A blocker with no issue yet is left out rather than guessed at, so push blockers first. When
+the task waits on a shape or plan task that has an issue in the same source, the new issue is
+filed as its **sub-issue** instead. A [shape task's breakdown](#dispatch-an-agent) mirrors its tickets
+this way through the `push_task` MCP tool, which is the same push, with the same ledger row and
+link, and which answers a retry of an already-pushed task with its existing issue.
 
 ### Writing back to the source
 
