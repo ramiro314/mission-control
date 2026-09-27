@@ -28528,7 +28528,8 @@ span.line-run-prov {
    Every kind needs its own rule - there is no fallback in this family, so a kind added
    without one inherits `.bl-foot`'s `--dim` and is the only chip on the card that is not
    coloured. */
-.bl-kind-plan {
+.bl-kind-plan,
+.bl-kind-shape {
   color: var(--purple);
 }
 .bl-kind-chat {

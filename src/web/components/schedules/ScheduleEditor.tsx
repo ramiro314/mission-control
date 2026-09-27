@@ -13,7 +13,7 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor, portableEffortLevels } from "@shared/harness-capabilities.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import {
-  BACKLOG_TASK_KINDS,
+  SCHEDULE_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
@@ -488,7 +488,7 @@ export function ScheduleEditor({
                       select is the only thing on this row that says what a kind IS - the
                       dispatch form can afford the blurb beside the option, and this
                       cannot. */}
-                  {BACKLOG_TASK_KINDS.map((kind) => (
+                  {SCHEDULE_TASK_KINDS.map((kind) => (
                     <option key={kind} value={kind}>
                       {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
                     </option>

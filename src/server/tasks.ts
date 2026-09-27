@@ -45,6 +45,7 @@ import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
   dispatchHasNoProvisionedResources,
+  isPlanningTaskKind,
   TASK_KIND_BACKLOG_REFUSAL,
   providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
@@ -111,8 +112,7 @@ import {
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
-import { isPlanTask } from "./plans/prompt.ts";
-import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
+import { planDispatchBlock, planningSkillsForSession, type PlanningSkillsForSession } from "./plans/skills.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
@@ -704,7 +704,7 @@ export interface AssignOptions {
    * construction: an assignment types into a conversation that already exists, and one that
    * has not acknowledged the current skills generation is still holding the previous set.
    */
-  requirePlanSkills?: typeof planSkillsForSession;
+  requirePlanSkills?: PlanningSkillsForSession;
 }
 
 /** Evidence that the daemon resolved before a Pipeline task may change its durable run. */
@@ -4184,8 +4184,8 @@ export class TaskManager {
     // generation is still holding the previous set - so the launch-time answer would have this
     // seam paste an invocation naming a skill the agent cannot load, which is exactly the
     // silent degradation the watermark rung exists to turn into a refusal.
-    const planSkills = isPlanTask(t)
-      ? (opts.requirePlanSkills ?? planSkillsForSession)(s)
+    const planSkills = isPlanningTaskKind(t.kind)
+      ? (opts.requirePlanSkills ?? planningSkillsForSession)(s, t.kind)
       : null;
     if (planSkills && !planSkills.ok) {
       return { ok: false, error: planSkills.message, scope: "task" };

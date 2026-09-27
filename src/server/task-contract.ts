@@ -1,10 +1,17 @@
+import type { PlanningTaskKind } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
 import {
   deferredImperativeList,
   taskCompletionContract,
   type TaskCompletionContract,
 } from "@shared/task-completion.ts";
-import { planContractAppendix, planWorkflowEvidenceAppendix, type PlanSkillInvocations } from "./plans/prompt.ts";
+import { planContractAppendix, planWorkflowEvidenceAppendix } from "./plans/prompt.ts";
+import { shapeContractAppendix } from "./plans/shape.ts";
+import {
+  PLANNING_SKILLS,
+  type PlanningSkillInvocations,
+  type PlanningSkillInvocationsByKind,
+} from "./plans/skills.ts";
 import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
 import { executionAuthorizationContract } from "./execution-authorization.ts";
@@ -51,12 +58,13 @@ export interface TaskContractInputs {
    */
   fallbackRoot?: string | null;
   /**
-   * The resolved per-harness invocations for a plan task's two skills.
+   * The resolved per-harness invocations for a planning (plan or shape) task's skills, keyed
+   * as `PLANNING_SKILLS` names them for the task's kind.
    *
-   * Non-null on every plan delivery, because both seams refuse the delivery before reaching
+   * Non-null on every planning delivery, because both seams refuse the delivery before reaching
    * here when they cannot be resolved (`plans/skills.ts`).
    */
-  planSkills?: PlanSkillInvocations | null;
+  planSkills?: PlanningSkillInvocations | null;
   /** The server resolved a Persona node in the selected immutable workflow graph. */
   workflowEvidence?: boolean;
 }
@@ -99,28 +107,48 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   ship: () => SHIP_COMPLETION_HANDOFF,
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
-  plan: (task, inputs) => [
-    planContractAppendix(requirePlanSkills(task, inputs), task.workflowId !== null),
-    ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
-  ].join("\n\n"),
+  plan: planningContract("plan", planContractAppendix),
   pipeline: () => null,
   chat: () => null,
+  shape: planningContract("shape", shapeContractAppendix),
 };
 
 /**
- * A plan's invocations, or a loud failure.
+ * A planning kind's delivered contract: its appendix over its resolved skills, then the plan
+ * evidence appendix when a Persona will read it. One composer for plan and shape.
+ */
+function planningContract<K extends PlanningTaskKind>(
+  kind: K,
+  render: (skills: PlanningSkillInvocationsByKind[K], workflowBound: boolean) => string,
+): (task: Task, inputs: TaskContractInputs) => string {
+  return (task, inputs) => [
+    render(requirePlanningSkills(task, inputs, kind), task.workflowId !== null),
+    ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
+  ].join("\n\n");
+}
+
+/**
+ * A planning task's invocations, or a loud failure.
  *
  * Unreachable through either shipped seam, and deliberately not made harmless. Both refuse a
- * plan delivery they cannot resolve the skills for, and they do it before anything is
+ * planning delivery they cannot resolve the skills for, and they do it before anything is
  * provisioned and before a live agent's checkout is reset - so arriving here means a third
  * seam was added without that refusal. Delivering a contract with a hole in it instead would
  * hand an agent a sentence that points at nothing, which is the one outcome this kind's
- * approved "point at the skills" decision cannot survive.
+ * approved "point at the skills" decision cannot survive. Every field the kind's
+ * `PLANNING_SKILLS` row names must be present, so one kind's invocations never satisfy another.
  */
-function requirePlanSkills(task: Task, inputs: TaskContractInputs): PlanSkillInvocations {
-  if (inputs.planSkills) return inputs.planSkills;
+function requirePlanningSkills<K extends PlanningTaskKind>(
+  task: Task,
+  inputs: TaskContractInputs,
+  kind: K,
+): PlanningSkillInvocationsByKind[K] {
+  const skills = inputs.planSkills as Record<string, string> | null | undefined;
+  if (skills && Object.keys(PLANNING_SKILLS[kind]).every((field) => typeof skills[field] === "string")) {
+    return skills as unknown as PlanningSkillInvocationsByKind[K];
+  }
   throw new Error(
-    `plan task ${task.id} reached delivery without resolved planning-skill invocations`,
+    `${kind} task ${task.id} reached delivery without resolved planning-skill invocations`,
   );
 }
 

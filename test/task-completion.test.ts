@@ -316,7 +316,10 @@ test("a workflow-bound plan defers its PR but still publishes artifacts before s
 
 test("unbound plans keep skill-owned PR creation and other kinds keep their contract", () => {
   assert.equal(taskCompletionContract("plan", false), null);
-  for (const kind of TASK_KINDS.filter((kind) => kind !== "plan")) {
+  assert.equal(taskCompletionContract("shape", false), null);
+  // Shape delivers a plan, so a bound shape task takes the plan's boundary under its own kind.
+  assert.deepEqual(taskCompletionContract("shape", true), { ...taskCompletionContract("plan", true), kind: "shape" });
+  for (const kind of TASK_KINDS.filter((kind) => kind !== "plan" && kind !== "shape")) {
     assert.equal(taskCompletionContract(kind, true), taskCompletionContract(kind, false));
   }
   const task = mkTask({ kind: "plan" });

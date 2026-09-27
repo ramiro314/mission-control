@@ -87,7 +87,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, and bugfix | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, bugfix, and shape | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, <kbd>s</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -133,7 +133,7 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
 Kind is asked before After work: scout and chat move the selection to **None**, while plan
-selects **Plan Validation** and bugfix selects **Bug Fix Review**. The question names the kind
+and shape select **Plan Validation** and bugfix selects **Bug Fix Review**. The question names the kind
 and explains its selected workflow.
 
 Two dispatches never run it: editing a task already in the backlog, whose answers exist
@@ -268,7 +268,7 @@ each new binding takes the newest immutable version shipped at the time (see
 form can override that choice for one task, including an explicit **None** that finishes
 without a Workflow.
 
-Choosing **plan** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
+Choosing **plan** or **shape** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
 Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
 and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
 mission retains its explicit workflow or None. Returning from a kind default restores the prior
@@ -336,6 +336,24 @@ comes from the task's own diff, so an unrelated plan sitting in the same checkou
 swept up. Unlike a scout, nothing about a plan **waits** on that: the task reaches done on its
 own boundary, and a plan task that wrote no plan at all releases its worktree cleanly rather
 than holding it.
+
+**shape** is a plan that starts with an interview. Its intent arrives as you wrote it, followed
+by a contract that hands the work to the bundled [Grill skill](skills-and-settings.md) first and
+to HTML Plans second. The agent grills you in rounds before it drafts anything: each round is one
+`request_plan_decisions` form holding every question that can be asked now, each with the
+option it recommends listed first and a free-text **Other**. Facts it can look up itself are not
+asked. Rounds continue until nothing is left to ask, and there is always at least one, however
+detailed the request. Dismissing a round stops the session without a plan. Once the interview
+is done it writes `plan.md` and `plan.html` and requests the plan review, whose follow-up is
+**Create tickets** or **Stop** instead of plan's phased follow-up. Turning the plan into ticket
+tasks is not available yet; choosing Create tickets records the choice in the plan.
+
+A shape task needs **Grill and HTML Plans both switched on**. With either one off the dispatch
+is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
+ownership rules and archive capture, and its default After work is **Plan Validation**. It can
+be added to the backlog and filed by a task source, but Foreman's backlog autopilot never
+launches one, because the interview needs you there to answer it. Recurring Missions and the
+MCP `create_task` tool cannot create shape tasks. The plan kind is unchanged.
 
 **pipeline** hands the whole run to the enabled external engine. It preselects **None** for
 After work because Mission Control has no task worktree or agent completion boundary to hand

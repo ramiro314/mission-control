@@ -223,3 +223,21 @@ test("the plan exemption does not reach past the review-artifact classifier", ()
     "with the safeguard off there was nothing to exempt from in the first place",
   );
 });
+
+test("a shape task is exempt from the review-artifact classifier and needs no explicit Workflow", () => {
+  // Shape delivers a plan, so it takes plan's exemption on both halves of the classifier.
+  assert.equal(block({ taskKind: "shape", objective: "Write a plan for the archives reading UI." }), null);
+  assert.equal(block({ taskKind: "shape", objective: "Output: mockups" }), null);
+  assert.equal(
+    block({
+      taskKind: "shape",
+      objective: "Shape the archives reading UI.",
+      changedPaths: ["docs/plans/archives-ui/plan.md", "docs/plans/archives-ui/plan.html"],
+    }),
+    null,
+  );
+  // And unlike chat, no Workflow selection is required for ordinary wrap-up.
+  assert.equal(block({ taskKind: "shape", workflowId: null }), null);
+  // The negative control: the same mockup objective on ship is still retired.
+  assert.equal(block({ taskKind: "ship", objective: "Output: mockups" })?.kind, "review_artifact");
+});

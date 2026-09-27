@@ -1,3 +1,4 @@
+import { isPlanningTaskKind } from "./task.ts";
 import { type TaskKind } from "./types.ts";
 
 /**
@@ -122,6 +123,7 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
   plan: null,
   pipeline: null,
   chat: null,
+  shape: null,
 };
 
 /**
@@ -135,7 +137,8 @@ export function taskCompletionContract(
   kind: TaskKind | null | undefined,
   workflowBound = false,
 ): TaskCompletionContract | null {
-  if (kind === "plan" && workflowBound) return PLAN_CONTRACT;
+  // Shape delivers a plan too, so it takes the plan's boundary under its own kind.
+  if (isPlanningTaskKind(kind) && workflowBound) return kind === "plan" ? PLAN_CONTRACT : { ...PLAN_CONTRACT, kind };
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 

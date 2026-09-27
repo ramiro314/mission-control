@@ -71,7 +71,7 @@ test("chat is immediate and restores Workflow and dependencies after a detour", 
   const dialog = await openDispatch(dashboard);
   const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
   const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
-  expect(await options(kind)).toEqual(["ship", "scout", "plan", "chat", "bugfix"]);
+  expect(await options(kind)).toEqual(["ship", "scout", "plan", "chat", "bugfix", "shape"]);
 
   await dialog.getByRole("button", { name: "Backlog details" }).click();
   const dependency = dialog.getByRole("combobox", { name: "Add dependency" });
@@ -146,7 +146,7 @@ test("backlog edit, ensemble, schedules, and task sources do not offer chat", as
   await dashboard.getByRole("button", { name: title, exact: true }).click();
   const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
   expect(await options(editor.getByRole("combobox", { name: "Kind", exact: true })))
-    .toEqual(["ship", "scout", "plan", "bugfix"]);
+    .toEqual(["ship", "scout", "plan", "bugfix", "shape"]);
   await editor.getByRole("button", { name: "Cancel" }).click();
 
   await dashboard.getByRole("button", { name: "Recurring missions" }).click();
@@ -172,7 +172,7 @@ test("backlog edit, ensemble, schedules, and task sources do not offer chat", as
   await dashboard.goto(`${daemon.baseURL}/#/settings/task-sources`);
   const sourceKind = dashboard.getByRole("combobox", { name: "Kind", exact: true });
   await expect(sourceKind).toBeVisible();
-  expect(await options(sourceKind)).toEqual(["ship", "scout", "plan", "pipeline", "bugfix"]);
+  expect(await options(sourceKind)).toEqual(["ship", "scout", "plan", "pipeline", "bugfix", "shape"]);
 });
 
 test("a fake-agent chat survives idle and a later turn until Complete and close", async ({

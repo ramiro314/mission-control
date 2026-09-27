@@ -120,6 +120,19 @@ backlog while the skills are off and dispatch cleanly once they are on. A pointe
 that is not installed points at nothing, and an agent left to improvise a plan looks exactly
 like one that followed a procedure.
 
+The **Grill** row carries the interview a [shape task](dispatch-and-backlog.md) opens with. It
+maps the work as a design tree and asks every question whose prerequisites are settled as one
+`request_plan_decisions` form per round, each question with its recommended option first and a
+free-text Other. Facts go to the agent and its subagents; only decisions go to you. It always
+asks at least one round, stops the session when a round is dismissed, and ends when nothing is
+left to ask. It adapts Matt Pocock's `grilling` skill (MIT, credited in the skill and in
+`NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills plugin. The
+procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
+
+**A `shape` task depends on Grill and HTML Plans**, under the same rule as plan: with either row
+switched off, or the master switch off, the dispatch is refused with a message naming the
+toggle. Backlogging one is always allowed. Phased Plan is not required for shape.
+
 The **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or
 research answer is written as one self-contained page at `docs/reports/<slug>/report.html` and

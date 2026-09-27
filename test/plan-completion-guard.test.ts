@@ -58,3 +58,31 @@ test("Foreman validates the context response instead of treating an older daemon
     assert.deepEqual(PlanPublicationContextSchema.parse({ owner: "skill" }), { owner: "skill" });
   } finally { globalThis.fetch = original; }
 });
+
+test("a prompted wrap-up holds plan and shape tasks whose publication owner is unknown", async () => {
+  const { promptedWrapupPlanPublication } = await import("../src/server/foreman/plan-publication.ts");
+  for (const kind of ["plan", "shape"] as const) {
+    // Unavailable, or a read that failed outright: never permission to publish.
+    assert.deepEqual(
+      await promptedWrapupPlanPublication(kind, async () => ({ owner: "unavailable", reason: "binding pending" })),
+      { context: { owner: "unavailable", reason: "binding pending" }, hold: true },
+      `${kind} holds on unavailable ownership`,
+    );
+    assert.deepEqual(
+      await promptedWrapupPlanPublication(kind, async () => { throw new Error("offline"); }),
+      { context: null, hold: true },
+      `${kind} holds when the read fails`,
+    );
+    // A resolved owner lets the wrap-up proceed with that context.
+    assert.deepEqual(await promptedWrapupPlanPublication(kind, async () => bound), { context: bound, hold: false });
+    assert.deepEqual(
+      await promptedWrapupPlanPublication(kind, async () => ({ owner: "skill" })),
+      { context: { owner: "skill" }, hold: false },
+    );
+  }
+  // Other kinds never read ownership and are never held by it.
+  const never = async (): Promise<never> => { assert.fail("must not be read"); };
+  for (const kind of ["ship", "bugfix", "scout", "chat", null] as const) {
+    assert.deepEqual(await promptedWrapupPlanPublication(kind, never), { context: null, hold: false });
+  }
+});

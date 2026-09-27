@@ -93,6 +93,12 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
   },
+  shape: {
+    label: "shape",
+    blurb: "Get grilled on the work first, then produce a reviewed plan.",
+    purpose: "shape work into a reviewed plan",
+    afterWorkHint: "Plan Validation checks agreement across plan files and phases.",
+  },
 };
 
 /** The launch and scheduling rules every surface must apply to a task kind. */
@@ -145,6 +151,14 @@ export const TASK_KIND_BEHAVIOR = {
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   },
   chat: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: false,
+    constraint: null,
+  },
+  // Never unattended: the work opens with an interview only a human can answer, so Foreman
+  // launching one on its own would leave a form waiting for nobody.
+  shape: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
@@ -208,6 +222,7 @@ const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
   plan: true,
   pipeline: false,
   chat: false,
+  shape: true,
 };
 
 /**
@@ -229,6 +244,7 @@ const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
   plan: true,
   pipeline: true,
   chat: false,
+  shape: true,
 };
 
 export const TASK_KIND_BACKLOG_REFUSAL =
@@ -236,6 +252,39 @@ export const TASK_KIND_BACKLOG_REFUSAL =
 
 export function taskKindAllowsBacklog(kind: TaskKind): boolean {
   return KIND_ALLOWS_BACKLOG[kind];
+}
+
+/**
+ * Whether a Recurring Mission may file this kind on a schedule.
+ *
+ * Narrower than the backlog: a shape task opens with an interview, and a mission that files
+ * the same interview every week asks the same questions of nobody in particular.
+ */
+const KIND_ALLOWS_SCHEDULE: Record<TaskKind, boolean> = {
+  ship: true,
+  bugfix: true,
+  scout: true,
+  plan: true,
+  pipeline: true,
+  chat: false,
+  shape: false,
+};
+
+export const TASK_KIND_SCHEDULE_REFUSAL =
+  "Shape tasks open with an interview, so a Recurring Mission cannot file them.";
+
+export function taskKindAllowsSchedule(kind: TaskKind): boolean {
+  return KIND_ALLOWS_SCHEDULE[kind];
+}
+
+/**
+ * Kinds that deliver a reviewed plan rather than a change: they share the plan completion
+ * contract, Plan Validation, and the planning-PR publication rules.
+ */
+export type PlanningTaskKind = Extract<TaskKind, "plan" | "shape">;
+
+export function isPlanningTaskKind(kind: TaskKind | null | undefined): kind is PlanningTaskKind {
+  return kind === "plan" || kind === "shape";
 }
 
 /**
@@ -267,6 +316,9 @@ export function taskHasNoProvisionedResources(task: Task): boolean {
 
 /** Task kinds offered by surfaces that can only create or edit backlog work. */
 export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
+
+/** Task kinds a Recurring Mission may file. */
+export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
 
 /**
  * The priorities, in ascending urgency. Array order is picker order and the order the
@@ -487,6 +539,7 @@ const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
   pipeline: undefined,
   chat: undefined,
   bugfix: BUG_FIX_REVIEW_WORKFLOW_ID,
+  shape: PLAN_VALIDATION_WORKFLOW_ID,
 };
 
 export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {

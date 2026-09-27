@@ -117,13 +117,25 @@ export interface MissionMcpRequirement {
  * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
  * it is the reason every existing dispatch's argv is unchanged.
  */
+/** Plan and shape name the same tools in their contracts, so they share one list. */
+const PLANNING_MISSION_MCP_TOOLS: readonly MissionMcpTool[] = [
+  PLAN_DECISIONS_TOOL,
+  PLAN_SCHEDULING_TOOL,
+  PLAN_PUBLICATION_TOOL,
+];
+
 const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
-  plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL],
+  plan: PLANNING_MISSION_MCP_TOOLS,
   pipeline: [],
   chat: [],
+  // Grilling rounds and the plan review are `request_plan_decisions` forms. The list also
+  // grants `create_task` (`PLAN_SCHEDULING_TOOL`), as the plan's kind contract specifies, but
+  // today's shape contract never calls it: filing tickets as tasks arrives with the tickets
+  // skill in a later ticket, and until then the contract tells the agent not to improvise it.
+  shape: PLANNING_MISSION_MCP_TOOLS,
 };
 
 /**
