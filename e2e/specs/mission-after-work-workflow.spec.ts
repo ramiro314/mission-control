@@ -423,3 +423,29 @@ test("editing a saved mission on its configured row clears it when switching to 
   await dashboard.getByRole("button", { name: "Save paused" }).click();
   await expect.poll(() => storedWorkflowId(daemon, mission.id)).toBe(null);
 });
+
+test("a mission kind picked before the Settings rows load is corrected to the configured row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await gate;
+    await route.continue();
+  });
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Create mission" }).click();
+  const kindSelect = dashboard.getByRole("combobox", { name: "Task kind" });
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+
+  await kindSelect.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  const read = editorConfigRead(dashboard);
+  release();
+  await read;
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+});

@@ -983,8 +983,14 @@ export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
   }
 }
 
-/** The per-kind dispatch defaults from Settings, or null when the config cannot be read. */
-async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
+/**
+ * The per-kind dispatch defaults from Settings, or null when the config cannot be read.
+ *
+ * The one read of these rows for surfaces that need nothing else from the workflow config.
+ * Null is "not known", never "none configured": a caller must not resolve a kind against it
+ * as though it were `{}`, which would pass a built-in off as the operator's choice.
+ */
+export async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
   try {
     const res = await actionFetch("/api/workflows/config");
     if (!res.ok) return null;

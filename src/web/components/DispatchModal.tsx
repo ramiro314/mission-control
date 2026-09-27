@@ -1355,6 +1355,12 @@ function DispatchModal({
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
   const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
+  /**
+   * A kind default written while the Settings rows were still unknown, resolved against the
+   * built-ins. Held so the rows can correct it when they land: the value is otherwise
+   * indistinguishable from an operator's pick and would override their configured row.
+   */
+  const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string | null } | null>(null);
 
   /**
    * A kind switch arms that kind's row under Settings -> Workflows -> Dispatch defaults.
@@ -1367,6 +1373,7 @@ function DispatchModal({
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
+    provisionalWorkflow.current = null;
     if (kind === "ship") {
       const stashed = stashedWorkflowId.current;
       stashedWorkflowId.current = NO_STASH;
@@ -1382,8 +1389,21 @@ function DispatchModal({
       return {};
     }
     if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+    if (!workflowConfig) provisionalWorkflow.current = { kind, workflowId: target };
     return { workflowId: target };
   }
+
+  // The rows landed after a kind switch guessed at them: replace the guess with the kind's
+  // real row, unless the operator has since chosen, or the kind has moved on.
+  useEffect(() => {
+    const guess = provisionalWorkflow.current;
+    if (!workflowConfig || !guess) return;
+    provisionalWorkflow.current = null;
+    if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults);
+    if (resolved !== guess.workflowId) update({ workflowId: resolved });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
+  }, [workflowConfig]);
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
@@ -1551,6 +1571,7 @@ function DispatchModal({
       // that was already lit. Taking None at that question therefore stands, and a later
       // kind switch leaves it alone.
       stashedWorkflowId.current = NO_STASH;
+      provisionalWorkflow.current = null;
       update({ workflowId });
     };
     const defaultName = defaultWorkflow
@@ -2940,6 +2961,7 @@ function DispatchModal({
                   // Chosen by hand, so a later kind switch must not hand back what scout
                   // put aside and revert this underneath the operator.
                   stashedWorkflowId.current = NO_STASH;
+                  provisionalWorkflow.current = null;
                   update({
                     workflowId:
                       value === "__default"

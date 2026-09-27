@@ -121,3 +121,65 @@ test("returning a row to its built-in follows the built-in again", async ({ dash
   };
   expect(config.kindWorkflowDefaults).toEqual({});
 });
+
+/**
+ * Holds every GET of the workflow config until `release` is called, so a spec can act inside
+ * the window where the Settings rows are not known yet.
+ */
+async function holdConfigReads(page: Page): Promise<() => void> {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await gate;
+    await route.continue();
+  });
+  return release;
+}
+
+async function setRows(daemon: { baseURL: string }, page: Page, rows: Record<string, string | null>): Promise<void> {
+  const saved = await page.request.put(`${daemon.baseURL}/api/workflows/config`, {
+    data: { liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: rows },
+  });
+  expect(saved.ok()).toBe(true);
+}
+
+test("a kind picked before the Settings rows load is corrected to the configured row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const release = await holdConfigReads(dashboard);
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  expect(await selectedLabel(afterWork)).toContain("loading");
+
+  // Inside the window the rows are unknown, so only the built-in can be shown...
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+
+  // ...and it is a guess, not the operator's choice: the real row replaces it on arrival.
+  release();
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+});
+
+test("a Workflow chosen by hand while the rows load is not replaced when they land", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const release = await holdConfigReads(dashboard);
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+
+  await kind.selectOption("bugfix");
+  await afterWork.selectOption("__none");
+  release();
+  await expect.poll(() => selectedLabel(afterWork)).not.toContain("loading");
+  await expect(afterWork).toHaveValue("__none");
+});
