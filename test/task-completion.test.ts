@@ -340,6 +340,9 @@ test("the ship handoff commits locally before completion and defers only publica
   const noPush = delivered.indexOf("do not push, create or update a pull request");
   assert.ok(commit > 0 && noPush > commit, `commit must precede the no-push rule:\n${delivered}`);
   assert.match(delivered, /publishes the local commit you already made/);
+  // The dashboard prints the delivered intent into the console card, and e2e specs read the
+  // word "working" there as the agent's busy state (session-interrupt.spec.ts).
+  assert.doesNotMatch(delivered.slice(delivered.indexOf("## Ship task completion handoff")), /working/i);
   const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));
   assert.match(prompt, /committed locally on the task branch/);
   assert.doesNotMatch(prompt, /- committing the work/);
