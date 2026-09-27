@@ -23,6 +23,11 @@ plan's "Adopted decisions" table.
 - **`TaskManager.mergedPrFor` is private** (`tasks.ts:1959`). The task-level freeability method
   therefore lives on `TaskManager`, while the Git reads move into a path-level helper extracted
   from `resetWouldDestroyWork` (`src/server/actions.ts:2417`).
+- **Merge evidence is commit-specific.** The work-episode bindings behind `mergedPrFor` record
+  each PR's `prHeadSha`, so the merged-PR excuse can require the checkout's HEAD to be contained
+  in a merged PR's head rather than trusting any merged PR for the task.
+- **The agent keeps running until `reclaim` stops it**, so the `ifSafe` re-check runs inside
+  `reclaim`, after the stop and immediately before teardown (a `beforeTeardown` guard).
 - **No persisted state changes and no migration.**
 
 ## Sizing
@@ -59,7 +64,8 @@ These are the contracts other callers may rely on after Phase 1:
 - `POST /api/tasks/:id/complete` accepts `freeWorktree: "ifSafe" | "discardWork"`.
 - The response gains optional `freed` and `freeError`. With the option absent it is unchanged.
 - `GET /api/tasks/:id/free-preview` returns `{ applicable, freeable, reasons[] }`.
-- Teardown always goes through `TaskManager.reclaim`.
+- Teardown always goes through `TaskManager.reclaim`. Its optional `beforeTeardown` guard runs
+  after the agent is stopped; callers that pass none behave exactly as before.
 
 ## Final verification
 

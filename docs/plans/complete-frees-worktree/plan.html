@@ -66,15 +66,15 @@
   <tr><th>#</th><th>Decision</th></tr>
   <tr><td>Scope</td><td>Frees every checkout Mission Control provisioned for the task (native slots, <code>git</code> fallback worktrees, every repository of a multi-repo task) through the existing Clean up path.</td></tr>
   <tr><td>Safety default</td><td>On by default only when the task is safe to free. When it is not, the box starts off with each reason listed, and the operator may still tick it.</td></tr>
-  <tr><td>What "safe" means</td><td>No uncommitted or untracked (non-ignored) files, and no commits that no <code>origin</code> ref holds. Committed work also counts as safe when Mission Control recorded the task's PR as merged, even if the branch was deleted from origin.</td></tr>
+  <tr><td>What "safe" means</td><td>No uncommitted or untracked (non-ignored) files, and no commits that no <code>origin</code> ref holds. Committed work also counts as safe when Mission Control recorded the task's PR as merged and the checkout's HEAD is that merged PR's recorded head commit or an ancestor of it, even if the branch was deleted from origin. Commits made after the merged head are never excused.</td></tr>
   <tr><td>Multi-repo</td><td>One checkbox for the task. Any unsafe checkout makes the default off, and every unsafe checkout's reason is listed.</td></tr>
   <tr><td>Failure</td><td>Completion is never rolled back. If freeing fails, the task stays <code>done</code> and the dialog reports "Task completed, but the worktree could not be freed: &lt;reason&gt;". The tree is left to Clean up or retention.</td></tr>
   <tr><td>Nothing to free</td><td>The checkbox is hidden when the task records no Mission Control-provisioned worktree. That covers assigned tasks, which use the session's own checkout, and pipeline tasks, whose workspace the provider owns.</td></tr>
   <tr><td>Entry points</td><td>Every place the shared <code>CompleteModal</code> opens: the session footer, Kill's "complete instead", and the conversation terminal. Automatic completions (merge, pipeline, mission conclusion, retro no-change) are unchanged.</td></tr>
   <tr><td>Default memory</td><td>On every time the dialog opens, subject to the safety default. No remembered choice.</td></tr>
   <tr><td>Where it runs</td><td>On the server, in one request. The complete route takes <code>freeWorktree</code> and runs Clean up after recording <code>done</code>. Clean up already stops the agent, so it replaces the dialog's separate kill.</td></tr>
-  <tr><td>Intent on the wire</td><td><code>freeWorktree: "ifSafe" | "discardWork"</code>. <code>ifSafe</code> re-checks at teardown and keeps the tree if it has become unsafe. <code>discardWork</code> is sent only when the operator ticked a box that the preview reported unsafe.</td></tr>
-  <tr><td>Preview</td><td>A new read-only <code>GET /api/tasks/:id/free-preview</code> returns <code>{ freeable, reasons[] }</code>. The dialog calls it on open and shows "checking…" until it answers. It is not added to every task broadcast.</td></tr>
+  <tr><td>Intent on the wire</td><td><code>freeWorktree: "ifSafe" | "discardWork"</code>. <code>ifSafe</code> re-checks after the agent is stopped, immediately before teardown, and keeps the tree if it has become unsafe. <code>discardWork</code> is sent only when the operator ticked a box that the preview reported unsafe.</td></tr>
+  <tr><td>Preview</td><td>A new read-only <code>GET /api/tasks/:id/free-preview</code> returns <code>{ applicable, freeable, reasons[] }</code>; <code>applicable</code> is false when the task has no Mission Control-provisioned worktree. The dialog calls it on open and shows "checking…" until it answers. It is not added to every task broadcast.</td></tr>
   <tr><td>Terminal</td><td>Accepted: freeing closes the task's own terminal home, including any extra panes in it.</td></tr>
 </table></div>
 <p>Unchanged:</p>
@@ -102,14 +102,15 @@
   <path class="msg-new" d="M150,80 L646,80" marker-end="url(#an)"/>
   <text x="400" y="72" text-anchor="middle">GET /api/tasks/:id/free-preview (on open)</text>
   <path class="msg-new" d="M650,112 L154,112" marker-end="url(#an)"/>
-  <text x="400" y="104" text-anchor="middle">{ freeable, reasons[] } → sets the checkbox default</text>
+  <text x="400" y="104" text-anchor="middle">{ applicable, freeable, reasons[] } → sets the checkbox default</text>
 
   <text class="sect" x="160" y="150">box ticked</text>
   <path class="msg-new" d="M150,172 L646,172" marker-end="url(#an)"/>
   <text x="400" y="164" text-anchor="middle">POST /api/tasks/:id/complete { …, freeWorktree: "ifSafe" | "discardWork" }</text>
-  <text x="660" y="198">1. finishCompletion → done</text>
-  <text x="660" y="216">2. ifSafe: re-check</text>
-  <text x="660" y="234">3. reclaim → teardown</text>
+  <text x="660" y="190">1. finishCompletion → done</text>
+  <text x="660" y="207">2. reclaim: stop agent</text>
+  <text x="660" y="224">3. ifSafe: re-check now</text>
+  <text x="660" y="241">4. teardown if safe</text>
   <path class="msg-new" d="M650,258 L154,258" marker-end="url(#an)"/>
   <text x="400" y="250" text-anchor="middle">{ ok, freed, freeError? }</text>
 
@@ -123,11 +124,11 @@
 
 <h2>Implementation</h2>
 <ol>
-  <li><strong>Safety predicate (server).</strong> Add a task-level <code>worktreeFreeability(task)</code> next to <code>resetWouldDestroyWork</code> (<code>src/server/actions.ts:2417</code>), and reuse its Git reads per checkout path: the primary <code>worktreePath</code> plus every <code>extraRepos[].worktreePath</code>. It returns <code>{ freeable: boolean, applicable: boolean, reasons: string[] }</code>. <code>applicable</code> is false when the task has no provisioned worktree or is a pipeline task. A local-only commit is excused when <code>TaskManager.mergedPrFor(task.id)</code> (<code>src/server/tasks.ts:1959</code>) is non-null. Uncommitted files are never excused.</li>
+  <li><strong>Safety predicate (server).</strong> Add a task-level <code>worktreeFreeability(task)</code> next to <code>resetWouldDestroyWork</code> (<code>src/server/actions.ts:2417</code>), and reuse its Git reads per checkout path: the primary <code>worktreePath</code> plus every <code>extraRepos[].worktreePath</code>. It returns <code>{ freeable: boolean, applicable: boolean, reasons: string[] }</code>. <code>applicable</code> is false when the task has no provisioned worktree or is a pipeline task. A local-only commit is excused only when the task has a merged work-episode PR (the bindings <code>mergedPrFor</code>, <code>src/server/tasks.ts:1959</code>, reads) whose recorded <code>pr_head_sha</code> equals the checkout's HEAD or has HEAD as an ancestor (<code>git merge-base --is-ancestor HEAD &lt;pr_head_sha&gt;</code>). A missing head SHA or an object Git cannot find means not excused. Uncommitted files are never excused.</li>
   <li><strong>Preview route.</strong> <code>GET /api/tasks/:id/free-preview</code> in <code>src/server/routes.ts</code> returns the predicate's result. 404 for an unknown task.</li>
   <li><strong>Complete route.</strong> Extend <code>CompleteTaskSchema</code> (<code>src/shared/protocol.ts:1311</code>) with an optional <code>freeWorktree: z.enum(["ifSafe", "discardWork"])</code>. In the route (<code>routes.ts:8121</code>), after a successful <code>tasks.complete(...)</code>:
     <ul>
-      <li><code>ifSafe</code>: re-run the predicate. If it is freeable, call <code>tasks.reclaim(id)</code>; otherwise skip, with the reasons as <code>freeError</code>.</li>
+      <li><code>ifSafe</code>: call <code>tasks.reclaim(id, { beforeTeardown })</code>. <code>reclaim</code> gains an optional guard that runs after the agent is stopped and archives are settled, immediately before <code>teardownWorktree</code>. The guard re-runs the predicate; if it is not freeable, reclaim skips teardown (the agent stays stopped, as Complete would have left it) and the reasons become <code>freeError</code>.</li>
       <li><code>discardWork</code>: call <code>tasks.reclaim(id)</code>.</li>
       <li>Return <code>freed: boolean</code> and <code>freeError?: string</code> alongside the existing result. The status stays <code>done</code> in every case.</li>
     </ul></li>
@@ -154,7 +155,8 @@
       <li>clean and pushed → freeable;</li>
       <li>uncommitted file → not freeable, even if the PR is merged;</li>
       <li>local-only commit → not freeable;</li>
-      <li>local-only commit with a merged PR → freeable;</li>
+      <li>local-only commit that is the merged PR's head (or an ancestor) → freeable;</li>
+      <li>local-only commit made after the merged PR's head → not freeable;</li>
       <li>multi-repo with one unsafe checkout → not freeable, with that checkout's reason;</li>
       <li>assigned task or pipeline task → not applicable.</li>
     </ul></li>
@@ -162,6 +164,7 @@
     <ul>
       <li><code>ifSafe</code> on a safe task → <code>done</code> and reclaimed;</li>
       <li><code>ifSafe</code> on a tree that became dirty → <code>done</code>, tree kept, <code>freeError</code> set;</li>
+      <li>a file written by the agent after the preview but before it was stopped → tree kept (the guard runs after the stop);</li>
       <li><code>discardWork</code> → reclaimed;</li>
       <li>reclaim refused → <code>done</code> kept, <code>freeError</code> set;</li>
       <li>no option → body and behaviour unchanged.</li>
@@ -180,7 +183,7 @@
 <h2>Risks</h2>
 <div class="scroll"><table>
   <tr><th>Risk</th><th>Mitigation</th></tr>
-  <tr><td>Default-on deletes work</td><td>The default is on only when the predicate proves safety, and the server re-checks at teardown under <code>ifSafe</code>.</td></tr>
+  <tr><td>Default-on deletes work</td><td>The default is on only when the predicate proves safety, and the server re-checks after stopping the agent, immediately before teardown, under <code>ifSafe</code>.</td></tr>
   <tr><td>Preview and teardown disagree</td><td><code>ifSafe</code> makes the server's check the one that decides; the preview only sets the default.</td></tr>
   <tr><td>Merged-PR excuse is too broad</td><td>It excuses committed work only; uncommitted and untracked files always block.</td></tr>
   <tr><td>Closing the terminal surprises the operator</td><td>The note under the checkbox says so.</td></tr>

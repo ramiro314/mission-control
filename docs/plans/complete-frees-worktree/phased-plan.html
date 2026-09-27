@@ -69,6 +69,8 @@
     </ul>
     No new teardown path is needed.</li>
   <li><strong><code>TaskManager.mergedPrFor</code> is private</strong> (<code>tasks.ts:1959</code>). The task-level freeability method therefore lives on <code>TaskManager</code>, while the Git reads move into a path-level helper extracted from <code>resetWouldDestroyWork</code> (<code>src/server/actions.ts:2417</code>).</li>
+  <li><strong>Merge evidence is commit-specific.</strong> The work-episode bindings behind <code>mergedPrFor</code> record each PR's <code>prHeadSha</code>, so the merged-PR excuse can require the checkout's HEAD to be contained in a merged PR's head rather than trusting any merged PR for the task.</li>
+  <li><strong>The agent keeps running until <code>reclaim</code> stops it</strong>, so the <code>ifSafe</code> re-check runs inside <code>reclaim</code>, after the stop and immediately before teardown (a <code>beforeTeardown</code> guard).</li>
   <li><strong>No persisted state changes and no migration.</strong></li>
 </ul>
 
@@ -97,7 +99,7 @@
   <li><code>POST /api/tasks/:id/complete</code> accepts <code>freeWorktree: "ifSafe" | "discardWork"</code>.</li>
   <li>The response gains optional <code>freed</code> and <code>freeError</code>. With the option absent it is unchanged.</li>
   <li><code>GET /api/tasks/:id/free-preview</code> returns <code>{ applicable, freeable, reasons[] }</code>.</li>
-  <li>Teardown always goes through <code>TaskManager.reclaim</code>.</li>
+  <li>Teardown always goes through <code>TaskManager.reclaim</code>. Its optional <code>beforeTeardown</code> guard runs after the agent is stopped; callers that pass none behave exactly as before.</li>
 </ul>
 
 <h2>Final verification</h2>

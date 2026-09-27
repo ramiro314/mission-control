@@ -59,7 +59,9 @@ finished tasks.
   `git status --porcelain` and `git rev-list --count HEAD --not --remotes=origin` from
   `session.cwd`. It is session-shaped, but the checks are purely per path.
 - **`TaskManager.mergedPrFor(taskId)`** (`tasks.ts:1959`) is **private**. It reads current and
-  historical work-episode bindings for a merged PR.
+  historical work-episode bindings for a merged PR and returns only the URL. The same bindings
+  (`taskWorkEpisodeForTask`, `historicalTaskWorkEpisodeBindingsForTask`) also carry
+  `pr_head_sha` and `merged_at`, which is what scoping the excuse to specific commits needs.
 - **Task shape:**
   - `worktreePath`, `provider` and `worktreeLeaseId` describe the primary checkout;
   - `extraRepos[]` carries the same for attached repositories;
@@ -87,22 +89,36 @@ finished tasks.
      or has `pipelineProvider`.
    - Run the check for every checkout, prefixing each reason with the repository name for
      multi-repo tasks.
-   - Local-only commits are excused when `this.mergedPrFor(id)` is non-null. Uncommitted or
-     untracked files are never excused.
+   - Local-only commits are excused only when a merged binding's recorded `prHeadSha` (read
+     from the same bindings as `mergedPrFor`) equals the checkout's HEAD or has HEAD as an
+     ancestor: `git merge-base --is-ancestor HEAD <prHeadSha>` exits 0. A commit made after the
+     merged head is therefore never excused. A missing `prHeadSha`, or a SHA Git cannot find
+     locally, means not excused. Pass the candidate SHAs into the path-level check rather than a
+     boolean. Uncommitted or untracked files are never excused.
    - Any unreadable checkout means not freeable, with that reason.
-   - Living inside `TaskManager` keeps `mergedPrFor` private.
+   - Living inside `TaskManager` keeps the binding reads private.
 3. **Preview route.** Add `GET /api/tasks/:id/free-preview` in `routes.ts` beside the other
    task routes. It returns the freeability, or 404 for an unknown task. It is read-only.
 4. **Wire contract.**
    - Extend `CompleteTaskSchema` with `freeWorktree: z.enum(["ifSafe", "discardWork"]).optional()`.
    - Extend the complete route's success body additively to `{ ...task, freed?: boolean, freeError?: string }`.
    - When the option is absent, the response must be byte-identical to today's.
-5. **Complete route.** After `tasks.complete(...)` succeeds and the option is present:
-   - `ifSafe`: `await tasks.worktreeFreeability(id)`.
-     - If it is `applicable && freeable`, `await tasks.reclaim(id)`.
-     - If it is not freeable, skip teardown, with `freeError` = "worktree kept: " plus the reasons.
-     - If it is not applicable, return `freed: false` with no error.
-   - `discardWork`: `await tasks.reclaim(id)` when applicable.
+5. **Reclaim guard and complete route.**
+   - Give `reclaim` an optional second argument, `{ beforeTeardown?: () => Promise<string | null> }`.
+     `reclaimReserved` calls it **after** `quiesceLaunchedAgentBeforeCapture` and
+     `settleArchivesBeforeTeardown`, immediately before `teardownWorktree`, all under the same
+     cleanup reservation. A non-null result skips teardown and returns
+     `{ ok: false, error: "worktree kept: " + reason }`, leaving every resource recorded. The
+     agent stays stopped, which is what Complete does anyway. Existing callers pass nothing and
+     behave exactly as before.
+   - Why here: the agent is still running until reclaim stops it, so a check made before
+     `reclaim` would miss anything the agent writes in between. Only a check after the stop
+     sees the final tree.
+   - After `tasks.complete(...)` succeeds and the option is present:
+     - Not applicable (from `worktreeFreeability`): return `freed: false` with no error.
+     - `ifSafe`: `await tasks.reclaim(id, { beforeTeardown })`, where the guard re-runs
+       `worktreeFreeability(id)` and returns its reasons when not freeable.
+     - `discardWork`: `await tasks.reclaim(id)` with no guard.
    - A reclaim returning `{ ok: false }` becomes `freeError`.
    - The status stays `done` in every branch. Re-read the task after reclaim so the returned row
      shows the released resources.
@@ -159,12 +175,17 @@ reset and worktree tests do.
   - an assigned task and a pipeline task are not applicable;
   - a clean single-repo task is freeable;
   - a dirty task is not freeable, even with a merged PR;
-  - a local-only commit plus a merged PR is freeable;
+  - a local-only commit that is the merged PR's recorded head, or an ancestor of it, is freeable;
+  - a local-only commit made after the merged PR's head is not freeable, even though a PR merged;
+  - a merged binding with no `prHeadSha` excuses nothing;
   - a multi-repo task with one dirty checkout is not freeable, with a repo-prefixed reason.
 - **Route:**
   - no option gives an unchanged body;
   - `ifSafe` on a safe task gives `done`, `freed: true`, and worktree fields cleared;
   - `ifSafe` on a dirty task gives `done`, `freed: false`, `freeError`, and the tree still recorded;
+  - `ifSafe` where the tree becomes dirty after the preview but before the agent stop (simulate
+    with a quiesce seam that writes a file) keeps the tree, because the guard runs after the stop;
+  - `reclaim` with no guard is unchanged (existing reclaim tests keep passing);
   - `discardWork` on a dirty task gives `freed: true`;
   - a reclaim refusal (reservation held) gives `done` plus `freeError`.
 
@@ -219,3 +240,10 @@ They must not bypass `reclaim` for teardown.
   - `mergedPrFor` is private, so freeability lives in `TaskManager`;
   - the plan's `worktreeFreeability(task)` next to `actions.ts` is split into a path-level Git
     check (actions.ts) plus the task-level method (tasks.ts).
+- **2026-09-27, review round 1 (GitHub Inspector on PR #11):**
+  - the `ifSafe` re-check moved from before `reclaim` into a `beforeTeardown` guard that runs
+    after the agent is stopped, closing the window in which a still-running agent could write
+    unseen work;
+  - the merged-PR excuse is scoped to commits contained in a merged PR's recorded head
+    (`prHeadSha`), not to "any PR for this task merged";
+  - `plan.md`'s preview contract now includes `applicable`, matching this file.

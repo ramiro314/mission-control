@@ -25,15 +25,15 @@ ticked, completing the task also runs Clean up. It is on by default whenever fre
 | --- | --- |
 | Scope | Frees every checkout Mission Control provisioned for the task (native slots, `git` fallback worktrees, every repository of a multi-repo task) through the existing Clean up path. |
 | Safety default | On by default only when the task is safe to free. When it is not, the box starts off with each reason listed, and the operator may still tick it. |
-| What "safe" means | No uncommitted or untracked (non-ignored) files, and no commits that no `origin` ref holds. Committed work also counts as safe when Mission Control recorded the task's PR as merged, even if the branch was deleted from origin. |
+| What "safe" means | No uncommitted or untracked (non-ignored) files, and no commits that no `origin` ref holds. Committed work also counts as safe when Mission Control recorded the task's PR as merged and the checkout's HEAD is that merged PR's recorded head commit or an ancestor of it, even if the branch was deleted from origin. Commits made after the merged head are never excused. |
 | Multi-repo | One checkbox for the task. Any unsafe checkout makes the default off, and every unsafe checkout's reason is listed. |
 | Failure | Completion is never rolled back. If freeing fails, the task stays `done` and the dialog reports "Task completed, but the worktree could not be freed: <reason>". The tree is left to Clean up or retention. |
 | Nothing to free | The checkbox is hidden when the task records no Mission Control-provisioned worktree. That covers assigned tasks, which use the session's own checkout, and pipeline tasks, whose workspace the provider owns. |
 | Entry points | Every place the shared `CompleteModal` opens: the session footer, Kill's "complete instead", and the conversation terminal. Automatic completions (merge, pipeline, mission conclusion, retro no-change) are unchanged. |
 | Default memory | On every time the dialog opens, subject to the safety default. No remembered choice. |
 | Where it runs | On the server, in one request. The complete route takes `freeWorktree` and runs Clean up after recording `done`. Clean up already stops the agent, so it replaces the dialog's separate kill. |
-| Intent on the wire | `freeWorktree: "ifSafe" \| "discardWork"`. `ifSafe` re-checks at teardown and keeps the tree if it has become unsafe. `discardWork` is sent only when the operator ticked a box that the preview reported unsafe. |
-| Preview | A new read-only `GET /api/tasks/:id/free-preview` returns `{ freeable, reasons[] }`. The dialog calls it on open and shows "checking…" until it answers. It is not added to every task broadcast. |
+| Intent on the wire | `freeWorktree: "ifSafe" \| "discardWork"`. `ifSafe` re-checks after the agent is stopped, immediately before teardown, and keeps the tree if it has become unsafe. `discardWork` is sent only when the operator ticked a box that the preview reported unsafe. |
+| Preview | A new read-only `GET /api/tasks/:id/free-preview` returns `{ applicable, freeable, reasons[] }`; `applicable` is false when the task has no Mission Control-provisioned worktree. The dialog calls it on open and shows "checking…" until it answers. It is not added to every task broadcast. |
 | Terminal | Accepted: freeing closes the task's own terminal home, including any extra panes in it. |
 
 Unchanged:
@@ -51,11 +51,12 @@ sequenceDiagram
   participant D as Complete dialog
   participant S as Daemon
   D->>S: GET /api/tasks/:id/free-preview
-  S-->>D: { freeable, reasons[] }  (sets checkbox default)
+  S-->>D: { applicable, freeable, reasons[] }  (sets checkbox default)
   alt box ticked
     D->>S: POST /api/tasks/:id/complete { ..., freeWorktree: "ifSafe" | "discardWork" }
     S->>S: finishCompletion -> done
-    S->>S: ifSafe: re-check; if safe (or discardWork) -> reclaim (stops agent, archives, teardownWorktree)
+    S->>S: reclaim: stop agent, settle archives
+    S->>S: ifSafe: re-check now; if unsafe keep the tree, else (or discardWork) teardownWorktree
     S-->>D: { ok, freed, freeError? }
   else box unticked (today)
     D->>S: POST /api/tasks/:id/complete
@@ -70,15 +71,20 @@ sequenceDiagram
    path: the primary `worktreePath` plus every `extraRepos[].worktreePath`. It returns
    `{ freeable: boolean, applicable: boolean, reasons: string[] }`. `applicable` is false when
    the task has no provisioned worktree or is a pipeline task. A local-only commit is excused
-   when `TaskManager.mergedPrFor(task.id)` (`src/server/tasks.ts:1959`) is non-null.
-   Uncommitted files are never excused.
+   only when the task has a merged work-episode PR (the bindings `mergedPrFor`,
+   `src/server/tasks.ts:1959`, reads) whose recorded `pr_head_sha` equals the checkout's HEAD or
+   has HEAD as an ancestor (`git merge-base --is-ancestor HEAD <pr_head_sha>`). A missing head
+   SHA or an object Git cannot find means not excused. Uncommitted files are never excused.
 2. **Preview route.** `GET /api/tasks/:id/free-preview` in `src/server/routes.ts` returns the
    predicate's result. 404 for an unknown task.
 3. **Complete route.** Extend `CompleteTaskSchema` (`src/shared/protocol.ts:1311`) with an
    optional `freeWorktree: z.enum(["ifSafe", "discardWork"])`. In the route (`routes.ts:8121`),
    after a successful `tasks.complete(...)`:
-   - `ifSafe`: re-run the predicate. If it is freeable, call `tasks.reclaim(id)`; otherwise
-     skip, with the reasons as `freeError`.
+   - `ifSafe`: call `tasks.reclaim(id, { beforeTeardown })`. `reclaim` gains an optional guard
+     that runs after the agent is stopped and archives are settled, immediately before
+     `teardownWorktree`. The guard re-runs the predicate; if it is not freeable, reclaim skips
+     teardown (the agent stays stopped, as Complete would have left it) and the reasons become
+     `freeError`.
    - `discardWork`: call `tasks.reclaim(id)`.
    - Return `freed: boolean` and `freeError?: string` alongside the existing result. The status
      stays `done` in every case.
@@ -102,12 +108,14 @@ sequenceDiagram
   - clean and pushed → freeable;
   - uncommitted file → not freeable, even if the PR is merged;
   - local-only commit → not freeable;
-  - local-only commit with a merged PR → freeable;
+  - local-only commit that is the merged PR's head (or an ancestor) → freeable;
+  - local-only commit made after the merged PR's head → not freeable;
   - multi-repo with one unsafe checkout → not freeable, with that checkout's reason;
   - assigned task or pipeline task → not applicable.
 - **`test/`, route:**
   - `ifSafe` on a safe task → `done` and reclaimed;
   - `ifSafe` on a tree that became dirty → `done`, tree kept, `freeError` set;
+  - a file written by the agent after the preview but before it was stopped → tree kept (the guard runs after the stop);
   - `discardWork` → reclaimed;
   - reclaim refused → `done` kept, `freeError` set;
   - no option → body and behaviour unchanged.
@@ -123,7 +131,7 @@ sequenceDiagram
 
 | Risk | Mitigation |
 | --- | --- |
-| Default-on deletes work | The default is on only when the predicate proves safety, and the server re-checks at teardown under `ifSafe`. |
+| Default-on deletes work | The default is on only when the predicate proves safety, and the server re-checks after stopping the agent, immediately before teardown, under `ifSafe`. |
 | Preview and teardown disagree | `ifSafe` makes the server's check the one that decides; the preview only sets the default. |
 | Merged-PR excuse is too broad | It excuses committed work only; uncommitted and untracked files always block. |
 | Closing the terminal surprises the operator | The note under the checkbox says so. |
