@@ -1,6 +1,18 @@
+import { mkdirSync } from "node:fs";
+
 import type { Locator, Page } from "@playwright/test";
 
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
+
+const EVIDENCE = artifactsDir("kind-workflow-defaults");
+
+/** A frame of the state just asserted, behind `MC_E2E_EVIDENCE` so ordinary runs write nothing. */
+async function shoot(target: Locator, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+}
 
 /**
  * Settings -> Workflows -> Dispatch defaults: one after-work Workflow per task kind.
@@ -56,6 +68,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await expect(kindRow(dashboard, "scout")).toHaveValue(GENERAL_REVIEW);
   await expect(kindRow(dashboard, "plan")).toHaveValue("__none");
   expect(await selectedLabel(kindRow(dashboard, "ship"))).toBe("Built-in default (No-Mistakes Review (High Rigor))");
+  await shoot(dashboard.locator('[data-anchor="workflows/dispatch-default"]'), "01-settings-dispatch-defaults");
 
   await dashboard.goto(`${daemon.baseURL}/`);
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -69,6 +82,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await kind.selectOption("bugfix");
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
   expect(await selectedLabel(afterWork)).toContain("General Review");
+  await shoot(dialog, "02-dispatch-bugfix-preselects-row");
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
   await kind.selectOption("plan");
