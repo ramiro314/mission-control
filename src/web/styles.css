@@ -28612,6 +28612,13 @@ span.line-run-prov {
   outline: 2px solid var(--select);
   outline-offset: 2px;
 }
+/* The card's verbs, side by side: launch, and "shape this" on a card that is not shape yet. */
+.bl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-self: flex-start;
+}
 .bl-launch {
   align-self: flex-start;
   padding: 2px 7px;

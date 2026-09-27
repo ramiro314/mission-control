@@ -1,4 +1,5 @@
 import { actionFetch } from "./experience.ts";
+import { SHAPE_THIS_PATCH } from "@shared/task.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -1815,6 +1816,15 @@ export const api = {
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
     post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+  /**
+   * "Shape this": the ordinary kind edit (`SHAPE_THIS_PATCH`), then the ordinary backlog
+   * dispatch - no conversion route of its own. The edit keeps the row's source link, labels
+   * and dependencies. A refused dispatch leaves the task converted in the backlog.
+   */
+  shapeBacklog: async (id: string) => {
+    const edited = await post(`/api/tasks/${encodeURIComponent(id)}/update`, SHAPE_THIS_PATCH);
+    return edited.ok ? await api.dispatchBacklog(id, true) : edited;
+  },
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>

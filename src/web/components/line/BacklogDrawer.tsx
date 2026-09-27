@@ -150,6 +150,7 @@ function BacklogRow({
   busy,
   onEdit,
   onLaunch,
+  onShape,
   onSetEnabled,
   onSetPriority,
   onReschedule,
@@ -170,6 +171,8 @@ function BacklogRow({
   busy: boolean;
   onEdit: () => void;
   onLaunch: () => void;
+  /** Convert to shape and dispatch, the same pair the board card's "shape this" sends. */
+  onShape: () => void;
   onSetEnabled: (next: boolean) => void;
   onSetPriority: (next: TaskPriority | null) => void;
   onReschedule: (deadId: string) => void;
@@ -305,6 +308,14 @@ function BacklogRow({
             </button>
           </Tooltip>
         )}
+        {/* The board card's "shape this", on the rows this drawer can start at all. */}
+        {band !== "blocked" && task.kind !== "shape" && (
+          <Tooltip label={`Convert "${task.title}" to a shape task and dispatch it. Its source link, labels and dependencies stay.`}>
+            <button type="button" className="btn" disabled={busy} onClick={onShape}>
+              Shape this
+            </button>
+          </Tooltip>
+        )}
       </span>
     </li>
   );
@@ -420,6 +431,7 @@ export function BacklogDrawer({
       onEdit: () => onEditTask(id),
       onLaunch: () =>
         void act(id, () => api.dispatchBacklog(id, true), "could not dispatch that task"),
+      onShape: () => void act(id, () => api.shapeBacklog(id), "could not shape that task"),
       onSetEnabled: (next) =>
         void act(id, () => api.updateTask(id, { enabled: next }), "could not change that"),
       onSetPriority: (next) =>

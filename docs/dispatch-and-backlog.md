@@ -351,7 +351,8 @@ tasks is not available yet; choosing Create tickets records the choice in the pl
 A shape task needs **Grill and HTML Plans both switched on**. With either one off the dispatch
 is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
 ownership rules and archive capture, and its default After work is **Plan Validation**. It can
-be added to the backlog and filed by a task source, but Foreman's backlog autopilot never
+be added to the backlog, [converted from a backlog card](#shape-a-shelved-task) with **shape
+this**, and filed by a task source whose default kind is shape, but Foreman's backlog autopilot never
 launches one, because the interview needs you there to answer it. Recurring Missions and the
 MCP `create_task` tool cannot create shape tasks. The plan kind is unchanged.
 
@@ -543,6 +544,21 @@ A root that **cannot** be walked back to a main checkout - a `.git` that points 
 with no owning repo, like a submodule or a relocated git dir - is refused rather than
 written and never scheduled. HTTP task creation and edits return `400 not a repo's main
 checkout` naming the path; task-source sweeps report the same refusal in their result.
+
+### Shape a shelved task
+
+A backlog task whose kind is not shape yet can be shaped from either layout: the Board's
+backlog card carries **shape this** beside **launch new agent**, and a ready or parked row in
+the Line's Backlog drawer carries **Shape this** beside its other controls. It is the ordinary [edit](#edit-a-shelved-task) followed by the ordinary dispatch,
+not a conversion of its own: the edit sets the kind to shape and After work to **Plan
+Validation**, the same pair the dispatch form picks when you switch to shape, and the task is
+then dispatched as a launch would. Nothing else on the task changes. Its source
+link, labels, priority and dependencies stay, so a shape task swept from a GitHub issue stays
+linked to that issue, and it completes when its planning pull request merges, like any shape
+task. On the Board the button is disabled while the card waits on a dependency you declared; the
+drawer leaves it off blocked rows, as it does **Launch now**. If the
+dispatch is refused, for example because Grill is off, the task stays in the backlog already
+converted to shape and the refusal says why.
 
 ### Hand a shelved task to an agent that's already running
 
@@ -1112,7 +1128,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
+| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |

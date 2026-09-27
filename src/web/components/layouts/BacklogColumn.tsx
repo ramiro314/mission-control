@@ -691,6 +691,14 @@ function BacklogCard({
     setBusy(false);
   }
 
+  /** "Shape this" - see `api.shapeBacklog`; the Line drawer's row sends the same pair. */
+  async function shapeThis(): Promise<void> {
+    setBusy(true);
+    const r = await api.shapeBacklog(task.id);
+    if (!r.ok) onAssignError(r.error ?? "could not shape that task");
+    setBusy(false);
+  }
+
   // Resolve a dead prerequisite - the two halves of unblocking this card. The target is
   // the DEAD task, never `task`: fixing it releases every dependent, not just this one.
   async function rescheduleDead(deadId: string): Promise<void> {
@@ -1064,6 +1072,7 @@ function BacklogCard({
           <span className="bl-next">next up</span>
         </Tooltip>
       )}
+      <span className="bl-actions">
       <Tooltip
         label={
           declaredBlocked
@@ -1097,6 +1106,21 @@ function BacklogCard({
           : "launch new agent"}
       </button>
       </Tooltip>
+      {task.kind !== "shape" && (
+        <Tooltip label="Convert it to a shape task and dispatch it: grill first, then plan and tickets. Its source link, labels and dependencies stay.">
+          <button
+            className="bl-launch"
+            onClick={(e) => {
+              e.stopPropagation();
+              void shapeThis();
+            }}
+            disabled={busy || declaredBlocked}
+          >
+            shape this
+          </button>
+        </Tooltip>
+      )}
+      </span>
     </article>
   );
 }
