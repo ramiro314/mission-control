@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Complete frees the task's worktree: phased implementation</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013; --surface-1: #16181c; --surface-2: #1d2026;
+    --line: #2f343c; --line-soft: #23272e;
+    --text-primary: #f2f3f5; --text-secondary: #b6bcc6; --text-muted: #8f97a2;
+    --link: #6aa8f0; --accent: #6aa8f0; --edge: #8f97a2;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --surface-0: #f4f4f2; --surface-1: #fcfcfb; --surface-2: #ebebe7;
+      --line: #d5d5d0; --line-soft: #e4e4e0;
+      --text-primary: #101114; --text-secondary: #43464c; --text-muted: #5e6168;
+      --link: #1f5fb0; --accent: #1f5fb0; --edge: #5e6168;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary); font-family: var(--sans); font-size: 15px; line-height: 1.65; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 28px 100px; }
+  header { padding: 48px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+  h1 { font-size: 32px; line-height: 1.15; margin: 0 0 12px; font-weight: 620; letter-spacing: -0.02em; }
+  .meta { color: var(--text-secondary); margin: 0; }
+  h2 { font-size: 22px; margin: 44px 0 10px; padding-top: 18px; border-top: 1px solid var(--line); font-weight: 620; }
+  p, li { max-width: 80ch; }
+  code { font-family: var(--mono); font-size: .86em; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; color: var(--text-primary); }
+  a { color: var(--link); }
+  .scroll { overflow-x: auto; margin: 14px 0 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; color: var(--text-primary); }
+  th { color: var(--text-secondary); background: var(--surface-2); font-weight: 600; white-space: nowrap; }
+  svg text { font-family: var(--sans); font-size: 12px; fill: var(--text-secondary); }
+  svg .lane { font-family: var(--mono); font-size: 13px; font-weight: 600; fill: var(--text-primary); }
+  svg .box { fill: var(--surface-2); stroke: var(--line); }
+  svg .life { stroke: var(--line); stroke-dasharray: 4 4; }
+  svg .msg { stroke: var(--edge); stroke-width: 1.5; fill: none; }
+  svg .msg-new { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  svg .ah { fill: var(--edge); }
+  svg .ahn { fill: var(--accent); }
+  svg .sect { fill: var(--text-muted); font-size: 11.5px; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Complete frees the task's worktree: phased implementation</h1>
+  <p class="meta"><strong>Source plan:</strong> <a href="plan.html"><code>plan.md</code></a> (approved 2026-09-27) · Source: <a href="phased-plan.md"><code>phased-plan.md</code></a></p>
+  <p class="meta"><strong>Submitted decision:</strong> implementation follow-up → <em>Create phased implementation plan</em>. No other open choices; every design decision was settled before approval and is recorded in the source plan's "Adopted decisions" table.</p>
+</header>
+
+<h2>Findings that shaped the phase</h2>
+<ul>
+  <li><strong>The complete route returns the task object</strong> (<code>src/server/routes.ts:8121</code>), and the browser, not the server, kills the session afterwards (<code>CompleteModal.tsx:118-145</code>). The new result fields are therefore additive on that object, and the checked path drops the browser kill because <code>reclaim</code> already stops the agent.</li>
+  <li><strong><code>TaskManager.reclaim</code></strong> (<code>src/server/tasks.ts:5729</code>) already provides every teardown the plan needs:
+    <ul>
+      <li>a cleanup reservation;</li>
+      <li>stopping the agent;</li>
+      <li>settling archives;</li>
+      <li>provider-aware teardown for native, <code>git</code> and multi-repo trees;</li>
+      <li>partial release.</li>
+    </ul>
+    No new teardown path is needed.</li>
+  <li><strong><code>TaskManager.mergedPrFor</code> is private</strong> (<code>tasks.ts:1959</code>). The task-level freeability method therefore lives on <code>TaskManager</code>, while the Git reads move into a path-level helper extracted from <code>resetWouldDestroyWork</code> (<code>src/server/actions.ts:2417</code>).</li>
+  <li><strong>No persisted state changes and no migration.</strong></li>
+</ul>
+
+<h2>Sizing</h2>
+<p>Estimated <strong>230 to 290 lines</strong> of non-test production code:</p>
+<div class="scroll"><table>
+  <tr><th>Area</th><th>Lines</th></tr>
+  <tr><td>Git check extraction</td><td>~40</td></tr>
+  <tr><td><code>worktreeFreeability</code></td><td>~50</td></tr>
+  <tr><td>Preview and complete route changes</td><td>~45</td></tr>
+  <tr><td>Schema and client API</td><td>~25</td></tr>
+  <tr><td><code>CompleteModal</code> checkbox, preview state and confirm branch</td><td>~80-120</td></tr>
+</table></div>
+<p>Docs and tests are extra. The work is slightly above the one-phase threshold, but it is a single vertical slice. A server-only first phase would ship an option no caller uses, and a UI-only phase cannot exist without the route. There are few edge cases, and they are enumerated in the phase file. <strong>One phase.</strong></p>
+
+<h2>Phases</h2>
+<div class="scroll"><table>
+  <tr><th>Phase</th><th>File</th><th>Depends on</th><th>Delivers</th></tr>
+  <tr><td>1</td><td><a href="phase-1-complete-frees-worktree.md"><code>phase-1-complete-frees-worktree.md</code></a></td><td>planning PR merge</td><td>Checkbox, preview route, <code>freeWorktree</code> on complete, docs, unit and e2e tests</td></tr>
+</table></div>
+<p><strong>Dependency graph:</strong> planning session → Phase 1.<br><strong>Concurrency:</strong> none; there is a single phase.<br><strong>Merge order:</strong> the planning PR (these artifacts), then Phase 1.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>These are the contracts other callers may rely on after Phase 1:</p>
+<ul>
+  <li><code>POST /api/tasks/:id/complete</code> accepts <code>freeWorktree: "ifSafe" | "discardWork"</code>.</li>
+  <li>The response gains optional <code>freed</code> and <code>freeError</code>. With the option absent it is unchanged.</li>
+  <li><code>GET /api/tasks/:id/free-preview</code> returns <code>{ applicable, freeable, reasons[] }</code>.</li>
+  <li>Teardown always goes through <code>TaskManager.reclaim</code>.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>The phase's exit criteria are the feature's:</p>
+<ul>
+  <li>typecheck, lint, the full unit suite, build and smoke all pass;</li>
+  <li>the new e2e spec passes;</li>
+  <li>CI is green;</li>
+  <li>unchecked Complete behaves exactly as before.</li>
+</ul>
+</div>
+</body>
+</html>

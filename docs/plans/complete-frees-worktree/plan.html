@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Complete frees the task's worktree</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013; --surface-1: #16181c; --surface-2: #1d2026;
+    --line: #2f343c; --line-soft: #23272e;
+    --text-primary: #f2f3f5; --text-secondary: #b6bcc6; --text-muted: #8f97a2;
+    --link: #6aa8f0; --accent: #6aa8f0; --edge: #8f97a2;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --surface-0: #f4f4f2; --surface-1: #fcfcfb; --surface-2: #ebebe7;
+      --line: #d5d5d0; --line-soft: #e4e4e0;
+      --text-primary: #101114; --text-secondary: #43464c; --text-muted: #5e6168;
+      --link: #1f5fb0; --accent: #1f5fb0; --edge: #5e6168;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary); font-family: var(--sans); font-size: 15px; line-height: 1.65; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 28px 100px; }
+  header { padding: 48px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+  h1 { font-size: 32px; line-height: 1.15; margin: 0 0 12px; font-weight: 620; letter-spacing: -0.02em; }
+  .meta { color: var(--text-secondary); margin: 0; }
+  h2 { font-size: 22px; margin: 44px 0 10px; padding-top: 18px; border-top: 1px solid var(--line); font-weight: 620; }
+  p, li { max-width: 80ch; }
+  code { font-family: var(--mono); font-size: .86em; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; color: var(--text-primary); }
+  a { color: var(--link); }
+  .scroll { overflow-x: auto; margin: 14px 0 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; color: var(--text-primary); }
+  th { color: var(--text-secondary); background: var(--surface-2); font-weight: 600; white-space: nowrap; }
+  svg text { font-family: var(--sans); font-size: 12px; fill: var(--text-secondary); }
+  svg .lane { font-family: var(--mono); font-size: 13px; font-weight: 600; fill: var(--text-primary); }
+  svg .box { fill: var(--surface-2); stroke: var(--line); }
+  svg .life { stroke: var(--line); stroke-dasharray: 4 4; }
+  svg .msg { stroke: var(--edge); stroke-width: 1.5; fill: none; }
+  svg .msg-new { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  svg .ah { fill: var(--edge); }
+  svg .ahn { fill: var(--accent); }
+  svg .sect { fill: var(--text-muted); font-size: 11.5px; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Complete frees the task's worktree</h1>
+  <p class="meta"><strong>Status:</strong> Approved on 2026-09-27 · <strong>Scope:</strong> One phase · <strong>Background:</strong> the worktree pool investigation and task lifecycle explainer from the planning session (local reports, not committed) · Source: <a href="plan.md"><code>plan.md</code></a></p>
+</header>
+
+<h2>Problem</h2>
+<p>Completing a task records <code>done</code> and stops its session, but never releases its checkout. "Mark done must not discard work" (<code>TaskManager.complete</code>, <code>src/server/tasks.ts:4875</code>), so the tree stays leased until someone runs <strong>Clean up</strong> or 30 days pass with no Git-visible change. In practice every completed task pins a pool slot. With <code>maxSlots: 8</code>, eight finished tasks fill a pool, and every later dispatch falls back to a throwaway <code>git</code> worktree that is held for 30 days too.</p>
+
+<h2>Goal</h2>
+<p>The Complete dialog gets a checkbox, <strong>"Free this task's worktree"</strong> ("worktrees" for a multi-repo task), with the note <strong>"Also closes this task's terminal"</strong> under it. When it is ticked, completing the task also runs Clean up. It is on by default whenever freeing is safe.</p>
+
+<h2>Adopted decisions</h2>
+<div class="scroll"><table>
+  <tr><th>#</th><th>Decision</th></tr>
+  <tr><td>Scope</td><td>Frees every checkout Mission Control provisioned for the task (native slots, <code>git</code> fallback worktrees, every repository of a multi-repo task) through the existing Clean up path.</td></tr>
+  <tr><td>Safety default</td><td>On by default only when the task is safe to free. When it is not, the box starts off with each reason listed, and the operator may still tick it.</td></tr>
+  <tr><td>What "safe" means</td><td>No uncommitted or untracked (non-ignored) files, and no commits that no <code>origin</code> ref holds. Committed work also counts as safe when Mission Control recorded the task's PR as merged, even if the branch was deleted from origin.</td></tr>
+  <tr><td>Multi-repo</td><td>One checkbox for the task. Any unsafe checkout makes the default off, and every unsafe checkout's reason is listed.</td></tr>
+  <tr><td>Failure</td><td>Completion is never rolled back. If freeing fails, the task stays <code>done</code> and the dialog reports "Task completed, but the worktree could not be freed: &lt;reason&gt;". The tree is left to Clean up or retention.</td></tr>
+  <tr><td>Nothing to free</td><td>The checkbox is hidden when the task records no Mission Control-provisioned worktree. That covers assigned tasks, which use the session's own checkout, and pipeline tasks, whose workspace the provider owns.</td></tr>
+  <tr><td>Entry points</td><td>Every place the shared <code>CompleteModal</code> opens: the session footer, Kill's "complete instead", and the conversation terminal. Automatic completions (merge, pipeline, mission conclusion, retro no-change) are unchanged.</td></tr>
+  <tr><td>Default memory</td><td>On every time the dialog opens, subject to the safety default. No remembered choice.</td></tr>
+  <tr><td>Where it runs</td><td>On the server, in one request. The complete route takes <code>freeWorktree</code> and runs Clean up after recording <code>done</code>. Clean up already stops the agent, so it replaces the dialog's separate kill.</td></tr>
+  <tr><td>Intent on the wire</td><td><code>freeWorktree: "ifSafe" | "discardWork"</code>. <code>ifSafe</code> re-checks at teardown and keeps the tree if it has become unsafe. <code>discardWork</code> is sent only when the operator ticked a box that the preview reported unsafe.</td></tr>
+  <tr><td>Preview</td><td>A new read-only <code>GET /api/tasks/:id/free-preview</code> returns <code>{ freeable, reasons[] }</code>. The dialog calls it on open and shows "checking…" until it answers. It is not added to every task broadcast.</td></tr>
+  <tr><td>Terminal</td><td>Accepted: freeing closes the task's own terminal home, including any extra panes in it.</td></tr>
+</table></div>
+<p>Unchanged:</p>
+<ul>
+  <li>Unchecked means today's flow exactly: complete, then kill, with the worktree kept.</li>
+  <li>Scout tasks get no special handling. <code>complete</code> already waits for the report archive, and Clean up settles archives before teardown.</li>
+  <li>"Satisfy dependents" and the retro offer behave as before.</li>
+  <li>Foreman and MCP callers do not use the new option in this change.</li>
+  <li>Success feedback reads "Task completed · worktree freed".</li>
+</ul>
+
+<h2>Flow</h2>
+<p>New requests are drawn in blue. The unticked path (grey, bottom) is today's flow, unchanged.</p>
+<div class="scroll" style="padding:10px">
+<svg width="820" height="400" viewBox="0 0 820 400" role="img" aria-label="Complete dialog to daemon request flow">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="an" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ahn" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="box" x="60" y="10" width="180" height="36" rx="8"/><text class="lane" x="150" y="33" text-anchor="middle">Complete dialog</text>
+  <rect class="box" x="560" y="10" width="180" height="36" rx="8"/><text class="lane" x="650" y="33" text-anchor="middle">Daemon</text>
+  <line class="life" x1="150" y1="46" x2="150" y2="390"/>
+  <line class="life" x1="650" y1="46" x2="650" y2="390"/>
+
+  <path class="msg-new" d="M150,80 L646,80" marker-end="url(#an)"/>
+  <text x="400" y="72" text-anchor="middle">GET /api/tasks/:id/free-preview (on open)</text>
+  <path class="msg-new" d="M650,112 L154,112" marker-end="url(#an)"/>
+  <text x="400" y="104" text-anchor="middle">{ freeable, reasons[] } → sets the checkbox default</text>
+
+  <text class="sect" x="160" y="150">box ticked</text>
+  <path class="msg-new" d="M150,172 L646,172" marker-end="url(#an)"/>
+  <text x="400" y="164" text-anchor="middle">POST /api/tasks/:id/complete { …, freeWorktree: "ifSafe" | "discardWork" }</text>
+  <text x="660" y="198">1. finishCompletion → done</text>
+  <text x="660" y="216">2. ifSafe: re-check</text>
+  <text x="660" y="234">3. reclaim → teardown</text>
+  <path class="msg-new" d="M650,258 L154,258" marker-end="url(#an)"/>
+  <text x="400" y="250" text-anchor="middle">{ ok, freed, freeError? }</text>
+
+  <text class="sect" x="160" y="300">box unticked (today)</text>
+  <path class="msg" d="M150,322 L646,322" marker-end="url(#a)"/>
+  <text x="400" y="314" text-anchor="middle">POST /api/tasks/:id/complete</text>
+  <path class="msg" d="M150,362 L646,362" marker-end="url(#a)"/>
+  <text x="400" y="354" text-anchor="middle">POST /api/sessions/:id/kill</text>
+</svg>
+</div>
+
+<h2>Implementation</h2>
+<ol>
+  <li><strong>Safety predicate (server).</strong> Add a task-level <code>worktreeFreeability(task)</code> next to <code>resetWouldDestroyWork</code> (<code>src/server/actions.ts:2417</code>), and reuse its Git reads per checkout path: the primary <code>worktreePath</code> plus every <code>extraRepos[].worktreePath</code>. It returns <code>{ freeable: boolean, applicable: boolean, reasons: string[] }</code>. <code>applicable</code> is false when the task has no provisioned worktree or is a pipeline task. A local-only commit is excused when <code>TaskManager.mergedPrFor(task.id)</code> (<code>src/server/tasks.ts:1959</code>) is non-null. Uncommitted files are never excused.</li>
+  <li><strong>Preview route.</strong> <code>GET /api/tasks/:id/free-preview</code> in <code>src/server/routes.ts</code> returns the predicate's result. 404 for an unknown task.</li>
+  <li><strong>Complete route.</strong> Extend <code>CompleteTaskSchema</code> (<code>src/shared/protocol.ts:1311</code>) with an optional <code>freeWorktree: z.enum(["ifSafe", "discardWork"])</code>. In the route (<code>routes.ts:8121</code>), after a successful <code>tasks.complete(...)</code>:
+    <ul>
+      <li><code>ifSafe</code>: re-run the predicate. If it is freeable, call <code>tasks.reclaim(id)</code>; otherwise skip, with the reasons as <code>freeError</code>.</li>
+      <li><code>discardWork</code>: call <code>tasks.reclaim(id)</code>.</li>
+      <li>Return <code>freed: boolean</code> and <code>freeError?: string</code> alongside the existing result. The status stays <code>done</code> in every case.</li>
+    </ul></li>
+  <li><strong>Client.</strong> <code>api.completeTask</code> in <code>src/web/lib/api.ts</code> gains the option and omits it when unset, so every existing caller sends an unchanged body. Add <code>api.taskFreePreview(id)</code>.</li>
+  <li><strong>Dialog.</strong> In <code>src/web/components/CompleteModal.tsx</code>:
+    <ul>
+      <li>fetch the preview on open;</li>
+      <li>render the checkbox and the terminal note only when the preview says the task has something to free (<code>applicable</code>);</li>
+      <li>default the box to <code>freeable</code>, and list the reasons when it is not freeable;</li>
+      <li>on confirm:
+        <ul>
+          <li>ticked: send <code>freeWorktree</code> (<code>ifSafe</code> if the preview was freeable, <code>discardWork</code> if the operator ticked an unsafe box) and skip <code>api.kill</code>;</li>
+          <li>unticked: keep today's complete-then-kill.</li>
+        </ul></li>
+      <li>report <code>freeError</code> in the dialog's existing error slot, worded as above.</li>
+    </ul></li>
+  <li><strong>Docs.</strong> Describe the checkbox and its safety rule in <code>docs/dispatch-and-backlog.md</code> (near "When a task's agent goes away") and add a cross-reference from <code>docs/worktrees-and-checks.md</code> "Task worktree retention".</li>
+</ol>
+
+<h2>Tests</h2>
+<ul>
+  <li><strong><code>test/</code>, predicate:</strong>
+    <ul>
+      <li>clean and pushed → freeable;</li>
+      <li>uncommitted file → not freeable, even if the PR is merged;</li>
+      <li>local-only commit → not freeable;</li>
+      <li>local-only commit with a merged PR → freeable;</li>
+      <li>multi-repo with one unsafe checkout → not freeable, with that checkout's reason;</li>
+      <li>assigned task or pipeline task → not applicable.</li>
+    </ul></li>
+  <li><strong><code>test/</code>, route:</strong>
+    <ul>
+      <li><code>ifSafe</code> on a safe task → <code>done</code> and reclaimed;</li>
+      <li><code>ifSafe</code> on a tree that became dirty → <code>done</code>, tree kept, <code>freeError</code> set;</li>
+      <li><code>discardWork</code> → reclaimed;</li>
+      <li>reclaim refused → <code>done</code> kept, <code>freeError</code> set;</li>
+      <li>no option → body and behaviour unchanged.</li>
+    </ul></li>
+  <li><strong><code>e2e/</code> spec</strong> (required for the UI change):
+    <ul>
+      <li>the box renders checked for a clean task;</li>
+      <li>it renders unchecked with the reason for a dirty task;</li>
+      <li>it is absent for an assigned task;</li>
+      <li>confirming with it checked shows the slot back as available in the Worktrees view;</li>
+      <li>a refused free shows the error while the task reads done;</li>
+      <li><code>expectContentClearsBorder</code> on the dialog.</li>
+    </ul></li>
+</ul>
+
+<h2>Risks</h2>
+<div class="scroll"><table>
+  <tr><th>Risk</th><th>Mitigation</th></tr>
+  <tr><td>Default-on deletes work</td><td>The default is on only when the predicate proves safety, and the server re-checks at teardown under <code>ifSafe</code>.</td></tr>
+  <tr><td>Preview and teardown disagree</td><td><code>ifSafe</code> makes the server's check the one that decides; the preview only sets the default.</td></tr>
+  <tr><td>Merged-PR excuse is too broad</td><td>It excuses committed work only; uncommitted and untracked files always block.</td></tr>
+  <tr><td>Closing the terminal surprises the operator</td><td>The note under the checkbox says so.</td></tr>
+</table></div>
+
+<h2>Non-goals</h2>
+<ul>
+  <li>Freeing on automatic completions (merge, pipeline, mission).</li>
+  <li>Changing the 30-day retention rule.</li>
+  <li>Exposing the option to Foreman or MCP.</li>
+  <li>Adding a "free" action outside the Complete dialog (Clean up already exists).</li>
+</ul>
+</div>
+</body>
+</html>
