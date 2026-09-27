@@ -10,7 +10,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-shape-this-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { SHAPE_THIS_PATCH } = await import("../src/shared/task.ts");
+const { shapeThisPatch } = await import("../src/shared/task.ts");
 const { PLAN_VALIDATION_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -47,7 +47,7 @@ test("Shape this converts a swept task to shape and keeps its source link, label
     workflowId: null,
   }));
 
-  const out = await tasks.update("t1", SHAPE_THIS_PATCH);
+  const out = await tasks.update("t1", shapeThisPatch({}));
 
   assert.equal(out.ok, true, out.error);
   const stored = r.getTask("t1")!;
@@ -62,5 +62,10 @@ test("Shape this converts a swept task to shape and keeps its source link, label
 });
 
 test("the patch names only the kind and its review, so nothing else on the task can move", () => {
-  assert.deepEqual(Object.keys(SHAPE_THIS_PATCH).sort(), ["kind", "workflowId"]);
+  assert.deepEqual(Object.keys(shapeThisPatch({})).sort(), ["kind", "workflowId"]);
+});
+
+test("the patch carries the shape row from Settings when one is set", () => {
+  assert.deepEqual(shapeThisPatch({ shape: "wf-mine" }), { kind: "shape", workflowId: "wf-mine" });
+  assert.deepEqual(shapeThisPatch({ shape: null }), { kind: "shape", workflowId: null });
 });

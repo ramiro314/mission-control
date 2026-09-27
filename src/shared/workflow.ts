@@ -1,4 +1,5 @@
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
+import type { KindWorkflowDefaults } from "./task.ts";
 import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
@@ -13,10 +14,7 @@ import type {
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 import { repoAllowlisted } from "./allowlist.ts";
-import {
-  NO_MISTAKES_REVIEW_WORKFLOW_ID,
-  parseBuiltinWorkflowVersionId,
-} from "./builtin-workflow.ts";
+import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -3122,14 +3120,20 @@ export interface WorkflowPolicy {
   liveEnabled: boolean;
   repoAllowlist: string[];
   /**
-   * Workflow identity preselected for new single-agent dispatches, or null for none.
+   * The after-work Workflow each task kind preselects, overriding
+   * `BUILTIN_KIND_WORKFLOW_DEFAULTS` kind by kind. An absent kind follows the built-in, `null`
+   * is an explicit None, and a string is a workflow identity.
    *
    * The identity is resolved to its then-current immutable published version when the
    * dispatched session is bound. Keeping the workflow id here means publishing a new version
    * updates the default without rewriting machine settings, while each resulting binding still
-   * pins one immutable version.
+   * pins one immutable version. Resolve a kind through `taskDefaultWorkflowId`, never by
+   * reading this map directly.
+   *
+   * Replaced the single `defaultWorkflowId`, which is migrated on read by
+   * `StoredWorkflowPolicySchema` and refused on write.
    */
-  defaultWorkflowId: WorkflowId | null;
+  kindWorkflowDefaults: KindWorkflowDefaults;
   retention: WorkflowRetentionConfig;
   /**
    * Machine-wide consent for running a configured command from a workflow.
@@ -3195,10 +3199,9 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,
   repoAllowlist: [],
-  // Store the stable workflow identity, not today's version. A task resolves it to the
-  // newest immutable shipped version when its session is armed (v5 in this build), while
-  // an explicit null in Settings or the dispatch form remains an opt-out.
-  defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  // Every kind follows its built-in (`BUILTIN_KIND_WORKFLOW_DEFAULTS`) until an operator
+  // sets a row, so an untouched install dispatches exactly as it always has.
+  kindWorkflowDefaults: {},
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,

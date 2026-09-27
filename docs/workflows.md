@@ -297,7 +297,9 @@ affordance off, Archive and Publish are disabled, the settings rail does not tak
 there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
-bindable.
+bindable. To have new tasks use your copy, publish it and choose it for each task kind under
+**Settings → Workflows → Dispatch defaults** (see
+[Dispatch an agent](dispatch-and-backlog.md), under **After work**).
 
 Because it always exists, its name is reserved: creating or renaming a workflow to
 `No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is

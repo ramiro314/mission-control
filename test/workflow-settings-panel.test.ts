@@ -173,10 +173,13 @@ test("every control the search index points at is on the panel", () => {
   }
 });
 
-test("the settings panel offers active published Workflows as the dispatch default", () => {
+test("the settings panel offers one dispatch default per task kind", () => {
   const html = renderToStaticMarkup(
     withOverlayHost(createElement(WorkflowSettingsPanel, {
-      state: state(ANSWERED),
+      state: state({
+        ...ANSWERED,
+        config: { ...ANSWERED.config, kindWorkflowDefaults: { bugfix: "workflow-review", scout: null } },
+      }),
       onNavigate: () => {},
       foremanEnabled: true,
       workflows: [{
@@ -196,9 +199,18 @@ test("the settings panel offers active published Workflows as the dispatch defau
       }],
     })),
   );
-  assert.match(html, /Dispatch default/);
-  assert.match(html, /Default after-work Workflow for dispatched tasks/);
+  assert.match(html, /Dispatch defaults/);
+  for (const kind of ["ship", "bugfix", "plan", "shape", "scout", "chat"]) {
+    assert.match(html, new RegExp(`aria-label="Default after-work Workflow for ${kind} tasks"`));
+  }
+  assert.doesNotMatch(html, /for pipeline tasks/, "Conductor owns what runs after a pipeline");
   assert.match(html, /Release review · v2/);
+  // A row with nothing stored says what it resolves to; the built-in catalog is not in this
+  // fixture, so a built-in Workflow is named as unavailable and a None built-in as None.
+  assert.match(html, /Built-in default \(unavailable Workflow\)/);
+  assert.match(html, /Built-in default \(None\)/);
+  // The selected option of each row is the stored choice.
+  assert.match(html, /<option value="workflow-review" selected="">Release review · v2<\/option>/);
 });
 
 // The anchors have to survive the pre-poll render too: `settings-sidebar-render.test.ts`

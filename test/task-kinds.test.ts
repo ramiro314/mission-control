@@ -178,7 +178,7 @@ test("shape is planning work that Foreman never starts on its own", () => {
   assert.equal(isPlanningTaskKind("ship"), false);
   assert.equal(allowsBacklogAutopilot("shape"), false, "the interview needs a human to answer it");
   assert.equal(hasReviewableDiff("shape"), true);
-  assert.equal(taskDefaultWorkflowId("shape", "machine-default"), PLAN_VALIDATION_WORKFLOW_ID);
+  assert.equal(taskDefaultWorkflowId("shape", {}), PLAN_VALIDATION_WORKFLOW_ID);
 });
 
 test("chat has the approved conversational copy", () => {

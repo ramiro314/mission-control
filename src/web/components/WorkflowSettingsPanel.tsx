@@ -6,6 +6,12 @@ import type {
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
+import {
+  BUILTIN_KIND_WORKFLOW_DEFAULTS,
+  HARNESS_LAUNCHED_TASK_KINDS,
+  TASK_KIND_INFO,
+  taskDefaultWorkflowId,
+} from "@shared/task.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import { TestEvidenceReadinessCard } from "./TestEvidenceReadinessCard.tsx";
@@ -25,6 +31,10 @@ import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
 } from "../workflows/WorkflowConfirmModal.tsx";
+
+/** Select values for a dispatch-default row that follows its built-in, or is explicitly None. */
+const BUILTIN_OPTION = "__builtin";
+const NONE_OPTION = "__none";
 
 /**
  * Where workflow Commands are authored, as the hash the Library's own card produces.
@@ -643,48 +653,64 @@ export function WorkflowSettingsPanel({
           <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
         </div>
         <div className="sc-controls">
-          <ConsoleCard title="Dispatch default" anchor="workflows/dispatch-default">
+          <ConsoleCard title="Dispatch defaults" anchor="workflows/dispatch-default">
             <p className="settings-hint">
-              Arm every new single-agent dispatch with a published Workflow. The dispatch form
-              shows this choice inline and can override it per task.
+              The Workflow each kind of task arms after its work. The dispatch form shows this
+              choice inline and can override it per task. Built-in defaults follow Mission
+              Control; a Workflow you choose here stays until you change it.
             </p>
-            <div className="wf-default-row">
-              <span className="wf-default-flow" aria-hidden>task → workflow</span>
-              <Tooltip label="Workflow preselected for every new single-agent dispatch">
-                <select
-                  className="field-input wf-default-select"
-                  value={config?.defaultWorkflowId ?? ""}
-                  disabled={!config || busy}
-                  aria-label="Default after-work Workflow for dispatched tasks"
-                  onChange={(event) => {
-                    if (!config) return;
-                    void save({
-                      ...config,
-                      defaultWorkflowId: event.target.value || null,
-                    });
-                  }}
-                >
-                  <option value="">None</option>
-                  {publishedWorkflows.map((workflow) => (
-                    <option key={workflow.id} value={workflow.id}>
-                      {workflow.name} · v{workflow.publishedVersion}
-                    </option>
-                  ))}
-                  {config?.defaultWorkflowId
-                    && !publishedWorkflows.some(
-                      (workflow) => workflow.id === config.defaultWorkflowId,
-                    )
-                    && (
-                      <option value={config.defaultWorkflowId}>
-                        Unavailable Workflow
-                      </option>
-                    )}
-                </select>
-              </Tooltip>
+            <div className="wf-default-rows">
+              {HARNESS_LAUNCHED_TASK_KINDS.map((kind) => {
+                const label = TASK_KIND_INFO[kind].label;
+                const chosen = config?.kindWorkflowDefaults[kind];
+                const builtinId = BUILTIN_KIND_WORKFLOW_DEFAULTS[kind];
+                const builtinName = builtinId
+                  ? workflows.find((workflow) => workflow.id === builtinId)?.name ?? "unavailable Workflow"
+                  : "None";
+                const unavailable = typeof chosen === "string"
+                  && !publishedWorkflows.some((workflow) => workflow.id === chosen);
+                return (
+                  <div className="wf-default-row" key={kind}>
+                    <span className="wf-default-kind" aria-hidden>{label}</span>
+                    <Tooltip label={`Workflow preselected for every new ${label} task`}>
+                      <select
+                        className="field-input wf-default-select"
+                        value={chosen === undefined ? BUILTIN_OPTION : chosen ?? NONE_OPTION}
+                        disabled={!config || busy}
+                        aria-label={`Default after-work Workflow for ${label} tasks`}
+                        onChange={(event) => {
+                          if (!config) return;
+                          const { [kind]: _previous, ...rest } = config.kindWorkflowDefaults;
+                          const value = event.target.value;
+                          void save({
+                            ...config,
+                            kindWorkflowDefaults: value === BUILTIN_OPTION
+                              ? rest
+                              : { ...rest, [kind]: value === NONE_OPTION ? null : value },
+                          });
+                        }}
+                      >
+                        <option value={BUILTIN_OPTION}>Built-in default ({builtinName})</option>
+                        <option value={NONE_OPTION}>None</option>
+                        {publishedWorkflows.map((workflow) => (
+                          <option key={workflow.id} value={workflow.id}>
+                            {workflow.name} · v{workflow.publishedVersion}
+                          </option>
+                        ))}
+                        {unavailable && <option value={chosen}>Unavailable Workflow</option>}
+                      </select>
+                    </Tooltip>
+                  </div>
+                );
+              })}
             </div>
-            {config?.defaultWorkflowId && !foremanEnabled && (
+            {config
+              && HARNESS_LAUNCHED_TASK_KINDS.some(
+                (kind) => taskDefaultWorkflowId(kind, config.kindWorkflowDefaults) !== null,
+              )
+              && !foremanEnabled && (
               <p className="settings-warn wf-default-warning">
-                Foreman is off. Turn it on before dispatching with this default, or choose None
+                Foreman is off. Turn it on before dispatching with these defaults, or choose None
                 in the dispatch form.
               </p>
             )}

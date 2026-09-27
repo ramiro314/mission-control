@@ -63,7 +63,7 @@ export type DispatchDraft = {
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
   /**
-   * After-work Workflow choice. Undefined follows the machine dispatch default on a fresh
+   * After-work Workflow choice. Undefined follows the task kind's dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
   workflowId: string | null | undefined;
