@@ -271,7 +271,7 @@ server.registerTool(
                   recommended: z
                     .boolean()
                     .optional()
-                    .describe("Marks a suggested choice; does not preselect"),
+                    .describe("Marks a suggested choice; the form opens with it preselected, so an untouched Submit returns it"),
                 }),
               )
               .min(1),
@@ -493,7 +493,7 @@ server.registerTool(
             recommended: z
               .boolean()
               .optional()
-              .describe("Marks a suggested choice; does not preselect"),
+              .describe("Marks a suggested choice; the form opens with it preselected, so an untouched Submit returns it"),
           }),
         )
         .optional()

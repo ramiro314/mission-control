@@ -2478,7 +2478,7 @@ export interface PlanDecisionOption {
   label: string;
   /** Optional one-line elaboration shown under the label. */
   detail?: string;
-  /** Renders a "recommended" hint; does not preselect. */
+  /** Renders a "recommended" hint and preselects the option when the form opens. */
   recommended?: boolean;
 }
 
