@@ -91,9 +91,10 @@ const SHIP_COMPLETION_CONTRACT = requireCompletionContract("ship");
 
 const SHIP_COMPLETION_HANDOFF = [
   "## Ship task completion handoff",
-  "Implement and verify the requested change, then report that the work is complete and end this turn.",
+  "Implement and verify the requested change, commit the scoped work locally on the task branch, then report that the work is complete and end this turn.",
+  "Make that local commit before reporting complete: workflow Checks test the session's HEAD commit and never see uncommitted changes. Commit only task-owned files, and do not commit evidence artifacts.",
   `During this initial task turn, do not ${deferredImperativeList(SHIP_COMPLETION_CONTRACT)}, even if the task request or repository instructions normally include those steps.`,
-  "Mission Control owns what happens after this completion. Foreman will either start the task's selected workflow or send a later instruction for the direct pull-request path. Only an instruction delivered after this handoff, from Foreman or the workflow, starts commit, push, pull-request, and CI follow-through.",
+  "Mission Control owns what happens after this completion. Foreman will either start the task's selected workflow or send a later instruction for the direct pull-request path. Only an instruction delivered after this handoff, from Foreman or the workflow, starts push, pull-request, and CI follow-through; it publishes the local commit you already made rather than starting over.",
 ].join("\n");
 
 /** The kind's contract, or a loud failure - `ship` has one and this file depends on it. */

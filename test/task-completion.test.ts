@@ -112,7 +112,7 @@ test("the deferred actions are one append-only list, not a wording", () => {
   // on, so re-wording an imperative is free and renaming an id is not.
   assert.deepEqual(
     contract.deferred.map((action) => action.id),
-    ["commit", "push", "pull-request", "review", "ci"],
+    ["push", "pull-request", "review", "ci"],
   );
 });
 
@@ -329,4 +329,24 @@ test("unbound plans keep skill-owned PR creation and other kinds keep their cont
   assert.match(delivered, /phased-plan skill owns.*pull request/);
   assert.match(delivered, /get_plan_publication_context/);
   assert.doesNotMatch(delivered, /## Plan task completion handoff/);
+});
+
+test("the ship handoff commits locally before completion and defers only publication", () => {
+  // Workflow Checks run against the session's captured HEAD, never the working tree, so an
+  // uncommitted change hands them the base commit (metalmind #283). The local commit is
+  // therefore part of completion; push, PR, review and CI stay deferred.
+  const contract = taskCompletionContract("ship")!;
+  assert.ok(!contract.deferred.some((action) => action.id === "commit"));
+  assert.ok(contract.complete.some((requirement) => /committed locally/.test(requirement)));
+  const delivered = withTaskKindContract(mkTask(), "Fix the retry defect");
+  const commit = delivered.indexOf("commit the scoped work locally on the task branch");
+  const noPush = delivered.indexOf("do not push, create or update a pull request");
+  assert.ok(commit > 0 && noPush > commit, `commit must precede the no-push rule:\n${delivered}`);
+  assert.match(delivered, /publishes the local commit you already made/);
+  // The dashboard prints the delivered intent into the console card, and e2e specs read the
+  // word "working" there as the agent's busy state (session-interrupt.spec.ts).
+  assert.doesNotMatch(delivered.slice(delivered.indexOf("## Ship task completion handoff")), /working/i);
+  const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));
+  assert.match(prompt, /committed locally on the task branch/);
+  assert.doesNotMatch(prompt, /- committing the work/);
 });

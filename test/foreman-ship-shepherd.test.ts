@@ -139,7 +139,7 @@ test("classifies empty, ambiguous, held, and direct-handoff recovery without wid
     assert.equal(empty.reason, "idle_empty");
     assert.equal(empty.needsReview, false);
     assert.match(empty.payload ?? "", /^This invited task is still open/);
-    assert.match(empty.payload ?? "", /Do not commit, push, create a pull request/);
+    assert.match(empty.payload ?? "", /commit the scoped work locally on the task branch.*Do not push, create a pull request/);
   }
 
   const ambiguous = decideShipShepherd(input({ diffHasChanges: true }));
@@ -158,7 +158,12 @@ test("classifies empty, ambiguous, held, and direct-handoff recovery without wid
   assert.equal(held.kind, "recover");
   if (held.kind === "recover") {
     assert.equal(held.reason, "held_gaps");
+    assert.equal(held.needsReview, false);
     assert.match(held.payload ?? "", /test\/widget\.test\.ts: Cover the retry branch/);
+    // Checks test HEAD, so a repair must land in a local commit, but publication stays deferred.
+    assert.match(held.payload ?? "", /Commit the scoped work locally on the task branch, but do not push, create a pull request/);
+    assert.match(held.payload ?? "", /verified and committed locally, report completion/);
+    assert.doesNotMatch(held.payload ?? "", /Do not commit/);
   }
 
   const handoffDecision = decision("direct_handoff", 1);
@@ -175,8 +180,14 @@ test("classifies empty, ambiguous, held, and direct-handoff recovery without wid
   assert.equal(handoff.kind, "recover");
   if (handoff.kind === "recover") {
     assert.equal(handoff.reason, "direct_handoff_missing_pr");
+    assert.equal(handoff.needsReview, false);
     assert.equal(handoff.generation, 2);
     assert.match(handoff.payload ?? "", /same branch/);
+    // The handoff already committed locally, so the direct-PR path publishes that commit
+    // and only commits what is still uncommitted, never a duplicate.
+    assert.match(handoff.payload ?? "", /push the task's existing local commit/);
+    assert.match(handoff.payload ?? "", /committing only task-owned changes not yet committed, rather than making a duplicate commit/);
+    assert.doesNotMatch(handoff.payload ?? "", /finish the already-authorized commit/);
   }
 });
 
@@ -762,4 +773,35 @@ test("bugfix shares ship recovery and its live-delivery boundaries", () => {
       session: session({ task: mkTaskSummary({ id: "task-1", kind, status: "done" }) }),
     })), { kind: "skip", why: "no running managed task is bound" });
   }
+});
+
+test("fixed recovery prompts that name a local commit never pass through the recovery reviewer's guard", () => {
+  // `forbiddenRecoveryInstruction` rejects any text naming "commit", and it runs only on the
+  // model reviewer's instruction, which the worker requests only when `needsReview` is true.
+  // The fixed prompts now tell the session to commit locally, so they must stay on the
+  // no-review path: a fixed prompt that went through review would be rejected.
+  const cases = [
+    decideShipShepherd(input()),
+    decideShipShepherd(input({ queue: queue({ promptedDecision: decision("held") }), diffHasChanges: true })),
+    decideShipShepherd(input({
+      session: session({ workCycle: {
+        logicalKey: NOTE_KEY,
+        generation: 2,
+        active: false,
+        completedAt: NOW - 21 * 60_000,
+        updatedAt: NOW - 21 * 60_000,
+      } }),
+      queue: queue({ promptedConsumedGeneration: 1, promptedDecision: decision("direct_handoff", 1) }),
+    })),
+  ];
+  for (const decided of cases) {
+    assert.equal(decided.kind, "recover");
+    if (decided.kind !== "recover") continue;
+    assert.ok(decided.payload, `${decided.reason} carries a fixed prompt`);
+    assert.equal(forbiddenRecoveryInstruction(decided.payload), true, `${decided.reason} names a commit`);
+    assert.equal(decided.needsReview, false, `${decided.reason} must bypass the recovery reviewer`);
+  }
+  // The only reviewed reason carries no fixed prompt; the reviewer's own text replaces it.
+  const ambiguous = decideShipShepherd(input({ diffHasChanges: true }));
+  assert.ok(ambiguous.kind === "recover" && ambiguous.needsReview && ambiguous.payload === null);
 });
