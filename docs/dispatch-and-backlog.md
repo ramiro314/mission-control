@@ -282,10 +282,10 @@ The rows reach every creation path that leaves the Workflow unnamed: the dispatc
 `POST /api/tasks` without `workflowId`, task-source sweeps, and the backlog's **Shape this**.
 An explicit Workflow or an explicit **None** always wins.
 
-Choosing a kind in the dispatch form preselects that kind's row. Returning to the kind the
-form opened on restores the selection it opened with, without waiting for the settings fetch.
-Choosing an after-work Workflow by hand ends that: a later kind switch leaves the choice
-alone. Rows are defaults, not locks: choose **None** to opt out, or select another published
+Choosing a kind in the dispatch form preselects that kind's row. Returning to **ship**
+restores the selection a switch put aside, without waiting for the settings fetch. A manual
+after-work choice clears that restoration, so returning to ship does not overwrite it. Rows
+are defaults, not locks: choose **None** to opt out, or select another published
 workflow. Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff,
 PR follow-through, and recovery; its default workflow is the difference.
 

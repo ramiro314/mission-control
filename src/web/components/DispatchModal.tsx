@@ -254,9 +254,7 @@ function repoCollision(d: DispatchDraft): string | null {
  * default-then-scout-then-ship reversal into a no-op.
  */
 const NO_STASH = Symbol("no-stash");
-type StashedWorkflowId =
-  | { kind: TaskKind; workflowId: DispatchDraft["workflowId"] }
-  | typeof NO_STASH;
+type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -1347,8 +1345,7 @@ function DispatchModal({
   }
 
   /**
-   * The after-work choice the form held before its first kind switch, and the kind it held it
-   * under, so switching back to that kind hands it straight back.
+   * What a switch away from Ship put aside, so switching back can hand it straight back.
    *
    * A ref rather than draft state: it is scratch belonging to one uninterrupted sequence
    * of clicks, not something a shelved task should carry. Losing it on close is correct -
@@ -1357,22 +1354,35 @@ function DispatchModal({
    * is what keeps an edit's stored Workflow safe while the config is still loading.
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
-  /** Set once the operator chooses an after-work Workflow; from then on a kind switch leaves it alone. */
-  const choseAfterWork = useRef(false);
   const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
 
   /**
-   * A kind switch arms that kind's dispatch default (Settings -> Workflows -> Dispatch
-   * defaults) until the operator makes an explicit after-work choice.
+   * A kind switch arms that kind's row under Settings -> Workflows -> Dispatch defaults.
+   *
+   * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
+   * returning hands it back, unless the operator chose an after-work Workflow by hand in
+   * between (which clears the stash, so their choice stands). Every other kind arms its row.
+   * Moving between two kinds with no diff whose rows agree leaves the choice alone, so a
+   * Workflow picked by hand on chat survives a hop to scout.
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
-    if (kind === draft.kind || choseAfterWork.current) return {};
-    if (stashedWorkflowId.current === NO_STASH) {
-      stashedWorkflowId.current = { kind: draft.kind, workflowId: draft.workflowId };
+    if (kind === draft.kind) return {};
+    if (kind === "ship") {
+      const stashed = stashedWorkflowId.current;
+      stashedWorkflowId.current = NO_STASH;
+      return stashed === NO_STASH ? {} : { workflowId: stashed };
     }
-    const stashed = stashedWorkflowId.current;
-    if (stashed.kind === kind) return { workflowId: stashed.workflowId };
-    return { workflowId: taskDefaultWorkflowId(kind, workflowConfig?.kindWorkflowDefaults ?? {}) };
+    const rows = workflowConfig?.kindWorkflowDefaults ?? {};
+    const target = taskDefaultWorkflowId(kind, rows);
+    if (
+      !hasReviewableDiff(kind)
+      && !hasReviewableDiff(draft.kind)
+      && target === taskDefaultWorkflowId(draft.kind, rows)
+    ) {
+      return {};
+    }
+    if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+    return { workflowId: target };
   }
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
@@ -1540,7 +1550,7 @@ function DispatchModal({
       // the work?" and answering IS choosing for yourself, even when the answer is the row
       // that was already lit. Taking None at that question therefore stands, and a later
       // kind switch leaves it alone.
-      choseAfterWork.current = true;
+      stashedWorkflowId.current = NO_STASH;
       update({ workflowId });
     };
     const defaultName = defaultWorkflow
@@ -2929,7 +2939,7 @@ function DispatchModal({
                   if (guidedTakeValue("afterWork", value)) return;
                   // Chosen by hand, so a later kind switch must not hand back what scout
                   // put aside and revert this underneath the operator.
-                  choseAfterWork.current = true;
+                  stashedWorkflowId.current = NO_STASH;
                   update({
                     workflowId:
                       value === "__default"
