@@ -1,4 +1,6 @@
-import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
+import {
+  canRefreshSourceTask, localSourceContent, sameSourceContent, type SourceBlocker, type SourceContent,
+} from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { inTransaction } from "./db.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -44,7 +46,7 @@ import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
-import { dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
+import { dependencyInputOf, dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
 import {
   dispatchHasNoProvisionedResources,
   isPlanningTaskKind,
@@ -3841,7 +3843,14 @@ export class TaskManager {
     };
   }
 
-  /** Apply only source-owned content, atomically with its accepted comparison baseline. */
+  /**
+   * Apply only source-owned content, atomically with its accepted comparison baseline.
+   *
+   * With `relates` (the source's kind can relate), the content's `blockedBy` is the
+   * `dependencies` group and is compared and applied too: see `sourceSyncedDependencies`.
+   * A synced edge that would close a cycle refuses the whole update with `cycle: true`, so
+   * nothing is half-applied and the caller can say why.
+   */
   async applySourceContent(
     id: string,
     source: TaskSourceRef,
@@ -3849,25 +3858,76 @@ export class TaskManager {
     content: SourceContent,
     persist: () => void,
     stillCurrent: () => boolean,
-  ): Promise<Ok> {
+    relates = false,
+  ): Promise<Ok & { cycle?: boolean }> {
     await this.titling.get(id);
     const task = this.registry.getTask(id);
     if (!task || !canRefreshSourceTask(task) || this.assigningTasks.has(id)
       || taskWorkEpisodeForTask(id) || historicalTaskWorkEpisodeBindingsForTask(id).length > 0) {
       return { ok: false, error: "the task has started, is being assigned, or is no longer in the backlog" };
     }
+    const local = localSourceContent(task, relates ? { sourceId: source.sourceId, tasks: this.registry.listTasks() } : null);
     if (task.source?.sourceId !== source.sourceId || task.source.externalId !== source.externalId
-      || !sameSourceContent(task, expected) || !stillCurrent()) {
+      || !sameSourceContent(local, expected) || !stillCurrent()) {
       return { ok: false, error: "the task or source changed; sweep again before applying this update" };
     }
-    const changed = !sameSourceContent(task, content);
-    const next = { ...task, ...content, updatedAt: Date.now() };
+    const changed = !sameSourceContent(local, content);
+    let dependencies = task.dependencies;
+    if (relates && content.blockedBy && !sameSourceContent({ ...local, blockedBy: content.blockedBy }, local)) {
+      try {
+        dependencies = this.sourceSyncedDependencies(task, source.sourceId, content.blockedBy);
+      } catch (error) {
+        if (error instanceof TaskDependencyError) return { ok: false, cycle: true, error: error.message };
+        throw error;
+      }
+    }
+    const { blockedBy: _blockedBy, ...fields } = content;
+    const next: Task = { ...task, ...fields, dependencies, updatedAt: Date.now() };
     const displaced = inTransaction(() => {
       persist();
       return changed ? dbUpsertTask(next) : [];
     });
     if (changed) this.registry.publishPersistedTask(next, displaced);
     return { ok: true };
+  }
+
+  /**
+   * The task's edges once its synced blockers are `blockedBy`.
+   *
+   * Only edges that stand for this source's items are in play (see `localSourceContent`);
+   * every other edge is kept as it is. A blocker already present keeps its edge. A new one
+   * becomes a task edge when a task linked to it may take one (`acceptsNewTaskEdgeTo`, the
+   * rule ingest uses) and a `source` edge otherwise. The result goes through the same
+   * resolver as an operator's edit, so a synced task edge that would close a cycle throws.
+   */
+  private sourceSyncedDependencies(task: Task, sourceId: string, blockedBy: SourceBlocker[]): TaskDependency[] {
+    const tasks = this.registry.listTasks();
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const refOf = (d: TaskDependency): string | null => {
+      if (d.type === "source" && d.sourceId === sourceId) return d.externalId;
+      if (d.type === "task") {
+        const linked = byId.get(d.taskId)?.source;
+        if (linked?.sourceId === sourceId) return linked.externalId;
+      }
+      return null;
+    };
+    const wanted = new Map(blockedBy.map((b) => [b.externalId, b]));
+    const kept = task.dependencies.filter((d) => {
+      const ref = refOf(d);
+      return ref === null || wanted.has(ref);
+    });
+    const present = new Set(kept.map(refOf));
+    const inputs: TaskDependencyInput[] = kept.map(dependencyInputOf);
+    const added: TaskSourceRef[] = [];
+    for (const blocker of wanted.values()) {
+      if (present.has(blocker.externalId) || blocker.externalId === task.source?.externalId) continue;
+      const linked = tasks.find((t) => t.id !== task.id && t.source?.sourceId === sourceId
+        && t.source.externalId === blocker.externalId && this.acceptsNewTaskEdgeTo(t.id));
+      if (linked) inputs.push({ type: "task", taskId: linked.id });
+      else added.push({ sourceId, externalId: blocker.externalId, url: blocker.url });
+    }
+    const resolved = this.resolveDependencies(inputs, task.id, task.dependencies);
+    return [...resolved, ...this.sourceDependencyEdges(added, resolved)];
   }
 
   /**

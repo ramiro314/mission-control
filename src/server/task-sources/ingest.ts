@@ -1,4 +1,4 @@
-import { sourceContent } from "@shared/task-source-sync.ts";
+import { localSourceContent } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./sync-store.ts";
 import { DispatchSchema } from "@shared/protocol.ts";
 import type {
@@ -12,6 +12,7 @@ import { resolveTaskRepoRoot, type TaskRepoRoot } from "../repos.ts";
 import type { TaskManager } from "../tasks.ts";
 import type { Task } from "@shared/types.ts";
 import { dependenciesFor, orderByBlockers } from "./relations.ts";
+import { canRelateTo } from "./index.ts";
 
 // Everything a task source does NOT get to do. A source returns candidates; this decides
 // which of them become new rows. Optional refresh of existing rows lives in sync.ts.
@@ -169,7 +170,10 @@ export async function ingestSweep(
         saveSourceSync(task.id, inst.id, {
           origin: "imported", externalId: c.ref.externalId,
           defaults: { priority: inst.defaults.priority, labels: inst.defaults.labels },
-          baseline: sourceContent(task), pending: null, conflicts: [],
+          // The edges just made are the dependencies group's baseline.
+          baseline: localSourceContent(task, canRelateTo(inst) ? { sourceId: inst.id,
+            tasks: dependencies.length > 0 ? linkedTasks() : [] } : null),
+          pending: null, conflicts: [],
           checkedAt: Date.now(), appliedAt: Date.now(), error: null,
         });
       });

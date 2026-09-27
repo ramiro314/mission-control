@@ -1538,9 +1538,15 @@ filed. It uses the existing sweep schedule, and **Sweep now** performs the same 
 when the schedule is paused. Leaving the setting off preserves import-only behavior.
 
 The same task keeps its ID and backlog position. The source can update its title and generated
-intent together, mapped priority, and copied labels where the provider offers them. Agent,
-model, task kind, workflow, dependencies, repositories, backlog position and autopilot eligibility
-remain local. Source defaults are captured when an item is imported; changing those defaults
+intent together, mapped priority, and copied labels where the provider offers them. A source
+whose kind can relate (GitHub today) also updates **dependencies**: the task's edges that stand
+for the source's own items, a `source` edge to an item or a task edge to the task linked to one,
+follow the item's blocking links. A new blocker becomes a task edge when a task is linked to it
+and a `source` edge otherwise, exactly as on import. Every other edge (a session, a task with no
+link to this source, another source's item) is local and never touched. A synced edge that would
+close a cycle is refused like a hand edit: the whole update is held, the task is kept as it is,
+and the reason is shown beside it until a later sweep finds the cycle gone. Agent, model, task
+kind, workflow, repositories, backlog position and autopilot eligibility remain local. Source defaults are captured when an item is imported; changing those defaults
 does not rewrite previously imported tasks. The existing description limit still applies:
 GitHub and Jira carry at most 4,000 characters of the issue description into the intent.
 
@@ -1552,8 +1558,12 @@ Independent, nonconflicting fields can still update. A review that changed while
 refused so an old click cannot overwrite newer work.
 
 Tasks imported before this feature have no baseline or reliable import-versus-push provenance.
-Sweep once, then review each older task before adopting it. Newly pushed tasks are excluded from
-automatic inbound updates. Turning the setting off retains existing baselines and reviews, but
+Sweep once, then review each older task before adopting it. A task imported before dependencies
+joined the sync has no dependencies baseline: when its local and source blockers already agree
+they become the baseline, and otherwise that group alone is flagged for review and never applied.
+Newly pushed tasks take only the dependencies group, under the same rule: their title, intent,
+priority and labels were written here and stay local. Mission Control never writes dependency
+changes back upstream from this setting. Turning the setting off retains existing baselines and reviews, but
 prevents applying them until updates are enabled again.
 
 Refresh reads linked issues independently of the discovery filter, including closed GitHub issues
