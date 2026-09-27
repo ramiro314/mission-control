@@ -6,8 +6,8 @@ import { type TaskKind } from "./types.ts";
  *
  * WHY THIS MODULE EXISTS
  *
- * A dispatched `ship` task is delivered a completion handoff telling it to stop before
- * commit, push, pull request and CI - Mission Control owns those. Its durable objective,
+ * A dispatched `ship` task is delivered a completion handoff telling it to commit locally and
+ * stop before push, pull request and CI - Mission Control owns those. Its durable objective,
  * written by a human, very often still says "open a reviewable pull request". Prompted
  * completion then asks a tool-less verifier "is the durable objective satisfied?", the
  * verifier reads an objective demanding a PR that nobody opened, answers no, and the
@@ -68,10 +68,13 @@ const SHIP_CONTRACT: TaskCompletionContract = {
     "the requested implementation is done",
     "repository documentation the change requires is updated",
     "the focused tests and verification the change requires have been run",
+    "the scoped work is committed locally on the task branch, so HEAD holds the change",
     "workflow evidence registration the task asked for is done when an active Persona workflow accepts it",
   ],
+  // Commit is deliberately NOT deferred: workflow Check nodes run against the session's
+  // captured HEAD commit and never the working tree, so an uncommitted change is invisible
+  // to them. The local commit belongs to this turn; publishing it does not.
   deferred: [
-    { id: "commit", imperative: "commit", noun: "committing the work" },
     { id: "push", imperative: "push", noun: "pushing a branch" },
     {
       id: "pull-request",
@@ -99,9 +102,9 @@ const PLAN_CONTRACT: TaskCompletionContract = {
     "the verification the planning work requires has been run",
     "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
   ],
-  // Plans need durable artifacts before scheduling. Commit/push are deliberately retained.
+  // Plans need durable artifacts before scheduling. Push is deliberately retained.
   deferred: [
-    ...SHIP_CONTRACT.deferred.filter((action) => !["commit", "push"].includes(action.id)),
+    ...SHIP_CONTRACT.deferred.filter((action) => action.id !== "push"),
     { id: "merge", imperative: "merge the pull request", noun: "merging the pull request" },
   ],
 };
@@ -146,7 +149,7 @@ export function workflowEvidenceRequirement(eligible: boolean): string {
     : "No active Persona workflow accepts evidence. Workflow evidence registration is not required for this handoff. Do not request it or treat its absence as a blocking gap, even if an earlier instruction or review requested it. Implementation, required documentation, and focused verification are still required.";
 }
 
-/** "commit, push, create or update a pull request, … or wait for pull-request CI". */
+/** "push, create or update a pull request, … or wait for pull-request CI". */
 export function deferredImperativeList(contract: TaskCompletionContract): string {
   return joinWithOr(contract.deferred.map((action) => action.imperative));
 }

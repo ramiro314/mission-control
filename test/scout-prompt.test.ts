@@ -175,7 +175,8 @@ test("a ship task hands completed implementation back before any pull-request wo
   assert.ok(authorization >= task.intent.length, "the shared authorization follows the intent");
   assert.ok(handoff > authorization, "the narrower ship boundary follows the authorization");
   assert.match(delivered, /report that the work is complete and end this turn/);
-  assert.match(delivered, /do not commit, push, create or update a pull request/);
+  assert.match(delivered, /commit the scoped work locally on the task branch/);
+  assert.match(delivered, /do not push, create or update a pull request/);
   assert.match(delivered, /Foreman will either start the task's selected workflow/);
   assert.match(delivered, /Only an instruction delivered after this handoff/);
 });

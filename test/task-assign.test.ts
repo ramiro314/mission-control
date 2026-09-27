@@ -1261,7 +1261,7 @@ test("assigned scout and ship prompts keep intent first and receive the shared a
       assert.doesNotMatch(typed!, /docs\/reports\/<slug>\/report\.html/);
       assert.match(typed!, /Ship task completion handoff/);
       assert.match(typed!, /report that the work is complete and end this turn/);
-      assert.match(typed!, /do not commit, push, create or update a pull request/);
+      assert.match(typed!, /do not push, create or update a pull request/);
     }
   }
 });
