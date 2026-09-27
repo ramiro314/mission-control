@@ -1638,13 +1638,30 @@ test("the next-up mark opens the planner, which quotes Foreman's own reason", as
   // test drives the sub-460px case this browser cannot reach - the drawer row's own fixed
   // columns collapse the mark out of view long before the window gets that small - so what
   // is checked here is the clamp actually engaging on a size a person can drag to.
+  //
+  // The mark itself must be whole first. Its rail clips, and a ready row's ops column is
+  // wide enough to squeeze that rail below the mark's own width - drawn as "ext up", and
+  // a click that has to scroll the rail to reach it fires a scroll that shuts the panel.
+  // 770 is the other squeeze: just above the breakpoint where the title column is widest.
+  const markIsWhole = async (): Promise<void> => {
+    const mark = (await nextUpTrigger(dashboard).boundingBox())!;
+    const rail = (await backlog.locator(".line-bl-row.is-next .line-bl-marks").boundingBox())!;
+    expect(mark.x).toBeGreaterThanOrEqual(rail.x);
+    expect(mark.x + mark.width).toBeLessThanOrEqual(rail.x + rail.width);
+  };
+  await dashboard.setViewportSize({ width: 770, height: 720 });
+  await markIsWhole();
   await dashboard.setViewportSize({ width: 640, height: 720 });
   await expect(planner(dashboard)).toHaveCount(0);
+  await markIsWhole();
+  await shoot(dashboard, "backlog-narrow-row");
   await nextUpTrigger(dashboard).click();
   const narrowBox = (await planner(dashboard).boundingBox())!;
   expect(narrowBox.x).toBeGreaterThanOrEqual(0);
   expect(narrowBox.x + narrowBox.width).toBeLessThanOrEqual(640);
   await expect(planner(dashboard).getByRole("button", { name: "Launch now" })).toBeVisible();
+  await expect(planner(dashboard)).toContainText(REASON);
+  await shoot(dashboard, "backlog-planner-narrow");
 });
 
 test("the planner explains an unplanned head instead of implying Foreman chose it", async ({
