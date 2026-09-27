@@ -39,6 +39,12 @@ const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
 const originalPath = process.env.PATH;
 const nodeBinDir = join(home, "bin");
 process.env.HARNESS_HOME = join(home, "state");
+// The fake `node` must outrank every real one. The executable locator ranks per-user version
+// managers (mise, asdf, volta shims) ABOVE the inherited PATH, so prepending to PATH alone lets
+// a developer's mise-installed Node answer the installer's probe instead of the fixture's -
+// green on a clean CI runner, red on any machine with mise. The operator directory is ranked
+// first of all.
+process.env.MISSION_EXECUTABLE_PATHS = nodeBinDir;
 // Nothing on PATH, so the probe reports "not installed" deterministically - which is also
 // the state every machine without conductor is in, and therefore the one the panel's
 // detection card has to be right about.
