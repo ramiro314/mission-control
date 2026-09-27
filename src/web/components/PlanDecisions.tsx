@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
 import { formatResponse, selectedOptions } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
@@ -23,14 +23,59 @@ export function decisionChoiceKey(decisionId: string, optionId: string): string 
  * like one that never asked. Blank "Other" text normalizes to null so "typed nothing" and
  * "typed and cleared it" are the same record.
  */
-function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDecisionAnswer[] {
+function toDecisionAnswers(
+  decisions: PlanDecision[],
+  answers: Answers,
+  draftOthers: ReadonlyMap<string, string> = new Map(),
+): PlanDecisionAnswer[] {
   return decisions.map((d) => {
     const a = answers[d.id];
+    const other = a?.other.trim() ? a.other.trim() : null;
     return {
       decisionId: d.id,
       selected: a?.selected ?? [],
-      other: a?.other.trim() ? a.other.trim() : null,
+      other,
+      // Provenance: this Other text is still exactly Foreman's draft. Edited by a single
+      // character, it is the human's words, and it goes out unmarked.
+      ...(other !== null && draftOthers.get(d.id) === other ? { foremanDraftAccepted: true } : {}),
     };
+  });
+}
+
+/**
+ * The recommended opening state with Foreman's draft laid over it, decision by decision.
+ *
+ * A decision the draft does not mention keeps the agent's recommendation, so a draft that
+ * answers one question of five changes one question of five.
+ */
+export function draftedAnswers(
+  decisions: PlanDecision[],
+  draft: readonly PlanDecisionAnswer[] | null | undefined,
+): Answers {
+  const answers = recommendedAnswers(decisions);
+  for (const d of draft ?? []) {
+    const decision = decisions.find((x) => x.id === d.decisionId);
+    if (!decision) continue;
+    const offered = new Set(decision.options.map((o) => o.id));
+    const selected = d.selected.filter((id) => offered.has(id));
+    answers[d.decisionId] = {
+      selected: decision.multiSelect ? selected : selected.slice(0, 1),
+      other: decision.allowOther ? (d.other ?? "") : "",
+    };
+  }
+  return answers;
+}
+
+/** Whether two form states would submit the same answer. */
+function sameAnswers(decisions: PlanDecision[], a: Answers, b: Answers): boolean {
+  return decisions.every((d) => {
+    const x = a[d.id] ?? { selected: [], other: "" };
+    const y = b[d.id] ?? { selected: [], other: "" };
+    return (
+      x.other.trim() === y.other.trim() &&
+      x.selected.length === y.selected.length &&
+      x.selected.every((id) => y.selected.includes(id))
+    );
   });
 }
 
@@ -61,10 +106,62 @@ function selectionSummary(decisions: PlanDecision[], payload: PlanDecisionAnswer
   const parts = decisions.flatMap((d, i) => {
     const a = payload[i];
     const labels = selectedOptions(d, a).map((o) => o.label);
-    if (a?.other) labels.push(`Other: ${a.other}`);
+    if (a?.other) labels.push(`Other: ${a.other}${a.foremanDraftAccepted ? " (Foreman's draft)" : ""}`);
     return labels.length ? [labels.join(", ")] : [];
   });
   return parts.length ? `Selected: ${parts.join(" · ")}` : null;
+}
+
+/**
+ * Where Foreman's draft stands on one open form - one state, not flags compared by hand.
+ *
+ * - `none`: no draft has been applied; the form shows the recommendation (or nothing).
+ * - `applied`: the form was filled from `draft`. `edited` records whether the human has
+ *   changed anything since; the banner and its revert stay either way.
+ * - `set-aside`: the human reverted, or took the form over before any draft arrived. No
+ *   draft is applied to this form again.
+ */
+export type DraftState =
+  | { kind: "none" }
+  | { kind: "applied"; draft: readonly PlanDecisionAnswer[]; key: string; edited: boolean }
+  | { kind: "set-aside" };
+
+function keyOf(draft: readonly PlanDecisionAnswer[] | null | undefined): string | null {
+  return draft?.length ? JSON.stringify(draft) : null;
+}
+
+/** The state a form opens in: applied when it opens with a draft, else none. */
+export function openingDraftState(draft: readonly PlanDecisionAnswer[] | null | undefined): DraftState {
+  const key = keyOf(draft);
+  return key && draft ? { kind: "applied", draft, key, edited: false } : { kind: "none" };
+}
+
+/** A hand edit: a form with no draft yet is the human's now; an applied one is edited. */
+export function draftAfterEdit(state: DraftState): DraftState {
+  if (state.kind === "none") return { kind: "set-aside" };
+  if (state.kind === "applied" && !state.edited) return { ...state, edited: true };
+  return state;
+}
+
+/**
+ * What a change in the incoming draft does to an open form, or null for nothing.
+ *
+ * A draft is applied only to a form nobody has touched: a new one lands, a changed one
+ * replaces it, and a vanished one (the invite was withdrawn) puts the recommendation back
+ * rather than leaving unlabelled Foreman answers. Once the human has edited an applied
+ * draft, a change to it sets the draft aside and leaves their answers exactly as they are.
+ */
+export function draftOnChange(
+  state: DraftState,
+  incoming: readonly PlanDecisionAnswer[] | null | undefined,
+): { next: DraftState; answers: "drafted" | "recommended" | "kept" } | null {
+  const key = keyOf(incoming);
+  if (state.kind === "set-aside") return null;
+  if (state.kind === "applied" && state.key === key) return null;
+  if (state.kind === "applied" && state.edited) return { next: { kind: "set-aside" }, answers: "kept" };
+  if (key && incoming) return { next: { kind: "applied", draft: incoming, key, edited: false }, answers: "drafted" };
+  if (state.kind === "applied") return { next: { kind: "none" }, answers: "recommended" };
+  return null;
 }
 
 /**
@@ -108,6 +205,7 @@ export function DecisionForm({
    */
   namePrefix = "d",
   foremanRecommended,
+  foremanDraft,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
@@ -129,14 +227,64 @@ export function DecisionForm({
    * Foreman note names this exact form, so an unmatched recommendation marks nothing.
    */
   foremanRecommended?: ReadonlySet<string>;
+  /**
+   * Foreman's drafted answers, when a live Foreman note in an invited session carries them
+   * for this exact form. Laid over the recommendation as the form's state - visibly, as
+   * "Foreman's draft", with a revert - and never submitted by anything but Submit.
+   */
+  foremanDraft?: readonly PlanDecisionAnswer[] | null;
 }): React.JSX.Element {
-  const [answers, setAnswers] = useState<Answers>(() => recommendedAnswers(decisions));
+  const [answers, setAnswers] = useState<Answers>(() => draftedAnswers(decisions, foremanDraft));
+  const [draft, setDraft] = useState<DraftState>(() => openingDraftState(foremanDraft));
+  // By content, so a re-render carrying the same draft is not a new one.
+  const draftKey = foremanDraft?.length ? JSON.stringify(foremanDraft) : null;
+
+  // Foreman's review takes minutes, so its draft usually lands on a form already open, and
+  // an invite withdrawn takes it away again. `draftOnChange` decides what that does to the
+  // form; see its rules.
+  useEffect(() => {
+    const step = draftOnChange(draft, foremanDraft);
+    if (!step) return;
+    if (step.answers === "drafted") setAnswers(draftedAnswers(decisions, foremanDraft));
+    if (step.answers === "recommended") setAnswers(recommendedAnswers(decisions));
+    setDraft(step.next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the draft's content
+  }, [draftKey]);
+
+  const activeDraft = draft.kind === "applied" ? draft.draft : null;
+  const draftOthers = new Map(
+    (activeDraft ?? []).flatMap((d) => (d.other?.trim() ? [[d.decisionId, d.other.trim()] as const] : [])),
+  );
+  const recommended = recommendedAnswers(decisions);
+  const draftChangesSomething =
+    activeDraft != null && !sameAnswers(decisions, draftedAnswers(decisions, activeDraft), recommended);
+
+  /** The human changed something by hand. */
+  function edited(): void {
+    setDraft(draftAfterEdit);
+  }
+
+  function revert(): void {
+    // Only the decisions Foreman's draft touched go back to the recommendation. An answer
+    // you gave to any other question is yours, and undoing Foreman must not undo it.
+    const drafted = new Set((activeDraft ?? []).map((d) => d.decisionId));
+    setAnswers((prev) => {
+      const next = { ...prev };
+      for (const id of drafted) {
+        if (recommended[id]) next[id] = recommended[id];
+        else delete next[id];
+      }
+      return next;
+    });
+    setDraft({ kind: "set-aside" });
+  }
 
   function get(id: string): { selected: string[]; other: string } {
     return answers[id] ?? { selected: [], other: "" };
   }
 
   function choose(d: PlanDecision, optionId: string, checked: boolean): void {
+    edited();
     setAnswers((prev) => {
       const cur = prev[d.id] ?? { selected: [], other: "" };
       let selected: string[];
@@ -152,6 +300,7 @@ export function DecisionForm({
   }
 
   function setOther(id: string, other: string): void {
+    edited();
     setAnswers((prev) => ({
       ...prev,
       [id]: { ...(prev[id] ?? { selected: [], other: "" }), other },
@@ -160,12 +309,26 @@ export function DecisionForm({
 
   // Built once per render and used for both the completeness test and the submit, so the
   // button's enabled state is decided over exactly the payload it would send.
-  const payload = toDecisionAnswers(decisions, answers);
+  const payload = toDecisionAnswers(decisions, answers, draftOthers);
   const complete = decisions.length > 0 && decisions.every((d, i) => isAnswered(d, payload[i]));
   const summary = selectionSummary(decisions, payload);
 
   return (
     <div className="decisions">
+      {draftChangesSomething && (
+        <div className="foreman-draft-banner" role="status" aria-label="Foreman's draft">
+          <span className="foreman-draft-banner-title">
+            <span aria-hidden>◆</span>
+            Foreman&apos;s draft
+          </span>
+          <span>Foreman changed the preselected answers. Nothing is sent until you submit.</span>
+          <Tooltip label="Restore the agent's recommendation on the questions Foreman drafted, and clear Foreman's Other text">
+            <button type="button" className="btn btn-ghost" disabled={busy} onClick={revert}>
+              Revert to recommendation
+            </button>
+          </Tooltip>
+        </div>
+      )}
       {decisions.map((d) => (
         <fieldset
           key={d.id}
@@ -208,6 +371,9 @@ export function DecisionForm({
               onChange={(e) => setOther(d.id, e.target.value)}
               disabled={busy}
             />
+          )}
+          {d.allowOther && draftOthers.has(d.id) && draftOthers.get(d.id) === get(d.id).other.trim() && (
+            <span className="decision-other-draft">◆ Foreman&apos;s draft</span>
           )}
         </fieldset>
       ))}

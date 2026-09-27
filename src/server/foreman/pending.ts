@@ -1,6 +1,7 @@
-import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
+import type { PaneDialog, PlanDecision, ReviewItem, Session } from "@shared/types.ts";
 import { activePaneDialog, dialogMarker } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+import { planDecisionsQuestion } from "./decision-draft.ts";
 
 // Kept as a re-export because answer routes and tests historically import the marker from
 // this module. Its implementation is shared now so the browser can recognize the same ask.
@@ -17,6 +18,8 @@ export { dialogMarker } from "@shared/session.ts";
  * branches on, since each situation has a fixed, model-free disposition:
  * - `input-review`     - a pending MCP `input` review: answerable by resolving it.
  * - `non-input-review` - a plan/diff review: human-only, Foreman can't deliver.
+ * - `plan-decisions-review` - a plan-decisions review: human-only too, but Foreman may
+ *                        DRAFT answers onto its form (never submit them).
  * - `terminal-pane`    - a stopped child (`awaiting_input`, or a menu on its screen) with a
  *                        terminal pane: answerable by typing, or by selecting a row.
  * - `structured-request` - a driver-run child blocked on a REQUEST rather than a screen:
@@ -31,6 +34,7 @@ export { dialogMarker } from "@shared/session.ts";
 export type PendingSituation =
   | "input-review"
   | "non-input-review"
+  | "plan-decisions-review"
   | "terminal-pane"
   | "structured-request"
   | "terminal-no-pane"
@@ -62,6 +66,8 @@ export interface Pending {
   reviewKind?: string;
   /** For a non-input review: its title, if any. */
   reviewTitle?: string;
+  /** For a `plan-decisions-review`: the decisions a draft answers. */
+  decisions?: PlanDecision[];
 }
 
 /**
@@ -141,6 +147,22 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
     };
   }
   const other = pend[0];
+  if (other?.kind === "plan-decisions" && other.decisions?.length) {
+    // Still not deliverable - `inputReviewId` stays null and nothing can be sent - but no
+    // longer purpose-only: the reviewer judges it so its answers can be drafted on the form.
+    return {
+      situation: "plan-decisions-review",
+      surface: "input-review",
+      question: planDecisionsQuestion(other),
+      inputReviewId: null,
+      reviewId: other.id,
+      canSend: false,
+      marker: `review:${other.id}`,
+      reviewKind: other.kind,
+      reviewTitle: other.title,
+      decisions: other.decisions,
+    };
+  }
   if (other) {
     return {
       situation: "non-input-review",

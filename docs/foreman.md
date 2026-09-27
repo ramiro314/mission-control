@@ -167,13 +167,45 @@ review form already owns the decision, Foreman does not draw a second answer car
 **Approve & send** path beside it. Instead the option its recommendation names wears a
 **◆ Foreman's pick** mark, so which one it chose reads at a glance, and the form gets a
 closed **View Foreman recommendation** control for the reasoning behind that pick. Opening
-it shows Foreman's prose in a bounded sidecar. The marked option is never preselected, and
-the original form remains the only place that can send an answer. When Foreman's prose names
+it shows Foreman's prose in a bounded sidecar. The mark alone never selects an option (only a
+[plan-decisions draft](#drafts-on-plan-decisions-forms) changes a form's selection), and the
+original form remains the only place that can send an answer. When Foreman's prose names
 no offered option, nothing is marked and only the control appears. If Foreman raised an
 unrelated decision,
 the separate note stays visible because its marker names a different ask. An escalation also
 fires a browser **alert**. The top-bar chip shows the mode, whether the worker is running, and
 the queue depth.
+
+#### Drafts on plan-decisions forms
+
+A `request_plan_decisions` form is the one review Foreman may help fill in. In a session it
+is [invited into](#which-sessions-foreman-may-act-in), Foreman's full reviewer reads the plan
+and its decisions and may write a **draft** onto the form: it can change the preselected
+option(s), put its own suggestion in **Other** where the decision accepts one, or both. A
+decision it leaves alone keeps the agent's recommendation.
+
+- The form opens on the draft, under a **◆ Foreman's draft** banner, and Foreman's Other text
+  carries its own **◆ Foreman's draft** tag. If the draft lands while the form is already open,
+  it is applied only when you have not touched the form yet.
+- **Revert to recommendation** puts back the agent's recommended options and clears Foreman's
+  Other text in one click, on the questions Foreman drafted. An answer you gave to any other
+  question is left as you set it.
+- Foreman **never submits** these forms, in any mode: dry-run, semi-auto and live all draft,
+  and the allowlist does not change that. The daemon refuses a Foreman-marked resolve of a
+  plan-decisions review outright.
+- When you submit with Foreman's Other text still in place, word for word, the answer the
+  agent receives reads `Other: … (Foreman draft, accepted)`, and the conversation's record of
+  your answer carries the same **Foreman draft, accepted** mark. Edit the text at all and it
+  is your answer, sent unmarked. The daemon decides the mark from the draft it holds, not from
+  what the submitting client claims: a claim with no matching live draft is dropped, and the
+  answer the agent reads is re-derived to match.
+- The draft is shown only while Foreman is invited. Withdrawing the invite takes it off the
+  form (an untouched form falls back to the recommendation), and the daemon refuses a new
+  draft for an uninvited session. Answering or dismissing the review retires it with the note.
+
+Escalating or skipping writes no draft, so the form stays as the agent preselected it. The
+cheap tier never drafts: these asks always go to the full reviewer, recorded with the triage
+reason **decision draft**.
 
 For a draft or escalation that has no canonical review form, the session detail keeps the existing
 **◆ decision** or **✎ draft** flag. Its expanded note carries the brief, recommendation and

@@ -2860,6 +2860,7 @@ async function processSession(
     // and a harness we cannot read reports no menu rather than another agent's reading of
     // its screen.
     menu: askOnScreen(session, pane),
+    planDecisions: pending.decisions ?? null,
   };
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means

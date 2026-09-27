@@ -265,6 +265,11 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
         ),
       };
     }
+    case "plan-decisions-review":
+      // Drafting answers is judgment, and the router's schema has no form field to draft
+      // with, so the full reviewer always takes it. Nothing it says can be SENT here - see
+      // `planFromVerdict` - so the route-up costs a model call and never a delivery.
+      return { kind: "route-up", reason: "plan-decisions-draft" };
     case "terminal-no-pane": {
       // A real question with no terminal pane to type an answer into, so Foreman would
       // escalate regardless. The plan has Tier 0 escalate directly when the question is short

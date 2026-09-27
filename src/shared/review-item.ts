@@ -113,6 +113,9 @@ export function selectedOptions(
   return decision.options.filter((o) => answer.selected.includes(o.id));
 }
 
+/** How an accepted Foreman "Other" draft is marked, in the answer and in the record. */
+export const FOREMAN_DRAFT_ACCEPTED = "Foreman draft, accepted";
+
 /**
  * The opening line of the response the agent receives when the form is submitted.
  *
@@ -152,7 +155,11 @@ export function formatResponse(
     const other = answer?.other?.trim() ?? "";
     const lines = [`• ${d.question}`];
     if (labels.length) lines.push(`  → ${labels.join(", ")}`);
-    if (d.allowOther && other) lines.push(`  Other: ${other}`);
+    // Provenance rides in the text the agent reads, not only in the record beside it: the
+    // agent should know these words were drafted by Foreman and accepted by the human.
+    if (d.allowOther && other) {
+      lines.push(`  Other: ${other}${answer?.foremanDraftAccepted ? ` (${FOREMAN_DRAFT_ACCEPTED})` : ""}`);
+    }
     if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
     return lines.join("\n");
   });

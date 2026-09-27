@@ -209,6 +209,9 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
+          // Only a plan-decisions form takes a draft: Foreman answers an `input` review
+          // itself, through the modes, and a draft there would be a second path to the same ask.
+          foremanDraft={review.kind === "plan-decisions" ? foremanNote?.draft : null}
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />

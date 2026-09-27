@@ -7,7 +7,14 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
-import { isHumanResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import {
+  decisionLead,
+  formatResponse,
+  isHumanResolvedReview,
+  reviewToolResult,
+} from "@shared/review-item.ts";
+import { noteAwaitsYou } from "@shared/foreman.ts";
+import { verifyDraftProvenance } from "./foreman/decision-draft.ts";
 import type { Registry } from "./registry.ts";
 import {
   inTransaction,
@@ -404,6 +411,12 @@ export class ReviewManager {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
     if (cur.status !== "pending") return cur;
+    // Foreman may DRAFT a plan-decisions answer onto the form (its note's `draft`), never
+    // send one: the plan's decisions are the human's. Refused here rather than trusted to the
+    // worker, so no Foreman-marked caller can settle one by any action.
+    if (by === "foreman" && cur.kind === "plan-decisions") {
+      throw new ReviewResolutionError("Foreman cannot resolve a plan-decisions review");
+    }
 
     const status: ReviewStatus =
       action === "approve"
@@ -413,12 +426,38 @@ export class ReviewManager {
           : action === "dismiss"
             ? "dismissed"
             : "answered";
-    const storedResponse = action === "dismiss" ? null : response;
+    let storedResponse = action === "dismiss" ? null : response;
     // Selections describe a form that was filled in, so only an `answer` can carry them.
     // The schema already clears them on a dismiss; this covers the approve/reject actions
     // it does not, and holds whether or not the request came through that schema.
-    const storedSelections = action === "answer" ? selections : null;
+    let storedSelections = action === "answer" ? selections : null;
+    // "Foreman draft, accepted" is provenance, so the daemon decides it from the draft it
+    // holds rather than trusting the caller's flag. When that changes any mark, the answer
+    // the agent reads is re-derived from the verified selections, so the two agree.
+    if (storedSelections) {
+      const verified = verifyDraftProvenance(storedSelections, this.liveDraftFor(cur));
+      if (verified !== storedSelections) {
+        storedSelections = verified;
+        if (cur.decisions?.length) {
+          storedResponse = formatResponse(cur.decisions, verified, decisionLead(cur.kind));
+        }
+      }
+    }
     return this.settle(cur, status, storedResponse, by, storedSelections);
+  }
+
+  /**
+   * Foreman's draft for this exact review, if one is live and shown.
+   *
+   * Read from the session's note summary, which already hides a draft while Foreman is not
+   * invited, and only when that note still awaits you and names this review.
+   */
+  private liveDraftFor(review: ReviewItem): PlanDecisionAnswer[] | null {
+    if (review.kind !== "plan-decisions") return null;
+    const note = this.registry.getSession(review.sessionId)?.note;
+    if (!note || !noteAwaitsYou(note.disposition)) return null;
+    if (note.handledMarker !== `review:${review.id}`) return null;
+    return note.draft ?? null;
   }
 
   /**

@@ -5835,6 +5835,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SetNoteSchema);
     if (!parsed.ok) return parsed.res;
+    // A draft preloads Foreman's answers into a session's form, which is Foreman acting in
+    // that session - so, like every other Foreman write, it needs an invite.
+    // Asked of the registry, which also decides whether a draft is SHOWN, so the gate and the
+    // display share one answer.
+    if (parsed.data.draft?.length && !registry.foremanMayDraft(session.id)) {
+      return c.json({ error: "Foreman is not invited into this session" }, 403);
+    }
     const note = registry.upsertNote(session.id, parsed.data);
     if (!note) return c.json({ error: "no such session" }, 404);
     return c.json(note);

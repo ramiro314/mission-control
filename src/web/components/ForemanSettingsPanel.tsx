@@ -159,6 +159,10 @@ const TRIAGE_REASON: Record<string, { label: string; hint: string }> = {
     label: "a review",
     hint: "The session posted a plan or diff review, and Foreman may not approve a review.",
   },
+  "plan-decisions-draft": {
+    label: "decision draft",
+    hint: "The session posted plan decisions. Foreman may draft answers on the form, never submit them.",
+  },
   "terminal-no-pane": {
     label: "no screen",
     hint: "The session was blocked with no terminal screen to read the ask from.",

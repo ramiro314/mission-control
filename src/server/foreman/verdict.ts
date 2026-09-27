@@ -6,6 +6,8 @@ import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import { driverFormAnswer } from "../sdk/answer.ts";
 import type { Pending } from "./pending.ts";
+import type { PlanDecision } from "@shared/types.ts";
+import { draftFromVerdict } from "./decision-draft.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
 // concrete actions the worker takes. Kept pure and free of I/O so it's unit
@@ -141,6 +143,13 @@ export interface ReviewContext {
    * typed at both and the menu confirmed its default.
    */
   menu?: PaneDialog | null;
+  /**
+   * The decisions of the `plan-decisions` review being judged, if that is the ask.
+   *
+   * Present, an answer can only ever become a DRAFT on that form, in every mode: Foreman
+   * never submits a plan's decisions (see `draftFromVerdict`).
+   */
+  planDecisions?: PlanDecision[] | null;
 }
 
 /** A resolved send instruction the worker will execute (or null: nothing to send). */
@@ -222,7 +231,13 @@ export function planFromVerdict(
   mayActLive: boolean,
   autoApproveAccess = true,
 ): VerdictPlan {
-  const base: SetNote = { purpose: v.purpose, handledMarker: ctx.promptMarker };
+  const base: SetNote = {
+    purpose: v.purpose,
+    handledMarker: ctx.promptMarker,
+    // Every note about a plan-decisions ask says whether it carries a draft, so a skip or an
+    // escalation can never inherit one.
+    ...(ctx.planDecisions ? { draft: null } : {}),
+  };
 
   if (v.action === "skip") {
     return {
@@ -252,6 +267,27 @@ export function planFromVerdict(
 
   // action === "answer"
   const answer = v.answer!; // guaranteed by the schema refine
+
+  if (ctx.planDecisions) {
+    // A plan's decisions are the human's, so this branch comes before every channel and
+    // mode check and never sends - not in live mode, not allowlisted, not ever. The answer
+    // becomes a visible draft on the form; the prose stays the recommendation, which is
+    // what the form's "Foreman's pick" marks and sidecar read.
+    const draft = draftFromVerdict(ctx.planDecisions, answer);
+    return {
+      note: {
+        ...base,
+        disposition: "pending",
+        brief: v.brief ?? null,
+        recommendation: answer.text,
+        draft,
+        lastAction: draft
+          ? "drafted answers on the decision form (awaiting you)"
+          : "drafted a reply (awaiting you)",
+      },
+      send: null,
+    };
+  }
 
   if (!autoApproveAccess && v.classification === "access") {
     // Access auto-approval is switched off: hand the approval to the human with
