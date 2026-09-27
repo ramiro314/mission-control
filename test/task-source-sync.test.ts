@@ -377,3 +377,25 @@ test("a synced edge that would close a cycle is refused whole and reported",asyn
   assert.deepEqual(getTask(task.id)!.dependencies,[]); assert.equal(getTask(task.id)!.title,"Original 1");
   assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/dependency cycle/);
 });
+test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  await tasks.update(task.id,{dependencies:[{type:"task",taskId:byRef(3).id}]});
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)},candidate(2),candidate(3)])).conflicted,1);
+  const review=sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!;
+  assert.deepEqual(review.conflicts,["dependencies"]);
+  // The source's blocker now depends on this task, so taking the source side closes a cycle.
+  await tasks.update(byRef(2).id,{dependencies:[{type:"task",taskId:task.id}]});
+  const before=getSourceSync(task.id);
+  const resolved=await resolveSourceSync(src,task.id,review.version,"source",tasks);
+  assert.equal(resolved.ok,false); assert.match(resolved.error!,/dependency cycle/);
+  assert.deepEqual(synced(task.id),[`task:${byRef(3).id}`]);
+  assert.deepEqual(getSourceSync(task.id),before);
+});
+test("a blocker whose linked task cannot take a new task edge becomes a source edge",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  // Out of the backlog with no live session: `acceptsNewTaskEdgeTo` refuses it.
+  registry.upsertTask({...byRef(2),status:"done"});
+  assert.equal(tasks.acceptsNewTaskEdgeTo(byRef(2).id),false);
+  await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}]);
+  assert.deepEqual(synced(task.id),[`source:acme/demo#2`,`task:${byRef(3).id}`]);
+});
