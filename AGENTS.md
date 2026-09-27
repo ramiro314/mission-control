@@ -76,6 +76,11 @@ override without ceremony - and around 130 files set `HARNESS_HOME` themselves t
 hand-built fixture database. **`MISSION_HOME` is still the name to set everywhere else**, in
 a test, in a daemon, and in an operator's environment.
 
+It also clears every inherited executable override (`MISSION_GH_BIN`, `MISSION_CLAUDE_BIN`,
+and the rest of `*_BIN` under all three prefixes). Those outrank `PATH`, where most files put
+their fakes, so a developer's own override would otherwise send the suite to the real binary.
+A test that needs one sets it in its file body, as it does for its home.
+
 A test that needs a particular database keeps seeding its own home above its imports, exactly
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
 runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only

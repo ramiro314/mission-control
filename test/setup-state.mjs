@@ -130,6 +130,15 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
+  // The executable overrides go for the same reason. `MISSION_GH_BIN` and its siblings
+  // outrank PATH, which is where most files put their fakes, so an operator who points one
+  // at a wrapper for local development sent the suite to the real binary: the fake never
+  // ran and every test waiting on it timed out. A file that wants an override still sets
+  // one in its body, after this has run.
+  for (const name of Object.keys(process.env)) {
+    if (/^(?:MISSION|FLEET|HARNESS)_\w+_BIN$/.test(name)) delete process.env[name];
+  }
+
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.
