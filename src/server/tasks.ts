@@ -2,6 +2,7 @@ import {
   canRefreshSourceTask, localSourceContent, sameSourceContent, type SourceBlocker, type SourceContent,
 } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
+import { blockerDependencies } from "./task-sources/relations.ts";
 import { inTransaction } from "./db.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
@@ -3896,8 +3897,7 @@ export class TaskManager {
    *
    * Only edges that stand for this source's items are in play (see `localSourceContent`);
    * every other edge is kept as it is. A blocker already present keeps its edge. A new one
-   * becomes a task edge when a task linked to it may take one (`acceptsNewTaskEdgeTo`, the
-   * rule ingest uses) and a `source` edge otherwise. The result goes through the same
+   * gets the edge ingest would give it (`blockerDependencies`). The result goes through the same
    * resolver as an operator's edit, so a synced task edge that would close a cycle throws.
    */
   private sourceSyncedDependencies(task: Task, sourceId: string, blockedBy: SourceBlocker[]): TaskDependency[] {
@@ -3917,17 +3917,15 @@ export class TaskManager {
       return ref === null || wanted.has(ref);
     });
     const present = new Set(kept.map(refOf));
-    const inputs: TaskDependencyInput[] = kept.map(dependencyInputOf);
-    const added: TaskSourceRef[] = [];
-    for (const blocker of wanted.values()) {
-      if (present.has(blocker.externalId) || blocker.externalId === task.source?.externalId) continue;
-      const linked = tasks.find((t) => t.id !== task.id && t.source?.sourceId === sourceId
-        && t.source.externalId === blocker.externalId && this.acceptsNewTaskEdgeTo(t.id));
-      if (linked) inputs.push({ type: "task", taskId: linked.id });
-      else added.push({ sourceId, externalId: blocker.externalId, url: blocker.url });
-    }
+    const added = blockerDependencies(
+      task.source?.externalId ?? "",
+      blockedBy.filter((b) => !present.has(b.externalId)).map((b) => ({ sourceId, ...b })),
+      tasks,
+      (taskId) => this.acceptsNewTaskEdgeTo(taskId),
+    );
+    const inputs: TaskDependencyInput[] = [...kept.map(dependencyInputOf), ...added.dependencies];
     const resolved = this.resolveDependencies(inputs, task.id, task.dependencies);
-    return [...resolved, ...this.sourceDependencyEdges(added, resolved)];
+    return [...resolved, ...this.sourceDependencyEdges(added.sourceDependencies, resolved)];
   }
 
   /**

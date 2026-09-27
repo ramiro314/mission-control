@@ -35,15 +35,8 @@ export interface CandidateDependencies {
 /**
  * The dependencies a candidate's blocking links ask for.
  *
- * A blocker linked to one of our tasks that may take a new task edge becomes one, which
- * then follows that task to its merge like any operator's edge. Whether it may is
- * `TaskManager`'s rule (`acceptsNewTaskEdgeTo`), passed in as `acceptsTaskEdge` so it has
- * one owner. Every other blocker - never swept, filtered out of this source, or linked to
- * a task that already finished, stopped, or has no live session yet - becomes a `source`
- * edge, released only by the item itself closing as completed. The parent link is never
- * an edge.
- *
- * Empty for a source whose kind cannot relate, whatever the candidate carries.
+ * Empty for a source whose kind cannot relate, whatever the candidate carries. Otherwise
+ * `blockerDependencies` decides each edge.
  */
 export function dependenciesFor(
   inst: TaskSourceInstance,
@@ -51,12 +44,32 @@ export function dependenciesFor(
   listTasks: () => Task[],
   acceptsTaskEdge: (taskId: string) => boolean,
 ): CandidateDependencies {
+  if (!canRelateTo(inst) || !candidate.blockedBy?.length) return { dependencies: [], sourceDependencies: [] };
+  return blockerDependencies(candidate.ref.externalId, candidate.blockedBy, listTasks(), acceptsTaskEdge);
+}
+
+/**
+ * Which edge each blocking link becomes: the one rule, for a task filed by a sweep and for
+ * blockers a later sync adds to it (`TaskManager.sourceSyncedDependencies`).
+ *
+ * A blocker linked to one of our tasks that may take a new task edge becomes one, which
+ * then follows that task to its merge like any operator's edge. Whether it may is
+ * `TaskManager`'s rule (`acceptsNewTaskEdgeTo`), passed in as `acceptsTaskEdge` so it has
+ * one owner. Every other blocker - never swept, filtered out of this source, or linked to
+ * a task that already finished, stopped, or has no live session yet - becomes a `source`
+ * edge, released only by the item itself closing as completed. The parent link is never
+ * an edge, and the item never blocks itself (`selfExternalId`).
+ */
+export function blockerDependencies(
+  selfExternalId: string,
+  blockedBy: TaskSourceRef[],
+  tasks: Task[],
+  acceptsTaskEdge: (taskId: string) => boolean,
+): CandidateDependencies {
   const out: CandidateDependencies = { dependencies: [], sourceDependencies: [] };
-  if (!canRelateTo(inst) || !candidate.blockedBy?.length) return out;
-  const tasks = listTasks();
   const seen = new Set<string>();
-  for (const ref of candidate.blockedBy) {
-    if (ref.externalId === candidate.ref.externalId || seen.has(ref.externalId)) continue;
+  for (const ref of blockedBy) {
+    if (ref.externalId === selfExternalId || seen.has(ref.externalId)) continue;
     seen.add(ref.externalId);
     const linked = tasks.find(
       (task) =>
