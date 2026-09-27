@@ -376,6 +376,18 @@ test("a synced edge that would close a cycle is refused whole and reported",asyn
   assert.equal((await refresh(src,tasks,[remote,candidate(2),candidate(3)])).skipped,1);
   assert.deepEqual(getTask(task.id)!.dependencies,[]); assert.equal(getTask(task.id)!.title,"Original 1");
   assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/dependency cycle/);
+  // The refused pass must not advance the baseline, or the brief it never wrote is lost.
+  assert.equal(getSourceSync(task.id)!.baseline!.title,"Original 1");
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy,[]);
+  // The same unchanged upstream is still refused while the cycle stands...
+  assert.equal((await refresh(src,tasks,[remote,candidate(2),candidate(3)])).skipped,1);
+  assert.equal(getTask(task.id)!.title,"Original 1");
+  // ...and once it is gone, the held brief and dependencies both arrive.
+  await tasks.update(byRef(2).id,{dependencies:[]});
+  assert.equal((await refresh(src,tasks,[remote,candidate(2),candidate(3)])).updated,1);
+  assert.equal(getTask(task.id)!.title,"Also renamed");
+  assert.deepEqual(synced(task.id),[`task:${byRef(2).id}`]);
+  assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error,null);
 });
 test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
   const {src,tasks,task,byRef}=await setupRelated();

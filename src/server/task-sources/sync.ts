@@ -141,8 +141,12 @@ export async function refreshSourceTasks(
     const applied = await tasks.applySourceContent(task.id, task.source!, local, content,
       () => saveSourceSync(task.id, inst.id, next), stillCurrent, canRelateTo(inst));
     // A cycle is refused whole, like a hand edit that closes one. Say so beside the task,
-    // and retry on later sweeps, when the source or the local graph may have moved.
-    if (applied.cycle && stillCurrent()) saveSourceSync(task.id, inst.id, { ...next, error: CYCLE_ERROR });
+    // and retry on later sweeps, when the source or the local graph may have moved. Only
+    // the check and the error are recorded: `next` carries the merge's advanced baseline,
+    // which would mark the groups this refused pass never wrote as already synced.
+    if (applied.cycle && stillCurrent()) {
+      saveSourceSync(task.id, inst.id, { ...record, checkedAt: next.checkedAt, error: CYCLE_ERROR });
+    }
     if (!applied.ok || next.error) counts.skipped++;
     else if (next.pending) counts.conflicted++;
     else if (!sameSourceContent(local, content)) counts.updated++;
