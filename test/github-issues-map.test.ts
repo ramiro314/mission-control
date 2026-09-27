@@ -258,6 +258,29 @@ test("the created issue carries the task's title and intent, the repo, and every
   ]);
 });
 
+test("a draft's relations become --blocked-by and --parent, by URL", () => {
+  const ref = (n: number, url: string | null = `https://github.com/acme/widgets/issues/${n}`) => ({
+    sourceId: "src-1",
+    externalId: `acme/widgets#${n}`,
+    url,
+  });
+  const args = ghIssueCreateArgs(cfg({ repo: "acme/widgets" }), {
+    title: "t",
+    intent: "i",
+    // A ref with no URL is skipped rather than guessed at.
+    blockedBy: [ref(3), ref(4), ref(5, null)],
+    parent: ref(1),
+  });
+  assert.deepEqual(args.slice(-4), [
+    "--blocked-by",
+    "https://github.com/acme/widgets/issues/3,https://github.com/acme/widgets/issues/4",
+    "--parent",
+    "https://github.com/acme/widgets/issues/1",
+  ]);
+  // No relations, no flags: an empty list never reaches gh as an empty `--blocked-by`.
+  assert.ok(!ghIssueCreateArgs(cfg(), { title: "t", intent: "i", blockedBy: [] }).includes("--blocked-by"));
+});
+
 test("an unconfigured repo and no labels pass no flags at all", () => {
   const args = ghIssueCreateArgs(cfg(), { title: "t", intent: "i" });
   assert.deepEqual(args, ["issue", "create", "--title", "t", "--body", "i"]);

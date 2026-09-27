@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import {
   ghProductScriptPath,
   ghWritebackScriptPath,
+  ghIssueCreateScriptPath,
   productAuthorizationBinPath,
   productAuthorizationScriptPath,
   writeProductAuthorizationBin,
@@ -503,6 +504,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // the same reason: absent content means both verbs succeed, which is what every spec
     // that never turns a source's write-back switch on already expects.
     MC_E2E_GH_WRITEBACK: ghWritebackScriptPath(home),
+    // And its scripted task-source issue creates. Absent content means every create prints
+    // issue 123, which is what every push spec before ticket mirroring already expects.
+    MC_E2E_GH_ISSUE_CREATE: ghIssueCreateScriptPath(home),
     // The public repository product reports would target. Pointed at a fixture owner/name so
     // no run - not even one whose `gh` override somehow failed - names the real tracker. The
     // blast dam is `MISSION_GH_BIN` above; this is the second lock on the same door.

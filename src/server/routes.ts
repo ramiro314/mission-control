@@ -69,6 +69,7 @@ import {
   type McpAdoptTicket,
   type McpCreateTicket,
   McpListBacklogSchema,
+  McpPushTaskSchema,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
@@ -334,9 +335,9 @@ import { interruptSession, requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
-import { pushTask } from "./task-sources/push.ts";
+import { pushTask, type PushTaskOutcome } from "./task-sources/push.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
-import type { TaskSourcesView } from "@shared/task-source.ts";
+import { TASK_SOURCE_KIND_INFO, pushSourcesFor, type TaskSourcesView } from "@shared/task-source.ts";
 import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
 import {
   activePipelineRepoStatuses,
@@ -4523,6 +4524,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ id: review.id, sessionId: session.id });
   });
 
+  /** A failed push as the Push route's status contract, shared by `push_task`. */
+  function pushOutcomeResponse(c: Context, r: Extract<PushTaskOutcome, { ok: false }>): Response {
+    switch (r.kind) {
+      case "unpushable":
+        return c.json({ error: r.error }, 400);
+      case "conflict":
+        return c.json({ error: r.error }, 409);
+      case "upstream":
+        return c.json({ error: r.error }, 502);
+      // Flagged as well as worded. The sentence is what a human reads; the flag is what a
+      // client branches on, and this is the one failure a client must not offer to retry.
+      case "unknown-outcome":
+        return c.json({ error: r.error, outcomeUnknown: true }, 504);
+    }
+  }
+
   /**
    * The edges an MCP task call asks for: its named prerequisites, plus the calling session
    * when it asked to be gated on itself. A Response when that session cannot be found.
@@ -4660,7 +4677,89 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         dependsOnTaskIds: task.dependencies.flatMap((dependency) =>
           dependency.type === "task" ? [dependency.taskId] : []),
       }));
-    return c.json({ repository: resolved.repoRoot, tasks: backlog });
+    return c.json({ repository: resolved.repoRoot, tasks: backlog, mirror: mirrorChoice(resolved.repoRoot) });
+  });
+
+  /**
+   * Whether a ticket breakdown in `repoRoot` can offer to mirror its tickets, and where.
+   *
+   * The sources are exactly the ones Push would accept (`pushSourcesFor`), so a kind without
+   * an outward verb is never offered. `relates` says whether that source will also write the
+   * blocking and parent links. When nothing qualifies, `unavailable` is the sentence the
+   * breakdown shows beside the switched-off choice.
+   */
+  function mirrorChoice(repoRoot: string): {
+    sources: Array<{ id: string; label: string; kind: string; relates: boolean }>;
+    unavailable: string | null;
+  } {
+    const configured = getTaskSourcesConfig().sources.filter((source) => source.repoRoot === repoRoot);
+    const name = (source: { label: string; kind: keyof typeof TASK_SOURCE_KIND_INFO }): string =>
+      source.label.trim() || TASK_SOURCE_KIND_INFO[source.kind].label;
+    const sources = pushSourcesFor(configured, repoRoot).map((source) => ({
+      id: source.id,
+      label: name(source),
+      kind: TASK_SOURCE_KIND_INFO[source.kind].label,
+      relates: TASK_SOURCE_KIND_INFO[source.kind].canRelate,
+    }));
+    if (sources.length > 0) return { sources, unavailable: null };
+    return {
+      sources,
+      unavailable: configured.length === 0
+        ? "No task source is configured for this repository, so there is nowhere to mirror the tickets."
+        : `This repository's task sources (${configured.map(name).join(", ")}) cannot receive pushed tasks.`,
+    };
+  }
+
+  /**
+   * Mirror one task to a task source for the session that filed it: MCP `push_task`.
+   *
+   * The same `pushTask` the edit modal's Push calls, so the seen row and the link commit
+   * together and a sweep never re-files the item. Two things are added for an agent caller:
+   *
+   *  - it may push only a task that waits on the calling session - a ticket it filed or
+   *    adopted - so a session cannot publish somebody else's backlog;
+   *  - a task already linked to that source answers 200 with `alreadyPushed: true`, so a
+   *    retry after a lost reply is idempotent instead of a 409 the agent has to interpret.
+   *
+   * Every other status is the Push route's own contract (`pushOutcomeResponse`), including
+   * 504 with `outcomeUnknown: true`, which must never be retried blind.
+   */
+  app.post("/mcp/push-task", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPushTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, taskId, sourceId } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching active session" }, 404);
+    const task = tasks.get(taskId);
+    if (!task) return c.json({ error: "no such task" }, 404);
+    const gated = task.dependencies.some((edge) =>
+      (edge.type === "task" || edge.type === "session") && edge.sessionId === session.id);
+    if (!gated) {
+      return c.json({ error: "push_task mirrors only a task that waits on this session - one it filed or adopted" }, 403);
+    }
+    let inst;
+    if (sourceId) {
+      inst = taskSourceById(sourceId);
+      if (!inst) return c.json({ error: "no such task source" }, 404);
+    } else {
+      const eligible = pushSourcesFor(getTaskSourcesConfig().sources, task.repoRoot);
+      if (eligible.length === 0) {
+        return c.json({ error: "no configured task source can receive this task" }, 409);
+      }
+      if (eligible.length > 1) {
+        return c.json({
+          error: `more than one task source can receive this task; name one as sourceId (${eligible.map((s) => s.id).join(", ")})`,
+        }, 409);
+      }
+      inst = eligible[0]!;
+    }
+    if (task.source?.sourceId === inst.id) {
+      return c.json({ task, source: task.source, alreadyPushed: true });
+    }
+    const r = await pushTask(inst, task, tasks);
+    if (r.ok) return c.json({ task: r.task, source: r.task.source, ...r.relations, alreadyPushed: false });
+    return pushOutcomeResponse(c, r);
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -7836,18 +7935,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!inst) return c.json({ error: "no such task source" }, 404);
     const r = await pushTask(inst, task, tasks);
     if (r.ok) return c.json(r.task);
-    switch (r.kind) {
-      case "unpushable":
-        return c.json({ error: r.error }, 400);
-      case "conflict":
-        return c.json({ error: r.error }, 409);
-      case "upstream":
-        return c.json({ error: r.error }, 502);
-      // Flagged as well as worded. The sentence is what a human reads; the flag is what a
-      // client branches on, and this is the one failure a client must not offer to retry.
-      case "unknown-outcome":
-        return c.json({ error: r.error, outcomeUnknown: true }, 504);
-    }
+    return pushOutcomeResponse(c, r);
   });
 
   app.post("/api/tasks/:id/dispatch", async (c) => {

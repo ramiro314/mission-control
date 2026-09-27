@@ -532,6 +532,88 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "push_task",
+  {
+    title: "Mirror a task to its task source",
+    description:
+      "Mirror one task this session filed or adopted to a configured task source (for example " +
+      "as a GitHub issue), exactly as the task's Push action does. When the source can relate " +
+      "items, the new item is marked blocked by the items of the task's blockers that are " +
+      "already pushed, and is filed under the item of the planning task it came from. Push " +
+      "blockers first. Idempotent: a task already linked to that source returns its link with " +
+      "alreadyPushed: true. An outcomeUnknown failure means the item may exist: check the " +
+      "tracker before retrying, and never retry it blind.",
+    inputSchema: {
+      taskId: z.string().min(1).describe("Id of the task, as create_task returned it"),
+      sourceId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Task source to push to, from list_backlog_tasks' mirror.sources. Omit it when the " +
+            "repository has exactly one source that can receive tasks",
+        ),
+    },
+  },
+  async ({ taskId, sourceId }) => {
+    try {
+      const res = await http("/mcp/push-task", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        taskId,
+        sourceId,
+      });
+      if (await isUnknownRoute(res)) {
+        return textResult(
+          "Could not push the task: this Mission Control daemon does not support push_task. " +
+            "Update or restart Mission Control and retry; nothing was pushed.",
+          true,
+        );
+      }
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        outcomeUnknown?: boolean;
+        task?: { id: string };
+        source?: { sourceId: string; externalId: string; url: string | null } | null;
+        blockedBy?: Array<{ externalId: string; url: string | null }>;
+        parent?: { externalId: string; url: string | null };
+        alreadyPushed?: boolean;
+      };
+      if (!res.ok) {
+        const retry = body.outcomeUnknown
+          ? " The outcome is unknown: the item may exist. Check the tracker before retrying; do not retry blind."
+          : res.status === 502
+            ? " Nothing was published, so a retry is safe."
+            : "";
+        return textResult(`Could not push the task (${res.status}): ${body.error ?? "unknown error"}.${retry}`, true);
+      }
+      return textResult(
+        JSON.stringify(
+          {
+            taskId: body.task?.id ?? taskId,
+            sourceId: body.source?.sourceId ?? null,
+            externalId: body.source?.externalId ?? null,
+            url: body.source?.url ?? null,
+            alreadyPushed: body.alreadyPushed === true,
+            ...(body.blockedBy ? { blockedBy: body.blockedBy.map((ref) => ref.url ?? ref.externalId) } : {}),
+            ...(body.parent ? { parent: body.parent.url ?? body.parent.externalId } : {}),
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (err) {
+      return textResult(
+        `Could not reach Mission Control: ${String(err)}. The push may or may not have run; ` +
+          "check the tracker before retrying.",
+        true,
+      );
+    }
+  },
+);
+
 // This is the replacement for Claude's built-in `AskUserQuestion`, which dispatched sessions
 // have taken away from them (see `src/server/ask-channel.ts`). It therefore has to cover what
 // the built-in covered: a question with discrete options, answered by clicking one. `options`

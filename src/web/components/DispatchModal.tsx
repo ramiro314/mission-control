@@ -40,6 +40,7 @@ import {
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
   TASK_SOURCE_KIND_INFO,
+  pushSourcesFor,
   type TaskSourceInstance,
   type TaskSourceRef,
 } from "@shared/task-source.ts";
@@ -288,26 +289,6 @@ function ensembleDraftsEqual(
   b: EnsembleDispatchDraft,
 ): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/**
- * The configured sources this task could actually be filed into.
- *
- * The SAME two questions the daemon asks, deliberately - `pushTask` refuses a kind whose
- * `canPush` is false and a source whose stored `repoRoot` is not the task's, by exact string
- * comparison of two values that were both resolved to a git root when they were stored. The
- * browser cannot run git, so it cannot re-derive either of them; matching the daemon's
- * comparison exactly is what keeps the modal from offering an action the route would refuse.
- *
- * `canPush` is readable here because it lives on the pure half of the contract
- * (`TASK_SOURCE_KIND_INFO`), which is the whole reason it was put there: the modal decides
- * whether to offer the action without importing an implementation the browser cannot load.
- */
-function eligiblePushSources(
-  sources: TaskSourceInstance[],
-  repoRoot: string,
-): TaskSourceInstance[] {
-  return sources.filter((s) => TASK_SOURCE_KIND_INFO[s.kind].canPush && s.repoRoot === repoRoot);
 }
 
 /** What to call a source in a picker: the operator's own name for it, else its kind's. */
@@ -2107,7 +2088,7 @@ function DispatchModal({
    */
   async function pushToSource(): Promise<void> {
     if (!editing || busy) return;
-    const eligible = eligiblePushSources(taskSources ?? [], editing.repoRoot);
+    const eligible = pushSourcesFor(taskSources ?? [], editing.repoRoot);
     const chosen = eligible.find((s) => s.id === push?.sourceId) ?? eligible[0];
     if (!chosen) return;
     // Captured, not re-read after the await. Every write below is tagged with the task this
@@ -3467,7 +3448,7 @@ export function PushToSourceBlock({
   // a button the operator's cursor is already moving past.
   if (sources === null) return null;
 
-  const eligible = eligiblePushSources(sources, repoRoot);
+  const eligible = pushSourcesFor(sources, repoRoot);
   if (eligible.length === 0) {
     return (
       // A muted line rather than the banner the other two states wear, deliberately: this is

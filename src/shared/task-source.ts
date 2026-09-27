@@ -162,6 +162,19 @@ export interface PushDraft {
   title: string;
   /** Becomes its body - the task's intent, which is the text a human wrote. */
   intent: string;
+  /**
+   * Items already in this source that block the task, from its dependency edges: a blocker
+   * task this source has an item for, or a `source` edge on this source. A blocker with no
+   * item yet is left out, never invented. Set only for a `canRelate` kind, which writes each
+   * as a blocking link on the new item; absent (not empty) when there are none.
+   */
+  blockedBy?: TaskSourceRef[];
+  /**
+   * The item of the planning task this one was sliced from (a shape or plan task the task
+   * depends on), so the new item lands as its sub-item. Set only for a `canRelate` kind, and
+   * only when that planning task has an item in this source.
+   */
+  parent?: TaskSourceRef;
 }
 
 /** The outcome of one push. Exactly one of `ref` / `error` is set. */
@@ -655,6 +668,22 @@ export const DEFAULT_MAX_PER_SWEEP = 25;
 export const MAX_PER_SWEEP_CEILING = 200;
 
 /** Clamp a stored interval into the range the sweeper will actually honour. */
+/**
+ * The configured sources a task based on `repoRoot` could actually be pushed into.
+ *
+ * The SAME two questions `pushTask` asks, deliberately, and the one place they are asked
+ * ahead of it: a kind whose `canPush` is false, and a source whose stored `repoRoot` is not
+ * the task's, by exact string comparison of two values that were both resolved to a git root
+ * when they were stored. The edit modal offers Push from this list and `list_backlog_tasks`
+ * reports it as the mirror choice, so neither offers what the push would refuse.
+ */
+export function pushSourcesFor(
+  sources: readonly TaskSourceInstance[],
+  repoRoot: string,
+): TaskSourceInstance[] {
+  return sources.filter((s) => TASK_SOURCE_KIND_INFO[s.kind].canPush && s.repoRoot === repoRoot);
+}
+
 export function clampSweepInterval(ms: number): number {
   return Math.min(MAX_SWEEP_INTERVAL_MS, Math.max(MIN_SWEEP_INTERVAL_MS, Math.round(ms)));
 }

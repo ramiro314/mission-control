@@ -288,6 +288,7 @@
   "POST /mcp/plan-publication": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/product-issues": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/product-issues/preview": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/push-task": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/retros/no-change": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/reviews": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/reviews/:id/detach": "401 {\"error\":\"unauthorized\"}",

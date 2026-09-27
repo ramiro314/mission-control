@@ -21,6 +21,7 @@ import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import {
   BACKLOG_LIST_TOOL,
   PLAN_DECISIONS_TOOL,
+  PUSH_TASK_TOOL,
   PLAN_SCHEDULING_TOOL,
   PLAN_PUBLICATION_TOOL,
 } from "./plans/tools.ts";
@@ -73,6 +74,7 @@ export const MISSION_MCP_TOOLS = [
   "report_product_issue",
   "report_status",
   "list_backlog_tasks",
+  "push_task",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`
   // scrapes `registerTool("...")` out of the server and compares the two lists by value, and
   // `scripts/smoke-bundles.mjs` resolves any CONSTANT here through a hand-written name-to-module
@@ -138,9 +140,10 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   pipeline: [],
   chat: [],
   // Grilling rounds, the plan review and the breakdown review are `request_plan_decisions`
-  // forms; the approved tickets are filed with `create_task`, and `list_backlog_tasks` finds
-  // the open tasks a ticket may adopt instead.
-  shape: [...PLANNING_MISSION_MCP_TOOLS, BACKLOG_LIST_TOOL],
+  // forms; the approved tickets are filed with `create_task`, `list_backlog_tasks` finds the
+  // open tasks a ticket may adopt instead, and `push_task` mirrors each filed ticket when the
+  // breakdown chose to.
+  shape: [...PLANNING_MISSION_MCP_TOOLS, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL],
 };
 
 /**

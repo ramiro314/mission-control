@@ -77,7 +77,9 @@ The breakdown review is the human's **final approval**. It is **one** `request_p
 form, and nothing is written or created before it is submitted.
 
 First call `list_backlog_tasks` to read the repository's open backlog. Any of those tasks may
-already cover a ticket; the human decides whether it does.
+already cover a ticket; the human decides whether it does. Its `mirror` field says whether the
+tickets can also be mirrored to a task source (for example as GitHub issues): `mirror.sources`
+lists the sources that can receive them, and `mirror.unavailable` says why none can.
 
 Then call `request_plan_decisions` once:
 
@@ -94,6 +96,19 @@ Then call `request_plan_decisions` once:
     Adopting keeps that task exactly as it is (its title, intent, kind and labels); it only gains
     this ticket's edges, and the tickets it blocks wait on it.
   - `allowOther: true`, so the human can ask for a change to the breakdown itself.
+- One last decision, id `mirror`, asking "Mirror the tickets to <source label>?", with `allowOther:
+  false` and two options:
+  - When `mirror.sources` is not empty: `yes` ("Yes, mirror them"), `recommended: true`, with
+    `detail` naming the source, and saying whether it also links each ticket to its blockers and
+    to the planning task's item (`relates`); then `no` ("No, keep them in Mission Control only").
+    With more than one source, offer one `yes:<source id>` option per source instead of `yes`,
+    and recommend the first.
+  - When it is empty: `no` ("No, keep them in Mission Control only"), `recommended: true`, with
+    `detail` holding `mirror.unavailable` word for word, so the human sees why; then `yes`
+    ("Yes, mirror them") with `detail` "Not available: <mirror.unavailable>". A `yes` submitted
+    here is a change request: say mirroring is unavailable and why, and ask whether to go on
+    without it.
+  Never decide availability yourself, and never offer a source `mirror.sources` did not list.
 
 The tool blocks until the human submits or dismisses:
 
@@ -110,7 +125,8 @@ The tool blocks until the human submits or dismisses:
 
 1. **Write** `docs/plans/<name>/tickets.md` beside the plan: every ticket in dependency order with
    its title, kind, labels, blocked-by and full body, and a **Task** column that will hold its
-   Mission Control task id, or `adopted <task id>` for an adopted ticket. Render `tickets.html`
+   Mission Control task id, or `adopted <task id>` for an adopted ticket. When mirroring was chosen,
+   add an **Issue** column that will hold each ticket's item URL. Render `tickets.html`
    beside it the way the html-plans skill renders a plan page.
 2. **Commit and push** the plan and the tickets files, so the pointer in every ticket body
    resolves in a pushed commit before any task names it. If you cannot push, stop and report why;
@@ -129,13 +145,32 @@ The tool blocks until the human submits or dismisses:
 
    The tasks are created enabled, so the backlog autopilot may pick them up once their blockers
    merge. The human's approval of the breakdown is that consent.
-4. **Record the ids.** Fill the Task column of `tickets.md` and `tickets.html` with what each call
-   returned, then commit and push again.
+4. **Mirror**, only when the `mirror` decision chose a source. Call `push_task` once per filed ticket,
+   right after the tickets are filed and in the same dependency order, blockers first: `taskId` is
+   the id `create_task` returned (or the adopted task's id), and `sourceId` is the chosen source's
+   id. Mission Control builds the item from the task and marks it blocked by the items of its
+   blockers that are already pushed, and files it under this shape task's own item when the shape
+   task came from one. Pushing blockers first is what lets those links exist.
+5. **Record the ids.** Fill the Task column of `tickets.md` and `tickets.html` with what each call
+   returned, and the Issue column with the `url` each `push_task` returned, then commit and push
+   again.
 
 If a `create_task` call fails, stop there: do not file the tickets that depend on it. Tasks
 already filed stay. Before retrying a call whose outcome you do not know, check
 `list_backlog_tasks` so a retry never files a ticket twice. Record in `tickets.md` which tickets
 were filed and which were not, and report the failure.
+
+If a `push_task` call fails:
+
+- The Mission Control tasks stay. They are the source of truth; never delete or re-file them.
+- Do not push the tickets that depend on the failed one, directly or through another ticket: their
+  blocked-by links would be missing. Keep pushing the tickets that do not depend on it.
+- Record the failure in the Issue column (`not pushed: <reason>`), and report which tickets were
+  pushed, which failed, and which were held back.
+- A retry is idempotent: `push_task` on a ticket that already has an item returns that item with
+  `alreadyPushed: true` and files nothing. A failure that says nothing was published is safe to
+  retry once. An `outcomeUnknown` failure means the item may exist: do not retry it. Tell the
+  human to check the tracker first, because a blind retry files a duplicate.
 
 Finish by reporting the tickets file, the ticket-to-task map (new and adopted), the blocking
 edges, and which tickets can run in parallel.
@@ -147,3 +182,5 @@ edges, and which tickets can run in parallel.
 - Do not put file paths other than the plan pointer in a ticket body.
 - Do not edit an adopted task's title, intent, kind or labels.
 - Do not set a priority.
+- Do not push a ticket when the breakdown did not choose to mirror, and do not create items in the
+  tracker any other way than `push_task`.

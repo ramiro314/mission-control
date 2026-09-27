@@ -30,3 +30,6 @@ export const PLAN_PUBLICATION_TOOL = "get_plan_publication_context" as const;
 
 /** How a shape task's breakdown finds the open backlog tasks a ticket could adopt. */
 export const BACKLOG_LIST_TOOL = "list_backlog_tasks" as const;
+
+/** How a shape task's breakdown mirrors each filed ticket to the repository's task source. */
+export const PUSH_TASK_TOOL = "push_task" as const;

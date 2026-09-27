@@ -1,7 +1,7 @@
 import { PLAN_PAGE_FILENAME, PLAN_SOURCE_PATH_SHAPE } from "@shared/plans.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
 import { PLAN_HTML_SKILL_ID } from "./prompt.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL } from "./tools.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL } from "./tools.ts";
 
 /**
  * The delivery contract of a `shape` task: grill first, then plan.
@@ -64,7 +64,8 @@ export function shapeContractAppendix(skills: ShapeSkillInvocations, workflowBou
     `   breakdown review, one \`${PLAN_DECISIONS_TOOL}\` form that is the human's final approval. Nothing is`,
     `   written or created before that form is submitted, and a dismissed breakdown creates nothing. On submit`,
     `   it writes the tickets file, commits and pushes it, then files each ticket with \`${PLAN_SCHEDULING_TOOL}\``,
-    "   in dependency order, gated on this session. On this harness:",
+    "   in dependency order, gated on this session. When the breakdown chose to mirror the tickets, it pushes",
+    `   each filed ticket to the task source with \`${PUSH_TASK_TOOL}\`, blockers first. On this harness:`,
     `   ${skills.tickets}`,
     "",
     `Before publication, call \`${PLAN_PUBLICATION_TOOL}\` to refresh who owns the pull request. A failed or unavailable read is not permission to publish directly.`,
