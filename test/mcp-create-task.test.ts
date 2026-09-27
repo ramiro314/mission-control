@@ -523,6 +523,27 @@ test("only an existing backlog task can be adopted", async () => {
   assert.equal(count(), 0, "a failed adoption never falls back to creating");
 });
 
+test("a task that has left the backlog cannot be adopted, and gains no edges", async () => {
+  const { repo, registry, tasks, file, count } = ticketHarness("ticket-adopt-running");
+  const blocker = await file({ title: "Blocker", intent: "b" });
+  const created = tasks.create({
+    repoRoot: repo, intent: "Already started", title: "Running work", kind: "ship", agent: "claude", backlog: true,
+  });
+  for (const status of ["running", "done"] as const) {
+    registry.upsertTask({ ...tasks.list().find((task) => task.id === created.id)!, status });
+    const refused = await file({
+      title: "t",
+      intent: "i",
+      dependsOnTaskIds: [blocker.body.id],
+      adoptTaskId: created.id,
+    });
+    assert.equal(refused.status, 409, `a ${status} task is refused`);
+    assert.equal(refused.body.error, `the task to adopt is ${status}, not in the backlog`);
+    assert.deepEqual(tasks.list().find((task) => task.id === created.id)!.dependencies, []);
+  }
+  assert.equal(count(), 2, "a refused adoption never falls back to creating");
+});
+
 test("list_backlog_tasks returns the calling repository's open backlog only", async () => {
   const { repo, tasks, app, file } = ticketHarness("ticket-list");
   const other = gitRepo("ticket-list-other");

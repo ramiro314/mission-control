@@ -38,6 +38,7 @@ import {
 import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
+import { isUnknownRoute } from "./unknown-route.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
@@ -326,19 +327,6 @@ server.registerTool(
     }
   },
 );
-
-/**
- * Whether a 404 means the daemon does not know the route at all, as an older build answers,
- * rather than a route that ran and reported a missing session or task as a JSON `error`.
- */
-async function isUnknownRoute(res: Response): Promise<boolean> {
-  if (res.status !== 404) return false;
-  try {
-    return typeof ((await res.clone().json()) as { error?: unknown }).error !== "string";
-  } catch {
-    return true;
-  }
-}
 
 server.registerTool(
   "create_task",
