@@ -2252,6 +2252,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.list(raw === "true"));
   });
   const workflowCommandManager = (): WorkflowCommandManager | null => workflowCommands ?? null;
+  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
+  const kindDefaultsNaming = (workflowId: string): string | null => {
+    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
+    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
+  };
   /**
    * The legacy config shape, COMPOSED rather than stored.
    *
@@ -2260,11 +2265,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * it. Global defaults are absent by construction: they have no repository, so no legacy row
    * could describe one honestly.
    */
-  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
-  const kindDefaultsNaming = (workflowId: string): string | null => {
-    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
-    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
-  };
   const legacyWorkflowConfig = (): WorkflowConfig => ({
     ...getWorkflowPolicy(),
     checkCommands: legacyCheckCommands(workflowCommandManager()?.list() ?? []),
