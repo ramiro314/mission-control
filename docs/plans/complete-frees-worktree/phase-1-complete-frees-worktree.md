@@ -79,9 +79,12 @@ finished tasks.
 ## 5. Implementation steps (in order)
 
 1. **Shared Git check.** In `src/server/actions.ts`, extract the body of `resetWouldDestroyWork`
-   into an exported `checkoutWouldLoseWork(path, { excuseLocalCommits })`. It returns
+   into an exported `checkoutWouldLoseWork(path, { excuseCommitsAncestorOf?: readonly string[] })`.
+   `excuseCommitsAncestorOf` lists merged PR head SHAs. Local-only commits are excused only when
+   HEAD equals one of them or is an ancestor of one (`git merge-base --is-ancestor HEAD <sha>`
+   exits 0); an empty or omitted list excuses nothing. It returns
    `{ uncommitted: number, localOnlyCommits: number, reason: string | null }`, or an
-   "unreadable" reason when Git fails. `resetWouldDestroyWork` becomes a thin wrapper, and its
+   "unreadable" reason when Git fails. `resetWouldDestroyWork` passes no list. `resetWouldDestroyWork` becomes a thin wrapper, and its
    strings and behaviour must stay identical because the reset preview relies on them.
 2. **Task freeability.** Add to `TaskManager` a public
    `async worktreeFreeability(id): Promise<{ applicable: boolean; freeable: boolean; reasons: string[] }>`.
@@ -93,8 +96,9 @@ finished tasks.
      from the same bindings as `mergedPrFor`) equals the checkout's HEAD or has HEAD as an
      ancestor: `git merge-base --is-ancestor HEAD <prHeadSha>` exits 0. A commit made after the
      merged head is therefore never excused. A missing `prHeadSha`, or a SHA Git cannot find
-     locally, means not excused. Pass the candidate SHAs into the path-level check rather than a
-     boolean. Uncommitted or untracked files are never excused.
+     locally, means not excused. Collect every merged binding's non-null `prHeadSha` and pass
+     them as `excuseCommitsAncestorOf` to the step 1 check. Uncommitted or untracked files are
+     never excused.
    - Any unreadable checkout means not freeable, with that reason.
    - Living inside `TaskManager` keeps the binding reads private.
 3. **Preview route.** Add `GET /api/tasks/:id/free-preview` in `routes.ts` beside the other
@@ -168,7 +172,9 @@ reset and worktree tests do.
   - a clean, pushed checkout loses nothing;
   - uncommitted and untracked files are counted;
   - a local-only commit is counted;
-  - a local-only commit is excused when excusing is on;
+  - a local-only commit is excused when HEAD equals or is an ancestor of a SHA in
+    `excuseCommitsAncestorOf`, and not excused when HEAD is a descendant of it;
+  - an `excuseCommitsAncestorOf` SHA that Git cannot find excuses nothing;
   - an unreadable path yields a reason;
   - `resetWouldDestroyWork` output is unchanged.
 - **Freeability:**
@@ -247,3 +253,6 @@ They must not bypass `reclaim` for teardown.
   - the merged-PR excuse is scoped to commits contained in a merged PR's recorded head
     (`prHeadSha`), not to "any PR for this task merged";
   - `plan.md`'s preview contract now includes `applicable`, matching this file.
+- **2026-09-27, review round 2 (GitHub Inspector on PR #11):** steps 1 and 2 named the excuse
+  parameter two ways (a boolean flag and a list of SHAs). It is now defined once, in step 1, as
+  `excuseCommitsAncestorOf: readonly string[]`, and step 2 and the tests use that name.
