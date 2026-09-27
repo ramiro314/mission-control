@@ -213,3 +213,81 @@ test("the Line's backlog drawer offers the same shape this, through the same two
   expect(converted).toMatchObject({ kind: "shape", source: swept!.source, labels: swept!.labels });
   expect(converted!.status).not.toBe("backlog");
 });
+
+test("a refused dispatch leaves the task converted to shape in the backlog and shows the refusal", async ({
+  page,
+  daemon,
+}) => {
+  upstream(daemon);
+  await putSources(page, daemon, [
+    { id: "gh", kind: "github-issues", label: "Demo issues", repoRoot: daemon.repo, enabled: false,
+      config: { repo: "acme/demo" } },
+  ]);
+  // Grill off: the kind edit is accepted, and the shape dispatch is refused naming the toggle.
+  expect((await page.request.put(`${daemon.baseURL}/api/skills/config`, {
+    data: { enabled: true, skills: { grill: false, "html-plans": true } },
+  })).ok()).toBe(true);
+  // Live delivery granted, so the refusal is the Grill one and not the workflow's.
+  expect((await page.request.put(`${daemon.baseURL}/api/workflows/config`, {
+    data: { liveEnabled: true, repoAllowlist: [daemon.repo] },
+  })).ok()).toBe(true);
+  await page.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  await sweep(page, daemon, "gh");
+  const [swept] = await tasks(page, daemon);
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const card = page.locator("section.board-backlog .bl-card").filter({ hasText: "Rework the export pipeline" });
+  const dispatched = page.waitForResponse((r) => r.url().endsWith(`/api/tasks/${swept!.id}/dispatch`));
+  await card.getByRole("button", { name: "shape this" }).click();
+  expect((await dispatched).ok()).toBe(false);
+
+  // The refusal is surfaced, and the card stays, now reading shape, with no button to shape it again.
+  await expect(page.getByText(/Enable Skills and the grill skill/).first()).toBeVisible();
+  await expect(card.locator(".bl-kind")).toHaveText("shape");
+  await expect(card.getByRole("button", { name: "shape this" })).toHaveCount(0);
+  await shoot(page, "05-refused-dispatch-left-shape");
+
+  const [after] = await tasks(page, daemon);
+  expect(after).toMatchObject({
+    id: swept!.id,
+    kind: "shape",
+    status: "backlog",
+    source: swept!.source,
+    labels: swept!.labels,
+    dependencies: swept!.dependencies,
+  });
+});
+
+test("a task waiting on a declared dependency cannot be shaped from either layout", async ({ page, daemon }) => {
+  const create = async (data: Record<string, unknown>): Promise<Task> => {
+    const res = await page.request.post(`${daemon.baseURL}/api/tasks`, {
+      data: { repoRoot: daemon.repo, backlog: true, ...data },
+    });
+    expect(res.ok(), await res.text()).toBe(true);
+    return res.json();
+  };
+  const base = await create({ intent: "Lay the base", title: "Lay the base" });
+  await create({ intent: "Build on the base", title: "Build on the base", dependencies: [{ type: "task", taskId: base.id }] });
+  await page.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+
+  // Board: the waiting card's button is present but disabled; the free card's is enabled.
+  const cards = page.locator("section.board-backlog .bl-card");
+  const card = (title: string): Locator =>
+    cards.filter({ has: page.getByRole("button", { name: title, exact: true }) });
+  const waiting = card("Build on the base");
+  await expect(waiting.getByRole("button", { name: "waiting for dependencies" })).toBeDisabled();
+  await expect(waiting.getByRole("button", { name: "shape this" })).toBeDisabled();
+  await expect(card("Lay the base").getByRole("button", { name: "shape this" })).toBeEnabled();
+
+  // Line drawer: the blocked row carries neither Launch now nor Shape this.
+  await page.getByRole("navigation", { name: "The Line" }).getByRole("button", { name: /^Backlog,/ }).click();
+  const drawer = page.getByRole("region", { name: "Backlog drawer" });
+  const rows = drawer.locator("li.line-bl-row");
+  const blockedRow = rows.filter({ hasText: "Build on the base" });
+  await expect(blockedRow).toBeVisible();
+  await expect(blockedRow.getByRole("button", { name: "Shape this" })).toHaveCount(0);
+  await expect(rows.filter({ has: page.getByRole("button", { name: "Lay the base", exact: true }) })
+    .getByRole("button", { name: "Shape this" })).toBeVisible();
+  await shoot(drawer, "06-blocked-row-has-no-shape-this");
+});
