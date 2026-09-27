@@ -252,6 +252,28 @@ test("an unrelated plan directory in the same checkout is never archived", async
   }
 });
 
+test("a shape task's plan is archived as a plan", async () => {
+  // Shape delivers a plan, so its capture kind is `plan`: the same bundle a plan task produces.
+  const h = harness();
+  const { repoRoot, worktreePath } = makeCheckout({
+    committed: {
+      "docs/plans/archive-rename/plan.md": "# The kind-agnostic archive\n",
+      "docs/plans/archive-rename/plan.html": planHtml("The kind-agnostic archive"),
+    },
+  });
+  const task = mkPlan({ kind: "shape", worktreePath, repoRoot, status: "done" });
+  h.registry.upsertTask(task);
+
+  assert.equal(new RegistryArchiveTaskGateway(h.registry).captureKind(task.id), "plan");
+  assert.equal((await h.tasks.reclaim(task.id)).ok, true);
+  const bundles = bundleDir(h, task.id);
+  assert.equal(bundles.length, 1, "a shape task's plan directory becomes one bundle");
+  assert.equal(
+    readFileSync(join(bundles[0]!, ARCHIVE_PRIMARY_REPORT_PATH), "utf8"),
+    planHtml("The kind-agnostic archive"),
+  );
+});
+
 test("a ship task that writes a plan directory is not archived", async () => {
   const h = harness();
   const { repoRoot, worktreePath } = makeCheckout({

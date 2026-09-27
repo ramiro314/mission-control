@@ -403,17 +403,18 @@ test("each delivery seam reaches for its own resolver, and only its own", () => 
   // launch resolver on a live session types a stale invocation, and the watermark resolver at
   // launch refuses a dispatch over a conversation that does not exist. Neither shows up in a
   // green suite, so the call sites are pinned here.
+  // Plan and shape share one resolver per seam (`plans/skills.ts`), keyed by the task's kind.
   const dispatcher = src("src/server/dispatcher.ts");
-  assert.match(dispatcher, /planSkillsForAgent/, "a fresh dispatch uses the launch-time ladder");
+  assert.match(dispatcher, /planningSkillsForAgent/, "a fresh dispatch uses the launch-time ladder");
   assert.ok(
-    !dispatcher.includes("planSkillsForSession"),
+    !/planningSkillsForSession|planSkillsForSession/.test(dispatcher),
     "a dispatch has no session to measure a reload watermark against",
   );
 
   const tasks = src("src/server/tasks.ts");
-  assert.match(tasks, /planSkillsForSession/, "an assignment uses the watermark-aware ladder");
+  assert.match(tasks, /planningSkillsForSession/, "an assignment uses the watermark-aware ladder");
   assert.ok(
-    !/planSkillsForAgent/.test(tasks.replaceAll("planDispatchBlock", "")),
+    !/planningSkillsForAgent|planSkillsForAgent/.test(tasks.replaceAll("planDispatchBlock", "")),
     "an assignment must not resolve as though the session were about to be launched",
   );
 });
@@ -423,7 +424,7 @@ test("both delivery seams gate the plan contract, not just the dispatcher", () =
   // appendix: a dispatcher-only refusal would let a backlog plan be assigned to a live agent
   // whose skills are switched off, which is the seam that types into a checkout it just reset.
   assert.match(src("src/server/dispatcher.ts"), /planSkills/);
-  assert.match(src("src/server/tasks.ts"), /requirePlanSkills \?\? planSkillsForSession/);
+  assert.match(src("src/server/tasks.ts"), /requirePlanSkills \?\? planningSkillsForSession/);
   assert.match(src("src/server/routes.ts"), /planDispatchBlock\(/);
 });
 

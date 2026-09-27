@@ -339,3 +339,20 @@ test("a planning session in repo A can gate a task whose primary is repo B", asy
   assert.equal(created.dependencies[0]?.sessionId, planningSession.id);
   assert.equal(created.dependencies[0]?.satisfiedAt, null);
 });
+
+test("MCP create_task never files a shape task, on either route", async () => {
+  // Shape opens with an interview only a human can answer, so it is not offered to agents
+  // filing work. The tool has no `kind` field: a caller that sends one anyway gets `ship`.
+  const repo = gitRepo("shape-refused");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  for (const path of ["/mcp/tasks", "/mcp/v2/tasks"] as const) {
+    const response = await createTaskRequest(app, path, repo, { kind: "shape" });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const created = body.task ?? body;
+    assert.equal(created.kind, "ship", `${path} must not create a shape task`);
+  }
+  assert.ok(tasks.list().every((task) => task.kind !== "shape"));
+});

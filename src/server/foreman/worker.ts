@@ -17,7 +17,7 @@ import {
   PROMPTED_DECISION_SUMMARY_MAX,
 } from "@shared/protocol.ts";
 import { taskCompletionContract } from "@shared/task-completion.ts";
-import { planPublicationStillCurrent, withPlanPublicationGuard } from "./plan-publication.ts";
+import { planPublicationStillCurrent, promptedWrapupPlanPublication, withPlanPublicationGuard } from "./plan-publication.ts";
 import type {
   AgentType,
   PromptedCompletionGap,
@@ -2090,10 +2090,11 @@ export async function processPromptedWrapup(
   // No base sha: the whole branch since it diverged is the unit of work, because a
   // pane-typed session has no per-item scope to anchor to. That is also why
   // `diffMayIncludeOtherWork` is true below - it always may.
-  const planPublication = session.task?.kind === "plan"
-    ? await client.planPublicationContext(session.id).catch(() => null)
-    : null;
-  if (session.task?.kind === "plan" && (!planPublication || planPublication.owner === "unavailable")) {
+  const { context: planPublication, hold: publicationHold } = await promptedWrapupPlanPublication(
+    session.task?.kind,
+    () => client.planPublicationContext(session.id),
+  );
+  if (publicationHold) {
     log(`${session.name}: prompted wrap-up held - plan publication ownership is unavailable`);
     return false;
   }

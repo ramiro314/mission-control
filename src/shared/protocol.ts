@@ -8,9 +8,11 @@ import {
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
   TASK_KIND_BACKLOG_REFUSAL,
+  TASK_KIND_SCHEDULE_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
+  taskKindAllowsSchedule,
 } from "./task.ts";
 import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
@@ -1072,7 +1074,7 @@ export const DispatchSchema = z
     effort: EffortLevelSchema.optional(),
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
-     * plan tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
+     * plan and shape tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
@@ -7252,6 +7254,7 @@ const ScheduleTemplateSchema = z
     kind: z
       .enum(TASK_KINDS)
       .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsSchedule, TASK_KIND_SCHEDULE_REFUSAL)
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment

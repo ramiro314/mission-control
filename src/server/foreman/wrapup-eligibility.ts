@@ -162,6 +162,7 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
   plan: false,
   pipeline: false,
   chat: true,
+  shape: false,
 };
 
 /** Kinds whose ordinary completion stays with the human unless a Workflow was selected. */
@@ -172,6 +173,7 @@ const KIND_REQUIRES_EXPLICIT_WORKFLOW: Record<TaskKind, boolean> = {
   plan: false,
   pipeline: false,
   chat: true,
+  shape: false,
 };
 
 /** A session with no linked task has no kind to exempt it, so it is classified as before. */

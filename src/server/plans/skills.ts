@@ -1,4 +1,5 @@
-import type { AgentType, Session, Task } from "@shared/types.ts";
+import { isPlanningTaskKind, type PlanningTaskKind } from "@shared/task.ts";
+import type { AgentType, Session, Task, TaskKind } from "@shared/types.ts";
 import {
   requiredSkillCommand,
   skillInvocationForAgent,
@@ -7,9 +8,9 @@ import {
 import {
   PLAN_HTML_SKILL_ID,
   PLAN_PHASED_SKILL_ID,
-  isPlanTask,
   type PlanSkillInvocations,
 } from "./prompt.ts";
+import { SHAPE_GRILL_SKILL_ID, type ShapeSkillInvocations } from "./shape.ts";
 
 /**
  * Whether a plan task can be honoured at all, and the invocations it will be told to use.
@@ -35,9 +36,40 @@ import {
  * either question with the other function is wrong in both directions.
  */
 
-export type PlanSkillResolution =
-  | { ok: true; commands: PlanSkillInvocations }
+/** What each planning kind's contract is handed, per kind. */
+export interface PlanningSkillInvocationsByKind {
+  plan: PlanSkillInvocations;
+  shape: ShapeSkillInvocations;
+}
+
+/** Either kind's resolved invocations, as `TaskContractInputs.planSkills` carries them. */
+export type PlanningSkillInvocations = PlanningSkillInvocationsByKind[PlanningTaskKind];
+
+/**
+ * THE one statement of which skills each planning kind needs, and under which field its
+ * contract reads each invocation. Key order is the order the skills are needed, which is the
+ * order a refusal reports them in. A kind added to `PlanningTaskKind` does not compile until
+ * it has a row, and a row whose fields disagree with its invocations type does not either.
+ */
+export const PLANNING_SKILLS: {
+  [K in PlanningTaskKind]: { readonly [F in keyof PlanningSkillInvocationsByKind[K]]: string };
+} = {
+  plan: { htmlPlans: PLAN_HTML_SKILL_ID, phasedPlan: PLAN_PHASED_SKILL_ID },
+  shape: { grill: SHAPE_GRILL_SKILL_ID, htmlPlans: PLAN_HTML_SKILL_ID },
+};
+
+export type PlanningSkillResolution<K extends PlanningTaskKind = PlanningTaskKind> =
+  | { ok: true; commands: PlanningSkillInvocationsByKind[K] }
   | { ok: false; message: string };
+
+/** The launch-time resolver's shape, as the Dispatcher takes it for injection. */
+export type PlanningSkillsForAgent = (agent: AgentType, kind: PlanningTaskKind) => PlanningSkillResolution;
+
+/** The assignment-time resolver's shape, as the TaskManager takes it for injection. */
+export type PlanningSkillsForSession = (session: Session, kind: PlanningTaskKind) => PlanningSkillResolution;
+
+/** Back-compat name for the plan kind's resolution. */
+export type PlanSkillResolution = PlanningSkillResolution<"plan">;
 
 /**
  * The resolver's own sentence, plus what it costs here.
@@ -56,26 +88,29 @@ export type PlanSkillResolution =
  * One message for both seams. A dispatch and a handover fail this for the same reason and the
  * operator's next move is the same, so a second wording would be two sentences to keep true.
  */
-function refusal(problem: string): string {
+function refusal(problem: string, kind: TaskKind = "plan"): string {
   return (
-    `${problem} A plan task's intent invokes the planning skills rather than restating them, `
+    `${problem} A ${kind} task's intent invokes the planning skills rather than restating them, `
     + "so it would reach an agent that cannot load the procedure it was told to follow. "
     + "Both skills live under Settings → Skills."
   );
 }
 
-function compose(
-  htmlPlans: RequiredSkillCommand,
-  phasedPlan: RequiredSkillCommand,
-): PlanSkillResolution {
-  // Reported in the order the skills are needed, so an operator with both switched off is
-  // pointed at the one that fails first rather than at whichever was checked first.
-  if (!htmlPlans.ok) return { ok: false, message: refusal(htmlPlans.message) };
-  if (!phasedPlan.ok) return { ok: false, message: refusal(phasedPlan.message) };
-  return {
-    ok: true,
-    commands: { htmlPlans: htmlPlans.command, phasedPlan: phasedPlan.command },
-  };
+/**
+ * Resolve every skill a planning kind needs, in order, stopping at the first that cannot be
+ * invoked. The single resolve-or-refuse path both delivery seams and the dispatch gate share.
+ */
+function resolvePlanningSkills<K extends PlanningTaskKind>(
+  kind: K,
+  resolveOne: (id: string) => RequiredSkillCommand,
+): PlanningSkillResolution<K> {
+  const commands: Record<string, string> = {};
+  for (const [field, id] of Object.entries(PLANNING_SKILLS[kind])) {
+    const resolved = resolveOne(id);
+    if (!resolved.ok) return { ok: false, message: refusal(resolved.message, kind) };
+    commands[field] = resolved.command;
+  }
+  return { ok: true, commands: commands as unknown as PlanningSkillInvocationsByKind[K] };
 }
 
 /**
@@ -84,11 +119,12 @@ function compose(
  * For a dispatch, which starts a conversation that does not exist yet and therefore starts
  * after the current skills generation by construction.
  */
-export function planSkillsForAgent(
+export function planningSkillsForAgent<K extends PlanningTaskKind>(
   agent: AgentType,
+  kind: K,
   resolve: typeof skillInvocationForAgent = skillInvocationForAgent,
-): PlanSkillResolution {
-  return compose(resolve(agent, PLAN_HTML_SKILL_ID), resolve(agent, PLAN_PHASED_SKILL_ID));
+): PlanningSkillResolution<K> {
+  return resolvePlanningSkills(kind, (id) => resolve(agent, id));
 }
 
 /**
@@ -98,25 +134,43 @@ export function planSkillsForAgent(
  * current symlink generation is still holding the previous skill set, so typing an invocation
  * into it names a skill it cannot load. Refused rather than typed.
  */
+export function planningSkillsForSession<K extends PlanningTaskKind>(
+  session: Session,
+  kind: K,
+  resolve: typeof requiredSkillCommand = requiredSkillCommand,
+): PlanningSkillResolution<K> {
+  return resolvePlanningSkills(kind, (id) => resolve(session, id));
+}
+
+/** The plan kind's launch-time resolution. */
+export function planSkillsForAgent(
+  agent: AgentType,
+  resolve: typeof skillInvocationForAgent = skillInvocationForAgent,
+): PlanSkillResolution {
+  return planningSkillsForAgent(agent, "plan", resolve);
+}
+
+/** The plan kind's assignment-time resolution. */
 export function planSkillsForSession(
   session: Session,
   resolve: typeof requiredSkillCommand = requiredSkillCommand,
 ): PlanSkillResolution {
-  return compose(resolve(session, PLAN_HTML_SKILL_ID), resolve(session, PLAN_PHASED_SKILL_ID));
+  return planningSkillsForSession(session, "plan", resolve);
 }
 
 /**
  * Why this task cannot be dispatched right now, or null when it can.
  *
  * The pre-flight the doors an operator dispatches through ask, so a refusal arrives on the
- * form or the button rather than as a failed card a few seconds later. Null - and no config
- * read at all - for every other kind, so a ship or scout dispatch is untouched by this gate.
+ * form or the button rather than as a failed card a few seconds later. Each planning kind
+ * asks for its own skills; null - and no config read at all - for every other kind, so a ship
+ * or scout dispatch is untouched by this gate.
  */
 export function planDispatchBlock(
   task: Pick<Task, "kind" | "agent">,
   resolve: typeof skillInvocationForAgent = skillInvocationForAgent,
 ): string | null {
-  if (!isPlanTask(task)) return null;
-  const resolved = planSkillsForAgent(task.agent, resolve);
+  if (!isPlanningTaskKind(task.kind)) return null;
+  const resolved = planningSkillsForAgent(task.agent, task.kind, resolve);
   return resolved.ok ? null : resolved.message;
 }

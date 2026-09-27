@@ -26,6 +26,7 @@ import {
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   dispatchHasNoProvisionedResources,
+  isPlanningTaskKind,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
@@ -71,8 +72,7 @@ import {
   type MissionMcpDescriptor,
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
-import { isPlanTask } from "./plans/prompt.ts";
-import { planSkillsForAgent } from "./plans/skills.ts";
+import { planningSkillsForAgent, type PlanningSkillsForAgent } from "./plans/skills.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
@@ -276,7 +276,7 @@ export class Dispatcher {
        * A seam only so a test can drive the refusal, and the launch-time resolver by
        * construction: this launch's conversation does not exist yet.
        */
-      planSkills?: typeof planSkillsForAgent;
+      planSkills?: PlanningSkillsForAgent;
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
       /**
@@ -453,8 +453,8 @@ export class Dispatcher {
       // `skillInvocationForAgent`, never the watermark-aware resolver: the conversation this
       // is resolving for does not exist yet and will start after the current skill generation
       // by construction. See `skills/invoke.ts`.
-      const planSkills = isPlanTask(task)
-        ? (this.deps.planSkills ?? planSkillsForAgent)(task.agent)
+      const planSkills = isPlanningTaskKind(task.kind)
+        ? (this.deps.planSkills ?? planningSkillsForAgent)(task.agent, task.kind)
         : null;
       if (planSkills && !planSkills.ok) throw new Error(planSkills.message);
       // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch

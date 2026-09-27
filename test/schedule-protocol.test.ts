@@ -156,3 +156,12 @@ test("history cursor and limit are validated, not silently coerced past their bo
   assert.equal(ScheduleHistoryQuerySchema.safeParse({ limit: "0" }).success, false);
   assert.equal(ScheduleHistoryQuerySchema.safeParse({ limit: "1000" }).success, false);
 });
+
+test("a recurring mission cannot file a shape task", () => {
+  const refused = CreateScheduleSchema.safeParse(definition({ template: template({ kind: "shape" }) }));
+  assert.equal(refused.success, false);
+  if (!refused.success) {
+    assert.match(refused.error.issues.map((issue) => issue.message).join("\n"), /Recurring Mission cannot file them/);
+  }
+  assert.equal(CreateScheduleSchema.safeParse(definition({ template: template({ kind: "plan" }) })).success, true);
+});
