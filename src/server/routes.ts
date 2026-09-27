@@ -337,7 +337,12 @@ import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./ta
 import { taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask, type PushTaskOutcome } from "./task-sources/push.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
-import { TASK_SOURCE_KIND_INFO, pushSourcesFor, type TaskSourcesView } from "@shared/task-source.ts";
+import {
+  TASK_SOURCE_KIND_INFO,
+  pushSourcesFor,
+  sourceName,
+  type TaskSourcesView,
+} from "@shared/task-source.ts";
 import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
 import {
   activePipelineRepoStatuses,
@@ -4693,11 +4698,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     unavailable: string | null;
   } {
     const configured = getTaskSourcesConfig().sources.filter((source) => source.repoRoot === repoRoot);
-    const name = (source: { label: string; kind: keyof typeof TASK_SOURCE_KIND_INFO }): string =>
-      source.label.trim() || TASK_SOURCE_KIND_INFO[source.kind].label;
     const sources = pushSourcesFor(configured, repoRoot).map((source) => ({
       id: source.id,
-      label: name(source),
+      label: sourceName(source),
       kind: TASK_SOURCE_KIND_INFO[source.kind].label,
       relates: TASK_SOURCE_KIND_INFO[source.kind].canRelate,
     }));
@@ -4706,7 +4709,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       sources,
       unavailable: configured.length === 0
         ? "No task source is configured for this repository, so there is nowhere to mirror the tickets."
-        : `This repository's task sources (${configured.map(name).join(", ")}) cannot receive pushed tasks.`,
+        : `This repository's task sources (${configured.map(sourceName).join(", ")}) cannot receive pushed tasks.`,
     };
   }
 

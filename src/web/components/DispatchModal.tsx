@@ -41,6 +41,7 @@ import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
   TASK_SOURCE_KIND_INFO,
   pushSourcesFor,
+  sourceName,
   type TaskSourceInstance,
   type TaskSourceRef,
 } from "@shared/task-source.ts";
@@ -289,11 +290,6 @@ function ensembleDraftsEqual(
   b: EnsembleDispatchDraft,
 ): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/** What to call a source in a picker: the operator's own name for it, else its kind's. */
-function sourceName(source: TaskSourceInstance): string {
-  return source.label.trim() || TASK_SOURCE_KIND_INFO[source.kind].label;
 }
 
 /**

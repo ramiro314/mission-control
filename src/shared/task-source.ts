@@ -684,6 +684,15 @@ export function pushSourcesFor(
   return sources.filter((s) => TASK_SOURCE_KIND_INFO[s.kind].canPush && s.repoRoot === repoRoot);
 }
 
+/**
+ * What to call a configured source wherever a person reads it: the operator's own name for
+ * it, else its kind's. One owner, so the edit modal's Push picker and the breakdown review's
+ * mirror choice name the same source the same way.
+ */
+export function sourceName(source: Pick<TaskSourceInstance, "label" | "kind">): string {
+  return source.label.trim() || TASK_SOURCE_KIND_INFO[source.kind].label;
+}
+
 export function clampSweepInterval(ms: number): number {
   return Math.min(MAX_SWEEP_INTERVAL_MS, Math.max(MIN_SWEEP_INTERVAL_MS, Math.round(ms)));
 }
