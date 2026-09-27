@@ -1,5 +1,5 @@
 import {
-  canRefreshSourceTask, localSourceContent, sameSourceContent, type SourceBlocker, type SourceContent,
+  canRefreshSourceTask, localSourceContent, sameSourceContent, sourceBlockerOf, type SourceBlocker, type SourceContent,
 } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { blockerDependencies } from "./task-sources/relations.ts";
@@ -3903,14 +3903,7 @@ export class TaskManager {
   private sourceSyncedDependencies(task: Task, sourceId: string, blockedBy: SourceBlocker[]): TaskDependency[] {
     const tasks = this.registry.listTasks();
     const byId = new Map(tasks.map((t) => [t.id, t]));
-    const refOf = (d: TaskDependency): string | null => {
-      if (d.type === "source" && d.sourceId === sourceId) return d.externalId;
-      if (d.type === "task") {
-        const linked = byId.get(d.taskId)?.source;
-        if (linked?.sourceId === sourceId) return linked.externalId;
-      }
-      return null;
-    };
+    const refOf = (d: TaskDependency): string | null => sourceBlockerOf(d, sourceId, byId)?.externalId ?? null;
     const wanted = new Map(blockedBy.map((b) => [b.externalId, b]));
     const kept = task.dependencies.filter((d) => {
       const ref = refOf(d);

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TASK_PRIORITIES, taskHasNoProvisionedResources } from "./task.ts";
-import type { Task } from "./types.ts";
+import type { Task, TaskDependency } from "./types.ts";
 
 /** One upstream item that blocks the task, named the way the source names it. */
 export const SourceBlockerSchema = z.object({ externalId: z.string(), url: z.string().nullable() });
@@ -84,16 +84,19 @@ export function localSourceContent(task: Task, relate: { sourceId: string; tasks
   const content = sourceContent({ title: task.title, intent: task.intent, priority: task.priority, labels: task.labels });
   if (!relate) return content;
   const byId = new Map(relate.tasks.map((t) => [t.id, t]));
-  const refs: SourceBlocker[] = [];
-  for (const d of task.dependencies) {
-    if (d.type === "source" && d.sourceId === relate.sourceId) refs.push({ externalId: d.externalId, url: d.url });
-    if (d.type === "task") {
-      const linked = byId.get(d.taskId)?.source;
-      if (linked?.sourceId === relate.sourceId) refs.push({ externalId: linked.externalId, url: linked.url });
-    }
-  }
-  content.blockedBy = sourceBlockers(refs);
+  content.blockedBy = sourceBlockers(task.dependencies.flatMap((d) => sourceBlockerOf(d, relate.sourceId, byId) ?? []));
   return content;
+}
+/**
+ * The source item an edge stands for, or null when the edge is outside the source's
+ * `dependencies` group. The one owner of that rule: the local projection above and the
+ * edges sync keeps (`TaskManager.sourceSyncedDependencies`) both read it.
+ */
+export function sourceBlockerOf(d: TaskDependency, sourceId: string, tasksById: Map<string, Task>): SourceBlocker | null {
+  if (d.type === "source") return d.sourceId === sourceId ? { externalId: d.externalId, url: d.url } : null;
+  if (d.type !== "task") return null;
+  const linked = tasksById.get(d.taskId)?.source;
+  return linked?.sourceId === sourceId ? { externalId: linked.externalId, url: linked.url } : null;
 }
 function groupValue(c: SourceContent, group: SourceContentGroup): unknown {
   if (group === "brief") return [c.title, c.intent];
