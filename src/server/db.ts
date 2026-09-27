@@ -5225,12 +5225,66 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
           });
         }
         seen.add(key);
+      } else if (
+        row.type === "source" &&
+        typeof row.sourceId === "string" &&
+        typeof row.externalId === "string"
+      ) {
+        const key = `source:${row.sourceId}:${row.externalId}`;
+        if (!seen.has(key)) {
+          out.push({
+            type: "source",
+            sourceId: row.sourceId,
+            externalId: row.externalId,
+            url: typeof row.url === "string" ? row.url : null,
+            title: typeof row.title === "string" ? row.title : row.externalId,
+            state:
+              row.state === "completed" || row.state === "not_planned" ? row.state : "open",
+            checkedAt: typeof row.checkedAt === "number" ? row.checkedAt : null,
+            selectedAt,
+            satisfiedAt,
+          });
+        }
+        seen.add(key);
+      } else if (row.type !== "task" && row.type !== "session" && row.type !== "source") {
+        // A type this build does not know - a newer build wrote it. Kept, unsatisfied, and
+        // written back verbatim: dropping it here would release work the newer build was
+        // holding back, the moment anybody ran this one. A malformed KNOWN type is still
+        // dropped, as it always was: this build does know what that edge should look like.
+        const key = JSON.stringify(row);
+        if (!seen.has(`unknown:${key}`)) {
+          const edgeType = typeof row.type === "string" ? row.type : "unknown";
+          out.push({
+            type: "unknown",
+            edgeType,
+            key,
+            title:
+              typeof row.title === "string" ? row.title : `Unrecognized dependency (${edgeType})`,
+            raw: row,
+            selectedAt: null,
+            satisfiedAt: null,
+          });
+        }
+        seen.add(`unknown:${key}`);
       }
     }
     return out;
   } catch {
     return [];
   }
+}
+
+/**
+ * Dependency edges as the JSON the column stores, or null for none.
+ *
+ * An edge of a type this build does not know is written back as the object it was read
+ * from, so a newer build finds its own edge again - see `parseTaskDependencies`.
+ */
+export function serializeTaskDependencies(dependencies: Task["dependencies"]): string | null {
+  if (dependencies.length === 0) return null;
+  return JSON.stringify(
+    dependencies.map((dependency) => (dependency.type === "unknown" ? dependency.raw : dependency)),
+  );
 }
 
 /** A stale/newer effort value cannot be trusted as a harness launch option. */
@@ -5403,7 +5457,7 @@ export function upsertTask(t: Task): string[] {
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
-      t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
+      serializeTaskDependencies(t.dependencies),
       t.enabled ? 1 : 0,
       t.backlogRank,
       t.model,
@@ -5654,7 +5708,7 @@ function writeTaskDependencyRewrites(
   );
   for (const rewrite of rewrites) {
     const result = update.run(
-      rewrite.dependencies.length > 0 ? JSON.stringify(rewrite.dependencies) : null,
+      serializeTaskDependencies(rewrite.dependencies),
       rewrite.updatedAt,
       rewrite.taskId,
     );

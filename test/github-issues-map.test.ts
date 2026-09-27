@@ -46,7 +46,7 @@ test("the base sweep asks only for open issues, and only for the fields we map",
   assert.ok(args.slice(0, 2).join(" ") === "issue list");
   assert.equal(argAfter(args, "--state"), "open");
   assert.equal(argAfter(args, "--limit"), "50");
-  assert.equal(argAfter(args, "--json"), "number,title,body,url,labels,assignees,updatedAt");
+  assert.equal(argAfter(args, "--json"), "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent");
   // No filter was configured, so none is passed - the sweep must not narrow itself.
   assert.equal(args.includes("--label"), false);
   assert.equal(args.includes("--search"), false);

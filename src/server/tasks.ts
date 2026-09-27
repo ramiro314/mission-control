@@ -18,6 +18,7 @@ import type {
   TaskDependency,
   TaskKind,
   TaskPriority,
+  TaskSourceItemState,
 } from "@shared/types.ts";
 import type {
   BulkUpdateTasks,
@@ -43,6 +44,7 @@ import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
+import { dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
 import {
   dispatchHasNoProvisionedResources,
   isPlanningTaskKind,
@@ -228,6 +230,16 @@ export interface CreateTaskInput {
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
   /**
+   * External items this task waits on, recovered from blocking links by a task source's
+   * sweep (`relations.ts`). Each becomes a new `source` dependency edge.
+   *
+   * A separate field rather than a `source` entry in `dependencies`, and that is the trust
+   * boundary: `dependencies` arrives from request bodies, where a `source` input may only
+   * KEEP an edge the task already has. No wire schema declares this field, so only daemon
+   * code - the sweep's ingest - can originate an external dependency.
+   */
+  sourceDependencies?: TaskSourceRef[];
+  /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
    * decide whether an item has been filed before.
@@ -315,6 +327,25 @@ export type TaskReorderResult =
 
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
+
+/** The live session a task is bound to, if any - what makes a non-backlog task a target. */
+function activeSessionFor(taskId: string, sessions: Session[]): Session | undefined {
+  return sessions.find((session) => session.state !== "exited" && session.task?.id === taskId);
+}
+
+/**
+ * Why a NEW task edge may not point at `target`, or null when it may.
+ *
+ * A backlogged task, or one bound to a live session whose lifecycle hooks report, since that
+ * is what lets the edge follow the work to its merge. Asked only for an edge the dependent
+ * does not already carry: an existing edge is kept whatever became of its target.
+ */
+function newTaskEdgeRefusal(target: Task, activeSession: Session | undefined): string | null {
+  if (target.status === "backlog") return null;
+  if (!activeSession) return "dependency task is neither backlogged nor active";
+  if (!activeSession.hooksSeen) return "dependency task has no observable work lifecycle";
+  return null;
+}
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
@@ -2452,11 +2483,10 @@ export class TaskManager {
     current: Task["dependencies"] = [],
   ): TaskDependency[] {
     const selectedAt = Date.now();
+    const kept = new Map(current.map((dependency) => [dependencyKey(dependency), dependency]));
+    // Task and session edges, which the branches below rebuild from live state.
     const existing = new Map(
-      current.map((dependency) => [
-        dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`,
-        dependency,
-      ]),
+      current.filter(isWorkDependency).map((dependency) => [dependencyKey(dependency), dependency]),
     );
     const sessions = this.registry.snapshot().sessions;
     const resolved: TaskDependency[] = [];
@@ -2464,11 +2494,27 @@ export class TaskManager {
 
     for (const input of inputs) {
       let dependency: TaskDependency;
-      if (input.type === "session") {
+      if (input.type === "source") {
+        // An external item. Only a task source's sweep originates one (see
+        // `CreateTaskInput.sourceDependencies`); a request can keep or remove it, never
+        // create it, so its observed state survives an edit and cannot be fabricated.
+        const stored = kept.get(dependencyKey(input));
+        if (stored?.type !== "source") {
+          throw new TaskDependencyError("dependency is no longer available");
+        }
+        dependency = stored;
+      } else if (input.type === "unknown") {
+        // Written by a newer build. It can be kept or removed, never created.
+        const stored = kept.get(dependencyKey(input));
+        if (stored?.type !== "unknown") {
+          throw new TaskDependencyError("dependency is no longer available");
+        }
+        dependency = stored;
+      } else if (input.type === "session") {
         const kept = existing.get(`session:${input.sessionId}`);
         if (kept?.type === "session") {
           dependency = kept;
-          const key = `session:${dependency.sessionId}`;
+          const key = dependencyKey(dependency);
           if (!seen.has(key)) resolved.push(dependency);
           seen.add(key);
           continue;
@@ -2528,18 +2574,13 @@ export class TaskManager {
           if (!kept) throw new TaskDependencyError("dependency task is no longer available");
           dependency = kept;
         } else {
-          const activeSession = sessions.find(
-            (session) => session.state !== "exited" && session.task?.id === target.id,
-          );
+          const activeSession = activeSessionFor(target.id, sessions);
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
-          const eligible = target.status === "backlog" || Boolean(activeSession);
-          if (!eligible && !existing.has(`task:${target.id}`)) {
-            throw new TaskDependencyError("dependency task is neither backlogged nor active");
-          }
-          if (target.status !== "backlog" && activeSession && !activeSession.hooksSeen && !previousEdge) {
-            throw new TaskDependencyError("dependency task has no observable work lifecycle");
+          if (!previousEdge) {
+            const refusal = newTaskEdgeRefusal(target, activeSession);
+            if (refusal) throw new TaskDependencyError(refusal);
           }
           dependency = {
             type: "task",
@@ -2559,7 +2600,7 @@ export class TaskManager {
         }
       }
 
-      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      const key = dependencyKey(dependency);
       if (dependency.type === "task" && dependency.taskId === taskId) {
         throw new TaskDependencyError("a task cannot depend on itself");
       }
@@ -2571,6 +2612,44 @@ export class TaskManager {
       throw new TaskDependencyError("task dependencies cannot form a cycle");
     }
     return resolved;
+  }
+
+  /**
+   * Whether a NEW task edge may point at this task - the rule `resolveDependencies` holds,
+   * asked ahead of time. A task source's ingest reads it to decide between a task edge and
+   * a `source` edge, so the rule has one owner and a sweep cannot build an edge the
+   * resolver would refuse (which would refuse the whole swept item).
+   */
+  acceptsNewTaskEdgeTo(taskId: string): boolean {
+    const target = this.registry.getTask(taskId);
+    if (!target) return false;
+    return newTaskEdgeRefusal(target, activeSessionFor(target.id, this.registry.snapshot().sessions)) === null;
+  }
+
+  /** New `source` edges for a sweep's external blockers, de-duplicated against `resolved`. */
+  private sourceDependencyEdges(refs: TaskSourceRef[], resolved: TaskDependency[]): TaskDependency[] {
+    const seen = new Set(resolved.map(dependencyKey));
+    const selectedAt = Date.now();
+    const out: TaskDependency[] = [];
+    for (const ref of refs) {
+      const edge: TaskDependency = {
+        type: "source",
+        sourceId: ref.sourceId,
+        externalId: ref.externalId,
+        url: ref.url,
+        title: ref.externalId,
+        // Open until the owning source's next re-check reads the item (`observeSourceItems`).
+        state: "open",
+        checkedAt: null,
+        selectedAt,
+        satisfiedAt: null,
+      };
+      const key = dependencyKey(edge);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(edge);
+    }
+    return out;
   }
 
   private createsDependencyCycle(taskId: string, proposed: TaskDependency[]): boolean {
@@ -2695,7 +2774,13 @@ export class TaskManager {
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
     const workflowId = resolveTaskWorkflowId(input.workflowId, input.kind);
-    const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
+    const resolvedDependencies = this.resolveDependencies(input.dependencies ?? [], id);
+    // Source edges cannot close a cycle - no task depends on an external item's task - so
+    // they join after the resolver's cycle check rather than inside it.
+    const dependencies = [
+      ...resolvedDependencies,
+      ...this.sourceDependencyEdges(input.sourceDependencies ?? [], resolvedDependencies),
+    ];
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const backlogged = Boolean(input.backlog) || mustBacklog;
     // The ONE edit that makes "work that files itself arrives at the bottom" true for every
@@ -5057,6 +5142,45 @@ export class TaskManager {
         }
         changed = true;
         return { ...dependency, satisfiedAt: at };
+      });
+      if (changed) {
+        this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
+      }
+    }
+  }
+
+  /**
+   * Record what a task source just read about the external items `source` edges wait on.
+   *
+   * The only writer of a source edge's `state`. An item closed as completed stamps
+   * `satisfiedAt`, exactly as a merged pull request does for a task edge, and it stays
+   * satisfied: a later reopen upstream does not re-block work that may already be running.
+   * Closed as not planned, the edge stays unsatisfied and reports `stopped`. An item the
+   * read could not answer for (`state: null`) only has its `checkedAt` moved, so one broken
+   * link cannot hold the oldest-first re-check queue on itself.
+   */
+  observeSourceItems(
+    sourceId: string,
+    observations: { externalId: string; state: TaskSourceItemState | null; title?: string }[],
+    at = Date.now(),
+  ): void {
+    const byId = new Map(observations.map((o) => [o.externalId, o]));
+    for (const task of this.registry.listTasks()) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type !== "source" || dependency.sourceId !== sourceId) return dependency;
+        if (dependency.satisfiedAt !== null) return dependency;
+        const seen = byId.get(dependency.externalId);
+        if (!seen) return dependency;
+        changed = true;
+        const state = seen.state ?? dependency.state;
+        return {
+          ...dependency,
+          state,
+          title: seen.title?.trim() || dependency.title,
+          checkedAt: at,
+          satisfiedAt: state === "completed" ? at : null,
+        };
       });
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
