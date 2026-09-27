@@ -3009,6 +3009,9 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  // Foreman's drafted answers for a plan-decisions review, as JSON `PlanDecisionAnswer[]`.
+  // Null on every existing row, which is exact: no note before this column carried a draft.
+  addColumn(d, "session_notes", "draft", "TEXT");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -9802,6 +9805,8 @@ interface SessionNoteRow {
   disposition: string;
   last_action: string | null;
   handled_marker: string | null;
+  /** JSON `PlanDecisionAnswer[]`, or null - Foreman's plan-decisions draft. */
+  draft: string | null;
   updated_at: number;
 }
 
@@ -9814,6 +9819,7 @@ function rowToNote(r: SessionNoteRow): SessionNote {
     disposition: r.disposition as NoteDisposition,
     lastAction: r.last_action,
     handledMarker: r.handled_marker,
+    draft: r.draft ? parseJsonArray<PlanDecisionAnswer>(r.draft) : null,
     updatedAt: r.updated_at,
   };
 }
@@ -9822,16 +9828,18 @@ export function upsertSessionNote(n: SessionNote): void {
   openDb()
     .prepare(
       `INSERT INTO session_notes (
-         note_key, purpose, brief, recommendation, disposition, last_action, handled_marker, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         note_key, purpose, brief, recommendation, disposition, last_action, handled_marker,
+         draft, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          purpose=excluded.purpose, brief=excluded.brief, recommendation=excluded.recommendation,
          disposition=excluded.disposition, last_action=excluded.last_action,
-         handled_marker=excluded.handled_marker, updated_at=excluded.updated_at`,
+         handled_marker=excluded.handled_marker, draft=excluded.draft,
+         updated_at=excluded.updated_at`,
     )
     .run(
       n.noteKey, n.purpose, n.brief, n.recommendation, n.disposition, n.lastAction,
-      n.handledMarker, n.updatedAt,
+      n.handledMarker, n.draft?.length ? JSON.stringify(n.draft) : null, n.updatedAt,
     );
 }
 

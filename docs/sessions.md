@@ -1924,7 +1924,9 @@ The MCP tools are:
   dismisses that decision set without an answer. An option marked `recommended` preselects:
   the form opens with it selected, a line beside **Submit** names every selection it will send,
   and an untouched Submit returns exactly the recommendation. A radio group preselects its
-  first recommended option; a checkbox group preselects all of them
+  first recommended option; a checkbox group preselects all of them. In a session Foreman is
+  invited into, Foreman may replace that preselection with a visible, revertible draft; it
+  never submits the form (see [Foreman drafts](foreman.md#drafts-on-plan-decisions-forms))
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
   dependsOnCurrentSession?)` - add a ship task to the backlog with the default

@@ -7366,6 +7366,10 @@ export class Registry extends EventEmitter {
       disposition: n.disposition,
       lastAction: n.lastAction,
       handledMarker: n.handledMarker,
+      // A draft is Foreman acting in the session, so it is shown only while Foreman is
+      // invited. Withdrawing the invite hides a draft already written, rather than leaving
+      // Foreman's words preloaded into a form it may no longer touch.
+      draft: this.foremanMayDraftIn(s) && n.draft?.length ? n.draft : null,
       updatedAt: n.updatedAt,
     };
   }
@@ -7391,6 +7395,14 @@ export class Registry extends EventEmitter {
       lastAction: patch.lastAction !== undefined ? patch.lastAction : prev?.lastAction ?? null,
       handledMarker:
         patch.handledMarker !== undefined ? patch.handledMarker : prev?.handledMarker ?? null,
+      // A draft answers exactly one ask. A patch naming a different marker without a draft of
+      // its own is about another ask, so the old draft must not ride along onto it.
+      draft:
+        patch.draft !== undefined
+          ? patch.draft
+          : patch.handledMarker !== undefined && patch.handledMarker !== (prev?.handledMarker ?? null)
+            ? null
+            : prev?.draft ?? null,
       updatedAt: now,
     };
     this.notes.set(key, next);
@@ -7525,6 +7537,7 @@ export class Registry extends EventEmitter {
         // belongs; leaving them on the note would keep offering an answer to nothing.
         recommendation: null,
         brief: null,
+        draft: null,
       },
       now,
     );
@@ -8220,6 +8233,23 @@ export class Registry extends EventEmitter {
    * beats even the implicit grant); any other row speaks for itself; no row means the
    * runtime decides - an SDK session is invited by construction, everything else is not.
    */
+  /**
+   * Whether Foreman may hold a draft on this session's forms: the ONE answer both the note
+   * route (accepting a draft) and the note summary (showing one) use, so the write gate and
+   * the display can never disagree.
+   *
+   * Resolved through `foremanInviteFor` rather than read off `s.foremanInvite`, which is a
+   * denormalized copy a caller may not have refreshed yet.
+   */
+  foremanMayDraft(sessionId: string): boolean {
+    const s = this.sessions.get(sessionId);
+    return s ? this.foremanMayDraftIn(s) : false;
+  }
+
+  private foremanMayDraftIn(s: Session): boolean {
+    return this.foremanInviteFor(s) !== null;
+  }
+
   private foremanInviteFor(s: Session): ForemanInvite | null {
     const row = this.invites.get(noteKeyFor(s));
     if (row) return row.source === "withdrawn" ? null : row.source;
@@ -8352,6 +8382,8 @@ export class Registry extends EventEmitter {
       const resolved = this.foremanInviteFor(s);
       if (s.foremanInvite === resolved) continue;
       const next = { ...s, foremanInvite: resolved };
+      // The note's draft is shown only while invited, so it follows the invite.
+      next.note = this.noteSummaryFor(next);
       this.sessions.set(id, next);
       this.emitSession(next);
     }

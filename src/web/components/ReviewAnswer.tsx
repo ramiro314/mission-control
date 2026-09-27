@@ -1,6 +1,6 @@
 import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
-import { selectedOptions } from "@shared/review-item.ts";
+import { FOREMAN_DRAFT_ACCEPTED, selectedOptions } from "@shared/review-item.ts";
 import { answeredDecisions, reviewAnswerVerb } from "../lib/reviews.ts";
 
 /**
@@ -140,6 +140,9 @@ function AnsweredDecision({
         <p className="review-answer-other">
           <span className="review-answer-other-tag">Other</span>
           {other}
+          {answer?.foremanDraftAccepted && (
+            <span className="review-answer-foreman-draft">{FOREMAN_DRAFT_ACCEPTED}</span>
+          )}
         </p>
       )}
       {nothingPicked && <p className="review-answer-none">No option chosen.</p>}

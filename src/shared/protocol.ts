@@ -853,6 +853,8 @@ export const PlanDecisionAnswerSchema = z.object({
   decisionId: z.string().min(1),
   selected: z.array(z.string().min(1)),
   other: z.string().nullable().optional().default(null),
+  /** The "Other" text is Foreman's draft, submitted unchanged - see `PlanDecisionAnswer`. */
+  foremanDraftAccepted: z.literal(true).optional(),
 });
 export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 
@@ -1543,6 +1545,8 @@ export const SetNoteSchema = z
     disposition: z.enum(["answered", "pending", "escalated", "skipped"]).optional(),
     lastAction: z.string().nullable().optional(),
     handledMarker: z.string().nullable().optional(),
+    /** Foreman's drafted answers for a plan-decisions review - see `SessionNote.draft`. */
+    draft: z.array(PlanDecisionAnswerSchema).max(50).nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty note update" });
 export type SetNote = z.infer<typeof SetNoteSchema>;

@@ -7369,6 +7369,43 @@ a.btn {
 .decision-other:focus {
   border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
 }
+/* Foreman's draft on a decision form: one banner naming it, with the revert beside it, and a
+   tag on any "Other" text that is still Foreman's words. Foreman's colour, never the approve
+   colour - the draft is a suggestion, and only Submit sends anything. */
+.foreman-draft-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--foreman) 10%, var(--panel));
+  font-size: 12px;
+  color: var(--muted);
+}
+.foreman-draft-banner-title {
+  color: var(--foreman);
+  font-weight: 600;
+}
+.foreman-draft-banner-title > span {
+  font-size: 9px;
+  margin-right: 5px;
+}
+.foreman-draft-banner .btn {
+  margin-left: auto;
+}
+.decision-other-draft {
+  align-self: flex-start;
+  color: var(--foreman);
+  font: 600 9.5px/1 var(--mono);
+}
+.review-answer-foreman-draft {
+  flex: none;
+  color: var(--foreman);
+  font: 600 9.5px/1 var(--mono);
+  white-space: nowrap;
+}
 .decisions-actions {
   display: flex;
   justify-content: space-between;

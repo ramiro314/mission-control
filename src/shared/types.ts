@@ -994,6 +994,13 @@ export interface SessionNote {
   lastAction: string | null;
   /** The reviewId / transcript turn id Foreman last acted on, for idempotency. */
   handledMarker: string | null;
+  /**
+   * Foreman's drafted answers for the `plan-decisions` review `handledMarker` names.
+   *
+   * Only ever a draft: the form shows it and the human submits (or reverts) it. Null for
+   * every other kind of note, and cleared whenever the note moves to another ask.
+   */
+  draft?: PlanDecisionAnswer[] | null;
   updatedAt: number;
 }
 
@@ -1706,6 +1713,11 @@ export interface SessionNoteSummary {
    * which can drift while a draft sits pending.
    */
   handledMarker: string | null;
+  /**
+   * Foreman's drafted answers for the plan-decisions review this note is about. Present only
+   * while the session is invited - see `SessionNote.draft`.
+   */
+  draft?: PlanDecisionAnswer[] | null;
   updatedAt: number;
 }
 
@@ -2518,6 +2530,14 @@ export interface PlanDecisionAnswer {
   selected: string[];
   /** What was typed into "Other", when the decision allowed it and the human used it. */
   other: string | null;
+  /**
+   * The "Other" text is Foreman's draft, submitted unchanged by the human.
+   *
+   * Provenance for the answer the agent reads and the record the conversation replays: the
+   * words are Foreman's, the decision to send them was the human's. Absent (never `false`)
+   * whenever the text is the human's own, so every older record reads exactly as it did.
+   */
+  foremanDraftAccepted?: true;
 }
 
 export interface ReviewItem {
