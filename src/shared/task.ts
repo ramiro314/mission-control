@@ -546,6 +546,18 @@ export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
   return KIND_WORKFLOW_DEFAULTS[kind] !== undefined;
 }
 
+/**
+ * The kind edit a backlog card's "Shape this" sends before it dispatches the task.
+ *
+ * Only the kind and its review change, the same pair the dispatch form changes on a switch to
+ * shape. Everything else, the source link above all, stays on the row, which is what lets a
+ * shape task swept from an issue later file its tickets as that issue's sub-issues.
+ */
+export const SHAPE_THIS_PATCH: { readonly kind: "shape"; readonly workflowId: string | null } = {
+  kind: "shape",
+  workflowId: KIND_WORKFLOW_DEFAULTS.shape ?? null,
+};
+
 /** Explicit None and workflow choices bypass this default at the caller. */
 export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null): string | null {
   return KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
