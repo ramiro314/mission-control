@@ -24916,6 +24916,12 @@ button.sc-row:focus-visible {
    from the marks rail, which remains flexible, while the action and ops reservation stay put. */
 .line-bl-who {
   width: 360px;
+  /* The one column here that can give width back, because its title and meta ellipsize.
+     A ready row's ops (switch, Launch now, Shape this) plus this column's full width leave
+     the marks rail less than the next-up mark near both widths this column is set at, and
+     the rail clips: the mark drew as "ext up", and reaching it scrolled the rail, which
+     closes the planner it opens. The floor on `.line-bl-marks` is what this yields to. */
+  flex-shrink: 1;
 }
 /* At the board's narrow breakpoint, restore this column's established reservation. The
    planner mark and ops controls need the remaining row width to stay reachable; the notice
@@ -25260,7 +25266,9 @@ span.line-run-prov {
 }
 .line-bl-marks {
   flex: 1;
-  min-width: 0;
+  /* Room for the whole `next up ▾` mark, on every row so the columns still line up. The
+     title column shrinks to make it (see `.line-bl-who`). */
+  min-width: 64px;
   display: flex;
   align-items: center;
   gap: 6px;
