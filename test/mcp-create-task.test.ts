@@ -409,8 +409,25 @@ function ticketHarness(name: string) {
     });
     return { status: response.status, body: await response.json() };
   };
+  // An adoption carries only its edges: no title, no intent.
+  const adopt = async (adoptTaskId: string, body: Record<string, unknown> = {}) => {
+    const response = await app.request("/mcp/v3/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: JSON.stringify({
+        env: {},
+        cwd: repo,
+        repoRoot: repo,
+        sessionId: `${name}-agent`,
+        dependsOnCurrentSession: true,
+        adoptTaskId,
+        ...body,
+      }),
+    });
+    return { status: response.status, body: await response.json() };
+  };
   const count = () => tasks.list().filter((task) => task.repoRoot === repo).length;
-  return { repo, registry, tasks, app, sessionId, file, count };
+  return { repo, registry, tasks, app, sessionId, file, adopt, count };
 }
 
 const edgesOf = (task: { dependencies: ReadonlyArray<{ type: string; taskId?: string; sessionId?: string | null }> }) =>
@@ -447,6 +464,15 @@ test("a ticket set files in dependency order with kind, labels, edges and the pl
   assert.equal(count(), 2);
 });
 
+test("a new ticket needs its title and intent, and nothing unknown rides along", async () => {
+  const { app, repo, count } = ticketHarness("ticket-required");
+  for (const body of [{ title: undefined }, { intent: undefined }, { priority: "high" }]) {
+    const response = await createTaskRequest(app, "/mcp/v3/tasks", repo, body);
+    assert.equal(response.status, 400, `${JSON.stringify(body)} is refused`);
+  }
+  assert.equal(count(), 0);
+});
+
 test("create_task files implementation kinds only", async () => {
   const { file, count } = ticketHarness("ticket-kind");
   for (const kind of ["shape", "plan", "scout", "chat"]) {
@@ -459,7 +485,7 @@ test("create_task files implementation kinds only", async () => {
 });
 
 test("adopting a backlog task only adds the ticket's edges to it", async () => {
-  const { repo, tasks, sessionId, file, count } = ticketHarness("ticket-adopt");
+  const { repo, tasks, sessionId, file, adopt, count } = ticketHarness("ticket-adopt");
   const existing = tasks.create({
     repoRoot: repo,
     intent: "The operator's own brief, which the ticket must not overwrite.",
@@ -471,14 +497,23 @@ test("adopting a backlog task only adds the ticket's edges to it", async () => {
   });
   const blocker = await file({ title: "Refactor the export seam", intent: "The seam." });
 
-  const adopted = await file({
-    title: "Ticket title that must not land",
-    intent: "Ticket body that must not land",
-    kind: "ship",
-    labels: ["ticket"],
-    dependsOnTaskIds: [blocker.body.id],
-    adoptTaskId: existing.id,
-  });
+  // A ticket's own title, intent, kind, labels or repository beside adoptTaskId describe a task
+  // this call would not create, so the body is refused rather than half-applied.
+  for (const extra of [
+    { title: "Ticket title that must not land" },
+    { intent: "Ticket body that must not land" },
+    { kind: "ship" },
+    { labels: ["ticket"] },
+    { targetRepository: repo },
+    { additionalRepositories: [] },
+  ]) {
+    const mixed = await adopt(existing.id, { dependsOnTaskIds: [blocker.body.id], ...extra });
+    assert.equal(mixed.status, 400, `adoptTaskId with ${Object.keys(extra)[0]} is refused`);
+  }
+  assert.deepEqual(tasks.list().find((task) => task.id === existing.id)!.dependencies, []);
+  assert.equal(count(), 2, "a refused adoption never falls back to creating");
+
+  const adopted = await adopt(existing.id, { dependsOnTaskIds: [blocker.body.id] });
   assert.equal(adopted.status, 200);
   assert.equal(adopted.body.id, existing.id);
   assert.equal(adopted.body.adopted, true);
@@ -495,13 +530,13 @@ test("adopting a backlog task only adds the ticket's edges to it", async () => {
   assert.deepEqual(edgesOf(dependent.body), [`task:${existing.id}`, `session:${sessionId}`]);
 
   // Adopting again with the same edges is a no-op, not a duplicate edge.
-  const again = await file({ title: "t", intent: "i", dependsOnTaskIds: [blocker.body.id], adoptTaskId: existing.id });
+  const again = await adopt(existing.id, { dependsOnTaskIds: [blocker.body.id] });
   assert.equal(again.status, 200);
   assert.equal(tasks.list().find((task) => task.id === existing.id)!.dependencies.length, 2);
 });
 
 test("an adoption that would close a dependency cycle is refused and changes nothing", async () => {
-  const { repo, tasks, file } = ticketHarness("ticket-cycle");
+  const { repo, tasks, file, adopt } = ticketHarness("ticket-cycle");
   const adoptable = tasks.create({
     repoRoot: repo, intent: "A", title: "A", kind: "ship", agent: "claude", backlog: true,
   });
@@ -509,34 +544,29 @@ test("an adoption that would close a dependency cycle is refused and changes not
   const waiting = await file({ title: "B", intent: "B", dependsOnTaskIds: [adoptable.id] });
   assert.equal(waiting.status, 200);
 
-  const cycle = await file({ title: "A", intent: "A", dependsOnTaskIds: [waiting.body.id], adoptTaskId: adoptable.id });
+  const cycle = await adopt(adoptable.id, { dependsOnTaskIds: [waiting.body.id] });
   assert.equal(cycle.status, 409);
   assert.match(cycle.body.error, /cycle/);
   assert.deepEqual(tasks.list().find((task) => task.id === adoptable.id)!.dependencies, []);
 });
 
 test("only an existing backlog task can be adopted", async () => {
-  const { file, count } = ticketHarness("ticket-adopt-missing");
-  const missing = await file({ title: "t", intent: "i", adoptTaskId: "no-such-task" });
+  const { adopt, count } = ticketHarness("ticket-adopt-missing");
+  const missing = await adopt("no-such-task");
   assert.equal(missing.status, 404);
   assert.match(missing.body.error, /no such task to adopt/);
   assert.equal(count(), 0, "a failed adoption never falls back to creating");
 });
 
 test("a task that has left the backlog cannot be adopted, and gains no edges", async () => {
-  const { repo, registry, tasks, file, count } = ticketHarness("ticket-adopt-running");
+  const { repo, registry, tasks, file, adopt, count } = ticketHarness("ticket-adopt-running");
   const blocker = await file({ title: "Blocker", intent: "b" });
   const created = tasks.create({
     repoRoot: repo, intent: "Already started", title: "Running work", kind: "ship", agent: "claude", backlog: true,
   });
   for (const status of ["running", "done"] as const) {
     registry.upsertTask({ ...tasks.list().find((task) => task.id === created.id)!, status });
-    const refused = await file({
-      title: "t",
-      intent: "i",
-      dependsOnTaskIds: [blocker.body.id],
-      adoptTaskId: created.id,
-    });
+    const refused = await adopt(created.id, { dependsOnTaskIds: [blocker.body.id] });
     assert.equal(refused.status, 409, `a ${status} task is refused`);
     assert.equal(refused.body.error, `the task to adopt is ${status}, not in the backlog`);
     assert.deepEqual(tasks.list().find((task) => task.id === created.id)!.dependencies, []);

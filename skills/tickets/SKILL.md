@@ -122,8 +122,10 @@ The tool blocks until the human submits or dismisses:
      (an adopted blocker's id is the adopted task's id);
    - `dependsOnCurrentSession: true` on every ticket, so none starts before this planning session's
      pull request merges the plan it points at;
-   - for an adopted ticket, `adoptTaskId: <task id>` as well. Nothing is created: the edges above
-     are added to that task and the rest of it is left alone. A cycle is refused; report it.
+   - for an adopted ticket, send `adoptTaskId: <task id>` with only `dependsOnTaskIds` and
+     `dependsOnCurrentSession`. Nothing is created: those edges are added to that task and the rest
+     of it is left alone. A title, intent, kind, labels or repository beside `adoptTaskId` is
+     refused, because the adopted task keeps its own. A cycle is refused too; report it.
 
    The tasks are created enabled, so the backlog autopilot may pick them up once their blockers
    merge. The human's approval of the breakdown is that consent.

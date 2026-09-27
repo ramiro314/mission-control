@@ -223,13 +223,17 @@ test("an approved breakdown files each ticket, adopts the chosen backlog task, a
       sessionId: session.agentSessionId,
       cwd: session.cwd,
       repoRoot: session.cwd,
-      title: ticket.title,
-      intent: `**What to build:** ${ticket.delivers}`,
-      kind: ticket.n === 3 ? "bugfix" : "ship",
-      labels: ["archive-exports"],
       dependsOnTaskIds: ticket.blockedBy.map((n) => ids.get(n)!),
       dependsOnCurrentSession: true,
-      ...(selected.startsWith("adopt:") ? { adoptTaskId: selected.slice("adopt:".length) } : {}),
+      // An adoption carries only its edges; a new ticket carries its own title, body, kind, labels.
+      ...(selected.startsWith("adopt:")
+        ? { adoptTaskId: selected.slice("adopt:".length) }
+        : {
+            title: ticket.title,
+            intent: `**What to build:** ${ticket.delivers}`,
+            kind: ticket.n === 3 ? "bugfix" : "ship",
+            labels: ["archive-exports"],
+          }),
     }), `create_task for ticket ${ticket.n}`);
     ids.set(ticket.n, filed.id);
   }

@@ -1935,7 +1935,10 @@ The MCP tools are:
   are normalized like the dispatch form's, and priority is never set. `adoptTaskId` names an
   existing backlog task that stands in for this one instead: nothing is created, the dependency
   edges are added to that task through the same checks a dependency edit gets (a cycle is
-  refused with 409), and its title, intent, kind and labels are left alone. A call carrying
+  refused with 409), and its title, intent, kind and labels are left alone. An adoption carries
+  only its edges: `title` and `intent` are required otherwise, and a `title`, `intent`, `kind`,
+  `labels` or repository selector sent beside `adoptTaskId` is refused with 400 rather than
+  ignored. A call carrying
   `kind`, `labels` or `adoptTaskId` uses its own versioned route, so an older daemon answers 404
   and creates nothing rather than filing a plain ship task or a duplicate of the adopted one. Omit the selectors to keep the calling repository as primary.
   Otherwise, each selector is an absolute local checkout path or a unique repository directory

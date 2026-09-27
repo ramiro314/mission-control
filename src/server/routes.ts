@@ -66,7 +66,8 @@ import {
   McpPlanPublicationSchema,
   McpCreateTaskV2Schema,
   McpCreateTaskV3Schema,
-  type McpCreateTaskV3,
+  type McpAdoptTicket,
+  type McpCreateTicket,
   McpListBacklogSchema,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
@@ -4522,30 +4523,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ id: review.id, sessionId: session.id });
   });
 
-  async function createMcpTask(
+  /**
+   * The edges an MCP task call asks for: its named prerequisites, plus the calling session
+   * when it asked to be gated on itself. A Response when that session cannot be found.
+   */
+  function mcpTaskDependencies(
     c: Context,
-    data: McpCreateTaskV3,
-    allowShortNames: boolean,
-  ) {
-    const {
-      env,
-      sessionId,
-      cwd,
-      dependsOnTaskIds,
-      dependsOnCurrentSession,
-    } = data;
-
-    const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
+    data: Pick<McpAdoptTicket, "env" | "sessionId" | "cwd" | "dependsOnTaskIds" | "dependsOnCurrentSession">,
+  ): TaskDependencyInput[] | Response {
+    const dependencies: TaskDependencyInput[] = data.dependsOnTaskIds.map((taskId) => ({
       type: "task",
       taskId,
     }));
-    if (dependsOnCurrentSession) {
-      const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (data.dependsOnCurrentSession) {
+      const session = registry.findSessionByEnv(data.env, data.sessionId, data.cwd);
       if (!session) return c.json({ error: "no matching active session" }, 404);
       dependencies.push({ type: "session", sessionId: session.id });
     }
+    return dependencies;
+  }
 
-    if (data.adoptTaskId !== undefined) return adoptMcpTask(c, data.adoptTaskId, dependencies);
+  async function createMcpTask(
+    c: Context,
+    data: McpCreateTicket,
+    allowShortNames: boolean,
+  ) {
+    const dependencies = mcpTaskDependencies(c, data);
+    if (dependencies instanceof Response) return dependencies;
 
     const shortNameSelectors = !allowShortNames
       ? "none"
@@ -4583,13 +4587,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   /**
    * A ticket adopting an existing backlog task: the ticket's edges are ADDED to that task and
-   * nothing else about it changes. It goes through the same single-task edit a person makes
-   * (`TaskManager.update`), so the backlog-only rule, the new-edge refusals and the cycle check
-   * are the ones every other dependency edit gets. Adopting is the one way `create_task` can
-   * close a cycle: the task already exists, so something may already wait on it.
+   * nothing else about it changes - `McpAdoptTicketSchema` carries nothing else to change. It
+   * goes through the same single-task edit a person makes (`TaskManager.update`), so the
+   * backlog-only rule, the new-edge refusals and the cycle check are the ones every other
+   * dependency edit gets. Adopting is the one way `create_task` can close a cycle: the task
+   * already exists, so something may already wait on it.
    */
-  async function adoptMcpTask(c: Context, taskId: string, dependencies: TaskDependencyInput[]) {
-    const task = registry.getTask(taskId);
+  async function adoptMcpTask(c: Context, data: McpAdoptTicket) {
+    const dependencies = mcpTaskDependencies(c, data);
+    if (dependencies instanceof Response) return dependencies;
+    const task = registry.getTask(data.adoptTaskId);
     if (!task) return c.json({ error: "no such task to adopt" }, 404);
     if (task.status !== "backlog") {
       return c.json({ error: `the task to adopt is ${task.status}, not in the backlog` }, 409);
@@ -4597,7 +4604,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const share = bulkTaskPatch(task, { set: {}, dependencies: { add: dependencies, remove: [] } });
     if (!share.ok) return c.json({ error: `the task to adopt ${share.error}` }, 409);
     if (share.patch.dependencies === undefined) return c.json({ ...task, adopted: true });
-    const result = await tasks.update(taskId, { dependencies: share.patch.dependencies });
+    const result = await tasks.update(task.id, { dependencies: share.patch.dependencies });
     if (!result.ok) return c.json({ error: result.error }, 409);
     return c.json({ ...result.task!, adopted: true });
   }
@@ -4626,7 +4633,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpCreateTaskV3Schema);
     if (!parsed.ok) return parsed.res;
-    return createMcpTask(c, parsed.data, true);
+    return "adoptTaskId" in parsed.data
+      ? adoptMcpTask(c, parsed.data)
+      : createMcpTask(c, parsed.data, true);
   });
 
   /**

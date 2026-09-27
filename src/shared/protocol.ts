@@ -820,17 +820,13 @@ export const McpCreateTaskV2Schema = McpCreateTaskBaseSchema.extend({
 export type McpCreateTaskV2 = z.infer<typeof McpCreateTaskV2Schema>;
 
 /**
- * Ticket-bearing MCP task creation: the v2 selectors plus `kind`, `labels` and `adoptTaskId`.
+ * Ticket-bearing MCP task creation: the v2 selectors plus `kind` and `labels`.
  *
  * Its own route for the reason v2 has one. An older daemon would strip these fields and answer
- * 200, and a stripped `adoptTaskId` is not a harmless loss: it files a duplicate of the task the
- * human chose to adopt. A daemon that does not know this route answers 404 and creates nothing.
- *
- * `adoptTaskId` names an existing backlog task that stands in for this ticket. Only the
- * dependency edges are added to it; its title, intent, kind and labels are left as they are, so
- * `title`, `intent`, `kind`, `labels` and the repository selectors are not applied when adopting.
+ * 200, filing a plain ship task instead. A daemon that does not know this route answers 404
+ * and creates nothing.
  */
-export const McpCreateTaskV3Schema = McpCreateTaskBaseSchema.extend({
+export const McpCreateTicketSchema = McpCreateTaskBaseSchema.extend({
   targetRepository: z.string().trim().min(1).optional(),
   additionalRepositories: z
     .array(z.string().trim().min(1))
@@ -839,8 +835,28 @@ export const McpCreateTaskV3Schema = McpCreateTaskBaseSchema.extend({
     .default([]),
   kind: z.enum(MCP_TASK_KINDS).optional().default("ship"),
   labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
-  adoptTaskId: z.string().min(1).optional(),
-}).refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
+}).strict();
+export type McpCreateTicket = z.infer<typeof McpCreateTicketSchema>;
+
+/**
+ * A ticket adopting an existing backlog task instead of creating one. Only the dependency
+ * edges are added to that task, so the shape carries nothing else: a title, intent, kind,
+ * labels or repository selector would describe a task this call does not create, and is
+ * refused rather than dropped. A stripped `adoptTaskId` on an older daemon would file a
+ * duplicate, which is why this also rides the v3 route.
+ */
+export const McpAdoptTicketSchema = McpCreateTaskBaseSchema.omit({ title: true, intent: true }).extend({
+  adoptTaskId: z.string().min(1),
+}).strict();
+export type McpAdoptTicket = z.infer<typeof McpAdoptTicketSchema>;
+
+/**
+ * The v3 route's body: a new ticket or an adoption, never a mix. Both halves are strict, so a
+ * body naming `adoptTaskId` beside a field only a new task uses matches neither and is refused.
+ */
+export const McpCreateTaskV3Schema = z
+  .union([McpAdoptTicketSchema, McpCreateTicketSchema])
+  .refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
 export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 
 /** MCP `list_backlog_tasks`: the calling repository's open backlog, for a ticket to adopt. */

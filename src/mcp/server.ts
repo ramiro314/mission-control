@@ -348,7 +348,9 @@ server.registerTool(
         .string()
         .min(1)
         .max(200)
+        .optional()
         .describe(
+          "Required unless adoptTaskId is set, and refused beside it. " +
           "Specific task title shown on the backlog card. Name the work, not the request for it: " +
             "no \"Implement\", \"We should\" or \"I want\" framing - \"Herdr Multiplexer\", not " +
             "\"Implement Herdr Multiplexer\"",
@@ -356,7 +358,9 @@ server.registerTool(
       intent: z
         .string()
         .min(1)
+        .optional()
         .describe(
+          "Required unless adoptTaskId is set, and refused beside it. " +
           "Goal-level brief for the agent: the outcome to deliver, the plan or phase file paths to " +
             "read and follow, and the verification bar. This text becomes the agent's prompt and is " +
             "read as the requester's explicit requirement, so keep it concise and leave step-by-step " +
@@ -403,8 +407,8 @@ server.registerTool(
         .optional()
         .describe(
           "Id of an existing backlog task (from list_backlog_tasks) that stands in for this one. " +
-            "Nothing is created: the dependency edges are added to that task and its title, intent, " +
-            "kind and labels stay as they are",
+            "Nothing is created: only dependsOnTaskIds and dependsOnCurrentSession are added to that " +
+            "task. Send those alone with it; title, intent, kind, labels and repositories are refused",
         ),
     },
   },
@@ -427,7 +431,11 @@ server.registerTool(
       // filing a plain ship task - or a duplicate of the task the human chose to adopt.
       const ticketFields =
         kind !== undefined || Boolean(labels?.length) || adoptTaskId !== undefined;
-      const body = {
+      const path = ticketFields ? "/mcp/v3/tasks" : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks";
+      // One body for every route, each field present only when the caller set it (JSON drops
+      // an undefined). What may combine is the daemon's call, not this wrapper's: an adoption
+      // sent with a title or a selector is refused there rather than quietly dropped here.
+      const res = await http(path, "POST", {
         env: ENV,
         sessionId: SESSION_ID,
         cwd: process.cwd(),
@@ -436,28 +444,13 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
-      };
-      const path = ticketFields ? "/mcp/v3/tasks" : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks";
-      const res = await http(
-        path,
-        "POST",
-        ticketFields
-          ? {
-              ...body,
-              targetRepository: repository,
-              additionalRepositories: additionalRepositories ?? [],
-              kind,
-              labels,
-              adoptTaskId,
-            }
-          : explicitRepositories
-            ? {
-                ...body,
-                targetRepository: repository,
-                additionalRepositories: additionalRepositories ?? [],
-              }
-            : body,
-      );
+        ...(explicitRepositories
+          ? { targetRepository: repository, additionalRepositories: additionalRepositories ?? [] }
+          : {}),
+        kind,
+        labels,
+        adoptTaskId,
+      });
       if (path !== "/mcp/tasks" && (await isUnknownRoute(res))) {
         return textResult(
           "Could not create task: this Mission Control daemon does not support " +
