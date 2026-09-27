@@ -444,8 +444,10 @@ test("a mission kind picked before the Settings rows load is corrected to the co
 
   await kindSelect.selectOption("bugfix");
   await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await shoot(dashboard, "mission-guess-while-rows-load", afterWork);
   const read = editorConfigRead(dashboard);
   release();
   await read;
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await shoot(dashboard, "mission-corrected-to-configured-row", afterWork);
 });

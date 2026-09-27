@@ -160,10 +160,12 @@ test("a kind picked before the Settings rows load is corrected to the configured
   // Inside the window the rows are unknown, so only the built-in can be shown...
   await kind.selectOption("bugfix");
   await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await shoot(dialog, "03-dispatch-guess-while-rows-load");
 
   // ...and it is a guess, not the operator's choice: the real row replaces it on arrival.
   release();
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await shoot(dialog, "04-dispatch-corrected-to-configured-row");
 });
 
 test("a Workflow chosen by hand while the rows load is not replaced when they land", async ({

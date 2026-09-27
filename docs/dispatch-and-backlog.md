@@ -290,7 +290,8 @@ workflow. Bugfix behaves like Ship for dispatch, backlog scheduling, implementat
 PR follow-through, and recovery; its default workflow is the difference.
 
 In a Recurring Mission, choosing **bugfix** or **plan** also preselects its row, while a
-saved mission retains its explicit workflow or None. Returning from a kind default restores
+saved mission retains its explicit workflow or None. **shape** has a row too but cannot be
+scheduled, so the mission editor never offers it. Returning from a kind default restores
 the prior mission choice, including None; an explicit after-work edit cancels that
 restoration. Ship keeps the mission's own choice, which starts on None (see
 [Recurring missions](recurring-missions.md#the-after-work-handoff)).
