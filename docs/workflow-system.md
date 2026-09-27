@@ -46,8 +46,14 @@ registered plan text because Persona calls cannot read checkout files. No new en
 submission format, or database table is introduced.
 
 Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
-both the dispatch form and server task creation. Plan defaults to Plan Validation; Bugfix defaults
-to Bug Fix Review; Ship retains the machine workflow setting. Explicit IDs and null opt-outs win.
+the dispatch form, the Recurring Mission editor, **Shape this**, and server task creation. It
+reads the operator's per-kind rows (`WorkflowPolicy.kindWorkflowDefaults`, edited under Settings
+→ Workflows → Dispatch defaults) and falls back to `BUILTIN_KIND_WORKFLOW_DEFAULTS`: Ship
+defaults to No-Mistakes Review, Bugfix to Bug Fix Review, Plan and Shape to Plan Validation,
+and Scout and Chat to None. Pipeline always resolves to None. Explicit IDs and null opt-outs
+win. The map replaced the single `defaultWorkflowId`, which `StoredWorkflowPolicySchema`
+migrates into the Ship row on read (a stored No-Mistakes reads as the built-in), including for
+settings backups written before it; `PUT /api/workflows/config` refuses the old field.
 Bugfix shares Ship's completion contract, automatic wrap-up, backlog eligibility, and recovery
 through the existing registries and `isShippingTaskKind` predicate.
 

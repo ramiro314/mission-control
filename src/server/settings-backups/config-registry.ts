@@ -62,9 +62,12 @@ export function settingPayloadForEntry(entry: AnyAppConfigEntry, logicalValue: u
 export function parseSettingPayload(entry: AnyAppConfigEntry, value: unknown): unknown {
   if (entry.classification.kind === "whole") return settingPayloadForEntry(entry, value);
   const record = z.record(z.unknown()).parse(value);
-  const allowed = new Set(Object.entries(entry.classification.fields)
-    .filter(([, valueClass]) => valueClass === "setting")
-    .map(([field]) => field));
+  const allowed = new Set([
+    ...Object.entries(entry.classification.fields)
+      .filter(([, valueClass]) => valueClass === "setting")
+      .map(([field]) => field),
+    ...(entry.classification.legacyFields ?? []),
+  ]);
   const unexpected = Object.keys(record).filter((field) => !allowed.has(field));
   if (unexpected.length > 0) {
     throw new TypeError(`Snapshot domain ${entry.backupDomain} has unexpected setting fields`);

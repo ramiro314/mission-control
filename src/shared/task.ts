@@ -1,4 +1,8 @@
-import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "./builtin-workflow.ts";
+import {
+  BUG_FIX_REVIEW_WORKFLOW_ID,
+  NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  PLAN_VALIDATION_WORKFLOW_ID,
+} from "./builtin-workflow.ts";
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
@@ -539,18 +543,53 @@ export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
   return kind === "ship" || kind === "bugfix";
 }
 
-const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
-  ship: undefined,
-  scout: undefined,
+/**
+ * The after-work Workflow each kind arms when nobody chose one, keyed by the kinds this app
+ * launches. `pipeline` has no entry: Conductor owns what runs after its work.
+ *
+ * These are the BUILT-IN answers. An operator overrides any of them under Settings ->
+ * Workflows -> Dispatch defaults (`WorkflowPolicy.kindWorkflowDefaults`), and a kind left
+ * unset there keeps following this record, so a later build can change a built-in and reach
+ * everyone who never chose.
+ */
+export const BUILTIN_KIND_WORKFLOW_DEFAULTS: Readonly<Record<HarnessLaunchedTaskKind, string | null>> = {
+  ship: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  scout: null,
   plan: PLAN_VALIDATION_WORKFLOW_ID,
-  pipeline: undefined,
-  chat: undefined,
+  chat: null,
   bugfix: BUG_FIX_REVIEW_WORKFLOW_ID,
   shape: PLAN_VALIDATION_WORKFLOW_ID,
 };
 
-export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
-  return KIND_WORKFLOW_DEFAULTS[kind] !== undefined;
+/**
+ * The operator's per-kind choices. An absent kind follows `BUILTIN_KIND_WORKFLOW_DEFAULTS`;
+ * `null` is an explicit None; a string is a workflow identity, resolved to its newest
+ * published version when the session is bound.
+ */
+export type KindWorkflowDefaults = Partial<Record<HarnessLaunchedTaskKind, string | null>>;
+
+/**
+ * The Workflow a new task of this kind arms when its creator named none.
+ *
+ * Explicit None and workflow choices bypass this default at the caller. Every creation path
+ * resolves through here - the dispatch form, `POST /api/tasks`, task-source sweeps, "Shape
+ * this" and the Recurring Mission editor - so a row set in Settings reaches all of them.
+ */
+export function taskDefaultWorkflowId(kind: TaskKind, configured: KindWorkflowDefaults): string | null {
+  if (!taskKindLaunchesHarness(kind)) return null;
+  const chosen = configured[kind];
+  return chosen === undefined ? BUILTIN_KIND_WORKFLOW_DEFAULTS[kind] : chosen;
+}
+
+/**
+ * The kinds whose row names this workflow, in registry order, for the archive and delete
+ * guards: a workflow a row still points at cannot be retired from under it.
+ */
+export function kindsDefaultingToWorkflow(
+  workflowId: string,
+  configured: KindWorkflowDefaults,
+): HarnessLaunchedTaskKind[] {
+  return HARNESS_LAUNCHED_TASK_KINDS.filter((kind) => configured[kind] === workflowId);
 }
 
 /**
@@ -560,12 +599,8 @@ export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
  * shape. Everything else, the source link above all, stays on the row, which is what lets a
  * shape task swept from an issue later file its tickets as that issue's sub-issues.
  */
-export const SHAPE_THIS_PATCH: { readonly kind: "shape"; readonly workflowId: string | null } = {
-  kind: "shape",
-  workflowId: KIND_WORKFLOW_DEFAULTS.shape ?? null,
-};
-
-/** Explicit None and workflow choices bypass this default at the caller. */
-export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null): string | null {
-  return KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
+export function shapeThisPatch(
+  configured: KindWorkflowDefaults,
+): { readonly kind: "shape"; readonly workflowId: string | null } {
+  return { kind: "shape", workflowId: taskDefaultWorkflowId("shape", configured) };
 }

@@ -89,7 +89,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
 | **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, bugfix, and shape | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, <kbd>s</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
-| **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
+| **After work** | the kind's dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
 A common dispatch is <kbd>+</kbd> <kbd>↵</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd>, then
 the task. Digits are ordinary filter characters during Repo and position shortcuts in the
@@ -259,27 +259,41 @@ when it launches.
 **After work** can arm any active published Workflow for the task. You can make that
 selection and add the task to the backlog while Foreman is off. When the task is dispatched,
 Foreman must be enabled and the selected harness must support its completion boundary; the
-Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
-machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
-every new single-agent dispatch. New installations start on the built-in
-**No-Mistakes Review** workflow. That default stores the workflow identity rather than today's version, so
-each new binding takes the newest immutable version shipped at the time (see
-[Built-in workflows](workflows.md#built-in-workflows)) while older bindings stay pinned. The dispatch
-form can override that choice for one task, including an explicit **None** that finishes
-without a Workflow.
+Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-Choosing **plan** or **shape** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
-Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
-and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
-mission retains its explicit workflow or None. Returning from a kind default restores the prior
-mission choice, including None; an explicit after-work edit cancels that restoration. Both kind defaults apply to API-created
-tasks when `workflowId` is omitted; an explicit workflow or **None** is preserved. Existing tasks
-keep their stored workflow. Ship continues to use Settings > Workflows for its machine default.
+**Settings → Workflows → Dispatch defaults** holds one row per task kind Mission Control
+launches: ship, bugfix, plan, shape, scout and chat. Pipeline has none, because Conductor owns
+what runs after its work. Each row holds one of three answers:
 
-Choosing **scout** or **chat** in the dispatch form preselects **None**. Returning to Ship restores
-the selection put aside by a kind switch. A manual after-work choice clears that restoration,
-so returning to Ship does not overwrite it. Plan and Bugfix remain selectable workflows rather
-than locks: choose **None** to opt out, or select another published workflow.
+| Row | What a new task of that kind arms |
+| --- | --- |
+| **Built-in default (…)** | The kind's built-in, named in the label: **No-Mistakes Review** for ship, **Bug Fix Review** for bugfix, **Plan Validation** for plan and shape, and **None** for scout and chat. Nothing is stored, so a later build that changes a built-in reaches the row. |
+| A published Workflow | That Workflow, for example your own copy of a built-in. Any active published Workflow may be chosen for any kind. |
+| **None** | Nothing runs after the work. |
+
+A row stores the workflow identity rather than today's version, so each new binding takes the
+newest immutable version published at the time (see
+[Built-in workflows](workflows.md#built-in-workflows)) while older bindings stay pinned. A row
+is read when a task is filed: changing it reaches the next task, and a task already in the
+backlog keeps the Workflow it was filed with. A Workflow a row names cannot be archived or
+deleted until the row changes; the refusal names the kinds that use it.
+
+The rows reach every creation path that leaves the Workflow unnamed: the dispatch form, a
+`POST /api/tasks` without `workflowId`, task-source sweeps, and the backlog's **Shape this**.
+An explicit Workflow or an explicit **None** always wins.
+
+Choosing a kind in the dispatch form preselects that kind's row. Returning to the kind the
+form opened on restores the selection it opened with, without waiting for the settings fetch.
+Choosing an after-work Workflow by hand ends that: a later kind switch leaves the choice
+alone. Rows are defaults, not locks: choose **None** to opt out, or select another published
+workflow. Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff,
+PR follow-through, and recovery; its default workflow is the difference.
+
+In a Recurring Mission, choosing **bugfix** or **plan** also preselects its row, while a
+saved mission retains its explicit workflow or None. Returning from a kind default restores
+the prior mission choice, including None; an explicit after-work edit cancels that
+restoration. Ship keeps the mission's own choice, which starts on None (see
+[Recurring missions](recurring-missions.md#the-after-work-handoff)).
 
 **chat** starts a conversation rather than a delivery. The task box becomes **What would you
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
@@ -399,8 +413,8 @@ itself satisfy declared task dependencies, which retain their merge-only rule.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task of a
-kind those surfaces support.
+Recurring Missions resolve the same per-kind dispatch default when they create an ordinary
+task of a kind those surfaces support without naming a Workflow.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 

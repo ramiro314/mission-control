@@ -1,5 +1,5 @@
 import { actionFetch } from "./experience.ts";
-import { SHAPE_THIS_PATCH } from "@shared/task.ts";
+import { shapeThisPatch, type KindWorkflowDefaults } from "@shared/task.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -983,6 +983,18 @@ export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
   }
 }
 
+/** The per-kind dispatch defaults from Settings, or null when the config cannot be read. */
+async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
+  try {
+    const res = await actionFetch("/api/workflows/config");
+    if (!res.ok) return null;
+    const data = (await res.json()) as { kindWorkflowDefaults?: KindWorkflowDefaults };
+    return data.kindWorkflowDefaults ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The refusal body is KEPT, not reduced to its message. A route that answers a conflict
  * with structure - what a destructive action would cost, which the caller then renders -
@@ -1817,12 +1829,17 @@ export const api = {
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
     post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
   /**
-   * "Shape this": the ordinary kind edit (`SHAPE_THIS_PATCH`), then the ordinary backlog
+   * "Shape this": the ordinary kind edit (`shapeThisPatch`), then the ordinary backlog
    * dispatch - no conversion route of its own. The edit keeps the row's source link, labels
    * and dependencies. A refused dispatch leaves the task converted in the backlog.
+   *
+   * The shape review is read from Settings at the click rather than cached, so a row changed
+   * a moment ago applies. An unreadable config refuses rather than guessing the built-in.
    */
-  shapeBacklog: async (id: string) => {
-    const edited = await post(`/api/tasks/${encodeURIComponent(id)}/update`, SHAPE_THIS_PATCH);
+  shapeBacklog: async (id: string): Promise<ActionResult> => {
+    const configured = await fetchKindWorkflowDefaults();
+    if (!configured) return { ok: false, error: "could not read the shape dispatch default" };
+    const edited = await post(`/api/tasks/${encodeURIComponent(id)}/update`, shapeThisPatch(configured));
     return edited.ok ? await api.dispatchBacklog(id, true) : edited;
   },
   recheckPipelineReadiness: (id: string) =>

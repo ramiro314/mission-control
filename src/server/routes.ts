@@ -5,7 +5,12 @@ import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
+import {
+  HARNESS_LAUNCHED_TASK_KINDS,
+  isShippingTaskKind,
+  kindsDefaultingToWorkflow,
+  TASK_KIND_INFO,
+} from "@shared/task.ts";
 import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -2255,6 +2260,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * it. Global defaults are absent by construction: they have no repository, so no legacy row
    * could describe one honestly.
    */
+  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
+  const kindDefaultsNaming = (workflowId: string): string | null => {
+    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
+    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
+  };
   const legacyWorkflowConfig = (): WorkflowConfig => ({
     ...getWorkflowPolicy(),
     checkCommands: legacyCheckCommands(workflowCommandManager()?.list() ?? []),
@@ -2283,14 +2293,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.defaultWorkflowId) {
-      const detail = workflowManager()?.get(parsed.data.defaultWorkflowId) ?? null;
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = parsed.data.kindWorkflowDefaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
       if (
         !detail
         || detail.workflow.archivedAt !== null
         || detail.workflow.currentVersionId === null
       ) {
-        return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
+        return c.json({
+          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
+        }, 409);
       }
     }
     // ONE transaction over both halves, because the old route's contract is that its body is
@@ -2413,9 +2427,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before archiving this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before archiving this workflow`,
       }, 409);
     }
     const result = manager.archive(id, parsed.data.expectedDraftRevision);
@@ -2440,9 +2455,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before deleting this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before deleting this workflow`,
       }, 409);
     }
     const result = manager.remove(id, parsed.data.expectedDraftRevision);

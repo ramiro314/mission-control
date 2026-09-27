@@ -934,7 +934,7 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     workflowPolicy: () => ({
       liveEnabled: false,
       repoAllowlist: [repoRoot],
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true,
       skipPassedJudges: true,

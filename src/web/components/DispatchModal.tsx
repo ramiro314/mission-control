@@ -34,7 +34,6 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   taskDefaultWorkflowId,
-  taskHasOwnDefaultWorkflow,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -255,7 +254,9 @@ function repoCollision(d: DispatchDraft): string | null {
  * default-then-scout-then-ship reversal into a no-op.
  */
 const NO_STASH = Symbol("no-stash");
-type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+type StashedWorkflowId =
+  | { kind: TaskKind; workflowId: DispatchDraft["workflowId"] }
+  | typeof NO_STASH;
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -1285,7 +1286,11 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null);
+  // Null while the config is out, as it always was: the rows are not known yet, and arming a
+  // built-in the operator may have replaced would gate the launch on Foreman for nothing.
+  const defaultWorkflowId = workflowConfig
+    ? taskDefaultWorkflowId(draft.kind, workflowConfig.kindWorkflowDefaults)
+    : null;
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
@@ -1342,31 +1347,32 @@ function DispatchModal({
   }
 
   /**
-   * What a ship-to-scout switch put aside, so switching back can hand it straight back.
+   * The after-work choice the form held before its first kind switch, and the kind it held it
+   * under, so switching back to that kind hands it straight back.
    *
    * A ref rather than draft state: it is scratch belonging to one uninterrupted sequence
    * of clicks, not something a shelved task should carry. Losing it on close is correct -
    * a reopened form has no reversal in flight - and the no-stash path leaves the stored
-   * selection alone rather than inventing one.
+   * selection alone rather than inventing one. Handing it back needs no config fetch, which
+   * is what keeps an edit's stored Workflow safe while the config is still loading.
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
+  /** Set once the operator chooses an after-work Workflow; from then on a kind switch leaves it alone. */
+  const choseAfterWork = useRef(false);
   const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
 
-  /** Preserve the prior selection until the operator makes an explicit after-work choice. */
+  /**
+   * A kind switch arms that kind's dispatch default (Settings -> Workflows -> Dispatch
+   * defaults) until the operator makes an explicit after-work choice.
+   */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
-    if (kind === draft.kind) return {};
-    if (taskHasOwnDefaultWorkflow(kind)) {
-      if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: taskDefaultWorkflowId(kind, null) };
-    }
-    if (!hasReviewableDiff(kind)) {
-      if (!hasReviewableDiff(draft.kind)) return {};
-      if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: null };
+    if (kind === draft.kind || choseAfterWork.current) return {};
+    if (stashedWorkflowId.current === NO_STASH) {
+      stashedWorkflowId.current = { kind: draft.kind, workflowId: draft.workflowId };
     }
     const stashed = stashedWorkflowId.current;
-    stashedWorkflowId.current = NO_STASH;
-    return stashed === NO_STASH ? {} : { workflowId: stashed };
+    if (stashed.kind === kind) return { workflowId: stashed.workflowId };
+    return { workflowId: taskDefaultWorkflowId(kind, workflowConfig?.kindWorkflowDefaults ?? {}) };
   }
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
@@ -1534,7 +1540,7 @@ function DispatchModal({
       // the work?" and answering IS choosing for yourself, even when the answer is the row
       // that was already lit. Taking None at that question therefore stands, and a later
       // kind switch leaves it alone.
-      stashedWorkflowId.current = NO_STASH;
+      choseAfterWork.current = true;
       update({ workflowId });
     };
     const defaultName = defaultWorkflow
@@ -2923,7 +2929,7 @@ function DispatchModal({
                   if (guidedTakeValue("afterWork", value)) return;
                   // Chosen by hand, so a later kind switch must not hand back what scout
                   // put aside and revert this underneath the operator.
-                  stashedWorkflowId.current = NO_STASH;
+                  choseAfterWork.current = true;
                   update({
                     workflowId:
                       value === "__default"

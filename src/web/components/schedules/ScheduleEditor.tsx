@@ -11,7 +11,9 @@ import { SCHEDULE_CATCHUP_CREATE_CAP } from "@shared/schedules.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor, portableEffortLevels } from "@shared/harness-capabilities.ts";
-import type { WorkflowSummary } from "@shared/workflow.ts";
+import type { WorkflowConfig, WorkflowSummary } from "@shared/workflow.ts";
+import type { KindWorkflowDefaults } from "@shared/task.ts";
+import { workflowRequest } from "../../workflows/workflowApi.ts";
 import {
   SCHEDULE_TASK_KINDS,
   MAX_LABELS,
@@ -20,7 +22,6 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   taskDefaultWorkflowId,
-  taskHasOwnDefaultWorkflow,
 } from "@shared/task.ts";
 import {
   createSchedule,
@@ -140,6 +141,18 @@ function draftFromSchedule(schedule: MissionSchedule): EditorDraft {
   };
 }
 
+/**
+ * The after-work Workflow a switch to this kind preselects in a mission, as the draft's
+ * string ("" is None), or `undefined` for a kind that keeps the mission's own choice.
+ *
+ * Ship is deliberately absent: a mission has always started a Ship with None rather than the
+ * machine's dispatch default. The other diff-producing kinds preselect their Settings row.
+ */
+function missionPresetWorkflowId(kind: TaskKind, configured: KindWorkflowDefaults): string | undefined {
+  if (kind === "ship" || !hasReviewableDiff(kind)) return undefined;
+  return taskDefaultWorkflowId(kind, configured) ?? "";
+}
+
 function draftToDefinition(draft: EditorDraft): ScheduleDefinitionPayload {
   return {
     name: draft.name.trim(),
@@ -197,10 +210,10 @@ export function ScheduleEditor({
   );
   // Kind defaults are temporary while switching kinds. Explicit after-work edits cancel
   // restoration; an existing mission using its kind's default returns to None for Ship.
-  const workflowBeforeKindDefault = useRef<string | null>(
-    taskHasOwnDefaultWorkflow(draft.kind)
-      && draft.workflowId === taskDefaultWorkflowId(draft.kind, null) ? "" : null,
-  );
+  // `undefined` until the first switch, so the comparison reads the Settings rows once they
+  // have loaded rather than the built-ins at mount.
+  const workflowBeforeKindDefault = useRef<string | null | undefined>(undefined);
+  const [kindWorkflowDefaults, setKindWorkflowDefaults] = useState<KindWorkflowDefaults>({});
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<ScheduleValidationField, string>>>(
@@ -218,6 +231,17 @@ export function ScheduleEditor({
 
   useEffect(() => {
     void fetchRepos().then(setRepos);
+    let alive = true;
+    void workflowRequest<WorkflowConfig>("/api/workflows/config")
+      .then((config) => {
+        if (alive) setKindWorkflowDefaults(config.kindWorkflowDefaults);
+      })
+      .catch(() => {
+        /* the built-ins stand in; the daemon still validates the saved mission */
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
@@ -234,10 +258,15 @@ export function ScheduleEditor({
   };
   const selectKind = (kind: TaskKind): void => {
     if (kind === draft.kind) return;
+    const preset = (of: TaskKind): string | undefined =>
+      missionPresetWorkflowId(of, kindWorkflowDefaults);
+    workflowBeforeKindDefault.current ??=
+      preset(draft.kind) !== undefined && draft.workflowId === preset(draft.kind) ? "" : null;
     let workflowId = draft.workflowId;
-    if (taskHasOwnDefaultWorkflow(kind)) {
+    const kindPreset = preset(kind);
+    if (kindPreset !== undefined) {
       workflowBeforeKindDefault.current ??= workflowId;
-      workflowId = taskDefaultWorkflowId(kind, null) ?? "";
+      workflowId = kindPreset;
     } else if (workflowBeforeKindDefault.current !== null) {
       workflowId = workflowBeforeKindDefault.current;
       workflowBeforeKindDefault.current = null;

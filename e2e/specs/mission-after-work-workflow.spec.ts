@@ -106,7 +106,7 @@ async function publishDefaultWorkflow(daemon: DaemonHandle): Promise<string> {
   });
   await api(daemon, "/api/workflows/config", {
     method: "PUT",
-    body: { liveEnabled: false, repoAllowlist: [], defaultWorkflowId: workflow.workflow.id },
+    body: { liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: { ship: workflow.workflow.id } },
   });
   return workflow.workflow.id;
 }

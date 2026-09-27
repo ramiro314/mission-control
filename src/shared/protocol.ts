@@ -1,4 +1,5 @@
 import { workflowFindingReason } from "./workflow-reasons.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
@@ -6260,6 +6261,20 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
+ * One row per kind this app launches (`HARNESS_LAUNCHED_TASK_KINDS`). An absent key follows
+ * the kind's built-in, `null` is an explicit None, and a string names a workflow identity.
+ * `pipeline` has no key: Conductor owns what runs after its work.
+ *
+ * Not `.strict()`: the tolerant read below falls back to the COMPLETE default on any parse
+ * failure, so a key a newer build added would otherwise cost the operator their allowlist.
+ */
+const KindWorkflowDefaultsSchema = z.object(
+  Object.fromEntries(
+    HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, z.string().min(1).max(500).nullable().optional()]),
+  ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<z.ZodNullable<z.ZodString>>>,
+);
+
+/**
  * The STRICT policy schema: everything about workflows that is still stored in `app_config`.
  *
  * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
@@ -6272,8 +6287,8 @@ export const WorkflowPolicySchema = z.object({
   skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
-  defaultWorkflowId: z.string().min(1).max(500).nullable()
-    .default(DEFAULT_WORKFLOW_POLICY.defaultWorkflowId),
+  kindWorkflowDefaults: KindWorkflowDefaultsSchema
+    .default(DEFAULT_WORKFLOW_POLICY.kindWorkflowDefaults),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
       .default(DEFAULT_WORKFLOW_POLICY.retention.rawEvidenceDays),
@@ -6296,6 +6311,14 @@ export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
  * durable owner changes underneath it.
  */
 export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
+  // Replaced by `kindWorkflowDefaults.ship`. REFUSED rather than stripped, because a write
+  // that still sends it would otherwise be a silent no-op: the field reverts on the next read
+  // and nothing says why.
+  defaultWorkflowId: z
+    .undefined({
+      errorMap: () => ({ message: "defaultWorkflowId was replaced by kindWorkflowDefaults.ship" }),
+    })
+    .optional(),
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
@@ -6342,7 +6365,31 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
  * longer takes an operator's configured commands with it: those live in their own table with
  * their own revisions, and a preference this build cannot parse says nothing about them.
  */
-export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
+export const StoredWorkflowPolicySchema = z
+  .preprocess(migrateLegacyDefaultWorkflowId, WorkflowPolicySchema)
+  .catch(DEFAULT_WORKFLOW_POLICY);
+
+/**
+ * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.
+ *
+ * The old single `defaultWorkflowId` was Ship's dispatch default. Every save wrote it, so it
+ * cannot tell "chose No-Mistakes" from "never touched it"; both read as the built-in, which
+ * behaves identically and lets an untouched install follow a later change to it. Any other
+ * value, `null` included, becomes an explicit Ship row. A blob that already has the map
+ * keeps it and the legacy key is dropped.
+ *
+ * Read-time and never written back, like `keepPreFieldCommandConsent`: the next save through
+ * Settings writes only the map. Old settings backups restore through this same schema, so
+ * they need no translation of their own.
+ */
+function migrateLegacyDefaultWorkflowId(blob: unknown): unknown {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob;
+  if (!Object.prototype.hasOwnProperty.call(blob, "defaultWorkflowId")) return blob;
+  const { defaultWorkflowId: legacy, ...rest } = blob as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(rest, "kindWorkflowDefaults")) return rest;
+  if (legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID || legacy === undefined) return rest;
+  return { ...rest, kindWorkflowDefaults: { ship: legacy } };
+}
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
