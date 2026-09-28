@@ -382,7 +382,7 @@ export function pushResultFrom(
   res: RunResult,
   ctx: PushContext,
   expectedRepo: string,
-  draft: PushDraft = { title: "", intent: "" },
+  draft: PushDraft,
 ): PushResult {
   const outcome = githubIssueCreateOutcome(res, expectedRepo);
   switch (outcome.kind) {
