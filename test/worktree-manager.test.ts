@@ -71,6 +71,23 @@ function acquire(m: WorktreeManager, clone: string, sha: string, key: string) {
   return m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key } });
 }
 
+/**
+ * A reservation quarantined before its lease was granted must not keep an active owner: that
+ * owner never received the lease ID, so it could never Return it, and Destroy and Reconcile
+ * would both refuse the slot for carrying it.
+ */
+function assertNoUngrantedOwner(m: WorktreeManager): void {
+  const quarantined = m.store.slots().filter((slot) => slot.state === "quarantined");
+  assert.notEqual(quarantined.length, 0);
+  for (const slot of quarantined) {
+    assert.deepEqual(
+      [slot.activeLeaseId, slot.activeOwnerKind, slot.activeOwnerKey, slot.leasedAt],
+      [null, null, null, null],
+      `slot ${slot.id} (${slot.quarantineReason}) kept an owner it never granted`,
+    );
+  }
+}
+
 function lease(result: Awaited<ReturnType<typeof acquire>>): NativeWorktreeLease {
   assert.equal(result.outcome, "acquired");
   return (result as { outcome: "acquired"; lease: NativeWorktreeLease }).lease;
@@ -655,6 +672,7 @@ test("operator setup runs only for a new slot and failure or uncertainty quarant
   const result = await acquire(failed, failedRepo.clone, failedRepo.sha, "task-setup-fail");
   assert.deepEqual(result, { outcome: "outcomeUnknown", reason: "setup refused" });
   assert.equal(failed.store.slots().some((slot) => slot.state === "quarantined"), true);
+  assertNoUngrantedOwner(failed);
 
   const unknownRepo = repository("mission-native-setup-unknown-");
   const unknown = manager({
@@ -672,6 +690,7 @@ test("operator setup runs only for a new slot and failure or uncertainty quarant
     reason: "setup outcome could not be proven",
   });
   assert.equal(unknown.store.slots().some((slot) => slot.state === "quarantined"), true);
+  assertNoUngrantedOwner(unknown);
 });
 
 test("repository files cannot opt a native slot into setup execution", async () => {
@@ -873,6 +892,7 @@ test("unknown Git add, lease commit, and return reset outcomes quarantine instea
     reason: "git add timed out",
   });
   assert.equal(addManager.store.slots().at(-1)?.state, "quarantined");
+  assertNoUngrantedOwner(addManager);
 
   const commitRepo = repository("mission-native-commit-unknown-");
   const commitManager = manager();
@@ -882,6 +902,7 @@ test("unknown Git add, lease commit, and return reset outcomes quarantine instea
     { outcome: "outcomeUnknown", reason: "lease commit could not be proven" },
   );
   assert.equal(commitManager.store.slots().at(-1)?.state, "quarantined");
+  assertNoUngrantedOwner(commitManager);
 
   class ReturnUnknownGit extends NativeWorktreeGit {
     failReset = false;
@@ -1031,6 +1052,7 @@ test("an attached or unprovable HEAD quarantines the slot instead of leasing it"
   // Not merely refused - held, so nothing hands the same slot to the next caller. `reset`
   // reporting success is never enough on its own; this inspection is the durable proof.
   assert.equal(attached.store.slots().every((slot) => slot.state === "quarantined"), true);
+  assertNoUngrantedOwner(attached);
 
   // The other half: a detached-state probe that never answered is not "detached".
   const unknownRepo = repository("mission-native-unprovable-head-");
@@ -1049,6 +1071,7 @@ test("an attached or unprovable HEAD quarantines the slot instead of leasing it"
   const unproven = await acquire(unknown, unknownRepo.clone, unknownRepo.sha, "task-gate-2");
   assert.equal(unproven.outcome, "outcomeUnknown");
   assert.equal(unknown.store.slots().every((slot) => slot.state === "quarantined"), true);
+  assertNoUngrantedOwner(unknown);
 });
 
 test("Return cannot mark a slot available while it still holds a branch", async () => {

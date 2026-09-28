@@ -355,23 +355,48 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
+  /**
+   * `withdrawGrant` is for a reservation quarantined before its lease was ever handed to the
+   * owner: the owner cannot hold or release an identity it never received, so the slot keeps
+   * its quarantine but drops the active identity in the same compare-and-swap.
+   */
   quarantine(
     slotId: string,
     reason: string,
     error: string | null,
     now: number,
     expectedVersion?: number,
+    withdrawGrant = false,
   ): WorktreeSlotRow | null {
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
     const args = expectedVersion === undefined
       ? [reason, error, now, slotId]
       : [reason, error, now, slotId, expectedVersion];
+    const withdraw = withdrawGrant
+      ? "active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,"
+      : "";
     const changed = this.db
       .prepare(
-        `UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+        `UPDATE worktree_slots SET state = 'quarantined', version = version + 1, ${withdraw}
            quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
       )
       .run(...args);
+    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
+  /**
+   * Drop an exact active identity from a quarantined slot whose owner has been proven not to
+   * reference it. The slot stays quarantined; only the stale owner is withdrawn.
+   */
+  withdrawQuarantinedLease(slotId: string, version: number, leaseId: string, now: number): WorktreeSlotRow | null {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET version = version + 1,
+           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
+           leased_at = NULL, updated_at = ?
+         WHERE id = ? AND state = 'quarantined' AND version = ? AND active_lease_id = ?`,
+      )
+      .run(now, slotId, version, leaseId);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 

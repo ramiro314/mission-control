@@ -88,6 +88,14 @@ rows persist that ID before work starts. Cleanup reads the recorded provider and
 than deciding again from current configuration, and refuses a stale lease or any slot whose
 process occupancy cannot be proved empty. Startup reconciliation uses the same fail-closed rules.
 
+A reservation quarantined before its lease is granted - a failed or unproven reset, creation,
+setup command, or verification, or a lost lease commit - drops its active owner in the same
+transition, because that owner never received the lease ID and could never return it. The slot
+stays quarantined and Destroy removes it through the ordinary revalidation. Reconcile repairs the
+same state left by an earlier build: a quarantined slot whose owner is positively proven not to
+reference its active lease loses that identity and stays quarantined. Unknown ownership is left
+untouched.
+
 `make session` is a loopback client for that daemon-owned inventory:
 
 ```sh

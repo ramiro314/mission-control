@@ -360,3 +360,49 @@ test("maintenance planning refuses every unsafe class and identifies safe right-
   assert.match(bySlot.get(leases[6]!.slotId)?.reason ?? "", /leased/);
   assert.equal(plan.filter((candidate) => candidate.rightSize).length, 6);
 });
+
+test("reconcile withdraws a quarantined slot's active owner only when non-reference is proven", async () => {
+  const cases = [
+    { name: "unreferenced", withdrawn: true },
+    { name: "referenced", withdrawn: false },
+    { name: "unknown", withdrawn: false },
+  ] as const;
+  for (const entry of cases) {
+    const repository = repo(`mission-reconcile-orphan-${entry.name}-`);
+    let leaseId = "";
+    const manager = new WorktreeManager(db, {
+      resolvePolicy: () => ({ enabled: true, maxSlots: 16, setupArgv: null }),
+      occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+      ownerReferenced: async (reference) => {
+        if (reference.leaseId !== leaseId) return false;
+        if (entry.name === "unknown") throw new Error("tasks table is unreadable");
+        return entry.name === "referenced";
+      },
+    });
+    const lease = acquired(
+      await manager.acquire({
+        repositoryPath: repository.clone,
+        baseSha: repository.sha,
+        owner: { kind: "task", key: `task-orphan-${entry.name}:0` },
+      }),
+    );
+    leaseId = lease.leaseId;
+    // What an earlier build left after a failed materialization: quarantined, owner stamped.
+    db.prepare(`UPDATE worktree_slots SET state = 'quarantined', quarantine_reason = 'setup failed' WHERE id = ?`)
+      .run(lease.slotId);
+
+    await manager.reconcile();
+    const slot = manager.store.slot(lease.slotId)!;
+    assert.equal(slot.state, "quarantined", `${entry.name}: the slot stays quarantined`);
+    assert.equal(slot.quarantineReason, "setup failed", `${entry.name}: the quarantine reason is kept`);
+    if (entry.withdrawn) {
+      assert.equal(slot.activeLeaseId, null);
+      assert.equal(slot.activeOwnerKind, null);
+      assert.equal(slot.activeOwnerKey, null);
+      assert.equal((await manager.removeSlot({ slotId: slot.id, allowDirty: false, allowUnmerged: false })).outcome, "removed");
+    } else {
+      assert.equal(slot.activeLeaseId, lease.leaseId, `${entry.name}: the active identity is untouched`);
+      assert.equal(slot.activeOwnerKey, `task-orphan-${entry.name}:0`);
+    }
+  }
+});

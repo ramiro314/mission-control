@@ -356,7 +356,12 @@ export class WorktreeManager {
     return worktreeRepositoryIdentity(repositoryPath, this.deps.poolsDirectory);
   }
 
-  private quarantine(slot: WorktreeSlotRow, reason: string, error: string | null = null): void {
+  private quarantine(
+    slot: WorktreeSlotRow,
+    reason: string,
+    error: string | null = null,
+    withdrawGrant = false,
+  ): void {
     try {
       const quarantined = this.store.quarantine(
         slot.id,
@@ -364,11 +369,21 @@ export class WorktreeManager {
         error ? bounded(error) : null,
         this.deps.now(),
         slot.version,
+        withdrawGrant,
       );
       if (quarantined) this.publish();
     } catch (quarantineError) {
       console.error(`[worktrees] could not quarantine slot ${slot.id}:`, quarantineError);
     }
+  }
+
+  /**
+   * Quarantine a reservation whose lease was never granted. Its owner never received the
+   * lease ID, so no domain row can ever release it; keeping the active identity would leave a
+   * slot that Return, Destroy and Reconcile all refuse forever.
+   */
+  private quarantineReservation(slot: WorktreeSlotRow, reason: string, error: string | null = null): void {
+    this.quarantine(slot, reason, error, true);
   }
 
   private async occupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
@@ -668,12 +683,12 @@ export class WorktreeManager {
             const reason = freshOccupancy?.status === "unknown"
               ? freshOccupancy.reason
               : "slot occupancy was not observed";
-            this.quarantine(reservation, "slot occupancy became unknown before reset", reason);
+            this.quarantineReservation(reservation, "slot occupancy became unknown before reset", reason);
             return { outcome: "outcomeUnknown", reason };
           }
           if (freshOccupancy.occupants.length > 0) {
             const reason = "a process entered the available slot before reset";
-            this.quarantine(reservation, reason);
+            this.quarantineReservation(reservation, reason);
             return { outcome: "outcomeUnknown", reason };
           }
         }
@@ -682,7 +697,7 @@ export class WorktreeManager {
           ? await this.deps.git.add(identity, reservation.path, input.baseSha)
           : await this.deps.git.reset(reservation.path, input.baseSha);
         if (!mutation.ok) {
-          this.quarantine(
+          this.quarantineReservation(
             reservation,
             created ? "worktree creation failed" : "worktree reset failed",
             mutation.reason,
@@ -695,7 +710,7 @@ export class WorktreeManager {
           if (!setup.ok || setup.outcomeUnknown) {
             const reason = setup.reason ??
               (setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed");
-            this.quarantine(
+            this.quarantineReservation(
               reservation,
               setup.outcomeUnknown
                 ? "operator-authored setup command outcome is unknown"
@@ -723,7 +738,7 @@ export class WorktreeManager {
           const reason = inspection.ok
             ? "materialized slot failed path, repository, exact HEAD, cleanliness, or detached-HEAD verification"
             : inspection.reason;
-          this.quarantine(reservation, "materialized slot verification failed", reason);
+          this.quarantineReservation(reservation, "materialized slot verification failed", reason);
           return { outcome: "outcomeUnknown", reason };
         }
 
@@ -734,7 +749,7 @@ export class WorktreeManager {
           this.deps.now(),
         );
         if (!leased) {
-          this.quarantine(reservation, "lease commit lost its slot compare-and-swap");
+          this.quarantineReservation(reservation, "lease commit lost its slot compare-and-swap");
           return { outcome: "outcomeUnknown", reason: "lease commit could not be proven" };
         }
         this.publish();
@@ -754,7 +769,7 @@ export class WorktreeManager {
         };
       } catch (error) {
         const reason = bounded(String(error));
-        this.quarantine(reservation, "native worktree materialization outcome is unknown", reason);
+        this.quarantineReservation(reservation, "native worktree materialization outcome is unknown", reason);
         return { outcome: "outcomeUnknown", reason };
       }
     });
@@ -1083,6 +1098,22 @@ export class WorktreeManager {
 
         if (slot.state === "quarantined") {
           this.store.updateObserved(slot.id, inspection.value.head, slot.lastError, now);
+          // A quarantine taken before its lease was granted, by a build that kept the active
+          // identity, names an owner that never received it. Withdraw that identity only when
+          // the owner is positively proven not to reference it; unknown ownership stays put.
+          const stale = activeReference(slot);
+          if (stale && stale !== "invalid") {
+            try {
+              if (!(await this.ownerReferenced(stale))) {
+                // `updateObserved` leaves the version alone, so this is still the row read above.
+                if (this.store.withdrawQuarantinedLease(slot.id, slot.version, stale.leaseId, now)) {
+                  this.publish();
+                }
+              }
+            } catch {
+              // Unknown ownership is not proof of absence; the identity stays as it is.
+            }
+          }
           continue;
         }
         if (slot.state === "provisioning") {
