@@ -1319,7 +1319,12 @@ measurement does not need an agent, a script, or a SQLite session. See
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the
-binding's repair-round limit. A failing path back to Session either resumes itself or waits for
+binding's repair-round limit. A provider refusal that no retry can fix is not retried: when the
+runner reports the model as unavailable to the account or the usage quota as exhausted, the
+Persona spends one call, records `model_unavailable` or `quota_exhausted` as that call's
+`workflow_llm_calls.error_code` instead of `persona_infrastructure`, and the failed node shows
+the reason, with the reset time when the provider gives one. Other call failures keep
+`persona_infrastructure`, and a reply that does not parse records `persona_parse`. A failing path back to Session either resumes itself or waits for
 a manual resubmit, depending on the published [repair-resumption policy](#repair-resumption).
 Resubmission captures fresh evidence and refuses an unchanged snapshot unless the operator
 explicitly confirms it, so an approval from an older round is never reused. Preview performs

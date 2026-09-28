@@ -122,6 +122,10 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   makes every historical row unreadable, and the degradation on an unknown value is
   `prompt-prefix`, so a reordered vocabulary would silently re-prefix text that was in fact
   delivered out of band
+- LLM provider failure kinds (`LLM_PROVIDER_FAILURE_KINDS` in `src/shared/llm.ts`) - written
+  verbatim into `workflow_llm_calls.error_code` beside the older `persona_infrastructure` and
+  `persona_parse` codes, which stay readable unchanged. A runner reports one by throwing
+  `LlmProviderFailure`; the engine never branches on which runner threw it
 - LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
   queried back by exact value, so a rename orphans every historical row it wrote
 - Usage ledger writer names (`usage_ledger.writer`: `otel`, `driver`, `rollout`, `report`,

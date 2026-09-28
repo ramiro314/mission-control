@@ -1087,7 +1087,7 @@ export class WorkflowEngine {
           callResult.parsed ? "succeeded" : "failed",
           callResult.raw ? Buffer.byteLength(callResult.raw) : 0,
           callResult.error
-            ? "persona_infrastructure"
+            ? callResult.providerFailure?.kind ?? "persona_infrastructure"
             : callResult.parsed
               ? null
               : "persona_parse",
@@ -1106,6 +1106,7 @@ export class WorkflowEngine {
     // What was wrong with the previous execution's reply, when it was a parse miss this
     // process observed. A restart only knows the persisted basis, so it keeps the generic text.
     let replyMiss: ModelReplyMiss | null = null;
+    let permanent = false;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
       const correction = violation
         ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
@@ -1135,13 +1136,21 @@ export class WorkflowEngine {
       if (result.kind === "ok") { verdict = result.value; break; }
       failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
       if (result.cause === "cancelled") break;
+      // A provider refusal that no repeat can fix - an unavailable model, an exhausted quota -
+      // ends the budget here. The operator reads the runner's own sentence, with the provider's
+      // original text kept after it.
+      if (result.providerFailure) {
+        failure = `${node.persona.name} Persona could not run: ${result.providerFailure.summary}. ${result.providerFailure.message}`;
+        permanent = true;
+        break;
+      }
     }
     if (claimed.reviewInput) this.store.appendEvent(run.id, "persona_contract_outcome", {
       attemptId: claimed.id, contractVersion: 1, outcome: verdict ? "accepted" : "exhausted",
       basis: violation, executions: this.store.personaOperationCalls(claimed.reviewInput.operationId),
     }, this.now(), `persona-contract-outcome:${claimed.id}`);
     if (!verdict) {
-      this.handleInfrastructureFailure(claimed, run.id, failure, !!claimed.reviewInput);
+      this.handleInfrastructureFailure(claimed, run.id, failure, !!claimed.reviewInput || permanent);
       return;
     }
     const latestRun = this.store.getRun(run.id);
