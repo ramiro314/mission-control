@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema } from "../src/shared/task-source.ts";
+import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema, sameSourceRef } from "../src/shared/task-source.ts";
 import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/shared/task-source.ts";
 import { sourceContent } from "../src/shared/task-source-sync.ts";
 import { dependencyInputOf } from "../src/shared/task-dependency.ts";
@@ -488,4 +488,24 @@ test("refresh overwrites the parent without review, adds no edge, and freezes on
     .run(task.id,"ep-parent","session","agent",1,1);
   await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(2)}]);
   assert.equal(getTask(task.id)!.sourceParent,null);
+});
+test("sameSourceRef compares field by field: an absent url equals a null one, and a missing ref only another",()=>{
+  const ref={sourceId:"s",externalId:"acme/demo#2",url:null};
+  const noUrl={externalId:"acme/demo#2",sourceId:"s"} as unknown as TaskSourceRef;
+  assert.equal(sameSourceRef(noUrl,ref),true);
+  assert.equal(sameSourceRef(null,undefined),true);
+  assert.equal(sameSourceRef(null,ref),false);
+  assert.equal(sameSourceRef(ref,undefined),false);
+  assert.equal(sameSourceRef(parentOf(2),{...parentOf(2),url:"https://github.com/acme/demo/issues/99"}),false);
+  assert.equal(sameSourceRef(parentOf(2),{...parentOf(2),externalId:"acme/demo#3"}),false);
+});
+test("a stored parent with a null url is unchanged when the source reports it with no url",async()=>{
+  const {src,tasks,task}=await setup();
+  const stored={sourceId:"s",externalId:"acme/demo#2",url:null};
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:stored}])).updated,1);
+  assert.deepEqual(getTask(task.id)!.sourceParent,stored);
+  const before=getTask(task.id)!.updatedAt;
+  const noUrl={sourceId:"s",externalId:"acme/demo#2"} as unknown as TaskSourceRef;
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:noUrl}])).unchanged,1);
+  assert.equal(getTask(task.id)!.updatedAt,before);
 });
