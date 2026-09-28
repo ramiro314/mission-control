@@ -141,12 +141,6 @@ test("a shape dispatch with the grill skill off is refused on the form, naming t
   await expect(refusal).toContainText("Enable Skills and the grill skill");
   await expect(refusal).toContainText("A shape task's intent invokes the planning skills");
   await expect(refusal).toContainText("Settings → Skills");
-  // Pointer and focus off the Dispatch button, and its tooltip gone, so the frame shows the
-  // whole refusal rather than a bubble printed over it.
-  await dialog.getByRole("button", { name: "Dispatch now" }).hover();
-  await dashboard.mouse.move(0, 0);
-  await dialog.getByPlaceholder("What should this agent do?").focus();
-  await expect(dashboard.locator(".tooltip")).toHaveCount(0);
   await shoot(dashboard, "04-shape-refused", dialog);
 
   // Refused before anything exists.

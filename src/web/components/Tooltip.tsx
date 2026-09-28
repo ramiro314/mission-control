@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useRef,
   useState,
   type ReactElement,
   type ReactNode,
@@ -135,8 +136,11 @@ export function Tooltip({
   const painted: ReactNode = rich ? label.content : label;
   const [tip, setTip] = useState<TipState | null>(null);
   const id = useId();
+  // The element whose hover or focus opened the current tip. See the disabled effect below.
+  const opener = useRef<HTMLElement | null>(null);
 
   const show = useCallback((el: HTMLElement) => {
+    opener.current = el;
     const r = el.getBoundingClientRect();
     const placement: Placement = r.top < TOP_FLIP_THRESHOLD ? "below" : "above";
     setTip({
@@ -202,11 +206,20 @@ export function Tooltip({
   // `onBlur` unmounts without ever firing. The browser does not help either: it drops focus
   // from a disabled element without a blur event of its own.
   //
+  // The same holds in the other direction. Re-enabling swaps the anchor span back for the
+  // bare child, so a tip opened on the span (a pointer resting on a button that disabled
+  // itself mid-request) loses the span's `onMouseLeave` with it and stays painted at the
+  // coordinates it measured, while the layout moves on. A refused dispatch did exactly
+  // that: the error it printed pushed the button down and left the bubble over the error.
+  // So on re-enable the tip hides only when the element that opened it is gone; a tip the
+  // re-enabled child opened itself - the backlog moves focus onto a control that its own
+  // move just enabled, in a layout effect before this one runs - is live and stays.
+  //
   // Hiding on the transition rather than on every render, so a tip that is legitimately
-  // open on a control that was already disabled - hovering the anchor span to read WHY it
+  // open on a control whose state is not changing - hovering the anchor span to read WHY it
   // is unavailable - is left alone.
   useEffect(() => {
-    if (disabled) hide();
+    if (disabled || !opener.current?.isConnected) hide();
   }, [disabled, hide]);
 
   // Merge our listeners onto the child (chaining any it already has) rather than wrapping
