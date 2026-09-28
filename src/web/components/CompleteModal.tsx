@@ -170,16 +170,22 @@ export function CompleteModal({
       setError(completed.error ?? "could not complete the task");
       return;
     }
-    if (free) {
+    // Only an explicit `freed: true` means reclaim ran and stopped the agent. Anything else -
+    // a refusal, or `freed: false` because the task had nothing to free by the time it was
+    // confirmed - still owes today's kill, so the agent is never left running.
+    if (free && completed.freed === true) {
       setBusy(false);
-      if (completed.freeError) {
-        // Completion stands; only the free failed. Stay open so the operator reads why.
-        setError(`Task completed, but the ${worktreeNoun} could not be freed: ${completed.freeError}`);
-        return;
-      }
       onNotice?.(`Task completed · ${worktreeNoun} freed`);
       onCompleted?.();
       close();
+      return;
+    }
+    if (free && completed.freeError) {
+      // Completion stands; only the free failed. Best-effort stop, since a refusal before
+      // reclaim's own stop leaves the agent up; then stay open so the operator reads why.
+      await api.kill(session.id);
+      setBusy(false);
+      setError(`Task completed, but the ${worktreeNoun} could not be freed: ${completed.freeError}`);
       return;
     }
     // The task is recorded before the agent stop is requested, and the order matters: a stop

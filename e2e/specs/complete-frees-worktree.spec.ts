@@ -187,6 +187,35 @@ test("a preview that fails hides the box and does not block Complete", async ({
   }).toBe(`done ${task.worktreePath}`);
 });
 
+test("a completion that frees nothing still stops the agent and claims no free", async ({
+  dashboard,
+  daemon,
+}) => {
+  const task = await dispatchIdle(dashboard, daemon, "nothing freed after all");
+  const dialog = await openComplete(dashboard);
+  await expect(dialog.getByRole("checkbox", { name: "Free this task's worktree" })).toBeChecked();
+
+  // The daemon answers a real completion without `freed: true` - as it does when the task
+  // has nothing left to free by confirm time - because the option is dropped in flight.
+  await dashboard.route(`**/api/tasks/${task.id}/complete`, async (route) => {
+    const { freeWorktree: _dropped, ...body } = route.request().postDataJSON();
+    await route.continue({ postData: JSON.stringify(body) });
+  });
+  const kill = dashboard.waitForRequest((r) => r.method() === "POST" && /\/api\/sessions\/[^/]+\/kill$/.test(r.url()));
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  await kill;
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+  await expect(dashboard.getByText("Task completed · worktree freed")).toHaveCount(0);
+  await expect.poll(async () => {
+    const row = await taskById(daemon, task.id);
+    return `${row?.status} ${row?.worktreePath}`;
+  }).toBe(`done ${task.worktreePath}`);
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ state: string; task: { id: string } | null }>>(daemon, "/api/sessions");
+    return sessions.find((s) => s.task?.id === task.id)?.state ?? "removed";
+  }, { timeout: 30_000 }).toMatch(/^(stopping|exited|removed)$/);
+});
+
 test("a free the daemon refuses after stopping the agent is reported while the task reads done", async ({
   dashboard,
   daemon,
