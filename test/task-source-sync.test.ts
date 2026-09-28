@@ -388,6 +388,13 @@ test("after a push, an upstream-added or upstream-removed blocker merges without
   assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===pushed.id)!.conflicts.length,0);
   assert.equal(getTask(pushed.id)!.title,"Written here");
 });
+test("after a push that wrote no blockers, an upstream-added blocker merges without review",async()=>{
+  const {src,tasks,byRef,pushed,remote}=await setupPushed([],[]);
+  assert.deepEqual(getSourceSync(pushed.id)!.baseline!.blockedBy,[]);
+  assert.equal((await refresh(src,tasks,[remote(3)])).updated,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+  assert.equal(getSourceSync(pushed.id)!.pending,null);
+});
 test("after a push, a local blocker that never went out is not read as removed upstream",async()=>{
   // #3 is a local blocker this source holds an item for, but it was not written upstream.
   const {src,tasks,byRef,pushed,remote}=await setupPushed([2,3],[2]);

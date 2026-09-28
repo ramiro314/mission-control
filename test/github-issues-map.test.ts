@@ -323,6 +323,9 @@ test("a clean create reports the blockers it wrote; a partial failure vouches fo
   const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not link", code: 1 }), ctx, "acme/widgets", draft);
   assert.equal(partial.ref?.externalId, "acme/widgets#42");
   assert.equal(partial.blockedBy, undefined);
+  // A clean create with no blockers vouches for "none written", which is not "unknown".
+  const none = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets", { title: "t", intent: "b" });
+  assert.deepEqual(none.blockedBy, []);
 });
 
 // `gh` prints progress above the URL, so the URL is the LAST such line rather than the

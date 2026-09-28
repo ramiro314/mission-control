@@ -258,6 +258,13 @@ test("a push records the blockers the source wrote as the dependencies baseline,
   assert.deepEqual(getSourceSync("ticket")!.baseline!.blockedBy, [{ externalId: "acme/demo#3", url: item(3).url }]);
 });
 
+test("a clean push that wrote no blockers records an empty dependencies baseline, not none", async () => {
+  const { tasks, task } = setup();
+  const r = await pushTask(mkSource(), task, tasks, { push: spy({ ...created, blockedBy: [] }).push });
+  assert.equal(r.ok, true);
+  assert.deepEqual(getSourceSync(task.id)!.baseline?.blockedBy, []);
+});
+
 test("a push whose source cannot vouch for its links records no dependencies baseline", async () => {
   const { tasks, ticket } = relationsFixture();
   const r = await pushTask(mkSource(), ticket, tasks, { push: spy({ ref: item(12), error: null, outcomeUnknown: false }).push });
