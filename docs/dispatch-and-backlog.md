@@ -1278,6 +1278,8 @@ the task waits on a shape or plan task that has an issue in the same source, the
 filed as its **sub-issue** instead. A [shape task's breakdown](#dispatch-an-agent) mirrors its tickets
 this way through the `push_task` MCP tool, which is the same push, with the same ledger row and
 link, and which answers a retry of an already-pushed task with its existing issue.
+With [Keep imported backlog tasks updated](#keeping-imported-backlog-tasks-updated) on, the
+blockers the push wrote become the baseline for later upstream changes to them.
 
 ### Writing back to the source
 
@@ -1627,8 +1629,14 @@ Tasks imported before this feature have no baseline or reliable import-versus-pu
 Sweep once, then review each older task before adopting it. A task imported before dependencies
 joined the sync has no dependencies baseline: when its local and source blockers already agree
 they become the baseline, and otherwise that group alone is flagged for review and never applied.
-Newly pushed tasks take only the dependencies group, under the same rule: their title, intent,
-priority and labels were written here and stay local. Mission Control never writes dependency
+Newly pushed tasks take only the dependencies group: their title, intent, priority and labels
+were written here and stay local. The push records the blockers it wrote as **blocked by** links
+as that group's baseline, in the same transaction as the ledger row and the link, so a later
+upstream change to them is applied without review. A local blocker that never went out (it had
+no issue yet, or no issue URL) is outside that baseline and stays local-only; it is never read as
+removed upstream. When the source cannot confirm its links were written (for example `gh` created
+the issue but failed to link it), the push records no dependencies baseline and the group falls
+to the rule above. Mission Control never writes dependency
 changes back upstream from this setting. Turning the setting off retains existing baselines and reviews, but
 prevents applying them until updates are enabled again.
 

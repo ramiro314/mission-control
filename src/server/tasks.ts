@@ -1,5 +1,5 @@
 import {
-  canRefreshSourceTask, localSourceContent, sameSourceContent, sourceBlockerOf, type SourceBlocker, type SourceContent,
+  canRefreshSourceTask, localSourceContent, sameSourceContent, sourceBlockerOf, sourceBlockers, type SourceBlocker, type SourceContent,
 } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { blockerDependencies } from "./task-sources/relations.ts";
@@ -3958,6 +3958,8 @@ export class TaskManager {
     id: string,
     ref: TaskSourceRef,
     transaction: typeof inTransaction = inTransaction,
+    /** The blockers the push wrote upstream: the `dependencies` baseline. Absent means none. */
+    pushedBlockers?: SourceBlocker[],
   ): Ok & { task?: Task } {
     const attached = transaction(() => {
       const t = this.registry.getTask(id);
@@ -3973,7 +3975,11 @@ export class TaskManager {
       saveSourceSync(task.id, ref.sourceId, {
         origin: "pushed", externalId: ref.externalId,
         defaults: { priority: task.priority, labels: task.labels },
-        baseline: null, pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
+        // A pushed task syncs only `dependencies`; the rest of the baseline is never read.
+        baseline: pushedBlockers
+          ? { ...localSourceContent(task, null), blockedBy: sourceBlockers(pushedBlockers) }
+          : null,
+        pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
       });
       return { ok: true as const, task, displaced };
     });

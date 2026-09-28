@@ -341,11 +341,16 @@ export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): st
  * that as created - the one outcome a retry must not repeat.
  */
 function relationArgs(draft: PushDraft): string[] {
-  const blockers = (draft.blockedBy ?? []).flatMap((ref) => (ref.url ? [ref.url] : []));
+  const blockers = writtenBlockers(draft).map((ref) => ref.url!);
   return [
     ...(blockers.length > 0 ? ["--blocked-by", blockers.join(",")] : []),
     ...(draft.parent?.url ? ["--parent", draft.parent.url] : []),
   ];
+}
+
+/** The draft's blockers that go out as `--blocked-by`: those with a URL. */
+function writtenBlockers(draft: PushDraft): TaskSourceRef[] {
+  return (draft.blockedBy ?? []).filter((ref) => ref.url);
 }
 
 /**
@@ -377,6 +382,7 @@ export function pushResultFrom(
   res: RunResult,
   ctx: PushContext,
   expectedRepo: string,
+  draft: PushDraft = { title: "", intent: "" },
 ): PushResult {
   const outcome = githubIssueCreateOutcome(res, expectedRepo);
   switch (outcome.kind) {
@@ -389,6 +395,9 @@ export function pushResultFrom(
         },
         error: null,
         outcomeUnknown: false,
+        // Only a clean exit vouches for the links: gh adds them after creating the issue,
+        // so a partial failure may have created it without them.
+        ...(outcome.partialFailure ? {} : { blockedBy: writtenBlockers(draft) }),
       };
     case "refused":
       return {
@@ -431,7 +440,7 @@ async function push(
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return pushResultFrom(res, ctx, cfg.repo);
+  return pushResultFrom(res, ctx, cfg.repo, draft);
 }
 
 // ---- the write-back half: a note onto the issue a task was swept from ----

@@ -307,10 +307,12 @@ export async function pushTask(
     //    was created for it and provenance is not a provisioning field (`attachSource`).
     let attached: { ok: boolean; error?: string; task?: Task };
     try {
+      // The dependencies baseline is exactly the blockers the source confirms it wrote, so
+      // an upstream change to them merges; local blockers that never went out stay local.
       attached = tasks.attachSource(task.id, ref, (link) => transaction(() => {
         remember(inst.id, ref.externalId, ref.url);
         return link();
-      }));
+      }), canRelateTo(inst) ? result.blockedBy : undefined);
     } catch (err) {
       // The transaction rolled back, so neither write landed - but the ISSUE still exists.
       // Reported as an unknown outcome rather than as a refusal for exactly that reason: a

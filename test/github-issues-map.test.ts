@@ -313,6 +313,18 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   assert.equal(r.ref!.externalId, externalIdFor(r.ref!.url!));
 });
 
+test("a clean create reports the blockers it wrote; a partial failure vouches for none", () => {
+  const blocker = (n: number, url: string | null) => ({ sourceId: "src-1", externalId: `acme/widgets#${n}`, url });
+  const draft = { title: "t", intent: "b", blockedBy: [blocker(3, "https://github.com/acme/widgets/issues/3"), blocker(4, null)] };
+  const out = "https://github.com/acme/widgets/issues/42\n";
+  // The URL-less blocker never went out as `--blocked-by`.
+  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets", draft);
+  assert.deepEqual(clean.blockedBy, [draft.blockedBy[0]]);
+  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not link", code: 1 }), ctx, "acme/widgets", draft);
+  assert.equal(partial.ref?.externalId, "acme/widgets#42");
+  assert.equal(partial.blockedBy, undefined);
+});
+
 // `gh` prints progress above the URL, so the URL is the LAST such line rather than the
 // first - taking the first would make a chatty release turn a progress line into the id.
 test("progress chatter above the URL is not mistaken for it", () => {

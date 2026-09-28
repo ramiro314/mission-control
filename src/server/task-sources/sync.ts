@@ -126,8 +126,10 @@ export async function refreshSourceTasks(
           // Legacy links also include locally-authored pushes. Adoption is always explicit.
           next = { ...next, pending: remote, conflicts: groups };
         } else {
-          // A pushed task starts with no dependencies baseline, which that group's own
-          // no-baseline rule covers: applied only where local and source already agree.
+          // A push records the blockers it wrote as the dependencies baseline. A pushed task
+          // without one (the source could not confirm its links, or it was pushed before
+          // baselines were recorded) falls to that group's no-baseline rule: applied only
+          // where local and source already agree.
           const baseline = record.baseline ?? { ...local, blockedBy: undefined };
           const merged = reconcileSourceContent(baseline, local, remote, groups);
           content = merged.content;
