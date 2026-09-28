@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flake-aware testing: touched tests locally, the full suite in CI</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117; --surface: #151b23; --line: #2b3544;
+    --text: #eef2f7; --muted: #a6b0bf; --blue: #6ca7ff;
+    --box-a: #16263d; --box-b: #1d2a1f; --box-c: #2e2412;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8; --surface: #ffffff; --line: #d5dce5;
+      --text: #152033; --muted: #4f5d70; --blue: #1768d3;
+      --box-a: #e3edfb; --box-b: #e4f3e7; --box-c: #fbf0dc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.6; }
+  main { max-width: 1040px; margin: 0 auto; padding: 44px 28px 90px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 14px; }
+  h2 { font-size: 22px; margin: 40px 0 10px; border-top: 1px solid var(--line); padding-top: 22px; }
+  h3 { font-size: 17px; margin: 24px 0 8px; }
+  code { font-family: var(--mono); font-size: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  pre code { border: 0; padding: 0; background: none; }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); margin: 12px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  tr:last-child td { border-bottom: 0; }
+  ul, ol { padding-left: 22px; } li { margin: 3px 0; }
+  .fig { overflow-x: auto; margin: 16px 0; }
+  .fig svg { display: block; max-width: none; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  svg text { fill: var(--text); font: 13px var(--sans); }
+  svg .lbl { fill: var(--muted); font-size: 12px; }
+  svg .box { stroke: var(--line); stroke-width: 1.2; }
+  svg .box.a { fill: var(--box-a); } svg .box.b { fill: var(--box-b); } svg .box.c { fill: var(--box-c); }
+  svg .arr { stroke: var(--blue); stroke-width: 1.6; }
+  svg .head { fill: var(--blue); }
+</style>
+</head>
+<body>
+<main>
+<h1>Flake-aware testing: touched tests locally, the full suite in CI</h1>
+<p>Workflows should stop making the operator&#39;s laptop the bottleneck. A workflow runs only the
+tests the change touched on the laptop, relies on the full suite in GitHub CI, and treats
+flaky tests as something to report and fix rather than a reason to send an agent back for
+another repair round.</p>
+<p>Settled through a six-round grilling session (30 decisions). It was prompted by the Shape this
+work (PR #21), where three repair rounds in a row were spent on unrelated tests that timed out
+under laptop load: a worktree preview time limit, an unnamed test whose name the repair packet
+cut off, and an Electron spawn.</p>
+<h2>Goals</h2>
+<ul>
+<li>A workflow can run <strong>only the touched tests</strong> locally, and still be trusted, because it
+waits for the <strong>full suite in GitHub CI</strong> before it finishes.</li>
+<li>CI <strong>identifies flaky tests</strong> (failed, then passed on one rerun), stays green when flakes
+are the only problem, and <strong>reports</strong> them where people and agents can see them.</li>
+<li>The <strong>GitHub Inspector</strong> sees the flake report and raises it only when the PR under review
+plausibly caused the flake.</li>
+<li><strong>Flake history</strong> is durable, and an agent can be pointed at it to <strong>fix flaky tests</strong> at
+their cause.</li>
+<li>Testing on the laptop <strong>stops piling up</strong>: one test command at a time across worktrees, at
+a lower concurrency.</li>
+<li>It is a <strong>Mission Control product feature</strong> that any repository can adopt, with a
+once-per-repository <strong>setup skill</strong> that brings a repository into the contract.</li>
+</ul>
+<h2>Non-goals</h2>
+<ul>
+<li>Quarantine. No flaky test is skipped automatically, and there is no quarantine label. Flakes
+already do not block a merge, so quarantine would only hide tests that still catch real bugs.
+Revisit only if the &quot;Flaky tests&quot; check becomes permanent noise.</li>
+<li>A pluggable flake-history backend. GitHub Issues is the only store. The flake report format
+is the stable part; a second store gets an interface when one is actually needed, the way
+task sources grew one.</li>
+<li>A second copy of history in Mission Control&#39;s database. History lives in GitHub.</li>
+<li>Changing the existing built-in workflows in place. The new shape ships as a new workflow.</li>
+</ul>
+<h2>Background: how things work today</h2>
+<ul>
+<li>A workflow Check runs one command per slot (<code>test</code>, <code>lint</code>, <code>typecheck</code>, <code>build</code>) from a
+machine-wide catalog with per-repository overrides. The command receives the repository, the
+head commit and a subfolder. It gets no base commit and no changed files.</li>
+<li>Any non-zero exit fails the Check, and the repair packet quotes the last few KB of output.
+There is no idea of a flaky test, and the failing test&#39;s name can be cut off.</li>
+<li>No workflow step waits on GitHub CI. CI follow-through is only an instruction in the Pull
+Request step&#39;s packet, and Personas never see CI results.</li>
+<li>The Inspector reads the PR diff, its comments and threads, and the overall CI state. It does
+not read individual checks, job summaries, logs or artifacts.</li>
+<li>CI runs the unit suite in 6 shards per Node release and the e2e suite in 15 shards. Unit tests
+have no retry, no machine-readable reporter, no artifacts and no job summary. Playwright
+retries once in CI, and nothing reports what that retry caught.</li>
+<li>The GitHub Issues task source matches issues carrying any one of a list of labels. It cannot
+require all of several labels, or exclude one.</li>
+</ul>
+<h2>Design</h2>
+<h3>1. Local touched tests (<code>affected-tests</code>)</h3>
+<p>A new check slot, <code>affected-tests</code>, is appended to the fixed slot list. Its command is a
+template with two placeholders:</p>
+<ul>
+<li><code>{files}</code>: the selected test files.</li>
+<li><code>{junit}</code>: a path Mission Control reads JUnit XML results from.</li>
+</ul>
+<p>Example for this repository:</p>
+<pre><code class="language-sh">node --test --import ./test/setup-state.mjs --import tsx --test-reporter=junit --test-reporter-destination={junit} {files}
+</code></pre>
+<p>Mission Control selects the tests, from the project&#39;s settings:</p>
+<ol>
+<li>Test files the diff changed or added, matched by the project&#39;s test-file patterns.</li>
+<li>Tests that import a changed file, directly or indirectly. This uses a built-in JS/TS import
+resolver. For other languages this step is skipped, and selection is (1) plus (3).</li>
+<li>The <strong>smoke set</strong>: patterns that always run, for registry-style tests that any change can
+break (for this repository, the route-surface oracle and the telemetry manifest are the
+obvious members).</li>
+</ol>
+<p>The base for &quot;changed&quot; is the merge base with the repository&#39;s default branch.</p>
+<p>Behaviour:</p>
+<ul>
+<li>An empty selection skips the step and passes with a note saying nothing was selected.</li>
+<li>When tests fail, Mission Control reads <code>{junit}</code>, reruns only the failed files once with the
+same template, and fails the Check only for tests that fail both times. A test that passes on
+the rerun is reported in the Check&#39;s result as a local flake. It does not fail the Check and
+is not recorded in flake history, because local flakes mostly measure laptop load.</li>
+<li>The repair packet quotes the failing tests&#39; names and messages from the JUnit results, not
+the raw end of the output.</li>
+</ul>
+<h3>2. Project testing settings (<code>.mission/testing.json</code>)</h3>
+<p>Selection settings are knowledge about the project, so they are committed to the repository and
+reviewed like code:</p>
+<pre><code class="language-json">{
+  &quot;tests&quot;: {
+    &quot;patterns&quot;: [&quot;test/**/*.test.ts&quot;],
+    &quot;includeImporters&quot;: true,
+    &quot;smokeSet&quot;: [&quot;test/route-surface-oracle.test.ts&quot;, &quot;test/telemetry-primary-actions.test.ts&quot;]
+  },
+  &quot;flakes&quot;: {
+    &quot;label&quot;: &quot;flaky-test&quot;,
+    &quot;actionableLabel&quot;: &quot;flaky-test:actionable&quot;,
+    &quot;actionableAfter&quot;: 3,
+    &quot;windowDays&quot;: 30
+  }
+}
+</code></pre>
+<ul>
+<li>A gitignored <code>.mission/testing.local.json</code> overrides the committed file <strong>key by key</strong>. A key
+set locally replaces the committed value, and a list replaces a list, so a local file can
+remove something (for example a slow smoke test) and stays small.</li>
+<li>Mission Control shows the effective settings and marks which values came from the local file.</li>
+<li>CI never has the local file, so everything CI reads (the <code>flakes</code> block) comes from the
+committed file only.</li>
+<li>The <code>affected-tests</code> command template itself stays a machine-local Command override, like
+every other slot.</li>
+</ul>
+<h3>3. Laptop load controls</h3>
+<ul>
+<li>A <strong>machine-wide test lease</strong>: only one test Command (<code>test</code> or <code>affected-tests</code>) runs at a
+time across all worktrees on the machine. Others wait, the way e2e runs already wait for the
+e2e host lease.</li>
+<li><strong>Lower test concurrency for checks</strong>: a Check&#39;s test command runs with a lower concurrency
+(this repository reads <code>MISSION_TEST_CONCURRENCY</code>).</li>
+<li>Both are settings.</li>
+</ul>
+<h3>4. Flake reporting in CI</h3>
+<p>A <strong>report action</strong> turns JUnit XML into a flake report:</p>
+<ol>
+<li>The test job runs the suite with a JUnit reporter.</li>
+<li><strong>Rerun</strong>: by default the action reruns only the failed test files once, from a rerun
+command template with the same <code>{files}</code> and <code>{junit}</code> placeholders. When the test runner&#39;s
+own retry output already shows which tests flaked (Playwright does), the action reads that
+instead of rerunning.</li>
+<li>A test that failed and then passed is a <strong>flake</strong>. A test that failed both times is a <strong>real
+failure</strong>.</li>
+<li>The action publishes:<ul>
+<li>a neutral <strong>&quot;Flaky tests&quot;</strong> check on the commit, whose summary lists each flake with its
+error snippet and a link to its history issue</li>
+<li>a job summary with the same content</li>
+<li>the report as an artifact, in Mission Control&#39;s flake report format</li>
+</ul>
+</li>
+<li>The test job itself stays green when flakes are the only failures, and fails on any real
+failure.</li>
+</ol>
+<p><strong>Distribution</strong>: the action is <strong>copied into each repository</strong> by the setup skill (for example
+<code>.github/actions/mission-flake-report/</code>), pinned to a version. Mission Control can update the
+copy later. Copying works for any repository owner and avoids needing access to this private
+repository.</p>
+<h3>5. Flake history in GitHub Issues</h3>
+<p>The report action also keeps history, so it covers every CI run, including pushes to <code>main</code> and
+PRs that Mission Control did not open:</p>
+<ul>
+<li><strong>One issue per flaky test</strong>, labelled with the configured flake label (default <code>flaky-test</code>).
+The first flake opens the issue, and each later occurrence adds a comment with the branch or
+PR, commit, run link, error snippet and time. The issue shows the occurrence count.</li>
+<li>When a test reaches <code>actionableAfter</code> occurrences (default 3) within the last <code>windowDays</code>
+(default 30), the action adds the configured actionable label (default
+<code>flaky-test:actionable</code>).</li>
+<li>The fix PR closes the issue in the normal way, and the actionable label is removed. If the
+test flakes again, the action reopens the issue and counting starts fresh from the reopen.</li>
+<li>The CI job needs <code>issues: write</code> and <code>checks: write</code>. The setup skill checks for both.</li>
+</ul>
+<h3>6. The &quot;Wait for CI&quot; workflow step</h3>
+<p>A new workflow step kind, placed after the Pull Request step. It watches the pushed commit&#39;s
+checks:</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Outcome</th>
+<th>What the step does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>All green, including green with flakes</td>
+<td>Passes, and records the flake summary in the run</td>
+</tr>
+<tr>
+<td>A real failure</td>
+<td>Fails, with a repair packet naming each failing check and quoting its failure summary</td>
+</tr>
+<tr>
+<td>Timed out (default 45 minutes)</td>
+<td>Does not pass, and says it timed out</td>
+</tr>
+<tr>
+<td>No checks at all, or no &quot;Flaky tests&quot; check</td>
+<td>Does not pass, and says CI is missing or not set up for flake reporting</td>
+</tr>
+</tbody></table>
+</div><ul>
+<li>A failure uses the existing repair-round limit. After each repair push, the step watches the
+<strong>new</strong> commit, never an earlier green result.</li>
+<li>Absent or incomplete CI is never reported as passing.</li>
+</ul>
+<h3>7. The new built-in workflow</h3>
+<p>&quot;No-Mistakes Review (Affected tests)&quot;:</p>
+<figure class="fig"><svg role="img" aria-label="The Affected tests workflow: every failure path returns to the session" viewBox="0 0 960 250" width="960" height="250"><defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker></defs><rect class="box c" x="20" y="100" width="130" height="54" rx="8"/><text x="85" y="124" text-anchor="middle">Session</text><text x="85" y="140" text-anchor="middle">submits</text><rect class="box a" x="200" y="100" width="150" height="54" rx="8"/><text x="275" y="124" text-anchor="middle">Check:</text><text x="275" y="140" text-anchor="middle">affected-tests</text><rect class="box a" x="400" y="100" width="120" height="38" rx="8"/><text x="460" y="124" text-anchor="middle">Personas</text><rect class="box a" x="570" y="100" width="140" height="54" rx="8"/><text x="640" y="124" text-anchor="middle">Pull Request</text><text x="640" y="140" text-anchor="middle">step</text><rect class="box b" x="760" y="100" width="130" height="38" rx="8"/><text x="825" y="124" text-anchor="middle">Wait for CI</text><rect class="box c" x="760" y="200" width="130" height="38" rx="8"/><text x="825" y="224" text-anchor="middle">End</text><line class="arr" x1="150" y1="125" x2="198" y2="125" marker-end="url(#h)"/><line class="arr" x1="350" y1="125" x2="398" y2="125" marker-end="url(#h)"/><line class="arr" x1="520" y1="125" x2="568" y2="125" marker-end="url(#h)"/><line class="arr" x1="710" y1="125" x2="758" y2="125" marker-end="url(#h)"/><line class="arr" x1="825" y1="138" x2="825" y2="198" marker-end="url(#h)"/><text class="lbl" x="850" y="175" text-anchor="middle">green</text><path class="arr" d="M825,100 C825,20 85,20 85,98" fill="none" marker-end="url(#h)"/><text class="lbl" x="450" y="30" text-anchor="middle">real failure</text><path class="arr" d="M275,100 C275,60 110,60 100,98" fill="none" marker-end="url(#h)"/><text class="lbl" x="190" y="62" text-anchor="middle">failed twice</text><path class="arr" d="M460,154 C460,215 90,215 80,156" fill="none" marker-end="url(#h)"/><text class="lbl" x="270" y="228" text-anchor="middle">changes requested</text></svg><figcaption>The Affected tests workflow: every failure path returns to the session</figcaption></figure><ul>
+<li>The existing No-Mistakes workflows are unchanged. You choose the new one per task kind under
+Dispatch defaults.</li>
+<li>Once it has proven itself on this repository, the kind defaults switch to it.</li>
+</ul>
+<h3>8. Inspector</h3>
+<ul>
+<li>The Inspector reads the &quot;Flaky tests&quot; check summary for the PR&#39;s current commit and includes
+it in its review.</li>
+<li>By default flakes are informational. It raises a finding only when a flaky test is one this
+PR added or touched, or the PR plausibly introduced the flakiness, and it links the test&#39;s
+history issue.</li>
+</ul>
+<h3>9. Cleanup: from flake issues to fixes</h3>
+<figure class="fig"><svg role="img" aria-label="From a CI flake to a fix: the report action writes history, the task source files the work" viewBox="0 0 1000 262" width="1000" height="262"><defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker></defs><rect class="box a" x="20" y="40" width="110" height="38" rx="8"/><text x="75" y="64" text-anchor="middle">CI run</text><rect class="box b" x="170" y="40" width="140" height="38" rx="8"/><text x="240" y="64" text-anchor="middle">Report action</text><rect class="box a" x="360" y="5" width="190" height="38" rx="8"/><text x="455" y="29" text-anchor="middle">'Flaky tests' check</text><rect class="box a" x="360" y="80" width="190" height="54" rx="8"/><text x="455" y="104" text-anchor="middle">Issue per flaky test</text><text x="455" y="120" text-anchor="middle">(flaky-test)</text><rect class="box c" x="600" y="80" width="170" height="38" rx="8"/><text x="685" y="104" text-anchor="middle">+ flaky-test:actionable</text><rect class="box a" x="810" y="80" width="170" height="54" rx="8"/><text x="895" y="104" text-anchor="middle">GitHub Issues</text><text x="895" y="120" text-anchor="middle">task source</text><rect class="box a" x="810" y="200" width="170" height="38" rx="8"/><text x="895" y="224" text-anchor="middle">Backlog task</text><rect class="box b" x="560" y="200" width="190" height="54" rx="8"/><text x="655" y="224" text-anchor="middle">Agent with</text><text x="655" y="240" text-anchor="middle">deflake skill</text><line class="arr" x1="130" y1="60" x2="168" y2="60" marker-end="url(#h)"/><line class="arr" x1="310" y1="50" x2="358" y2="28" marker-end="url(#h)"/><line class="arr" x1="310" y1="70" x2="358" y2="100" marker-end="url(#h)"/><line class="arr" x1="550" y1="105" x2="598" y2="105" marker-end="url(#h)"/><text class="lbl" x="574" y="74" text-anchor="middle">N in window</text><line class="arr" x1="770" y1="105" x2="808" y2="105" marker-end="url(#h)"/><line class="arr" x1="895" y1="134" x2="895" y2="198" marker-end="url(#h)"/><text class="lbl" x="885" y="172" text-anchor="end">all of both labels</text><line class="arr" x1="810" y1="225" x2="752" y2="225" marker-end="url(#h)"/><path class="arr" d="M655,200 C655,160 470,160 455,136" fill="none" marker-end="url(#h)"/><text class="lbl" x="560" y="158" text-anchor="middle">fix PR closes issue</text></svg><figcaption>From a CI flake to a fix: the report action writes history, the task source files the work</figcaption></figure><ul>
+<li>The GitHub Issues task source gains <strong>&quot;all of these labels&quot;</strong> and <strong>&quot;none of these labels&quot;</strong>
+next to today&#39;s &quot;any of these labels&quot;. A source can then pick up exactly the actionable flake
+issues, for example all of <code>flaky-test</code> and <code>flaky-test:actionable</code>, none of <code>wontfix</code>.
+Existing sources behave as before. The Jira source is unchanged, since JQL already does this.</li>
+<li>A new <strong><code>deflake</code> skill</strong> in Mission Control&#39;s skills catalog, which the task&#39;s instructions
+invoke. It tells the agent to:<ul>
+<li>read the issue&#39;s occurrence history</li>
+<li>reproduce the flake under load (repeat the test, raise concurrency, run it alongside a
+CPU-heavy process)</li>
+<li>find the timing dependency and fix its cause</li>
+<li>loosen a timeout only when the limit itself is wrong, and say why in the PR</li>
+<li>prove the fix with a before/after repeated run</li>
+<li>close the issue from the PR</li>
+</ul>
+</li>
+</ul>
+<h3>10. Setup skill (once per repository)</h3>
+<p>A skill in Mission Control&#39;s catalog, started as an ordinary task from a &quot;Set up flake-aware
+testing&quot; action on the repository:</p>
+<ol>
+<li><strong>Audit</strong> the repository against the contract: a test runner that can emit JUnit XML, the
+rerun command template, the report action in CI and its version, the <code>checks: write</code> and
+<code>issues: write</code> permissions, the <code>affected-tests</code> command template, test-file patterns and a
+proposed smoke set.</li>
+<li><strong>Propose</strong> the changes in one approval form.</li>
+<li><strong>Apply</strong> after approval: open a PR with the CI and test-script changes, the copied report
+action, <code>.mission/testing.json</code> and the <code>.gitignore</code> entry for the local file, and set
+Mission Control&#39;s <code>affected-tests</code> command template for the repository.</li>
+<li><strong>Verify</strong>: run the new <code>affected-tests</code> command once locally, and after the PR merges
+confirm the &quot;Flaky tests&quot; check appears on a CI run.</li>
+</ol>
+<p>Run again later, it detects an outdated copy of the report action and offers the update.</p>
+<h2>Phases</h2>
+<p>Each phase is usable on its own.</p>
+<ol>
+<li><strong>Laptop relief</strong>: the <code>affected-tests</code> slot, selection from <code>.mission/testing.json</code> and its
+local override, the <code>{files}</code>/<code>{junit}</code> template with one local rerun and JUnit-based repair
+packets, the machine-wide test lease, and check concurrency settings.</li>
+<li><strong>Flake reporting in CI</strong>: the report action, the &quot;Flaky tests&quot; check, and the flake issues
+with the actionable threshold, proven on this repository&#39;s CI.</li>
+<li><strong>Wait for CI step</strong> and the new built-in workflow.</li>
+<li><strong>Inspector</strong> reads the flake summary.</li>
+<li><strong>Setup skill</strong>: audit, apply after approval, verify.</li>
+<li><strong>Cleanup</strong>: task source &quot;all of&quot; and &quot;none of&quot; labels, and the <code>deflake</code> skill.</li>
+</ol>
+<h2>Open verification</h2>
+<ul>
+<li>Whether Node 24 has <code>--test-rerun-failures</code>. Node 26 does. The report action&#39;s default rerun
+only needs the failed files and the rerun template, so it does not depend on this flag.</li>
+</ul>
+<h2>Decisions</h2>
+<p>Numbers follow the grilling session. Q21 and Q25 were never asked.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Chosen</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Q1</td>
+<td>Product feature or this repository only</td>
+<td>A Mission Control product feature</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>What relying on CI means</td>
+<td>The workflow waits for green CI; a real CI failure is a repair round</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td>What counts as touched tests</td>
+<td>Changed tests, plus importers, plus a smoke set, adjustable per project</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td>What a flake does to CI</td>
+<td>CI stays green, with a separate neutral &quot;Flaky tests&quot; check</td>
+</tr>
+<tr>
+<td>Q5</td>
+<td>Reruns before a failure is real</td>
+<td>One rerun of the failed files</td>
+</tr>
+<tr>
+<td>Q6</td>
+<td>Local flakes</td>
+<td>Rerun once locally; only CI flakes are recorded</td>
+</tr>
+<tr>
+<td>Q7</td>
+<td>Who selects touched tests</td>
+<td>Mission Control, from per-project settings</td>
+</tr>
+<tr>
+<td>Q8</td>
+<td>How a workflow asks for touched tests</td>
+<td>A new <code>affected-tests</code> check slot</td>
+</tr>
+<tr>
+<td>Q9</td>
+<td>Wait for CI behaviour</td>
+<td>As in section 6, with a 45-minute default limit</td>
+</tr>
+<tr>
+<td>Q10</td>
+<td>Flake report format and producer</td>
+<td>Mission Control&#39;s format, built from JUnit XML by a report action; plus a setup skill</td>
+</tr>
+<tr>
+<td>Q11</td>
+<td>Inspector and flakes</td>
+<td>A finding only when the PR plausibly caused the flake</td>
+</tr>
+<tr>
+<td>Q12</td>
+<td>Where history lives</td>
+<td>Outside Mission Control, GitHub by default</td>
+</tr>
+<tr>
+<td>Q13</td>
+<td>What starts cleanup</td>
+<td>Flake issues through a task source, at a configurable actionable threshold (default 3)</td>
+</tr>
+<tr>
+<td>Q14</td>
+<td>Laptop load controls</td>
+<td>A machine-wide test lease and lower check concurrency, both settings</td>
+</tr>
+<tr>
+<td>Q15</td>
+<td>GitHub store</td>
+<td>One issue per flaky test, with a dedicated flake label</td>
+</tr>
+<tr>
+<td>Q16</td>
+<td>Pluggable history</td>
+<td>GitHub only, no provider interface yet</td>
+</tr>
+<tr>
+<td>Q17</td>
+<td>Setup skill scope</td>
+<td>Audit, apply after approval, verify</td>
+</tr>
+<tr>
+<td>Q18</td>
+<td>Who reruns in CI</td>
+<td>The report action by default; a runner&#39;s own retry output when it shows flakes</td>
+</tr>
+<tr>
+<td>Q19</td>
+<td>Local command contract</td>
+<td>A template with <code>{files}</code> and <code>{junit}</code> placeholders</td>
+</tr>
+<tr>
+<td>Q20</td>
+<td>Cleanup instructions</td>
+<td>A <code>deflake</code> skill</td>
+</tr>
+<tr>
+<td>Q22</td>
+<td>Quarantine</td>
+<td>None for now</td>
+</tr>
+<tr>
+<td>Q23</td>
+<td>How the workflow is offered</td>
+<td>A new built-in workflow; defaults switch once proven</td>
+</tr>
+<tr>
+<td>Q24</td>
+<td>Where project settings live</td>
+<td><code>.mission/testing.json</code>, with a gitignored <code>.local</code> override</td>
+</tr>
+<tr>
+<td>Q26</td>
+<td>Shipping order</td>
+<td>The six phases above</td>
+</tr>
+<tr>
+<td>Q27</td>
+<td>Local file merge</td>
+<td>Key by key; lists replace lists</td>
+</tr>
+<tr>
+<td>Q28</td>
+<td>Actionable threshold</td>
+<td>In <code>.mission/testing.json</code>: 3 occurrences in 30 days; label names configurable</td>
+</tr>
+<tr>
+<td>Q29</td>
+<td>Task source label matching</td>
+<td>Add &quot;all of&quot; and &quot;none of&quot; to the GitHub Issues source</td>
+</tr>
+<tr>
+<td>Q30</td>
+<td>Report action distribution</td>
+<td>Copied into each repository by the setup skill, pinned to a version</td>
+</tr>
+</tbody></table>
+</div>
+</main>
+</body>
+</html>
