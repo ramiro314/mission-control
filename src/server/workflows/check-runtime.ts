@@ -73,6 +73,15 @@ export interface CheckAttemptRef {
   attemptId: string;
   submissionId: string;
   nodeId: string;
+  /**
+   * Whether this attempt takes the machine-wide check test lease, decided ONCE by the engine
+   * when it chose whether to queue the attempt behind its per-daemon test gate. The executor
+   * obeys it rather than re-reading `checkTestLease`, so a setting flipped between scheduling
+   * and spawn cannot take the lease inside a check slot the gate never protected.
+   *
+   * Absent means "ask the policy", for a caller with no scheduler of its own.
+   */
+  testLease?: boolean;
 }
 
 /** Test suites get the larger budget; faster check slots keep the supervisor default. */
@@ -273,13 +282,14 @@ export class CheckRuntime {
     const timeoutMs = this.timeoutMs ?? defaultCheckTimeoutMs(request.slot);
     const runsTests = slotRunsTests(request.slot);
     const policy = runsTests ? this.testPolicy() : NO_TEST_POLICY;
+    const takeLease = runsTests && (attempt.testLease ?? policy.checkTestLease);
     const extraEnv: Record<string, string> = {};
     if (runsTests && policy.checkTestConcurrency !== null) {
       extraEnv[CHECK_TEST_CONCURRENCY_ENV] = String(policy.checkTestConcurrency);
     }
     let testLease: CheckTestLease | null = null;
     let waitedMs: number | undefined;
-    if (policy.checkTestLease && !this.env[CHECK_TEST_LEASE_HELD_ENV]) {
+    if (takeLease && !this.env[CHECK_TEST_LEASE_HELD_ENV]) {
       const waitStarted = Date.now();
       let waited = false;
       try {

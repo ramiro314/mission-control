@@ -1069,7 +1069,7 @@ function leaseRuntime(
       };
     },
   });
-  const exec = (slot: "test" | "lint" | "typecheck" | "build", ref = attemptRef()) =>
+  const exec = (slot: "test" | "lint" | "typecheck" | "build", ref: ReturnType<typeof attemptRef> & { testLease?: boolean } = attemptRef()) =>
     runtime.executorFor(ref)({ slot, command: PASSES, repoRoot, workingSubpath: "", headSha });
   return { exec, seen, pool };
 }
@@ -1226,4 +1226,22 @@ test("a failed test check that waited keeps the wait in its note", async () => {
   assert.equal(outcome?.status, "failed");
   assert.equal(outcome?.exitCode, 3);
   assert.match(outcome?.note ?? "", /exited 3\. Waited 45s for another test check to finish\.$/);
+});
+
+test("the executor obeys the engine's per-attempt lease decision over the live setting", async () => {
+  const told = recordingLease();
+  const toldRun = leaseRuntime({ lease: told, policy: { checkTestLease: false, checkTestConcurrency: 3 } });
+  assert.equal((await toldRun.exec("test", { ...attemptRef(), testLease: true })).kind, "exited");
+  assert.equal(told.events.length, 2, "told to lease, it leases even though the setting is now off");
+
+  const notTold = recordingLease();
+  const notToldRun = leaseRuntime({ lease: notTold, policy: { checkTestLease: true, checkTestConcurrency: 3 } });
+  assert.equal((await notToldRun.exec("test", { ...attemptRef(), testLease: false })).kind, "exited");
+  assert.deepEqual(notTold.events, [], "told not to lease, it does not, though the setting is now on");
+  assert.deepEqual(notToldRun.seen[0]!.extraEnv, { MISSION_TEST_CONCURRENCY: "3" });
+
+  const lintTold = recordingLease();
+  const lintRun = leaseRuntime({ lease: lintTold });
+  assert.equal((await lintRun.exec("lint", { ...attemptRef(), testLease: true })).kind, "exited");
+  assert.deepEqual(lintTold.events, [], "a non-test slot never leases, whatever it is told");
 });

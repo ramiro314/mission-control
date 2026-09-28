@@ -2538,3 +2538,35 @@ test("with the test lease on, a daemon runs one test check at a time and lint ne
     await engine.stop();
   }
 });
+
+test("the test-lease decision made at scheduling is the one the executor is told", async () => {
+  // The setting is flipped ON while the attempt waits for a check slot. The attempt was not
+  // queued behind the per-daemon test gate, so it must not take the machine lease inside the
+  // slot it holds - and the reverse flip must not drop a lease the gate was chosen for.
+  for (const initially of [false, true]) {
+    const id = `lease-decision-${initially}`;
+    const store = seedSubmission(id, checkGraph);
+    let lease = initially;
+    const told: Array<boolean | undefined> = [];
+    const engine = new WorkflowEngine(store, () => {}, {
+      retryBaseMs: 1,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      workflowPolicy: () => checkPolicy({ checkTestLease: lease }),
+      workflowCommand: checkCatalog(),
+      checkSchedule: async (fn) => {
+        lease = !initially;
+        return await fn();
+      },
+      checkDeps: (attempt) => {
+        told.push(attempt.testLease);
+        return { execute: async () => ({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 }) };
+      },
+    });
+    engine.start();
+    engine.activateSubmission(`submission-${id}`);
+    await waitFor(() => store.getRun(`run-${id}`)?.status === "completed");
+    await engine.stop();
+    assert.deepEqual(told, [initially]);
+  }
+});
