@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { junitCaseKey, parseJUnit, type JUnitCase } from "@shared/junit.ts";
@@ -14,6 +14,7 @@ import {
 } from "@shared/workflow.ts";
 import type { MergedTestingConfig } from "@shared/testing-config.ts";
 import { readTestingConfig } from "../testing-config.ts";
+import { realpathOr } from "../util/repo-doc.ts";
 import { selectAffectedTests, type TestSelectionDeps } from "../test-selection.ts";
 import type { CheckExecutionResult } from "./checks.ts";
 import type { CheckSpawnOutcome } from "./check-supervisor.ts";
@@ -163,7 +164,7 @@ export async function runAffectedTests(
 ): Promise<CheckSpawnOutcome> {
   const dir = mkdtempSync(join(tmpdir(), "mission-junit-"));
   const cwd = join(ctx.treeRoot, ctx.workingSubpath);
-  const roots = [safeRealpath(ctx.treeRoot), ctx.treeRoot];
+  const roots = [realpathOr(ctx.treeRoot), ctx.treeRoot];
   const selectedPaths = new Set(plan.files.map((file) => file.path));
   const argFor = (path: string) => relative(cwd, join(ctx.treeRoot, path)) || ".";
   const ranLabel = `Ran ${plural(plan.files.length, "selected test file", "selected test files")}`;
@@ -300,12 +301,4 @@ function readJUnitFile(path: string): { ok: true; cases: JUnitCase[] } | { ok: f
   if (size > MAX_JUNIT_BYTES) return { ok: false, error: `the results file is larger than ${MAX_JUNIT_BYTES} bytes` };
   const parsed = parseJUnit(readFileSync(path, "utf8"));
   return parsed.ok ? { ok: true, cases: parsed.results.cases } : { ok: false, error: parsed.error };
-}
-
-function safeRealpath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
 }
