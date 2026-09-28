@@ -5,7 +5,7 @@ import {
   type SourceContent, type SourceContentGroup, type SourceSyncCounts, type SourceSyncRecord, type SourceSyncReview,
 } from "@shared/task-source-sync.ts";
 import { normalizeLabels } from "@shared/task.ts";
-import type { SweepContext, SweepResult, TaskCandidate, TaskSourceInstance } from "@shared/task-source.ts";
+import { sameSourceRef, type SweepContext, type SweepResult, type TaskCandidate, type TaskSourceInstance } from "@shared/task-source.ts";
 import type { Task } from "@shared/types.ts";
 import { getTask, listTaskSourceBacklog, listTasks } from "../db.ts";
 import type { TaskManager } from "../tasks.ts";
@@ -156,7 +156,7 @@ export async function refreshSourceTasks(
     if (!applied.ok || next.error) counts.skipped++;
     else if (next.pending) counts.conflicted++;
     else if (!sameSourceContent(local, content)
-      || (parent !== undefined && JSON.stringify(parent) !== JSON.stringify(task.sourceParent))) counts.updated++;
+      || (parent !== undefined && !sameSourceRef(parent, task.sourceParent))) counts.updated++;
     else counts.unchanged++;
   }
   return counts;

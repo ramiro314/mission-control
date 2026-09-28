@@ -468,6 +468,10 @@ test("refresh overwrites the parent without review, adds no edge, and freezes on
   assert.equal(getTask(task.id)!.sourceParent,null);
   assert.equal((await refresh(src,tasks,[{...candidate(),parent:parentOf(2)}])).updated,1);
   assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(2));
+  // The same parent again, even with its keys in another order, is unchanged: no rewrite.
+  const {url,externalId,sourceId}=parentOf(2); const before=getTask(task.id)!.updatedAt;
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:{url,externalId,sourceId}}])).unchanged,1);
+  assert.equal(getTask(task.id)!.updatedAt,before);
   assert.deepEqual(synced(task.id),[]);
   assert.equal(getSourceSync(task.id)!.pending,null); assert.deepEqual(getSourceSync(task.id)!.conflicts,[]);
   // A local edit conflicting with upstream content does not hold the parent back.

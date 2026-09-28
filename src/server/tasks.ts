@@ -32,7 +32,7 @@ import type {
   TaskDependencyInput,
   UpdateTask,
 } from "@shared/protocol.ts";
-import type { TaskSourceRef } from "@shared/task-source.ts";
+import { sameSourceRef, type TaskSourceRef } from "@shared/task-source.ts";
 import {
   pipelineRecoveryOutcomeFor,
   pipelineRunKeyOf,
@@ -3886,7 +3886,7 @@ export class TaskManager {
     }
     const sourceParent = parent === undefined ? task.sourceParent : parent;
     const changed = !sameSourceContent(local, content)
-      || JSON.stringify(sourceParent) !== JSON.stringify(task.sourceParent);
+      || !sameSourceRef(sourceParent, task.sourceParent);
     let dependencies = task.dependencies;
     if (relates && content.blockedBy && !sameSourceContent({ ...local, blockedBy: content.blockedBy }, local)) {
       try {

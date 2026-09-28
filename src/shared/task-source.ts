@@ -677,6 +677,15 @@ export const MAX_PER_SWEEP_CEILING = 200;
 
 /** Clamp a stored interval into the range the sweeper will actually honour. */
 /**
+ * Whether two refs name the same item, field by field. Not `JSON.stringify`: key order and an
+ * absent versus null `url` must not read as a change. Null or undefined equals only itself.
+ */
+export function sameSourceRef(a: TaskSourceRef | null | undefined, b: TaskSourceRef | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.sourceId === b.sourceId && a.externalId === b.externalId && (a.url ?? null) === (b.url ?? null);
+}
+
+/**
  * The configured sources a task based on `repoRoot` could actually be pushed into.
  *
  * The SAME two questions `pushTask` asks, deliberately, and the one place they are asked
