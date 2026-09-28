@@ -340,7 +340,8 @@ server.registerTool(
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
       "prerequisites keep the new task backlogged until their pull requests merge. Pass " +
       "adoptTaskId to have an existing backlog task stand in for this one instead: only the " +
-      "dependency edges are added to it, and a cycle is refused. Repository " +
+      "dependency edges are added to it, and a cycle is refused. The adopted task must belong " +
+      "to the current repository or to the one named by repository. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
       "authority later. Returns the task id and canonical repository set.",
     inputSchema: {
@@ -373,7 +374,9 @@ server.registerTool(
         .optional()
         .describe(
           "Primary repository as an absolute local checkout path or a unique repository directory " +
-            "name. Omit it to use the calling session's current repository",
+            "name. Omit it to use the calling session's current repository. With adoptTaskId it " +
+            "instead names the repository the adopted task may belong to, as passed to " +
+            "list_backlog_tasks",
         ),
       additionalRepositories: z
         .array(z.string().trim().min(1))
@@ -408,7 +411,9 @@ server.registerTool(
         .describe(
           "Id of an existing backlog task (from list_backlog_tasks) that stands in for this one. " +
             "Nothing is created: only dependsOnTaskIds and dependsOnCurrentSession are added to that " +
-            "task. Send those alone with it; title, intent, kind, labels and repositories are refused",
+            "task. Send those alone with it, plus repository when the task came from another " +
+            "repository's list_backlog_tasks; title, intent, kind, labels and additionalRepositories " +
+            "are refused, and so is a task from neither the current nor the named repository",
         ),
     },
   },
@@ -444,9 +449,13 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
-        ...(explicitRepositories
-          ? { targetRepository: repository, additionalRepositories: additionalRepositories ?? [] }
-          : {}),
+        // An adoption names at most the repository its task came from; additionalRepositories
+        // is sent only when set, so the daemon refuses it rather than this wrapper dropping it.
+        ...(adoptTaskId !== undefined
+          ? { targetRepository: repository, additionalRepositories }
+          : explicitRepositories
+            ? { targetRepository: repository, additionalRepositories: additionalRepositories ?? [] }
+            : {}),
         kind,
         labels,
         adoptTaskId,
@@ -500,25 +509,41 @@ server.registerTool(
 server.registerTool(
   "list_backlog_tasks",
   {
-    title: "List the repository's open backlog",
+    title: "List a repository's open backlog",
     description:
-      "List the open backlog tasks of the calling session's repository: id, title, kind, labels, " +
-      "and the task ids each one already depends on. Read-only. Use it to offer an existing task " +
-      "a ticket could adopt through create_task's adoptTaskId.",
-    inputSchema: {},
+      "List the open backlog tasks of the calling session's repository, or of the one named by " +
+      "repository: id, title, kind, labels, and the task ids each one already depends on, plus " +
+      "the mirror choice for that repository. Read-only. Use it to offer an existing task a " +
+      "ticket could adopt through create_task's adoptTaskId; to adopt a task listed from a named " +
+      "repository, pass the same repository to create_task.",
+    inputSchema: {
+      repository: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Repository to list, as an absolute local checkout path or a unique repository directory " +
+            "name. Omit it to list the calling session's current repository",
+        ),
+    },
   },
-  async () => {
+  async ({ repository }) => {
     try {
-      const res = await http("/mcp/backlog", "POST", {
+      // Naming a repository uses its own route: an older daemon would strip the field and
+      // answer with the caller's backlog as though it were the named one's.
+      const res = await http(repository === undefined ? "/mcp/backlog" : "/mcp/v2/backlog", "POST", {
         env: ENV,
         sessionId: SESSION_ID,
         cwd: process.cwd(),
         repoRoot: process.cwd(),
+        repository,
       });
       if (await isUnknownRoute(res)) {
         return textResult(
-          "Could not list the backlog: this Mission Control daemon does not support it. Update " +
-            "or restart Mission Control and retry.",
+          "Could not list the backlog: this Mission Control daemon does not support " +
+            (repository === undefined ? "it" : "naming a repository") +
+            ". Update or restart Mission Control and retry.",
           true,
         );
       }

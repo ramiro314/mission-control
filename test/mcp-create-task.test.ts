@@ -504,7 +504,6 @@ test("adopting a backlog task only adds the ticket's edges to it", async () => {
     { intent: "Ticket body that must not land" },
     { kind: "ship" },
     { labels: ["ticket"] },
-    { targetRepository: repo },
     { additionalRepositories: [] },
   ]) {
     const mixed = await adopt(existing.id, { dependsOnTaskIds: [blocker.body.id], ...extra });
@@ -601,4 +600,87 @@ test("list_backlog_tasks returns the calling repository's open backlog only", as
     labels: [],
     dependsOnTaskIds: [mine.body.id],
   });
+});
+
+const listBacklog = async (
+  app: ReturnType<typeof buildApp>,
+  repoRoot: string,
+  repository?: string,
+) => {
+  const response = await app.request("/mcp/v2/backlog", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ env: {}, cwd: repoRoot, repoRoot, ...(repository ? { repository } : {}) }),
+  });
+  return { status: response.status, body: await response.json() };
+};
+
+test("list_backlog_tasks lists a named repository's backlog, by path or unique name", async () => {
+  const { repo, tasks, app, file } = ticketHarness("cross-list");
+  const other = gitRepo("cross-list-other");
+  await file({ title: "Mine", intent: "m" });
+  tasks.create({ repoRoot: other, intent: "o", title: "Theirs", kind: "bugfix", agent: "claude", backlog: true });
+
+  const own = await listBacklog(app, repo);
+  assert.equal(own.status, 200);
+  assert.equal(own.body.repository, repo);
+  assert.deepEqual(own.body.tasks.map((task: { title: string }) => task.title), ["Mine"]);
+
+  for (const selector of [other, "cross-list-other"]) {
+    const named = await listBacklog(app, repo, selector);
+    assert.equal(named.status, 200, JSON.stringify(named.body));
+    assert.equal(named.body.repository, other);
+    assert.deepEqual(named.body.tasks.map((task: { title: string }) => task.title), ["Theirs"]);
+  }
+});
+
+test("list_backlog_tasks refuses a missing or ambiguous repository name", async () => {
+  const { repo, app } = ticketHarness("cross-list-errors");
+  const first = gitRepo("gamma/dup-lib");
+  const second = gitRepo("delta/dup-lib");
+
+  const missing = await listBacklog(app, repo, "not-here");
+  assert.equal(missing.status, 400);
+  assert.match(missing.body.error, /no local repository named "not-here"/);
+
+  const ambiguous = await listBacklog(app, repo, "dup-lib");
+  assert.equal(ambiguous.status, 409);
+  assert.match(ambiguous.body.error, /ambiguous/);
+  assert.ok(ambiguous.body.error.includes(first) && ambiguous.body.error.includes(second));
+
+  // A field this route does not know is refused, never stripped.
+  const response = await app.request("/mcp/v2/backlog", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ env: {}, cwd: repo, repoRoot: repo, repositories: ["x"] }),
+  });
+  assert.equal(response.status, 400);
+});
+
+test("adoption refuses a task from neither the caller's nor the named repository", async () => {
+  const { tasks, adopt, file } = ticketHarness("cross-adopt");
+  const other = gitRepo("cross-adopt-other");
+  const blocker = await file({ title: "Blocker", intent: "b" });
+  const foreign = tasks.create({
+    repoRoot: other, intent: "o", title: "Theirs", kind: "ship", agent: "claude", backlog: true,
+  });
+
+  const refused = await adopt(foreign.id, { dependsOnTaskIds: [blocker.body.id] });
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /belongs to .*cross-adopt-other.*neither this session's repository nor the named repository/);
+  assert.deepEqual(tasks.list().find((task) => task.id === foreign.id)!.dependencies, []);
+
+  // Naming some third repository does not widen it to this one.
+  gitRepo("cross-adopt-third");
+  const wrongName = await adopt(foreign.id, { targetRepository: "cross-adopt-third", dependsOnTaskIds: [blocker.body.id] });
+  assert.equal(wrongName.status, 409);
+
+  const badName = await adopt(foreign.id, { targetRepository: "not-here" });
+  assert.equal(badName.status, 400);
+
+  // Naming the task's own repository - the one it was listed from - allows it.
+  const adopted = await adopt(foreign.id, { targetRepository: "cross-adopt-other", dependsOnTaskIds: [blocker.body.id] });
+  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+  assert.equal(adopted.body.adopted, true);
+  assert.deepEqual(edgesOf(adopted.body).slice(0, 1), [`task:${blocker.body.id}`]);
 });

@@ -1937,8 +1937,9 @@ The MCP tools are:
   edges are added to that task through the same checks a dependency edit gets (a cycle is
   refused with 409), and its title, intent, kind and labels are left alone. An adoption carries
   only its edges: `title` and `intent` are required otherwise, and a `title`, `intent`, `kind`,
-  `labels` or repository selector sent beside `adoptTaskId` is refused with 400 rather than
-  ignored. A call carrying
+  `labels` or `additionalRepositories` sent beside `adoptTaskId` is refused with 400 rather than
+  ignored. The adopted task must belong to the calling repository or to the one `repository`
+  names (resolved like any selector); a task from any other repository is refused with 409. A call carrying
   `kind`, `labels` or `adoptTaskId` uses its own versioned route, so an older daemon answers 404
   and creates nothing rather than filing a plain ship task or a duplicate of the adopted one. Omit the selectors to keep the calling repository as primary.
   Otherwise, each selector is an absolute local checkout path or a unique repository directory
@@ -1950,10 +1951,14 @@ The MCP tools are:
   creation route, so an older daemon returns 404 and creates nothing instead of ignoring the new
   fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
-- `list_backlog_tasks()` - read the calling repository's open backlog: each task's id, title,
-  kind, labels and the task ids it already depends on. Read-only; a shape task's breakdown
-  review offers these as tasks a ticket may adopt. Its `mirror` field lists the task sources the
-  tickets could be pushed to (`sources`), or says why there are none (`unavailable`)
+- `list_backlog_tasks(repository?)` - read the calling repository's open backlog, or the one
+  `repository` names: each task's id, title, kind, labels and the task ids it already depends on.
+  `repository` is resolved like `create_task`'s selector, an absolute path or a unique repository
+  directory name, refused with 400 when nothing matches and 409 when a name is ambiguous; naming
+  one uses its own versioned route, so an older daemon answers 404 rather than listing the
+  caller's backlog. Read-only; a shape task's breakdown review offers these as tasks a ticket may
+  adopt. Its `mirror` field lists the task sources the listed repository's tickets could be pushed
+  to (`sources`), or says why there are none (`unavailable`)
 - `push_task(taskId, sourceId?)` - mirror one task the calling session filed or adopted to a task
   source, the way the task editor's [Push](dispatch-and-backlog.md#push-a-task-to-github) does,
   with the same ledger row and link. `sourceId` may be omitted when exactly one source can receive

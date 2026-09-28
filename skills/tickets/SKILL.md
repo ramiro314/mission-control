@@ -76,7 +76,10 @@ and record any deviation in the pull request. Implement only this ticket.
 The breakdown review is the human's **final approval**. It is **one** `request_plan_decisions`
 form, and nothing is written or created before it is submitted.
 
-First call `list_backlog_tasks` to read the repository's open backlog. Any of those tasks may
+First call `list_backlog_tasks` to read the repository's open backlog. When the tickets belong to
+another repository than this session's, pass that one as `repository` (an absolute path or a
+unique repository directory name): the tasks and the `mirror` choice then both come from it, and
+an unknown or ambiguous name is refused. Any of those tasks may
 already cover a ticket; the human decides whether it does. Its `mirror` field says whether the
 tickets can also be mirrored to a task source (for example as GitHub issues): `mirror.sources`
 lists the sources that can receive them, and `mirror.unavailable` says why none can.
@@ -139,9 +142,11 @@ The tool blocks until the human submits or dismisses:
    - `dependsOnCurrentSession: true` on every ticket, so none starts before this planning session's
      pull request merges the plan it points at;
    - for an adopted ticket, send `adoptTaskId: <task id>` with only `dependsOnTaskIds` and
-     `dependsOnCurrentSession`. Nothing is created: those edges are added to that task and the rest
-     of it is left alone. A title, intent, kind, labels or repository beside `adoptTaskId` is
-     refused, because the adopted task keeps its own. A cycle is refused too; report it.
+     `dependsOnCurrentSession`, plus the same `repository` you passed to `list_backlog_tasks` when
+     you named one. Nothing is created: those edges are added to that task and the rest
+     of it is left alone. A title, intent, kind, labels or `additionalRepositories` beside
+     `adoptTaskId` is refused, because the adopted task keeps its own. A task from neither this
+     session's repository nor the named one is refused, and so is a cycle; report either.
 
    The tasks are created enabled, so the backlog autopilot may pick them up once their blockers
    merge. The human's approval of the breakdown is that consent.

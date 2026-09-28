@@ -208,6 +208,25 @@ test("create_task publishes bounded repository selectors and ticket fields, and 
   assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);
 });
 
+test("list_backlog_tasks may name a repository, and only through the route that knows it", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  const start = source.indexOf('server.registerTool(\n  "list_backlog_tasks"');
+  const end = source.indexOf('server.registerTool(\n  "push_task"', start);
+  assert.ok(start >= 0 && end > start, "the list_backlog_tasks registration is present");
+  const registration = source.slice(start, end);
+  assert.match(registration, /repository: z/);
+  assert.match(
+    registration,
+    /repository === undefined \? "\/mcp\/backlog" : "\/mcp\/v2\/backlog"/,
+    "an older daemon answers 404 rather than listing the caller's backlog as the named one's",
+  );
+  assert.match(registration, /isUnknownRoute\(res\)/);
+
+  // An adoption forwards the named repository, and nothing it does not carry.
+  const create = source.slice(source.indexOf('server.registerTool(\n  "create_task"'), start);
+  assert.match(create, /adoptTaskId !== undefined\s*\? \{ targetRepository: repository, additionalRepositories \}/);
+});
+
 test("product issue registration requires public confirmation and bounded attachment ids", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const start = source.indexOf('server.registerTool(\n  "report_product_issue"');

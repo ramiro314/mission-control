@@ -842,12 +842,17 @@ export type McpCreateTicket = z.infer<typeof McpCreateTicketSchema>;
 /**
  * A ticket adopting an existing backlog task instead of creating one. Only the dependency
  * edges are added to that task, so the shape carries nothing else: a title, intent, kind,
- * labels or repository selector would describe a task this call does not create, and is
+ * labels or additional repositories would describe a task this call does not create, and are
  * refused rather than dropped. A stripped `adoptTaskId` on an older daemon would file a
  * duplicate, which is why this also rides the v3 route.
+ *
+ * `targetRepository` is the one selector it takes, and it only widens which task may be
+ * adopted: the adopted task must belong to the caller's repository or to this one, the same
+ * repository `list_backlog_tasks` was asked to list.
  */
 export const McpAdoptTicketSchema = McpCreateTaskBaseSchema.omit({ title: true, intent: true }).extend({
   adoptTaskId: z.string().min(1),
+  targetRepository: z.string().trim().min(1).optional(),
 }).strict();
 export type McpAdoptTicket = z.infer<typeof McpAdoptTicketSchema>;
 
@@ -868,6 +873,15 @@ export const McpListBacklogSchema = z.object({
   repoRoot: z.string().min(1),
 });
 export type McpListBacklog = z.infer<typeof McpListBacklogSchema>;
+
+/**
+ * `list_backlog_tasks` naming another repository. Its own strict route for the reason the v2
+ * task route has one: an older daemon would strip `repository` and answer with the caller's
+ * backlog, which looks exactly like a valid answer about the named one.
+ */
+export const McpListBacklogV2Schema = McpListBacklogSchema.extend({
+  repository: z.string().trim().min(1).optional(),
+}).strict();
 
 /**
  * MCP `push_task`: mirror one task this session filed to a task source, through the same

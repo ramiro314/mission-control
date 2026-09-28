@@ -2,6 +2,7 @@
 export const ACTION_EXCLUSIONS = [
   ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
   ["POST", "/mcp/backlog", "Read-only backlog listing for a ticket breakdown; no task is created or edited by this operation."],
+  ["POST", "/mcp/v2/backlog", "Read-only backlog listing of a named repository for a ticket breakdown; no task is created or edited by this operation."],
   ["POST", "/api/sessions/:id/workflow-review", "Phase 4 owns workflow run/submission facts through the WorkflowStore mutation observer."],
   ["POST", "/api/sessions/:id/html-block-anchor", "Read-only renderer handshake; Files entry/preview owns intentional use."],
   ["POST", "/api/sessions/:id/html-block-target", "Read-only renderer handshake; Files entry/preview owns intentional use."],

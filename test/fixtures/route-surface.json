@@ -295,6 +295,7 @@
   "POST /mcp/scouts/submit": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/status": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/v2/backlog": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v2/tasks": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v3/tasks": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/workflow-evidence": "401 {\"error\":\"unauthorized\"}",
