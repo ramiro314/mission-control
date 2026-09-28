@@ -120,18 +120,28 @@ export function parsePanes(stdout: string): TerminalInventory<EmulatorPane> {
   }));
 }
 
-export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
+/**
+ * `locatorTimeoutMs` bounds the endpoint lookup that precedes every operation. Production
+ * keeps the default; a test whose fake `wezterm` is a Node script raises it, because that
+ * lookup then pays a Node process startup a loaded host can stretch past the default.
+ */
+export function weztermEmulator(
+  exec: TerminalExec = defaultExec,
+  opts: { locatorTimeoutMs?: number } = {},
+): TerminalEmulator {
+  const withSocket = <T>(expected: string | undefined, operation: (socket: WeztermSocket) => Promise<T>) =>
+    withWeztermSocket(exec, expected, operation, opts.locatorTimeoutMs);
   const unavailable = () => ({
     ok: false, outcomeUnknown: false,
     error: "WezTerm pane identity is stale or unavailable; wait for fresh discovery",
   });
   const targetOperation = <T>(target: EmulatorTarget, operation: (socket: WeztermSocket) => Promise<T>) =>
-    target.incarnation ? withWeztermSocket(exec, target.incarnation, operation) : Promise.resolve(null);
+    target.incarnation ? withSocket(target.incarnation, operation) : Promise.resolve(null);
   const cmd = async (target: EmulatorTarget, args: string[], fail: string, opts: { input?: string } = {}) =>
     await targetOperation(target, async (socket) => toResult(await socket.exec(args, opts), fail)) ?? unavailable();
 
   /** Enumerate through the pinned endpoint; a failed observation is unknown inventory. */
-  const list = (): Promise<TerminalInventory<EmulatorPane>> => withWeztermSocket(exec, undefined, async (socket) => {
+  const list = (): Promise<TerminalInventory<EmulatorPane>> => withSocket(undefined, async (socket) => {
     const res = await socket.exec(["list", "--format", "json"]);
     return res.code === 0 ? parsePanes(res.stdout)?.map((pane) => ({ ...pane, incarnation: socket.incarnation })) ?? null : null;
   });
@@ -215,7 +225,7 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
 
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
-        return await withWeztermSocket(exec, undefined, async (socket): Promise<SpawnResult> => {
+        return await withSocket(undefined, async (socket): Promise<SpawnResult> => {
           const result = await socket.exec([
             "spawn",
             ...(spec.cwd ? ["--cwd", spec.cwd] : []),
