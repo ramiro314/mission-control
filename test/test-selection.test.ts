@@ -98,6 +98,11 @@ test("a git failure is reported, never read as an empty selection", async () => 
     changedPaths: async () => ({ ok: false, reason: "not a git repository" }),
   });
   assert.deepEqual(selection, { ok: false, reason: "the changed files could not be read: not a git repository" });
+  const deleted = await selectAffectedTests("/", config(CONFIG), {
+    changedPaths: async () => ({ ok: true, repoRoot: "/", paths: [] }),
+    deletedPaths: async () => ({ ok: false, reason: "could not read the deleted paths" }),
+  });
+  assert.deepEqual(deleted, { ok: false, reason: "the deleted files could not be read: could not read the deleted paths" });
 });
 
 test("the scanner finds static, re-export, dynamic and require specifiers", () => {
@@ -110,4 +115,20 @@ test("the scanner finds static, re-export, dynamic and require specifiers", () =
     "const f = require(\"./f.cjs\");",
     "const g = import(name);",
   ].join("\n")).sort(), ["./a.ts", "./b.ts", "./c.ts", "./d.css", "./e.ts", "./f.cjs"]);
+});
+
+test("a deleted file still selects the tests that import it, directly and transitively", async () => {
+  const root = fixture();
+  // The change deletes the shared util: direct.test imports it, transitive.test reaches it
+  // through src/mid.ts. Neither test changed, and neither is in the smoke set.
+  git(root, "rm", "-q", "src/shared/util.ts");
+  git(root, "commit", "-q", "-m", "delete util");
+  const selection = await selectAffectedTests(root, config({ tests: { patterns: CONFIG.tests.patterns } }));
+  assert.ok(selection.ok, selection.ok ? "" : selection.reason);
+  assert.deepEqual(selection.files, [
+    { path: "test/direct.test.ts", reason: "imports", via: "src/shared/util.ts" },
+    { path: "test/dynamic.test.ts", reason: "imports", via: "src/shared/util.ts" },
+    { path: "test/transitive.test.ts", reason: "imports", via: "src/shared/util.ts" },
+  ]);
+  assert.equal(selection.changedCount, 1);
 });

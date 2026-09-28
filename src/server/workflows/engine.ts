@@ -337,14 +337,19 @@ export function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): 
   // is least likely to be, and a repair packet that cuts it off sends the agent hunting.
   const failures = outcome.affected?.failures ?? [];
   if (failures.length > 0) {
+    // The list is capped; the summary carries the true count, and the packet says it is partial.
+    const total = outcome.affected?.failureCount ?? failures.length;
+    const unlisted = total > failures.length
+      ? `\n\n${total} tests failed twice in this check; only the first ${failures.length} are listed.`
+      : "";
     return normalizePersonaVerdict({
       verdict: "fail",
       summary,
-      requestedChanges: failures.map((failure) => {
+      requestedChanges: failures.map((failure, index) => {
         const where = failure.file ? ` in ${failure.file}` : "";
         return {
           title: `Fix the failing test "${failure.name}"${where}`,
-          rationale: `It failed on the run and again on its rerun.\n\n${failure.message}`,
+          rationale: `It failed on the run and again on its rerun.${index === 0 ? unlisted : ""}\n\n${failure.message}`,
           evidence: [{ kind: "check" as const, path: attemptId, quote: failure.message }],
         };
       }),

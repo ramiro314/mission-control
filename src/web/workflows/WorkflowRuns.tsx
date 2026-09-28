@@ -388,6 +388,13 @@ function SelectedTestItem({ test }: { test: WorkflowSelectedTest }): React.JSX.E
   );
 }
 
+/** Says how many tests a capped list leaves out, so a count is never read as the whole. */
+function UnlistedTests({ total, listed }: { total: number; listed: number }): React.JSX.Element | null {
+  return total > listed
+    ? <p className="wf-run-meta">{total - listed} more are not listed here.</p>
+    : null;
+}
+
 function namedTest(test: WorkflowNamedTest): string {
   return test.file ? `${test.name} (${test.file})` : test.name;
 }
@@ -425,19 +432,21 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
       )}
       {report.flakes.length > 0 && (
         <>
-          <h5>Local flakes ({report.flakes.length})</h5>
+          <h5>Local flakes ({report.flakeCount})</h5>
           <p>These failed once and passed on the rerun, so they did not fail the check.</p>
           <ul aria-label="Local flakes">
             {report.flakes.map((test) => <li key={namedTest(test)}>{namedTest(test)}</li>)}
           </ul>
+          <UnlistedTests total={report.flakeCount} listed={report.flakes.length} />
         </>
       )}
       {report.failures.length > 0 && (
         <>
-          <h5>Failed twice ({report.failures.length})</h5>
+          <h5>Failed twice ({report.failureCount})</h5>
           <ul aria-label="Failed tests">
             {report.failures.map((test) => <li key={namedTest(test)}>{namedTest(test)}</li>)}
           </ul>
+          <UnlistedTests total={report.failureCount} listed={report.failures.length} />
         </>
       )}
       {report.settings.localKeys.length > 0 && (

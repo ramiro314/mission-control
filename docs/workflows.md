@@ -802,7 +802,9 @@ The outcome and the run's events record this template, never the expanded argv.
 
 **Selection** reads the repository's `.mission/testing.json` from the check's worktree, so the
 settings under review are the ones used. "Changed" means changed since the merge base with the
-default branch (`changedPathsSince` in `src/server/diff.ts`). A test file is selected when:
+default branch (`changedPathsSince` in `src/server/diff.ts`), and a file the change deleted counts
+as changed (`deletedPathsSince`), so a test still importing it is selected. A test file is
+selected when:
 
 1. it changed and matches `tests.patterns` (repository-relative globs, matched with
    `path.matchesGlob`);
@@ -828,7 +830,9 @@ the gate with the output tail. Both runs happen inside one worktree lease and on
 the lease is taken only after selection, so a change that selects nothing never waits for it.
 
 **The repair packet names each test that failed twice**, one requested change per test, with the
-runner's message and detail, instead of quoting the end of the output.
+runner's message and detail, instead of quoting the end of the output. At most 20 tests are
+listed; the outcome keeps the full counts of failures and flakes, and both the card and the
+packet say how many were left out.
 
 **`.mission/testing.json`** is committed and reviewed like code:
 

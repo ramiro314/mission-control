@@ -103,7 +103,9 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
   const report: WorkflowAffectedTestsReport = {
     selectedCount: selection.files.length,
     selected: selection.files.slice(0, AFFECTED_TESTS_LIMITS.selectionShown).map(boundSelected),
+    flakeCount: 0,
     flakes: [],
+    failureCount: 0,
     failures: [],
     settings: settingsOf(read.merged),
   };
@@ -261,7 +263,9 @@ export async function runAffectedTests(
     }
     const affected: WorkflowAffectedTestsReport = {
       ...plan.report,
+      flakeCount: flakes.length,
       flakes: flakes.slice(0, AFFECTED_TESTS_LIMITS.flakes),
+      failureCount: failures.length,
       failures: failures.slice(0, AFFECTED_TESTS_LIMITS.failures),
     };
     const flaked = flakes.length === 0

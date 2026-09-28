@@ -83,6 +83,7 @@ function harness(options: {
     resolveCommit: async (_repo, sha) => sha,
     testSelection: {
       changedPaths: async () => ({ ok: true, repoRoot: options.root, paths: options.changed }),
+      deletedPaths: async () => ({ ok: true, repoRoot: options.root, paths: [] }),
       trackedFiles: async () => options.tracked,
     },
   });
@@ -317,4 +318,30 @@ test("a failure that names no selected file reruns the whole selection", async (
     { file: "test/a.test.ts", name: "adds" },
     { file: "test/helpers/setup.ts", name: "setup hook" },
   ]);
+});
+
+test("more failures than the cap are counted in full, on the outcome and in the repair packet", async () => {
+  const root = tree(CONFIG);
+  const names = Array.from({ length: 25 }, (_, i) => `case ${String(i).padStart(2, "0")}`);
+  const h = harness({
+    root,
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    answer: () => ({
+      exitCode: 1,
+      xml: junit(root, names.map((name) => ({ file: "test/a.test.ts", name, failure: "boom" }))),
+    }),
+  });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.affected?.failureCount, 25);
+  assert.equal(outcome.affected?.failures.length, 20);
+  assert.equal(outcome.affected?.flakeCount, 0);
+  assert.match(outcome.note, /25 tests failed twice/);
+  const verdict = checkVerdict(outcome, "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict !== "fail") return;
+  assert.equal(verdict.requestedChanges.length, 20);
+  assert.match(verdict.requestedChanges[0]!.rationale, /25 tests failed twice in this check; only the first 20 are listed\./);
+  assert.doesNotMatch(verdict.requestedChanges[1]!.rationale, /only the first/);
 });

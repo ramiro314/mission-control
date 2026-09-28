@@ -2,7 +2,7 @@ import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join, matchesGlob, normalize, posix } from "node:path";
 import type { TestingConfig } from "@shared/testing-config.ts";
 import type { WorkflowSelectedTest } from "@shared/workflow.ts";
-import { changedPathsSince, type ChangedPathsResult } from "./diff.ts";
+import { changedPathsSince, deletedPathsSince, type ChangedPathsResult } from "./diff.ts";
 import { run } from "./util/exec.ts";
 
 // Which tests an `affected-tests` check runs, from the project's `.mission/testing.json`:
@@ -25,6 +25,8 @@ export type TestSelection =
 export interface TestSelectionDeps {
   /** Defaults to `changedPathsSince`. */
   changedPaths?: (treeRoot: string) => Promise<ChangedPathsResult>;
+  /** Defaults to `deletedPathsSince`: files the change removed, from the same base. */
+  deletedPaths?: (treeRoot: string) => Promise<ChangedPathsResult>;
   /** Defaults to `git ls-files`. Repository-relative, forward slashes. */
   trackedFiles?: (treeRoot: string) => Promise<string[] | null>;
 }
@@ -248,11 +250,19 @@ export async function selectAffectedTests(
   if (!changedResult.ok) {
     return { ok: false, reason: `the changed files could not be read: ${changedResult.reason}` };
   }
+  const deletedResult = await (deps.deletedPaths ?? deletedPathsSince)(treeRoot);
+  if (!deletedResult.ok) {
+    return { ok: false, reason: `the deleted files could not be read: ${deletedResult.reason}` };
+  }
   const tracked = await (deps.trackedFiles ?? gitTrackedFiles)(treeRoot);
   if (!tracked) return { ok: false, reason: "the repository's files could not be listed" };
 
   const present = new Set(tracked.map((file) => normalize(file).split("\\").join("/")));
-  const changed = new Set(changedResult.paths.filter((file) => present.has(file)));
+  // A deleted file is a change too: a test still importing it is broken by this change without
+  // being touched. It is an origin of the import graph and a file specifiers may resolve to,
+  // although nothing can be read from it.
+  const deleted = deletedResult.paths.filter((file) => !present.has(file));
+  const changed = new Set([...changedResult.paths.filter((file) => present.has(file)), ...deleted]);
   const { patterns, includeImporters, smokeSet } = config.tests;
   const tests = [...present].filter((file) => matchesAny(file, patterns)).sort();
 
@@ -261,7 +271,7 @@ export async function selectAffectedTests(
     if (changed.has(file)) selected.set(file, { path: file, reason: "changed" });
   }
   if (includeImporters && changed.size > 0) {
-    const resolver = new ImportResolver(present, readPathAliases(treeRoot));
+    const resolver = new ImportResolver(new Set([...present, ...deleted]), readPathAliases(treeRoot));
     const reached = testsReachingChanges(treeRoot, tests, changed, resolver);
     for (const [file, via] of reached) {
       if (!selected.has(file)) selected.set(file, { path: file, reason: "imports", via });

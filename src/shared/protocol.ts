@@ -6449,7 +6449,9 @@ export const WorkflowAffectedTestsReportSchema = z.object({
     reason: z.enum(WORKFLOW_TEST_SELECTION_REASONS),
     via: AffectedTestPathSchema.optional(),
   })).max(AFFECTED_TESTS_LIMITS.selectionShown),
+  flakeCount: z.number().int().min(0),
   flakes: z.array(WorkflowNamedTestSchema).max(AFFECTED_TESTS_LIMITS.flakes),
+  failureCount: z.number().int().min(0),
   failures: z.array(WorkflowNamedTestSchema.extend({
     message: z.string().max(AFFECTED_TESTS_LIMITS.failureMessage),
   })).max(AFFECTED_TESTS_LIMITS.failures),

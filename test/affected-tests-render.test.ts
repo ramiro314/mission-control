@@ -9,7 +9,9 @@ import { hasTooltip } from "./helpers/markup.ts";
 const report = (over: Partial<WorkflowAffectedTestsReport> = {}): WorkflowAffectedTestsReport => ({
   selectedCount: 0,
   selected: [],
+  flakeCount: 0,
   flakes: [],
+  failureCount: 0,
   failures: [],
   settings: { patterns: ["test/**/*.test.ts"], includeImporters: true, smokeSet: [], localKeys: [] },
   ...over,
@@ -41,7 +43,9 @@ test("flakes, twice-failed tests and local-override keys are each said", () => {
     report: report({
       selectedCount: 1,
       selected: [{ path: "test/a.test.ts", reason: "changed" }],
+      flakeCount: 1,
       flakes: [{ file: "test/a.test.ts", name: "races" }],
+      failureCount: 1,
       failures: [{ file: "test/a.test.ts", name: "adds", message: "1 !== 2" }],
       settings: { patterns: [], includeImporters: true, smokeSet: [], localKeys: ["tests.smokeSet"] },
     }),
@@ -51,4 +55,22 @@ test("flakes, twice-failed tests and local-override keys are each said", () => {
   assert.match(html, /Failed twice \(1\)/);
   assert.match(html, /testing\.local\.json<\/code>: tests\.smokeSet/);
   assert.doesNotMatch(html, /<details/);
+});
+
+test("a capped failure or flake list says how many it leaves out", () => {
+  const failures = Array.from({ length: 20 }, (_, i) => ({ file: "test/a.test.ts", name: `f${i}`, message: "x" }));
+  const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {
+    report: report({
+      selectedCount: 1,
+      selected: [{ path: "test/a.test.ts", reason: "changed" }],
+      failureCount: 25,
+      failures,
+      flakeCount: 3,
+      flakes: [{ file: null, name: "only one listed" }],
+    }),
+  }));
+  assert.match(html, /Failed twice \(25\)/);
+  assert.match(html, /Local flakes \(3\)/);
+  assert.match(html, /5 more are not listed here/);
+  assert.match(html, /2 more are not listed here/);
 });

@@ -3619,9 +3619,13 @@ export interface WorkflowAffectedTestsReport {
   selectedCount: number;
   /** The first `AFFECTED_TESTS_LIMITS.selectionShown` selected files, sorted by path. */
   selected: WorkflowSelectedTest[];
-  /** Tests that failed, then passed on the one rerun. Reported, never failing the check. */
+  /** Every local flake, before the `AFFECTED_TESTS_LIMITS.flakes` cap. */
+  flakeCount: number;
+  /** Tests that failed, then passed on the one rerun. Reported, never failing the check. Capped. */
   flakes: WorkflowNamedTest[];
-  /** Tests that failed on both runs: the reason a check failed. */
+  /** Every test that failed twice, before the `AFFECTED_TESTS_LIMITS.failures` cap. */
+  failureCount: number;
+  /** Tests that failed on both runs: the reason a check failed. Capped. */
   failures: WorkflowTestFailure[];
   /** The effective selection settings, and which keys came from the local override file. */
   settings: {
