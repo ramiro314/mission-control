@@ -202,8 +202,8 @@ const DRAFT = [{ decisionId: "providers", selected: ["github"], other: "Okta via
 test("the form opens on Foreman's draft, names it, and offers the revert", () => {
   const answers = draftedAnswers(decisions, DRAFT);
   // The drafted decision changes; the others keep the agent's recommendation.
-  assert.deepEqual(answers.providers, { selected: ["github"], other: "Okta via SAML" });
-  assert.deepEqual(answers.store, { selected: ["pg"], other: "" });
+  assert.deepEqual(answers.providers, { selected: ["github"], other: "Okta via SAML", otherChosen: false });
+  assert.deepEqual(answers.store, { selected: ["pg"], other: "", otherChosen: false });
 
   const html = renderToStaticMarkup(
     createElement(DecisionForm, { decisions, busy: false, onSubmit: () => {}, foremanDraft: DRAFT }),

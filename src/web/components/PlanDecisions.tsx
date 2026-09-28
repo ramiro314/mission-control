@@ -1,12 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
 import { formatResponse, selectedOptions } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-/** Per-decision answer state: chosen option ids plus any free-text "Other". */
-type Answers = Record<string, { selected: string[]; other: string }>;
+/**
+ * Per-decision answer state: chosen option ids plus any free-text "Other".
+ *
+ * `otherChosen` means something only on a single-choice question, where Other is one more
+ * radio in the group: true when Other is the choice, in which case `selected` is empty. The
+ * text is kept when a listed option is chosen instead, so switching back does not lose it,
+ * but it is not sent. A multi-choice question's Other is additive and ignores the flag.
+ */
+type Answer = { selected: string[]; other: string; otherChosen: boolean };
+type Answers = Record<string, Answer>;
+
+const EMPTY: Answer = { selected: [], other: "", otherChosen: false };
 
 /** Stable inside one review form, shared with its Foreman recommendation matcher. */
 export function decisionChoiceKey(decisionId: string, optionId: string): string {
@@ -23,17 +33,21 @@ export function decisionChoiceKey(decisionId: string, optionId: string): string 
  * like one that never asked. Blank "Other" text normalizes to null so "typed nothing" and
  * "typed and cleared it" are the same record.
  */
-function toDecisionAnswers(
+export function toDecisionAnswers(
   decisions: PlanDecision[],
   answers: Answers,
   draftOthers: ReadonlyMap<string, string> = new Map(),
 ): PlanDecisionAnswer[] {
   return decisions.map((d) => {
-    const a = answers[d.id];
-    const other = a?.other.trim() ? a.other.trim() : null;
+    const a = answers[d.id] ?? EMPTY;
+    // Single choice: Other is a radio of its own, so its text goes out only while it is the
+    // choice, and then alone. Kept text beside a listed option is not an answer.
+    const single = !d.multiSelect;
+    const text = a.other.trim();
+    const other = text && (!single || a.otherChosen) ? text : null;
     return {
       decisionId: d.id,
-      selected: a?.selected ?? [],
+      selected: single && a.otherChosen ? [] : a.selected,
       other,
       // Provenance: this Other text is still exactly Foreman's draft. Edited by a single
       // character, it is the human's words, and it goes out unmarked.
@@ -58,21 +72,32 @@ export function draftedAnswers(
     if (!decision) continue;
     const offered = new Set(decision.options.map((o) => o.id));
     const selected = d.selected.filter((id) => offered.has(id));
+    const other = decision.allowOther ? (d.other ?? "") : "";
+    // A drafted Other on a single-choice question is chosen, exactly as typing it would be.
+    const otherChosen = !decision.multiSelect && other.trim() !== "";
     answers[d.decisionId] = {
-      selected: decision.multiSelect ? selected : selected.slice(0, 1),
-      other: decision.allowOther ? (d.other ?? "") : "",
+      selected: otherChosen ? [] : decision.multiSelect ? selected : selected.slice(0, 1),
+      other,
+      otherChosen,
     };
   }
   return answers;
 }
 
-/** Whether two form states would submit the same answer. */
+/**
+ * Whether two form states would submit the same answer.
+ *
+ * Compared as payloads, so Other text kept beside a listed option - shown, never sent - does
+ * not count as a difference.
+ */
 function sameAnswers(decisions: PlanDecision[], a: Answers, b: Answers): boolean {
-  return decisions.every((d) => {
-    const x = a[d.id] ?? { selected: [], other: "" };
-    const y = b[d.id] ?? { selected: [], other: "" };
+  const pa = toDecisionAnswers(decisions, a);
+  const pb = toDecisionAnswers(decisions, b);
+  return decisions.every((_, i) => {
+    const x = pa[i]!;
+    const y = pb[i]!;
     return (
-      x.other.trim() === y.other.trim() &&
+      x.other === y.other &&
       x.selected.length === y.selected.length &&
       x.selected.every((id) => y.selected.includes(id))
     );
@@ -91,7 +116,7 @@ export function recommendedAnswers(decisions: PlanDecision[]): Answers {
   const answers: Answers = {};
   for (const d of decisions) {
     const ids = d.options.filter((o) => o.recommended).map((o) => o.id);
-    if (ids.length) answers[d.id] = { selected: d.multiSelect ? ids : ids.slice(0, 1), other: "" };
+    if (ids.length) answers[d.id] = { selected: d.multiSelect ? ids : ids.slice(0, 1), other: "", otherChosen: false };
   }
   return answers;
 }
@@ -162,6 +187,60 @@ export function draftOnChange(
   if (key && incoming) return { next: { kind: "applied", draft: incoming, key, edited: false }, answers: "drafted" };
   if (state.kind === "applied") return { next: { kind: "none" }, answers: "recommended" };
   return null;
+}
+
+/**
+ * A single-choice question's Other: one more radio in the group, with its text box in the row.
+ *
+ * A pointer click on the radio, a pointer press in the box, or typing chooses Other. Focus
+ * alone never does, so tabbing through the form leaves the selection as it was - which is why
+ * the box listens for `pointerdown` and not `focus`. A pointer click on the radio moves focus
+ * into the box; a keyboard-driven click (`detail === 0`, from Space or the arrow keys) leaves
+ * focus on the radio, as a radio group normally does.
+ */
+function OtherChoice({
+  name,
+  value,
+  chosen,
+  busy,
+  onChoose,
+  onText,
+}: {
+  name: string;
+  value: string;
+  chosen: boolean;
+  busy: boolean;
+  onChoose: () => void;
+  onText: (text: string) => void;
+}): React.JSX.Element {
+  const box = useRef<HTMLInputElement>(null);
+  return (
+    <div className="decision-option decision-other-choice">
+      <label className="decision-other-choice-label">
+        <input
+          type="radio"
+          name={name}
+          checked={chosen}
+          onChange={onChoose}
+          onClick={(e) => {
+            if (e.detail > 0) box.current?.focus();
+          }}
+          disabled={busy}
+        />
+        <span className="decision-option-label">Other</span>
+      </label>
+      <input
+        ref={box}
+        className="decision-other"
+        placeholder="Other…"
+        aria-label="Other answer"
+        value={value}
+        onPointerDown={onChoose}
+        onChange={(e) => onText(e.target.value)}
+        disabled={busy}
+      />
+    </div>
+  );
 }
 
 /**
@@ -279,14 +358,14 @@ export function DecisionForm({
     setDraft({ kind: "set-aside" });
   }
 
-  function get(id: string): { selected: string[]; other: string } {
-    return answers[id] ?? { selected: [], other: "" };
+  function get(id: string): Answer {
+    return answers[id] ?? EMPTY;
   }
 
   function choose(d: PlanDecision, optionId: string, checked: boolean): void {
     edited();
     setAnswers((prev) => {
-      const cur = prev[d.id] ?? { selected: [], other: "" };
+      const cur = prev[d.id] ?? EMPTY;
       let selected: string[];
       if (d.multiSelect) {
         selected = checked
@@ -295,16 +374,23 @@ export function DecisionForm({
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
-      return { ...prev, [d.id]: { ...cur, selected } };
+      // Picking a listed radio deselects Other; its text stays in the box, unsent.
+      return { ...prev, [d.id]: { ...cur, selected, otherChosen: false } };
     });
   }
 
-  function setOther(id: string, other: string): void {
+  /** Single choice: make Other the choice, clearing the listed option. */
+  function chooseOther(d: PlanDecision): void {
+    if (get(d.id).otherChosen) return;
     edited();
-    setAnswers((prev) => ({
-      ...prev,
-      [id]: { ...(prev[id] ?? { selected: [], other: "" }), other },
-    }));
+    setAnswers((prev) => ({ ...prev, [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: true } }));
+  }
+
+  function setOther(d: PlanDecision, other: string): void {
+    edited();
+    // Typing into a single-choice Other chooses it, as a pointer click in the box does.
+    const choosing = d.multiSelect ? {} : { selected: [], otherChosen: true };
+    setAnswers((prev) => ({ ...prev, [d.id]: { ...(prev[d.id] ?? EMPTY), other, ...choosing } }));
   }
 
   // Built once per render and used for both the completeness test and the submit, so the
@@ -329,7 +415,7 @@ export function DecisionForm({
           </Tooltip>
         </div>
       )}
-      {decisions.map((d) => (
+      {decisions.map((d, i) => (
         <fieldset
           key={d.id}
           className="decision"
@@ -363,16 +449,26 @@ export function DecisionForm({
             </label>
             );
           })}
-          {d.allowOther && (
+          {d.allowOther && !d.multiSelect && (
+            <OtherChoice
+              name={`${namePrefix}-${d.id}`}
+              value={get(d.id).other}
+              chosen={get(d.id).otherChosen}
+              busy={busy}
+              onChoose={() => chooseOther(d)}
+              onText={(text) => setOther(d, text)}
+            />
+          )}
+          {d.allowOther && d.multiSelect && (
             <input
               className="decision-other"
               placeholder="Other…"
               value={get(d.id).other}
-              onChange={(e) => setOther(d.id, e.target.value)}
+              onChange={(e) => setOther(d, e.target.value)}
               disabled={busy}
             />
           )}
-          {d.allowOther && draftOthers.has(d.id) && draftOthers.get(d.id) === get(d.id).other.trim() && (
+          {payload[i]?.foremanDraftAccepted && (
             <span className="decision-other-draft">◆ Foreman&apos;s draft</span>
           )}
         </fieldset>

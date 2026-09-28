@@ -7373,6 +7373,25 @@ a.btn {
 .decision-other:focus {
   border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
 }
+/* A single-choice question's Other: a row of the radio group, its text box filling the row. */
+.decision-other-choice {
+  align-items: center;
+  cursor: default;
+}
+.decision-other-choice-label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+}
+.decision-other-choice-label input {
+  margin-top: 0;
+}
+.decision-other-choice .decision-other {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+}
 /* Foreman's draft on a decision form: one banner naming it, with the revert beside it, and a
    tag on any "Other" text that is still Foreman's words. Foreman's colour, never the approve
    colour - the draft is a suggestion, and only Submit sends anything. */
