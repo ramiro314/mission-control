@@ -5,7 +5,7 @@ tests the change touched on the laptop, relies on the full suite in GitHub CI, a
 flaky tests as something to report and fix rather than a reason to send an agent back for
 another repair round.
 
-Settled through a six-round grilling session (30 decisions). It was prompted by the Shape this
+Settled through a six-round grilling session (28 decisions). It was prompted by the Shape this
 work (PR #21), where three repair rounds in a row were spent on unrelated tests that timed out
 under laptop load: a worktree preview time limit, an unnamed test whose name the repair packet
 cut off, and an Electron spawn.
