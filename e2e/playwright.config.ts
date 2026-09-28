@@ -28,7 +28,13 @@ export default defineConfig({
   expect: { timeout: 20_000 },
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
+  // `MISSION_PLAYWRIGHT_JSON` adds the JSON report CI's flake report action reads: with
+  // `retries: 1`, a test that failed and then passed on its retry is reported as `flaky`.
+  reporter: [
+    ["list"],
+    ...(process.env.CI ? [["html", { open: "never" }] as const] : []),
+    ...(process.env.MISSION_PLAYWRIGHT_JSON ? [["json", { outputFile: process.env.MISSION_PLAYWRIGHT_JSON }] as const] : []),
+  ],
   use: {
     // Traces are most of the reason this suite uses @playwright/test rather than driving
     // playwright-core from node:test. On a failure this is the difference between a number

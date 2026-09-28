@@ -31,6 +31,7 @@ Mission Control's product reference is organized by feature below.
 - [User interface](ui.md)
 - [GitHub Inspector and shipping](inspector-and-shipping.md)
 - [Worktrees and checks](worktrees-and-checks.md)
+- [Flaky tests in CI](flaky-tests.md): the "Flaky tests" check, the flake report format, and one GitHub issue per flaky test.
 - [Running Mission Control at Upstart](upstart.md)
 - [Configuration and commands](configuration.md)
 - [Demo mode](demo-mode.md)

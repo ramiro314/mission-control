@@ -293,8 +293,31 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Playwright retries once in CI and reports a test that failed and then passed as
+      # `flaky` in its JSON report; the flake report action reads that instead of rerunning.
       - name: End-to-end tests
+        id: e2e
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        env:
+          MISSION_PLAYWRIGHT_JSON: ${{ runner.temp }}/flake/playwright.json
+
+      - name: Classify flaky end-to-end tests
+        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
+        uses: ./.github/actions/mission-flake-report
+        with:
+          mode: rerun
+          job: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+          playwright-json: ${{ runner.temp }}/flake/playwright.json
+          report: ${{ runner.temp }}/flake/report.json
+
+      - name: Upload flake report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-report-e2e-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/flake/report.json
+          if-no-files-found: warn
+          retention-days: 7
 
       # Artifact names have to be unique per shard: `upload-artifact@v4` refuses to write
       # the same name twice in one run.
@@ -305,6 +328,55 @@ jobs:
           name: playwright-report-shard-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
+
+  # Merges every test job's flake report, keeps one GitHub issue per flaky test, and publishes
+  # the "Flaky tests" check on the commit the tests ran against (the PR head, not the merge
+  # commit). Neutral when anything flaked, success otherwise. See docs/flaky-tests.md.
+  #
+  # The only job that may write: job-level permissions keep the rest of CI at
+  # `contents: read`. A fork PR's token is read-only whatever this asks for, so there the
+  # action writes the job summary alone and says which writes it skipped.
+  #
+  # `!cancelled()` rather than `always()`: a run superseded by a newer push is cancelled, and
+  # its commit needs no check. A red test job still gets its report published.
+  flake-report:
+    name: flake report
+    needs: [unit-node-24, unit-node-26, e2e]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Tolerant of a run where no test job got far enough to upload a report: the action
+      # still publishes a check that says how many reports it read.
+      - name: Download flake reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: flake-report-*
+          path: flake-reports
+
+      - name: Publish flake report
+        uses: ./.github/actions/mission-flake-report
+        with:
+          mode: publish
+          reports: flake-reports
+          report: flake-report.json
+
+      - name: Upload merged flake report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-report
+          path: flake-report.json
+          if-no-files-found: warn
+          retention-days: 30
 
   # Full macOS app packaging. It's slow (downloads the Electron runtime + builds a
   # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.

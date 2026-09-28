@@ -1,5 +1,5 @@
 name: Run unit shard
-description: Restore one Node dependency tree and run one complete unit shard, build, and smoke check.
+description: Restore one Node dependency tree and run one complete unit shard, rerun its failed test files once, then build and smoke check.
 
 inputs:
   node-version:
@@ -63,11 +63,44 @@ runs:
       shell: bash
       run: npm run build:state-lock-native
 
+    # The shard records its exit code instead of failing here: the flake report step below
+    # decides. It reruns only the failed files once, so a test that fails and then passes is a
+    # flake (reported, job stays green) and one that fails twice fails the job. See
+    # docs/flaky-tests.md.
     - name: Test
+      id: test
       shell: bash
-      run: xvfb-run -a npm test
+      run: |
+        mkdir -p "$RUNNER_TEMP/flake"
+        set +e
+        xvfb-run -a npm test
+        echo "exit-code=$?" >> "$GITHUB_OUTPUT"
       env:
         MISSION_TEST_SHARD: ${{ inputs.shard }}/${{ inputs.shard-total }}
+        MISSION_TEST_JUNIT: ${{ runner.temp }}/flake/junit.xml
+
+    # The rerun command is `npm test`'s own node command with the shard's failed files in
+    # place of the glob; `{junit}` is where the rerun writes its results.
+    - name: Rerun failed test files once
+      uses: ./.github/actions/mission-flake-report
+      with:
+        mode: rerun
+        job: unit (node ${{ inputs.node-version }}, shard ${{ inputs.shard }}/${{ inputs.shard-total }})
+        junit: ${{ runner.temp }}/flake/junit.xml
+        exit-code: ${{ steps.test.outputs.exit-code }}
+        rerun-command: xvfb-run -a node --test --import ./test/setup-state.mjs --import tsx --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination={junit} {files}
+        report: ${{ runner.temp }}/flake/report.json
+
+    # Unique per leg: `upload-artifact@v4` refuses the same name twice in one run. The
+    # `flake-report` job collects every `flake-report-*` artifact.
+    - name: Upload flake report
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: flake-report-unit-node-${{ inputs.node-version }}-shard-${{ inputs.shard }}
+        path: ${{ runner.temp }}/flake/report.json
+        if-no-files-found: warn
+        retention-days: 7
 
     - name: Build
       shell: bash
