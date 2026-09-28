@@ -805,6 +805,30 @@ evidence that anybody is finished with the work in a tree. The retention clock a
 already had survives the settlement rather than restarting, so a daemon restarted every day
 cannot postpone cleanup forever.
 
+#### Freeing the worktree when you complete a task
+
+The **Complete** dialog can free the task's checkout in the same step. When the task holds a
+worktree Mission Control provisioned for it - a native pool slot, a `git` fallback worktree,
+or every repository of a multi-repo task - the dialog shows **Free this task's worktree**
+("worktrees" for a multi-repo task), with the note **Also closes this task's terminal**.
+Ticking it records `done` and then runs the same teardown as **Clean up**, so the slot goes
+back to the pool straight away instead of waiting for Clean up or the 30-day retention.
+
+The box is ticked by default only when freeing is provably safe:
+
+- no checkout has uncommitted or untracked (non-ignored) files, which are never excused; and
+- no checkout has commits that no `origin` ref holds, unless those commits are contained in
+  the recorded head of a pull request Mission Control saw merge for this task. A commit made
+  after that merged head is never excused.
+
+When it is not safe the box starts clear and lists each reason. You can still tick it, and
+the work goes with the tree. When it is safe, the daemon checks again after stopping the
+agent and immediately before the teardown, and keeps the tree if anything has changed. A
+free that fails never undoes the completion: the task stays `done` and the dialog says
+`Task completed, but the worktree could not be freed: <reason>`. The box is absent for a
+task with nothing Mission Control provisioned, such as an assigned task or a pipeline task.
+Left unticked, Complete behaves exactly as it always has and the worktree is kept.
+
 ### Hold a backlog item back
 
 Every backlog row carries an **on/off switch**: turn it off and the

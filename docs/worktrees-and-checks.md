@@ -267,6 +267,8 @@ A task's worktrees are not freed when the task ends. A `done`, `failed`, or `can
 keeps every checkout it holds so a person can still read the work, commit it, push it, or
 reclaim it deliberately with **Clean up**. That reprieve is bounded: **Mission Control removes a
 terminal task's worktrees automatically after 30 days without a Git-visible change.**
+To free a finished task's checkout right away instead, tick **Free this task's worktree** in the
+Complete dialog - see [freeing the worktree when you complete a task](dispatch-and-backlog.md#freeing-the-worktree-when-you-complete-a-task).
 
 The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
 untracked files, local commits, and commits that were never pushed are all deleted when the

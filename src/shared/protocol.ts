@@ -1315,8 +1315,26 @@ export const CompleteTaskSchema = z.object({
   satisfyDependents: z.boolean().optional().default(false),
   requireStopped: z.boolean().optional().default(false),
   confirmIncompleteScout: z.boolean().optional().default(false),
+  /**
+   * Also free the task's Mission Control-provisioned worktrees once it is recorded `done`,
+   * through `TaskManager.reclaim`. `ifSafe` re-checks after the agent is stopped and keeps
+   * the tree if it would lose work; `discardWork` frees regardless, and is sent only when
+   * the operator ticked a box the free preview reported unsafe. Absent: today's complete,
+   * with an unchanged response. Completion is never rolled back by a failed free.
+   */
+  freeWorktree: z.enum(["ifSafe", "discardWork"]).optional(),
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
+
+/** `GET /api/tasks/:id/free-preview`: may completing this task free its worktrees by default? */
+export interface TaskFreePreview {
+  /** False when the task holds no Mission Control-provisioned worktree to free. */
+  applicable: boolean;
+  /** True when no checkout has uncommitted, untracked or unprotected local work. */
+  freeable: boolean;
+  /** Why not, one per finding, repository-prefixed for a multi-repo task. */
+  reasons: string[];
+}
 
 export const RescheduleTaskSchema = z.object({}).strict();
 

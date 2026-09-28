@@ -27,6 +27,7 @@ import {
   AwayConfigPatchSchema,
   BacklogPlanSchema,
   CompleteTaskSchema,
+  type TaskFreePreview,
   CompleteRetroNoChangeSchema,
   ComposerActivitySchema,
   CreatePersonaSchema,
@@ -8166,7 +8167,39 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       throw error;
     }
     if (!t) return c.json({ error: "no such task" }, 404);
-    return c.json(t);
+    const free = parsed.data.freeWorktree;
+    if (!free) return c.json(t);
+    // Completion is recorded above and never rolled back: from here a failure is reported as
+    // `freeError` beside the `done` task, and the tree is left to Clean up or retention.
+    const id = t.id;
+    const preview = await tasks.worktreeFreeability(id);
+    if (!preview?.applicable) return c.json({ ...t, freed: false });
+    const freed = await tasks.reclaim(
+      id,
+      free === "ifSafe"
+        ? {
+            beforeTeardown: async () => {
+              const now = await tasks.worktreeFreeability(id);
+              if (!now) return "the task no longer exists";
+              return now.freeable ? null : now.reasons.join("; ");
+            },
+          }
+        : {},
+    );
+    const latest = tasks.get(id) ?? t;
+    return c.json(
+      freed.ok
+        ? { ...latest, freed: true }
+        : { ...latest, freed: false, freeError: freed.error ?? "the worktree could not be freed" },
+    );
+  });
+
+  // Read-only: would completing this task free its worktrees by default? The Complete
+  // dialog's checkbox default. Not broadcast; the dialog asks when it opens.
+  app.get("/api/tasks/:id/free-preview", async (c) => {
+    const preview = await tasks.worktreeFreeability(c.req.param("id"));
+    if (!preview) return c.json({ error: "no such task" }, 404);
+    return c.json(preview satisfies TaskFreePreview);
   });
 
   app.delete("/api/tasks/:id", async (c) => {
