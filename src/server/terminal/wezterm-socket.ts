@@ -24,6 +24,9 @@ function selectedSocket(stderr: string): string | null {
   } catch { return null; }
 }
 
+/** Production budget for the endpoint locator: a native `wezterm cli list` answers well inside it. */
+export const WEZTERM_LOCATOR_TIMEOUT_MS = 1000;
+
 /**
  * A pathname check followed by a CLI call can race a mux restart. Pin the socket inode
  * with a hard link BEFORE enumerating or validating it, and keep that link until the
@@ -38,12 +41,13 @@ export async function withWeztermSocket<T>(
   exec: TerminalExec,
   expected: string | undefined,
   operation: (socket: WeztermSocket) => Promise<T>,
+  locatorTimeoutMs = WEZTERM_LOCATOR_TIMEOUT_MS,
 ): Promise<T | null> {
   const bin = resolveBin(WEZTERM_BIN);
   const env = binEnv(WEZTERM_BIN);
   const located = await exec(bin, ["cli", "--no-auto-start", "list", "--format", "json"], {
     env: { ...env, WEZTERM_LOG: "wezterm_client::client=trace" },
-    timeoutMs: 1000,
+    timeoutMs: locatorTimeoutMs,
   });
   const path = located.code === 0 ? selectedSocket(located.stderr) : null;
   if (!path) return null;

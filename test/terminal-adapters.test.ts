@@ -594,3 +594,14 @@ test("a bound backend whose catalog binary disappeared fails under its command n
     },
   );
 });
+
+test("the wezterm endpoint locator keeps its 1s production budget unless a caller raises it", async () => {
+  const budgets: (number | undefined)[] = [];
+  const dead: TerminalExec = async (_bin, _args, opts) => {
+    budgets.push(opts?.timeoutMs);
+    return stubRun({ stdout: "", stderr: "", code: 1 });
+  };
+  await weztermEmulator(dead).list!();
+  await weztermEmulator(dead, { locatorTimeoutMs: 10_000 }).list!();
+  assert.deepEqual(budgets, [1000, 10_000]);
+});

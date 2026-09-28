@@ -80,7 +80,10 @@ async function spawnTab(mode: "ok" | "unreadable" | "refused") {
   // Set on the parent so the strip has something to strip - this is the stale-GUI case.
   process.env.WEZTERM_UNIX_SOCKET = "/tmp/gui-sock-dead";
   try {
-    const result = await weztermEmulator().spawn!.tab({
+    // The generous locator budget is on purpose: this fake `wezterm` is a Node script, so
+    // each endpoint lookup pays a fresh Node startup, and a loaded full suite pushed that
+    // past the 1s production budget. What is under test is the spawn's outcome, not speed.
+    const result = await weztermEmulator(undefined, { locatorTimeoutMs: 10_000 }).spawn!.tab({
       argv: ["tmux", "attach", "-t", "api"],
       title: "api",
       cwd: null,
