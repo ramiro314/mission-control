@@ -1196,3 +1196,34 @@ test("the settings switch the lease and the variable off, and a nested daemon sk
   assert.deepEqual(nested.events, [], "a daemon inside a leased check is already covered");
   assert.deepEqual(nestedRun.seen[0]!.extraEnv, { MISSION_TEST_CONCURRENCY: "2" });
 });
+
+test("the wait note formats seconds, whole minutes, and minutes with seconds", async () => {
+  const { leaseWaitNote } = await import("../src/server/workflows/checks.ts");
+  assert.equal(leaseWaitNote(5_000), "Waited 5s for another test check to finish.");
+  assert.equal(leaseWaitNote(200), "Waited 1s for another test check to finish.");
+  assert.equal(leaseWaitNote(59_000), "Waited 59s for another test check to finish.");
+  assert.equal(leaseWaitNote(60_000), "Waited 1m for another test check to finish.");
+  assert.equal(leaseWaitNote(180_000), "Waited 3m for another test check to finish.");
+  assert.equal(leaseWaitNote(192_000), "Waited 3m 12s for another test check to finish.");
+});
+
+test("a failed test check that waited keeps the wait in its note", async () => {
+  const { runCheck } = await import("../src/server/workflows/checks.ts");
+  const result = await runCheck({
+    slot: "test",
+    command: { ...emptyWorkflowCommandView("test"), defaultCommand: FAILS },
+    policy: { checksEnabled: true, repoAllowlist: ["/repo"] },
+    reserveRun: null,
+    cwd: "/repo",
+    repoRoot: "/repo",
+    headSha: "abc",
+  }, {
+    checkoutSubpath: async () => "",
+    execute: async () => ({ kind: "exited", exitCode: 3, output: "1 failing\n", truncatedBytes: 0, waitedMs: 45_000 }),
+  });
+  assert.equal(result.kind, "outcome");
+  const outcome = result.kind === "outcome" ? result.outcome : null;
+  assert.equal(outcome?.status, "failed");
+  assert.equal(outcome?.exitCode, 3);
+  assert.match(outcome?.note ?? "", /exited 3\. Waited 45s for another test check to finish\.$/);
+});
