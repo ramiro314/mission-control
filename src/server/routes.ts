@@ -9,6 +9,7 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   isShippingTaskKind,
   kindsDefaultingToWorkflow,
+  shapeThisPatch,
   TASK_KIND_INFO,
 } from "@shared/task.ts";
 import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
@@ -7976,6 +7977,41 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
+    return c.json(r.task!);
+  });
+
+  /**
+   * "Shape this": convert a backlog task to shape and dispatch it, as one request.
+   *
+   * Every refusal the dispatch could give is asked of the task AS CONVERTED before anything
+   * is written - the planning skills (`planDispatchBlock`, reached through
+   * `backlogDispatchRefusal`), the parked and dependency gates, and the shape review's
+   * Workflow gates - so a refused Shape this leaves the task exactly as it was. The edit is
+   * `shapeThisPatch`: the kind and its review, nothing else, so the source link stays.
+   */
+  app.post("/api/tasks/:id/shape", async (c) => {
+    const parsed = await parseBody(c, DispatchBacklogTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const id = c.req.param("id");
+    const task = tasks.get(id);
+    if (!task) return c.json({ error: "no such task" }, 404);
+    if (task.status !== "backlog") {
+      return c.json({ error: `task is ${task.status}, not in the backlog` }, 409);
+    }
+    const patch = shapeThisPatch(getWorkflowPolicy().kindWorkflowDefaults);
+    const converted = { ...task, ...patch };
+    const refusal = tasks.backlogDispatchRefusal(converted, parsed.data);
+    if (refusal) return c.json({ error: refusal }, 409);
+    if (patch.workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.dispatchWorkflowBlock(patch.workflowId, task.agent, task.repoRoot);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+    }
+    const edited = await tasks.update(id, patch);
+    if (!edited.ok) return c.json({ error: edited.error }, edited.error === "no such task" ? 404 : 409);
+    const r = await tasks.dispatch(id, parsed.data);
+    if (!r.ok) return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     return c.json(r.task!);
   });
 

@@ -590,16 +590,17 @@ checkout` naming the path; task-source sweeps report the same refusal in their r
 
 A backlog task whose kind is not shape yet can be shaped from either layout: the Board's
 backlog card carries **shape this** beside **launch new agent**, and a ready or parked row in
-the Line's Backlog drawer carries **Shape this** beside its other controls. It is the ordinary [edit](#edit-a-shelved-task) followed by the ordinary dispatch,
-not a conversion of its own: the edit sets the kind to shape and After work to **Plan
+the Line's Backlog drawer carries **Shape this** beside its other controls. It converts
+the task and dispatches it in one step: the kind becomes shape and After work becomes **Plan
 Validation**, the same pair the dispatch form picks when you switch to shape, and the task is
 then dispatched as a launch would. Nothing else on the task changes. Its source
 link, labels, priority and dependencies stay, so a shape task swept from a GitHub issue stays
 linked to that issue, and it completes when its planning pull request merges, like any shape
 task. On the Board the button is disabled while the card waits on a dependency you declared; the
-drawer leaves it off blocked rows, as it does **Launch now**. If the
-dispatch is refused, for example because Grill is off, the task stays in the backlog already
-converted to shape and the refusal says why.
+drawer leaves it off blocked rows, as it does **Launch now**. Every reason the dispatch could be
+refused is checked against the converted task before anything changes, so if it is refused, for
+example because Grill is off, the task stays in the backlog exactly as it was, with its original
+kind, and the refusal says why.
 
 ### Hand a shelved task to an agent that's already running
 

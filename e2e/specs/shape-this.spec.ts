@@ -11,10 +11,10 @@ import type { Task } from "../../src/shared/types.ts";
  * The two ways into shape that are not the dispatch form: "shape this" on a backlog card, and
  * a task source whose default kind is shape.
  *
- * "Shape this" is the ordinary kind edit followed by the ordinary dispatch, so what only a
- * browser can show is the chain: click -> POST /update (kind + Plan Validation) -> POST
- * /dispatch -> a live shape session -> the task row still carrying the issue it was swept
- * from. Every agent is the fake and every `gh` call is `FAKE_GH`, so no tokens are spent and
+ * "Shape this" converts and dispatches in one request, so what only a browser can show is the
+ * chain: click -> POST /shape (kind + Plan Validation, then the dispatch) -> a live shape
+ * session -> the task row still carrying the issue it was swept from. A refused one changes
+ * nothing, so the card keeps its kind and its button. Every agent is the fake and every `gh` call is `FAKE_GH`, so no tokens are spent and
  * nothing reaches GitHub.
  */
 
@@ -98,12 +98,10 @@ test("shape this converts a swept backlog task to shape and dispatches it, keepi
   await expect(card.locator(".bl-kind")).toHaveText("ship");
   await shoot(card, "01-backlog-card-offers-shape-this");
 
-  // The existing routes, in order: the kind edit, then the dispatch.
-  const edited = page.waitForRequest((r) => r.url().endsWith(`/api/tasks/${swept!.id}/update`));
-  const dispatched = page.waitForRequest((r) => r.url().endsWith(`/api/tasks/${swept!.id}/dispatch`));
+  // One request converts and dispatches.
+  const shaped = page.waitForResponse((r) => r.url().endsWith(`/api/tasks/${swept!.id}/shape`));
   await shapeThis.click();
-  expect((await edited).postDataJSON()).toEqual({ kind: "shape", workflowId: "builtin-workflow:plan-validation" });
-  await dispatched;
+  expect((await shaped).ok()).toBe(true);
   await expect(card).toHaveCount(0, { timeout: 30_000 });
 
   const [converted] = await tasks(page, daemon);
@@ -180,7 +178,7 @@ test("every task source kind can file its items as shape tasks", async ({ page, 
   }]);
 });
 
-test("the Line's backlog drawer offers the same shape this, through the same two routes", async ({
+test("the Line's backlog drawer offers the same shape this, through the same route", async ({
   page,
   daemon,
 }) => {
@@ -204,11 +202,9 @@ test("the Line's backlog drawer offers the same shape this, through the same two
   await expect(shapeThis).toBeEnabled();
   await shoot(drawer, "04-line-drawer-offers-shape-this");
 
-  const edited = page.waitForRequest((r) => r.url().endsWith(`/api/tasks/${swept!.id}/update`));
-  const dispatched = page.waitForRequest((r) => r.url().endsWith(`/api/tasks/${swept!.id}/dispatch`));
+  const shaped = page.waitForResponse((r) => r.url().endsWith(`/api/tasks/${swept!.id}/shape`));
   await shapeThis.click();
-  expect((await edited).postDataJSON()).toEqual({ kind: "shape", workflowId: "builtin-workflow:plan-validation" });
-  await dispatched;
+  expect((await shaped).ok()).toBe(true);
   await expect(row).toHaveCount(0, { timeout: 30_000 });
 
   const [converted] = await tasks(page, daemon);
@@ -216,7 +212,7 @@ test("the Line's backlog drawer offers the same shape this, through the same two
   expect(converted!.status).not.toBe("backlog");
 });
 
-test("a refused dispatch leaves the task converted to shape in the backlog and shows the refusal", async ({
+test("a refused shape this leaves the task's kind unchanged and shows the refusal", async ({
   page,
   daemon,
 }) => {
@@ -225,7 +221,7 @@ test("a refused dispatch leaves the task converted to shape in the backlog and s
     { id: "gh", kind: "github-issues", label: "Demo issues", repoRoot: daemon.repo, enabled: false,
       config: { repo: "acme/demo" } },
   ]);
-  // Grill off: the kind edit is accepted, and the shape dispatch is refused naming the toggle.
+  // Grill off: the shape dispatch is refused naming the toggle, before anything is converted.
   expect((await page.request.put(`${daemon.baseURL}/api/skills/config`, {
     data: { enabled: true, skills: { grill: false, "html-plans": true } },
   })).ok()).toBe(true);
@@ -239,20 +235,21 @@ test("a refused dispatch leaves the task converted to shape in the backlog and s
 
   await page.goto(`${daemon.baseURL}/#/fleet`);
   const card = page.locator("section.board-backlog .bl-card").filter({ hasText: "Rework the export pipeline" });
-  const dispatched = page.waitForResponse((r) => r.url().endsWith(`/api/tasks/${swept!.id}/dispatch`));
+  const shaped = page.waitForResponse((r) => r.url().endsWith(`/api/tasks/${swept!.id}/shape`));
   await card.getByRole("button", { name: "shape this" }).click();
-  expect((await dispatched).ok()).toBe(false);
+  expect((await shaped).status()).toBe(409);
 
-  // The refusal is surfaced, and the card stays, now reading shape, with no button to shape it again.
+  // The refusal is surfaced, and the card stays as it was: still ship, still offering shape this.
   await expect(page.getByText(/Enable Skills and the grill skill/).first()).toBeVisible();
-  await expect(card.locator(".bl-kind")).toHaveText("shape");
-  await expect(card.getByRole("button", { name: "shape this" })).toHaveCount(0);
-  await shoot(page, "05-refused-dispatch-left-shape");
+  await expect(card.locator(".bl-kind")).toHaveText("ship");
+  await expect(card.getByRole("button", { name: "shape this" })).toBeEnabled();
+  await shoot(page, "05-refused-shape-left-unchanged");
 
   const [after] = await tasks(page, daemon);
   expect(after).toMatchObject({
     id: swept!.id,
-    kind: "shape",
+    kind: "ship",
+    workflowId: swept!.workflowId,
     status: "backlog",
     source: swept!.source,
     labels: swept!.labels,
