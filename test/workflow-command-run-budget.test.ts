@@ -529,3 +529,15 @@ test("a hand-edited budget degrades the field toward running, not the slot towar
   assert.deepEqual(view.defaultCommand, ["npm", "run", "build"], "the slot must still be readable");
   assert.equal(view.maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
 });
+
+test("a released reservation stops counting, so a gate that ran nothing spent nothing", () => {
+  const store = new WorkflowStore(db);
+  seedRun(store, "released", 1);
+  assert.equal(store.reserveCheckRun("run-released", "attempt-released-1-a", "affected-tests", 1, null).granted, true);
+  store.releaseCheckRun("attempt-released-1-a");
+  assert.equal(store.checkRunsSpent("run-released", "affected-tests", null), 0);
+  assert.deepEqual(
+    store.reserveCheckRun("run-released", "attempt-released-1-b", "affected-tests", 1, null),
+    { granted: true, spent: 0 },
+  );
+});

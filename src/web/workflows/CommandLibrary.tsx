@@ -6,6 +6,7 @@ import {
   WORKFLOW_LIMITS,
   checkCommandRoot,
   formatCheckCommand,
+  commandTemplateProblem,
   parseCheckCommand,
   workflowCommandFact,
   workflowCommandRunsFact,
@@ -43,7 +44,7 @@ import {
  * on the right, a local draft, a discard guard and a compare-and-swap save - because an
  * operator who has navigated one should not have to learn a third shape. It draws the rail
  * out of the SHARED primitives under `src/web/library/` rather than a fourth copy of them.
- * What is different is that the rail is CLOSED: four built-in slots ship with the product,
+ * What is different is that the rail is CLOSED: the built-in slots ship with the product,
  * so there is no New, no duplicate, no archive, and no empty state. A slot nobody has
  * configured is still a row.
  *
@@ -609,6 +610,13 @@ export function CommandLibrary({
       setError(body.error);
       return;
     }
+    const templateProblem = [body.body.defaultCommand, ...body.body.overrides.map((entry) => entry.command)]
+      .map((argv) => (argv ? commandTemplateProblem(selectedSlot, argv) : null))
+      .find((problem) => problem !== null);
+    if (templateProblem) {
+      setError(templateProblem);
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -652,7 +660,7 @@ export function CommandLibrary({
         <div className="wf-command-sidebar-head">
           <div>
             <h3>Commands</h3>
-            <p>4 slots</p>
+            <p>{WORKFLOW_CHECK_SLOTS.length} slots</p>
           </div>
         </div>
         <div className="wf-command-list">
@@ -684,7 +692,7 @@ export function CommandLibrary({
         {/* Why there is no New here, said where the missing control would have been. The
             other two rails end in controls; this one ends in the reason it has none. */}
         <p className="wf-command-rail-foot">
-          Four slots ship with Mission Control and there is no fifth to author. A workflow
+          These slots ship with Mission Control, and only a release adds one. A workflow
           names a slot, never a command.
         </p>
       </aside>
@@ -774,6 +782,13 @@ export function CommandLibrary({
             Saving stores an argv - it runs nothing. A workflow reaching the{" "}
             <code>{selectedSlot}</code> Command runs it later, without a shell, in a
             commit-pinned checkout of a repository granted the Workflows cell in Trust.
+            {selectedSlot === "affected-tests" && (
+              <>
+                {" "}Mission Control picks the tests from the repository&apos;s{" "}
+                <code>.mission/testing.json</code>, passes them as <code>{"{files}"}</code>, reads
+                results from <code>{"{junit}"}</code>, and reruns failures once.
+              </>
+            )}
           </p>
 
           {conflict && (

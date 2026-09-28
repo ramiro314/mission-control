@@ -556,10 +556,13 @@ import {
   WORKFLOW_LIMITS,
   WORKFLOW_RUN_STATUSES,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  WORKFLOW_CHECK_SLOTS,
+  commandTemplateProblem,
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type {
   TestEvidenceAuditAggregate,
+  WorkflowCheckSlot,
   WorkflowConfig,
   WorkflowLaunchBlock,
   WorkflowLaunchFix,
@@ -2364,7 +2367,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Command catalog unavailable" }, 503);
     const parsed = await parseBody(c, UpdateWorkflowCommandSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.replace(c.req.param("slot"), parsed.data);
+    const slot = c.req.param("slot");
+    if ((WORKFLOW_CHECK_SLOTS as readonly string[]).includes(slot)) {
+      for (const argv of [parsed.data.defaultCommand, ...parsed.data.overrides.map((entry) => entry.command)]) {
+        const problem = argv ? commandTemplateProblem(slot as WorkflowCheckSlot, argv) : null;
+        if (problem) return c.json({ error: problem, code: "workflow_command_invalid_template" }, 400);
+      }
+    }
+    const result = manager.replace(slot, parsed.data);
     return result.ok ? c.json(result.view) : workflowCommandFailure(c, result);
   });
   app.post("/api/workflows", bodyLimit({

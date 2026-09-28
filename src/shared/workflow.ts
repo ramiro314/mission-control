@@ -1974,7 +1974,13 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
  * hard-coding `npm test` would be wrong on every repository that is not the one it was
  * written in. The operator describes the machine; the version describes the gate.
  */
-export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build"] as const;
+export const WORKFLOW_CHECK_SLOTS = [
+  "test",
+  "lint",
+  "typecheck",
+  "build",
+  "affected-tests",
+] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
 /**
@@ -1985,7 +1991,7 @@ export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
  * than compared against at a call site.
  */
 export function slotRunsTests(slot: WorkflowCheckSlot): boolean {
-  return slot === "test";
+  return slot === "test" || slot === "affected-tests";
 }
 
 /**
@@ -2973,7 +2979,38 @@ export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
   lint: "The style and correctness pass that runs before review.",
   typecheck: "The type checker, when this repository has one separate from its build.",
   build: "The build or bundle step that proves the change compiles.",
+  "affected-tests": "Only the tests this change touched, selected by Mission Control.",
 };
+
+/** The `affected-tests` argv element replaced by one element per selected test file. */
+export const AFFECTED_TESTS_FILES_PLACEHOLDER = "{files}";
+/** Replaced, wherever it appears inside an element, by the path JUnit results are read from. */
+export const AFFECTED_TESTS_JUNIT_PLACEHOLDER = "{junit}";
+
+/**
+ * Why `argv` cannot be this slot's command, or null when it can.
+ *
+ * Only `affected-tests` has a rule: its command is a template Mission Control fills, and one
+ * that names no `{files}` would run the whole suite while claiming to run a selection, and one
+ * with no `{junit}` would leave nothing to read which tests failed from. Asked when a command
+ * is saved, and again, defensively, when one runs.
+ */
+export function commandTemplateProblem(
+  slot: WorkflowCheckSlot,
+  argv: readonly string[],
+): string | null {
+  if (slot !== "affected-tests") return null;
+  const missing: string[] = [];
+  if (!argv.includes(AFFECTED_TESTS_FILES_PLACEHOLDER)) {
+    missing.push(`an argument that is exactly ${AFFECTED_TESTS_FILES_PLACEHOLDER}`);
+  }
+  if (!argv.some((arg) => arg.includes(AFFECTED_TESTS_JUNIT_PLACEHOLDER))) {
+    missing.push(`${AFFECTED_TESTS_JUNIT_PLACEHOLDER} where the JUnit results are written`);
+  }
+  return missing.length === 0
+    ? null
+    : `An affected-tests command must contain ${missing.join(" and ")}.`;
+}
 
 /**
  * What every Command surface says when the catalog has not arrived.
@@ -3535,6 +3572,68 @@ export interface WorkflowCheckOutcome {
   truncatedBytes: number;
   /** Always a complete sentence, including on a pass. */
   note: string;
+  /**
+   * What an `affected-tests` check selected and learned, when it got as far as selecting.
+   * Absent on every other slot and on outcomes recorded before the slot existed.
+   */
+  affected?: WorkflowAffectedTestsReport;
+}
+
+/** Bounds on the `affected` block, which is durable `output_json`. */
+export const AFFECTED_TESTS_LIMITS = {
+  /** Selected files kept for display. The command itself receives every selected file. */
+  selectionShown: 50,
+  flakes: 50,
+  failures: 20,
+  path: 1_000,
+  testName: 500,
+  failureMessage: 2_000,
+} as const;
+
+/** Why a test file was selected. APPEND-ONLY: durable in `output_json`. */
+export const WORKFLOW_TEST_SELECTION_REASONS = ["changed", "imports", "smoke"] as const;
+export type WorkflowTestSelectionReason = (typeof WORKFLOW_TEST_SELECTION_REASONS)[number];
+
+export interface WorkflowSelectedTest {
+  /** Repository-relative. */
+  path: string;
+  reason: WorkflowTestSelectionReason;
+  /** For `imports`: the changed file this test reaches through its imports. */
+  via?: string;
+}
+
+/** One test named by the JUnit results, identified the way a person would look for it. */
+export interface WorkflowNamedTest {
+  /** Repository-relative when it could be made so, else as the runner reported it. */
+  file: string | null;
+  name: string;
+}
+
+export interface WorkflowTestFailure extends WorkflowNamedTest {
+  /** The runner's message and detail, bounded. */
+  message: string;
+}
+
+export interface WorkflowAffectedTestsReport {
+  /** Every selected file, before the display cap. */
+  selectedCount: number;
+  /** The first `AFFECTED_TESTS_LIMITS.selectionShown` selected files, sorted by path. */
+  selected: WorkflowSelectedTest[];
+  /** Every local flake, before the `AFFECTED_TESTS_LIMITS.flakes` cap. */
+  flakeCount: number;
+  /** Tests that failed, then passed on the one rerun. Reported, never failing the check. Capped. */
+  flakes: WorkflowNamedTest[];
+  /** Every test that failed twice, before the `AFFECTED_TESTS_LIMITS.failures` cap. */
+  failureCount: number;
+  /** Tests that failed on both runs: the reason a check failed. Capped. */
+  failures: WorkflowTestFailure[];
+  /** The effective selection settings, and which keys came from the local override file. */
+  settings: {
+    patterns: string[];
+    includeImporters: boolean;
+    smokeSet: string[];
+    localKeys: string[];
+  };
 }
 
 /**

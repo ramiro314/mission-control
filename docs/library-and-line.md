@@ -268,10 +268,11 @@ states how many were omitted rather than guessing a name or destination.
 Behind a Command card is the same rail and workspace, arranged around the thing this screen
 actually decides: which argv a repository resolves to.
 
-**The rail** is one group, **Built-in slots**, with its count - there are four slots and there
-will never be a fifth, so there is no New, no search and no state filter. Each row's sub-label
+**The rail** is one group, **Built-in slots**, with its count - the slots are a fixed,
+append-only vocabulary (`test`, `lint`, `typecheck`, `build`, `affected-tests`) that only a
+release extends, so there is no New, no search and no state filter. Each row's sub-label
 is the slot's stored state (`Global default · 2 overrides`, `Not configured`), which is the one
-fact that tells four rows apart; it is the same sentence the Library card and the workflow
+fact that tells the rows apart; it is the same sentence the Library card and the workflow
 palette use, so the three cannot disagree. The slot's purpose has moved off the rows to the
 row's tooltip, and it opens the workspace's execution note - so it is read once for the slot
 you opened, rather than four times identically down a list. A note below the list says why the

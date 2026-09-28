@@ -7,7 +7,10 @@ import type {
   WorkflowContextSnapshot,
   WorkflowDelivery,
   WorkflowHumanDecision,
+  WorkflowAffectedTestsReport,
   WorkflowCheckOutcome,
+  WorkflowNamedTest,
+  WorkflowSelectedTest,
   WorkflowExternalSource,
   WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
@@ -348,6 +351,7 @@ function CheckCard({
       </header>
       <p className="wf-run-summary">{outcome.note}</p>
       <p className="wf-run-check-sentence">{view.sentence}</p>
+      {outcome.affected && <AffectedTestsDetails report={outcome.affected} />}
       {outcome.output && (
         <div className="wf-run-card-body">
           <h5>Command output</h5>
@@ -364,6 +368,93 @@ function CheckCard({
       )}
       <p className="wf-run-meta">{parts.join(" · ")}</p>
     </article>
+  );
+}
+
+/** How many selected test files an `affected-tests` card lists before folding the rest. */
+const AFFECTED_SELECTION_INLINE = 5;
+
+function selectionReason(test: WorkflowSelectedTest): string {
+  if (test.reason === "changed") return "changed";
+  if (test.reason === "smoke") return "smoke set";
+  return test.via ? `imports ${test.via}` : "imports a changed file";
+}
+
+function SelectedTestItem({ test }: { test: WorkflowSelectedTest }): React.JSX.Element {
+  return (
+    <li>
+      <code>{test.path}</code> <span className="wf-run-meta">({selectionReason(test)})</span>
+    </li>
+  );
+}
+
+/** Says how many tests a capped list leaves out, so a count is never read as the whole. */
+function UnlistedTests({ total, listed }: { total: number; listed: number }): React.JSX.Element | null {
+  return total > listed
+    ? <p className="wf-run-meta">{total - listed} more are not listed here.</p>
+    : null;
+}
+
+function namedTest(test: WorkflowNamedTest): string {
+  return test.file ? `${test.name} (${test.file})` : test.name;
+}
+
+/**
+ * What an `affected-tests` check selected, which tests flaked, and which settings shaped it.
+ *
+ * The local-override keys are listed because a selection shaped by a gitignored file is
+ * invisible everywhere else: CI and every other checkout never see that file.
+ */
+export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTestsReport }): React.JSX.Element {
+  const inline = report.selected.slice(0, AFFECTED_SELECTION_INLINE);
+  const folded = report.selected.slice(AFFECTED_SELECTION_INLINE);
+  const unshown = report.selectedCount - report.selected.length;
+  return (
+    <div className="wf-run-card-body wf-run-affected">
+      <h5>Selected tests ({report.selectedCount})</h5>
+      {report.selectedCount === 0 ? (
+        <p>No test files matched this change.</p>
+      ) : (
+        <ul aria-label="Selected tests">
+          {inline.map((test) => <SelectedTestItem key={test.path} test={test} />)}
+        </ul>
+      )}
+      {folded.length > 0 && (
+        <details>
+          <Tooltip label="Show the rest of the selected test files">
+            <summary>{folded.length + unshown} more selected</summary>
+          </Tooltip>
+          <ul>
+            {folded.map((test) => <SelectedTestItem key={test.path} test={test} />)}
+          </ul>
+          {unshown > 0 && <p className="wf-run-meta">{unshown} more are not listed here.</p>}
+        </details>
+      )}
+      {report.flakes.length > 0 && (
+        <>
+          <h5>Local flakes ({report.flakeCount})</h5>
+          <p>These failed once and passed on the rerun, so they did not fail the check.</p>
+          <ul aria-label="Local flakes">
+            {report.flakes.map((test) => <li key={namedTest(test)}>{namedTest(test)}</li>)}
+          </ul>
+          <UnlistedTests total={report.flakeCount} listed={report.flakes.length} />
+        </>
+      )}
+      {report.failures.length > 0 && (
+        <>
+          <h5>Failed twice ({report.failureCount})</h5>
+          <ul aria-label="Failed tests">
+            {report.failures.map((test) => <li key={namedTest(test)}>{namedTest(test)}</li>)}
+          </ul>
+          <UnlistedTests total={report.failureCount} listed={report.failures.length} />
+        </>
+      )}
+      {report.settings.localKeys.length > 0 && (
+        <p className="wf-run-meta">
+          From <code>.mission/testing.local.json</code>: {report.settings.localKeys.join(", ")}
+        </p>
+      )}
+    </div>
   );
 }
 

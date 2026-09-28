@@ -242,13 +242,7 @@ export async function changedPathsSince(cwd: string | null): Promise<ChangedPath
   if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
   const repoRoot = top.stdout.trim();
 
-  const ref = await sourceRef(cwd);
-  let diffBase = "HEAD";
-  if (ref) {
-    const mb = await git(cwd, ["merge-base", "HEAD", ref]);
-    const merged = mb.code === 0 ? mb.stdout.trim() : "";
-    if (merged) diffBase = merged;
-  }
+  const diffBase = await changedPathsBase(cwd);
 
   const paths = new Set<string>();
   // An unborn HEAD has nothing tracked to diff against and `git diff HEAD` says so. Confirmed
@@ -279,6 +273,36 @@ export async function changedPathsSince(cwd: string | null): Promise<ChangedPath
   }
 
   return { ok: true, repoRoot, paths: [...paths].sort() };
+}
+
+/** `merge-base(HEAD, sourceRef)`, or `HEAD` for a branch with no shared history. */
+async function changedPathsBase(cwd: string): Promise<string> {
+  const ref = await sourceRef(cwd);
+  if (!ref) return "HEAD";
+  const mb = await git(cwd, ["merge-base", "HEAD", ref]);
+  const merged = mb.code === 0 ? mb.stdout.trim() : "";
+  return merged || "HEAD";
+}
+
+/**
+ * The tracked paths a checkout DELETED since its source branch - the half `changedPathsSince`
+ * leaves out on purpose, from the same base. A caller asking which tests a change can break
+ * needs it: a test importing a deleted file is broken by the change without being touched.
+ * Fails closed exactly as `changedPathsSince` does.
+ */
+export async function deletedPathsSince(cwd: string | null): Promise<ChangedPathsResult> {
+  if (!cwd) return { ok: false, reason: "there is no working directory to read" };
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
+  const repoRoot = top.stdout.trim();
+  const diffBase = await changedPathsBase(cwd);
+  if (diffBase === "HEAD" && (await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])).code !== 0) {
+    return { ok: true, repoRoot, paths: [] };
+  }
+  const deleted = await git(cwd, ["diff", "--name-only", "--diff-filter=D", diffBase]);
+  if (deleted.code !== 0) return { ok: false, reason: "could not read the deleted paths" };
+  const paths = deleted.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  return { ok: true, repoRoot, paths: [...new Set(paths)].sort() };
 }
 
 /** Count added lines in a unified diff body (`+` lines, excluding the `+++` header). */

@@ -8,6 +8,7 @@ import {
   checkCommandSubpath,
   formatCheckCommand,
   resolveWorkflowCommand,
+  type WorkflowAffectedTestsReport,
   type WorkflowCheckOutcome,
   type WorkflowCheckSlot,
   type WorkflowCommandView,
@@ -97,6 +98,21 @@ export type CheckExecutionResult =
     output: string;
     truncatedBytes: number;
     /** How long the command waited for the machine's check test lease, when it waited. */
+    waitedMs?: number;
+  }
+  /**
+   * An executor that interprets its command's results itself - the `affected-tests` slot,
+   * which selects tests, reruns failures once and reads JUnit - and so decides the status
+   * rather than handing back one exit code. `exitCode` is null when nothing ran.
+   */
+  | {
+    kind: "decided";
+    status: "passed" | "failed" | "skipped" | "unavailable";
+    note: string;
+    exitCode: number | null;
+    output: string;
+    truncatedBytes: number;
+    affected?: WorkflowAffectedTestsReport;
     waitedMs?: number;
   }
   /** The configured executable is not there. A settings problem, not a defect. */
@@ -283,6 +299,13 @@ export async function runCheck(
      * test of the resolution ladder - genuinely means. It is NOT a reservation that failed.
      */
     reserveRun: (() => CheckRunReservation) | null;
+    /**
+     * Give a granted reservation back, when the executor decided without running anything -
+     * an affected-tests gate that selected no tests, or found no testing settings. The budget
+     * counts executions, so a gate that executed nothing must not spend one. Absent means the
+     * caller keeps no durable record to release.
+     */
+    releaseRun?: () => void;
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
@@ -380,6 +403,23 @@ export async function runCheck(
   if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };
   if (result.kind === "unavailable") {
     return outcome(slot, "unavailable", result.note, { command });
+  }
+
+  if (result.kind === "decided") {
+    if (result.exitCode === null && reservation?.granted) input.releaseRun?.();
+    const bounded = tailBounded(result.output, WORKFLOW_EXECUTION_LIMITS.checkOutput);
+    const waited = result.waitedMs === undefined ? "" : ` ${leaseWaitNote(result.waitedMs)}`;
+    // A note about a command that ran names it; one about a gate that stopped short does not.
+    const note = result.exitCode === null
+      ? `${result.note}${waited}`
+      : checkOutcomeNote(command, `: ${result.note}${waited}`);
+    return outcome(slot, result.status, note, {
+      command,
+      exitCode: result.exitCode,
+      output: bounded.text,
+      truncatedBytes: result.truncatedBytes + bounded.droppedBytes,
+      ...(result.affected ? { affected: result.affected } : {}),
+    });
   }
 
   const bounded = tailBounded(result.output, WORKFLOW_EXECUTION_LIMITS.checkOutput);

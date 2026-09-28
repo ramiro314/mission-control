@@ -17,3 +17,6 @@ e2e/.probe/
 e2e/.artifacts/
 .evidence/
 .pipeline/
+
+# Per-checkout override of .mission/testing.json (see docs/workflows.md)
+.mission/testing.local.json

@@ -1,0 +1,13 @@
+{
+  "tests": {
+    "patterns": ["test/**/*.test.ts"],
+    "includeImporters": true,
+    "smokeSet": ["test/route-surface-oracle.test.ts", "test/telemetry-primary-actions.test.ts"]
+  },
+  "flakes": {
+    "label": "flaky-test",
+    "actionableLabel": "flaky-test:actionable",
+    "actionableAfter": 3,
+    "windowDays": 30
+  }
+}
