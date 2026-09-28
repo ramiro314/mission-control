@@ -482,3 +482,35 @@ export function grantRefusal(
   if (!grant.cwd.startsWith("/")) return `grant cwd must be absolute, got ${grant.cwd || "(empty)"}`;
   return null;
 }
+
+/**
+ * Provider failures that cannot succeed on an immediate retry of the same call.
+ *
+ * Persisted verbatim as `workflow_llm_calls.error_code`, so this tuple is append-only: never
+ * rename, reorder, or reuse a value. A row written before these existed carries the generic
+ * `persona_infrastructure` code and stays readable as it always was.
+ */
+export const LLM_PROVIDER_FAILURE_KINDS = ["model_unavailable", "quota_exhausted"] as const;
+export type LlmProviderFailureKind = (typeof LLM_PROVIDER_FAILURE_KINDS)[number];
+
+/**
+ * What a runner throws when the provider refused the call for a reason a retry cannot fix.
+ *
+ * A runner classifies its own provider's text; callers read only `kind`, never the runner id,
+ * so any harness that recognises the same causes reports them the same way. `message` keeps
+ * the provider's original diagnostic; `summary` is the operator-facing sentence.
+ */
+export class LlmProviderFailure extends Error {
+  readonly kind: LlmProviderFailureKind;
+  readonly summary: string;
+  /** The provider's stated reset time, verbatim, when it gave one. */
+  readonly resetsAt: string | null;
+
+  constructor(kind: LlmProviderFailureKind, summary: string, message: string, resetsAt: string | null = null) {
+    super(message);
+    this.name = "LlmProviderFailure";
+    this.kind = kind;
+    this.summary = summary;
+    this.resetsAt = resetsAt;
+  }
+}

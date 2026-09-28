@@ -287,6 +287,15 @@ if (process.argv[2] === "exec") {
     process.stdin.on("data", (chunk) => chunks.push(chunk));
     process.stdin.on("end", () => {
       const prompt = Buffer.concat(chunks).toString("utf8");
+      // The provider's exact refusal when a ChatGPT account's quota is spent: exit 1 in
+      // seconds, stderr only, nothing on stdout. Recorded so a spec can count the spawns.
+      if (prompt.includes("E2E_CODEX_QUOTA_EXHAUSTED")) {
+        if (recordDir) appendFileSync(join(recordDir, "codex", "workflow-quota-exhausted.log"), "call\n");
+        process.stderr.write("You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again at Oct 22nd, 2026 9:01 PM.\n");
+        process.exitCode = 1;
+        done();
+        return;
+      }
       const manifest = workflowImageManifest(prompt);
       const observed = imagePaths.map((path) => {
         const bytes = readFileSync(path);
