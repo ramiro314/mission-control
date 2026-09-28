@@ -210,6 +210,34 @@ test("a listed option deselects Other and keeps its text unsent; Tab is inert, a
   expect(review.response).toBe(`Plan decisions submitted:\n\n• ${QUESTION}\n  → ${LISTED}`);
 });
 
+test("choosing Other from the keyboard selects it but leaves focus on the radio", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setup(dashboard, daemon);
+  const modal = await openReview(dashboard);
+  const { recommended, listed, other, box } = controls(modal);
+
+  // Arrow keys walk the group, Other included, and focus stays on the radios.
+  await recommended.focus();
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(listed).toBeChecked();
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(other).toBeChecked();
+  await expect(recommended).not.toBeChecked();
+  await expect(other).toBeFocused();
+  await expect(box).not.toBeFocused();
+
+  // Space on the Other radio chooses it the same way, without jumping into the box.
+  await recommended.click();
+  await other.focus();
+  await dashboard.keyboard.press("Space");
+  await expect(other).toBeChecked();
+  await expect(recommended).not.toBeChecked();
+  await expect(other).toBeFocused();
+  await expect(box).not.toBeFocused();
+});
+
 test("Other chosen with an empty box leaves the question unanswered", async ({ dashboard, daemon }) => {
   await setup(dashboard, daemon);
   const modal = await openReview(dashboard);
