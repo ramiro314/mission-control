@@ -171,7 +171,7 @@ function BacklogRow({
   busy: boolean;
   onEdit: () => void;
   onLaunch: () => void;
-  /** Convert to shape and dispatch, the same pair the board card's "shape this" sends. */
+  /** Convert to shape and dispatch through `api.shapeBacklog`, as the board card's "shape this" does. */
   onShape: () => void;
   onSetEnabled: (next: boolean) => void;
   onSetPriority: (next: TaskPriority | null) => void;

@@ -1,5 +1,5 @@
 import { actionFetch } from "./experience.ts";
-import { shapeThisPatch, type KindWorkflowDefaults } from "@shared/task.ts";
+import type { KindWorkflowDefaults } from "@shared/task.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -1841,19 +1841,13 @@ export const api = {
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
     post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
   /**
-   * "Shape this": the ordinary kind edit (`shapeThisPatch`), then the ordinary backlog
-   * dispatch - no conversion route of its own. The edit keeps the row's source link, labels
-   * and dependencies. A refused dispatch leaves the task converted in the backlog.
-   *
-   * The shape review is read from Settings at the click rather than cached, so a row changed
-   * a moment ago applies. An unreadable config refuses rather than guessing the built-in.
+   * "Shape this": convert a backlog task to shape and dispatch it, in one request. The
+   * daemon asks every dispatch refusal of the converted task before writing, so a refused
+   * Shape this leaves the task unchanged. The kind edit keeps the source link, labels and
+   * dependencies, and its review is read from Settings on the daemon at the click.
    */
-  shapeBacklog: async (id: string): Promise<ActionResult> => {
-    const configured = await fetchKindWorkflowDefaults();
-    if (!configured) return { ok: false, error: "could not read the shape dispatch default" };
-    const edited = await post(`/api/tasks/${encodeURIComponent(id)}/update`, shapeThisPatch(configured));
-    return edited.ok ? await api.dispatchBacklog(id, true) : edited;
-  },
+  shapeBacklog: (id: string) =>
+    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/shape`, { overrideDisabled: true }),
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>

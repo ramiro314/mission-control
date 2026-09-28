@@ -3100,29 +3100,8 @@ export class TaskManager {
       }
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (!taskKindAllowsBacklog(t.kind)) {
-        return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, task: t };
-      }
-      // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
-      // the coarser fact and the one the operator can act on immediately.
-      if (refusedAsDisabled(t, options.overrideDisabled)) {
-        return { ok: false, error: DISABLED_REFUSAL, task: t };
-      }
-      const blockers = this.dependencyBlockers(t);
-      if (blockers.length > 0) {
-        return {
-          ok: false,
-          error: `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}`,
-          task: t,
-        };
-      }
-      // A plan whose contract cannot be honoured is turned away HERE, synchronously, rather
-      // than left to fail on the card a few seconds later. The Dispatcher refuses it too and
-      // that is not redundancy: this is the answer the operator's click and the autopilot's
-      // pass both read, and that one is the backstop for every door that does not come
-      // through here. Null for every other kind, so nothing else changes.
-      const planBlock = planDispatchBlock(t);
-      if (planBlock) return { ok: false, error: planBlock, task: t };
+      const refusal = this.backlogDispatchRefusal(t, options);
+      if (refusal) return { ok: false, error: refusal, task: t };
       // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
       // the layer that acts on it - including `defaultModel`, which it ranks between the
       // task's own pin and the Harnesses panel default (see `Dispatcher.dispatch`).
@@ -3137,6 +3116,30 @@ export class TaskManager {
       void this.dispatcher.dispatch(id, options);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
+  }
+
+  /**
+   * Why `dispatch` would turn this backlog row away, or null when it would launch it.
+   *
+   * Takes the row rather than an id so a caller can ask about the row an edit WOULD produce
+   * before writing it: "Shape this" asks of the task as converted to shape, and refuses
+   * without converting anything.
+   */
+  backlogDispatchRefusal(t: Task, options: Pick<DispatchOptions, "overrideDisabled"> = {}): string | null {
+    if (!taskKindAllowsBacklog(t.kind)) return TASK_KIND_BACKLOG_REFUSAL;
+    // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
+    // the coarser fact and the one the operator can act on immediately.
+    if (refusedAsDisabled(t, options.overrideDisabled)) return DISABLED_REFUSAL;
+    const blockers = this.dependencyBlockers(t);
+    if (blockers.length > 0) {
+      return `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}`;
+    }
+    // A plan whose contract cannot be honoured is turned away HERE, synchronously, rather
+    // than left to fail on the card a few seconds later. The Dispatcher refuses it too and
+    // that is not redundancy: this is the answer the operator's click and the autopilot's
+    // pass both read, and that one is the backstop for every door that does not come
+    // through here. Null for every other kind, so nothing else changes.
+    return planDispatchBlock(t);
   }
 
   /** Re-run readiness for the same reserved provider attempt without minting a retry. */

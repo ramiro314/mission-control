@@ -691,7 +691,7 @@ function BacklogCard({
     setBusy(false);
   }
 
-  /** "Shape this" - see `api.shapeBacklog`; the Line drawer's row sends the same pair. */
+  /** "Shape this" - see `api.shapeBacklog`; the Line drawer's row sends the same request. */
   async function shapeThis(): Promise<void> {
     setBusy(true);
     const r = await api.shapeBacklog(task.id);
