@@ -391,3 +391,49 @@ test("an option on a task with nothing to free completes it and frees nothing", 
   assert.equal("freeError" in body, false);
 });
 
+
+function attached(extra: { repoRoot: string; worktreePath: string; branch: string }) {
+  return {
+    repoRoot: extra.repoRoot,
+    worktreePath: extra.worktreePath,
+    branch: extra.branch,
+    provider: "git" as const,
+    worktreeLeaseId: null,
+    baseSha: null,
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+  };
+}
+
+test("ifSafe on a clean multi-repo task frees every checkout", async () => {
+  const { registry, complete } = setup();
+  const extra = repoWithWorktree("attached");
+  const task = gitTask("multi-clean", { extraRepos: [attached(extra)] });
+  registry.upsertTask(task);
+  const { body } = await complete("multi-clean", { freeWorktree: "ifSafe" });
+  assert.equal(body.status, "done");
+  assert.equal(body.freed, true);
+  const row = registry.getTask("multi-clean")!;
+  assert.equal(row.worktreePath, null);
+  assert.equal(row.extraRepos[0]?.worktreePath, null);
+  assert.equal(existsSync(task.worktreePath!), false);
+  assert.equal(existsSync(extra.worktreePath), false);
+});
+
+test("ifSafe on a multi-repo task with one dirty attached checkout keeps every tree", async () => {
+  const { registry, complete } = setup();
+  const extra = repoWithWorktree("attached");
+  writeFileSync(join(extra.worktreePath, "wip.txt"), "wip\n");
+  const task = gitTask("multi-dirty", { extraRepos: [attached(extra)] });
+  registry.upsertTask(task);
+  const { body } = await complete("multi-dirty", { freeWorktree: "ifSafe" });
+  assert.equal(body.status, "done");
+  assert.equal(body.freed, false);
+  assert.equal(body.freeError, "worktree kept: attached: it has 1 uncommitted file(s)");
+  const row = registry.getTask("multi-dirty")!;
+  assert.equal(row.worktreePath, task.worktreePath);
+  assert.equal(row.extraRepos[0]?.worktreePath, extra.worktreePath);
+  assert.equal(existsSync(task.worktreePath!), true);
+  assert.equal(existsSync(join(extra.worktreePath, "wip.txt")), true);
+});

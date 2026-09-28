@@ -4307,9 +4307,8 @@ export function App(): React.JSX.Element {
             tourOutcome={
               completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
             }
-            onCompleted={(notice) => {
-              onKilled(completeSession.id);
-              if (!notice) return;
+            onCompleted={() => onKilled(completeSession.id)}
+            onNotice={(notice) => {
               if (completeNoticeTimer.current) clearTimeout(completeNoticeTimer.current);
               setCompleteNotice(notice);
               completeNoticeTimer.current = setTimeout(() => setCompleteNotice(null), 5000);

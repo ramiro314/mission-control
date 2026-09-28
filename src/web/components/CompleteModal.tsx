@@ -30,6 +30,7 @@ export function CompleteModal({
   tasks,
   tourOutcome,
   onCompleted,
+  onNotice,
   onClose,
 }: {
   session: Session;
@@ -40,11 +41,10 @@ export function CompleteModal({
    * actions inert; the tour controller owns the one fixed completion path.
    */
   tourOutcome?: string;
-  /**
-   * Fired once the task is closed and session shutdown is accepted, so App drops detail.
-   * `notice` is a success worth flashing once the dialog is gone.
-   */
-  onCompleted?: (notice?: string) => void;
+  /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
+  onCompleted?: () => void;
+  /** A success worth flashing once the dialog is gone ("Task completed · worktree freed"). */
+  onNotice?: (notice: string) => void;
   onClose: () => void;
 }): React.JSX.Element {
   const task = session.task;
@@ -104,7 +104,7 @@ export function CompleteModal({
     };
   }, [taskId, tourPreview]);
   const freeOffered = freePreview === undefined || freePreview?.applicable === true;
-  const worktreeNoun = task && task.repoPrs.length > 0 ? "worktrees" : "worktree";
+  const worktreeNoun = (task?.repoPrs?.length ?? 0) > 0 ? "worktrees" : "worktree";
   const freeChecked = freePreview?.applicable === true && freeWorktree;
 
   /**
@@ -177,7 +177,8 @@ export function CompleteModal({
         setError(`Task completed, but the ${worktreeNoun} could not be freed: ${completed.freeError}`);
         return;
       }
-      onCompleted?.(`Task completed · ${worktreeNoun} freed`);
+      onNotice?.(`Task completed · ${worktreeNoun} freed`);
+      onCompleted?.();
       close();
       return;
     }
@@ -291,12 +292,20 @@ export function CompleteModal({
 
               {freeOffered && (
                 <label className="complete-satisfy">
-                  <input
-                    type="checkbox"
-                    checked={freeChecked}
-                    disabled={busy || freePreview === undefined}
-                    onChange={(e) => setFreeWorktree(e.target.checked)}
-                  />
+                  <Tooltip
+                    label={
+                      freePreview?.freeable === false
+                        ? "Runs Clean up after completing even though this would lose the work listed below"
+                        : "Runs Clean up after completing, returning the checkout to its pool"
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={freeChecked}
+                      disabled={busy || freePreview === undefined}
+                      onChange={(e) => setFreeWorktree(e.target.checked)}
+                    />
+                  </Tooltip>
                   <span>
                     {freePreview === undefined ? "checking…" : `Free this task's ${worktreeNoun}`}
                   </span>

@@ -140,6 +140,53 @@ test("a dirty task's box starts clear with the reason, and unchecked Complete ke
   }).toBe(`done ${task.worktreePath}`);
 });
 
+test("ticking a dirty task's box sends discardWork and frees the tree anyway", async ({
+  dashboard,
+  daemon,
+}) => {
+  const task = await dispatchIdle(dashboard, daemon, "discard my uncommitted work");
+  writeFileSync(join(task.worktreePath!, "throwaway.txt"), "not worth keeping\n");
+  const dialog = await openComplete(dashboard);
+  const free = dialog.getByRole("checkbox", { name: "Free this task's worktree" });
+  await expect(free).not.toBeChecked();
+  await expect(dialog.getByText("it has 1 uncommitted file(s)")).toBeVisible();
+
+  // The operator's deliberate act: the only way uncommitted work is ever freed.
+  await free.check();
+  const request = dashboard.waitForRequest((r) =>
+    r.method() === "POST" && r.url().endsWith(`/api/tasks/${task.id}/complete`));
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  expect((await request).postDataJSON()).toMatchObject({ freeWorktree: "discardWork" });
+
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+  await expect.poll(async () => {
+    const row = await taskById(daemon, task.id);
+    return `${row?.status} ${row?.worktreePath}`;
+  }).toBe("done null");
+});
+
+test("a preview that fails hides the box and does not block Complete", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.route("**/api/tasks/*/free-preview", (route) =>
+    route.fulfill({ status: 500, json: { error: "boom" } }));
+  const task = await dispatchIdle(dashboard, daemon, "preview goes wrong");
+  const dialog = await openComplete(dashboard);
+  await expect(dialog.getByText("checking…")).toHaveCount(0);
+  await expect(dialog.getByRole("checkbox", { name: /Free this task's/ })).toHaveCount(0);
+
+  const request = dashboard.waitForRequest((r) =>
+    r.method() === "POST" && r.url().endsWith(`/api/tasks/${task.id}/complete`));
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  expect((await request).postDataJSON()).not.toHaveProperty("freeWorktree");
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+  await expect.poll(async () => {
+    const row = await taskById(daemon, task.id);
+    return `${row?.status} ${row?.worktreePath}`;
+  }).toBe(`done ${task.worktreePath}`);
+});
+
 test("a free the daemon refuses after stopping the agent is reported while the task reads done", async ({
   dashboard,
   daemon,
