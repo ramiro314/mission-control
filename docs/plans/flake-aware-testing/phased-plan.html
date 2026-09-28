@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flake-aware testing: phased implementation plan</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117; --surface: #151b23; --line: #2b3544;
+    --text: #eef2f7; --muted: #a6b0bf; --blue: #6ca7ff;
+    --box-a: #16263d; --box-b: #1d2a1f; --box-c: #2e2412;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8; --surface: #ffffff; --line: #d5dce5;
+      --text: #152033; --muted: #4f5d70; --blue: #1768d3;
+      --box-a: #e3edfb; --box-b: #e4f3e7; --box-c: #fbf0dc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.6; }
+  main { max-width: 1040px; margin: 0 auto; padding: 44px 28px 90px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 14px; }
+  h2 { font-size: 22px; margin: 40px 0 10px; border-top: 1px solid var(--line); padding-top: 22px; }
+  h3 { font-size: 17px; margin: 24px 0 8px; }
+  code { font-family: var(--mono); font-size: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  pre code { border: 0; padding: 0; background: none; }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); margin: 12px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  tr:last-child td { border-bottom: 0; }
+  ul, ol { padding-left: 22px; } li { margin: 3px 0; }
+  .fig { overflow-x: auto; margin: 16px 0; }
+  .fig svg { display: block; max-width: none; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  svg text { fill: var(--text); font: 13px var(--sans); }
+  svg .lbl { fill: var(--muted); font-size: 12px; }
+  svg .box { stroke: var(--line); stroke-width: 1.2; }
+  svg .box.a { fill: var(--box-a); } svg .box.b { fill: var(--box-b); } svg .box.c { fill: var(--box-c); }
+  svg .arr { stroke: var(--blue); stroke-width: 1.6; }
+  svg .head { fill: var(--blue); }
+</style>
+</head>
+<body>
+<main>
+<h1>Flake-aware testing: phased implementation plan</h1>
+<p>Source plan: <a href="plan.md">plan.md</a>. Rendered: <a href="plan.html">plan.html</a>.</p>
+<p>Human decision on the plan review: <strong>Create phased implementation plan</strong>. The source plan&#39;s 28
+settled decisions are requirements, not open questions.</p>
+<h2>Phases</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>File</th>
+<th>Direct prerequisites</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><a href="phase-1-check-test-lease.md">phase-1-check-test-lease.md</a></td>
+<td>none</td>
+<td>One test command at a time across the machine, at a lower concurrency</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="phase-2-affected-tests-check.md">phase-2-affected-tests-check.md</a></td>
+<td>1</td>
+<td>The <code>affected-tests</code> slot: selection, <code>{files}</code>/<code>{junit}</code> template, one local rerun, JUnit repair packets</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="phase-3-ci-flake-reporting.md">phase-3-ci-flake-reporting.md</a></td>
+<td>2</td>
+<td>The report action, the &quot;Flaky tests&quot; check, one GitHub issue per flaky test, wired into this repository&#39;s CI</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="phase-4-wait-for-ci-and-inspector.md">phase-4-wait-for-ci-and-inspector.md</a></td>
+<td>3</td>
+<td>The Wait for CI node, the Affected tests built-in workflow, and the Inspector reading the flake summary</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="phase-5-testing-setup-skill.md">phase-5-testing-setup-skill.md</a></td>
+<td>4</td>
+<td>The once-per-repository setup skill and its repository action</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="phase-6-flake-cleanup.md">phase-6-flake-cleanup.md</a></td>
+<td>3</td>
+<td>Task source &quot;all of&quot; / &quot;none of&quot; labels and the <code>deflake</code> skill</td>
+</tr>
+</tbody></table>
+</div><figure class="fig"><svg role="img" aria-label="Phase dependencies: 6 needs only 3, so it can run alongside 4 and 5" viewBox="0 0 900 200" width="900" height="200"><defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker></defs><rect class="box a" x="10" y="70" width="130" height="38" rx="8"/><text x="75" y="94" text-anchor="middle">1 Test lease</text><rect class="box a" x="180" y="70" width="140" height="38" rx="8"/><text x="250" y="94" text-anchor="middle">2 affected-tests</text><rect class="box b" x="360" y="70" width="150" height="54" rx="8"/><text x="435" y="94" text-anchor="middle">3 CI flake</text><text x="435" y="110" text-anchor="middle">reporting</text><rect class="box a" x="560" y="20" width="160" height="54" rx="8"/><text x="640" y="44" text-anchor="middle">4 Wait for CI</text><text x="640" y="60" text-anchor="middle">+ Inspector</text><rect class="box c" x="760" y="20" width="120" height="38" rx="8"/><text x="820" y="44" text-anchor="middle">5 Setup skill</text><rect class="box c" x="560" y="130" width="160" height="38" rx="8"/><text x="640" y="154" text-anchor="middle">6 Cleanup</text><line class="arr" x1="140" y1="95" x2="178" y2="95" marker-end="url(#h)"/><line class="arr" x1="320" y1="95" x2="358" y2="95" marker-end="url(#h)"/><line class="arr" x1="510" y1="85" x2="558" y2="50" marker-end="url(#h)"/><line class="arr" x1="510" y1="110" x2="558" y2="150" marker-end="url(#h)"/><line class="arr" x1="720" y1="45" x2="758" y2="45" marker-end="url(#h)"/></svg><figcaption>Phase dependencies: 6 needs only 3, so it can run alongside 4 and 5</figcaption></figure><p><strong>Concurrency</strong>: Phase 6 depends only on Phase 3, so it can run alongside Phases 4 and 5. Every
+other phase is sequential. <strong>Merge order</strong>: 1, 2, 3, then 4 and 6 in either order, then 5.</p>
+<h2>Investigated findings that change the source plan</h2>
+<p>These are recorded decisions. Each phase file repeats the ones it owns.</p>
+<ol>
+<li><strong>The Inspector poller is the only GitHub poller.</strong> The change contracts say the PR session
+action &quot;never talks to a provider&quot; and that a second poll loop would double the API cost. So
+the Wait for CI node does not poll GitHub. Phase 4 extends the Inspector&#39;s single PR GraphQL
+query with the head commit&#39;s check runs, and the node is re-observed on Inspector updates, the
+way session actions already are. The Inspector&#39;s flake reading uses the same snapshot, which is
+why the source plan&#39;s Phases 3 and 4 are one phase here.</li>
+<li><strong>More than one daemon can run on a machine</strong> (one per state directory), so a queue inside the
+daemon is not a machine-wide lease. Phase 1 lifts the e2e host lease&#39;s user-scoped loopback
+TCP pattern into a shared module rather than inventing a second lock mechanism.</li>
+<li><strong>The runtime has no XML parser, glob library or import-graph tool</strong>, and the packaged app
+ships no <code>node_modules</code>. Node&#39;s <code>path.matchesGlob</code> covers patterns on Node 24 and 26. JUnit is
+parsed by a small parser for the subset the runners emit, and imports are found by a lexical
+scanner with relative and <code>tsconfig</code> <code>paths</code> resolution. No new runtime dependency.</li>
+<li><strong>Node&#39;s JUnit reporter carries the test&#39;s file</strong> (<code>file</code> attribute on each <code>&lt;testcase&gt;</code>) on
+Node 24 and 26, which is what rerunning &quot;only the failed files&quot; needs.</li>
+<li><strong>A check&#39;s worktree is a detached tree at the head commit and does not reliably contain
+ignored files</strong>, so <code>.mission/testing.local.json</code> is read from the session&#39;s main checkout,
+not the check tree.</li>
+<li><strong>The recorded check command is capped at 32 arguments.</strong> An outcome records the template, never
+the argv expanded with <code>{files}</code>.</li>
+<li><strong>Placing a node after the Pull Request action removes the &quot;shipping-only continuation&quot;
+exemption</strong> from evidence readiness. Phase 4 extends that predicate to allow Wait for CI
+between the action and End, and turns off the Pull Request action&#39;s CI follow-through contract
+when a Wait for CI node follows it, so the agent and the node do not both chase CI.</li>
+<li><strong>There is no per-repository action menu in the UI.</strong> Phase 5 adds the &quot;Set up flake-aware
+testing&quot; action as a row action on the Trust panel&#39;s repository rows, the only per-repository
+row surface today.</li>
+<li><strong>The packaged app ships <code>skills/</code> but not <code>.github/</code>.</strong> The report action is a generated
+bundle. Phase 3 emits it into this repository&#39;s <code>.github/actions/</code>, and Phase 5 adds a second
+generated copy under the setup skill&#39;s assets so the skill can copy it into other repositories.</li>
+<li><strong>CI currently grants only <code>contents: read</code>.</strong> Phase 3 grants <code>checks: write</code> and
+<code>issues: write</code> to the one reporting job only. Fork PRs get a read-only token regardless, so the
+action degrades to a job summary there, and Wait for CI reports the missing check plainly.</li>
+<li><strong>A Settings backup restore refuses a snapshot missing a Command slot.</strong> Phase 2 makes restore
+accept a snapshot without <code>affected-tests</code> (it predates the slot) by using the default.</li>
+</ol>
+<h2>Deviations from the source plan&#39;s phase list</h2>
+<ul>
+<li><p><strong>Source Phase 1 is split</strong> into Phase 1 (test lease, concurrency) and Phase 2 (affected-tests).
+Together they are the largest slice of the feature. The lease is a cross-process primitive with its own
+failure modes and immediate value, and splitting it gives a small, independently testable merge
+unit.</p>
+</li>
+<li><p><strong>Source Phases 3 and 4 are combined</strong> into Phase 4, because both read the same new check-run data
+from the Inspector&#39;s snapshot (finding 1). Splitting them would build that data path twice or
+leave it half-owned.</p>
+</li>
+<li><p><strong>The setup skill verifies on the setup PR&#39;s own CI</strong>, not after the PR merges. The setup PR
+runs the new CI, so the &quot;Flaky tests&quot; check appears on it before merge. That is the same proof,
+available while the agent&#39;s session is still open.</p>
+</li>
+<li><p><strong>Switching the kind defaults to the new workflow is not scheduled.</strong> The source plan switches them
+&quot;once it has proven itself on this repository&quot;, which is an operator decision after Phase 4 has
+run for a while, not implementation work. It is one setting change under Dispatch defaults.</p>
+</li>
+</ul>
+<h2>Sizing</h2>
+<p>Estimated non-test implementation lines, with the assumptions:</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Estimate</th>
+<th>Main cost</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>200-300</td>
+<td>Shared lease module, check runtime wiring, two settings</td>
+</tr>
+<tr>
+<td>2</td>
+<td>900-1200</td>
+<td>New slot across about 20 enumerations, selection, import scanner, JUnit parser, executor loop, outcome and UI</td>
+</tr>
+<tr>
+<td>3</td>
+<td>800-1100</td>
+<td>Report action source and generator, GitHub REST calls, issue upsert and windowing, CI wiring</td>
+</tr>
+<tr>
+<td>4</td>
+<td>1000-1400</td>
+<td>New node kind across engine, graph, store, web; Inspector query and prompt; new built-in workflow</td>
+</tr>
+<tr>
+<td>5</td>
+<td>350-550</td>
+<td>Skill prose, repository row action and route, asset generation</td>
+</tr>
+<tr>
+<td>6</td>
+<td>250-400</td>
+<td>Two config fields, query and UI, <code>deflake</code> skill prose</td>
+</tr>
+<tr>
+<td>Total</td>
+<td>3500-4950</td>
+<td></td>
+</tr>
+</tbody></table>
+</div><p>Six phases, because the total is far above one reviewable change. Each boundary is either a
+different system (daemon checks, CI, workflow engine, skills) or a new contract later phases
+consume. Phase 6 is separate from Phase 5 because it does not need Wait for CI and can ship as
+soon as flake issues exist.</p>
+<h2>Cross-phase contracts</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Contract</th>
+<th>Owner</th>
+<th>Consumers</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>slotRunsTests(slot)</code> predicate, and the lease wrapping every test-running check</td>
+<td>1</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Setting names for the lease and check test concurrency</td>
+<td>1</td>
+<td>5</td>
+</tr>
+<tr>
+<td><code>affected-tests</code> slot id (appended to <code>WORKFLOW_CHECK_SLOTS</code>)</td>
+<td>2</td>
+<td>4, 5</td>
+</tr>
+<tr>
+<td><code>src/shared/testing-config.ts</code>: <code>.mission/testing.json</code> schema including the <code>flakes</code> block, and the key-by-key local merge</td>
+<td>2</td>
+<td>3, 5, 6</td>
+</tr>
+<tr>
+<td><code>src/shared/junit.ts</code>: JUnit subset parser</td>
+<td>2</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Command template placeholders <code>{files}</code> and <code>{junit}</code></td>
+<td>2</td>
+<td>3, 5</td>
+</tr>
+<tr>
+<td><code>src/shared/flake-report.ts</code>: flake report v1 format, the <code>Flaky tests</code> check name, the summary&#39;s machine-readable marker</td>
+<td>3</td>
+<td>4</td>
+</tr>
+<tr>
+<td>Flake issue body marker, occurrence comment shape, label semantics</td>
+<td>3</td>
+<td>6</td>
+</tr>
+<tr>
+<td>Generated report action source and generator</td>
+<td>3</td>
+<td>5</td>
+</tr>
+<tr>
+<td>Wait for CI node kind id and the Inspector snapshot&#39;s check runs</td>
+<td>4</td>
+<td>5</td>
+</tr>
+<tr>
+<td>Setup skill id <code>testing-setup</code></td>
+<td>5</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>labelsAll</code> / <code>labelsNone</code> task source fields, <code>deflake</code> skill id</td>
+<td>6</td>
+<td>none</td>
+</tr>
+</tbody></table>
+</div><h2>Final verification</h2>
+<ul>
+<li>Each phase&#39;s own verification (in its file), plus <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+and <code>npm run build</code> with <code>npm run smoke</code> where it touches runtime surfaces.</li>
+<li>UI changes carry Playwright specs in <code>e2e/</code> (Phases 2, 4, 5, 6), per the repository&#39;s rule.</li>
+<li>End to end, after Phase 5 merges: run the setup skill against this repository, dispatch a ship
+task on the Affected tests workflow, and confirm the local check runs only touched tests, the PR&#39;s
+&quot;Flaky tests&quot; check appears, Wait for CI passes on green, and the Inspector review carries the
+flake summary.</li>
+</ul>
+
+</main>
+</body>
+</html>
