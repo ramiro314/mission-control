@@ -220,6 +220,7 @@ const BASE_TASK = {
   effort: null,
   workflowId: null,
   source: null,
+  sourceParent: null,
   pipelineRun: null,
   repoRoot: "/repo/api",
   worktreePath: "/wt/t1",

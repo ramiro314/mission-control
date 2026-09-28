@@ -675,7 +675,15 @@ export const DEFAULT_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 export const DEFAULT_MAX_PER_SWEEP = 25;
 export const MAX_PER_SWEEP_CEILING = 200;
 
-/** Clamp a stored interval into the range the sweeper will actually honour. */
+/**
+ * Whether two refs name the same item, field by field. Not `JSON.stringify`: key order and an
+ * absent versus null `url` must not read as a change. Null or undefined equals only itself.
+ */
+export function sameSourceRef(a: TaskSourceRef | null | undefined, b: TaskSourceRef | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.sourceId === b.sourceId && a.externalId === b.externalId && (a.url ?? null) === (b.url ?? null);
+}
+
 /**
  * The configured sources a task based on `repoRoot` could actually be pushed into.
  *
@@ -701,6 +709,7 @@ export function sourceName(source: Pick<TaskSourceInstance, "label" | "kind">): 
   return source.label.trim() || TASK_SOURCE_KIND_INFO[source.kind].label;
 }
 
+/** Clamp a stored interval into the range the sweeper will actually honour. */
 export function clampSweepInterval(ms: number): number {
   return Math.min(MAX_SWEEP_INTERVAL_MS, Math.max(MIN_SWEEP_INTERVAL_MS, Math.round(ms)));
 }

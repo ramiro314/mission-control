@@ -151,6 +151,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     model: null,
     effort: null,
     source: null,
+    sourceParent: null,
     pipelineRun: null,
     repoRoot: "/repo",
     baseSha: null,

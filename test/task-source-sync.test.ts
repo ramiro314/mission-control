@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema } from "../src/shared/task-source.ts";
+import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema, sameSourceRef } from "../src/shared/task-source.ts";
 import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/shared/task-source.ts";
 import { sourceContent } from "../src/shared/task-source-sync.ts";
 import { dependencyInputOf } from "../src/shared/task-dependency.ts";
@@ -446,4 +446,66 @@ test("a blocker whose linked task cannot take a new task edge becomes a source e
   assert.equal(tasks.acceptsNewTaskEdgeTo(byRef(2).id),false);
   await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}]);
   assert.deepEqual(synced(task.id),[`source:acme/demo#2`,`task:${byRef(3).id}`]);
+});
+
+// The parent: source-owned display data, outside every merge group, and never an edge.
+const parentOf=(n:number):TaskSourceRef=>candidate(n).ref;
+test("ingest records a swept sub-issue's parent and creates no edge for it",async()=>{
+  const src=TaskSourceInstanceSchema.parse({id:"s",kind:"github-issues",repoRoot:"/repo",keepUpdated:true,
+    defaults:{agent:"claude",priority:"med",labels:[]}});
+  setTaskSourcesConfig({sources:[src]});
+  const tasks=new TaskManager(new Registry());
+  // The parent is itself a backlog task here, which is exactly when an edge would be tempting.
+  await ingestSweep(src,{items:[candidate(4),{...candidate(5),parent:parentOf(4)}],error:null},tasks,
+    {resolveRepoRoot:async()=>({ok:true,repoRoot:"/repo"})});
+  const child=listTasks().find((t)=>t.source?.externalId==="acme/demo#5")!;
+  assert.deepEqual(child.sourceParent,parentOf(4));
+  assert.deepEqual(child.dependencies,[]);
+  assert.equal(listTasks().find((t)=>t.source?.externalId==="acme/demo#4")!.sourceParent,null);
+});
+test("refresh overwrites the parent without review, adds no edge, and freezes once started",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  assert.equal(getTask(task.id)!.sourceParent,null);
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:parentOf(2)}])).updated,1);
+  assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(2));
+  // The same parent again, even with its keys in another order, is unchanged: no rewrite.
+  const {url,externalId,sourceId}=parentOf(2); const before=getTask(task.id)!.updatedAt;
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:{url,externalId,sourceId}}])).unchanged,1);
+  assert.equal(getTask(task.id)!.updatedAt,before);
+  assert.deepEqual(synced(task.id),[]);
+  assert.equal(getSourceSync(task.id)!.pending,null); assert.deepEqual(getSourceSync(task.id)!.conflicts,[]);
+  // A local edit conflicting with upstream content does not hold the parent back.
+  await tasks.update(task.id,{title:"Local title"});
+  await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(3)}]);
+  assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(3));
+  assert.deepEqual(synced(task.id),[]); assert.ok(byRef(3));
+  // Removed upstream: cleared.
+  await refresh(src,tasks,[{...candidate(),title:"Remote title"}]);
+  assert.equal(getTask(task.id)!.sourceParent,null);
+  // Started: frozen like every other refreshed field.
+  openDb().prepare(`INSERT INTO historical_task_work_episode_bindings
+    (task_id,episode_id,session_id,agent_session_id,bound_at,updated_at) VALUES (?,?,?,?,?,?)`)
+    .run(task.id,"ep-parent","session","agent",1,1);
+  await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(2)}]);
+  assert.equal(getTask(task.id)!.sourceParent,null);
+});
+test("sameSourceRef compares field by field: an absent url equals a null one, and a missing ref only another",()=>{
+  const ref={sourceId:"s",externalId:"acme/demo#2",url:null};
+  const noUrl={externalId:"acme/demo#2",sourceId:"s"} as unknown as TaskSourceRef;
+  assert.equal(sameSourceRef(noUrl,ref),true);
+  assert.equal(sameSourceRef(null,undefined),true);
+  assert.equal(sameSourceRef(null,ref),false);
+  assert.equal(sameSourceRef(ref,undefined),false);
+  assert.equal(sameSourceRef(parentOf(2),{...parentOf(2),url:"https://github.com/acme/demo/issues/99"}),false);
+  assert.equal(sameSourceRef(parentOf(2),{...parentOf(2),externalId:"acme/demo#3"}),false);
+});
+test("a stored parent with a null url is unchanged when the source reports it with no url",async()=>{
+  const {src,tasks,task}=await setup();
+  const stored={sourceId:"s",externalId:"acme/demo#2",url:null};
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:stored}])).updated,1);
+  assert.deepEqual(getTask(task.id)!.sourceParent,stored);
+  const before=getTask(task.id)!.updatedAt;
+  const noUrl={sourceId:"s",externalId:"acme/demo#2"} as unknown as TaskSourceRef;
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:noUrl}])).unchanged,1);
+  assert.equal(getTask(task.id)!.updatedAt,before);
 });

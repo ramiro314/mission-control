@@ -1524,6 +1524,11 @@ export async function setKeepAwake(
  */
 export interface PushTaskResult extends ActionResult {
   source?: TaskSourceRef | null;
+  /**
+   * The parent the pushed item was filed under (the reply is the updated `Task`, so this is
+   * `Task.sourceParent`). Display only.
+   */
+  sourceParent?: TaskSourceRef | null;
   outcomeUnknown?: boolean;
 }
 

@@ -179,6 +179,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     model: "claude-opus-4-8",
     effort: "xhigh",
     source: { sourceId: "gh", externalId: "org/repo#1", url: "https://example.invalid/1" },
+    sourceParent: null,
     repoRoot: "/repo",
     baseSha: null,
     extraRepos: [],

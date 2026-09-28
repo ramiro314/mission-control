@@ -25,6 +25,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
     effort: null,
     workflowId: null,
     source: null,
+    sourceParent: null,
     pipelineRun: null,
     repoRoot: process.cwd(),
     worktreePath: null,

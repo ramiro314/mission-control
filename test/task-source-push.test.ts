@@ -248,6 +248,21 @@ test("pushTask hands the relations to the source through the registry and report
   assert.equal(countTaskSourceSeen("src-1"), 1);
 });
 
+test("a push records the draft's parent on the task for display, and adds no dependency edge", async () => {
+  const { tasks, ticket } = relationsFixture();
+  const r = await pushTask(mkSource(), ticket, tasks, { push: spy(created).push });
+  assert.equal(r.ok, true);
+  assert.deepEqual(getTask("ticket")!.sourceParent, item(1));
+  // Written with the link, in the same row: the edges are exactly the ones the ticket had.
+  assert.deepEqual(getTask("ticket")!.dependencies, ticket.dependencies);
+});
+
+test("a push with no parent in the draft records none", async () => {
+  const { tasks, task } = setup();
+  assert.equal((await pushTask(mkSource(), task, tasks, { push: spy(created).push })).ok, true);
+  assert.equal(getTask(task.id)!.sourceParent, null);
+});
+
 test("a push records the blockers the source wrote as the dependencies baseline, and nothing it did not", async () => {
   const { tasks, ticket } = relationsFixture();
   // The source confirms only #3: #5 went out in the draft but is not claimed as written.
