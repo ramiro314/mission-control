@@ -35,7 +35,7 @@ test("the test check lease and concurrency default on, save, and read back", asy
   await shoot(dashboard, "default");
 
   await concurrency.fill("2");
-  await card.getByRole("button", { name: "Apply" }).click();
+  await concurrency.press("Enter");
   await expect.poll(async () => (await config(daemon)).checkTestConcurrency).toBe(2);
 
   await lease.uncheck();
@@ -49,12 +49,12 @@ test("the test check lease and concurrency default on, save, and read back", asy
 
   // An empty box leaves the variable unset rather than writing a number.
   await concurrency.fill("");
-  await card.getByRole("button", { name: "Apply" }).click();
+  await concurrency.blur();
   await expect.poll(async () => (await config(daemon)).checkTestConcurrency).toBe(null);
 
   // Out of range is refused in the panel, and nothing is written.
   await concurrency.fill("40");
-  await card.getByRole("button", { name: "Apply" }).click();
+  await concurrency.press("Enter");
   await expect(dashboard.getByText(/Test concurrency must be a whole number from 1 to 32/)).toBeVisible();
   expect((await config(daemon)).checkTestConcurrency).toBe(null);
 

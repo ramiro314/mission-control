@@ -56,6 +56,13 @@ export interface HostLeaseOptions<Details extends object = Record<never, never>>
   waitMs: number;
   /** Extra fields published in the owner metadata beside the standard ones. */
   details?: Details;
+  /**
+   * Whether a metadata file's extra fields are well-formed. A file that fails this is treated
+   * exactly like a malformed base field: no identified owner, so a protocol speaker that never
+   * publishes valid metadata is refused after the grace period. Pass it with `details`, so a
+   * caller reading a detail field never sees `undefined` from a corrupt file.
+   */
+  isDetails?: (value: Record<string, unknown>) => boolean;
   /** Called whenever the observed holder changes while waiting, with null if unidentified. */
   onWaiting?: (owner: (HostLeaseOwner & Partial<Details>) | null) => void;
   /** Overrides, for tests. Port 0 picks a free port, which a second acquirer then names. */
@@ -93,7 +100,10 @@ function protocolPrefix(name: HostLeaseName): string {
   return `${name}-lease-v1:`;
 }
 
-async function readOwner(metadataPath: string): Promise<HostLeaseOwner | null> {
+async function readOwner(
+  metadataPath: string,
+  isDetails: (value: Record<string, unknown>) => boolean = () => true,
+): Promise<HostLeaseOwner | null> {
   try {
     const parsed = JSON.parse(await readFile(metadataPath, "utf8")) as Partial<HostLeaseOwner>;
     if (
@@ -104,6 +114,7 @@ async function readOwner(metadataPath: string): Promise<HostLeaseOwner | null> {
       || !Array.isArray(parsed.argv)
       || !parsed.argv.every((part) => typeof part === "string")
       || !Number.isInteger(parsed.port)
+      || !isDetails(parsed as Record<string, unknown>)
     ) {
       return null;
     }
@@ -242,7 +253,7 @@ export async function acquireHostLease<Details extends object = Record<never, ne
           if (released) return;
           released = true;
           try {
-            const current = await readOwner(metadataPath);
+            const current = await readOwner(metadataPath, options.isDetails);
             if (current?.token === owner.token) {
               await options.beforeReleaseMetadataRemoval?.();
               await rm(metadataPath, { force: true });
@@ -269,7 +280,7 @@ export async function acquireHostLease<Details extends object = Record<never, ne
       }
     }
 
-    const observed = await readOwner(metadataPath);
+    const observed = await readOwner(metadataPath, options.isDetails);
     const current = observed?.token === probe.token ? observed : null;
     if (current) {
       unverifiedSince = null;

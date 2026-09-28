@@ -61,6 +61,8 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
     label: LEASE_LABEL,
     waitMs: options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
     details: { workers: options.workers },
+    // Validated, so the cast below is sound: a file without an integer `workers` is no owner.
+    isDetails: (value) => Number.isInteger(value.workers),
     onWaiting: options.onWait
       ? (owner) => options.onWait!(owner as E2eLeaseOwner | null)
       : undefined,

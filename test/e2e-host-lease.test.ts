@@ -234,3 +234,42 @@ test("an E2E suite times out with the live owner's identity", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("owner metadata without an integer worker count is not accepted as the holder", async () => {
+  const { root, metadataPath } = await fixture();
+  // Speaks the protocol and publishes a matching token, but its metadata lacks `workers`.
+  const holder = createServer((socket) => socket.end("mission-control-e2e-lease-v1:tok\n"));
+  try {
+    await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", resolve));
+    const address = holder.address();
+    assert.ok(address && typeof address !== "string");
+    await writeFile(metadataPath, JSON.stringify({
+      token: "tok",
+      pid: process.pid,
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+      cwd: "/checkout",
+      argv: ["playwright", "test"],
+      port: address.port,
+    }));
+    const seen: Array<unknown> = [];
+    await assert.rejects(
+      acquireE2eHostLease({
+        metadataPath,
+        port: address.port,
+        workers: 4,
+        pollMs: 5,
+        waitTimeoutMs: 60_000,
+        metadataGraceMs: 25,
+        onWait: (owner) => seen.push(owner),
+      }),
+      /did not publish matching owner metadata within 25ms/,
+    );
+    assert.deepEqual(seen, [null], "the malformed file was never reported as an owner");
+  } finally {
+    await new Promise<void>((resolve, reject) => holder.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    }));
+    await rm(root, { recursive: true, force: true });
+  }
+});

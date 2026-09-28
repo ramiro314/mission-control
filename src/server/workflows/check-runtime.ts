@@ -118,6 +118,7 @@ export const acquireCheckTestLease: CheckTestLeaseAcquirer = ({ attemptId, waitM
     label: "Mission Control check test lease",
     waitMs,
     details: { attemptId },
+    isDetails: (value) => typeof value.attemptId === "string",
     onWaiting: () => onWaiting(),
   });
 

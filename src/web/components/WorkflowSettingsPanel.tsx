@@ -477,6 +477,7 @@ export function WorkflowSettingsPanel({
       );
       return;
     }
+    if (value === config.checkTestConcurrency) return;
     void save({ ...config, checkTestConcurrency: value });
   };
 
@@ -673,6 +674,51 @@ export function WorkflowSettingsPanel({
             where the card above answers "is the subsystem working". An operator who has just
             had a submission rejected opens this panel to ask the first question, so it is in
             the readings column and last, where the deepest detail belongs. */}
+          <ConsoleCard title="Test checks" anchor="workflows/test-checks">
+            <Tooltip label="Queue test checks machine-wide, across every daemon, instead of running them together">
+              <label className="wf-judge-passes">
+                <input
+                  type="checkbox"
+                  checked={config?.checkTestLease ?? true}
+                  disabled={!config || busy}
+                  onChange={(event) => {
+                    if (config) void save({ ...config, checkTestLease: event.target.checked });
+                  }}
+                />
+                Run one test check at a time on this machine
+              </label>
+            </Tooltip>
+            <div className="wf-retention-inline">
+              <Tooltip label="Passed to test checks as MISSION_TEST_CONCURRENCY. Saved on Enter or when you leave the box; empty leaves it unset.">
+                <label>
+                  <span>Test concurrency</span>
+                  <input
+                    type="number"
+                    min={WORKFLOW_LIMITS.checkTestConcurrencyMin}
+                    max={WORKFLOW_LIMITS.checkTestConcurrencyMax}
+                    placeholder="Unset"
+                    value={testConcurrency}
+                    disabled={!config || busy}
+                    onChange={(event) => setTestConcurrency(event.target.value)}
+                    // Saved on Enter or on leaving the box, so the panel keeps ONE Apply
+                    // (retention's) and this card stays short enough for its column.
+                    onBlur={applyTestConcurrency}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                </label>
+              </Tooltip>
+            </div>
+            <p className="settings-hint">
+              On by default. A test check waits for any other test check on this machine to
+              finish, and its note says how long it waited. Lint, typecheck and build checks
+              never wait. Test checks also get <code>MISSION_TEST_CONCURRENCY</code> (3 by
+              default), which Mission Control's own test script reads; other repositories can
+              read it or ignore it.
+            </p>
+          </ConsoleCard>
+
           <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
         </div>
         <div className="sc-controls">
@@ -841,50 +887,6 @@ export function WorkflowSettingsPanel({
               shell, with this daemon's filesystem authority - so it executes that branch's
               scripts, dependencies and build steps. It is not a sandbox. Only repositories
               granted the Workflows cell in Trust can run one.
-            </p>
-          </ConsoleCard>
-
-          <ConsoleCard title="Test checks" anchor="workflows/test-checks">
-            <Tooltip label="Queue test checks machine-wide, across every daemon, instead of running them together">
-              <label className="wf-judge-passes">
-                <input
-                  type="checkbox"
-                  checked={config?.checkTestLease ?? true}
-                  disabled={!config || busy}
-                  onChange={(event) => {
-                    if (config) void save({ ...config, checkTestLease: event.target.checked });
-                  }}
-                />
-                Run one test check at a time on this machine
-              </label>
-            </Tooltip>
-            <div className="wf-retention-inline">
-              <Tooltip label="Passed to test checks as MISSION_TEST_CONCURRENCY. Leave empty to not set it.">
-                <label>
-                  <span>Test concurrency</span>
-                  <input
-                    type="number"
-                    min={WORKFLOW_LIMITS.checkTestConcurrencyMin}
-                    max={WORKFLOW_LIMITS.checkTestConcurrencyMax}
-                    placeholder="Unset"
-                    value={testConcurrency}
-                    disabled={!config || busy}
-                    onChange={(event) => setTestConcurrency(event.target.value)}
-                  />
-                </label>
-              </Tooltip>
-              <Tooltip label="Save the test concurrency">
-                <button className="btn" disabled={!config || busy} onClick={applyTestConcurrency}>
-                  Apply
-                </button>
-              </Tooltip>
-            </div>
-            <p className="settings-hint">
-              On by default. A test check waits for any other test check on this machine to
-              finish, and its note says how long it waited. Lint, typecheck and build checks
-              never wait. Test checks also get <code>MISSION_TEST_CONCURRENCY</code> (3 by
-              default), which Mission Control's own test script reads; other repositories can
-              read it or ignore it.
             </p>
           </ConsoleCard>
 
