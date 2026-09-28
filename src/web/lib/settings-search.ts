@@ -641,6 +641,19 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("workflow-policy"),
   },
   {
+    id: "workflow-test-checks",
+    label: "Run one test check at a time on this machine",
+    description: "Queue workflow test checks machine-wide and pass them a lower test concurrency.",
+    category: "workflows",
+    anchor: "workflows/test-checks",
+    keywords: [
+      "test", "check", "lease", "queue", "concurrency", "parallel", "timeout", "flaky",
+      "MISSION_TEST_CONCURRENCY",
+    ],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
     id: "workflow-allowlist",
     label: "Workflow allowed repositories",
     // Still a `workflows` row, and it still lands on `workflows/allowlist`, because that is

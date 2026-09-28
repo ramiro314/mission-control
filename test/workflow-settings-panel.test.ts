@@ -962,3 +962,11 @@ test("the Trust summary still names both capabilities the one grant covers", () 
   assert.match(html, /granted the Workflows cell in Trust/);
   assert.match(html, /The same grant is what lets a Command node run a command\./);
 });
+
+test("the Test checks card renders the lease switch and the concurrency box", () => {
+  const html = render(ANSWERED);
+  assert.match(html, /data-anchor="workflows\/test-checks"/);
+  assert.match(html, /<input type="checkbox"[^>]*checked=""\/>Run one test check at a time on this machine/);
+  assert.match(html, /<span>Test concurrency<\/span><input type="number" min="1" max="32" placeholder="Unset"/);
+  assert.match(html, /MISSION_TEST_CONCURRENCY/);
+});

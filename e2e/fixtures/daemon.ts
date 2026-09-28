@@ -443,6 +443,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // edits this for real, and without the redirect one browser test would rewrite the
     // config of whichever cmux the machine running it happens to have installed.
     MISSION_CMUX_CONFIG_PATH: join(home, "cmux-config", "cmux.json"),
+    // Fixture daemons never take the machine's check test lease: the e2e host lease already
+    // serialises suites, their checks are `printf`s, and waiting behind the operator's real
+    // test run - or behind the very check that launched this suite - would only time out.
+    // See `CHECK_TEST_LEASE_HELD_ENV`.
+    MISSION_CHECK_TEST_LEASE_HELD: "1",
     // Herdr is opt-in because its fake owns a real disposable Unix socket and process tree.
     // Every other spec sees a known missing path, never the operator's installed Herdr.
     HERDR_BIN: herdrEnabled ? bins.herdr : join(home, "missing-herdr"),

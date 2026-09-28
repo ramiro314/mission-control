@@ -62,6 +62,12 @@ export interface SupervisedCheckRequest {
   /** Where inside that tree the command runs, RELATIVE. `""` is the root. */
   workingSubpath: string;
   timeoutMs?: number;
+  /**
+   * Variables set on top of the scrubbed environment, for example the executor's
+   * `MISSION_TEST_CONCURRENCY` for a test-running check. Applied after the scrub, so a value
+   * named here wins over the daemon's own.
+   */
+  extraEnv?: Readonly<Record<string, string>>;
 }
 
 export interface SupervisedCheckDeps {
@@ -107,7 +113,10 @@ export async function runSupervisedCheck(
     };
   }
 
-  const env = scrubCheckEnv(deps.env ?? process.env, deps.daemonToken ?? readToken());
+  const env = {
+    ...scrubCheckEnv(deps.env ?? process.env, deps.daemonToken ?? readToken()),
+    ...request.extraEnv,
+  };
   let outcome: CheckSpawnOutcome;
   try {
     outcome = await spawnCheckProcess({

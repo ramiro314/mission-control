@@ -196,6 +196,8 @@ const workflowFields = {
   retention: "setting",
   checksEnabled: "setting",
   skipPassedJudges: "setting",
+  checkTestLease: "setting",
+  checkTestConcurrency: "setting",
 } satisfies Record<keyof WorkflowPolicy, AppConfigValueClass>;
 
 const taskSourcesFields = {

@@ -724,6 +724,35 @@ An infrastructure problem is never a fail either. A timeout, a kill, a pool with
 give: none of them is a statement about the change under review, so they retry and then block
 the run visibly rather than reporting a verdict.
 
+#### Test checks share the machine
+
+A laptop running several workflows at once used to start every test suite together, and the
+suites then timed out competing for CPU. So a **test** check (the slots `slotRunsTests` in
+`src/shared/workflow.ts` names; today only `test`) takes a machine-wide lease first:
+
+- **One test check at a time on this machine**, for this OS user, across every daemon. The lease
+  is an exclusive loopback listen (`src/server/util/host-lease.ts`, the same mechanism the E2E
+  suite's host lease uses under another name), so a daemon that crashes frees it with its
+  socket. It is taken inside the check executor after the worktree is leased and released as
+  soon as the command finishes. Lint, typecheck and build checks never take it.
+- **Inside one daemon**, a second test check queues as a pending attempt rather than holding one
+  of the daemon's two check slots while it waits, so lint, typecheck and build keep a slot.
+- **Waiting does not count against the command's timeout.** The command's clock starts at spawn.
+  The wait has its own ceiling of the same length (60 minutes for `test`); running out is an
+  infrastructure failure, which retries like any other.
+- **A check that waited says so.** Its outcome note ends with, for example, "Waited 3m 12s for
+  another test check to finish."
+- **Test checks run at a lower concurrency.** The command gets `MISSION_TEST_CONCURRENCY`
+  (default 3), which this repository's `npm test` reads. Other repositories can read it or
+  ignore it.
+
+Both are settings in **Settings → Workflows → Test checks**: `checkTestLease` (default on) and
+`checkTestConcurrency` (1 to 32, default 3; empty leaves the variable unset). While a daemon
+holds the lease for a check it also sets `MISSION_CHECK_TEST_LEASE_HELD=1` in that check's
+environment, so a daemon started inside it (an E2E suite run as a test check) does not wait on
+its own parent. The E2E fixture daemons set it too, since the E2E host lease already serialises
+suites.
+
 **Commands are consent-gated twice**, and are off by default. The two questions live apart on
 purpose: *what* a slot runs is authoring and lives in Library, and *whether* it may run at all
 is policy and lives in **Settings → Workflows** (`#/settings/workflows`) as **Allow workflow

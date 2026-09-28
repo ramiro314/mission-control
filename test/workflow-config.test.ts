@@ -466,3 +466,22 @@ test("judge passes default on for old policies, preserve explicit off and reject
   setWorkflowPolicy({ skipPassedJudges: true });
   assert.equal(getWorkflowPolicy().skipPassedJudges, true);
 });
+
+test("the check test lease and concurrency default on for old policies and validate writes", () => {
+  // A blob written before these fields existed reads with the defaults.
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, { liveEnabled: true, repoAllowlist: [] });
+  assert.equal(getWorkflowPolicy().checkTestLease, true);
+  assert.equal(getWorkflowPolicy().checkTestConcurrency, 3);
+  assert.equal(WorkflowConfigSchema.parse({}).checkTestConcurrency, 3);
+  setWorkflowPolicy({ checkTestLease: false, checkTestConcurrency: null });
+  assert.equal(getWorkflowPolicy().checkTestLease, false);
+  assert.equal(getWorkflowPolicy().checkTestConcurrency, null);
+  setWorkflowPolicy({ checkTestConcurrency: 32 });
+  assert.equal(getWorkflowPolicy().checkTestConcurrency, 32);
+  for (const bad of [0, 33, 2.5, "4"]) {
+    assert.equal(WorkflowConfigSchema.safeParse({ checkTestConcurrency: bad }).success, false, String(bad));
+  }
+  setWorkflowPolicy({});
+  assert.equal(getWorkflowPolicy().checkTestLease, true);
+  assert.equal(getWorkflowPolicy().checkTestConcurrency, 3);
+});
