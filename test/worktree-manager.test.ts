@@ -861,6 +861,8 @@ test("exceptions after reservation return outcomeUnknown and leave a reconcilabl
   const addResult = await acquire(addManager, addRepo.clone, addRepo.sha, "task-add-throw");
   assert.equal(addResult.outcome, "outcomeUnknown");
   assert.equal(addManager.store.slots().at(-1)?.state, "quarantined");
+  // A thrown error is an unknown outcome, and the lease was still never granted.
+  assertNoUngrantedOwner(addManager);
 
   const reserveRepo = repository("mission-native-reserve-throw-");
   const reserveManager = manager();
@@ -877,6 +879,58 @@ test("exceptions after reservation return outcomeUnknown and leave a reconcilabl
   );
   assert.equal(reserveResult.outcome, "outcomeUnknown");
   assert.equal(reserveManager.store.slots().some((slot) => slot.state === "provisioning"), true);
+});
+
+test("a reused slot that becomes unknown or occupied before reset is quarantined without an owner", async () => {
+  const cases: Array<{ name: string; observed: WorktreeOccupancy; reason: string }> = [
+    {
+      name: "unknown",
+      observed: { status: "unknown", reason: "lsof timed out" },
+      reason: "lsof timed out",
+    },
+    {
+      name: "occupied",
+      observed: {
+        status: "known",
+        occupants: [{
+          pid: 91,
+          ppid: 1,
+          startRaw: "now",
+          startMs: 1,
+          command: "zsh",
+          cwd: "/elsewhere",
+          knownOwner: null,
+        }],
+      },
+      reason: "a process entered the available slot before reset",
+    },
+  ];
+  for (const entry of cases) {
+    const { clone, sha } = repository(`mission-native-fresh-${entry.name}-`);
+    // Occupancy is read twice by the second acquisition: once to choose an eligible slot,
+    // then again on the reserved slot just before reset. Only that second read changes.
+    let reads: number | null = null;
+    const m = manager({
+      resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+      occupancy: async (paths) => {
+        if (reads !== null && ++reads === 2) {
+          return new Map(paths.map((path) => [path, entry.observed]));
+        }
+        return emptyOccupancy(paths);
+      },
+    });
+    const first = lease(await acquire(m, clone, sha, `task-fresh-${entry.name}-1`));
+    assert.equal((await m.release(first)).outcome, "released");
+    reads = 0;
+    assert.deepEqual(await acquire(m, clone, sha, `task-fresh-${entry.name}-2`), {
+      outcome: "outcomeUnknown",
+      reason: entry.reason,
+    });
+    assert.equal(reads, 2, `${entry.name}: the fresh pre-reset occupancy read was reached`);
+    assert.equal(m.store.slot(first.slotId)?.state, "quarantined");
+    assertNoUngrantedOwner(m);
+    db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
+  }
 });
 
 test("unknown Git add, lease commit, and return reset outcomes quarantine instead of falling back", async () => {
