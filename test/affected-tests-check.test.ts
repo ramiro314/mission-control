@@ -243,3 +243,78 @@ test("a gate that ran nothing hands its run budget back; one that ran keeps it s
   }).check();
   assert.equal(ran.released, 0);
 });
+
+test("a rerun whose JUnit results cannot be read fails, keeping both runs' output", async () => {
+  const root = tree(CONFIG);
+  const h = harness({
+    root,
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    // The first run names its failure; the rerun exits non-zero and writes nothing.
+    answer: (_run, index) => index === 0
+      ? { exitCode: 1, xml: junit(root, [{ file: "test/a.test.ts", name: "adds", failure: "1 !== 2" }]) }
+      : { exitCode: 7 },
+  });
+  const outcome = await h.check();
+  assert.equal(h.runs.length, 2);
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.exitCode, 7);
+  assert.match(outcome.note, /the rerun exited 7 and its JUnit results could not be read/);
+  assert.match(outcome.output, /run 1\n[\s\S]*rerunning 1 file once[\s\S]*run 2\n/);
+  assert.deepEqual(outcome.affected?.failures, []);
+  // No test is named, so the repair packet falls back to the output tail.
+  const verdict = checkVerdict(outcome, "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict === "fail") {
+    assert.equal(verdict.requestedChanges.length, 1);
+    assert.match(verdict.requestedChanges[0]!.rationale, /run 2/);
+  }
+});
+
+test("a rerun that exits non-zero while its results name no failing test fails, never passes", async () => {
+  const root = tree(CONFIG);
+  const h = harness({
+    root,
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    answer: (run, index) => index === 0
+      ? { exitCode: 1, xml: junit(root, [{ file: "test/a.test.ts", name: "adds", failure: "1 !== 2" }]) }
+      // Every named test passed, yet the process failed (a crash after the reporter flushed).
+      : { exitCode: 1, xml: junit(root, run.files.map((file) => ({ file, name: "adds" }))) },
+  });
+  const outcome = await h.check();
+  assert.equal(h.runs.length, 2);
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.exitCode, 1);
+  assert.match(outcome.note, /the rerun exited 1, but its JUnit results name no failing test/);
+  assert.deepEqual(outcome.affected?.flakes, []);
+});
+
+test("a failure that names no selected file reruns the whole selection", async () => {
+  const root = tree(CONFIG);
+  const h = harness({
+    root,
+    changed: ["test/a.test.ts", "test/b.test.ts"],
+    tracked: TRACKED,
+    answer: (run, index) => index === 0
+      // One failure traces to a selected file, the other to a helper nobody selected.
+      ? {
+        exitCode: 1,
+        xml: junit(root, [
+          { file: "test/a.test.ts", name: "adds", failure: "1 !== 2" },
+          { file: "test/helpers/setup.ts", name: "setup hook", failure: "port in use" },
+        ]),
+      }
+      : { exitCode: 0, xml: junit(root, run.files.map((file) => ({ file, name: "ok" }))) },
+  });
+  const outcome = await h.check();
+  assert.deepEqual(h.runs[0]!.files, ["test/a.test.ts", "test/b.test.ts", "test/smoke.test.ts"]);
+  // Not just test/a.test.ts: the untraceable failure could belong to any of them.
+  assert.deepEqual(h.runs[1]!.files, h.runs[0]!.files);
+  assert.match(outcome.output, /rerunning 3 files once/);
+  assert.equal(outcome.status, "passed");
+  assert.deepEqual(outcome.affected?.flakes, [
+    { file: "test/a.test.ts", name: "adds" },
+    { file: "test/helpers/setup.ts", name: "setup hook" },
+  ]);
+});
