@@ -47,7 +47,7 @@ import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import { runJobStructured } from "../llm/jobs.ts";
 import type { JobExecution } from "../llm/jobs.ts";
-import { parseModelJson } from "../llm/structured.ts";
+import { parseModelReply } from "../llm/structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "../llm/structured.ts";
 import { untrustedJsonBlock } from "../review/prompt.ts";
 import type { Registry } from "../registry.ts";
@@ -603,7 +603,7 @@ export async function reconcileWorkflowCoverage(
     } else {
       result = await runJobStructured<typeof CriterionReconciliationSchema>(
         "workflow-context", prompt,
-        (text) => parseModelJson(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
+        (text) => parseModelReply(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
           timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, maxAttempts: 1,
           schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
           onExecution: deps.onReconciliationExecution,
@@ -754,7 +754,7 @@ export async function compactWorkflowContext(
     const call = await runJobStructured<typeof CompactionSchema>(
       "workflow-context",
       prompt,
-      (text) => parseModelJson(text, CompactionSchema),
+      (text) => parseModelReply(text, CompactionSchema),
       "Workflow context compaction",
       {
         timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
