@@ -403,7 +403,7 @@ so a draft moves between them freely and existing workflows need no migration.
 
 There are two add controls, because they answer two different questions. **＋ Stage**, on the
 seam between cards, creates a stage and offers all three things a stage can be: your Personas,
-the four check slots, and your addable session actions, grouped. The picker inside an
+the check slots, and your addable session actions, grouped. The picker inside an
 evaluation stage adds another *member* to it, so it offers Personas and checks only. A session
 action stage has neither - it holds exactly one action by construction - so its own control
 chooses **which** action it sends. Checks are offered even before you have authored a Persona,
@@ -638,8 +638,8 @@ reason.
 which is the same already-shipped path an unconfigured slot takes - see [Running a check
 command](worktrees-and-checks.md#running-a-check-command) for why the platform floor exists.
 
-**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck` and
-`build`. What each one runs is configured in
+**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck`,
+`build` and `affected-tests` (see [Affected tests](#affected-tests)). What each one runs is configured in
 [Library › Commands](library-and-line.md#commands) (`#/library/commands/<slot>`), keeping the
 exportable published version machine-neutral and free of argv. The execution contract accepts
 an **argv**, not a shell string, so `&&`, `|` and `$HOME` are ordinary arguments. The editor
@@ -728,7 +728,7 @@ the run visibly rather than reporting a verdict.
 
 A laptop running several workflows at once used to start every test suite together, and the
 suites then timed out competing for CPU. So a **test** check (the slots `slotRunsTests` in
-`src/shared/workflow.ts` names; today only `test`) takes a machine-wide lease first:
+`src/shared/workflow.ts` names: `test` and `affected-tests`) takes a machine-wide lease first:
 
 - **One test check at a time on this machine**, for this OS user, across every daemon. The lease
   is an exclusive loopback listen (`src/server/util/host-lease.ts`, the same mechanism the E2E
@@ -780,6 +780,84 @@ a Persona's slot.
 Run detail draws a Command as its own card: the slot, the configured argv, the exit code, and the
 last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
 the sentence saying which of the reasons above applied.
+
+#### Affected tests
+
+The `affected-tests` slot runs only the tests a change touched, so a workflow does not make the
+laptop run the whole suite. Its Command is a **template** with two placeholders:
+
+- `{files}` must be a whole argument. It becomes one argument per selected test file, relative
+  to where the command runs.
+- `{junit}` may sit inside an argument. It becomes the path Mission Control reads JUnit XML
+  results from, in a temporary directory per attempt.
+
+A template missing either is refused when saved, and fails the check if one reaches a run. For
+this repository:
+
+```sh
+node --test --import ./test/setup-state.mjs --import tsx --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination={junit} {files}
+```
+
+The outcome and the run's events record this template, never the expanded argv.
+
+**Selection** reads the repository's `.mission/testing.json` from the check's worktree, so the
+settings under review are the ones used. "Changed" means changed since the merge base with the
+default branch (`changedPathsSince` in `src/server/diff.ts`). A test file is selected when:
+
+1. it changed and matches `tests.patterns` (repository-relative globs, matched with
+   `path.matchesGlob`);
+2. `tests.includeImporters` is on and it imports a changed file, directly or through other
+   files. The scanner reads static `import` and `export ... from`, `import()` and `require()` with
+   string literals, resolves relative specifiers (including `.js` written for a `.ts` file) and
+   the root `tsconfig.json`'s `compilerOptions.paths`, and ignores anything else. This is JS and
+   TS only; other languages get (1) and (3);
+3. it matches `tests.smokeSet`, which always runs.
+
+A repository with no `.mission/testing.json` skips the gate with a note naming the file. An
+invalid committed file fails the gate with the error, because the file is part of the change. An
+empty selection skips with "No tests were selected for this change." A gate that stops before
+running anything (no settings, an empty selection, a bad template) hands its run back, so it does
+not spend the Command's per-run budget.
+
+**Failures are rerun once.** When the command exits non-zero, Mission Control reads `{junit}`,
+reruns only the failed files (every selected file if a failure names no selected file) with the
+same template, and fails the gate only for tests that failed both times. A test that failed once
+and passed on the rerun is a **local flake**: it is listed on the card and does not fail the
+gate. Results that cannot be read, or a non-zero exit whose results name no failing test, fail
+the gate with the output tail. Both runs happen inside one worktree lease and one test lease, and
+the lease is taken only after selection, so a change that selects nothing never waits for it.
+
+**The repair packet names each test that failed twice**, one requested change per test, with the
+runner's message and detail, instead of quoting the end of the output.
+
+**`.mission/testing.json`** is committed and reviewed like code:
+
+```json
+{
+  "tests": {
+    "patterns": ["test/**/*.test.ts"],
+    "includeImporters": true,
+    "smokeSet": ["test/route-surface-oracle.test.ts", "test/telemetry-primary-actions.test.ts"]
+  },
+  "flakes": {
+    "label": "flaky-test",
+    "actionableLabel": "flaky-test:actionable",
+    "actionableAfter": 3,
+    "windowDays": 30
+  }
+}
+```
+
+Every key has a default (`patterns` and `smokeSet` empty, `includeImporters` on, and the `flakes`
+values above), and an unknown key is refused with its name so a typo cannot silently do nothing.
+The `flakes` block is read by CI flake reporting, not by this check. The schema and merge live in
+`src/shared/testing-config.ts`.
+
+A gitignored **`.mission/testing.local.json`** in your own checkout (the session's repository,
+not the check's worktree) overrides the committed file **key by key**: a key set locally
+replaces the committed value, and a list replaces a list, so a local file can drop a slow smoke
+test. Run detail lists the keys that came from the local file. An invalid local file does not
+blame the change: the gate reports Not run with the error.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or

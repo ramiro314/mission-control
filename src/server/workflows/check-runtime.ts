@@ -15,6 +15,13 @@ import {
 import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-group.ts";
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
 import { resolveCapturedCommit } from "./commit-id.ts";
+import type { TestSelectionDeps } from "../test-selection.ts";
+import {
+  planAffectedTests,
+  runAffectedTests,
+  type AffectedTestsContext,
+  type AffectedTestsPlan,
+} from "./affected-tests.ts";
 import {
   createCheckGroupRecovery,
   DEFAULT_CHECK_TIMEOUT_MS,
@@ -86,7 +93,7 @@ export interface CheckAttemptRef {
 
 /** Test suites get the larger budget; faster check slots keep the supervisor default. */
 export function defaultCheckTimeoutMs(slot: CheckExecutionRequest["slot"]): number {
-  return slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
+  return slotRunsTests(slot) ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
 }
 
 /** The two settings a test-running check reads, asked once per check. */
@@ -165,6 +172,8 @@ export interface CheckRuntimeDeps {
   acquireTestLease?: CheckTestLeaseAcquirer;
   /** Where `CHECK_TEST_LEASE_HELD_ENV` is read from. Defaults to the daemon's environment. */
   env?: NodeJS.ProcessEnv;
+  /** How an affected-tests check reads changed and tracked files. Defaults to git. */
+  testSelection?: TestSelectionDeps;
 }
 
 const NO_TEST_POLICY: CheckTestPolicy = { checkTestLease: false, checkTestConcurrency: null };
@@ -184,6 +193,7 @@ export class CheckRuntime {
   private readonly testPolicy: () => CheckTestPolicy;
   private readonly acquireTestLease: CheckTestLeaseAcquirer;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly testSelection: TestSelectionDeps | undefined;
 
   /**
    * Phase 3's answer to the lease manager's open question, ready to inject.
@@ -208,6 +218,7 @@ export class CheckRuntime {
     this.testPolicy = deps.testPolicy ?? (() => NO_TEST_POLICY);
     this.acquireTestLease = deps.acquireTestLease ?? acquireCheckTestLease;
     this.env = deps.env ?? process.env;
+    this.testSelection = deps.testSelection;
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
       const row = store.get(attemptId);
@@ -276,6 +287,41 @@ export class CheckRuntime {
       };
     }
 
+    // The affected-tests slot selects its tests first, in the leased tree and BEFORE the test
+    // lease: a change that selects nothing, or a repository with no testing settings, must not
+    // queue behind another worktree's suite to say so.
+    let affected: { ctx: AffectedTestsContext; plan: Extract<AffectedTestsPlan, { kind: "run" }> } | null = null;
+    if (request.slot === "affected-tests") {
+      const ctx: AffectedTestsContext = {
+        template: request.command,
+        treeRoot: leasePath,
+        workingSubpath: request.workingSubpath,
+        localRoot: request.repoRoot,
+        selection: this.testSelection,
+      };
+      let plan: AffectedTestsPlan;
+      try {
+        plan = await planAffectedTests(ctx);
+      } catch (err) {
+        plan = {
+          kind: "done",
+          result: { kind: "infrastructure", reason: `the affected-tests check could not select tests: ${message(err)}` },
+        };
+      }
+      if (plan.kind === "done") {
+        // Nothing ran, so the group is empty by construction and the tree can go straight back.
+        const cleanup = await this.settle(attempt.attemptId, "empty");
+        if (!cleanup.ok) {
+          return {
+            kind: "infrastructure",
+            reason: `the ${request.slot} check's worktree could not be accounted for: ${cleanup.reason}`,
+          };
+        }
+        return plan.result;
+      }
+      affected = { ctx, plan };
+    }
+
     // The command's own timeout starts at spawn, so a wait here never eats into it. The wait
     // has its own ceiling, the same length, and running out is infrastructure: the engine's
     // ordinary retry asks again rather than reporting a verdict about a command never run.
@@ -312,12 +358,11 @@ export class CheckRuntime {
       extraEnv[CHECK_TEST_LEASE_HELD_ENV] = "1";
     }
 
-    let outcome: CheckSpawnOutcome;
-    try {
-      outcome = await this.supervise(
+    const spawn = (command: readonly string[]): Promise<CheckSpawnOutcome> =>
+      this.supervise(
         {
           attemptId: attempt.attemptId,
-          command: request.command,
+          command,
           // THE LEASED TREE, joined with the subpath the winning command entry named. Never
           // the binding's `sessionRepoRoot`: on the ordinary dispatch shape that names the
           // shared main repository behind a linked worktree, so a check would test an
@@ -332,6 +377,13 @@ export class CheckRuntime {
           teardown: this.teardown,
         },
       );
+    let outcome: CheckSpawnOutcome;
+    try {
+      // An affected-tests run may spawn twice - the selection, then its failed files once more -
+      // under this one worktree lease and this one test lease.
+      outcome = affected
+        ? await runAffectedTests(affected.ctx, affected.plan, (argv) => spawn(argv))
+        : await spawn(request.command);
     } catch (err) {
       // The supervisor is written not to throw, and a lease outliving one that did would be a
       // pool slot lost to a bug nobody can see. Resolved as unproven, which is the fail-closed
@@ -377,7 +429,7 @@ export class CheckRuntime {
           + `not reported because its pooled worktree could not be accounted for: ${cleanup.reason}`,
       };
     }
-    return waitedMs !== undefined && outcome.result.kind === "exited"
+    return waitedMs !== undefined && (outcome.result.kind === "exited" || outcome.result.kind === "decided")
       ? { ...outcome.result, waitedMs }
       : outcome.result;
   }
@@ -444,6 +496,7 @@ type CheckCleanup = { ok: true } | { ok: false; reason: string };
  */
 function describeResult(result: CheckExecutionResult): string {
   if (result.kind === "exited") return `exited ${result.exitCode}`;
+  if (result.kind === "decided") return `ended ${result.status} (${result.note})`;
   if (result.kind === "unavailable") return "reported that its command was not found";
   return `could not be run (${result.reason})`;
 }

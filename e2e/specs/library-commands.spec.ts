@@ -82,7 +82,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.waitForTimeout(150);
 }
 
-const SLOTS = ["test", "lint", "typecheck", "build"] as const;
+const SLOTS = ["test", "lint", "typecheck", "build", "affected-tests"] as const;
 
 const card = (page: Page, slot: string) =>
   page.getByRole("region", { name: "What does each standard gate run?" })
@@ -130,7 +130,7 @@ test("the Commands shelf is the sixth question, with four built-in cards and no 
     await expect(card(dashboard, slot)).toContainText("built-in");
   }
   // Every authoring shelf carries a ＋ New card. This one cannot: the slots ship with the
-  // product and there is no fifth to author.
+  // product and there is none to author.
   await expect(shelf.getByRole("button", { name: /New/ })).toHaveCount(0);
   // And no cross-link, because a Command has no runs of its own to count.
   await expect(shelf.getByRole("button", { name: /→$/ })).toHaveCount(0);
@@ -247,6 +247,46 @@ test("a global default is typed, previewed, saved, and lands in the daemon's cat
   await dashboard.goto(`${daemon.baseURL}/#/library`);
   await expect(card(dashboard, "test")).toContainText("Global default");
   await expect(card(dashboard, "lint")).toContainText("Not configured");
+});
+
+test("the affected-tests slot is in the rail, explains its template, and refuses one without it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/affected-tests`);
+  const rail = dashboard.getByRole("complementary", { name: "Command library" });
+  await expect(rail).toBeVisible();
+  await expect(rail).toContainText("affected-tests");
+  await expect(dashboard.getByRole("heading", { name: "affected-tests", exact: true })).toBeVisible();
+  // The execution note says what the placeholders are and where the selection comes from.
+  const main = dashboard.getByRole("main");
+  await expect(main).toContainText(".mission/testing.json");
+  await expect(main).toContainText("reruns failures once");
+
+  const field = dashboard.getByLabel("Default command");
+  const save = dashboard.getByRole("button", { name: "Save Command" });
+  // A plain suite command would run everything while claiming to run a selection.
+  await field.fill("npm test");
+  await save.click();
+  await expect(dashboard.getByRole("alert")).toContainText("must contain an argument that is exactly {files}");
+  expect(slotOf(await catalog(daemon), "affected-tests").defaultCommand).toBeNull();
+
+  // The daemon refuses it too, so a surface that skips the editor cannot store one.
+  const direct = await fetch(`${daemon.baseURL}/api/workflow-commands/affected-tests`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: 1, defaultCommand: ["npm", "test"], overrides: [], maxRuns: 1 }),
+  });
+  expect(direct.status).toBe(400);
+
+  const template = "node --test --test-reporter=junit --test-reporter-destination={junit} {files}";
+  await field.fill(template);
+  await save.click();
+  await expect
+    .poll(async () => slotOf(await catalog(daemon), "affected-tests").defaultCommand)
+    .toEqual(["node", "--test", "--test-reporter=junit", "--test-reporter-destination={junit}", "{files}"]);
+  await expect(rail).toContainText("Global default");
+  await shoot(dashboard, "affected-tests-template");
 });
 
 test("an unconfigured slot's run budget reads once per run, in the control and in words", async ({

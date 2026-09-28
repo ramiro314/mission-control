@@ -98,6 +98,9 @@ import {
   SESSION_ACTION_WAIT_REASONS,
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_TEST_SELECTION_REASONS,
+  commandTemplateProblem,
+  AFFECTED_TESTS_LIMITS,
   WORKFLOW_CHECK_STATUSES,
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
@@ -6244,6 +6247,9 @@ export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: WorkflowCommandArgvSchema,
+}).superRefine((value, ctx) => {
+  const problem = commandTemplateProblem(value.slot, value.command);
+  if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: problem });
 });
 
 /** One repository or subdirectory exception, inside the slot that owns it. */
@@ -6429,6 +6435,32 @@ function migrateLegacyDefaultWorkflowId(blob: unknown): unknown {
   return { ...rest, kindWorkflowDefaults: { ship: legacy } };
 }
 
+const AffectedTestPathSchema = z.string().min(1).max(AFFECTED_TESTS_LIMITS.path);
+const WorkflowNamedTestSchema = z.object({
+  file: AffectedTestPathSchema.nullable(),
+  name: z.string().max(AFFECTED_TESTS_LIMITS.testName),
+});
+
+/** What an `affected-tests` check selected and learned. See `WorkflowAffectedTestsReport`. */
+export const WorkflowAffectedTestsReportSchema = z.object({
+  selectedCount: z.number().int().min(0),
+  selected: z.array(z.object({
+    path: AffectedTestPathSchema,
+    reason: z.enum(WORKFLOW_TEST_SELECTION_REASONS),
+    via: AffectedTestPathSchema.optional(),
+  })).max(AFFECTED_TESTS_LIMITS.selectionShown),
+  flakes: z.array(WorkflowNamedTestSchema).max(AFFECTED_TESTS_LIMITS.flakes),
+  failures: z.array(WorkflowNamedTestSchema.extend({
+    message: z.string().max(AFFECTED_TESTS_LIMITS.failureMessage),
+  })).max(AFFECTED_TESTS_LIMITS.failures),
+  settings: z.object({
+    patterns: z.array(z.string()),
+    includeImporters: z.boolean(),
+    smokeSet: z.array(z.string()),
+    localKeys: z.array(z.string()),
+  }),
+});
+
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
   status: z.enum(WORKFLOW_CHECK_STATUSES),
@@ -6438,6 +6470,7 @@ export const WorkflowCheckOutcomeSchema = z.object({
   output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
   truncatedBytes: z.number().int().min(0),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  affected: WorkflowAffectedTestsReportSchema.optional(),
 });
 
 /**

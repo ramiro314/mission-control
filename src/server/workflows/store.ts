@@ -8095,6 +8095,14 @@ export class WorkflowStore {
   }
 
   /**
+   * Return one attempt's reservation, for a gate that decided without executing its command.
+   * The counterpart of `reserveCheckRun`: the budget counts executions, not opportunities.
+   */
+  releaseCheckRun(attemptId: string): void {
+    this.db.prepare(`UPDATE workflow_node_attempts SET check_run_slot = NULL WHERE id = ?`).run(attemptId);
+  }
+
+  /**
    * Reservations a run has already spent on one Command, for a reader that is not claiming one.
    *
    * Exists for tests and diagnostics. The engine never asks: a caller that counted and then

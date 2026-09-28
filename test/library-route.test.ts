@@ -58,7 +58,7 @@ test("a Command route names a slot or nothing, and never a blank draft", () => {
     page: "library",
     shelf: "commands",
   });
-  // `new` is not "open a blank one" here: there is no fifth slot to author.
+  // `new` is not "open a blank one" here: there is no slot to author.
   assert.deepEqual(parseMissionRoute("#/library/commands/new"), {
     page: "library",
     shelf: "commands",

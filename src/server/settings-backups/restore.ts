@@ -7,7 +7,11 @@ import {
   type SettingsBackupEnvelopeV1,
   type SettingsRestorePreview,
 } from "@shared/settings-backups.ts";
-import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
+import {
+  WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  type WorkflowCheckSlot,
+} from "@shared/workflow.ts";
 import type {
   Persona,
   SessionAction,
@@ -91,10 +95,41 @@ export function migrateSettingsBackupSnapshot(
     settings,
     personas: SettingsBackupPersonaSchema.array().parse(payload("personas")),
     sessionActions: SettingsBackupSessionActionSchema.array().parse(payload("session-actions")),
-    workflowCommands: SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
+    workflowCommands: withSlotsAddedSinceSnapshot(
+      SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
+    ),
     workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
     workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
   };
+}
+
+/**
+ * Command slots appended to `WORKFLOW_CHECK_SLOTS` after the backup format was published.
+ *
+ * A snapshot taken before one of these existed says nothing about it, and that is exactly what
+ * an unconfigured slot says too - so it restores as one, rather than refusing a snapshot that
+ * was complete when it was taken. A slot missing from this list is still refused as missing:
+ * those were in the catalog from the first published snapshot.
+ */
+const SLOTS_ADDED_SINCE_BACKUP_V1: readonly WorkflowCheckSlot[] = ["affected-tests"];
+
+function withSlotsAddedSinceSnapshot(
+  rows: SettingsBackupWorkflowCommand[],
+): SettingsBackupWorkflowCommand[] {
+  const present = new Set(rows.map((row) => row.slot));
+  const missing = SLOTS_ADDED_SINCE_BACKUP_V1.filter((slot) => !present.has(slot));
+  return [
+    ...rows,
+    ...missing.map((slot) => ({
+      slot,
+      defaultCommand: null,
+      overrides: [],
+      maxRuns: WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+      revision: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    })),
+  ];
 }
 
 /** Add current-state config merges only after the pure migration boundary has completed. */

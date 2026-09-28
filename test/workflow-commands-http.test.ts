@@ -428,3 +428,38 @@ test("the catalog routes answer 503 rather than constructing a second owner", as
   const config = await (await request("/api/workflows/config")).json() as { checkCommands: [] };
   assert.deepEqual(config.checkCommands, []);
 });
+
+test("an affected-tests command without its placeholders is refused on save, the others are not", async () => {
+  const { request } = fixture();
+  const put = (slot: string, value: unknown) =>
+    request(`/api/workflow-commands/${slot}`, { method: "PUT", body: body(value) });
+  const refused = await put("affected-tests", {
+    expectedRevision: 1,
+    defaultCommand: ["npm", "test"],
+    overrides: [],
+    maxRuns: 1,
+  });
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json() as { error: string }).error, /\{files\}.*\{junit\}/);
+  // An override is held to the same rule as the default.
+  const override = await put("affected-tests", {
+    expectedRevision: 1,
+    defaultCommand: null,
+    overrides: [{ repoRoot: "/repo", command: ["node", "--test", "{files}"] }],
+    maxRuns: 1,
+  });
+  assert.equal(override.status, 400);
+  const saved = await put("affected-tests", {
+    expectedRevision: 1,
+    defaultCommand: ["node", "--test", "--test-reporter-destination={junit}", "{files}"],
+    overrides: [],
+    maxRuns: 1,
+  });
+  assert.equal(saved.status, 200);
+  assert.equal((await put("test", {
+    expectedRevision: 1,
+    defaultCommand: ["npm", "test"],
+    overrides: [],
+    maxRuns: 1,
+  })).status, 200);
+});

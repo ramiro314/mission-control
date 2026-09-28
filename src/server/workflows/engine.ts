@@ -322,7 +322,7 @@ export function sessionActionCompleteEdges(
  * A build log with an empty tail would otherwise produce an empty `rationale`, which the
  * strict schema refuses.
  */
-function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): PersonaVerdict | null {
+export function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): PersonaVerdict | null {
   const summary = outcome.note;
   if (checkOutcomePasses(outcome)) {
     return normalizePersonaVerdict({
@@ -331,6 +331,25 @@ function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): Persona
       approvalDetails: { reason: summary, evidence: [] },
       confidence: 1,
     });
+  }
+  // Tests named by JUnit results each get their own requested change, carrying the runner's
+  // own message: the end of a combined run-and-rerun log is where the NAME of a failing test
+  // is least likely to be, and a repair packet that cuts it off sends the agent hunting.
+  const failures = outcome.affected?.failures ?? [];
+  if (failures.length > 0) {
+    return normalizePersonaVerdict({
+      verdict: "fail",
+      summary,
+      requestedChanges: failures.map((failure) => {
+        const where = failure.file ? ` in ${failure.file}` : "";
+        return {
+          title: `Fix the failing test "${failure.name}"${where}`,
+          rationale: `It failed on the run and again on its rerun.\n\n${failure.message}`,
+          evidence: [{ kind: "check" as const, path: attemptId, quote: failure.message }],
+        };
+      }),
+      confidence: 1,
+    }, new Set(), new Set(), new Set([attemptId]));
   }
   const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
@@ -1394,6 +1413,8 @@ export class WorkflowEngine {
           this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
           run.checkBudgetEpochRound ?? null,
         ),
+        // An affected-tests gate that selected nothing ran nothing, so it hands its run back.
+        releaseRun: () => this.store.releaseCheckRun(claimed.id),
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,

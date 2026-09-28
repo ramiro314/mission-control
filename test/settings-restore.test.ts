@@ -845,3 +845,40 @@ test("Skills preflight refuses known blockers and startup reconciliation retries
   assert.equal(second.changed, false);
   assert.equal(second.config.generation, 1);
 });
+
+test("a snapshot taken before the affected-tests slot restores it as unconfigured", async () => {
+  seedBaseline();
+  const withoutSlot = (slot: string) => (body: SettingsBackupEnvelopeBodyV1) => {
+    const entry = body.domains.find((row) => row.domain === "workflow-commands")!;
+    entry.payload = (entry.payload as Array<{ slot: string }>).filter((row) => row.slot !== slot);
+    body.counts.workflowCommands -= 1;
+  };
+  const older = resign(snapshot(), withoutSlot("affected-tests"));
+  const staged = stageSettingsBackupSnapshot(older);
+  const slot = staged.workflowCommands.find((row) => row.slot === "affected-tests");
+  assert.deepEqual(
+    slot && { defaultCommand: slot.defaultCommand, overrides: slot.overrides, maxRuns: slot.maxRuns },
+    { defaultCommand: null, overrides: [], maxRuns: 1 },
+  );
+
+  // Configured after the snapshot was taken, so restoring it returns the slot to unconfigured.
+  const current = workflowStore.getWorkflowCommand("affected-tests")!;
+  assert.equal(workflowStore.replaceWorkflowCommandCas("affected-tests", current.revision, {
+    defaultCommand: ["node", "--test", "--test-reporter-destination={junit}", "{files}"],
+    overrides: [],
+    maxRuns: 1,
+  }).ok, true);
+  const root = join(home, "pre-slot");
+  new SettingsBackupStore(root).write(older);
+  const restore = service(root);
+  assert.equal(restore.previewRestore(older.id).status, "ready");
+  const result = await restore.restore(older.id, older.digest);
+  assert.equal(result.status, "restored");
+  assert.equal(workflowStore.getWorkflowCommand("affected-tests")!.defaultCommand, null);
+
+  // A slot that existed from the first published snapshot is still refused when missing.
+  const broken = resign(snapshot(), withoutSlot("lint"));
+  const brokenRoot = join(home, "missing-lint");
+  new SettingsBackupStore(brokenRoot).write(broken);
+  assert.equal(service(brokenRoot).previewRestore(broken.id).status, "preflight_blocked");
+});

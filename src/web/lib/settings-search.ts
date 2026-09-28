@@ -691,7 +691,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // is the same machine-wide switch it always was. Only the words on it moved.
     anchor: "workflows/checks",
     keywords: [
-      "check", "command", "test", "lint", "typecheck", "build", "gate", "exit code", "allow",
+      "check", "command", "test", "lint", "typecheck", "build", "affected-tests", "gate",
+      "exit code", "allow",
       "pause",
     ],
     kind: "toggle",
@@ -706,11 +707,12 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // exactly who this row exists for, and dropping it would answer them with nothing.
     id: "workflow-check-commands",
     label: "What each Command runs",
-    description: "The test, lint, typecheck and build argvs - authored in Library › Commands.",
+    description: "The test, lint, typecheck, build and affected-tests argvs - authored in Library › Commands.",
     category: "workflows",
     anchor: "workflows/command-catalog",
     keywords: [
-      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "repo",
+      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "affected-tests",
+      "repo",
       "override", "default", "library",
     ],
     kind: "jump",
