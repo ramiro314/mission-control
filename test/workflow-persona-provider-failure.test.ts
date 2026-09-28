@@ -24,10 +24,18 @@ const QUOTA_EXHAUSTED = "You've hit your usage limit. Upgrade to Plus to continu
 writeFileSync(join(home, "model"), MODEL_UNAVAILABLE);
 writeFileSync(join(home, "quota"), QUOTA_EXHAUSTED);
 writeFileSync(join(home, "transient"), "");
+// Codex can also report the refusal as a JSON error event on stdout, with the text nested
+// under `error.message` and nothing on stderr.
+const MODEL_MESSAGE = "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.";
+writeFileSync(join(home, "model-stdout"), "");
+writeFileSync(join(home, "model-stdout.stdout"), `${JSON.stringify({ type: "error", error: { message: MODEL_MESSAGE } })}\n`);
 writeFileSync(fake, `#!/bin/sh
 cat >/dev/null
 echo call >> "$CODEX_FAKE_CALLS"
-cat "$(dirname "$0")/$(cat "$CODEX_FAKE_MODE")" >&2
+dir="$(dirname "$0")"
+mode="$(cat "$CODEX_FAKE_MODE")"
+cat "$dir/$mode" >&2
+if [ -f "$dir/$mode.stdout" ]; then cat "$dir/$mode.stdout"; fi
 exit 1
 `);
 chmodSync(fake, 0o755);
@@ -35,7 +43,8 @@ chmodSync(fake, 0o755);
 const { openDb } = await import("../src/server/db.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
-const { codexRunner, classifyCodexFailure } = await import("../src/server/llm/codex.ts");
+const { codexRunner, classifyCodexFailure, configureCodexRunnerTransport } = await import("../src/server/llm/codex.ts");
+const { LlmProviderFailure } = await import("../src/shared/llm.ts");
 
 const graph: PublishedWorkflowGraph = {
   nodes: [
@@ -204,4 +213,48 @@ test("classifyCodexFailure reads the reset time when present and declines unknow
   assert.equal(bare?.summary, "Codex usage limit reached");
   assert.equal(bare?.resetsAt, null);
   assert.equal(classifyCodexFailure("codex exited 1: connection reset by peer"), null);
+});
+
+test("a JSON error event on stdout is read from its nested message and classified", async () => {
+  writeFileSync(modePath, "model-stdout");
+  const error = await codexRunner.run("review", { model: "gpt-5.6-sol" }).then(
+    () => assert.fail("the run should reject"),
+    (caught: unknown) => caught,
+  );
+  assert.ok(error instanceof LlmProviderFailure);
+  assert.equal(error.kind, "model_unavailable");
+  assert.equal(error.message, `codex exited 1: ${MODEL_MESSAGE}`);
+  assert.equal(error.summary, "Codex account cannot use model gpt-5.6-sol");
+});
+
+test("the SDK transport classifies permanent failures and leaves others plain", async () => {
+  async function sdkRejection(text: string): Promise<unknown> {
+    const restore = configureCodexRunnerTransport(() => "sdk", {
+      createClient: () => ({
+        startThread: () => ({
+          run: async () => {
+            throw new Error(text);
+          },
+        }),
+      }),
+    });
+    try {
+      return await codexRunner.run("review", { model: "gpt-5.6-sol" }).then(
+        () => assert.fail("the run should reject"),
+        (caught: unknown) => caught,
+      );
+    } finally {
+      restore();
+    }
+  }
+  const quota = await sdkRejection(QUOTA_EXHAUSTED);
+  assert.ok(quota instanceof LlmProviderFailure);
+  assert.equal(quota.kind, "quota_exhausted");
+  assert.equal(quota.resetsAt, "Oct 22nd, 2026 9:01 PM");
+  const model = await sdkRejection(MODEL_UNAVAILABLE);
+  assert.ok(model instanceof LlmProviderFailure);
+  assert.equal(model.kind, "model_unavailable");
+  const other = await sdkRejection("stream disconnected before completion");
+  assert.ok(other instanceof Error);
+  assert.equal(other instanceof LlmProviderFailure, false);
 });
