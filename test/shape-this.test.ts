@@ -244,8 +244,7 @@ test("a parked task is refused unless the caller overrides the hold, and changes
 
   const res = await route.shape({ overrideDisabled: false });
 
-  assert.equal(res.status, 409);
-  assert.deepEqual(route.launched, []);
+  await assertRefusedUnchanged(route, res, /^task is disabled - Foreman will not schedule it/);
   assert.deepEqual(route.registry.getTask("t1"), before);
 });
 
