@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
+import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -363,6 +364,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       source_id     TEXT,
       external_id   TEXT,
       source_url    TEXT,
+      -- JSON TaskSourceRef of the item the source item is a sub-issue of. Display only,
+      -- never a dependency edge. NULL when it has none or nobody swept this.
+      source_parent TEXT,
       repo_root     TEXT NOT NULL,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
@@ -3652,6 +3656,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "source_id", "TEXT");
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
+  // `source_parent`: the JSON TaskSourceRef of the item's parent (a GitHub sub-issue's
+  // parent), shown beside the upstream link. Display only - it never becomes a dependency
+  // edge. Nullable: every older task genuinely has no recorded parent.
+  addColumn(d, "tasks", "source_parent", "TEXT");
   // The provider-run identity learned after a pipeline dispatch's first child agent appears.
   // Both nullable with no default: old and non-pipeline tasks have no provider lifecycle to
   // follow, and a half-written pair fails closed when the row is read.
@@ -4988,6 +4996,7 @@ interface TaskRow {
   source_id: string | null;
   external_id: string | null;
   source_url: string | null;
+  source_parent: string | null;
   repo_root: string;
   pipeline_provider: string | null;
   pipeline_slug: string | null;
@@ -5355,6 +5364,7 @@ function rowToTask(
       r.source_id && r.external_id
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
+    sourceParent: parseSourceParent(r.source_parent),
     repoRoot: r.repo_root,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
@@ -5388,6 +5398,21 @@ function rowToTask(
   };
 }
 
+/**
+ * A stored `source_parent` blob, or null. A malformed one reads as no parent rather than
+ * throwing: it is display data, and one bad row must not take out `listTasks`.
+ */
+function parseSourceParent(raw: string | null): TaskSourceRef | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<TaskSourceRef> | null;
+    if (!v || typeof v.sourceId !== "string" || typeof v.externalId !== "string") return null;
+    return { sourceId: v.sourceId, externalId: v.externalId, url: typeof v.url === "string" ? v.url : null };
+  } catch {
+    return null;
+  }
+}
+
 export function upsertTask(t: Task): string[] {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
@@ -5418,7 +5443,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, backlog_rank,
          model, effort,
-         workflow_id, source_id, external_id, source_url, repo_root,
+         workflow_id, source_id, external_id, source_url, source_parent, repo_root,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -5426,7 +5451,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5434,7 +5459,7 @@ export function upsertTask(t: Task): string[] {
          model=excluded.model, effort=excluded.effort,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
-         source_url=excluded.source_url,
+         source_url=excluded.source_url, source_parent=excluded.source_parent,
          repo_root=excluded.repo_root,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
@@ -5467,6 +5492,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
+      t.sourceParent ? JSON.stringify(t.sourceParent) : null,
       t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,

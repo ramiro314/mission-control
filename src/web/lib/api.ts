@@ -1518,6 +1518,8 @@ export async function setKeepAwake(
  */
 export interface PushTaskResult extends ActionResult {
   source?: TaskSourceRef | null;
+  /** The parent the pushed item was filed under, when the draft named one. Display only. */
+  parent?: TaskSourceRef;
   outcomeUnknown?: boolean;
 }
 

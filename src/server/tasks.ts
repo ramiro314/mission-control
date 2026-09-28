@@ -248,6 +248,11 @@ export interface CreateTaskInput {
    * decide whether an item has been filed before.
    */
   source?: TaskSourceRef;
+  /**
+   * The item `source` is a sub-issue of, as the sweep read it. Display only (see
+   * `Task.sourceParent`): it never becomes a dependency edge.
+   */
+  sourceParent?: TaskSourceRef;
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
@@ -2822,6 +2827,7 @@ export class TaskManager {
       // selected workflow's current immutable version there.
       workflowId,
       source: input.source ?? null,
+      sourceParent: input.sourceParent ?? null,
       // Filled by pipeline dispatch before its host starts. Null remains valid for backlog
       // rows and for tasks persisted by builds that learned the link only from a child.
       pipelineRun: null,
@@ -3860,6 +3866,12 @@ export class TaskManager {
     persist: () => void,
     stillCurrent: () => boolean,
     relates = false,
+    /**
+     * The item's parent as the source reports it now. Source-owned display data outside the
+     * merge: overwritten whenever given, with no group and no conflict review. Undefined
+     * leaves the stored parent as it is.
+     */
+    parent?: TaskSourceRef | null,
   ): Promise<Ok & { cycle?: boolean }> {
     await this.titling.get(id);
     const task = this.registry.getTask(id);
@@ -3872,7 +3884,9 @@ export class TaskManager {
       || !sameSourceContent(local, expected) || !stillCurrent()) {
       return { ok: false, error: "the task or source changed; sweep again before applying this update" };
     }
-    const changed = !sameSourceContent(local, content);
+    const sourceParent = parent === undefined ? task.sourceParent : parent;
+    const changed = !sameSourceContent(local, content)
+      || JSON.stringify(sourceParent) !== JSON.stringify(task.sourceParent);
     let dependencies = task.dependencies;
     if (relates && content.blockedBy && !sameSourceContent({ ...local, blockedBy: content.blockedBy }, local)) {
       try {
@@ -3883,7 +3897,7 @@ export class TaskManager {
       }
     }
     const { blockedBy: _blockedBy, ...fields } = content;
-    const next: Task = { ...task, ...fields, dependencies, updatedAt: Date.now() };
+    const next: Task = { ...task, ...fields, dependencies, sourceParent, updatedAt: Date.now() };
     const displaced = inTransaction(() => {
       persist();
       return changed ? dbUpsertTask(next) : [];
@@ -3960,6 +3974,8 @@ export class TaskManager {
     transaction: typeof inTransaction = inTransaction,
     /** The blockers the push wrote upstream: the `dependencies` baseline. Absent means none. */
     pushedBlockers?: SourceBlocker[],
+    /** The draft's `parent`, recorded for display. Never a dependency edge. */
+    parent?: TaskSourceRef,
   ): Ok & { task?: Task } {
     const attached = transaction(() => {
       const t = this.registry.getTask(id);
@@ -3970,7 +3986,7 @@ export class TaskManager {
       if (t.source) {
         return { ok: false as const, error: `task is already linked to ${t.source.externalId}` };
       }
-      const task: Task = { ...t, source: ref, updatedAt: Date.now() };
+      const task: Task = { ...t, source: ref, sourceParent: parent ?? null, updatedAt: Date.now() };
       const displaced = dbUpsertTask(task);
       saveSourceSync(task.id, ref.sourceId, {
         origin: "pushed", externalId: ref.externalId,

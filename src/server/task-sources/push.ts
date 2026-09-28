@@ -312,7 +312,7 @@ export async function pushTask(
       attached = tasks.attachSource(task.id, ref, (link) => transaction(() => {
         remember(inst.id, ref.externalId, ref.url);
         return link();
-      }), canRelateTo(inst) ? result.blockedBy : undefined);
+      }), canRelateTo(inst) ? result.blockedBy : undefined, draft.parent);
     } catch (err) {
       // The transaction rolled back, so neither write landed - but the ISSUE still exists.
       // Reported as an unknown outcome rather than as a refusal for exactly that reason: a

@@ -108,6 +108,9 @@ export async function refreshSourceTasks(
     const groups = syncGroups(inst, record);
     const local = localSourceContent(task, relation(inst, () => tasks.list()));
     let content = local;
+    // Set once the candidate is confirmed to be this task's item: its parent is then
+    // overwritten as source-owned display data, whatever the merge below decides.
+    let parent: TaskCandidate["parent"] | null | undefined;
     let next: SourceSyncRecord = { ...record, checkedAt: Date.now(), error: null };
     const candidate = candidates.get(task.source!.externalId);
     if (identities.get(task.source!.externalId)! > 1) {
@@ -120,6 +123,7 @@ export async function refreshSourceTasks(
     } else if (candidate.ref.url !== task.source!.url) {
       next.error = "The source returned a different issue link. The existing task was kept.";
     } else {
+      parent = candidate.parent ?? null;
       try {
         const remote = projection(inst, candidate, record);
         if (!record.baseline && record.origin !== "pushed") {
@@ -141,7 +145,7 @@ export async function refreshSourceTasks(
     }
     const stillCurrent = () => !ctx.signal.aborted && current() && sameRecord(getSourceSync(task.id), saved);
     const applied = await tasks.applySourceContent(task.id, task.source!, local, content,
-      () => saveSourceSync(task.id, inst.id, next), stillCurrent, canRelateTo(inst));
+      () => saveSourceSync(task.id, inst.id, next), stillCurrent, canRelateTo(inst), parent);
     // A cycle is refused whole, like a hand edit that closes one. Say so beside the task,
     // and retry on later sweeps, when the source or the local graph may have moved. Only
     // the check and the error are recorded: `next` carries the merge's advanced baseline,
@@ -151,7 +155,8 @@ export async function refreshSourceTasks(
     }
     if (!applied.ok || next.error) counts.skipped++;
     else if (next.pending) counts.conflicted++;
-    else if (!sameSourceContent(local, content)) counts.updated++;
+    else if (!sameSourceContent(local, content)
+      || (parent !== undefined && JSON.stringify(parent) !== JSON.stringify(task.sourceParent))) counts.updated++;
     else counts.unchanged++;
   }
   return counts;

@@ -1275,7 +1275,7 @@ through `gh issue create --blocked-by` and `--parent`). Each blocker task that a
 issue in the same source, and each blocking issue a sweep recovered, becomes a **blocked by**
 link. A blocker with no issue yet is left out rather than guessed at, so push blockers first. When
 the task waits on a shape or plan task that has an issue in the same source, the new issue is
-filed as its **sub-issue** instead. A [shape task's breakdown](#dispatch-an-agent) mirrors its tickets
+filed as its **sub-issue** instead, and the editor shows that parent beside the new link. A [shape task's breakdown](#dispatch-an-agent) mirrors its tickets
 this way through the `push_task` MCP tool, which is the same push, with the same ledger row and
 link, and which answers a retry of an already-pushed task with its existing issue.
 With [Keep imported backlog tasks updated](#keeping-imported-backlog-tasks-updated) on, the
@@ -1572,7 +1572,10 @@ insert, so a swept task is never visible unblocked:
   is released when the item closes as completed. Closed as not planned, the card shows the
   [stopped-dependency warning](#resolve-a-stopped-dependency).
 - A **parent** (sub-issue) link is never a dependency. A parent is the larger piece of work an
-  item belongs to, not something it waits on.
+  item belongs to, not something it waits on. It is kept for display instead: the task
+  editor shows **Sub-issue of #M** beside the **Filed upstream as** link, linking to the
+  parent. The parent is recorded when the item is filed, when a push files the task as a
+  sub-issue, and on every [keep-updated refresh](#keeping-imported-backlog-tasks-updated).
 
 Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
 `gh issue view` each), at most 25 per sweep, least recently checked first. A failed read
@@ -1615,7 +1618,9 @@ link to this source, another source's item) is local and never touched. A synced
 close a cycle is refused like a hand edit: the whole update is held, the task is kept as it is,
 and the reason is shown beside it until a later sweep finds the cycle gone. Agent, model, task
 kind, workflow, repositories, backlog position and autopilot eligibility remain local. Source defaults are captured when an item is imported; changing those defaults
-does not rewrite previously imported tasks. The existing description limit still applies:
+does not rewrite previously imported tasks. The item's **parent** (a GitHub sub-issue's parent
+issue) is source-owned display data outside every group: each refresh overwrites it from the
+source, with no baseline and no review, and it never becomes a dependency. The existing description limit still applies:
 GitHub and Jira carry at most 4,000 characters of the issue description into the intent.
 
 A saved import baseline lets Mission Control distinguish a remote change from an operator edit.

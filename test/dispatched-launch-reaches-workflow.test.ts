@@ -80,6 +80,7 @@ function mkTask(): Task {
     effort: null,
     workflowId: null,
     source: null,
+    sourceParent: null,
     repoRoot: "/repo",
     worktreePath: "/repo",
     branch: null,

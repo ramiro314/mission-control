@@ -2229,6 +2229,12 @@ export interface Task {
    */
   source: TaskSourceRef | null;
   /**
+   * The item this task's source item is a sub-issue of, as the source last reported it, else
+   * null. Display only: written on ingest, on push (the draft's `parent`) and on keep-updated
+   * refresh, and never read to create a dependency edge.
+   */
+  sourceParent: TaskSourceRef | null;
+  /**
    * The provider run this pipeline dispatch owns.
    *
    * New dispatches persist it before their host starts. Older terminal tasks may still learn

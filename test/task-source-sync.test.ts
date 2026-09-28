@@ -447,3 +447,41 @@ test("a blocker whose linked task cannot take a new task edge becomes a source e
   await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}]);
   assert.deepEqual(synced(task.id),[`source:acme/demo#2`,`task:${byRef(3).id}`]);
 });
+
+// The parent: source-owned display data, outside every merge group, and never an edge.
+const parentOf=(n:number):TaskSourceRef=>candidate(n).ref;
+test("ingest records a swept sub-issue's parent and creates no edge for it",async()=>{
+  const src=TaskSourceInstanceSchema.parse({id:"s",kind:"github-issues",repoRoot:"/repo",keepUpdated:true,
+    defaults:{agent:"claude",priority:"med",labels:[]}});
+  setTaskSourcesConfig({sources:[src]});
+  const tasks=new TaskManager(new Registry());
+  // The parent is itself a backlog task here, which is exactly when an edge would be tempting.
+  await ingestSweep(src,{items:[candidate(4),{...candidate(5),parent:parentOf(4)}],error:null},tasks,
+    {resolveRepoRoot:async()=>({ok:true,repoRoot:"/repo"})});
+  const child=listTasks().find((t)=>t.source?.externalId==="acme/demo#5")!;
+  assert.deepEqual(child.sourceParent,parentOf(4));
+  assert.deepEqual(child.dependencies,[]);
+  assert.equal(listTasks().find((t)=>t.source?.externalId==="acme/demo#4")!.sourceParent,null);
+});
+test("refresh overwrites the parent without review, adds no edge, and freezes once started",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  assert.equal(getTask(task.id)!.sourceParent,null);
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:parentOf(2)}])).updated,1);
+  assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(2));
+  assert.deepEqual(synced(task.id),[]);
+  assert.equal(getSourceSync(task.id)!.pending,null); assert.deepEqual(getSourceSync(task.id)!.conflicts,[]);
+  // A local edit conflicting with upstream content does not hold the parent back.
+  await tasks.update(task.id,{title:"Local title"});
+  await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(3)}]);
+  assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(3));
+  assert.deepEqual(synced(task.id),[]); assert.ok(byRef(3));
+  // Removed upstream: cleared.
+  await refresh(src,tasks,[{...candidate(),title:"Remote title"}]);
+  assert.equal(getTask(task.id)!.sourceParent,null);
+  // Started: frozen like every other refreshed field.
+  openDb().prepare(`INSERT INTO historical_task_work_episode_bindings
+    (task_id,episode_id,session_id,agent_session_id,bound_at,updated_at) VALUES (?,?,?,?,?,?)`)
+    .run(task.id,"ep-parent","session","agent",1,1);
+  await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(2)}]);
+  assert.equal(getTask(task.id)!.sourceParent,null);
+});

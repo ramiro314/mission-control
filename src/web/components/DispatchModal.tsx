@@ -304,6 +304,8 @@ type PushState = {
   sourceId: string | null;
   /** What the push created, read off the route's own 200 body. */
   ref: TaskSourceRef | null;
+  /** The parent the push filed the item under, read off the same 200 body. */
+  parent: TaskSourceRef | null;
   /** The daemon's own refusal, kept verbatim. */
   error: string | null;
   /** The 504: the item MAY exist, so the action is withdrawn rather than offered again. */
@@ -312,7 +314,7 @@ type PushState = {
 
 /** Nothing asked yet, for this task. */
 function freshPushState(taskId: string): PushState {
-  return { taskId, sourceId: null, ref: null, error: null, outcomeUnknown: false };
+  return { taskId, sourceId: null, ref: null, parent: null, error: null, outcomeUnknown: false };
 }
 
 /**
@@ -2097,6 +2099,8 @@ function DispatchModal({
   const push = editing && pushState?.taskId === editing.id ? pushState : null;
   // The link this form should draw: the row's own, or the one this opening just created.
   const taskLink = editing?.source ?? push?.ref ?? null;
+  // Display only, beside the link: the item this one is a sub-issue of, never an edge.
+  const taskParent = editing?.source ? editing.sourceParent : push?.parent ?? null;
   /**
    * The form holds edits the daemon has not been told about.
    *
@@ -2135,7 +2139,7 @@ function DispatchModal({
     const r = await api.pushTaskToSource(taskId, chosen.id);
     setPending(null);
     if (r.ok && r.source) {
-      answered({ ref: r.source });
+      answered({ ref: r.source, parent: r.parent ?? null });
       return;
     }
     // An accepted push that names nothing cannot be told from a created issue we failed to
@@ -2730,6 +2734,7 @@ function DispatchModal({
         {editing && (
           <PushToSourceBlock
             link={taskLink}
+            parent={taskParent}
             sources={taskSources}
             /* The STORED repo, never `draft.repoRoot`: the daemon compares a source against
                the row it holds, so filtering on an unsaved edit would offer sources for a repo
@@ -3414,8 +3419,21 @@ function DispatchModal({
  * The external id it prints ("acme/demo-repo#123", "MC-14") already says which world it came
  * from, and says it truthfully for a kind that cannot receive pushes at all.
  */
+/**
+ * The short form of an external id beside `sibling`: "#12" for a GitHub "owner/repo#12" in the
+ * same repo as the sibling, and the id as it is otherwise ("other/repo#12", "MC-14").
+ */
+function shortSourceId(externalId: string, sibling: string): string {
+  const hash = externalId.lastIndexOf("#");
+  if (hash < 0) return externalId;
+  return sibling.slice(0, sibling.lastIndexOf("#")) === externalId.slice(0, hash)
+    ? externalId.slice(hash)
+    : externalId;
+}
+
 export function PushToSourceBlock({
   link,
+  parent = null,
   sources,
   repoRoot,
   selectedSourceId = null,
@@ -3428,6 +3446,11 @@ export function PushToSourceBlock({
 }: {
   /** The item this task is linked to - stored on the row, or minted by a push in this opening. */
   link: TaskSourceRef | null;
+  /**
+   * The item `link` is a sub-issue of, as the source last reported it. Display only: shown
+   * beside the link, and never a dependency.
+   */
+  parent?: TaskSourceRef | null;
   /**
    * The configured sources, or null while the read is out - AND if it never landed.
    *
@@ -3473,7 +3496,23 @@ export function PushToSourceBlock({
                shown as text rather than as a link to nowhere. */
             <strong>{link.externalId}</strong>
           )}
-          . This task stays in the backlog, and that source will not file it back as a new one.
+          .
+          {parent && (
+            <>
+              {" "}Sub-issue of{" "}
+              {parent.url ? (
+                <Tooltip label={`Open ${parent.externalId} in a new tab`}>
+                  <a className="source-provenance-link" href={parent.url} target="_blank" rel="noreferrer">
+                    {shortSourceId(parent.externalId, link.externalId)}
+                  </a>
+                </Tooltip>
+              ) : (
+                <strong>{shortSourceId(parent.externalId, link.externalId)}</strong>
+              )}
+              .
+            </>
+          )}
+          {" "}This task stays in the backlog, and that source will not file it back as a new one.
         </span>
       </div>
     );

@@ -163,6 +163,8 @@ export async function ingestSweep(
           ...parsed.data,
           repoRoot,
           source: c.ref,
+          // Display only: the parent is shown beside the link and never becomes an edge.
+          ...(c.parent ? { sourceParent: c.parent } : {}),
           enabled: inst.defaults.enabled,
           ...(dependencies.length > 0 ? { dependencies } : {}),
           ...(sourceDependencies.length > 0 ? { sourceDependencies } : {}),
