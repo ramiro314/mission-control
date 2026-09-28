@@ -26,7 +26,7 @@ Object.defineProperty(globalThis, "localStorage", {
   },
 });
 
-const { DispatchLayer, PushToSourceBlock } = await import(
+const { DispatchLayer, PushToSourceBlock, sourceLinkFor } = await import(
   "../src/web/components/DispatchModal.tsx"
 );
 const { BacklogColumn } = await import("../src/web/components/layouts/BacklogColumn.tsx");
@@ -272,6 +272,19 @@ test("a swept sub-issue names its parent beside the link, short when it shares t
   const other = block({ link: REF, parent: { ...parent, externalId: "acme/other#7" }, sources: null, repoRoot: "/r" });
   assert.match(other, />acme\/other#7<\/a>/);
   assert.doesNotMatch(editor(mkTask({ source: REF })), /Sub-issue of/);
+});
+
+test("right after a push, the parent comes from the push reply, before the row carries a source", () => {
+  const parent = { ...REF, externalId: "acme/demo-repo#7", url: "https://github.com/acme/demo-repo/issues/7" };
+  // The editing row has no source yet: the link and parent are what the push reply named.
+  const fromPush = sourceLinkFor({ source: null, sourceParent: null }, { ref: REF, parent });
+  assert.deepEqual(fromPush, { link: REF, parent });
+  const html = block({ ...fromPush, sources: [], repoRoot: "/r" });
+  assert.match(html, /Filed upstream as/);
+  assert.match(html, /Sub-issue of <a class="source-provenance-link" href="https:\/\/github\.com\/acme\/demo-repo\/issues\/7"[^>]*>#7<\/a>/);
+  // The stored row wins once it has a link, and no link means no parent line at all.
+  assert.deepEqual(sourceLinkFor({ source: REF, sourceParent: null }, { ref: REF, parent }), { link: REF, parent: null });
+  assert.deepEqual(sourceLinkFor(null, { ref: null, parent }), { link: null, parent: null });
 });
 
 test("a scheduled task that is also filed upstream reads as two origins, not a conflict", () => {

@@ -313,6 +313,19 @@ type PushState = {
 };
 
 /** Nothing asked yet, for this task. */
+/**
+ * The upstream link and its parent that the editor draws: the row's own when it has one,
+ * else what a push in this opening just created (read off the push reply, before any
+ * `task_upsert` lands). The parent is display only and never an edge.
+ */
+export function sourceLinkFor(
+  editing: Pick<Task, "source" | "sourceParent"> | null | undefined,
+  push: Pick<PushState, "ref" | "parent"> | null,
+): { link: TaskSourceRef | null; parent: TaskSourceRef | null } {
+  if (editing?.source) return { link: editing.source, parent: editing.sourceParent };
+  return { link: push?.ref ?? null, parent: push?.ref ? push.parent : null };
+}
+
 function freshPushState(taskId: string): PushState {
   return { taskId, sourceId: null, ref: null, parent: null, error: null, outcomeUnknown: false };
 }
@@ -2098,9 +2111,7 @@ function DispatchModal({
    */
   const push = editing && pushState?.taskId === editing.id ? pushState : null;
   // The link this form should draw: the row's own, or the one this opening just created.
-  const taskLink = editing?.source ?? push?.ref ?? null;
-  // Display only, beside the link: the item this one is a sub-issue of, never an edge.
-  const taskParent = editing?.source ? editing.sourceParent : push?.parent ?? null;
+  const { link: taskLink, parent: taskParent } = sourceLinkFor(editing, push);
   /**
    * The form holds edits the daemon has not been told about.
    *
@@ -2139,7 +2150,7 @@ function DispatchModal({
     const r = await api.pushTaskToSource(taskId, chosen.id);
     setPending(null);
     if (r.ok && r.source) {
-      answered({ ref: r.source, parent: r.parent ?? null });
+      answered({ ref: r.source, parent: r.sourceParent ?? null });
       return;
     }
     // An accepted push that names nothing cannot be told from a created issue we failed to

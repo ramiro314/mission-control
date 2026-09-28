@@ -227,6 +227,29 @@ test("a created issue answers 200 with the linked task, records it seen, and fil
   ]);
 });
 
+test("a push filed under a planning task's issue answers with that parent, stores it, and adds no edge", async () => {
+  configure(GITHUB);
+  process.env.MISSION_GH_BIN = GH.created;
+  process.env.MC_GH_RECORD = record;
+  const parent = { sourceId: "src-gh", externalId: "acme/demo#3", url: "https://github.com/acme/demo/issues/3" };
+  const edge: Task["dependencies"][number] = {
+    type: "task", taskId: "shape", title: "shape", sessionId: "shape-session", episodeId: null,
+    agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null,
+  };
+  const { registry, push } = setup({ dependencies: [edge] });
+  registry.upsertTask(mkTask({ id: "shape", kind: "shape", status: "running", repoRoot: repo, source: parent }));
+
+  const res = await push("t1", { sourceId: "src-gh" });
+  assert.equal(res.status, 200);
+  // The reply is the updated Task, and `sourceParent` on it is what the modal reads right
+  // after the press, before any task_upsert arrives.
+  const body = (await res.json()) as Task;
+  assert.deepEqual(body.sourceParent, parent);
+  assert.deepEqual(getTask("t1")!.sourceParent, parent);
+  assert.deepEqual(getTask("t1")!.dependencies.map((d) => d.type === "task" ? d.taskId : d.type), ["shape"]);
+  assert.ok(readFileSync(record, "utf8").split("\n").includes("--parent"));
+});
+
 test("a second push of a now-linked task is a 409, not a second issue", async () => {
   configure(GITHUB);
   process.env.MISSION_GH_BIN = GH.created;
