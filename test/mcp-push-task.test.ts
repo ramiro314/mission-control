@@ -148,6 +148,7 @@ function setup() {
   return {
     pushTask: (taskId: string, sourceId?: string) => post("/mcp/push-task", { taskId, ...(sourceId ? { sourceId } : {}) }),
     backlog: () => post("/mcp/backlog", { repoRoot: root }),
+    post,
   };
 }
 
@@ -274,4 +275,33 @@ test("list_backlog_tasks reports the mirror choice from the registry", async () 
     sources: [{ id: "src-gh", label: "demo issues", kind: "GitHub issues", relates: true }],
     unavailable: null,
   });
+});
+
+test("list_backlog_tasks naming a repository reports that repository's mirror choice", async () => {
+  // The caller sits in a repository with no task source; the named one has GitHub issues.
+  const caller = join(repos, "caller");
+  mkdirSync(caller, { recursive: true });
+  execFileSync("git", ["-C", caller, "init", "-q"]);
+  const callerRoot = realpathSync(caller);
+  configure(GITHUB);
+  const { post } = setup();
+
+  const own = await (await post("/mcp/v2/backlog", { cwd: callerRoot, repoRoot: callerRoot })).json() as {
+    repository: string; tasks: unknown[]; mirror: { sources: unknown[] };
+  };
+  assert.equal(own.repository, callerRoot);
+  assert.deepEqual(own.tasks, []);
+  assert.deepEqual(own.mirror.sources, [], "omitted: the caller's own repository, unchanged");
+
+  for (const repository of ["demo", root]) {
+    const named = await post("/mcp/v2/backlog", { cwd: callerRoot, repoRoot: callerRoot, repository });
+    assert.equal(named.status, 200, await named.clone().text());
+    const body = await named.json() as {
+      repository: string; tasks: Array<{ id: string }>; mirror: { sources: Array<{ id: string }>; unavailable: string | null };
+    };
+    assert.equal(body.repository, root);
+    assert.ok(body.tasks.some((task) => task.id === "ticket-1"), `${repository}: the named repository's backlog`);
+    assert.deepEqual(body.mirror.sources.map((source) => source.id), ["src-gh"]);
+    assert.equal(body.mirror.unavailable, null);
+  }
 });

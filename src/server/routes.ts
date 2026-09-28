@@ -74,6 +74,7 @@ import {
   type McpAdoptTicket,
   type McpCreateTicket,
   McpListBacklogSchema,
+  McpListBacklogV2Schema,
   McpPushTaskSchema,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
@@ -510,7 +511,7 @@ import {
   resolveTaskExtraRepoRoots,
   resolveTaskRepoRoot,
 } from "./repos.ts";
-import { prepareTaskRepositories } from "./task-repository-preparation.ts";
+import { prepareTaskRepositories, resolveRepositorySelector } from "./task-repository-preparation.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   readSubmissionImageBody,
@@ -4630,12 +4631,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * backlog-only rule, the new-edge refusals and the cycle check are the ones every other
    * dependency edit gets. Adopting is the one way `create_task` can close a cycle: the task
    * already exists, so something may already wait on it.
+   *
+   * The task must belong to the caller's repository or to the one `targetRepository` names -
+   * the repositories `list_backlog_tasks` could have offered it from - so a guessed or stale id
+   * cannot hang a ticket's edges on another repository's work.
    */
   async function adoptMcpTask(c: Context, data: McpAdoptTicket) {
     const dependencies = mcpTaskDependencies(c, data);
     if (dependencies instanceof Response) return dependencies;
+    const named = data.targetRepository === undefined
+      ? null
+      : await resolveRepositorySelector(data.targetRepository);
+    if (named && !named.ok) return c.json({ error: named.error }, named.status);
     const task = registry.getTask(data.adoptTaskId);
     if (!task) return c.json({ error: "no such task to adopt" }, 404);
+    const caller = await resolveTaskRepoRoot(data.repoRoot);
+    const allowed = [caller.ok ? caller.repoRoot : null, named?.ok ? named.repoRoot : null];
+    if (!allowed.includes(task.repoRoot)) {
+      return c.json({
+        error:
+          `the task to adopt belongs to ${task.repoRoot}, which is neither this session's ` +
+          `repository nor the named repository; name it as repository to adopt from it`,
+      }, 409);
+    }
     if (task.status !== "backlog") {
       return c.json({ error: `the task to adopt is ${task.status}, not in the backlog` }, 409);
     }
@@ -4679,14 +4697,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   /**
    * The calling repository's open backlog, so a ticket breakdown can offer each ticket the
    * existing task it might adopt. Read-only, and only the fields that choice needs: the
-   * intent itself stays on the board.
+   * intent itself stays on the board. The v2 route may name another `repository`, resolved
+   * like `create_task`'s selector; the tasks and the mirror choice then both come from it.
    */
-  app.post("/mcp/backlog", async (c) => {
-    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const parsed = await parseBody(c, McpListBacklogSchema);
-    if (!parsed.ok) return parsed.res;
-    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+  async function listMcpBacklog(c: Context, repoRoot: string, repository: string | undefined) {
+    const resolved = repository === undefined
+      ? { status: 400 as const, ...(await resolveTaskRepoRoot(repoRoot)) }
+      : await resolveRepositorySelector(repository);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
     const backlog = tasks
       .list()
       .filter((task) => task.status === "backlog" && task.repoRoot === resolved.repoRoot)
@@ -4699,6 +4717,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           dependency.type === "task" ? [dependency.taskId] : []),
       }));
     return c.json({ repository: resolved.repoRoot, tasks: backlog, mirror: mirrorChoice(resolved.repoRoot) });
+  }
+
+  app.post("/mcp/backlog", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListBacklogSchema);
+    if (!parsed.ok) return parsed.res;
+    return listMcpBacklog(c, parsed.data.repoRoot, undefined);
+  });
+
+  app.post("/mcp/v2/backlog", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListBacklogV2Schema);
+    if (!parsed.ok) return parsed.res;
+    return listMcpBacklog(c, parsed.data.repoRoot, parsed.data.repository);
   });
 
   /**

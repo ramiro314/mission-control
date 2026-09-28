@@ -51,6 +51,23 @@ async function resolveSelector(selector: string): Promise<
 }
 
 /**
+ * Resolve one repository selector the way `create_task`'s `repository` is resolved - an
+ * absolute path, or a unique repository directory name - to its canonical repository root.
+ * 400 when nothing matches, 409 when a name is ambiguous. No kind or harness policy applies:
+ * this names a repository, it does not prepare a task for one.
+ */
+export async function resolveRepositorySelector(selector: string): Promise<
+  | { ok: true; repoRoot: string }
+  | { ok: false; status: 400 | 409; error: string }
+> {
+  const selected = await resolveSelector(selector);
+  if (!selected.ok) return selected;
+  const resolved = await resolveTaskRepoRoot(selected.path);
+  if (!resolved.ok) return { ok: false, status: 400, error: resolved.error };
+  return { ok: true, repoRoot: resolved.repoRoot };
+}
+
+/**
  * Resolve a task's complete repository set and the harness that must be able to reach it.
  * Git identity stays in `repos.ts`; this module only coordinates selector addressing with
  * the existing task-kind default and multi-repository capability policy.
