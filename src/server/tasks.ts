@@ -9,7 +9,7 @@ import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
   AgentType,
@@ -69,6 +69,7 @@ import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 import {
   branchReleasedByReset,
+  checkoutWouldLoseWork,
   injectPrompt,
   kill,
   nameRulesFor,
@@ -5728,11 +5729,63 @@ export class TaskManager {
   }
 
   /**
+   * Could this task's Mission Control-provisioned checkouts be freed without losing work?
+   * Null for an unknown task.
+   *
+   * Backs the Complete dialog's "Free this task's worktree" default and, under `ifSafe`, the
+   * re-check `reclaim` runs after the agent is stopped. `applicable` is false when there is
+   * nothing Mission Control owns to free: an assigned task (no provisioned tree) or a
+   * pipeline task (its workspace belongs to the provider).
+   *
+   * Each checkout goes through `checkoutWouldLoseWork`. Local-only commits are excused only
+   * when they are contained in a merged work-episode PR's recorded head, which is why this
+   * lives here: the binding reads behind `mergedPrFor` stay private.
+   */
+  async worktreeFreeability(
+    id: string,
+  ): Promise<{ applicable: boolean; freeable: boolean; reasons: string[] } | null> {
+    const t = this.registry.getTask(id);
+    if (!t) return null;
+    const trees = [
+      { repoRoot: t.repoRoot, worktreePath: t.worktreePath },
+      ...t.extraRepos,
+    ].filter((tree): tree is { repoRoot: string; worktreePath: string } => Boolean(tree.worktreePath));
+    if (trees.length === 0 || t.pipelineRun !== null || providerOwnsTaskCompletion(t.kind)) {
+      return { applicable: false, freeable: false, reasons: [] };
+    }
+    const excuseCommitsAncestorOf = this.mergedPrHeadShasFor(id);
+    const reasons: string[] = [];
+    for (const tree of trees) {
+      const loss = await checkoutWouldLoseWork(tree.worktreePath, { excuseCommitsAncestorOf });
+      const prefix = trees.length > 1 ? `${basename(tree.repoRoot)}: ` : "";
+      reasons.push(...loss.reasons.map((reason) => prefix + reason));
+    }
+    return { applicable: true, freeable: reasons.length === 0, reasons };
+  }
+
+  /** Every merged work-episode binding's recorded PR head, from the bindings `mergedPrFor` reads. */
+  private mergedPrHeadShasFor(taskId: string): string[] {
+    const current = taskWorkEpisodeForTask(taskId);
+    return [...(current ? [current] : []), ...historicalTaskWorkEpisodeBindingsForTask(taskId)]
+      .filter((binding) => binding.mergedAt !== null && binding.prHeadSha)
+      .map((binding) => binding.prHeadSha!);
+  }
+
+  /**
    * Free a terminal task's leftover worktree + agent (the explicit, confirmed
    * "reclaim" action) while KEEPING its status and outcome - unlike cancel, which
    * aborts an active task.
+   *
+   * `beforeTeardown` runs after the agent is stopped and archives are settled, immediately
+   * before teardown, under the same reservation. A non-null answer keeps every resource
+   * recorded and refuses with "worktree kept: <reason>". The Complete dialog's `ifSafe`
+   * uses it so its safety check sees the tree the stopped agent left, not the one it was
+   * still writing to. Callers that pass nothing behave exactly as before.
    */
-  async reclaim(id: string): Promise<Ok> {
+  async reclaim(
+    id: string,
+    options: { beforeTeardown?: () => Promise<string | null> } = {},
+  ): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     // Reserved for the same reason the automatic path is, and against the same set of
@@ -5742,12 +5795,16 @@ export class TaskManager {
     return this.withCleanupReservation<Ok>(
       id,
       { ok: false, error: "this task's resources are already being cleaned up" },
-      () => this.reclaimReserved(id, t),
+      () => this.reclaimReserved(id, t, options.beforeTeardown),
     );
   }
 
   /** `reclaim`'s body, once the reservation is held. */
-  private async reclaimReserved(id: string, t: Task): Promise<Ok> {
+  private async reclaimReserved(
+    id: string,
+    t: Task,
+    beforeTeardown?: () => Promise<string | null>,
+  ): Promise<Ok> {
     try {
       await this.quiesceLaunchedAgentBeforeCapture(t);
     } catch (error) {
@@ -5761,6 +5818,8 @@ export class TaskManager {
     // last chance here, because after this line its report is gone.
     const archived = await this.settleArchivesBeforeTeardown(id);
     if (!archived.ok) return archived;
+    const kept = beforeTeardown ? await beforeTeardown() : null;
+    if (kept !== null) return { ok: false, error: `worktree kept: ${kept}` };
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;

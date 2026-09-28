@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { TaskFreePreview } from "@shared/protocol.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { retroBackstopOffer, retroOutcome } from "../lib/retro-offer.ts";
@@ -29,6 +30,7 @@ export function CompleteModal({
   tasks,
   tourOutcome,
   onCompleted,
+  onNotice,
   onClose,
 }: {
   session: Session;
@@ -41,6 +43,8 @@ export function CompleteModal({
   tourOutcome?: string;
   /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
   onCompleted?: () => void;
+  /** A success worth flashing once the dialog is gone ("Task completed · worktree freed"). */
+  onNotice?: (notice: string) => void;
   onClose: () => void;
 }): React.JSX.Element {
   const task = session.task;
@@ -74,6 +78,34 @@ export function CompleteModal({
       : null;
   /** A success worth saying out loud - today, only the retro that became a backlog task. */
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * "Free this task's worktree": the server's read of whether freeing is safe, fetched on
+   * open. `undefined` while it is being asked, `null` when it could not answer - which hides
+   * the box rather than blocking Complete. The box defaults to `freeable` every time the
+   * dialog opens; nothing is remembered.
+   */
+  const [freePreview, setFreePreview] = useState<TaskFreePreview | null | undefined>(undefined);
+  const [freeWorktree, setFreeWorktree] = useState(false);
+  const taskId = task?.id ?? null;
+  useEffect(() => {
+    if (!taskId || tourPreview) {
+      setFreePreview(null);
+      return;
+    }
+    let live = true;
+    setFreePreview(undefined);
+    void api.taskFreePreview(taskId).then((preview) => {
+      if (!live) return;
+      setFreePreview(preview);
+      setFreeWorktree(preview?.applicable === true && preview.freeable);
+    });
+    return () => {
+      live = false;
+    };
+  }, [taskId, tourPreview]);
+  const freeOffered = freePreview === undefined || freePreview?.applicable === true;
+  const worktreeNoun = (task?.repoPrs?.length ?? 0) > 0 ? "worktrees" : "worktree";
+  const freeChecked = freePreview?.applicable === true && freeWorktree;
 
   /**
    * The last place a retro can be offered, for the session that never opened a pull request.
@@ -112,6 +144,10 @@ export function CompleteModal({
     if (!canComplete || !task) return;
     setBusy(true);
     setError(null);
+    // Ticked: the daemon frees the tree after recording `done`, and its Clean up stops the
+    // agent, so there is no separate kill. `discardWork` only when the operator ticked a box
+    // the preview had left clear because freeing would lose work.
+    const free = freeChecked ? (freePreview?.freeable ? "ifSafe" : "discardWork") : undefined;
     // An outcome is useful context, not permission to finish. Keep the wire contract's
     // non-empty outcome by supplying the plain status when the operator has nothing to
     // add; callers that do have a result still preserve it verbatim.
@@ -122,6 +158,7 @@ export function CompleteModal({
       satisfy,
       undefined,
       activeScoutWarning !== null,
+      free,
     );
     if (!completed.ok) {
       setBusy(false);
@@ -131,6 +168,24 @@ export function CompleteModal({
       }
       setScoutWarning(null);
       setError(completed.error ?? "could not complete the task");
+      return;
+    }
+    // Only an explicit `freed: true` means reclaim ran and stopped the agent. Anything else -
+    // a refusal, or `freed: false` because the task had nothing to free by the time it was
+    // confirmed - still owes today's kill, so the agent is never left running.
+    if (free && completed.freed === true) {
+      setBusy(false);
+      onNotice?.(`Task completed · ${worktreeNoun} freed`);
+      onCompleted?.();
+      close();
+      return;
+    }
+    if (free && completed.freeError) {
+      // Completion stands; only the free failed. Best-effort stop, since a refusal before
+      // reclaim's own stop leaves the agent up; then stay open so the operator reads why.
+      await api.kill(session.id);
+      setBusy(false);
+      setError(`Task completed, but the ${worktreeNoun} could not be freed: ${completed.freeError}`);
       return;
     }
     // The task is recorded before the agent stop is requested, and the order matters: a stop
@@ -240,6 +295,38 @@ export function CompleteModal({
                   </span>
                 )}
               </label>
+
+              {freeOffered && (
+                <label className="complete-satisfy">
+                  <Tooltip
+                    label={
+                      freePreview?.freeable === false
+                        ? "Runs Clean up after completing even though this would lose the work listed below"
+                        : "Runs Clean up after completing, returning the checkout to its pool"
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={freeChecked}
+                      disabled={busy || freePreview === undefined}
+                      onChange={(e) => setFreeWorktree(e.target.checked)}
+                    />
+                  </Tooltip>
+                  <span>
+                    {freePreview === undefined ? "checking…" : `Free this task's ${worktreeNoun}`}
+                  </span>
+                </label>
+              )}
+              {freePreview?.applicable && (
+                <p className="complete-satisfy-why">Also closes this task's terminal</p>
+              )}
+              {freePreview?.applicable && !freePreview.freeable && (
+                <ul className="complete-dependents" aria-label="Why the worktree is not freed by default">
+                  {freePreview.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              )}
 
               {dependents.length > 0 && (
                 <label className="complete-satisfy">
