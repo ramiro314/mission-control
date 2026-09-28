@@ -196,6 +196,14 @@ export interface PushResult {
    * `wasRefused`, which is the same rule for the same reason.
    */
   outcomeUnknown: boolean;
+  /**
+   * The draft's blockers the implementation confirms it wrote as blocking links, possibly
+   * none. Set only on a clean create by a `canRelate` kind; absent when it cannot vouch for
+   * them (a partial failure, a kind that writes no links). Push records exactly these as the
+   * task's `dependencies` sync baseline, so an absent list leaves that group with no
+   * baseline rather than claiming links that may never have landed.
+   */
+  blockedBy?: TaskSourceRef[];
 }
 
 /**

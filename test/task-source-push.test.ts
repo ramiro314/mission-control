@@ -248,6 +248,30 @@ test("pushTask hands the relations to the source through the registry and report
   assert.equal(countTaskSourceSeen("src-1"), 1);
 });
 
+test("a push records the blockers the source wrote as the dependencies baseline, and nothing it did not", async () => {
+  const { tasks, ticket } = relationsFixture();
+  // The source confirms only #3: #5 went out in the draft but is not claimed as written.
+  const r = await pushTask(mkSource(), ticket, tasks, {
+    push: spy({ ref: item(12), error: null, outcomeUnknown: false, blockedBy: [item(3)] }).push,
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(getSourceSync("ticket")!.baseline!.blockedBy, [{ externalId: "acme/demo#3", url: item(3).url }]);
+});
+
+test("a clean push that wrote no blockers records an empty dependencies baseline, not none", async () => {
+  const { tasks, task } = setup();
+  const r = await pushTask(mkSource(), task, tasks, { push: spy({ ...created, blockedBy: [] }).push });
+  assert.equal(r.ok, true);
+  assert.deepEqual(getSourceSync(task.id)!.baseline?.blockedBy, []);
+});
+
+test("a push whose source cannot vouch for its links records no dependencies baseline", async () => {
+  const { tasks, ticket } = relationsFixture();
+  const r = await pushTask(mkSource(), ticket, tasks, { push: spy({ ref: item(12), error: null, outcomeUnknown: false }).push });
+  assert.equal(r.ok, true);
+  assert.equal(getSourceSync("ticket")!.baseline, null);
+});
+
 // ---- refusal vs unknown outcome: the distinction that prevents a double-created issue ----
 
 test("an upstream refusal writes nothing at all", async () => {

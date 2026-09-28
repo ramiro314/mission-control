@@ -369,6 +369,42 @@ test("a pushed task with local blockers and no baseline is flagged for review, n
   assert.equal(getSourceSync(pushed.id)!.origin,"pushed");
   assert.equal((await refresh(src,tasks,[{...candidate(7),blockedBy:[]}])).unchanged,1);
 });
+// A push records the blockers it wrote upstream as the dependencies baseline.
+async function setupPushed(local:number[],written:number[]){
+  const {src,registry,tasks,byRef}=await setupRelated();
+  const pushed=mkTask({id:"pushed",source:null,title:"Written here"}); registry.upsertTask(pushed);
+  await tasks.update(pushed.id,{dependencies:local.map((n)=>({type:"task" as const,taskId:byRef(n).id}))});
+  assert.ok(tasks.attachSource(pushed.id,candidate(7).ref,inTransaction,blockedBy(...written)).ok);
+  const remote=(...ns:number[])=>({...candidate(7),title:"Renamed upstream",blockedBy:blockedBy(...ns)});
+  return {src,tasks,byRef,pushed,remote};
+}
+test("after a push, an upstream-added or upstream-removed blocker merges without review",async()=>{
+  const {src,tasks,byRef,pushed,remote}=await setupPushed([2],[2]);
+  assert.deepEqual(getSourceSync(pushed.id)!.baseline!.blockedBy!.map((b)=>b.externalId),["acme/demo#2"]);
+  assert.equal((await refresh(src,tasks,[remote(2,3)])).updated,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(2).id}`,`task:${byRef(3).id}`].sort());
+  assert.equal((await refresh(src,tasks,[remote(3)])).updated,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+  assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===pushed.id)!.conflicts.length,0);
+  assert.equal(getTask(pushed.id)!.title,"Written here");
+});
+test("after a push that wrote no blockers, an upstream-added blocker merges without review",async()=>{
+  const {src,tasks,byRef,pushed,remote}=await setupPushed([],[]);
+  assert.deepEqual(getSourceSync(pushed.id)!.baseline!.blockedBy,[]);
+  assert.equal((await refresh(src,tasks,[remote(3)])).updated,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+  assert.equal(getSourceSync(pushed.id)!.pending,null);
+});
+test("after a push, a local blocker that never went out is not read as removed upstream",async()=>{
+  // #3 is a local blocker this source holds an item for, but it was not written upstream.
+  const {src,tasks,byRef,pushed,remote}=await setupPushed([2,3],[2]);
+  assert.equal((await refresh(src,tasks,[remote(2)])).unchanged,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(2).id}`,`task:${byRef(3).id}`].sort());
+  assert.equal(getSourceSync(pushed.id)!.pending,null);
+  // Upstream dropping the one it holds collides with the local-only edit: reviewed, never applied.
+  assert.equal((await refresh(src,tasks,[remote()])).conflicted,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(2).id}`,`task:${byRef(3).id}`].sort());
+});
 test("a synced edge that would close a cycle is refused whole and reported",async()=>{
   const {src,tasks,task,byRef}=await setupRelated();
   await tasks.update(byRef(2).id,{dependencies:[{type:"task",taskId:task.id}]});

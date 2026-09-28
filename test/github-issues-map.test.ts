@@ -295,11 +295,15 @@ test("shell metacharacters in a title or body are arguments, not syntax", () => 
   assert.equal(args[5], nasty);
 });
 
+/** A draft with no relations, for the cases that are not about blockers. */
+const DRAFT = { title: "t", intent: "b" };
+
 test("a created issue is identified by the URL gh printed, the same id a sweep would give it", () => {
   const r = pushResultFrom(
     stubRun({ stdout: "https://github.com/acme/widgets/issues/42\n", stderr: "", code: 0 }),
     ctx,
     "acme/widgets",
+    DRAFT,
   );
   assert.equal(r.error, null);
   assert.equal(r.outcomeUnknown, false);
@@ -313,6 +317,21 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   assert.equal(r.ref!.externalId, externalIdFor(r.ref!.url!));
 });
 
+test("a clean create reports the blockers it wrote; a partial failure vouches for none", () => {
+  const blocker = (n: number, url: string | null) => ({ sourceId: "src-1", externalId: `acme/widgets#${n}`, url });
+  const draft = { title: "t", intent: "b", blockedBy: [blocker(3, "https://github.com/acme/widgets/issues/3"), blocker(4, null)] };
+  const out = "https://github.com/acme/widgets/issues/42\n";
+  // The URL-less blocker never went out as `--blocked-by`.
+  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets", draft);
+  assert.deepEqual(clean.blockedBy, [draft.blockedBy[0]]);
+  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not link", code: 1 }), ctx, "acme/widgets", draft);
+  assert.equal(partial.ref?.externalId, "acme/widgets#42");
+  assert.equal(partial.blockedBy, undefined);
+  // A clean create with no blockers vouches for "none written", which is not "unknown".
+  const none = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets", DRAFT);
+  assert.deepEqual(none.blockedBy, []);
+});
+
 // `gh` prints progress above the URL, so the URL is the LAST such line rather than the
 // first - taking the first would make a chatty release turn a progress line into the id.
 test("progress chatter above the URL is not mistaken for it", () => {
@@ -324,6 +343,7 @@ test("progress chatter above the URL is not mistaken for it", () => {
     }),
     ctx,
     "acme/widgets",
+    DRAFT,
   );
   assert.equal(r.ref!.url, "https://github.com/acme/widgets/issues/9");
 });
@@ -336,6 +356,7 @@ test("a non-zero gh exit is a refusal that names itself, and is retry-safe", () 
     stubRun({ stdout: "", stderr: "could not add label: 'triage' not found\n", code: 1 }),
     ctx,
     "acme/widgets",
+    DRAFT,
   );
   assert.equal(r.ref, null);
   assert.match(r.error!, /gh issue create failed: could not add label: 'triage' not found/);
@@ -350,6 +371,7 @@ test("a gh that never reported back is an UNKNOWN outcome, not a refusal", () =>
     { stdout: "", stderr: "timed out", code: null, outcomeUnknown: true, overflowed: false },
     ctx,
     "acme/widgets",
+    DRAFT,
   );
   assert.equal(r.ref, null);
   assert.equal(r.outcomeUnknown, true);
@@ -365,6 +387,7 @@ test("exit 0 with no URL is an unknown outcome - the issue exists and cannot be 
     stubRun({ stdout: "done\n", stderr: "", code: 0 }),
     ctx,
     "acme/widgets",
+    DRAFT,
   );
   assert.equal(r.ref, null);
   assert.equal(r.outcomeUnknown, true);
@@ -386,6 +409,7 @@ test("an unknown outcome outranks whatever exit code came with it", () => {
       },
       ctx,
       "acme/widgets",
+      DRAFT,
     );
     assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);
     assert.equal(r.ref, null);
