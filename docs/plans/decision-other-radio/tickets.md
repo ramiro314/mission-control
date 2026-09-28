@@ -5,7 +5,7 @@ no task source is configured for this repository.
 
 | # | Title | Kind | Labels | Blocked by | Task |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Decision forms: Other as its own radio choice | bugfix | decision-other-radio | None (gated on the planning session) | 2c8ebe69-6489-4f11-8029-0b66b6280b53 |
+| 1 | Decision forms: Other as its own radio choice | bugfix | decision-other-radio | Planning session (its PR must merge first) | 2c8ebe69-6489-4f11-8029-0b66b6280b53 |
 
 ## Ticket 1: Decision forms: Other as its own radio choice
 
@@ -16,7 +16,7 @@ its text box, selects Other and clears the preselected recommended option. Picki
 option deselects Other, and the typed text stays visible but is not sent. Multi-choice questions
 keep today's additive Other.
 
-**Blocked by:** None - can start immediately.
+**Blocked by:** No other ticket. Gated on the planning session: it starts only after the planning pull request merges, because that merge is what puts docs/plans/decision-other-radio/plan.md on main for this ticket to read.
 
 **Acceptance criteria:**
 - [ ] A single-choice question with Other renders an Other radio in the same group as the listed options. Multi-choice questions are unchanged.
@@ -31,3 +31,8 @@ keep today's additive Other.
 **Test seams:** the form's exported pure helpers and static markup, in the plan-decisions unit test file. A new Playwright spec drives a single-choice question through typing, switching back, Tab versus click, and empty-Other Submit, using fake agents only.
 
 Context: read docs/plans/decision-other-radio/plan.md (sections "Behavior" and "Implementation") first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
+
+Note: the filed task's intent text was created before this correction and still reads "None -
+can start immediately". The gate is still enforced: the task was created with
+`dependsOnCurrentSession: true`, so Mission Control keeps it in the backlog until this planning
+session's pull request merges. This file is the corrected record.
