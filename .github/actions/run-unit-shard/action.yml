@@ -79,8 +79,9 @@ runs:
         MISSION_TEST_SHARD: ${{ inputs.shard }}/${{ inputs.shard-total }}
         MISSION_TEST_JUNIT: ${{ runner.temp }}/flake/junit.xml
 
-    # The rerun command is `npm test`'s own node command with the shard's failed files in
-    # place of the glob; `{junit}` is where the rerun writes its results.
+    # The rerun goes through `test:run`, the same script `npm test` runs, with the shard's failed
+    # files in place of the glob, so the two runs cannot disagree about how JUnit is produced.
+    # `{junit}` is where the rerun writes its results.
     - name: Rerun failed test files once
       uses: ./.github/actions/mission-flake-report
       with:
@@ -88,7 +89,7 @@ runs:
         job: unit (node ${{ inputs.node-version }}, shard ${{ inputs.shard }}/${{ inputs.shard-total }})
         junit: ${{ runner.temp }}/flake/junit.xml
         exit-code: ${{ steps.test.outputs.exit-code }}
-        rerun-command: xvfb-run -a node --test --import ./test/setup-state.mjs --import tsx --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination={junit} {files}
+        rerun-command: xvfb-run -a env MISSION_TEST_JUNIT={junit} npm run --silent test:run -- {files}
         report: ${{ runner.temp }}/flake/report.json
 
     # Unique per leg: `upload-artifact@v4` refuses the same name twice in one run. The

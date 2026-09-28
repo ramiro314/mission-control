@@ -20,10 +20,11 @@ The report action, `.github/actions/mission-flake-report/`, runs in two modes.
 
 **`mode: rerun`**, a step in each test job:
 
-- **Unit shards** (`.github/actions/run-unit-shard/action.yml`). `npm test` writes JUnit XML
-  when `MISSION_TEST_JUNIT` names a path, and the shard records its exit code instead of
-  failing. The action reads the results, reruns only the failed files once with its
-  `rerun-command` template, and compares. `{files}` becomes one argument per failed file and
+- **Unit shards** (`.github/actions/run-unit-shard/action.yml`). `npm test` runs the
+  `test:run` script, which writes JUnit XML when `MISSION_TEST_JUNIT` names a path, and the shard
+  records its exit code instead of failing. The action reads the results, reruns only the failed
+  files once with its `rerun-command` template (`test:run` again, over the failed files), and
+  compares. `test:run` is the one owner of how this repository gets JUnit out of `node --test`. `{files}` becomes one argument per failed file and
   `{junit}` the rerun's results path, the same template contract as the
   [`affected-tests` gate](workflows.md#affected-tests). The rerun's environment carries
   `MISSION_FLAKE_RERUN=1`.
@@ -94,6 +95,11 @@ One issue per flaky test, labelled with the `flakes.label` from the committed
   GitHub's own timestamps.
 - **Fixed**: the fix PR closes the issue (`Fixes #n`). On its next run the action removes the
   actionable label from any closed flake issue.
+- **Concurrent runs**: GitHub has no conditional create, so two runs that meet the same new
+  flake at once can each open an issue. Each re-lists after creating; the higher-numbered issue
+  replaces its key marker with `<!-- mission-flake-duplicate:v1 of=<n> -->`, closes itself, and
+  its occurrence goes to the lowest-numbered one. Occurrences are also recounted after each
+  comment is posted, so two runs recording at once still cross the threshold.
 - **Flakes again after a fix**: the action reopens the issue, drops the actionable label, and
   counting starts over from the reopen.
 

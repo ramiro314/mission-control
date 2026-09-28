@@ -4212,6 +4212,9 @@ function renderFlakeSummary(report) {
 function flakeIssueMarker(key) {
   return `<!-- mission-flake:v1 key=${key} -->`;
 }
+function flakeDuplicateMarker(canonical) {
+  return `<!-- mission-flake-duplicate:v1 of=${canonical} -->`;
+}
 function parseFlakeIssueKey(body) {
   const match = /<!-- mission-flake:v1 key=([0-9a-f]+) -->/.exec(body ?? "");
   return match ? match[1] : null;
@@ -4441,18 +4444,25 @@ async function lastReopened(client, repo, issue) {
   }
   return latest;
 }
+function indexByKey(listed) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const issue of listed) {
+    if (issue.pull_request) continue;
+    const key = parseFlakeIssueKey(issue.body);
+    if (!key) continue;
+    const seen = byKey.get(key);
+    if (!seen || issue.number < seen.number) byKey.set(key, issue);
+  }
+  return byKey;
+}
 async function updateFlakeIssues(opts) {
   const { client, ctx, flakes, now } = opts;
   const repo = ctx.repository;
   await ensureLabel(client, repo, flakes.label, "d4c5f9", "A test that failed and then passed on rerun in CI");
   await ensureLabel(client, repo, flakes.actionableLabel, "b60205", "A flaky test that crossed the occurrence threshold");
-  const listed = await client.paginate(`/repos/${repo}/issues?labels=${enc(flakes.label)}&state=all`);
-  const byKey = /* @__PURE__ */ new Map();
-  for (const issue of listed) {
-    if (issue.pull_request) continue;
-    const key = parseFlakeIssueKey(issue.body);
-    if (key && !byKey.has(key)) byKey.set(key, issue);
-  }
+  const listPath = `/repos/${repo}/issues?labels=${enc(flakes.label)}&state=all`;
+  const listed = await client.paginate(listPath);
+  const byKey = indexByKey(listed);
   const groups = /* @__PURE__ */ new Map();
   for (const entry of opts.report.flakes) {
     const group = groups.get(entry.key);
@@ -4460,10 +4470,20 @@ async function updateFlakeIssues(opts) {
     else groups.set(entry.key, [entry]);
   }
   const windowStart = new Date(now.getTime() - flakes.windowDays * DAY_MS);
+  const countOccurrences = async (issue) => {
+    const reopenedAt = await lastReopened(client, repo, issue.number);
+    const since = reopenedAt && reopenedAt > windowStart ? reopenedAt : windowStart;
+    const comments = await client.paginate(`/repos/${repo}/issues/${issue.number}/comments`);
+    const dated = [
+      { text: issue.body, at: issue.created_at },
+      ...comments.map((comment) => ({ text: comment.body, at: comment.created_at }))
+    ];
+    return dated.filter((item) => item.at !== void 0 && new Date(item.at) > since && parseFlakeOccurrences(item.text).length > 0).length;
+  };
   const results = [];
   for (const [key, entries] of groups) {
     const occurrence = occurrenceBlock(entries, ctx, now);
-    const existing = byKey.get(key);
+    let existing = byKey.get(key);
     if (!existing) {
       const actionable2 = flakes.actionableAfter <= 1;
       const created = await client.request("POST", `/repos/${repo}/issues`, {
@@ -4471,26 +4491,28 @@ async function updateFlakeIssues(opts) {
         body: issueBody(entries[0], flakes, occurrence),
         labels: actionable2 ? [flakes.label, flakes.actionableLabel] : [flakes.label]
       });
-      results.push({ key, number: created.number, url: created.html_url, occurrences: 1, actionable: actionable2 });
-      continue;
+      const canonical = indexByKey(await client.paginate(listPath)).get(key);
+      if (!canonical || canonical.number >= created.number) {
+        results.push({ key, number: created.number, url: created.html_url, occurrences: 1, actionable: actionable2 });
+        continue;
+      }
+      const retiredBody = (created.body ?? "").replace(flakeIssueMarker(key), flakeDuplicateMarker(canonical.number));
+      await client.request("PATCH", `/repos/${repo}/issues/${created.number}`, {
+        body: `${retiredBody}
+
+Duplicate of #${canonical.number}, which another CI run opened at the same time.`,
+        state: "closed",
+        state_reason: "not_planned"
+      });
+      existing = canonical;
     }
     const issuePath = `/repos/${repo}/issues/${existing.number}`;
-    let earlier = 0;
     const reopening = existing.state === "closed";
-    if (reopening) {
-      await client.request("PATCH", issuePath, { state: "open" });
-    } else {
-      const reopenedAt = await lastReopened(client, repo, existing.number);
-      const since = reopenedAt && reopenedAt > windowStart ? reopenedAt : windowStart;
-      const comments = await client.paginate(`${issuePath}/comments`);
-      const dated = [
-        { text: existing.body, at: existing.created_at },
-        ...comments.map((comment) => ({ text: comment.body, at: comment.created_at }))
-      ];
-      earlier = dated.filter((item) => item.at !== void 0 && new Date(item.at) > since && parseFlakeOccurrences(item.text).length > 0).length;
-    }
+    let earlier = 0;
+    if (reopening) await client.request("PATCH", issuePath, { state: "open" });
+    else earlier = await countOccurrences(existing);
     await client.request("POST", `${issuePath}/comments`, { body: occurrence });
-    const occurrences = earlier + 1;
+    const occurrences = Math.max(earlier + 1, await countOccurrences(existing));
     const actionable = occurrences >= flakes.actionableAfter;
     const hasActionable = labelNames(existing).includes(flakes.actionableLabel);
     if (actionable && !hasActionable) {

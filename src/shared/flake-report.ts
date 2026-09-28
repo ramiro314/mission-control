@@ -227,6 +227,14 @@ export function flakeIssueMarker(key: string): string {
   return `<!-- mission-flake:v1 key=${key} -->`;
 }
 
+/**
+ * Replaces the key marker on an issue retired as a duplicate (two CI runs opened one each at
+ * the same time), so the key is found on exactly one issue again.
+ */
+export function flakeDuplicateMarker(canonical: number): string {
+  return `<!-- mission-flake-duplicate:v1 of=${canonical} -->`;
+}
+
 /** The key an issue body's marker names, or null. */
 export function parseFlakeIssueKey(body: string | null | undefined): string | null {
   const match = /<!-- mission-flake:v1 key=([0-9a-f]+) -->/.exec(body ?? "");

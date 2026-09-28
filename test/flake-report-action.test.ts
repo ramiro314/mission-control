@@ -42,6 +42,17 @@ test("the committed action is exactly what the generator produces", async () => 
   assert.match(files["action.yml"]!, /using: node24/);
 });
 
+test("CI's first run and its rerun share one test invocation", () => {
+  // `npm test` and the unit shard's rerun-command both go through `test:run`, the one owner of
+  // how this repository gets JUnit out of `node --test`, so the classifier compares like with like.
+  const scripts = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
+  assert.match(scripts.test!, /^npm run --silent test:run -- /);
+  assert.match(scripts["test:run"]!, /\$\{MISSION_TEST_JUNIT:\+--test-reporter=spec .*--test-reporter=junit --test-reporter-destination=\$MISSION_TEST_JUNIT\}/);
+  const shard = readFileSync(join(root, ".github", "actions", "run-unit-shard", "action.yml"), "utf8");
+  const rerun = /^\s+rerun-command:\s*(.+)$/m.exec(shard)?.[1];
+  assert.equal(rerun, "xvfb-run -a env MISSION_TEST_JUNIT={junit} npm run --silent test:run -- {files}");
+});
+
 // JUnit fixtures, in the shape `node --test --test-reporter=junit` writes.
 function junit(cases: { name: string; file: string; failed?: boolean; classname?: string }[]): string {
   const body = cases.map((c) => {
@@ -524,6 +535,39 @@ describe("publish mode", () => {
     await publish({ ctx, reports: [jobReport([])], configText: null, client: gh.client, now: NOW });
     assert.equal(issue.state, "closed");
     assert.deepEqual(issue.labels.map((l) => l.name), ["flaky-test"]);
+  });
+
+  test("two runs that open the same new flake at once converge on one issue", async () => {
+    const gh = fakeGitHub({ now: NOW });
+    const run = () => publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    const [first, second] = await Promise.all([run(), run()]);
+    // Both created one (GitHub has no conditional create); the later one retired itself.
+    assert.equal(gh.issues.length, 2);
+    const withKey = gh.issues.filter((i) => i.body.includes(flakeIssueMarker(flake("fails").key)));
+    assert.deepEqual(withKey.map((i) => [i.number, i.state]), [[1, "open"]]);
+    const retired = gh.issues[1]!;
+    assert.equal(retired.state, "closed");
+    assert.ok(retired.body.includes("<!-- mission-flake-duplicate:v1 of=1 -->"));
+    // The retired run's occurrence landed on the canonical issue, and both checks link it.
+    assert.equal(gh.issues[0]!.comments.length, 1);
+    assert.deepEqual([first, second].map((r) => r.report.issues[0]!.number), [1, 1]);
+    assert.equal(second.report.issues[0]!.occurrences, 2);
+
+    // Later runs find only the canonical issue.
+    const later = await publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    assert.deepEqual(later.report.issues.map((i) => [i.number, i.occurrences]), [[1, 3]]);
+    assert.equal(retired.state, "closed");
+  });
+
+  test("two runs recording occurrences at once still cross the threshold", async () => {
+    const gh = fakeGitHub({ now: NOW });
+    const issue = gh.seedIssue({ key: flake("fails").key, created_at: daysAgo(1) });
+    const run = () => publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    const results = await Promise.all([run(), run()]);
+    // Body + two comments = 3: whichever run recounts after both posts adds the label.
+    assert.equal(issue.comments.length, 2);
+    assert.ok(results.some((r) => r.report.issues[0]!.actionable));
+    assert.ok(issue.labels.some((l) => l.name === "flaky-test:actionable"));
   });
 
   test("a fork PR writes nothing and says which writes it skipped", async () => {
