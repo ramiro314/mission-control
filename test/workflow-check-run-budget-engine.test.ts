@@ -249,6 +249,8 @@ const checkPolicy = () => ({
   kindWorkflowDefaults: { ship: null },
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
+  checkTestLease: false,
+  checkTestConcurrency: null,
   skipPassedJudges: true,
 });
 

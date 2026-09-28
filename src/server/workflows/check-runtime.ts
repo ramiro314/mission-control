@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
+import { slotRunsTests, type WorkflowPolicy } from "@shared/workflow.ts";
+import { acquireHostLease } from "../util/host-lease.ts";
 import type {
   CheckExecutionRequest,
   CheckExecutionResult,
@@ -78,6 +80,47 @@ export function defaultCheckTimeoutMs(slot: CheckExecutionRequest["slot"]): numb
   return slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
 }
 
+/** The two settings a test-running check reads, asked once per check. */
+export type CheckTestPolicy = Pick<WorkflowPolicy, "checkTestLease" | "checkTestConcurrency">;
+
+/** Held machine-wide while one test-running check's command runs. */
+export interface CheckTestLease {
+  release(): Promise<void>;
+}
+
+/**
+ * Take the machine-wide check test lease, waiting at most `waitMs`. `onWaiting` fires when the
+ * lease turned out to be held by somebody else, so a caller can tell a real wait from none.
+ */
+export type CheckTestLeaseAcquirer = (
+  request: { attemptId: string; waitMs: number; onWaiting: () => void },
+) => Promise<CheckTestLease>;
+
+/**
+ * Set in a test-running check's environment while this daemon holds the machine's check test
+ * lease for it, and read by a daemon from its own environment.
+ *
+ * A daemon started INSIDE a leased check - an e2e suite run as a workflow test check starts
+ * its own daemons - is already covered by its ancestor's hold, and taking the lease again
+ * would wait on its own parent until the check timed out. The e2e fixture sets it for the same
+ * reason: the e2e host lease already serialises suites, and a fixture daemon's checks are
+ * `printf`s that must not queue behind the operator's real test run.
+ */
+export const CHECK_TEST_LEASE_HELD_ENV = "MISSION_CHECK_TEST_LEASE_HELD";
+
+/** The test concurrency variable this repository's `npm test` reads. */
+export const CHECK_TEST_CONCURRENCY_ENV = "MISSION_TEST_CONCURRENCY";
+
+/** The real acquirer: `src/server/util/host-lease.ts` under the check test lease's name. */
+export const acquireCheckTestLease: CheckTestLeaseAcquirer = ({ attemptId, waitMs, onWaiting }) =>
+  acquireHostLease({
+    name: "mission-check-tests",
+    label: "Mission Control check test lease",
+    waitMs,
+    details: { attemptId },
+    onWaiting: () => onWaiting(),
+  });
+
 /** How the composed runtime is driven, and every seam a test needs to drive it without a pool. */
 export interface CheckRuntimeDeps {
   /** Defaults to the real gated supervisor. */
@@ -102,7 +145,19 @@ export interface CheckRuntimeDeps {
   db?: DatabaseSync;
   /** Defaults to asking git. See `resolveCapturedCommit`. */
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
+  /**
+   * The test lease and concurrency settings. Defaults to both OFF, so a runtime nobody wired
+   * to the operator's policy - every test that constructs one - never takes the machine lease.
+   * The daemon passes `getWorkflowPolicy`.
+   */
+  testPolicy?: () => CheckTestPolicy;
+  /** Defaults to `acquireCheckTestLease`. */
+  acquireTestLease?: CheckTestLeaseAcquirer;
+  /** Where `CHECK_TEST_LEASE_HELD_ENV` is read from. Defaults to the daemon's environment. */
+  env?: NodeJS.ProcessEnv;
 }
+
+const NO_TEST_POLICY: CheckTestPolicy = { checkTestLease: false, checkTestConcurrency: null };
 
 /**
  * The composed check execution runtime.
@@ -116,6 +171,9 @@ export class CheckRuntime {
   private readonly timeoutMs: number | undefined;
   private readonly teardown: CheckGroupTeardownOptions | undefined;
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
+  private readonly testPolicy: () => CheckTestPolicy;
+  private readonly acquireTestLease: CheckTestLeaseAcquirer;
+  private readonly env: NodeJS.ProcessEnv;
 
   /**
    * Phase 3's answer to the lease manager's open question, ready to inject.
@@ -137,6 +195,9 @@ export class CheckRuntime {
     this.timeoutMs = deps.timeoutMs;
     this.teardown = deps.teardown;
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
+    this.testPolicy = deps.testPolicy ?? (() => NO_TEST_POLICY);
+    this.acquireTestLease = deps.acquireTestLease ?? acquireCheckTestLease;
+    this.env = deps.env ?? process.env;
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
       const row = store.get(attemptId);
@@ -205,6 +266,41 @@ export class CheckRuntime {
       };
     }
 
+    // The command's own timeout starts at spawn, so a wait here never eats into it. The wait
+    // has its own ceiling, the same length, and running out is infrastructure: the engine's
+    // ordinary retry asks again rather than reporting a verdict about a command never run.
+    const timeoutMs = this.timeoutMs ?? defaultCheckTimeoutMs(request.slot);
+    const runsTests = slotRunsTests(request.slot);
+    const policy = runsTests ? this.testPolicy() : NO_TEST_POLICY;
+    const extraEnv: Record<string, string> = {};
+    if (runsTests && policy.checkTestConcurrency !== null) {
+      extraEnv[CHECK_TEST_CONCURRENCY_ENV] = String(policy.checkTestConcurrency);
+    }
+    let testLease: CheckTestLease | null = null;
+    let waitedMs: number | undefined;
+    if (policy.checkTestLease && !this.env[CHECK_TEST_LEASE_HELD_ENV]) {
+      const waitStarted = Date.now();
+      let waited = false;
+      try {
+        testLease = await this.acquireTestLease({
+          attemptId: attempt.attemptId,
+          waitMs: timeoutMs,
+          onWaiting: () => { waited = true; },
+        });
+      } catch (err) {
+        // Nothing ran, so the group is empty by construction and the tree can go straight back.
+        const cleanup = await this.settle(attempt.attemptId, "empty");
+        return {
+          kind: "infrastructure",
+          reason:
+            `the ${request.slot} check could not take the machine's test lease: ${message(err)}`
+            + (cleanup.ok ? "" : `; its worktree also could not be accounted for: ${cleanup.reason}`),
+        };
+      }
+      if (waited) waitedMs = Date.now() - waitStarted;
+      extraEnv[CHECK_TEST_LEASE_HELD_ENV] = "1";
+    }
+
     let outcome: CheckSpawnOutcome;
     try {
       outcome = await this.supervise(
@@ -217,7 +313,8 @@ export class CheckRuntime {
           // unrelated checkout and report the answer as if it were about this submission.
           leasePath,
           workingSubpath: request.workingSubpath,
-          timeoutMs: this.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
+          timeoutMs,
+          extraEnv,
         },
         {
           registry: this.leases.processes,
@@ -228,12 +325,17 @@ export class CheckRuntime {
       // The supervisor is written not to throw, and a lease outliving one that did would be a
       // pool slot lost to a bug nobody can see. Resolved as unproven, which is the fail-closed
       // reading: the row and the pin are kept and reclamation asks about the group later.
+      await testLease?.release().catch(() => {});
       await this.settle(attempt.attemptId, "unknown");
       return {
         kind: "infrastructure",
         reason: `the ${request.slot} check runtime failed: ${message(err)}`,
       };
     }
+    // Released as soon as the command is done, before the tree settles: the next test check
+    // may start while this one's worktree is still being handed back. A release that fails
+    // closes nothing it can still hold - the socket closes with this process at the latest.
+    await testLease?.release().catch(() => {});
 
     // BEFORE the result surfaces, always. An `infrastructure` result reaches
     // `handleInfrastructureFailure`, which finishes this attempt and creates a fresh one, and
@@ -264,7 +366,9 @@ export class CheckRuntime {
           + `not reported because its pooled worktree could not be accounted for: ${cleanup.reason}`,
       };
     }
-    return outcome.result;
+    return waitedMs !== undefined && outcome.result.kind === "exited"
+      ? { ...outcome.result, waitedMs }
+      : outcome.result;
   }
 
   /**

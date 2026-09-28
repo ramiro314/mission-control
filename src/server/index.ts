@@ -47,6 +47,7 @@ import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
+import { getWorkflowPolicy } from "./workflows/config.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
@@ -275,7 +276,9 @@ const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
 });
-const checkRuntime = new CheckRuntime(checkLeases);
+// The operator's test lease and concurrency settings reach the executor here and nowhere
+// else, so every test-running check in this daemon reads them per check.
+const checkRuntime = new CheckRuntime(checkLeases, { testPolicy: getWorkflowPolicy });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {

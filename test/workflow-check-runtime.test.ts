@@ -937,6 +937,8 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
       kindWorkflowDefaults: { ship: null },
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true,
+      checkTestLease: false,
+      checkTestConcurrency: null,
       skipPassedJudges: true,
     }),
     workflowCommand: (slot) => ({
@@ -1014,4 +1016,183 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     1,
   );
   store.cancelRun("run-gate-block", "test_cleanup", 99);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The machine-wide check test lease and the lower test concurrency.
+// ---------------------------------------------------------------------------------------------
+
+type CheckTestLeaseAcquirer = import("../src/server/workflows/check-runtime.ts").CheckTestLeaseAcquirer;
+
+/** A recording stand-in for the machine lease, so no test here touches the real port. */
+function recordingLease(opts: { wait?: boolean; fail?: string } = {}) {
+  const events: string[] = [];
+  const acquire: CheckTestLeaseAcquirer = async ({ attemptId, waitMs, onWaiting }) => {
+    events.push(`acquire:${attemptId}:${waitMs}`);
+    if (opts.wait) {
+      onWaiting();
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+    }
+    if (opts.fail) throw new Error(opts.fail);
+    return { release: async () => { events.push("release"); } };
+  };
+  return { events, acquire };
+}
+
+function leaseRuntime(
+  over: {
+    lease: ReturnType<typeof recordingLease>;
+    policy?: { checkTestLease: boolean; checkTestConcurrency: number | null };
+    env?: NodeJS.ProcessEnv;
+    supervise?: (request: import("../src/server/workflows/check-supervisor.ts").SupervisedCheckRequest) => Promise<CheckSpawnOutcome>;
+  },
+) {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 2);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const seen: Array<{ timeoutMs: number | undefined; extraEnv: Record<string, string> | undefined; events: string[] }> = [];
+  const runtime = new CheckRuntime(leases, {
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    testPolicy: () => over.policy ?? { checkTestLease: true, checkTestConcurrency: 3 },
+    acquireTestLease: over.lease.acquire,
+    env: over.env ?? {},
+    supervise: async (request) => {
+      seen.push({ timeoutMs: request.timeoutMs, extraEnv: request.extraEnv, events: [...over.lease.events] });
+      return over.supervise ? await over.supervise(request) : {
+        result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const exec = (slot: "test" | "lint" | "typecheck" | "build", ref = attemptRef()) =>
+    runtime.executorFor(ref)({ slot, command: PASSES, repoRoot, workingSubpath: "", headSha });
+  return { exec, seen, pool };
+}
+
+test("only a test check takes the lease, and only a test check gets the lower concurrency", async () => {
+  const lease = recordingLease();
+  const { exec, seen } = leaseRuntime({ lease });
+  for (const slot of ["lint", "typecheck", "build"] as const) {
+    assert.equal((await exec(slot)).kind, "exited");
+  }
+  assert.deepEqual(lease.events, [], "lint, typecheck and build never touch the lease");
+  for (const entry of seen) assert.deepEqual(entry.extraEnv, {});
+
+  const ref = attemptRef();
+  assert.equal((await exec("test", ref)).kind, "exited");
+  // Held around the spawn: acquired before the supervisor ran, released after it returned.
+  assert.deepEqual(seen.at(-1)!.events, [`acquire:${ref.attemptId}:${60 * 60_000}`]);
+  assert.deepEqual(lease.events, [`acquire:${ref.attemptId}:${60 * 60_000}`, "release"]);
+  assert.deepEqual(seen.at(-1)!.extraEnv, {
+    MISSION_TEST_CONCURRENCY: "3",
+    MISSION_CHECK_TEST_LEASE_HELD: "1",
+  });
+});
+
+test("the lease is released when the command fails and when the runtime throws", async () => {
+  const failing = recordingLease();
+  const failed = leaseRuntime({
+    lease: failing,
+    supervise: async () => ({
+      result: { kind: "exited", exitCode: 1, output: "1 failing\n", truncatedBytes: 0 },
+      emptiness: "empty",
+      supervisor: null,
+    }),
+  });
+  const failedOutcome = await failed.exec("test");
+  assert.equal(failedOutcome.kind, "exited");
+  assert.equal(failing.events.at(-1), "release");
+
+  const throwing = recordingLease();
+  const thrown = leaseRuntime({
+    lease: throwing,
+    supervise: async () => { throw new Error("supervisor bug"); },
+  });
+  const ref = attemptRef();
+  const thrownOutcome = await thrown.exec("test", ref);
+  assert.equal(thrownOutcome.kind, "infrastructure");
+  assert.equal(throwing.events.at(-1), "release");
+  // Settled as unproven, exactly as before this change; clear it for the leak guard.
+  db.prepare("DELETE FROM workflow_check_leases WHERE attempt_id = ?").run(ref.attemptId);
+
+  const infra = recordingLease();
+  const infraRun = leaseRuntime({
+    lease: infra,
+    supervise: async () => ({
+      result: { kind: "infrastructure", reason: "killed by SIGKILL" },
+      emptiness: "empty",
+      supervisor: null,
+    }),
+  });
+  assert.equal((await infraRun.exec("test")).kind, "infrastructure");
+  assert.equal(infra.events.at(-1), "release");
+});
+
+test("a lease that cannot be taken is infrastructure, runs nothing, and returns the tree", async () => {
+  const lease = recordingLease({ fail: "Timed out waiting for the Mission Control check test lease" });
+  const { exec, seen, pool } = leaseRuntime({ lease });
+  const ref = attemptRef();
+  const outcome = await exec("test", ref);
+  assert.equal(outcome.kind, "infrastructure");
+  assert.match(
+    outcome.kind === "infrastructure" ? outcome.reason : "",
+    /could not take the machine's test lease: Timed out waiting/,
+  );
+  assert.equal(seen.length, 0, "no command ran");
+  assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+  assert.deepEqual(pool.trees.filter((t) => t.state === "leased"), []);
+});
+
+test("a check that waited says so, and its command timeout starts after the wait", async () => {
+  const lease = recordingLease({ wait: true });
+  const { exec, seen } = leaseRuntime({ lease });
+  const outcome = await exec("test");
+  assert.equal(outcome.kind, "exited");
+  assert.ok(outcome.kind === "exited" && outcome.waitedMs! >= 1_000, "the wait is measured");
+  // The supervisor, which starts the command's clock, was handed the full budget only after
+  // the lease was held.
+  assert.equal(seen[0]!.timeoutMs, 60 * 60_000);
+  assert.equal(seen[0]!.events.length, 1);
+
+  const { runCheck } = await import("../src/server/workflows/checks.ts");
+  const result = await runCheck({
+    slot: "test",
+    command: { ...emptyWorkflowCommandView("test"), defaultCommand: PASSES },
+    policy: { checksEnabled: true, repoAllowlist: ["/repo"] },
+    reserveRun: null,
+    cwd: "/repo",
+    repoRoot: "/repo",
+    headSha: "abc",
+  }, {
+    checkoutSubpath: async () => "",
+    execute: async () => ({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0, waitedMs: 192_000 }),
+  });
+  assert.equal(result.kind, "outcome");
+  assert.match(
+    result.kind === "outcome" ? result.outcome.note : "",
+    /passed\. Waited 3m 12s for another test check to finish\.$/,
+  );
+});
+
+test("the settings switch the lease and the variable off, and a nested daemon skips the lease", async () => {
+  const off = recordingLease();
+  const offRun = leaseRuntime({ lease: off, policy: { checkTestLease: false, checkTestConcurrency: null } });
+  assert.equal((await offRun.exec("test")).kind, "exited");
+  assert.deepEqual(off.events, []);
+  assert.deepEqual(offRun.seen[0]!.extraEnv, {});
+
+  const nested = recordingLease();
+  const nestedRun = leaseRuntime({
+    lease: nested,
+    env: { MISSION_CHECK_TEST_LEASE_HELD: "1" },
+    policy: { checkTestLease: true, checkTestConcurrency: 2 },
+  });
+  assert.equal((await nestedRun.exec("test")).kind, "exited");
+  assert.deepEqual(nested.events, [], "a daemon inside a leased check is already covered");
+  assert.deepEqual(nestedRun.seen[0]!.extraEnv, { MISSION_TEST_CONCURRENCY: "2" });
 });

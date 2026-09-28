@@ -117,7 +117,7 @@
   "GET /api/workflows/:id/versions": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/:id/versions/:version": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/:id/versions/:version/export": "503 {\"error\":\"Workflow manager unavailable\"}",
-  "GET /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"kindWorkflowDefaults\":{},\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
+  "GET /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"checkTestConcurrency\":3,\"checkTestLease\":true,\"kindWorkflowDefaults\":{},\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
   "GET /api/workflows/status": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/test-evidence-audit": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/worktrees": "503 {\"error\":\"worktree operations unavailable\"}",
@@ -330,6 +330,6 @@
   "PUT /api/terminals/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"message\\\": \\\"empty config update\\\",\\n    \\\"path\\\": []\\n  }\\n]\"}",
   "PUT /api/ui/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"message\\\": \\\"empty config update\\\",\\n    \\\"path\\\": []\\n  }\\n]\"}",
   "PUT /api/workflow-commands/:slot": "503 {\"error\":\"Command catalog unavailable\"}",
-  "PUT /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"kindWorkflowDefaults\":{},\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
+  "PUT /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"checkTestConcurrency\":3,\"checkTestLease\":true,\"kindWorkflowDefaults\":{},\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
   "PUT /api/worktrees/config": "503 {\"error\":\"worktree operations unavailable\"}"
 }

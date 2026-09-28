@@ -136,6 +136,9 @@ export const WORKFLOW_LIMITS = {
    * operator is least likely to look at.
    */
   commandMaxRunsMin: 1,
+  /** The `checkTestConcurrency` range: at least one test file at a time, at most 32. */
+  checkTestConcurrencyMin: 1,
+  checkTestConcurrencyMax: 32,
   /**
    * The ceiling on the same budget: `repairRoundsMax` PLUS ONE, and the plus one is the point.
    *
@@ -1975,6 +1978,17 @@ export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build"] as co
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
 /**
+ * Whether a check slot runs a test suite, and so takes the machine-wide check test lease and
+ * the lower test concurrency (`checkTestLease`, `checkTestConcurrency`).
+ *
+ * The one place that answer lives. A later slot that also runs tests is appended here rather
+ * than compared against at a call site.
+ */
+export function slotRunsTests(slot: WorkflowCheckSlot): boolean {
+  return slot === "test";
+}
+
+/**
  * The provider and model ONE Persona occurrence runs under, chosen by the workflow.
  *
  * A PAIR rather than two independently inherited fields, and that is the whole point of the
@@ -3163,6 +3177,18 @@ export interface WorkflowPolicy {
    * grants, and nobody on it would have been asked anything.
    */
   checksEnabled: boolean;
+  /**
+   * Run at most one test-running check (`slotRunsTests`) at a time across this machine, for
+   * this OS user, across every daemon. Other test checks wait for the lease; lint, typecheck
+   * and build checks never take it.
+   */
+  checkTestLease: boolean;
+  /**
+   * `MISSION_TEST_CONCURRENCY` handed to a test-running check's command, or null to leave the
+   * variable as the daemon's environment has it. This repository's `npm test` reads it; other
+   * repositories may read it or ignore it.
+   */
+  checkTestConcurrency: number | null;
 }
 
 /**
@@ -3208,7 +3234,8 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
     maxCompletedRuns: 1_000,
   },
   // Authorised, and gated on `repoAllowlist` exactly as `liveEnabled` is - see the field.
-  checksEnabled: true,
+  checksEnabled: true,  checkTestLease: true,
+  checkTestConcurrency: 3,
 };
 
 /** The default policy under the legacy wire shape: no commands, because none are stored. */

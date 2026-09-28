@@ -6330,6 +6330,12 @@ export const WorkflowPolicySchema = z.object({
       .default(DEFAULT_WORKFLOW_POLICY.retention.maxCompletedRuns),
   }).default(DEFAULT_WORKFLOW_POLICY.retention),
   checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checksEnabled),
+  checkTestLease: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checkTestLease),
+  checkTestConcurrency: z.number().int()
+    .min(WORKFLOW_LIMITS.checkTestConcurrencyMin)
+    .max(WORKFLOW_LIMITS.checkTestConcurrencyMax)
+    .nullable()
+    .default(DEFAULT_WORKFLOW_POLICY.checkTestConcurrency),
 });
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
 

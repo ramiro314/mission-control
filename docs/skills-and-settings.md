@@ -387,6 +387,8 @@ first), and the health counters - on the same routes, with nothing about the con
 it gains by being here is everything a drawer could not have: a rail row, a scope badge, a deep
 link, and a place in ⌘K, so the one switch in this app that can type into somebody's live agent
 session is findable by searching for what it does. The runs page header keeps a link to it.
+It has since gained **Test checks**, which queues workflow test checks machine-wide and sets
+the test concurrency they run at; see [Test checks share the machine](workflows.md#test-checks-share-the-machine).
 
 **Dispatch** joined last, and it is the one row holding a single checkbox - **Guided
 dispatch**, which is the same preference the **Guided** switch in the dispatch modal's header

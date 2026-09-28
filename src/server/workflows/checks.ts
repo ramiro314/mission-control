@@ -91,7 +91,14 @@ export interface CheckExecutionRequest {
 
 export type CheckExecutionResult =
   /** The command ran to completion and reported this. */
-  | { kind: "exited"; exitCode: number; output: string; truncatedBytes: number }
+  | {
+    kind: "exited";
+    exitCode: number;
+    output: string;
+    truncatedBytes: number;
+    /** How long the command waited for the machine's check test lease, when it waited. */
+    waitedMs?: number;
+  }
   /** The configured executable is not there. A settings problem, not a defect. */
   | { kind: "unavailable"; note: string }
   /** It could not be run, or died without answering. Never a fail. */
@@ -380,17 +387,27 @@ export async function runCheck(
   // clip dropped on top. Summing rather than overwriting is what keeps the figure exact
   // instead of reporting the last truncation as if it were the only one.
   const truncatedBytes = result.truncatedBytes + bounded.droppedBytes;
+  const waited = result.waitedMs === undefined ? "" : ` ${leaseWaitNote(result.waitedMs)}`;
   return result.exitCode === 0
-    ? outcome(slot, "passed", checkOutcomeNote(command, " passed."), {
+    ? outcome(slot, "passed", checkOutcomeNote(command, ` passed.${waited}`), {
         command,
         exitCode: 0,
         output: bounded.text,
         truncatedBytes,
       })
-    : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.`), {
+    : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.${waited}`), {
         command,
         exitCode: result.exitCode,
         output: bounded.text,
         truncatedBytes,
       });
+}
+
+/** "Waited 3m 12s for another test check to finish.", so a slow check explains itself. */
+export function leaseWaitNote(waitedMs: number): string {
+  const seconds = Math.max(1, Math.round(waitedMs / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  const span = minutes === 0 ? `${rest}s` : rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
+  return `Waited ${span} for another test check to finish.`;
 }

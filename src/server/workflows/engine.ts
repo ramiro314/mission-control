@@ -38,6 +38,7 @@ import {
   checkOutcomePasses,
   checkRunBudgetSpent,
   isVerdictNode,
+  slotRunsTests,
   verdictAuthor,
 } from "@shared/workflow.ts";
 import { envVar } from "../config.ts";
@@ -389,6 +390,15 @@ export class WorkflowEngine {
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
+  /**
+   * One test-running check at a time in this daemon, taken OUTSIDE `checkLimit`.
+   *
+   * The machine-wide check test lease is taken inside the executor, so a test check waiting
+   * for it holds a check slot. Two waiting in one daemon would hold both and stall every lint,
+   * typecheck and build behind the lease. Queued here instead, the second waits as a queued
+   * attempt and holds nothing. Only applies while `checkTestLease` is on.
+   */
+  private readonly testCheckLimit: CheckScheduler = createCheckScheduler(1);
   private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowPolicy: () => WorkflowPolicy;
@@ -883,12 +893,15 @@ export class WorkflowEngine {
           && this.checkBudgetAlreadySpent(attempt, target);
         const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
         const run = () => this.runAttempt(attempt, checkLimitHeld);
+        const checkRun = target?.kind === "check" && this.leasesTests(target.slot)
+          ? () => this.testCheckLimit(() => this.checkLimit(run))
+          : () => this.checkLimit(run);
         // A Command whose per-run allowance is already spent needs no execution capacity:
         // `runCheck` records budget_spent without calling the executor. Starting that attempt
         // directly prevents a repair round from sitting behind unrelated builds merely to be
         // skipped once a slot opens. `runCheckAttempt` still gates its executor as a race-safe
         // fallback if the budget epoch or catalog changes after this read.
-        const promise = (skipCheckLimit ? run() : checkLimitHeld ? this.checkLimit(run) : this.limit(run))
+        const promise = (skipCheckLimit ? run() : checkLimitHeld ? checkRun() : this.limit(run))
           .catch((error) => workflowLog("error", {
             event: "attempt_failed",
             call: attempt.id,
@@ -933,6 +946,11 @@ export class WorkflowEngine {
     const node = version?.graph.nodes.find((candidate) => candidate.id === attempt.nodeId);
     if (!submission || !run || !version || !node) return null;
     return { submission, run, version, node };
+  }
+
+  /** Whether a check on this slot takes the machine-wide check test lease right now. */
+  private leasesTests(slot: WorkflowCheckSlot): boolean {
+    return slotRunsTests(slot) && this.workflowPolicy().checkTestLease;
   }
 
   private targetNode(attempt: WorkflowNodeAttempt): PublishedWorkflowNode | null {
@@ -1332,7 +1350,9 @@ export class WorkflowEngine {
       ? {
           ...baseDeps,
           execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
-            this.checkLimit(() => baseDeps.execute!(request)),
+            this.leasesTests(node.slot)
+              ? this.testCheckLimit(() => this.checkLimit(() => baseDeps.execute!(request)))
+              : this.checkLimit(() => baseDeps.execute!(request)),
         }
       : baseDeps;
 

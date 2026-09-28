@@ -1105,6 +1105,8 @@ const checkPolicy = (over: Record<string, unknown> = {}) => ({
   kindWorkflowDefaults: { ship: null },
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
+  checkTestLease: false,
+  checkTestConcurrency: null,
   ...over,
 });
 
@@ -2464,4 +2466,75 @@ for (const [label, firstReply, expected] of [
   assert.ok(prompts[1]!.includes(expected), prompts[1]!.slice(-600));
   assert.doesNotMatch(prompts[1]!, /could not be executed or parsed|LEAK-ME/);
   assert.equal(store.getRun(`run-${id}`)?.status, "completed");
+});
+
+test("with the test lease on, a daemon runs one test check at a time and lint never waits", async () => {
+  // Two test gates and a lint gate in parallel, under the real two-slot check limiter. Without
+  // the per-daemon gate the second test check would hold the other slot waiting for the
+  // machine lease, and lint would stall behind both.
+  const graph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "t1", kind: "check", slot: "test", position: { x: 200, y: 0 } },
+      { id: "t2", kind: "check", slot: "test", position: { x: 200, y: 100 } },
+      { id: "lint", kind: "check", slot: "lint", position: { x: 200, y: 200 } },
+      { id: "join", kind: "all_pass", position: { x: 450, y: 100 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 700, y: 0 } },
+    ],
+    edges: [
+      ...["t1", "t2", "lint"].flatMap((id) => [
+        { id: `s-${id}`, source: "session", sourcePort: "submitted", target: id, targetPort: "activate" } as const,
+        { id: `${id}-pass`, source: id, sourcePort: "pass", target: "join", targetPort: "result" } as const,
+        { id: `${id}-fail`, source: id, sourcePort: "fail", target: "join", targetPort: "result" } as const,
+      ]),
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  for (const checkTestLease of [true, false]) {
+    const id = `test-gate-${checkTestLease}`;
+    const store = seedSubmission(id, graph);
+    const held: Array<() => void> = [];
+    let testsRunning = 0;
+    let maxTestsRunning = 0;
+    let lintDone = false;
+    const catalog = checkCatalog({
+      test: [{ repoRoot: "/repo", command: ["npm", "test"] }],
+      lint: [{ repoRoot: "/repo", command: ["npm", "run", "lint"] }],
+    });
+    const engine = new WorkflowEngine(store, () => {}, {
+      retryBaseMs: 1,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      workflowPolicy: () => checkPolicy({ checkTestLease }),
+      workflowCommand: (slot) => ({ ...catalog(slot)!, maxRuns: 5 }),
+      checkDeps: () => ({
+        execute: async (request) => {
+          if (request.slot === "lint") {
+            lintDone = true;
+            return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 };
+          }
+          testsRunning += 1;
+          maxTestsRunning = Math.max(maxTestsRunning, testsRunning);
+          await new Promise<void>((resolve) => held.push(resolve));
+          testsRunning -= 1;
+          return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 };
+        },
+      }),
+    });
+    engine.start();
+    engine.activateSubmission(`submission-${id}`);
+    await waitFor(() => held.length >= (checkTestLease ? 1 : 2));
+    // Give a second test check every chance to start if nothing were stopping it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(testsRunning, checkTestLease ? 1 : 2);
+    // On, lint ran while a test check was still held and the other was queued.
+    if (checkTestLease) assert.equal(lintDone, true);
+    while (store.getRun(`run-${id}`)?.status !== "completed") {
+      held.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(maxTestsRunning, checkTestLease ? 1 : 2);
+    await engine.stop();
+  }
 });

@@ -806,3 +806,20 @@ test("nothing stays registered for the exit hook once a check is finished", asyn
   // signal a pid that has since been handed to somebody else.
   assert.equal(liveCheckGroupCount(), 0);
 });
+
+test("extra variables reach the check's environment and win over the daemon's own", async () => {
+  const dir = workspace();
+  const { registry } = recordingRegistry();
+  const outcome = await runSupervisedCheck(
+    {
+      attemptId: "attempt-extra-env",
+      command: ["sh", "-c", 'printf "%s|%s" "$MISSION_TEST_CONCURRENCY" "$MISSION_CHECK_TEST_LEASE_HELD"'],
+      leasePath: dir,
+      workingSubpath: "",
+      extraEnv: { MISSION_TEST_CONCURRENCY: "3", MISSION_CHECK_TEST_LEASE_HELD: "1" },
+    },
+    { registry, daemonToken: "", env: { ...process.env, MISSION_TEST_CONCURRENCY: "6" } },
+  );
+  assert.equal(outcome.result.kind, "exited");
+  assert.equal(outcome.result.kind === "exited" ? outcome.result.output : "", "3|1");
+});

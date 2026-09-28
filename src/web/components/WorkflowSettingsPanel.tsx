@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import type {
-  WorkflowConfig,
-  WorkflowStatus,
-  WorkflowSummary,
+import {
+  WORKFLOW_LIMITS,
+  type WorkflowConfig,
+  type WorkflowStatus,
+  type WorkflowSummary,
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
@@ -361,9 +362,12 @@ export function WorkflowSettingsPanel({
   // rather than on its numbers so a later poll cannot overwrite a half-typed box - the
   // boxes are a draft the operator applies, not a mirror of what is stored.
   const [adopted, setAdopted] = useState(false);
+  // Same draft rule as retention: an empty box means "leave the variable unset".
+  const [testConcurrency, setTestConcurrency] = useState("");
   useEffect(() => {
     if (config && !adopted) {
       setRetention(draftOf(config));
+      setTestConcurrency(config.checkTestConcurrency === null ? "" : String(config.checkTestConcurrency));
       setAdopted(true);
     }
   }, [config, adopted]);
@@ -455,6 +459,25 @@ export function WorkflowSettingsPanel({
       danger: true,
       onConfirm: () => void save(next),
     });
+  };
+
+  const applyTestConcurrency = (): void => {
+    if (!config || busy) return;
+    const text = testConcurrency.trim();
+    const value = text === "" ? null : Number(text);
+    if (
+      value !== null
+      && (!Number.isInteger(value)
+        || value < WORKFLOW_LIMITS.checkTestConcurrencyMin
+        || value > WORKFLOW_LIMITS.checkTestConcurrencyMax)
+    ) {
+      setLocalError(
+        `Test concurrency must be a whole number from ${WORKFLOW_LIMITS.checkTestConcurrencyMin} `
+        + `to ${WORKFLOW_LIMITS.checkTestConcurrencyMax}, or empty to leave it unset.`,
+      );
+      return;
+    }
+    void save({ ...config, checkTestConcurrency: value });
   };
 
   const openTile = (id: string): void => {
@@ -818,6 +841,50 @@ export function WorkflowSettingsPanel({
               shell, with this daemon's filesystem authority - so it executes that branch's
               scripts, dependencies and build steps. It is not a sandbox. Only repositories
               granted the Workflows cell in Trust can run one.
+            </p>
+          </ConsoleCard>
+
+          <ConsoleCard title="Test checks" anchor="workflows/test-checks">
+            <Tooltip label="Queue test checks machine-wide, across every daemon, instead of running them together">
+              <label className="wf-judge-passes">
+                <input
+                  type="checkbox"
+                  checked={config?.checkTestLease ?? true}
+                  disabled={!config || busy}
+                  onChange={(event) => {
+                    if (config) void save({ ...config, checkTestLease: event.target.checked });
+                  }}
+                />
+                Run one test check at a time on this machine
+              </label>
+            </Tooltip>
+            <div className="wf-retention-inline">
+              <Tooltip label="Passed to test checks as MISSION_TEST_CONCURRENCY. Leave empty to not set it.">
+                <label>
+                  <span>Test concurrency</span>
+                  <input
+                    type="number"
+                    min={WORKFLOW_LIMITS.checkTestConcurrencyMin}
+                    max={WORKFLOW_LIMITS.checkTestConcurrencyMax}
+                    placeholder="Unset"
+                    value={testConcurrency}
+                    disabled={!config || busy}
+                    onChange={(event) => setTestConcurrency(event.target.value)}
+                  />
+                </label>
+              </Tooltip>
+              <Tooltip label="Save the test concurrency">
+                <button className="btn" disabled={!config || busy} onClick={applyTestConcurrency}>
+                  Apply
+                </button>
+              </Tooltip>
+            </div>
+            <p className="settings-hint">
+              On by default. A test check waits for any other test check on this machine to
+              finish, and its note says how long it waited. Lint, typecheck and build checks
+              never wait. Test checks also get <code>MISSION_TEST_CONCURRENCY</code> (3 by
+              default), which Mission Control's own test script reads; other repositories can
+              read it or ignore it.
             </p>
           </ConsoleCard>
 
