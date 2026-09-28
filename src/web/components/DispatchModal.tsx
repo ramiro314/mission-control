@@ -312,7 +312,6 @@ type PushState = {
   outcomeUnknown: boolean;
 };
 
-/** Nothing asked yet, for this task. */
 /**
  * The upstream link and its parent that the editor draws: the row's own when it has one,
  * else what a push in this opening just created (read off the push reply, before any
@@ -326,6 +325,7 @@ export function sourceLinkFor(
   return { link: push?.ref ?? null, parent: push?.ref ? push.parent : null };
 }
 
+/** Nothing asked yet, for this task. */
 function freshPushState(taskId: string): PushState {
   return { taskId, sourceId: null, ref: null, parent: null, error: null, outcomeUnknown: false };
 }
@@ -3409,6 +3409,18 @@ function DispatchModal({
 }
 
 /**
+ * The short form of an external id beside `sibling`: "#12" for a GitHub "owner/repo#12" in the
+ * same repo as the sibling, and the id as it is otherwise ("other/repo#12", "MC-14").
+ */
+function shortSourceId(externalId: string, sibling: string): string {
+  const hash = externalId.lastIndexOf("#");
+  if (hash < 0) return externalId;
+  return sibling.slice(0, sibling.lastIndexOf("#")) === externalId.slice(0, hash)
+    ? externalId.slice(hash)
+    : externalId;
+}
+
+/**
  * Where a backlog task meets the world outside Mission Control: the item it is linked to, or
  * the one action that creates one.
  *
@@ -3430,18 +3442,6 @@ function DispatchModal({
  * The external id it prints ("acme/demo-repo#123", "MC-14") already says which world it came
  * from, and says it truthfully for a kind that cannot receive pushes at all.
  */
-/**
- * The short form of an external id beside `sibling`: "#12" for a GitHub "owner/repo#12" in the
- * same repo as the sibling, and the id as it is otherwise ("other/repo#12", "MC-14").
- */
-function shortSourceId(externalId: string, sibling: string): string {
-  const hash = externalId.lastIndexOf("#");
-  if (hash < 0) return externalId;
-  return sibling.slice(0, sibling.lastIndexOf("#")) === externalId.slice(0, hash)
-    ? externalId.slice(hash)
-    : externalId;
-}
-
 export function PushToSourceBlock({
   link,
   parent = null,
