@@ -181,7 +181,7 @@ const singleOther: PlanDecision[] = [
 test("a single-choice question with Other renders an Other radio in the same group", () => {
   const html = render(singleOther);
   assert.equal(html.match(/type="radio"[^>]*name="d-install"/g)?.length, 3, "two options plus Other");
-  assert.match(html, /<input type="radio" name="d-install"[^>]*\/><span class="decision-option-label">Other<\/span>/);
+  assert.match(html, /<input type="radio" aria-label="Other"[^>]*name="d-install"[^>]*\/>/);
   assert.doesNotMatch(inputFor(html, ">Other<"), /checked/, "the recommendation opens chosen, not Other");
   assert.match(html, /placeholder="Other…"/);
   // Multi-choice is unchanged: checkboxes and a separate box, no Other radio.

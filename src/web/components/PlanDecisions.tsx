@@ -217,16 +217,20 @@ function OtherChoice({
   return (
     <div className="decision-option decision-other-choice">
       <label className="decision-other-choice-label">
-        <input
-          type="radio"
-          name={name}
-          checked={chosen}
-          onChange={onChoose}
-          onClick={(e) => {
-            if (e.detail > 0) box.current?.focus();
-          }}
-          disabled={busy}
-        />
+        <Tooltip label="Answer with your own text instead of a listed option">
+          <input
+            type="radio"
+            // Named outright: the tooltip's hidden description sits inside the label too.
+            aria-label="Other"
+            name={name}
+            checked={chosen}
+            onChange={onChoose}
+            onClick={(e) => {
+              if (e.detail > 0) box.current?.focus();
+            }}
+            disabled={busy}
+          />
+        </Tooltip>
         <span className="decision-option-label">Other</span>
       </label>
       <input
