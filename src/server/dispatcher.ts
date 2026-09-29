@@ -2522,18 +2522,9 @@ export async function teardownWorktree(
   _priority: "foreground" | "background" = "foreground",
   /** The daemon's singleton allocator. Required only when a recorded provider is `mission`. */
   manager?: WorktreeManager,
+  /** Automatic lifecycle policy, checked before home cleanup and each destructive provider boundary. */
+  beforeReturn?: (path: string) => Promise<string | null>,
 ): Promise<void> {
-  if (task.homeName) {
-    const killed = await killHome(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
-    if (!killed.ok) {
-      // A refused close is harmless only when the recorded resource is proved absent.
-      // Keep the checkout when the terminal is live or its identity cannot be checked.
-      const alive = await homeAlive(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
-      if (alive !== false) {
-        throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
-      }
-    }
-  }
   // Every tree the task holds, primary first. Each is attempted even if an earlier one
   // failed, and the failures are reported together: stopping at the first would leave the
   // remaining trees leased or on disk with nothing left that will ever come back for them.
@@ -2561,10 +2552,28 @@ export async function teardownWorktree(
       position: index + 1,
     })),
   ];
+  if (task.homeName) {
+    // A newly unsafe tree keeps the home as well as the checkout. Check the whole
+    // collection before closing their shared home, then check again at each provider.
+    for (const tree of trees) {
+      if (!tree.worktreePath) continue;
+      const blocked = await beforeReturn?.(tree.worktreePath);
+      if (blocked) throw new Error(blocked);
+    }
+    const killed = await killHome(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
+    if (!killed.ok) {
+      // A refused close is harmless only when the recorded resource is proved absent.
+      // Keep the checkout when the terminal is live or its identity cannot be checked.
+      const alive = await homeAlive(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
+      if (alive !== false) {
+        throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
+      }
+    }
+  }
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, legacy, manager).then(
+    await teardownOneWorktree(tree, legacy, manager, beforeReturn).then(
       () => {
         if (tree.worktreePath) reclaimed.push(tree.worktreePath);
       },
@@ -2665,10 +2674,13 @@ async function teardownOneWorktree(
   },
   legacy: LegacyTreehouseService,
   manager?: WorktreeManager,
+  beforeReturn?: (path: string) => Promise<string | null>,
 ): Promise<void> {
   if (!task.worktreePath) return;
   // Read once so every provider check and diagnostic names the same requested path.
   const worktreePath = task.worktreePath;
+  const blocked = await beforeReturn?.(worktreePath);
+  if (blocked) throw new Error(blocked);
 
   if (task.provider === "mission") {
     if (!manager) throw new Error("native worktree manager is unavailable");
@@ -2688,7 +2700,10 @@ async function teardownOneWorktree(
           : `native task lease is stale: ${lookup.reason}`,
       );
     }
-    const released = await manager.release(lookup.lease, { ownerAuthorized: true });
+    const released = await manager.release(lookup.lease, {
+      ownerAuthorized: true,
+      beforeReset: beforeReturn ? () => beforeReturn(worktreePath) : undefined,
+    });
     if (released.outcome === "released" || released.outcome === "alreadyReleased") return;
     throw new Error(`native worktree release ${released.outcome}: ${released.reason}`);
   }

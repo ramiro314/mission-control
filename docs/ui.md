@@ -762,8 +762,8 @@ available:
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
   The **Board** drills into that same detail when you open a tile. In Console and Board, the
-  Diff tab contains the complete checkout diff reader; the footer action and <kbd>d</kbd>
-  reveal it in place.
+  Diff tab contains the complete checkout diff reader; the tab itself and
+  <kbd>⇧</kbd><kbd>D</kbd> reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
   the tab row opens their history. The rail is deliberately *not* a sixth tab - Work queue,
@@ -809,6 +809,20 @@ available:
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
+- **Every Board column has three widths: collapsed, normal, and expanded.** Hover a column's
+  header to show its width control, three bars from thin to wide, and press the width you
+  want. The control stays visible while a column is expanded. A collapsed column becomes a thin strip
+  showing its dot, its card count, and its name written vertically, and clicking the strip
+  restores it. Any column can be collapsed, including **Backlog** and **needs you**, and
+  several at once. Only one column is expanded at a time, and expanding one returns the
+  previous one to normal. Double-clicking a header still expands or restores it. A collapsed
+  column stays collapsed after a reload; an expanded one returns to normal. An empty **needs
+  you** is already the slim all-clear rail, so it has no width control until something needs
+  you. A **needs you** you collapsed stays a strip when it empties, and when a session starts
+  waiting on you the strip stays collapsed and its count pulses. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
+  collapsed column is hiding. Opening a session from a collapsed column (from the Line or a
+  notification, say) shows that column as the drill-in rail in full, and it is collapsed
+  again when you come back to the board.
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
   the card's own - jump shortcut, goal, live activity, workflow, model, context meter,
@@ -863,7 +877,8 @@ available:
   it, sit two marks a conversation can add while its session works: **Pin the working row**,
   which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,
   and **Reply box progress bar**, a thin moving bar along the top of the reply box. Both ship
-  off, and an upgraded profile gets them off too, once, the same way as **Workflow details**.
+  on. A profile that was given them off by the build that introduced them has them switched
+  back on once, on upgrade, and unchecking either afterwards sticks.
   The row's elapsed-time clock is not on this list: it is always drawn. See
   [the step the current turn is on](sessions.md#the-step-the-current-turn-is-on).
 - **The conversation header stays on one row, and gives way in a fixed order.** It carries the
@@ -1645,7 +1660,7 @@ it and no fleet action loses its key.
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
-Codex / Claude in the Console and Board detail's tab strip; Focus, Diff, Reset, Interrupt,
+Codex / Claude in the Console and Board detail's tab strip; Focus, Reset, Backlog,
 Complete and Kill in the Console
 footer; the Console's Conversation, Work queue, Diff and Files tabs; the Files toolbar's Preview,
 Editor and Comment controls; Dispatch and the Fleet,

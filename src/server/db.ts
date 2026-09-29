@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
+import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
@@ -171,7 +172,8 @@ let db: DatabaseSync | undefined;
  *    operator enables collection.
  */
 // 3: bounded telemetry source checkpoints for immutable workflow context and timing.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 3;
+// 4: explicit final-completion worktree-return obligations, with no historical backfill.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 4;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -2854,6 +2856,15 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- The prompt-delivery boundary asks "is this session being closed?" before every send.
     CREATE INDEX IF NOT EXISTS idx_task_session_closures_session
       ON task_session_closures(session_id);
+
+    -- Explicit authorization for final-completion return. Existing done tasks must never
+    -- be backfilled: they completed under the policy that retained their local work.
+    -- The completion and dispatch timestamps bind this obligation to one task attempt.
+    CREATE TABLE IF NOT EXISTS task_worktree_returns (
+      task_id       TEXT NOT NULL PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      completed_at  INTEGER NOT NULL,
+      dispatched_at INTEGER
+    );
 
     -- ---- line comments in the Files workspace ----
     --
@@ -5539,6 +5550,11 @@ export function upsertTask(t: Task): string[] {
         );
       });
     }
+    // A reopened/replaced attempt or a fully reclaimed task cannot retain an old return
+    // authorization. Partial returns keep it until the last owned checkout is released.
+    d.prepare(`DELETE FROM task_worktree_returns WHERE task_id = ? AND
+      (? <> 'done' OR completed_at IS NOT ? OR dispatched_at IS NOT ? OR ? = 0)`)
+      .run(t.id, t.status, t.completedAt, t.dispatchedAt, taskHasWorktrees(t) ? 1 : 0);
     if (ownsTransaction) d.exec("COMMIT");
     return displaced;
   } catch (error) {
@@ -7469,7 +7485,8 @@ export function openTaskSessionClosure(
 }
 
 /**
- * Persist a completed task and the closure its agent is owed, in ONE transaction.
+ * Persist a completed task, its worktree-return obligation and optional session closure
+ * in ONE transaction. An existing done row alone never authorizes worktree return.
  *
  * The ordering problem this removes. The completion and the closure used to be two writes -
  * the task row, then the ledger from the completion's callback - and a daemon that died
@@ -7489,19 +7506,31 @@ export function openTaskSessionClosure(
  */
 export function completeTaskWithSessionClosure(
   task: Task,
-  closure: { sessionId: string; requestedAt: number; deadlineAt: number },
+  closure: { sessionId: string; requestedAt: number; deadlineAt: number } | null,
 ): readonly string[] {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
     const displaced = upsertTask(task);
-    openTaskSessionClosure(task.id, closure.sessionId, closure.requestedAt, closure.deadlineAt);
+    if (taskHasWorktrees(task)) {
+      d.prepare(`INSERT OR REPLACE INTO task_worktree_returns (task_id, completed_at, dispatched_at)
+        VALUES (?, ?, ?)`).run(task.id, task.completedAt, task.dispatchedAt);
+    }
+    if (closure) openTaskSessionClosure(task.id, closure.sessionId, closure.requestedAt, closure.deadlineAt);
     d.exec("COMMIT");
     return displaced;
   } catch (err) {
     if (d.isTransaction) d.exec("ROLLBACK");
     throw err;
   }
+}
+
+/** Only completions made under the automatic-return policy may resume destructive return. */
+export function taskOwesWorktreeReturn(task: Task): boolean {
+  if (task.status !== "done" || !taskHasWorktrees(task) || task.completedAt === null) return false;
+  return Boolean(openDb().prepare(`SELECT 1 FROM task_worktree_returns
+    WHERE task_id = ? AND completed_at = ? AND dispatched_at IS ?`)
+    .get(task.id, task.completedAt, task.dispatchedAt));
 }
 
 export function getTaskSessionClosure(taskId: string): TaskSessionClosureRow | null {

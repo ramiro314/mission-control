@@ -611,7 +611,8 @@ tells you the exact resume command to run yourself.
 
 ### Interrupt: stop the turn without ending the session
 
-<kbd>⌃</kbd><kbd>C</kbd>, or the **Interrupt** button beside Kill. It stops what the agent is
+<kbd>⌃</kbd><kbd>C</kbd> in the session detail. It has no button in the footer, so the chord
+is the whole control; rebind it under **Settings → Keyboard**. It stops what the agent is
 doing right now, drops every message still queued behind it, and puts the cursor in that
 session's composer so the replacement instruction can be typed immediately.
 
@@ -671,8 +672,8 @@ that is a half-written draft in the composer or a transcript line, a diff hunk o
 terminal output you have dragged across. With nothing selected, it stops the agent. Like
 every other shortcut it is rebindable in **Settings → Keyboard**.
 
-The button is disabled when there is nothing to stop - an idle agent - and the tooltip says
-which of the two reasons applies.
+With nothing to stop - an idle agent - the chord does nothing, and the session keeps
+everything it had.
 
 ### What each agent can do is declared, not assumed
 
@@ -1337,9 +1338,9 @@ it should. The clock is part of the row and cannot be switched off. When a turn 
 its prompt is no longer in the loaded part of the log, the row draws no clock rather than a
 smaller, wrong one.
 
-**Two more marks are yours to add**, under **Settings → Display → Session display → Working
-indicator**. Both ship off, so with neither checked the conversation looks exactly as it did
-before, plus the clock, and the panel's preview shows each one as you check it:
+**Two more marks are on by default**, under **Settings → Display → Session display → Working
+indicator**. Uncheck either to drop it; with neither checked the conversation shows only the
+row and its clock. The panel's preview shows each one as you check or uncheck it:
 
 - **Pin the working row** keeps the row on the bottom edge of the log while you scroll back
   through the conversation. At the bottom of the log nothing changes - it is still the last

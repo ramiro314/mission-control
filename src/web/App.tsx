@@ -34,6 +34,7 @@ import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
 import { KillModal } from "./components/KillModal.tsx";
+import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { RecurringMissionsPanel } from "./components/RecurringMissionsPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
@@ -90,6 +91,7 @@ import {
 } from "./lib/card-shortcuts.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
+import { collapsedColumnSessionIds } from "./lib/column-width.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -211,6 +213,7 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["queue", "toggleQueue"],
   ["mode", "cycleMode"],
   ["interrupt", "requestInterrupt"],
+  ["requeue", "requestRequeue"],
   ["complete", "requestComplete"],
   ["kill", "requestKill"],
 ];
@@ -630,6 +633,12 @@ export function App(): React.JSX.Element {
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
+  const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
+  // The session the Return to backlog confirm was showing when it sent its request. Requeueing
+  // a live task cancels it first, which takes its session off the fleet while the request is
+  // still pending, so from that moment the dialog renders from this snapshot and is no longer
+  // closed by the session leaving - a failed re-file must still be read in the dialog.
+  const [requeueSentFor, setRequeueSentFor] = useState<Session | null>(null);
   const [workflowBindingTarget, setWorkflowBindingTarget] = useState<WorkflowBindingTarget | null>(null);
   // Bumped for a session each time it's reset. The compose boxes are uncontrolled
   // (their text is parked in the draft map, not React state), so clearing the map
@@ -1830,6 +1839,10 @@ export function App(): React.JSX.Element {
   }, [route.page]);
   const closeReset = useCallback(() => setResetSessionId(null), []);
   const closeKill = useCallback(() => setKillSessionId(null), []);
+  const closeRequeue = useCallback(() => {
+    setRequeueSessionId(null);
+    setRequeueSentFor(null);
+  }, []);
   const closeFiles = useCallback(() => {
     if (filesSessionId) files.flush(filesSessionId);
     setFilesSessionId(null);
@@ -2037,6 +2050,7 @@ export function App(): React.JSX.Element {
       { sessionId: resetSessionId, close: closeReset },
       { sessionId: completeSessionId, close: closeComplete },
       { sessionId: killSessionId, close: closeKill },
+      { sessionId: requeueSentFor ? null : requeueSessionId, close: closeRequeue },
       { sessionId: filesSessionId, close: closeFiles },
       { sessionId: filePickerSessionId, close: closeFilePicker },
       {
@@ -2048,12 +2062,15 @@ export function App(): React.JSX.Element {
       resetSessionId,
       completeSessionId,
       killSessionId,
+      requeueSessionId,
+      requeueSentFor,
       filesSessionId,
       filePickerSessionId,
       workflowBindingTarget,
       closeReset,
       closeComplete,
       closeKill,
+      closeRequeue,
       closeFiles,
       closeFilePicker,
     ],
@@ -2287,10 +2304,19 @@ export function App(): React.JSX.Element {
   // between renders - the store hands back the same set until a fold changes it, and `fleet` is
   // itself a memo - so this recomputes exactly when a fold or the fleet moves.
   const collapsedRepoKeys = useRepoCollapsed();
-  const foldedIds = useMemo(
-    () => hiddenSessionIds(fleet.groups, collapsedRepoKeys),
-    [fleet, collapsedRepoKeys],
-  );
+  // And the sessions in a Board column collapsed to a strip, for the same reason. Only on the
+  // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
+  // focused column is drawn as the rail in full whatever the overview had folded, so its rows
+  // have to stay walkable there.
+  const collapsedColumns = useUiConfig().collapsedBoardColumns;
+  const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
+  const foldedIds = useMemo(() => {
+    const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
+    if (!hideCollapsedColumns) return folded;
+    const inStrips = collapsedColumnSessionIds(fleet.groups, new Set(collapsedColumns));
+    if (inStrips.size === 0) return folded;
+    return new Set([...folded, ...inStrips]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns]);
 
   const boardColumns = useMemo(
     () => fleet.groups.map((g) => g.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
@@ -2650,6 +2676,9 @@ export function App(): React.JSX.Element {
     ? sessions.find((s) => s.id === completeSessionId) ?? null
     : null;
   const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
+  const requeueSession = requeueSessionId
+    ? sessions.find((s) => s.id === requeueSessionId) ?? requeueSentFor
+    : null;
   const filesSession = filesSessionId ? sessions.find((s) => s.id === filesSessionId) ?? null : null;
   const filePickerSession = filePickerSessionId
     ? sessions.find((s) => s.id === filePickerSessionId) ?? null
@@ -2711,7 +2740,6 @@ export function App(): React.JSX.Element {
     onDeselect: layout === "board" ? () => setBoardOpen(false) : () => setSelectedId(null),
     detailId,
     onOpenReviews: setReviewSessionId,
-    onOpenDiff: openDiff,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
     onOpenFilePath: openSessionPath,
@@ -2728,6 +2756,7 @@ export function App(): React.JSX.Element {
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
     onKill: setKillSessionId,
+    onRequeue: setRequeueSessionId,
     onKilled,
     resetNonces,
     registerEl,
@@ -4327,6 +4356,15 @@ export function App(): React.JSX.Element {
               killSession.task ? () => setCompleteSessionId(killSession.id) : undefined
             }
             onClose={closeKill}
+          />
+        )}
+
+        {requeueSession && (
+          <RequeueModal
+            session={requeueSession}
+            onSent={() => setRequeueSentFor(requeueSession)}
+            onRequeued={() => onKilled(requeueSession.id)}
+            onClose={closeRequeue}
           />
         )}
 

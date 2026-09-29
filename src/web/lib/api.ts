@@ -237,6 +237,7 @@ export interface DispatchResult extends ActionResult {
  * problems it just verified so the operator confirms this exact missing archive state.
  */
 export interface CompleteTaskResult extends ActionResult {
+  sessionClosureRequested?: boolean;
   confirmIncompleteScout?: boolean;
   problems?: string[];
   /** Present only when `freeWorktree` was sent: whether the task's worktrees were freed. */
@@ -1932,6 +1933,9 @@ export const api = {
   // `completeTask(id, ..., true)` is the "it already landed" half. Refused (409) on a task
   // that is done or still live.
   rescheduleTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reschedule`, {}),
+  // Send a dispatched task back to the backlog at the rank it had, cancelling it first when it
+  // is still live. The session footer's Return to backlog; refused (409) on a done task.
+  requeueTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/requeue`, {}),
   // `satisfyDependents` is the operator's explicit override of the merge gate on
   // declared dependencies - omitted rather than sent as false so the request body stays
   // the one every existing caller already sends. See `CompleteTaskSchema`.
