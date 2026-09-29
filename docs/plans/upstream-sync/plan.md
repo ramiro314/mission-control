@@ -1,13 +1,13 @@
 # Upstream sync: keep the fork building on top of teamupstart/mission-control
 
-Status: approved 2026-09-29 after a four-round interview and plan review. Not implemented.
+Status: approved 2026-09-29 after a four-round interview and plan review. Amended the same day with the fork ledger (D12 to D19 and ticket 3) after two more interview rounds. Not implemented.
 
 ## Goal
 
 `ramiro314/mission-control` (the fork, `origin`) should always be upstream
 `teamupstart/mission-control` (`upstream`) plus a small, deliberate layer of fork changes. This
-plan lands the first sync, writes down how every later sync is done, and schedules that sync
-to run weekly.
+plan lands the first sync, writes down how every later sync is done, keeps a documented
+history of what the fork changes (the fork ledger), and schedules the sync to run weekly.
 
 ## Where things stand (verified 2026-09-29)
 
@@ -64,7 +64,15 @@ to run weekly.
 | D8 | Who merges a sync PR | The human, after CI is green. The agent opens the PR and waits for CI, and never merges. |
 | D9 | Recurring sync | A Mission Control recurring mission, Mondays 09:00 in the operator's local time zone. Missed runs collapse into one catch-up. The agent is inherited from the task kind. A run with nothing new upstream ends without a branch or PR. |
 | D10 | Fork `Release` workflow | Disable it in the fork with `gh workflow disable release.yml -R ramiro314/mission-control`. The file stays byte-identical to upstream. |
-| D11 | Split | Two tickets. Ticket 2 is blocked by ticket 1. |
+| D11 | Split | Three tickets. Ticket 1 blocks ticket 3, and ticket 3 blocks ticket 2 (D19). Tickets 1 and 2 were filed first as #56 and #57; ticket 3 was added afterwards. |
+| D12 | Fork ledger: unit | One entry per fork **feature** (a concept), listing the PRs that built it. It serves two purposes: an agent can detect conceptual conflicts with upstream, and the human can see where the fork stands against the original. |
+| D13 | Ledger entry fields | Each entry records: intent (what it does and why the fork needs it); behavior contracts and the upstream behavior it assumes (for example, "Complete keeps the worktree"); upstream surfaces touched (modules, routes, protocol types, DB columns, UI views); status (active, superseded by upstream, removed, or upstreamed, with the date and the sync PR); the PRs and plan docs behind it; and whether it is a candidate to send upstream. |
+| D14 | Where-we-stand view | A status header at the top of the ledger: last synced upstream version and SHA, sync date, fork commits ahead and upstream commits behind, and the active feature count. `ledger.html` renders it. |
+| D15 | Location | `docs/fork/ledger.md` and `docs/fork/ledger.html` (a fork-only path, so they never conflict in a merge), linked from `docs/README.md` and the upstream-sync runbook. |
+| D16 | Keeping it current | (a) Every fork PR that adds or changes a feature updates its ledger entry in the same PR. (b) The sync runbook: before merging, the sync agent checks the new upstream commits against each active entry's contracts, assumptions and surfaces, and writes a "Conceptual conflicts" section in the sync PR (any hit follows D6). After merging, it updates statuses and the header. The agent re-renders `ledger.html` whenever `ledger.md` changes. There is no CI check and no render script. |
+| D17 | Where the rule lives | A short "Fork" section at the end of `AGENTS.md`, pointing to `docs/fork/ledger.md` and `docs/upstream-sync.md` and stating D16(a). |
+| D18 | Backfill and fixes | Backfill every fork feature from PRs #1 to #53. #17 is recorded as superseded by upstream #1148, and Dependabot (#35, #40, #41, #43) as removed, both through the ticket 1 sync PR. The standalone fixes (#4, #13, #15, #18, #19, #21, #22, #23, #24, #33) go into one "Standalone fixes" table with each fix's PR, what it fixes, the surface it touches and whether it is an upstream candidate. |
+| D19 | Ledger ticketing | New ticket 3, blocked by ticket 1 so it records the post-sync state. Ticket 2 gains a blocker on ticket 3, so the weekly mission starts with the ledger in place. |
 
 ## Sync flow
 
@@ -74,7 +82,8 @@ flowchart LR
   M -->|nothing new| X[end, no PR]
   M -->|git merge upstream/main| B[sync/upstream-date<br/>off origin/main]
   B -->|conflicts: runbook D6<br/>fork feature at risk: request_input| B
-  B -->|gates green| P[Sync PR to fork main]
+  L[docs/fork/ledger.md] -->|pre-merge conceptual check| B
+  B -->|gates green, ledger updated| P[Sync PR to fork main]
   P -->|human merges after CI| F[origin/main<br/>ramiro314]
 ```
 
@@ -140,9 +149,46 @@ Acceptance:
 - Every gate is green.
 - The runbook exists and is linked.
 
+## Ticket 3: fork ledger
+
+Blocked by ticket 1, so the ledger records the post-sync state (#17 superseded, Dependabot removed,
+baseline upstream 1.26.0).
+
+1. Write `docs/fork/ledger.md`:
+   - The status header (D14), measured from git right after ticket 1 merges.
+   - One entry per fork feature with the D13 fields, backfilled from PRs #1 to #53 and their plan
+     docs (D18).
+   - The "Standalone fixes" table.
+
+   The feature groups known at planning time are:
+   - shape tasks, grill and tickets (#1, #3, #7, #9, #10, #21);
+   - task-source relations and dependency sync (#5, #8, #16, #20, #44 label filters);
+   - decision forms (#2, #6, #28, #30);
+   - per-kind default workflows (#12);
+   - MCP backlog listing and adoption across repositories (#14);
+   - flake-aware testing (#25, #26, #27, #29, #44 deflake skill, #48, #53);
+   - Complete frees the worktree (#11, #17: superseded);
+   - Dependabot (#35, #40, #41, #43: removed).
+
+   Verify each group against the PRs.
+2. Render `docs/fork/ledger.html` html-plans style (self-contained, light and dark) (D16).
+3. Link the ledger from `docs/README.md`. Add the ledger steps to `docs/upstream-sync.md`: the
+   pre-merge conceptual conflict check, the "Conceptual conflicts" section in the PR, and the
+   post-merge status and header update (D16b).
+4. Append the "Fork" section to `AGENTS.md` (D17).
+
+Acceptance:
+
+- Every merged fork PR from #1 to #53 appears in exactly one feature entry or in the fixes table.
+- Every active entry names its contracts, assumptions and surfaces.
+- The header numbers match `git rev-list --count` at the merge.
+- `ledger.html` renders the same content as `ledger.md`.
+- The runbook and `AGENTS.md` point to the ledger.
+
 ## Ticket 2: weekly recurring sync mission
 
-Blocked by ticket 1, because the mission's task points at `docs/upstream-sync.md`.
+Blocked by ticket 1, because the mission's task points at `docs/upstream-sync.md`, and by
+ticket 3, because every sync run checks and updates the ledger (D19).
 
 1. On the operator's daemon, create a recurring mission through Missions (or `POST /api/schedules`):
    - Name: "Sync fork with upstream".
@@ -177,3 +223,6 @@ Acceptance:
 - **The rollback touches the lockfile.** The hono 2.x to 1.x and concurrently 10 to 9
   downgrades are covered by the full test suite and e2e.
 - **The mission spends model tokens weekly.** The early exit keeps an idle week cheap.
+- **The ledger can drift.** Nothing enforces it mechanically (there is no CI check), so an
+  entry is only as current as the fork rule in `AGENTS.md` and review make it. The weekly sync
+  refreshes the header and statuses.

@@ -1,12 +1,13 @@
 # Upstream sync: tickets
 
-Source plan: [plan.md](plan.md). The breakdown was approved on 2026-09-29. Every ticket is
+Source plan: [plan.md](plan.md). The breakdown was approved on 2026-09-29 and amended the same day to add ticket 3 (the fork ledger). Every ticket is
 gated on the planning session and mirrored to GitHub issues.
 
 | # | Title | Kind | Labels | Blocked by | Task | Issue |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Fork sync with upstream 1.26.0 and upstream-sync runbook | ship | upstream-sync | None | 934cd306-299f-4a3a-add6-176216b75bad | https://github.com/ramiro314/mission-control/issues/56 |
-| 2 | Weekly upstream-sync recurring mission | ship | upstream-sync | 1 | 497e6b23-880c-45e9-9b1f-6a42dcf5b969 | https://github.com/ramiro314/mission-control/issues/57 |
+| 3 | Fork ledger | ship | upstream-sync | 1 | TBD | TBD |
+| 2 | Weekly upstream-sync recurring mission | ship | upstream-sync | 1, 3 | 497e6b23-880c-45e9-9b1f-6a42dcf5b969 | https://github.com/ramiro314/mission-control/issues/57 |
 
 ## Ticket 1: Fork sync with upstream 1.26.0 and upstream-sync runbook
 
@@ -41,7 +42,32 @@ dependency diff against `upstream/main` in the PR evidence.
 Context: read docs/plans/upstream-sync/plan.md (sections "Decisions" and "Ticket 1") first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
 <!-- /ticket-1-body -->
 
+## Ticket 3: Fork ledger
+
+<!-- ticket-3-body -->
+**What to build:** A fork ledger that documents everything this fork changes against the
+original Mission Control, as one entry per fork feature. It has two jobs: an agent can use it
+to detect conceptual conflicts with new upstream commits, and the human can see where the fork
+stands at a glance.
+
+**Blocked by:** Ticket 1 (Fork sync with upstream 1.26.0 and upstream-sync runbook).
+
+**Acceptance criteria:**
+- [ ] The ledger (markdown plus a self-contained HTML rendering, in light and dark) lives at the location plan decision D15 names. It is linked from the docs index and from the upstream-sync runbook.
+- [ ] A status header shows the last synced upstream version and SHA, the sync date, fork commits ahead and upstream commits behind, and the active feature count. The numbers match git at the time of writing.
+- [ ] One entry per fork feature records: intent; behavior contracts and the upstream behavior it assumes; upstream surfaces touched (modules, routes, protocol types, DB columns, UI views); status (active, superseded by upstream, removed, or upstreamed, with the date and the sync PR); the PRs and plan docs behind it; and whether it is an upstream candidate.
+- [ ] Every merged fork PR from #1 to #53 appears in exactly one feature entry or in the "Standalone fixes" table. "Complete frees the worktree" (#11, #17) is marked superseded by upstream #1148, and Dependabot is marked removed, both through the ticket 1 sync PR.
+- [ ] The upstream-sync runbook gains the ledger steps. Before merging, check the new upstream commits against each active entry's contracts, assumptions and surfaces, and write a "Conceptual conflicts" section in the sync PR; any hit follows the ask-before-removing policy. After merging, update statuses and the header, then re-render the HTML.
+- [ ] AGENTS.md ends with a short "Fork" section. It points to the ledger and the runbook, and says that any fork PR adding or changing a feature updates its ledger entry and re-renders the page in the same PR.
+
+**Test seams:** Documentation only. Include in the PR evidence a PR-coverage check: the list of merged fork PRs from `gh pr list`, compared against the PR numbers cited in the ledger, with none missing. Also include the git counts behind the header.
+
+Context: read docs/plans/upstream-sync/plan.md (decisions D12 to D19 and section "Ticket 3") first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
+<!-- /ticket-3-body -->
+
 ## Ticket 2: Weekly upstream-sync recurring mission
+
+Note: ticket 2 was filed before ticket 3 existed, so its task intent says it is blocked by ticket 1 only. When the amendment was filed, a blocker edge on ticket 3 was added to its task.
 
 <!-- ticket-2-body -->
 **What to build:** Every Monday at 09:00 local time, Mission Control files a task that brings the
