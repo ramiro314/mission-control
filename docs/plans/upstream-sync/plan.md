@@ -161,16 +161,26 @@ baseline upstream 1.26.0).
    - The "Standalone fixes" table.
 
    The feature groups known at planning time are:
-   - shape tasks, grill and tickets (#1, #3, #7, #9, #10, #21);
-   - task-source relations and dependency sync (#5, #8, #16, #20, #44 label filters);
+   - shape tasks, grill and tickets (#1, #3, #7, #9, #10);
+   - task-source relations and dependency sync (#5, #8, #16, #20);
    - decision forms (#2, #6, #28, #30);
    - per-kind default workflows (#12);
    - MCP backlog listing and adoption across repositories (#14);
-   - flake-aware testing (#25, #26, #27, #29, #44 deflake skill, #48, #53);
+   - flake-aware testing (#25, #26, #27, #29, #44, #48, #53);
    - Complete frees the worktree (#11, #17: superseded);
    - Dependabot (#35, #40, #41, #43: removed).
 
    Verify each group against the PRs.
+
+   Each PR has exactly one home, a feature entry or the fixes table. Two PRs were placed
+   deliberately:
+   - **#21** fixes "Shape this" but stays in the "Standalone fixes" table, as D18 lists it. The
+     shape entry may mention it as related, but does not claim it.
+   - **#44** is placed under flake-aware testing, because it was built as a phase of the
+     flake-aware testing plan (the task-source label filters exist to sweep actionable flake
+     issues for the deflake skill). Its task-source label filters are recorded as surfaces
+     touched in that entry. The task-source relations entry may mention it as related, but does
+     not claim it.
 2. Render `docs/fork/ledger.html` html-plans style (self-contained, light and dark) (D16).
 3. Link the ledger from `docs/README.md`. Add the ledger steps to `docs/upstream-sync.md`: the
    pre-merge conceptual conflict check, the "Conceptual conflicts" section in the PR, and the
