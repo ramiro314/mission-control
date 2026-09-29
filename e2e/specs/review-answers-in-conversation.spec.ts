@@ -138,9 +138,13 @@ test("answering a three-option question puts the choice in the conversation", as
 
   // Deliberately NOT the recommended option: a replay that quietly drew the recommendation
   // would look correct for any answer, so the spec picks the one nothing would default to.
+  //
+  // Other is typed FIRST and then passed over. On a single-choice question Other is its own
+  // radio, so picking a listed option afterwards deselects it and its text is kept but not
+  // sent - the replay must say what went out, not what was left in the box.
   const form = dashboard.locator(".review-modal");
-  await form.getByRole("radio", { name: /Single shared ring buffer/ }).check();
   await form.getByPlaceholder("Other…").fill("cap it at 200 turns per session");
+  await form.getByRole("radio", { name: /Single shared ring buffer/ }).check();
   await form.getByRole("button", { name: "Submit" }).click();
   await expect(form).toBeHidden();
 
@@ -161,7 +165,7 @@ test("answering a three-option question puts the choice in the conversation", as
   await expect(answer.getByLabel("Chosen: Single shared ring buffer")).toBeVisible();
   await expect(answer.getByLabel("Not chosen: Bounded LRU per session")).toBeVisible();
   await expect(answer.getByLabel("Not chosen: No cache at all")).toBeVisible();
-  await expect(answer).toContainText("cap it at 200 turns per session");
+  await expect(answer).not.toContainText("cap it at 200 turns per session");
 
   // A record, not a control. A resolved review cannot be answered twice, so nothing on the
   // entry may be clickable - an inert copy of a form is worse than prose.
