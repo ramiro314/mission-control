@@ -4222,6 +4222,9 @@ function parseFlakeIssueKey(body) {
 function flakeOccurrenceMarker(at) {
   return `<!-- mission-flake-occurrence:v1 at=${at.toISOString()} -->`;
 }
+function flakeRunMarker(runUrl) {
+  return `<!-- mission-flake-run:v1 url=${runUrl} -->`;
+}
 function parseFlakeOccurrences(text) {
   const times = [];
   for (const match of (text ?? "").matchAll(/<!-- mission-flake-occurrence:v1 at=(\S+) -->/g)) {
@@ -4392,6 +4395,7 @@ function occurrenceBlock(entries, ctx, at) {
   const message = entries.find((entry) => entry.message)?.message ?? "";
   return [
     flakeOccurrenceMarker(at),
+    flakeRunMarker(ctx.runUrl),
     `Flaked on ${where} at \`${ctx.commit.slice(0, 12)}\` ([CI run](${ctx.runUrl}))${inJobs}.`,
     ...message ? ["", fenced(message)] : []
   ].join("\n");
@@ -4432,6 +4436,13 @@ async function ensureLabel(client, repo, name, color, description) {
     await client.request("POST", `/repos/${repo}/labels`, { name, color, description });
   } catch (err) {
     if (!(err instanceof GitHubError) || err.status !== 422) throw err;
+  }
+}
+async function removeLabel(client, issuePath, label) {
+  try {
+    await client.request("DELETE", `${issuePath}/labels/${enc(label)}`);
+  } catch (err) {
+    if (!(err instanceof GitHubError) || err.status !== 404) throw err;
   }
 }
 async function lastReopened(client, repo, issue) {
@@ -4507,6 +4518,18 @@ Duplicate of #${canonical.number}, which another CI run opened at the same time.
       existing = canonical;
     }
     const issuePath = `/repos/${repo}/issues/${existing.number}`;
+    const runMarker = flakeRunMarker(ctx.runUrl);
+    const recorded = await client.paginate(`${issuePath}/comments`);
+    if ([existing.body, ...recorded.map((comment) => comment.body)].some((text) => text?.includes(runMarker))) {
+      results.push({
+        key,
+        number: existing.number,
+        url: existing.html_url,
+        occurrences: await countOccurrences(existing),
+        actionable: labelNames(existing).includes(flakes.actionableLabel)
+      });
+      continue;
+    }
     const reopening = existing.state === "closed";
     let earlier = 0;
     if (reopening) await client.request("PATCH", issuePath, { state: "open" });
@@ -4518,7 +4541,7 @@ Duplicate of #${canonical.number}, which another CI run opened at the same time.
     if (actionable && !hasActionable) {
       await client.request("POST", `${issuePath}/labels`, { labels: [flakes.actionableLabel] });
     } else if (!actionable && hasActionable && reopening) {
-      await client.request("DELETE", `${issuePath}/labels/${enc(flakes.actionableLabel)}`);
+      await removeLabel(client, issuePath, flakes.actionableLabel);
     }
     const body = existing.body ?? "";
     const countAt = body.indexOf(FLAKE_COUNT_MARKER);
@@ -4532,7 +4555,7 @@ Duplicate of #${canonical.number}, which another CI run opened at the same time.
     const key = parseFlakeIssueKey(issue.body);
     if (key && groups.has(key)) continue;
     if (!labelNames(issue).includes(flakes.actionableLabel)) continue;
-    await client.request("DELETE", `/repos/${repo}/issues/${issue.number}/labels/${enc(flakes.actionableLabel)}`);
+    await removeLabel(client, `/repos/${repo}/issues/${issue.number}`, flakes.actionableLabel);
   }
   return results;
 }

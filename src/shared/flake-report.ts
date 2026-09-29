@@ -246,6 +246,14 @@ export function flakeOccurrenceMarker(at: Date): string {
   return `<!-- mission-flake-occurrence:v1 at=${at.toISOString()} -->`;
 }
 
+/**
+ * Follows the occurrence marker and names the CI run that recorded it, so re-running the
+ * publish job for the same run (same run id, a later attempt) does not record it twice.
+ */
+export function flakeRunMarker(runUrl: string): string {
+  return `<!-- mission-flake-run:v1 url=${runUrl} -->`;
+}
+
 /** Every occurrence time recorded in a body or comment, in order. Unparseable times are skipped. */
 export function parseFlakeOccurrences(text: string | null | undefined): Date[] {
   const times: Date[] = [];

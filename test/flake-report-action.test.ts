@@ -367,6 +367,7 @@ function fakeGitHub(opts: { forbid?: RegExp; now: Date }) {
       }
       if ((m = /^\/labels\/(.+)$/.exec(rest)) && init.method === "DELETE") {
         const name = decodeURIComponent(m[1]!);
+        if (!issue.labels.some((l) => l.name === name)) return reply(404, { message: "Label does not exist" });
         issue.labels = issue.labels.filter((l) => l.name !== name);
         return reply(200, []);
       }
@@ -409,6 +410,8 @@ const PR_EVENT = {
 };
 const ENV = { GITHUB_REPOSITORY: "o/r", GITHUB_SHA: "mergesha", GITHUB_RUN_ID: "5", GITHUB_REF_NAME: "9/merge" };
 const ctx: RunContext = runContextFrom(ENV, PR_EVENT);
+/** A separate CI run of the same PR: the same run id is a replay of one run. */
+const runCtx = (id: number): RunContext => runContextFrom({ ...ENV, GITHUB_RUN_ID: String(id) }, PR_EVENT);
 
 function flake(name: string, job = "unit (node 24, shard 1/6)"): FlakeReportTest {
   return { key: flakeKey("junit", "test/a.test.ts", name), runner: "junit", file: "test/a.test.ts", name, message: "boom", job };
@@ -493,14 +496,14 @@ describe("publish mode", () => {
       ],
     });
     // The body's first occurrence and the 35-day-old one have left the 30-day window: 1 + now.
-    let result = await publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    let result = await publish({ ctx: runCtx(101), reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
     assert.deepEqual(result.report.issues.map((i) => [i.occurrences, i.actionable]), [[2, false]]);
     assert.equal(issue.comments.length, 4);
     assert.match(issue.comments[3]!.body, /^<!-- mission-flake-occurrence:v1 at=2026-09-28T12:00:00\.000Z -->/);
     assert.match(issue.body, /Occurrences counted: \*\*2\*\* in the last 30 days/);
     assert.ok(!issue.labels.some((l) => l.name === "flaky-test:actionable"));
 
-    result = await publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    result = await publish({ ctx: runCtx(102), reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
     assert.deepEqual(result.report.issues.map((i) => [i.occurrences, i.actionable]), [[3, true]]);
     assert.ok(issue.labels.some((l) => l.name === "flaky-test:actionable"));
     assert.match(issue.body, /Occurrences counted: \*\*3\*\*/);
@@ -521,7 +524,7 @@ describe("publish mode", () => {
 
     // The next occurrence counts only what came after the reopen.
     const later = new Date(NOW.getTime() + 60_000);
-    const again = await publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: later });
+    const again = await publish({ ctx: runCtx(2), reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: later });
     assert.deepEqual(again.report.issues.map((i) => i.occurrences), [2]);
   });
 
@@ -539,8 +542,8 @@ describe("publish mode", () => {
 
   test("two runs that open the same new flake at once converge on one issue", async () => {
     const gh = fakeGitHub({ now: NOW });
-    const run = () => publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
-    const [first, second] = await Promise.all([run(), run()]);
+    const run = (id: number) => publish({ ctx: runCtx(id), reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    const [first, second] = await Promise.all([run(11), run(12)]);
     // Both created one (GitHub has no conditional create); the later one retired itself.
     assert.equal(gh.issues.length, 2);
     const withKey = gh.issues.filter((i) => i.body.includes(flakeIssueMarker(flake("fails").key)));
@@ -554,7 +557,7 @@ describe("publish mode", () => {
     assert.equal(second.report.issues[0]!.occurrences, 2);
 
     // Later runs find only the canonical issue.
-    const later = await publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    const later = await publish({ ctx: runCtx(13), reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
     assert.deepEqual(later.report.issues.map((i) => [i.number, i.occurrences]), [[1, 3]]);
     assert.equal(retired.state, "closed");
   });
@@ -562,12 +565,53 @@ describe("publish mode", () => {
   test("two runs recording occurrences at once still cross the threshold", async () => {
     const gh = fakeGitHub({ now: NOW });
     const issue = gh.seedIssue({ key: flake("fails").key, created_at: daysAgo(1) });
-    const run = () => publish({ ctx, reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
-    const results = await Promise.all([run(), run()]);
+    const run = (id: number) => publish({ ctx: runCtx(id), reports: [jobReport([flake("fails")])], configText: null, client: gh.client, now: NOW });
+    const results = await Promise.all([run(21), run(22)]);
     // Body + two comments = 3: whichever run recounts after both posts adds the label.
     assert.equal(issue.comments.length, 2);
     assert.ok(results.some((r) => r.report.issues[0]!.actionable));
     assert.ok(issue.labels.some((l) => l.name === "flaky-test:actionable"));
+  });
+
+  test("two runs reopening the same issue at once both finish every flake", async () => {
+    const gh = fakeGitHub({ now: NOW });
+    const reopened = gh.seedIssue({
+      key: flake("fails").key,
+      state: "closed",
+      labels: [{ name: "flaky-test" }, { name: "flaky-test:actionable" }],
+    });
+    const run = (id: number) => publish({
+      ctx: runCtx(id),
+      reports: [jobReport([flake("fails"), flake("other")])],
+      configText: null,
+      client: gh.client,
+      now: NOW,
+    });
+    // Both see the stale actionable label and remove it; the second DELETE answers 404.
+    const results = await Promise.all([run(31), run(32)]);
+    for (const result of results) {
+      assert.ok(!result.notes.some((note) => /cannot write issues/.test(note)), result.notes.join("\n"));
+      // The flake after the reopened one is still recorded and linked.
+      assert.deepEqual(result.report.issues.map((i) => i.key), [flake("fails").key, flake("other").key]);
+    }
+    assert.equal(gh.writes.filter((w) => w === "DELETE /issues/1/labels/flaky-test%3Aactionable").length, 2);
+    assert.equal(reopened.state, "open");
+    assert.deepEqual(reopened.labels.map((l) => l.name), ["flaky-test"]);
+  });
+
+  test("re-running the publish job for the same CI run records nothing twice", async () => {
+    const gh = fakeGitHub({ now: NOW });
+    const issue = gh.seedIssue({ key: flake("fails").key, created_at: daysAgo(1) });
+    const replay = () => publish({ ctx: runCtx(41), reports: [jobReport([flake("fails"), flake("new")])], configText: null, client: gh.client, now: NOW });
+    const first = await replay();
+    const second = await replay();
+    assert.equal(issue.comments.length, 1);
+    assert.match(issue.comments[0]!.body, /<!-- mission-flake-run:v1 url=https:\/\/github\.com\/o\/r\/actions\/runs\/41 -->/);
+    // The new flake's issue carries the run marker in its body, so it gains no comment either.
+    const created = gh.issues.find((i) => i.body.includes(flakeIssueMarker(flake("new").key)))!;
+    assert.equal(created.comments.length, 0);
+    assert.equal(gh.issues.length, 2);
+    assert.deepEqual(second.report.issues, first.report.issues);
   });
 
   test("a fork PR writes nothing and says which writes it skipped", async () => {

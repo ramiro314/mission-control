@@ -3,6 +3,7 @@ import {
   flakeDuplicateMarker,
   flakeIssueMarker,
   flakeOccurrenceMarker,
+  flakeRunMarker,
   parseFlakeIssueKey,
   parseFlakeOccurrences,
   type FlakeReport,
@@ -67,6 +68,7 @@ function occurrenceBlock(entries: FlakeReportTest[], ctx: RunContext, at: Date):
   const message = entries.find((entry) => entry.message)?.message ?? "";
   return [
     flakeOccurrenceMarker(at),
+    flakeRunMarker(ctx.runUrl),
     `Flaked on ${where} at \`${ctx.commit.slice(0, 12)}\` ([CI run](${ctx.runUrl}))${inJobs}.`,
     ...(message ? ["", fenced(message)] : []),
   ].join("\n");
@@ -114,6 +116,19 @@ async function ensureLabel(client: GitHubClient, repo: string, name: string, col
   } catch (err) {
     // 422: another job created it between the GET and the POST.
     if (!(err instanceof GitHubError) || err.status !== 422) throw err;
+  }
+}
+
+/**
+ * Remove a label, treating "not on the issue" (404) as done: a concurrent run may have removed
+ * it first. Left to propagate, that 404 would read as a missing permission and abandon every
+ * remaining flake in the run.
+ */
+async function removeLabel(client: GitHubClient, issuePath: string, label: string): Promise<void> {
+  try {
+    await client.request("DELETE", `${issuePath}/labels/${enc(label)}`);
+  } catch (err) {
+    if (!(err instanceof GitHubError) || err.status !== 404) throw err;
   }
 }
 
@@ -221,6 +236,20 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
     }
 
     const issuePath = `/repos/${repo}/issues/${existing.number}`;
+    // A re-run of this publish job replays the same run's reports: report the issue as it
+    // stands instead of recording, reopening or relabelling a second time.
+    const runMarker = flakeRunMarker(ctx.runUrl);
+    const recorded = await client.paginate<IssueComment>(`${issuePath}/comments`);
+    if ([existing.body, ...recorded.map((comment) => comment.body)].some((text) => text?.includes(runMarker))) {
+      results.push({
+        key,
+        number: existing.number,
+        url: existing.html_url,
+        occurrences: await countOccurrences(existing),
+        actionable: labelNames(existing).includes(flakes.actionableLabel),
+      });
+      continue;
+    }
     const reopening = existing.state === "closed";
     // Counted before this run's comment is posted too, so a list that lags behind the post
     // cannot undercount.
@@ -235,7 +264,7 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
     if (actionable && !hasActionable) {
       await client.request("POST", `${issuePath}/labels`, { labels: [flakes.actionableLabel] });
     } else if (!actionable && hasActionable && reopening) {
-      await client.request("DELETE", `${issuePath}/labels/${enc(flakes.actionableLabel)}`);
+      await removeLabel(client, issuePath, flakes.actionableLabel);
     }
     const body = existing.body ?? "";
     const countAt = body.indexOf(FLAKE_COUNT_MARKER);
@@ -253,7 +282,7 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
     const key = parseFlakeIssueKey(issue.body);
     if (key && groups.has(key)) continue;
     if (!labelNames(issue).includes(flakes.actionableLabel)) continue;
-    await client.request("DELETE", `/repos/${repo}/issues/${issue.number}/labels/${enc(flakes.actionableLabel)}`);
+    await removeLabel(client, `/repos/${repo}/issues/${issue.number}`, flakes.actionableLabel);
   }
   return results;
 }

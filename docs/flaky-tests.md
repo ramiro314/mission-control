@@ -87,8 +87,13 @@ One issue per flaky test, labelled with the `flakes.label` from the committed
 - **Each later flake**: an occurrence comment on that issue. One comment per test per run,
   listing every job that saw it.
 - Every occurrence, in the body or a comment, starts with
-  `<!-- mission-flake-occurrence:v1 at=<ISO time> -->`, then the PR or branch, the commit, the run
-  link, the jobs and the error snippet.
+  `<!-- mission-flake-occurrence:v1 at=<ISO time> -->` and
+  `<!-- mission-flake-run:v1 url=<run URL> -->`, then the PR or branch, the commit, the run link,
+  the jobs and the error snippet.
+- **Re-running the publish job** for the same CI run (same run URL, a later attempt) records
+  nothing twice: an issue that already holds that run's marker is reported as it stands, without
+  a new comment, reopen or label change. A full re-run of the test jobs reuses the run URL too,
+  so it is treated the same way.
 - **Actionable**: when the occurrences within the last `flakes.windowDays` days (default 30),
   counted from the issue's most recent reopen, reach `flakes.actionableAfter` (default 3), the
   issue gains `flakes.actionableLabel` (default `flaky-test:actionable`). Occurrences are dated by
@@ -98,7 +103,8 @@ One issue per flaky test, labelled with the `flakes.label` from the committed
 - **Concurrent runs**: GitHub has no conditional create, so two runs that meet the same new
   flake at once can each open an issue. Each re-lists after creating; the higher-numbered issue
   replaces its key marker with `<!-- mission-flake-duplicate:v1 of=<n> -->`, closes itself, and
-  its occurrence goes to the lowest-numbered one. Occurrences are also recounted after each
+  its occurrence goes to the lowest-numbered one. Removing a label that a concurrent run already
+  removed (a 404) counts as done, so it never reads as a missing permission. Occurrences are also recounted after each
   comment is posted, so two runs recording at once still cross the threshold.
 - **Flakes again after a fix**: the action reopens the issue, drops the actionable label, and
   counting starts over from the reopen.
