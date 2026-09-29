@@ -157,13 +157,15 @@ export function TrustPanel({
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  // The one row whose "Set up flake-aware testing" was last clicked, and what came of it. One at a
-  // time because the answer is read once, beside the row it belongs to.
-  const [setup, setSetup] = useState<{
-    repo: string;
+  // Each row's "Set up flake-aware testing" request and its answer, keyed by repository so rows
+  // stay independent: a request in flight on one row neither disables another row's button nor
+  // lets its answer land under the wrong row.
+  const [setups, setSetups] = useState<Record<string, {
     state: "busy" | "started" | "queued" | "refused";
     text: string;
-  } | null>(null);
+  }>>({});
+  const setupsRef = useRef(setups);
+  setupsRef.current = setups;
 
   // The workspace's git repos, for the add picker - same source the four panels used.
   useEffect(() => {
@@ -344,22 +346,22 @@ export function TrustPanel({
    * the refusal is shown on the row that asked.
    */
   async function startTestingSetup(repo: string): Promise<void> {
-    if (setup?.state === "busy") return;
-    setSetup({ repo, state: "busy", text: "Starting…" });
+    if (setupsRef.current[repo]?.state === "busy") return;
+    const answer = (next: (typeof setups)[string]) =>
+      setSetups((prev) => ({ ...prev, [repo]: next }));
+    answer({ state: "busy", text: "Starting…" });
     const res = await api.startTestingSetup(repo);
     if (!res.ok || !res.task) {
-      setSetup({ repo, state: "refused", text: res.error ?? "The testing setup task could not be started." });
+      answer({ state: "refused", text: res.error ?? "The testing setup task could not be started." });
       return;
     }
-    setSetup(res.launched
+    answer(res.launched
       ? {
-        repo,
         state: "started",
         text: "Testing setup started. Its agent audits this repository and asks you to approve "
           + "every change in one form before it changes anything.",
       }
       : {
-        repo,
         state: "queued",
         text: `Testing setup is in the backlog and has not launched yet: ${res.reason ?? "it will launch when it can"}.`,
       });
@@ -450,7 +452,7 @@ export function TrustPanel({
                     type="button"
                     className="trust-setup"
                     aria-label={`Set up flake-aware testing for ${row.repo}`}
-                    disabled={setup?.state === "busy"}
+                    disabled={setups[row.repo]?.state === "busy"}
                     onClick={() => void startTestingSetup(row.repo)}
                   >
                     Set up testing
@@ -470,12 +472,12 @@ export function TrustPanel({
                   </button>
                 </Tooltip>
               </div>
-              {setup?.repo === row.repo && (
+              {setups[row.repo] && (
                 <p
-                  className={`trust-row-note${setup.state === "refused" ? " settings-error" : " settings-hint"}`}
-                  role={setup.state === "refused" ? "alert" : "status"}
+                  className={`trust-row-note${setups[row.repo]!.state === "refused" ? " settings-error" : " settings-hint"}`}
+                  role={setups[row.repo]!.state === "refused" ? "alert" : "status"}
                 >
-                  {setup.text}
+                  {setups[row.repo]!.text}
                 </p>
               )}
             </Fragment>

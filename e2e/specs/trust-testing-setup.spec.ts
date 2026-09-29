@@ -1,5 +1,7 @@
-import { mkdirSync } from "node:fs";
-import { basename } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 
 import type { Page } from "@playwright/test";
 import type { Task } from "../../src/shared/types.ts";
@@ -94,4 +96,46 @@ test("with the skill on, the action starts the testing-setup task", async ({ das
   expect(task!.intent).toContain("Invoke the testing-setup skill and follow it");
   expect(task!.title).toBe(`Set up flake-aware testing: ${basename(daemon.repo)}`);
   await shoot(dashboard, "02-started-skill-on");
+});
+
+test("a request in flight on one row leaves every other row's action usable and answered on its own row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setSkill(dashboard, daemon.baseURL, false);
+  // A second real repository, so both rows resolve and stage.
+  const other = realpathSync(mkdtempSync(join(tmpdir(), "mc-e2e-setup-other-")));
+  execFileSync("git", ["-C", other, "init", "-q"]);
+  await openTrustWith(dashboard, daemon.repo);
+  await dashboard.getByRole("combobox", { name: /search repos or type a path/i }).fill(other);
+  await dashboard.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(dashboard.getByRole("button", { name: `Set up flake-aware testing for ${other}` })).toBeVisible();
+
+  // Hold the first row's request open until the second row has been used.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await dashboard.route("**/api/repositories/testing-setup", async (route) => {
+    const body = route.request().postDataJSON() as { repoRoot: string };
+    if (body.repoRoot === daemon.repo) await held;
+    await route.continue();
+  });
+
+  const first = dashboard.getByRole("button", { name: `Set up flake-aware testing for ${daemon.repo}` });
+  const second = dashboard.getByRole("button", { name: `Set up flake-aware testing for ${other}` });
+  await first.click();
+  await expect(first).toBeDisabled();
+  await expect(second).toBeEnabled();
+
+  await second.click();
+  const rows = dashboard.getByRole("table", { name: "Repository trust grants" });
+  const refusals = rows.getByRole("alert").filter({ hasText: /Enable Skills and the testing-setup skill/ });
+  await expect(refusals).toHaveCount(1);
+  await expect(first).toBeDisabled();
+  await expect(rows.getByText("Starting…")).toHaveCount(1);
+
+  release();
+  await expect(refusals).toHaveCount(2);
+  await expect(first).toBeEnabled();
+  await shoot(dashboard, "03-rows-independent");
+  rmSync(other, { recursive: true, force: true });
 });
