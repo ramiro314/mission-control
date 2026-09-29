@@ -18,6 +18,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/pipelines/register", "setup.pipeline_register", "setup"],
   ["POST", "/api/pipelines/install", "setup.pipeline_installer_launch", "setup"],
   ["POST", "/api/tasks", "task.create", "tasks"],
+  ["POST", "/api/repositories/testing-setup", "task.testing_setup", "tasks"],
   ["POST", "/mcp/tasks", "task.create", "tasks"],
   ["POST", "/mcp/v2/tasks", "task.create", "tasks"],
   ["POST", "/mcp/v3/tasks", "task.create", "tasks"],

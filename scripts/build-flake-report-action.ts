@@ -1,13 +1,19 @@
 #!/usr/bin/env node
-// Regenerate `.github/actions/mission-flake-report/` from `src/flake-report-action/`.
+// Regenerate `.github/actions/mission-flake-report/` from `src/flake-report-action/`, and the
+// identical copy under `skills/testing-setup/assets/mission-flake-report/`.
 //
 //   npm run build:flake-report-action
 //
 // The action GitHub runs is a single bundled `index.mjs` plus its `action.yml`, both committed
 // because a workflow can only use an action that is in the repository. This generator is the
 // ONLY producer of those files: `test/flake-report-action.test.ts` imports `renderFlakeReportAction`
-// and fails when the committed files differ from what it renders, so an edit to the source
-// that was not regenerated, or a hand edit to the output, cannot merge.
+// and fails when either committed copy differs from what it renders, so an edit to the source
+// that was not regenerated, or a hand edit to an output, cannot merge.
+//
+// Two outputs of one render, never two builds. This repository's CI runs the first. The second
+// ships inside the packaged app (which carries `skills/` but not `.github/`), and the
+// `testing-setup` skill copies it into other repositories and compares its header version with
+// theirs to offer an update.
 //
 // Run this after changing anything under `src/flake-report-action/` or the shared modules it
 // bundles (`src/shared/flake-report.ts`, `junit.ts`, `testing-config.ts`,
@@ -20,6 +26,12 @@ import { FLAKE_REPORT_ACTION_VERSION } from "../src/flake-report-action/version.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const FLAKE_REPORT_ACTION_DIR = join(root, ".github", "actions", "mission-flake-report");
+/** The copy the `testing-setup` skill installs into other repositories. */
+export const FLAKE_REPORT_ACTION_SKILL_ASSET_DIR = join(
+  root, "skills", "testing-setup", "assets", "mission-flake-report",
+);
+/** Every directory the generator writes, each holding the same files. */
+export const FLAKE_REPORT_ACTION_DIRS = [FLAKE_REPORT_ACTION_DIR, FLAKE_REPORT_ACTION_SKILL_ASSET_DIR];
 
 const HEADER = [
   `// mission-flake-report ${FLAKE_REPORT_ACTION_VERSION}`,
@@ -108,7 +120,9 @@ export async function renderFlakeReportAction(): Promise<Record<string, string>>
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const files = await renderFlakeReportAction();
-  mkdirSync(FLAKE_REPORT_ACTION_DIR, { recursive: true });
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(FLAKE_REPORT_ACTION_DIR, name), text);
-  console.log(`Wrote ${Object.keys(files).join(", ")} to ${FLAKE_REPORT_ACTION_DIR}`);
+  for (const dir of FLAKE_REPORT_ACTION_DIRS) {
+    mkdirSync(dir, { recursive: true });
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    console.log(`Wrote ${Object.keys(files).join(", ")} to ${dir}`);
+  }
 }

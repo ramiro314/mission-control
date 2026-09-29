@@ -23466,6 +23466,38 @@ button.sc-row:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* "Set up flake-aware testing": a quiet text action after the name, never shrunk so the path
+   ellipsizes first. */
+.trust-setup {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 20px;
+  cursor: pointer;
+}
+.trust-repo .trust-repo-path {
+  margin-right: 8px;
+}
+.trust-setup:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.trust-setup:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+/* The setup action's answer, spanning the row it belongs to. */
+.trust-row-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 6px 14px 8px;
+  font-size: 11.5px;
+}
 /* The trapped merge cell and the empty inspector cell that would untrap it. The amber wash
    is the structural version of the prose warning the Shipping panel used to carry alone. */
 .trust-c.is-trap {

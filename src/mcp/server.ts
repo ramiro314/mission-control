@@ -992,6 +992,54 @@ server.registerTool(
   },
 );
 
+// The testing-setup skill's one Command write. It names no slot and no repository: the daemon
+// derives the calling session's testing-setup task and writes only that task repository's
+// `affected-tests` override, refusing any other session. The argv bound mirrors
+// `WorkflowCommandArgvSchema`; the `{files}` / `{junit}` rule is checked by the daemon.
+server.registerTool(
+  "set_affected_tests_command",
+  {
+    title: "Set this repository's affected-tests Command",
+    description:
+      "Use only after the human approved this exact command template in a decision form " +
+      "(request_plan_decisions). Sets the affected-tests Command for the repository this " +
+      "testing-setup task works on, and nothing else. The template is an argv: one element must " +
+      "be exactly {files} (replaced by the selected test files) and one must contain {junit} " +
+      "(where the runner writes JUnit XML).",
+    inputSchema: {
+      command: z
+        .array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg))
+        .min(1)
+        .max(WORKFLOW_LIMITS.checkCommandArgs)
+        .describe("The approved template as an argv, for example [\"npx\", \"vitest\", \"run\", \"--reporter=junit\", \"--outputFile={junit}\", \"{files}\"]"),
+    },
+  },
+  async ({ command }) => {
+    try {
+      const res = await http("/mcp/workflow-commands/affected-tests", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        command,
+      });
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused the affected-tests Command (${res.status}): ${await res.text()}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as { repoRoot: string; replayed?: boolean };
+      return textResult(
+        body.replayed
+          ? `${body.repoRoot} already had this affected-tests Command.`
+          : `Set the affected-tests Command for ${body.repoRoot}.`,
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // Submit this ensemble member's finished work for comparison. The member NEVER names itself: the
 // daemon derives which member from this session's pane/id/cwd, so the arguments carry only the
 // member's own bounded claims - no ensemble, member, task, session, worktree, artifact or ref id.

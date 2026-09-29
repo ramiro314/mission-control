@@ -66,6 +66,7 @@ import type {
   ResolveEpisode,
   ResolveFindingsResult,
   RetroResponse,
+  TestingSetupStartResponse,
   ShippingConfig,
   ShippingConfigPatch,
   SetNote,
@@ -1739,6 +1740,13 @@ export const api = {
     post<ActionResult & RetroResponse>(
       `/api/sessions/${encodeURIComponent(id)}/retro`,
     ),
+  /**
+   * Start the testing-setup task for one repository (the Trust row's "Set up flake-aware
+   * testing"). A 409 carries the skill refusal to show beside the row; `launched: false` means
+   * the task exists in the backlog with `reason` and launches when it can.
+   */
+  startTestingSetup: (repoRoot: string) =>
+    post<ActionResult & Partial<TestingSetupStartResponse>>("/api/repositories/testing-setup", { repoRoot }),
   /**
    * Answer the option menu a session is showing by selecting one of its rows.
    *

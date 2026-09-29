@@ -28,6 +28,7 @@ import {
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
+import { SET_AFFECTED_TESTS_COMMAND_TOOL } from "./testing-setup-tool.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
@@ -86,6 +87,7 @@ export const MISSION_MCP_TOOLS = [
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
   COMPLETE_RETRO_NO_CHANGE_TOOL,
+  SET_AFFECTED_TESTS_COMMAND_TOOL,
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];

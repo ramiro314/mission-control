@@ -4,7 +4,7 @@ import type { InspectorState } from "../useInspector.ts";
 import type { ShippingState } from "../useShipping.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { useUiConfig, updateUiConfig } from "../lib/uiConfig.ts";
-import { fetchRepos, resolveRepo } from "../lib/api.ts";
+import { api, fetchRepos, resolveRepo } from "../lib/api.ts";
 import {
   candidateRepos,
   checkExecutionGrants,
@@ -157,6 +157,15 @@ export function TrustPanel({
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // Each row's "Set up flake-aware testing" request and its answer, keyed by repository so rows
+  // stay independent: a request in flight on one row neither disables another row's button nor
+  // lets its answer land under the wrong row.
+  const [setups, setSetups] = useState<Record<string, {
+    state: "busy" | "started" | "queued" | "refused";
+    text: string;
+  }>>({});
+  const setupsRef = useRef(setups);
+  setupsRef.current = setups;
 
   // The workspace's git repos, for the add picker - same source the four panels used.
   useEffect(() => {
@@ -331,6 +340,33 @@ export function TrustPanel({
     await updateUiConfig({ trustStaged: [...stagedRef.current, root] });
   }
 
+  /**
+   * Start the testing-setup task for one repository. The daemon owns everything the task is -
+   * kind, intent, skill, tools - and refuses before creating anything when the skill is off, so
+   * the refusal is shown on the row that asked.
+   */
+  async function startTestingSetup(repo: string): Promise<void> {
+    if (setupsRef.current[repo]?.state === "busy") return;
+    const answer = (next: (typeof setups)[string]) =>
+      setSetups((prev) => ({ ...prev, [repo]: next }));
+    answer({ state: "busy", text: "Starting…" });
+    const res = await api.startTestingSetup(repo);
+    if (!res.ok || !res.task) {
+      answer({ state: "refused", text: res.error ?? "The testing setup task could not be started." });
+      return;
+    }
+    answer(res.launched
+      ? {
+        state: "started",
+        text: "Testing setup started. Its agent audits this repository and asks you to approve "
+          + "every change in one form before it changes anything.",
+      }
+      : {
+        state: "queued",
+        text: `Testing setup is in the backlog and has not launched yet: ${res.reason ?? "it will launch when it can"}.`,
+      });
+  }
+
   /** Whether each column's owning daemon has answered, so a cell can disable rather than lie. */
   const configPresent: Record<GrantColumn, boolean> = {
     foreman: Boolean(foreman.config),
@@ -411,6 +447,17 @@ export function TrustPanel({
             <Fragment key={row.repo}>
               <div className="trust-c trust-repo">
                 <RepositoryName path={row.repo} className="trust-repo-path" />
+                <Tooltip label="An agent audits this repository for flake-aware testing and asks you to approve every change before it opens a pull request">
+                  <button
+                    type="button"
+                    className="trust-setup"
+                    aria-label={`Set up flake-aware testing for ${row.repo}`}
+                    disabled={setups[row.repo]?.state === "busy"}
+                    onClick={() => void startTestingSetup(row.repo)}
+                  >
+                    Set up testing
+                  </button>
+                </Tooltip>
               </div>
               {COLUMNS.map((c) => cell(row, c))}
               <div className="trust-c trust-remove-c">
@@ -425,6 +472,14 @@ export function TrustPanel({
                   </button>
                 </Tooltip>
               </div>
+              {setups[row.repo] && (
+                <p
+                  className={`trust-row-note${setups[row.repo]!.state === "refused" ? " settings-error" : " settings-hint"}`}
+                  role={setups[row.repo]!.state === "refused" ? "alert" : "status"}
+                >
+                  {setups[row.repo]!.text}
+                </p>
+              )}
             </Fragment>
           ))}
         </div>

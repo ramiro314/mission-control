@@ -429,3 +429,52 @@ test("the shipped deflake skill reproduces first, limits timeouts, and proves th
   // Merging the fix closes the issue.
   assert.match(text, /`Fixes #<issue>`/);
 });
+
+test("the shipped testing-setup skill audits, asks once, applies only what was approved, and verifies twice", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "testing-setup");
+  assert.ok(skill, "testing-setup should be in the catalog");
+  assert.equal(skill.name, "testing-setup");
+  assert.equal(skill.category, "testing");
+  assert.equal(skill.enforcement, "triggered");
+  assert.match(skill.description, /Set up flake-aware testing/);
+
+  const text = readFileSync(new URL("../skills/testing-setup/SKILL.md", import.meta.url), "utf8");
+  // The audit list, each item named.
+  for (const item of [
+    /\*\*Test runner and JUnit XML\.\*\*/,
+    /\*\*Rerun command template\.\*\*[\s\S]*`\{files\}`[\s\S]*`\{junit\}`/,
+    /\*\*The report action in CI\.\*\*[\s\S]*version against this skill's asset/,
+    /\*\*Permissions\.\*\*[\s\S]*`checks: write` and\s+`issues: write`/,
+    /\*\*The check on the PR head commit\.\*\*/,
+    /\*\*`\.mission\/testing\.json`\.\*\*/,
+    /\*\*The `\.gitignore` entry\*\* for `\.mission\/testing\.local\.json`/,
+    /\*\*Test-file patterns\.\*\*/,
+    /\*\*A proposed smoke set\.\*\*[\s\S]*reason for each/,
+  ]) assert.match(text, item);
+  // One approval form, never prose or several forms.
+  assert.match(text, /## 2\. Propose, in one form/);
+  assert.match(text, /\*\*`request_plan_decisions`\*\* once, with every proposed change/);
+  assert.match(text, /never split the proposal across several forms/);
+  assert.match(text, /`smoke-set`: `multiSelect: true`/);
+  assert.match(text, /`builtin-workflow:no-mistakes-review-affected-tests`/);
+  // Apply only what was approved, with the one scoped tool.
+  assert.match(text, /\*\*apply only what was approved\.\*\*/);
+  assert.match(text, /## 3\. Apply only what was approved/);
+  assert.match(text, /\*\*`set_affected_tests_command`\*\* with the exact approved argv/);
+  assert.match(text, /`assets\/mission-flake-report\/`/);
+  // Both verification steps.
+  assert.match(text, /\*\*One local `affected-tests` run\.\*\*/);
+  assert.match(text, /\*\*The "Flaky tests" check on the setup pull request's own CI\.\*\*/);
+  assert.match(text, /`ci_flake_report_missing`/);
+  // A later run offers only the action update.
+  assert.match(text, /propose the update as the \*\*only\*\* change/);
+  // The laptop settings, by name.
+  assert.match(text, /`checkTestLease`/);
+  assert.match(text, /`checkTestConcurrency`/);
+});
+
+test("the testing-setup skill ships the generated report action it copies", () => {
+  const asset = new URL("../skills/testing-setup/assets/mission-flake-report/", import.meta.url);
+  assert.match(readFileSync(new URL("index.mjs", asset), "utf8"), /^\/\/ mission-flake-report \d+\.\d+\.\d+\n/);
+  assert.match(readFileSync(new URL("action.yml", asset), "utf8"), /^# mission-flake-report \d+\.\d+\.\d+\n/);
+});

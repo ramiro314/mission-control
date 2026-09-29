@@ -128,6 +128,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.setEffort`](../src/web/lib/api.ts#L1684) | `/api/sessions/:id/effort` |
 | [`api.reset`](../src/web/lib/api.ts#L1689) | `/api/sessions/:id/reset` |
 | [`api.runRetro`](../src/web/lib/api.ts#L1700) | `/api/sessions/:id/retro` |
+| [`api.startTestingSetup`](../src/web/lib/api.ts) | `/api/repositories/testing-setup` |
 | [`api.selectOption`](../src/web/lib/api.ts#L1716) | `/api/sessions/:id/select-option` |
 | [`api.submitOptions`](../src/web/lib/api.ts#L1727) | `/api/sessions/:id/submit-options` |
 | [`api.submitAnswers`](../src/web/lib/api.ts#L1741) | `/api/sessions/:id/submit-options` |
@@ -252,6 +253,7 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `adopt_pipeline_run` | Pipeline owner, `pipeline.adopt` |
 | `report_pipeline_workspace` | Pinned workspace owner, `pipeline.workspace` |
 | `complete_retro_no_change` | Retrospective owner, `session.retro_no_change` |
+| `set_affected_tests_command` | Command catalog owner, `workflow.command` |
 | `submit_ensemble_result` | Generic ensemble submission owner, `ensemble.submit` |
 | `get_plan_publication_context` | Publication-context read, explicitly excluded |
 | `submit_workflow_evidence` | Evidence owner, `runs.evidence_register`; capability probe excluded |

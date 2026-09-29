@@ -14,6 +14,47 @@ This repository's CI is the first user. The design is in
 are the `affected-tests` gate's business (see [Affected tests](workflows.md#affected-tests))
 and are never recorded here.
 
+## Setting up a repository
+
+Any repository on GitHub can be brought into this contract in one supervised task. In
+**Settings → Trust**, each repository row has a **Set up testing** action ("Set up flake-aware
+testing"). It calls `POST /api/repositories/testing-setup`, which starts a ship task whose intent
+invokes the **Testing setup** skill ([`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md)).
+The skill must be switched on in **Settings → Skills**; while it is off the action is refused on
+the row with the sentence naming the toggle, and no task is created. It is also refused while an
+earlier testing-setup task for the same repository is still open (in the backlog or live), so two
+agents never edit the same CI at once; once that task is done, failed or cancelled, the action
+starts a new one. The task has no review
+Workflow bound: the human approves every change in the skill's form, and the skill proves the
+result on its own pull request.
+
+The agent:
+
+1. **Audits** the repository: the test runner and its JUnit XML flag, a rerun template with
+   `{files}` and `{junit}`, whether CI runs the report action and at which version, the publish
+   job's `checks: write` and `issues: write`, whether the check lands on the pull request's head
+   commit, `.mission/testing.json`, the `.gitignore` entry for `.mission/testing.local.json`, the
+   test-file patterns, and a proposed smoke set with a reason for each test.
+2. **Proposes** every change in one `request_plan_decisions` form: the CI diff summary, the
+   `.mission/testing.json` content, the smoke set (multi-select), the `affected-tests` template,
+   and whether to recommend the **No-Mistakes Review (Affected tests)** workflow.
+3. **Applies only what was approved**: copies the report action, edits CI and test scripts,
+   writes `.mission/testing.json` and the `.gitignore` entry, opens one pull request, and sets the
+   repository's `affected-tests` Command with the `set_affected_tests_command` Mission MCP tool.
+4. **Verifies** twice: one local run of the `affected-tests` template on a few test files, and the
+   "Flaky tests" check on the setup pull request's own CI run.
+
+`set_affected_tests_command` takes only the argv. The daemon refuses it from any session that is
+not running a testing-setup task (the task carries the `testing-setup` label), checks the
+`{files}` / `{junit}` rule, and writes only that task repository's `affected-tests` override,
+keeping every other override, the default and the run budget.
+
+The copy the skill installs is `skills/testing-setup/assets/mission-flake-report/`, the second
+output of the same generator as this repository's copy (see [Changing the action](#changing-the-action)),
+because the packaged app ships `skills/` but not `.github/`. Run the setup again later and the
+skill compares the version on the first line of the repository's copy with its own, and offers
+the update as the only change when the repository's copy is older.
+
 ## How a run is classified
 
 The report action, `.github/actions/mission-flake-report/`, runs in two modes.
@@ -182,6 +223,9 @@ the shared modules it bundles: `flake-report.ts`, `junit.ts`, `testing-config.ts
 npm run build:flake-report-action
 ```
 
-and commit the result. `test/flake-report-action.test.ts` fails when the committed files differ
-from the generator's output. Raise `FLAKE_REPORT_ACTION_VERSION` in
-`src/flake-report-action/version.ts` with any behaviour change; the bundle's header carries it.
+and commit the result. It writes both `.github/actions/mission-flake-report/` and the testing-setup
+skill's copy in `skills/testing-setup/assets/mission-flake-report/`, and
+`test/flake-report-action.test.ts` fails when either committed copy differs from the generator's
+output. Raise `FLAKE_REPORT_ACTION_VERSION` in
+`src/flake-report-action/version.ts` with any behaviour change; the bundle's header carries it,
+and it is what the testing-setup skill compares to offer other repositories the update.
