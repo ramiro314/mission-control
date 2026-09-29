@@ -16,12 +16,12 @@ runs:
   using: composite
   steps:
     - name: Set up Node ${{ inputs.node-version }}
-      uses: actions/setup-node@v5
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
 
     - name: Restore node_modules
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: node_modules
         key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
@@ -39,7 +39,7 @@ runs:
     # Deliberately not keyed on the Node version, so both supported releases share one
     # Electron runtime cache.
     - name: Cache the Electron runtime
-      uses: actions/cache@v5
+      uses: actions/cache@v6
       with:
         path: ~/.cache/electron
         key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}

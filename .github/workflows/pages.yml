@@ -51,7 +51,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Costs one API call and turns the one failure this workflow is actually likely to hit
       # into a sentence naming the setting to change.
