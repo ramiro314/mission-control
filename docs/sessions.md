@@ -1971,7 +1971,10 @@ The MCP tools are:
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
   can be dismissed without sending an answer. A `recommended` option preselects, as it does
-  for `request_plan_decisions`
+  for `request_plan_decisions`. On a single-choice question Other is one more radio in the
+  group: typing in it, clicking its radio, or clicking into its box chooses it alone, and
+  picking a listed option keeps the text visible but unsent. On a multi-choice question Other
+  is sent alongside the checked options
 - `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
   the session to report Mission Control feedback, publishes a public GitHub issue automatically
   and returns its URL without a second dashboard approval. The tool prepares the daemon preview

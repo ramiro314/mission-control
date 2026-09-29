@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DecisionForm, recommendedAnswers } from "../src/web/components/PlanDecisions.tsx";
+import { DecisionForm, draftedAnswers, recommendedAnswers, toDecisionAnswers } from "../src/web/components/PlanDecisions.tsx";
 import type { PlanDecision } from "../src/shared/types.ts";
 import { hasTooltip } from "./helpers/markup.ts";
 
@@ -132,8 +132,8 @@ function inputFor(html: string, label: string): string {
 
 test("recommendedAnswers preselects the first recommended radio and every recommended checkbox", () => {
   assert.deepEqual(recommendedAnswers(allRecommended), {
-    store: { selected: ["pg"], other: "" },
-    providers: { selected: ["google", "gitlab"], other: "" },
+    store: { selected: ["pg"], other: "", otherChosen: false },
+    providers: { selected: ["google", "gitlab"], other: "", otherChosen: false },
   });
   // A decision with no recommendation contributes nothing and opens empty.
   assert.deepEqual(recommendedAnswers([decisions[1]!]), {});
@@ -161,4 +161,71 @@ test("a form without any recommendation opens as before: nothing checked, no sum
   assert.doesNotMatch(html, /checked/);
   assert.doesNotMatch(html, /Selected:/);
   assert.match(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);
+});
+
+// Single choice with Other: Other is one more radio in the group, and its text is sent only
+// while it is the choice - and then alone. Multi-choice keeps its additive Other box.
+
+const singleOther: PlanDecision[] = [
+  {
+    id: "install",
+    question: "How should the installer run?",
+    options: [
+      { id: "wsl", label: "Run install.sh inside WSL", recommended: true },
+      { id: "ps", label: "PowerShell script" },
+    ],
+    allowOther: true,
+  },
+];
+
+test("a single-choice question with Other renders an Other radio in the same group", () => {
+  const html = render(singleOther);
+  assert.equal(html.match(/type="radio"[^>]*name="d-install"/g)?.length, 3, "two options plus Other");
+  assert.match(html, /<input type="radio" aria-label="Other"[^>]*name="d-install"[^>]*\/>/);
+  assert.doesNotMatch(inputFor(html, ">Other<"), /checked/, "the recommendation opens chosen, not Other");
+  assert.match(html, /placeholder="Other…"/);
+  // Multi-choice is unchanged: checkboxes and a separate box, no Other radio.
+  const multi = render([decisions[1]!]);
+  assert.doesNotMatch(multi, /type="radio"/);
+  assert.equal(multi.match(/placeholder="Other/g)?.length, 1);
+});
+
+test("single choice sends Other alone while chosen, and drops kept text once a listed option is", () => {
+  const chosen = { install: { selected: [], other: "  Test  ", otherChosen: true } };
+  assert.deepEqual(toDecisionAnswers(singleOther, chosen), [{ decisionId: "install", selected: [], other: "Test" }]);
+
+  // A listed option chosen again: the text is kept in state (and the box) but not sent.
+  const back = { install: { selected: ["ps"], other: "Test", otherChosen: false } };
+  assert.deepEqual(toDecisionAnswers(singleOther, back), [{ decisionId: "install", selected: ["ps"], other: null }]);
+
+  // Other chosen with a blank box is unanswered, so Submit stays disabled.
+  const blank = { install: { selected: [], other: "  ", otherChosen: true } };
+  assert.deepEqual(toDecisionAnswers(singleOther, blank), [{ decisionId: "install", selected: [], other: null }]);
+
+  // Multi-choice Other stays additive, whatever the flag says.
+  const multi = { providers: { selected: ["google"], other: "Okta", otherChosen: false } };
+  assert.deepEqual(toDecisionAnswers([decisions[1]!], multi), [
+    { decisionId: "providers", selected: ["google"], other: "Okta" },
+  ]);
+});
+
+test("a Foreman draft with Other on a single-choice question opens with Other chosen", () => {
+  const drafted = draftedAnswers(singleOther, [{ decisionId: "install", selected: ["wsl"], other: "Use a VM" }]);
+  assert.deepEqual(drafted.install, { selected: [], other: "Use a VM", otherChosen: true });
+
+  const html = renderToStaticMarkup(
+    createElement(DecisionForm, {
+      decisions: singleOther,
+      busy: false,
+      onSubmit: () => {},
+      foremanDraft: [{ decisionId: "install", selected: ["wsl"], other: "Use a VM" }],
+    }),
+  );
+  assert.match(inputFor(html, ">Other<"), /checked/);
+  assert.doesNotMatch(inputFor(html, "Run install.sh inside WSL"), /checked/);
+  assert.match(html, /Selected: Other: Use a VM \(Foreman&#x27;s draft\)/);
+
+  // A draft without Other text keeps its listed choice.
+  const listed = draftedAnswers(singleOther, [{ decisionId: "install", selected: ["ps"], other: null }]);
+  assert.deepEqual(listed.install, { selected: ["ps"], other: "", otherChosen: false });
 });
