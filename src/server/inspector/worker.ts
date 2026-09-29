@@ -8,6 +8,7 @@ import {
   loadInspectorComments,
   loadOpenInspectorPrs,
   updateInspectorPr,
+  recordInspectorCiObservation,
   upsertInspectorComment,
 } from "../db.ts";
 import { createLimiter, runStructured, parseModelReply } from "../llm/structured.ts";
@@ -605,6 +606,9 @@ async function processPr(
     },
     now,
   );
+  // CI on the head commit, from the same query and the same instant. Keyed to the commit it
+  // was read for, so a Wait for CI node never mistakes one head's checks for another's.
+  if (s.ci) recordInspectorCiObservation(pr.key, { ...s.ci, observedAt: now });
   onObserved?.(s, now);
 
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
@@ -968,6 +972,8 @@ async function reviewRound(
     changedPaths: paths,
     open,
     round: pr.round + 1,
+    // The report from this same read, and only for the head being reviewed.
+    flakeSummary: s.ci?.headSha === s.headSha ? s.ci.flakeReport : null,
   });
 
   const run = inspectorRunOptions(

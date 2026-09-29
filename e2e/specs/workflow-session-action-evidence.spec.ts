@@ -359,7 +359,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   //     pass. `code-design-reviewer.spec.ts` owns stage 3's membership; this step is here for
   //     the stage ORDER and the overflow measurement around it.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }).click();
   const shipped = dashboard.locator(".wf-pipeline-strip");
   await expect(shipped).toBeVisible();
   const stages = shipped.locator("section.wf-pipeline-stage");

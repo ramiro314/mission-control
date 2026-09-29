@@ -119,7 +119,7 @@ test("scout only defaults the Workflow, it does not lock it", async ({ dashboard
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue("__none");
 
-  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
+  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review (High Rigor)");
   await afterWork.selectOption(builtinId);
 
   // A scout CAN still hand off - the kind picks the default, it does not remove the
@@ -131,7 +131,7 @@ test("scout only defaults the Workflow, it does not lock it", async ({ dashboard
 
 test("a hand-picked Workflow is not reverted by a later kind switch", async ({ dashboard }) => {
   const { kind, afterWork } = await openDispatch(dashboard);
-  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
+  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review (High Rigor)");
 
   // Scout puts the dispatch default aside, then the operator chooses for themselves.
   await kind.selectOption("scout");

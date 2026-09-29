@@ -234,7 +234,7 @@ test("the builder's Pipeline view scrolls to its last stage too", async ({
   // which is the state an operator authoring on a laptop is in.
   await dashboard.setViewportSize({ width: 1100, height: 900 });
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }).click();
 
   const strip = dashboard.locator(".wf-pipeline-strip");
   await expect(strip).toBeVisible();

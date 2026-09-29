@@ -131,7 +131,7 @@ test("the Library shelves answer a question each, and name nothing that is runni
     .toContainText("validation error");
   await expect(dashboard.getByRole("button", { name: /Shelf workflow/ })).toContainText("draft");
   // The shipped built-in is published, and says so with its version and reviewer count.
-  await expect(dashboard.getByRole("button", { name: /No-Mistakes Review/ }))
+  await expect(dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }))
     .toContainText("reviewers");
 
   // And the page states its own contract, which is what every later phase has to keep.
@@ -311,7 +311,7 @@ test("the built-in workflow graph fills the full builder canvas", async ({
 }) => {
   await dashboard.setViewportSize({ width: 1682, height: 1100 });
   await dashboard.goto(`${daemon.baseURL}/#/library`);
-  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }).click();
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
 
   const canvas = dashboard.getByLabel("Published workflow graph");

@@ -167,7 +167,7 @@ copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-Four ready-made workflows ship already published in the Library:
+Five ready-made workflows ship already published in the Library:
 
 | Workflow | Judges, in stage order | Finishes with |
 | --- | --- | --- |
@@ -175,6 +175,7 @@ Four ready-made workflows ship already published in the Library:
 | **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
 | **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Verified Pull Request action |
+| **No-Mistakes Review (Affected tests)** | The same judges as High Rigor | Verified Pull Request action, then [Wait for CI](#wait-for-ci), then GitHub Inspector |
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
@@ -198,6 +199,17 @@ recorded decisions. Its evidence preflight is advisory; plan judges own document
 
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
 Their next versions update only the pinned model to `gpt-6-sol`.
+
+**No-Mistakes Review (Affected tests)** (`builtin-workflow:no-mistakes-review-affected-tests`) is
+No-Mistakes Review's current pipeline with two changes: the first stage runs the
+[`affected-tests`](#affected-tests) Command instead of `test`, so the laptop runs only the tests a
+change touched, and a [Wait for CI](#wait-for-ci) stage follows the Pull Request action, so the
+full suite runs in GitHub CI before the run can end. Everything else - judges, routing,
+completion policy, delivery, resumption, and repair rounds - matches High Rigor. Version 1 is
+authored on GPT-5.6 routing and version 2 moves it to `gpt-6-sol`, like the others. It is not a
+kind default: bind it, or choose it under **Dispatch defaults**, in a repository whose CI
+publishes the ["Flaky tests" check](flaky-tests.md#the-flaky-tests-check). Without that check,
+Wait for CI blocks the run rather than passing it.
 Their earlier versions remain available with their original review graphs and completion policies.
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
@@ -593,6 +605,10 @@ and concrete external blockers accurately. CI repairs and rebases may produce an
 content warning, but they do not stop the PR action. Inspector comments and merge authority remain
 with their existing owners.
 
+When a [Wait for CI](#wait-for-ci) node follows the action, the CI instructions are left out
+whatever the preference says: the node owns CI for that pull request, and an agent chasing the
+same checks would push while the node judges the head it was given.
+
 **Mission Control never polls GitHub for this.** The creation hook durably adopts the pull request.
 The GitHub Inspector's existing poller is the only thing that later asks the provider for
 comparison metadata, and the PR action never waits for that optional diagnostic enrichment.
@@ -611,6 +627,53 @@ Mission Control attributes an adoption to this action only when the pull request
 bound session and was adopted after the instruction was delivered. Once that durable fact exists,
 a closed or merged state, a moved checkout, a changed pushed ref, or missing provider metadata is
 reported on the completed action. None sends a repair packet or spends a repair round.
+
+#### Wait for CI
+
+A **Wait for CI** node holds the run until the pull request's CI has finished, so a workflow can
+rely on the full suite in GitHub CI rather than running it locally. It follows a Pull Request
+action's `complete` route and nothing else - Publish refuses it anywhere else
+(`wait_for_ci_placement`), and the Pipeline editor only offers it at the seam right after a Pull
+Request action. It has `pass` and `fail` routes like a Command, and one setting: a timeout of 5 to
+240 minutes, 45 by default.
+
+It watches one commit: the head the Pull Request action's continuation captured, which is what
+the session pushed, resolved to a full commit id. The head GitHub last reported is not used
+unless the capture cannot be resolved, because the action completes on adoption and the
+Inspector can still be a poll behind the push. CI reported for any other head is ignored. The
+first 100 checks on the head are read.
+
+It never talks to GitHub. The [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review)'s
+one pull request query reads the head commit's check runs beside its head, and stores them with
+the pull request. The node is decided from that stored snapshot whenever the Inspector updates and
+on the workflow's fifteen-second sweep, so **the Inspector must be on** for it to see CI. Failure
+detail comes from each check's own title and summary; CI logs are not read.
+
+| CI on the head | Outcome |
+| --- | --- |
+| Any check still running, or nothing reported yet | Keeps waiting. |
+| Every check finished, one or more failing (other than "Flaky tests") | **Fail**: a repair packet asks for one change per failing check, with its conclusion, title, summary excerpt, and link. |
+| Every check passed, with a "Flaky tests" check | **Pass**, including green with flakes. The flake list is recorded on the attempt. |
+| Every check passed, no "Flaky tests" check for five minutes | **Blocks** the run: `ci_flake_report_missing`. |
+| Nothing appeared on the head by the timeout | **Blocks**: `ci_missing`. |
+| Still running at the timeout | **Blocks**: `ci_timeout`. |
+
+The "Flaky tests" check never fails the node: its jobs already fail on real failures. A block
+spends no repair round. When CI can be fixed without a new commit - rerun a stuck job, turn on
+a missing workflow - use **Wait for CI again** on the run, which waits on the same head with a
+fresh timeout. When the fix needs a new commit, such as adding the [flake report](flaky-tests.md)
+to CI, start a new round instead, so the new head is reviewed and pushed. A block the retry
+cannot fix (`ci_pull_request_unknown`: no pull request or head to watch) offers only the new
+round. Disabling the node for a run passes it without reading CI.
+
+A fail is an ordinary repair round: the session fixes the change, the round runs the whole
+pipeline again, the Pull Request action pushes the new head, and the node waits on that head.
+A path from a Pull Request action through Wait for CI to End still counts as a shipping-only
+continuation, so it keeps the evidence-readiness exemption and the **verified shipping** label.
+
+The run view shows what the node is waiting for - the pull request, the head, elapsed time
+against the limit - and the checks with their states. On a fail it lists the failing checks; on
+a pass it lists the flaky tests with their history issues; on a block it says why in plain words.
 
 ### Command nodes
 

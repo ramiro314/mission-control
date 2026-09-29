@@ -900,9 +900,33 @@ A SessionAction is a durable side effect, not an evaluator:
   cross-submission read, and it is provenance the runtime wrote rather than a relationship
   inferred from ordering.
 - **Terminal PR continuations read as shipping.** A completed Pull Request child whose only
-  reachable consumer is End is labelled `verified shipping`, with `review + shipping` on its
-  round. This is derived from the same shared graph predicate and the completed persisted proof,
-  so a blocked or evaluator-bound child never receives completion wording.
+  reachable consumer is End - directly, or through Wait for CI's `pass` route - is labelled
+  `verified shipping`, with `review + shipping` on its round. This is derived from the same
+  shared graph predicate and the completed persisted proof, so a blocked or evaluator-bound
+  child never receives completion wording.
+
+### Wait for CI
+
+- A verdict node (`isVerdictNode`) that waits: the engine parks it as one `waiting` attempt
+  whose `output_json` is a `WaitForCiState` (`src/shared/wait-for-ci.ts`), with no snapshot.
+  It occupies no execution slot. `parseWorkflowNodeAttemptRow` accepts a waiting row that
+  carries either a session action snapshot or that state, and nothing else.
+- It never talks to a provider. The Inspector's one PR query reads the head commit's check
+  runs, stored as `inspector_prs.observed_ci_json` keyed to the commit they were read for; the
+  manager decides the node from that on Inspector updates and its fifteen-second sweep. A
+  second poll loop is not an option, for the pull request adapter's reason above.
+- It judges exactly one full head: the continuation's captured head, resolved through
+  `resolveCapturedCommit` (`resolveWaitForCiHead`). The adapter's `expectedHeadOid` is only a
+  fallback (`reportedHeadOid`): the action completes on adoption, and on a pull request that
+  already existed the ledger can hold the head from before this push. CI for any other head is
+  ignored.
+- `decideWaitForCi` is the one decision and is pure. A block is a run phase
+  (`WAIT_FOR_CI_BLOCK_CODES`, append-only, each with a sentence in `run-model.ts` and a
+  recovery policy); the submission fails with it so the infrastructure retry can revive it and
+  wait again. A block never becomes a repair packet or spends a round.
+- Placement is validated (`waitForCiMayFollow`): only after a Pull Request action's
+  `complete` route. When one follows an action, that action's packet omits the CI
+  follow-through contract (`waitForCiFollows`).
 
 ## The GitHub Inspector footer
 

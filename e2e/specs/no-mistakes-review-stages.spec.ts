@@ -52,7 +52,7 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
 }) => {
   await dashboard.setViewportSize({ width: 1440, height: 900 });
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }).click();
 
   await expect(dashboard.getByRole("textbox", { name: "Name", exact: true })).toHaveValue("No-Mistakes Review (High Rigor)");
   const pipeline = dashboard.locator(".wf-pipeline-strip");

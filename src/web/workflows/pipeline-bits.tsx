@@ -215,7 +215,7 @@ export function ReviewerRow({
   toggleLabel = null,
 }: {
   name: string;
-  kind?: "persona" | "check" | "session_action";
+  kind?: "persona" | "check" | "session_action" | "wait_for_ci";
   meta?: string | null;
   status?: PipelineStatus | null;
   state?: PipelineItemState;
@@ -241,6 +241,7 @@ export function ReviewerRow({
         <span className="wf-pipeline-reviewer-name">
           {disabled && <span className="wf-pipeline-disabled-mark" aria-hidden>⊘</span>}
           {kind === "check" && <span className="wf-pipeline-check-mark">Command</span>}
+          {kind === "wait_for_ci" && <span className="wf-pipeline-check-mark">CI</span>}
           {/* The badge says what this row IS, because a session action sitting in a column
               of reviewers otherwise reads as one - and it does the opposite of reviewing. */}
           {kind === "session_action" && <span className="wf-pipeline-action-mark">Session action</span>}

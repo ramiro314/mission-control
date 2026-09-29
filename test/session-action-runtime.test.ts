@@ -28,6 +28,7 @@ import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import type { CiCheckRun, CiObservation } from "../src/shared/wait-for-ci.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
 process.env.MISSION_HOME = home;
@@ -157,6 +158,8 @@ interface HarnessOptions {
   /** Make the pane positively reject the write, the way a guard or a busy pane does. */
   refuseInject?: boolean;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
+  /** Put a Wait for CI node, with this timeout, between the last action and End. */
+  waitForCiMinutes?: number;
 }
 
 async function harness(sessionId: string, options: HarnessOptions = {}) {
@@ -197,8 +200,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const captureHead: { sha: string | null } = { sha: null };
   const adopted: SessionActionAdoptedPullRequest[] = [];
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
+  /** What the Inspector last stored about CI, as a test states it. */
+  const ci: { observation: CiObservation | null } = { observation: null };
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
+    ciObservation: (key) => key === "owner/repo#7" ? ci.observation : null,
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -340,6 +346,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     ...(options.downstream
       ? [{ id: "downstream", kind: "persona", personaId: downstreamId, position: { x: 700, y: 0 } }]
       : []),
+    ...(options.waitForCiMinutes
+      ? [{ id: "ci", kind: "wait_for_ci", timeoutMinutes: options.waitForCiMinutes, position: { x: 800, y: 0 } }]
+      : []),
     { id: "end", kind: "end", outcome: "Approved", position: { x: 900, y: 0 } },
   ];
   const edges: unknown[] = [
@@ -367,10 +376,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   } else {
     const sequence = ["upstream", ...chain.map((entry) => entry.node)];
     if (options.downstream) sequence.push("downstream");
+    if (options.waitForCiMinutes) sequence.push("ci");
     for (let index = 0; index < sequence.length; index += 1) {
       const from = sequence[index]!;
       const to = sequence[index + 1] ?? "end";
-      const port = from === "upstream" || from === "downstream" ? "pass" : "complete";
+      const port = from === "upstream" || from === "downstream" || from === "ci" ? "pass" : "complete";
       const targetPort = to === "end" ? "terminal" : "activate";
       edges.push({ id: `e-${from}`, source: from, sourcePort: port, target: to, targetPort });
       if (port === "pass" && from !== "upstream") {
@@ -507,6 +517,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     repository,
     adopted,
     adoptPr,
+    ci,
     sessionId,
     versionId,
     reportIdle,
@@ -1756,6 +1767,279 @@ test("a pull request already open at the reviewed commit completes without a sec
     );
     assert.equal(h.adopted.length, 1, "the fixture adopted a second pull request");
     assert.equal(h.injected.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+// ---- Wait for CI after the Pull Request action ------------------------------------------
+//
+// The node reads CI only through the Inspector's stored snapshot (`ciObservation` here), so
+// each test states what CI looked like and sweeps, exactly as the Inspector's update event
+// and the resumption timer do in the daemon.
+
+const ciRun = (
+  name: string,
+  state: CiCheckRun["state"],
+  extra: Partial<CiCheckRun> = {},
+): CiCheckRun => ({
+  name,
+  state,
+  conclusion: state === "pending" ? null : state === "failing" ? "FAILURE" : "SUCCESS",
+  detailsUrl: `https://ci.example/${encodeURIComponent(name)}`,
+  title: null,
+  summary: null,
+  ...extra,
+});
+
+const FLAKE_REPORT = {
+  version: 1 as const,
+  commit: "head-2",
+  ref: "feature",
+  pullRequest: 7,
+  runUrl: "https://github.com/owner/repo/actions/runs/1",
+  flakes: [{
+    key: "0123456789abcdef",
+    runner: "junit",
+    file: "test/timing.test.ts",
+    name: "timing > settles",
+    message: "timed out once",
+  }],
+  failures: [],
+  errors: [],
+  issues: [{
+    key: "0123456789abcdef",
+    number: 12,
+    url: "https://github.com/owner/repo/issues/12",
+    occurrences: 1,
+    actionable: false,
+  }],
+};
+
+function observeCi(
+  h: Harness,
+  headSha: string,
+  checkRuns: CiCheckRun[],
+  flakeReport: CiObservation["flakeReport"] = null,
+): void {
+  h.ci.observation = { headSha, observedAt: Date.now(), checkRuns, flakeReport };
+}
+
+function ciAttempts(h: Harness, runId: string) {
+  return h.store.listSubmissions(runId)
+    .flatMap((submission) => h.store.listAttempts(submission.id))
+    .filter((attempt) => attempt.nodeId === "ci")
+    .sort((a, b) => a.attempt - b.attempt);
+}
+
+/** Drive the run through the Pull Request action until Wait for CI is waiting. */
+async function runToCiWait(
+  h: Harness,
+  adoption: Parameters<Harness["adoptPr"]>[0] = { atHead: "head-2" },
+): Promise<string> {
+  const runId = await runToAction(h);
+  await waitFor(
+    () => h.store.listDeliveries(runId).some((delivery) =>
+      delivery.kind === "session_action" && delivery.state === "delivered"),
+    "the pull request packet was never delivered",
+  );
+  h.head.sha = "head-2";
+  h.runActionTurn();
+  h.adoptPr(adoption);
+  await h.manager.sweepSessionActions(SETTLED());
+  await waitFor(
+    () => ciAttempts(h, runId).at(-1)?.state === "waiting",
+    `Wait for CI never started waiting: ${JSON.stringify(ciAttempts(h, runId).at(-1)?.output ?? null)}`,
+  );
+  return runId;
+}
+
+test("Wait for CI judges only the proven head, and passes green CI carrying its flakes", async () => {
+  const h = await harness("ci-pass", {
+    pullRequest: true,
+    waitForCiMinutes: 45,
+    trackCiFailures: () => true,
+    evidenceReadinessPolicy: "criterion_mapped_v1",
+  });
+  try {
+    const runId = await runToCiWait(h);
+    // The node owns CI, so the action's packet leaves the agent's CI follow-through out.
+    const packet = h.store.listDeliveries(runId).find((delivery) => delivery.kind === "session_action")!;
+    assert.doesNotMatch(packet.payload, /Workflow pull request CI follow-through/);
+
+    const waiting = ciAttempts(h, runId)[0]!;
+    const state = waiting.output as { expectedHeadOid: string; pullRequestKey: string; timeoutMinutes: number };
+    assert.equal(state.expectedHeadOid, h.full("head-2"));
+    assert.equal(state.pullRequestKey, "owner/repo#7");
+    assert.equal(state.timeoutMinutes, 45);
+    // A waiting CI attempt holds no model slot.
+    assert.deepEqual(h.store.listRunnableAttempts(Date.now()), []);
+
+    // Another head's green CI is not this head's.
+    observeCi(h, h.full("head-3"), [ciRun("unit", "passing"), ciRun("Flaky tests", "passing")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.deepEqual((ciAttempts(h, runId)[0]!.output as { checkRuns: unknown[] }).checkRuns, []);
+
+    // Still running: keep waiting, but record what was seen.
+    observeCi(h, h.full("head-2"), [ciRun("unit", "passing"), ciRun("e2e", "pending")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.equal((ciAttempts(h, runId)[0]!.output as { checkRuns: unknown[] }).checkRuns.length, 2);
+
+    observeCi(h, h.full("head-2"), [
+      ciRun("unit", "passing"),
+      ciRun("e2e", "passing"),
+      ciRun("Flaky tests", "passing", { conclusion: "NEUTRAL", title: "1 flaky test" }),
+    ], FLAKE_REPORT);
+    await h.manager.sweepWaitForCi();
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "green CI with a flake did not reach End");
+
+    const passed = ciAttempts(h, runId)[0]!;
+    assert.equal((passed.verdict as { verdict: string }).verdict, "pass");
+    const output = passed.output as { outcome: string; flakeReport: { flakes: unknown[] } };
+    assert.equal(output.outcome, "pass");
+    assert.equal(output.flakeReport.flakes.length, 1);
+    // Still a shipping-only continuation: no readiness cycle for the PR segment.
+    const child = h.store.listSubmissions(runId)[1]!;
+    assert.equal(child.readiness, null);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a failing CI check sends a repair packet naming it, and Flaky tests never fails the node", async () => {
+  const h = await harness("ci-fail", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    observeCi(h, h.full("head-2"), [
+      ciRun("unit (node 24)", "failing", { title: "2 tests failed", summary: "test/a.test.ts failed twice" }),
+      ciRun("lint", "passing"),
+      ciRun("Flaky tests", "failing"),
+    ]);
+    await h.manager.sweepWaitForCi();
+    await waitFor(() => h.store.getRun(runId)?.status === "waiting_for_session", "failing CI did not return to Session");
+
+    const failed = ciAttempts(h, runId)[0]!;
+    const verdict = failed.verdict as { verdict: string; requestedChanges: { title: string }[] };
+    assert.equal(verdict.verdict, "fail");
+    assert.deepEqual(verdict.requestedChanges.map((change) => change.title), [
+      'Fix the failing CI check "unit (node 24)"',
+    ]);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.kind === "persona_feedback"),
+      "no repair packet was prepared",
+    );
+    const repair = h.store.listDeliveries(runId).find((delivery) => delivery.kind === "persona_feedback")!;
+    assert.match(repair.payload, /## Wait for CI/);
+    assert.match(repair.payload, /Fix the failing CI check "unit \(node 24\)"/);
+    assert.match(repair.payload, /2 tests failed/);
+    assert.match(repair.payload, /https:\/\/ci\.example\/unit/);
+    assert.doesNotMatch(repair.payload, /CI check "Flaky tests"/);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("Wait for CI blocks with a plain reason, and retrying waits on the same head again", async () => {
+  const h = await harness("ci-block", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    const firstState = ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string };
+
+    // Green without the report: a grace period first, then the block.
+    observeCi(h, h.full("head-2"), [ciRun("unit", "passing")]);
+    const now = Date.now();
+    await h.manager.sweepWaitForCi(now);
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    await h.manager.sweepWaitForCi(now + 6 * 60_000);
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_flake_report_missing");
+    assert.equal(ciAttempts(h, runId)[0]!.state, "error");
+    // Waiting again on the same head is the primary move; a new round stays available for a
+    // fix that needs a new commit.
+    const recovery = h.store.runSummary(runId)?.recovery;
+    assert.equal(recovery?.primary, "retry");
+    assert.ok(recovery?.resubmit, "a CI block must still offer a new round");
+
+    const retry = (requestId: string): void => {
+      const retried = h.manager.retry(runId, { requestId });
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      const latest = ciAttempts(h, runId).at(-1)!;
+      assert.equal(latest.state, "waiting");
+      assert.equal((latest.output as { expectedHeadOid: string }).expectedHeadOid, firstState.expectedHeadOid);
+      assert.equal(h.store.getRun(runId)?.status, "running");
+    };
+    retry("retry-report");
+
+    // Nothing ever appears on the head: missing CI at the timeout.
+    h.ci.observation = null;
+    await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_missing");
+    retry("retry-missing");
+
+    // Checks that never finish: a timeout.
+    observeCi(h, h.full("head-2"), [ciRun("unit", "pending")]);
+    await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_timeout");
+    assert.equal(ciAttempts(h, runId).length, 3);
+    // No repair round was spent on any of it.
+    assert.equal(h.store.listSubmissions(runId).every((submission) => submission.round === 1), true);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("disabling Wait for CI passes it without reading CI", async () => {
+  const h = await harness("ci-disabled", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    const disabled = h.manager.setNodesDisabled(runId, { requestId: "disable-ci", nodeIds: ["ci"], disabled: true });
+    assert.equal(disabled.ok, true, JSON.stringify(disabled));
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "a disabled Wait for CI did not pass");
+    const output = ciAttempts(h, runId)[0]!.output as { disabled?: boolean; outcome: string };
+    assert.equal(output.disabled, true);
+    assert.equal(output.outcome, "pass");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("before the Inspector has polled, Wait for CI watches the head the continuation captured", async () => {
+  const h = await harness("ci-unobserved", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    // Adopted from the creation hook, with no provider head yet: the action completes on
+    // adoption alone and records no expected head.
+    const runId = await runToCiWait(h, { observedHeadOid: null, observedState: null });
+    await waitFor(
+      () => (ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string | null }).expectedHeadOid === h.full("head-2"),
+      "Wait for CI did not adopt the continuation's captured head",
+    );
+    observeCi(h, h.full("head-2"), [ciRun("unit", "passing"), ciRun("Flaky tests", "passing")]);
+    await h.manager.sweepWaitForCi();
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "green CI on the captured head did not pass");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("Wait for CI watches the pushed head, not a stale head the Inspector last reported", async () => {
+  const h = await harness("ci-stale-report", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    // The pull request already existed at head-1; the session pushed head-2, and the
+    // Inspector has not polled since. The action still completes (with a warning).
+    const runId = await runToCiWait(h, { atHead: "head-1" });
+    await waitFor(
+      () => (ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string | null }).expectedHeadOid === h.full("head-2"),
+      "Wait for CI did not watch the captured head",
+    );
+    const state = ciAttempts(h, runId)[0]!.output as { reportedHeadOid: string | null };
+    assert.equal(state.reportedHeadOid, h.full("head-1"));
+    // The old head's finished, failing CI is not this head's.
+    observeCi(h, h.full("head-1"), [ciRun("unit", "failing")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.equal(h.store.getRun(runId)?.status, "running");
   } finally {
     await h.stop();
   }

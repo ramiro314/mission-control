@@ -193,7 +193,7 @@ test("reordering stages keeps node ids and every route that still means the same
   assert.deepEqual(
     projectStages(after)!.stages.map((stage) => {
       const member = evaluation(stage).members[0]!;
-      return member.kind === "persona" ? member.personaId : member.slot;
+      return member.kind === "persona" ? member.personaId : member.kind === "check" ? member.slot : member.kind;
     }),
     ["security", "intent"],
   );
@@ -218,7 +218,7 @@ test("a brand-new stage mints its own join without disturbing the stage before i
   const minted = evaluation(projected.stages[1]).members.map((member) => member.nodeId!);
   assert.equal(new Set([gate, ...minted, "intent", "session", "end"]).size, 6);
   assert.deepEqual(
-    evaluation(projected.stages[1]).members.map((member) => member.kind === "persona" ? member.personaId : member.slot),
+    evaluation(projected.stages[1]).members.map((member) => member.kind === "persona" ? member.personaId : member.kind === "check" ? member.slot : member.kind),
     ["security", "style"],
   );
   assert.deepEqual(validation(after), { valid: true, diagnostics: [] });

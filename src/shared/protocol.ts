@@ -3,6 +3,7 @@ import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
+import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
@@ -5158,6 +5159,13 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("end"),
     outcome: WorkflowOutcomeSchema,
     position: WorkflowPointSchema,
+  }),  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("wait_for_ci"),
+    timeoutMinutes: z.number().int()
+      .min(WAIT_FOR_CI_TIMEOUT_MINUTES.min)
+      .max(WAIT_FOR_CI_TIMEOUT_MINUTES.max),
+    position: WorkflowPointSchema,
   }),
 ]);
 
@@ -5193,6 +5201,13 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     id: WorkflowNodeIdSchema,
     kind: z.literal("end"),
     outcome: WorkflowOutcomeSchema,
+    position: WorkflowPointSchema,
+  }),  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("wait_for_ci"),
+    timeoutMinutes: z.number().int()
+      .min(WAIT_FOR_CI_TIMEOUT_MINUTES.min)
+      .max(WAIT_FOR_CI_TIMEOUT_MINUTES.max),
     position: WorkflowPointSchema,
   }),
 ]);

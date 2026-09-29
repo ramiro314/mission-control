@@ -48,3 +48,11 @@ export const BUG_FIX_REVIEW_WORKFLOW_SLUG = "bug-fix-review";
 export const PLAN_VALIDATION_WORKFLOW_SLUG = "plan-validation";
 export const BUG_FIX_REVIEW_WORKFLOW_ID = builtinWorkflowId(BUG_FIX_REVIEW_WORKFLOW_SLUG);
 export const PLAN_VALIDATION_WORKFLOW_ID = builtinWorkflowId(PLAN_VALIDATION_WORKFLOW_SLUG);
+
+/**
+ * No-Mistakes Review with the local `affected-tests` gate in place of the full `test` gate,
+ * and a Wait for CI stage after the pull request, so the full suite runs in CI instead.
+ */
+export const NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG = "no-mistakes-review-affected-tests";
+export const NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_ID =
+  builtinWorkflowId(NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG);

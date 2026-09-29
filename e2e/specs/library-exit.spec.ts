@@ -337,7 +337,7 @@ test("a focused graph EDGE peels too, rather than swallowing every press", async
   // still fired, so the press was spent doing nothing, focus stayed on the edge, and EVERY
   // following Escape repeated the no-op. Keyboard-only, Escape could never reach the page.
   await dashboard.goto(`${daemon.baseURL}/#/library/workflows`);
-  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }).click();
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
 
   const edge = dashboard.locator(".react-flow__edge").first();

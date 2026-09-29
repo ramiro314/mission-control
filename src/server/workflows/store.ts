@@ -181,6 +181,12 @@ import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
+import {
+  initialWaitForCiState,
+  readWaitForCiState,
+  type WaitForCiBlockCode,
+  type WaitForCiState,
+} from "@shared/wait-for-ci.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { WorkflowImageEvidenceError } from "./evidence-error.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
@@ -1958,6 +1964,15 @@ const WorkflowNodeAttemptRowSchema = z.object({
   finished_at: nullableInteger,
 });
 
+function waitForCiOutput(outputJson: string | null | undefined): boolean {
+  if (!outputJson) return false;
+  try {
+    return readWaitForCiState(JSON.parse(outputJson)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt {
   const row = parseShape("workflow_node_attempts", WorkflowNodeAttemptRowSchema, value);
   // An attempt executes ONE kind of thing. Carrying both snapshots would make every reader
@@ -1970,13 +1985,18 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       "an attempt cannot carry both a Persona and a session action snapshot",
     );
   }
-  // `waiting` exists only for a session action, so a waiting attempt with no action snapshot
-  // is a row nothing can deliver, recover, or explain. Refuse it rather than park a run on it.
-  if (row.state === "waiting" && (row.session_action_snapshot_json ?? null) === null) {
+  // `waiting` exists for a session action and for Wait for CI. A waiting attempt that is
+  // neither is a row nothing can deliver, observe, recover, or explain. Refuse it rather than
+  // park a run on it. Wait for CI carries no snapshot; its state in `output_json` is its proof.
+  if (
+    row.state === "waiting"
+    && (row.session_action_snapshot_json ?? null) === null
+    && !waitForCiOutput(row.output_json)
+  ) {
     throw new WorkflowRowError(
       "workflow_node_attempts",
       row.id,
-      "a waiting attempt must carry its session action snapshot",
+      "a waiting attempt must carry its session action snapshot or its Wait for CI state",
     );
   }
   if ((row.operator_directive_json ?? null) !== null && row.persona_snapshot_json === null) {
@@ -2767,6 +2787,8 @@ export interface WorkflowAttemptInsert {
   sessionAction?: SessionActionSnapshot | null;
   /** The waiting attempt's initial observation state, written with the row. */
   sessionActionState?: SessionActionAttemptState | null;
+  /** A Wait for CI attempt's initial state, written with the row. Exclusive with the above. */
+  waitForCiState?: WaitForCiState | null;
   /** Frozen only for Persona attempts; omitted everywhere else. */
   checkEvidence?: readonly WorkflowCheckEvidence[];
   reviewInput?: WorkflowPersonaReviewInput;
@@ -7850,6 +7872,66 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * Record a newer observation on a waiting Wait for CI attempt without finishing it. Guarded
+   * on `waiting`, for `updateSessionActionState`'s reason: an observer already in flight must
+   * never move a settled attempt backwards.
+   */
+  updateWaitForCiState(attemptId: string, state: WaitForCiState, now: number): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(attemptId);
+      if (!attempt || attempt.state !== "waiting" || !readWaitForCiState(attempt.output)) return null;
+      return this.finishAttempt(attempt.id, { state: "waiting", output: workflowJson(state) }, now);
+    });
+  }
+
+  /** Finish a waiting Wait for CI attempt with its verdict and outgoing receipts, once. */
+  settleWaitForCiAttempt(
+    attemptId: string,
+    input: { verdict: WorkflowJson; output: WorkflowJson; receipts: Array<{ edgeId: string; payload: WorkflowJson }> },
+    now: number,
+  ): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(attemptId);
+      if (!attempt || attempt.state !== "waiting" || !readWaitForCiState(attempt.output)) return null;
+      return this.finishAttemptWithReceipts(attempt.id, input, now);
+    });
+  }
+
+  /**
+   * Stop a waiting Wait for CI attempt and block its run in the phase its code names.
+   *
+   * The submission fails with it, the way an exhausted infrastructure attempt does, so the
+   * operator's retry (`manualInfrastructureRetry`) can revive the same submission and wait on
+   * the same head again. No repair round is spent: CI that never reported is not the agent's
+   * change to fix.
+   */
+  blockWaitForCiAttempt(input: {
+    attemptId: string;
+    code: WaitForCiBlockCode;
+    detail: string;
+    state: WaitForCiState;
+    now: number;
+  }): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(input.attemptId);
+      if (!attempt || attempt.state !== "waiting" || !readWaitForCiState(attempt.output)) return null;
+      const finished = this.finishAttempt(attempt.id, {
+        state: "error",
+        output: workflowJson(input.state),
+        error: `${input.code}: ${input.detail}`,
+      }, input.now);
+      const submission = this.getSubmission(attempt.submissionId);
+      if (submission) {
+        this.setSubmissionState(submission.id, "failed", input.now);
+        const detail = { nodeId: attempt.nodeId, attemptId: attempt.id, code: input.code, detail: input.detail };
+        this.setRunState(submission.runId, "blocked", input.code, detail, input.now);
+        this.appendEvent(submission.runId, "wait_for_ci_blocked", detail, input.now);
+      }
+      return finished;
+    });
+  }
+
   insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
     return this.mutate(() => {
       if (input.reviewInput && (!input.persona || input.reviewInput.submissionId !== input.submissionId)) {
@@ -7875,7 +7957,8 @@ export class WorkflowStore {
         // The waiting attempt's observation state is written WITH the row, not after it: a
         // daemon that stopped between the two would leave an attempt nothing can tell apart
         // from one whose packet was already prepared.
-        input.sessionActionState ? JSON.stringify(input.sessionActionState) : null,
+        input.sessionActionState ? JSON.stringify(input.sessionActionState)
+          : input.waitForCiState ? JSON.stringify(input.waitForCiState) : null,
         input.retryAt ?? null,
         input.inputFingerprint,
         input.error ?? null,
@@ -8317,23 +8400,30 @@ export class WorkflowStore {
       }
       const errored = [...latestByNode.values()].filter((attempt) => attempt.state === "error");
       for (const attempt of errored) {
+        // A blocked Wait for CI waits again, on the same pull request and head, with a fresh
+        // timeout. Everything else is queued to run again.
+        const ciWait = readWaitForCiState(attempt.output);
         this.insertAttempt({
           id: attempt.nodeId === latest.nodeId ? attemptId : randomUUID(),
           submissionId,
           nodeId: attempt.nodeId,
           attempt: attempt.attempt + 1,
-          state: "queued",
+          state: ciWait ? "waiting" : "queued",
           persona: attempt.persona,
           checkEvidence: attempt.checkEvidence,
           reviewInput: attempt.reviewInput ? { ...attempt.reviewInput, operationId: randomUUID() } : undefined,
+          waitForCiState: ciWait ? initialWaitForCiState({ ...ciWait, now }) : undefined,
           inputFingerprint: attempt.inputFingerprint,
           now,
         });
       }
+      const blockedPhase = this.mustRun(runId).currentPhase;
       if (!this.reviveFailedSubmission(
         submissionId,
         runId,
-        "infrastructure_error",
+        // The phase the retry was offered in: an infrastructure failure, or a Wait for CI
+        // block (whose attempt carries its CI state). Anything else refuses to revive.
+        readWaitForCiState(latest.output) ? blockedPhase : "infrastructure_error",
         now,
       )) {
         throw new Error(`Workflow submission ${submissionId} cannot be revived`);
