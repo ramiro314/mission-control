@@ -5,8 +5,8 @@ gated on the planning session and mirrored to GitHub issues.
 
 | # | Title | Kind | Labels | Blocked by | Task | Issue |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Fork sync with upstream 1.26.0 and upstream-sync runbook | ship | upstream-sync | None | TBD | TBD |
-| 2 | Weekly upstream-sync recurring mission | ship | upstream-sync | 1 | TBD | TBD |
+| 1 | Fork sync with upstream 1.26.0 and upstream-sync runbook | ship | upstream-sync | None | 934cd306-299f-4a3a-add6-176216b75bad | https://github.com/ramiro314/mission-control/issues/56 |
+| 2 | Weekly upstream-sync recurring mission | ship | upstream-sync | 1 | 497e6b23-880c-45e9-9b1f-6a42dcf5b969 | https://github.com/ramiro314/mission-control/issues/57 |
 
 ## Ticket 1: Fork sync with upstream 1.26.0 and upstream-sync runbook
 
