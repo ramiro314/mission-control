@@ -1,0 +1,96 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Upstream sync - tickets</title><style>
+:root{color-scheme:light dark;--bg:#fbfaf8;--panel:#fff;--fg:#1c1e21;--muted:#62676e;--line:#e3dfd8;--accent:#b06a1f;--code:#f3f1ec}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--panel:#14181e;--fg:#e7ebf1;--muted:#98a2b1;--line:#242b34;--accent:#f6a733;--code:#0a0c0f}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:1.8em;line-height:1.25}h2{margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.3em}
+a{color:var(--accent)}code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:1px 4px;border-radius:4px}
+pre{background:var(--code);padding:12px;border-radius:8px;overflow-x:auto}pre code{padding:0}
+table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}
+.diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
+figcaption{color:var(--muted);font-size:13px}
+.b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
+</style></head><body><main><h1>Upstream sync: tickets</h1>
+<p>Source plan: <a href="plan.md">plan.md</a>. The breakdown was approved on 2026-09-29. Every ticket is
+gated on the planning session and mirrored to GitHub issues.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Title</th>
+<th>Kind</th>
+<th>Labels</th>
+<th>Blocked by</th>
+<th>Task</th>
+<th>Issue</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Fork sync with upstream 1.26.0 and upstream-sync runbook</td>
+<td>ship</td>
+<td>upstream-sync</td>
+<td>None</td>
+<td>TBD</td>
+<td>TBD</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Weekly upstream-sync recurring mission</td>
+<td>ship</td>
+<td>upstream-sync</td>
+<td>1</td>
+<td>TBD</td>
+<td>TBD</td>
+</tr>
+</tbody></table>
+<h2>Ticket 1: Fork sync with upstream 1.26.0 and upstream-sync runbook</h2>
+<!-- ticket-1-body -->
+<p><strong>What to build:</strong> The fork&#39;s <code>main</code> becomes upstream <code>teamupstart/mission-control</code> <code>main</code> plus
+the fork&#39;s own layer, landed as one reviewable PR that merges upstream as a real merge. After
+it lands:</p>
+<ul>
+<li>Complete behaves exactly like upstream&#39;s (upstream #1148 replaces the fork&#39;s opt-in
+&quot;Free this task&#39;s worktree&quot; checkbox and its preview route).</li>
+<li>Every dependency version matches upstream&#39;s, apart from the fork-only entries.</li>
+<li>Dependabot is gone.</li>
+<li>A runbook exists that any agent can follow to repeat the sync.</li>
+</ul>
+<p><strong>Blocked by:</strong> None - can start immediately.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The sync branch comes off fresh <code>origin/main</code> and merges <code>upstream/main</code> with a merge commit, with no rebase or force-push. <code>upstream/main</code> is an ancestor of the PR head.</li>
+<li><input disabled="" type="checkbox"> Fork PR #17&#39;s surface is fully removed: the checkbox, the free-preview route, the <code>freeWorktree</code> request field, <code>TaskFreePreview</code>, their docs, tests and e2e spec. A search for those symbols finds nothing.</li>
+<li><input disabled="" type="checkbox"> Dependency and devDependency versions equal upstream&#39;s. The only differences are the fork-only entries. The lockfile is regenerated starting from upstream&#39;s.</li>
+<li><input disabled="" type="checkbox"> The Dependabot config is deleted.</li>
+<li><input disabled="" type="checkbox"> The upstream-sync runbook covers every point in plan section &quot;Ticket 1&quot;, step 5. It is linked from the docs index and has an agent-memory pointer.</li>
+<li><input disabled="" type="checkbox"> typecheck, lint, the unit suite, build, smoke and e2e all pass locally, and PR CI is green. The PR is left for the human to merge.</li>
+<li><input disabled="" type="checkbox"> Once the PR is open: Dependabot PRs #38, #39 and #42 are closed with a comment linking it, and the fork&#39;s Release workflow is disabled through <code>gh workflow disable</code>, with the file unchanged.</li>
+<li><input disabled="" type="checkbox"> Any conflict outside the ones the plan resolves follows decision D6: upstream wins, and a fork feature is not removed or reworked without asking the human first.</li>
+</ul>
+<p><strong>Test seams:</strong> The existing suites carry the proof. Upstream&#39;s own tests and e2e specs for worktree
+return, requeue and board column widths must pass, and the unit and e2e suites must stay green once
+the removed feature&#39;s test and spec are gone. Include a <code>git merge-base --is-ancestor</code> check and a
+dependency diff against <code>upstream/main</code> in the PR evidence.</p>
+<p>Context: read docs/plans/upstream-sync/plan.md (sections &quot;Decisions&quot; and &quot;Ticket 1&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<!-- /ticket-1-body -->
+
+<h2>Ticket 2: Weekly upstream-sync recurring mission</h2>
+<!-- ticket-2-body -->
+<p><strong>What to build:</strong> Every Monday at 09:00 local time, Mission Control files a task that brings the
+fork up to date with upstream by following the upstream-sync runbook. When upstream has
+nothing new, the run ends without a branch or PR. When it has, the run ends with a sync PR
+that the human merges.</p>
+<p><strong>Blocked by:</strong> Ticket 1 (Fork sync with upstream 1.26.0 and upstream-sync runbook).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> A recurring mission named &quot;Sync fork with upstream&quot; exists on the operator&#39;s daemon for this repository. It is enabled, weekly on Mondays at 09:00 in the operator&#39;s local time zone, collapses missed runs into one catch-up, skips when a previous run&#39;s task is still open, inherits the agent from the task kind, and has After work set to None.</li>
+<li><input disabled="" type="checkbox"> Its task template tells the agent to follow the runbook, and to exit without a branch or PR when upstream has nothing new.</li>
+<li><input disabled="" type="checkbox"> The preview shows the next occurrences on Mondays at 09:00 local. A manual Run now files a backlog task that references the runbook.</li>
+<li><input disabled="" type="checkbox"> The runbook records the mission&#39;s name and cadence, and that change lands in this ticket&#39;s PR.</li>
+</ul>
+<p><strong>Test seams:</strong> The daemon&#39;s schedule preview and Run now through the Missions overlay or the schedules
+API. The filed backlog task is the proof. No code change is expected beyond the runbook update.</p>
+<p>Context: read docs/plans/upstream-sync/plan.md (sections &quot;Decisions&quot; D8 and D9, and &quot;Ticket 2&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<!-- /ticket-2-body -->
+</main></body></html>
