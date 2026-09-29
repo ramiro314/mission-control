@@ -6,11 +6,25 @@
 // Closing the window HIDES it (the app stays resident in the menu bar so alerts
 // keep firing); only a real quit destroys it.
 
-import { BrowserWindow, screen, shell } from "electron";
+import { BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
+import { setTimeout as delay } from "node:timers/promises";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { isQuitting } from "./lifecycle.ts";
+import { daemonHealthy } from "./daemon.ts";
+import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
+import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
 
 let win: BrowserWindow | null = null;
+let startup: WindowStartup | null = null;
+const loadedListeners = new Set<() => void>();
+
+export function onMainWindowLoaded(listener: () => void): void {
+  loadedListeners.add(listener);
+}
+
+export function stopWindowStartup(): void {
+  startup?.stop();
+}
 
 /**
  * Told when the window - and with it the renderer - is destroyed.
@@ -62,20 +76,19 @@ function isInternal(url: string): boolean {
   }
 }
 
-/** Load the target, retrying while the daemon/Vite server is still coming up. */
-async function loadWithRetry(w: BrowserWindow, url: string, attempts = 50): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await w.loadURL(url);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 300));
-    }
+async function dashboardReady(url: string, signal: AbortSignal): Promise<boolean> {
+  if (!process.env.MISSION_DEV_SERVER_URL) return daemonHealthy(800, signal);
+  // Vite owns the development origin and has no daemon health route of its own.
+  try {
+    const response = await fetch(url, { method: "HEAD", signal: AbortSignal.any([signal, AbortSignal.timeout(800)]) });
+    return response.ok;
+  } catch {
+    return false;
   }
-  await w.loadURL(url).catch(() => {}); // last attempt; let any error render
 }
 
 export function createWindow(preloadPath: string): BrowserWindow {
+  if (win) return win;
   win = new BrowserWindow({
     ...initialSize(),
     minWidth: 720,
@@ -102,8 +115,38 @@ export function createWindow(preloadPath: string): BrowserWindow {
     },
   });
 
-  win.once("ready-to-show", () => win?.show());
-  void loadWithRetry(win, targetUrl());
+  const window = win;
+  const url = targetUrl();
+  // Both local status pages and the dashboard must release navigation on Retry or quit.
+  const navigate = async (target: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    let responseStatus = -1;
+    const didNavigate = (_event: ElectronEvent, _url: string, status: number) => { responseStatus = status; };
+    const stop = () => { if (!window.isDestroyed()) window.webContents.stop(); };
+    const timer = setTimeout(stop, WINDOW_STARTUP_TIMEOUT_MS);
+    signal.addEventListener("abort", stop, { once: true });
+    window.webContents.on("did-navigate", didNavigate);
+    try {
+      await window.loadURL(target);
+      // Electron resolves loadURL for a fully rendered HTTP error page as well.
+      if (responseStatus >= 400) throw new Error(`Dashboard navigation returned HTTP ${responseStatus}`);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", stop);
+      window.webContents.removeListener("did-navigate", didNavigate);
+    }
+  };
+  const loading = new WindowStartup({
+    now: () => Date.now(),
+    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state))}`, signal),
+    ready: (signal) => dashboardReady(url, signal),
+    load: (signal) => navigate(url, signal),
+    pause: (signal) => delay(1000, undefined, { signal }),
+    loaded: () => { for (const listener of loadedListeners) listener(); },
+    log: (error) => console.error("[mission-control] dashboard startup navigation failed:", error),
+  });
+  startup = loading;
+  window.once("ready-to-show", () => { if (!window.isDestroyed()) window.show(); });
 
   // External links (PR pages, docs, …) open in the system browser; in-app
   // navigation stays pinned to the daemon/Vite origin.
@@ -115,6 +158,11 @@ export function createWindow(preloadPath: string): BrowserWindow {
     return { action: "allow" };
   });
   win.webContents.on("will-navigate", (e, url) => {
+    if (url === STARTUP_RETRY_URL) {
+      e.preventDefault();
+      void loading.start();
+      return;
+    }
     if (!isInternal(url)) {
       e.preventDefault();
       void shell.openExternal(url);
@@ -128,10 +176,13 @@ export function createWindow(preloadPath: string): BrowserWindow {
     }
   });
   win.on("closed", () => {
+    loading.stop();
+    startup = null;
     win = null;
     for (const listener of closedListeners) listener();
   });
 
+  void loading.start();
   return win;
 }
 
