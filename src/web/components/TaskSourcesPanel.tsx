@@ -202,6 +202,25 @@ function GithubFields({
   // rejects, with the explanation arriving as a validation error.
   const assignee = cfg.assignedToMe ? "me" : cfg.unassignedOnly ? "nobody" : "any";
 
+  // The three label filters share one shape: a comma list that commits on blur. One owner
+  // for that wiring, so the three cannot drift apart.
+  const labelListField = (
+    key: "labelsAny" | "labelsAll" | "labelsNone",
+    label: string,
+    placeholder: string,
+  ): React.JSX.Element => (
+    <label className="ts-field">
+      <span className="ts-field-label">{label}</span>
+      <input
+        className="field-input mono"
+        placeholder={placeholder}
+        value={val(key, cfg[key].join(", "))}
+        onChange={(e) => edit(key, e.target.value)}
+        onBlur={() => commit(key, (v) => onChange({ ...cfg, [key]: splitList(v) }))}
+      />
+    </label>
+  );
+
   return (
     <div className="ts-fields">
       <label className="ts-field">
@@ -215,44 +234,9 @@ function GithubFields({
         />
       </label>
 
-      <label className="ts-field">
-        <span className="ts-field-label">Labels (any of)</span>
-        <input
-          className="field-input mono"
-          placeholder="bug, good first issue"
-          value={val("labelsAny", cfg.labelsAny.join(", "))}
-          onChange={(e) => edit("labelsAny", e.target.value)}
-          onBlur={() =>
-            commit("labelsAny", (v) => onChange({ ...cfg, labelsAny: splitList(v) }))
-          }
-        />
-      </label>
-
-      <label className="ts-field">
-        <span className="ts-field-label">Labels (all of)</span>
-        <input
-          className="field-input mono"
-          placeholder="flaky-test, flaky-test:actionable"
-          value={val("labelsAll", cfg.labelsAll.join(", "))}
-          onChange={(e) => edit("labelsAll", e.target.value)}
-          onBlur={() =>
-            commit("labelsAll", (v) => onChange({ ...cfg, labelsAll: splitList(v) }))
-          }
-        />
-      </label>
-
-      <label className="ts-field">
-        <span className="ts-field-label">Labels (none of)</span>
-        <input
-          className="field-input mono"
-          placeholder="wontfix"
-          value={val("labelsNone", cfg.labelsNone.join(", "))}
-          onChange={(e) => edit("labelsNone", e.target.value)}
-          onBlur={() =>
-            commit("labelsNone", (v) => onChange({ ...cfg, labelsNone: splitList(v) }))
-          }
-        />
-      </label>
+      {labelListField("labelsAny", "Labels (any of)", "bug, good first issue")}
+      {labelListField("labelsAll", "Labels (all of)", "flaky-test, flaky-test:actionable")}
+      {labelListField("labelsNone", "Labels (none of)", "wontfix")}
 
       <label className="ts-field">
         <span className="ts-field-label">Milestone (optional)</span>
