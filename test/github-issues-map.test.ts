@@ -69,6 +69,72 @@ test("several labels become an OR search, not repeated --label flags", () => {
   assert.equal(argAfter(args, "--search"), 'label:bug,"good first issue"');
 });
 
+// All-of and none-of: the flake cleanup sweep ("flaky-test AND flaky-test:actionable, NOT
+// wontfix"). Space is AND inside one search, so each required label is its own term, and
+// `-label:` excludes. Repeating `--label` would also AND, but the exclusion has no flag, so
+// both live in the search where they read as one query.
+test("all-of labels are separate AND terms and none-of labels are exclusions", () => {
+  const args = ghIssueListArgs(
+    cfg({ labelsAll: ["flaky-test", "flaky-test:actionable"], labelsNone: ["wontfix"] }),
+  );
+  assert.equal(args.includes("--label"), false);
+  assert.equal(
+    argAfter(args, "--search"),
+    'label:flaky-test label:"flaky-test:actionable" -label:wontfix',
+  );
+});
+
+test("all-of and none-of labels are quoted like any-of labels", () => {
+  const args = ghIssueListArgs(cfg({ labelsAll: ["good first issue"], labelsNone: ['say "no"'] }));
+  assert.equal(argAfter(args, "--search"), 'label:"good first issue" -label:"say \\"no\\""');
+});
+
+test("all-of and none-of combine with several any-of labels in one search", () => {
+  const args = ghIssueListArgs(
+    cfg({ labelsAny: ["bug", "regression"], labelsAll: ["P1"], labelsNone: ["wontfix"], unassignedOnly: true }),
+  );
+  assert.equal(args.filter((a) => a === "--search").length, 1);
+  assert.equal(argAfter(args, "--search"), "label:bug,regression label:P1 -label:wontfix no:assignee");
+});
+
+// One any-of label keeps its `--label` flag, which gh ANDs with the search terms - exactly
+// the meaning "this label, and all of those, and none of these" asks for.
+test("one any-of label keeps --label alongside all-of and none-of terms", () => {
+  const args = ghIssueListArgs(cfg({ labelsAny: ["mission"], labelsNone: ["wontfix"] }));
+  assert.equal(argAfter(args, "--label"), "mission");
+  assert.equal(argAfter(args, "--search"), "-label:wontfix");
+});
+
+// The cross-phase contract: a source stored before these fields existed parses them as
+// empty and sends gh byte-for-byte the argv it always did.
+test("configs without all-of or none-of produce exactly the argv they always did", () => {
+  const json = "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent";
+  assert.deepEqual(ghIssueListArgs(cfg({ repo: "acme/w", labelsAny: ["mission"] })), [
+    "issue", "list", "--state", "open", "--limit", "50", "--repo", "acme/w", "--label", "mission", "--json", json,
+  ]);
+  assert.deepEqual(ghIssueListArgs(cfg({ labelsAny: ["a", "b c"], assignedToMe: true, milestone: "v2" })), [
+    "issue", "list", "--state", "open", "--limit", "50", "--assignee", "@me", "--milestone", "v2",
+    "--search", 'label:a,"b c"', "--json", json,
+  ]);
+});
+
+// A label both required and excluded selects nothing, the same silent-empty sweep the
+// assignee pair is refused for. GitHub label names are case-insensitive, so is the check.
+test("the schema refuses a label that is both required and excluded", () => {
+  for (const over of [
+    { labelsAll: ["flaky-test"], labelsNone: ["flaky-test"] },
+    { labelsAny: ["bug", "Wontfix"], labelsNone: ["wontfix"] },
+  ]) {
+    const r = GithubIssuesConfigSchema.safeParse(over);
+    assert.equal(r.success, false);
+    assert.match(JSON.stringify(r), /selects nothing/);
+  }
+  assert.ok(GithubIssuesConfigSchema.safeParse({ labelsAll: ["a"], labelsNone: ["b"] }).success);
+  // Stored before the fields existed: they default to empty.
+  const old = GithubIssuesConfigSchema.parse({ labelsAny: ["x"] });
+  assert.deepEqual([old.labelsAll, old.labelsNone], [[], []]);
+});
+
 test("assignedToMe and unassignedOnly reach gh by their own routes", () => {
   assert.equal(argAfter(ghIssueListArgs(cfg({ assignedToMe: true })), "--assignee"), "@me");
   // `--assignee` has no "nobody" spelling, so this is a search term.
@@ -256,6 +322,18 @@ test("the created issue carries the task's title and intent, the repo, and every
     "--label",
     "triage",
   ]);
+});
+
+// A pushed issue must still match its own source: it carries every any-of and all-of label
+// (once each), and never a none-of label.
+test("a pushed issue carries the all-of labels and none of the none-of labels", () => {
+  const args = ghIssueCreateArgs(
+    cfg({ labelsAny: ["mission"], labelsAll: ["flaky-test", "mission"], labelsNone: ["wontfix"] }),
+    { title: "t", intent: "i" },
+  );
+  const labels = args.flatMap((a, i) => (a === "--label" ? [args[i + 1]] : []));
+  assert.deepEqual(labels, ["mission", "flaky-test"]);
+  assert.equal(args.includes("wontfix"), false);
 });
 
 test("a draft's relations become --blocked-by and --parent, by URL", () => {

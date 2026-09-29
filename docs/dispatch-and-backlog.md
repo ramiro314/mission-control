@@ -1221,6 +1221,8 @@ works in that checkout, the source works.
 |---|---|
 | **Repository** | `owner/repo`; blank uses the checkout's own `origin` |
 | **Labels (any of)** | match issues carrying **any** of these. Blank matches all |
+| **Labels (all of)** | match only issues carrying **every one** of these. Blank adds no filter |
+| **Labels (none of)** | skip issues carrying **any** of these. A label also listed under any of or all of selects nothing, so it is refused |
 | **Assignee** | anyone / assigned to me / unassigned. One choice, not two switches - "assigned to me *and* unassigned" selects nothing, so it isn't expressible |
 | **Milestone** | restrict to one milestone |
 | **Issues per sweep** | how many `gh` is asked for |
@@ -1263,8 +1265,9 @@ what changes is that it now carries a link to the issue, shown in that same spot
 also where a task that was *swept in* shows the issue it came from.
 
 The issue carries the task's **title**, its **text** as the body, and one label for each of
-the source's **Labels (any of)** filter labels - so the issue this files matches the filter
-that would find it, rather than creating work its own source cannot see. Nothing else about
+the source's **Labels (any of)** and **Labels (all of)** filter labels, and never a **Labels
+(none of)** label - so the issue this files matches the filter that would find it, rather than
+creating work its own source cannot see. Nothing else about
 the task goes upstream: not its priority, not its repo path, not its status.
 
 The action appears only when a **GitHub Issues source is configured for that task's repo**;

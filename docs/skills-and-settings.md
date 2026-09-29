@@ -87,6 +87,16 @@ than merely describing it. A post-merge follow-up also requires the **Pull Reque
 approved changes can open their own review. Switch both on for that path. The procedure lives in
 [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
 
+The **Deflake** row fixes a flaky test at its cause. It fires on a task swept from a
+`Flaky test:` issue, or any request to deflake or stabilize an intermittent test. The agent reads
+the issue and its occurrence comments through the v1 markers the CI action writes, reproduces the
+flake under load (repeated runs, raised concurrency, a CPU-heavy process alongside) before
+changing anything, fixes the timing or ordering dependency, loosens a timeout only when the limit
+itself is wrong, proves the fix with a before and after repeated run at the same load, and opens
+the fix pull request with `Fixes #<n>`. The [flaky tests guide](flaky-tests.md#fixing-flakes-from-the-backlog)
+has the task source recipe that feeds it. The procedure lives in
+[`skills/deflake/SKILL.md`](../skills/deflake/SKILL.md).
+
 The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. It estimates total non-test implementation effort and complexity before choosing the fewest

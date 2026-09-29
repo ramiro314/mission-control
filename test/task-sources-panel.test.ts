@@ -529,3 +529,25 @@ test("a github source's close reason is composed by the card and carries what is
   assert.match(html, /<option value="not-planned" selected="">Not planned<\/option>/);
   assert.doesNotMatch(html, /Target status/);
 });
+
+// The all-of and none-of label filters sit beside any-of and show what is stored, joined
+// the same way, so a saved flake-cleanup source reads back as it was typed.
+test("a github source shows its all-of and none-of label filters", () => {
+  const source = mkSource({
+    config: { labelsAll: ["flaky-test", "flaky-test:actionable"], labelsNone: ["wontfix"] },
+  });
+  const html = renderToStaticMarkup(createElement(SourceCard, {
+    src: source,
+    kindLabel: "GitHub issues",
+    status: undefined,
+    repos: [],
+    now: Date.now(),
+    onChange: () => {},
+    onRemove: () => {},
+    state: mkState(viewOf([source])),
+  }));
+
+  assert.match(html, /Labels \(any of\)/);
+  assert.match(html, /Labels \(all of\)<\/span><input[^>]*value="flaky-test, flaky-test:actionable"/);
+  assert.match(html, /Labels \(none of\)<\/span><input[^>]*value="wontfix"/);
+});

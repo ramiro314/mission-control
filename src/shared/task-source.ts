@@ -506,6 +506,13 @@ export const GithubIssuesConfigSchema = z
      * they name.
      */
     labelsAny: z.array(z.string().min(1).max(100)).max(20).default([]),
+    /**
+     * Match only issues carrying EVERY one of these. Empty = no such filter. Not normalized,
+     * for the same reason as `labelsAny`.
+     */
+    labelsAll: z.array(z.string().min(1).max(100)).max(20).default([]),
+    /** Skip issues carrying ANY of these. Empty = no such filter. Not normalized either. */
+    labelsNone: z.array(z.string().min(1).max(100)).max(20).default([]),
     /** Only issues assigned to the authenticated `gh` user. */
     assignedToMe: z.boolean().default(false),
     /** Only issues with no assignee - the "up for grabs" sweep. */
@@ -535,7 +542,19 @@ export const GithubIssuesConfigSchema = z
   .refine((c) => !(c.assignedToMe && c.unassignedOnly), {
     message: "assignedToMe and unassignedOnly select nothing together - pick one",
     path: ["unassignedOnly"],
-  });
+  })
+  // Same failure, by label: a label both required and excluded selects nothing. GitHub
+  // matches label names case-insensitively, so the comparison does too.
+  .refine(
+    (c) => {
+      const none = new Set(c.labelsNone.map((l) => l.toLowerCase()));
+      return ![...c.labelsAll, ...c.labelsAny].some((l) => none.has(l.toLowerCase()));
+    },
+    {
+      message: "a label in labelsNone is also required by labelsAll or labelsAny - that selects nothing",
+      path: ["labelsNone"],
+    },
+  );
 export type GithubIssuesConfig = z.infer<typeof GithubIssuesConfigSchema>;
 
 // ---- jira: a JQL filter as a backlog queue ----

@@ -119,6 +119,10 @@ export function ghIssueListArgs(cfg: GithubIssuesConfig): string[] {
   } else if (cfg.labelsAny.length > 1) {
     search.push(`label:${cfg.labelsAny.map(quoteTerm).join(",")}`);
   }
+  // Space is AND in a search, so each required label is its own term, and `-label:` is
+  // GitHub's exclusion. Both ride in the same `--search` as the any-of term above.
+  for (const l of cfg.labelsAll) search.push(`label:${quoteTerm(l)}`);
+  for (const l of cfg.labelsNone) search.push(`-label:${quoteTerm(l)}`);
   if (cfg.assignedToMe) args.push("--assignee", "@me");
   // `--assignee` has no "nobody" spelling, so the unassigned sweep is a search term. The
   // schema has already refused the pair, so this can never fight the flag above.
@@ -302,8 +306,8 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
 /**
  * The `gh issue create` argv for this config and draft.
  *
- * The labels are the source's OWN sweep filter (`labelsAny`), which is the point rather
- * than a convenience: an issue created without them would not match the filter this
+ * The labels are the source's OWN sweep filter (`labelsAny` and `labelsAll`), which is
+ * the point rather than a convenience: an issue created without them would not match the filter this
  * source sweeps, so the same repo would show the issue to everyone else and hide it from
  * the source that filed it. Here `--label` repeated is exactly right - the sweep needs
  * ANY of the labels and had to fight the flag's AND semantics, but a created issue simply
@@ -326,9 +330,18 @@ export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): st
     "--body",
     draft.intent,
     ...(cfg.repo ? ["--repo", cfg.repo] : []),
-    ...cfg.labelsAny.flatMap((l) => ["--label", l]),
+    ...pushLabels(cfg).flatMap((l) => ["--label", l]),
     ...relationArgs(draft),
   ];
+}
+
+/**
+ * The labels a pushed issue carries: every any-of label and every all-of label, so it
+ * matches its own source's filter. Never a none-of label - the schema refuses a label in
+ * both, so none can arrive through the other two lists.
+ */
+function pushLabels(cfg: GithubIssuesConfig): string[] {
+  return [...new Set([...cfg.labelsAny, ...cfg.labelsAll])];
 }
 
 /**

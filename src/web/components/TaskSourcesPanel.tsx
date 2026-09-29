@@ -229,6 +229,32 @@ function GithubFields({
       </label>
 
       <label className="ts-field">
+        <span className="ts-field-label">Labels (all of)</span>
+        <input
+          className="field-input mono"
+          placeholder="flaky-test, flaky-test:actionable"
+          value={val("labelsAll", cfg.labelsAll.join(", "))}
+          onChange={(e) => edit("labelsAll", e.target.value)}
+          onBlur={() =>
+            commit("labelsAll", (v) => onChange({ ...cfg, labelsAll: splitList(v) }))
+          }
+        />
+      </label>
+
+      <label className="ts-field">
+        <span className="ts-field-label">Labels (none of)</span>
+        <input
+          className="field-input mono"
+          placeholder="wontfix"
+          value={val("labelsNone", cfg.labelsNone.join(", "))}
+          onChange={(e) => edit("labelsNone", e.target.value)}
+          onBlur={() =>
+            commit("labelsNone", (v) => onChange({ ...cfg, labelsNone: splitList(v) }))
+          }
+        />
+      </label>
+
+      <label className="ts-field">
         <span className="ts-field-label">Milestone (optional)</span>
         <input
           className="field-input mono"
