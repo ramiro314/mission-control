@@ -10,9 +10,13 @@ export class GitHubError extends Error {
     super(`GitHub ${method} ${path} answered ${status}: ${body.slice(0, 300)}`);
   }
 
-  /** The token lacks the permission (a fork PR, or a workflow that did not grant it). */
+  /**
+   * The token lacks the permission (a fork PR, or a workflow that did not grant it). Only a
+   * 403: a 404 on a write means the target is gone (a concurrent close, delete or transfer),
+   * which is a fact about one issue, not about the token.
+   */
   get forbidden(): boolean {
-    return this.status === 403 || (this.status === 404 && this.method !== "GET");
+    return this.status === 403;
   }
 }
 

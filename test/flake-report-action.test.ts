@@ -296,7 +296,7 @@ interface FakeIssue {
   events: { event: string; created_at: string }[];
 }
 
-function fakeGitHub(opts: { forbid?: RegExp; now: Date }) {
+function fakeGitHub(opts: { forbid?: RegExp; gone?: RegExp; now: Date }) {
   const labels = new Set<string>();
   const issues: FakeIssue[] = [];
   const checkRuns: Record<string, unknown>[] = [];
@@ -316,6 +316,7 @@ function fakeGitHub(opts: { forbid?: RegExp; now: Date }) {
     if (init.method !== "GET") {
       writes.push(`${init.method} ${path}`);
       if (opts.forbid?.test(`${init.method} ${path}`)) return reply(403, { message: "Resource not accessible by integration" });
+      if (opts.gone?.test(`${init.method} ${path}`)) return reply(404, { message: "Not Found" });
     }
     const page = Number(searchParams.get("page") ?? "1");
     const paged = <T>(items: T[]) => reply(200, items.slice((page - 1) * 100, page * 100));
@@ -612,6 +613,42 @@ describe("publish mode", () => {
     assert.equal(created.comments.length, 0);
     assert.equal(gh.issues.length, 2);
     assert.deepEqual(second.report.issues, first.report.issues);
+  });
+
+  // Each write in one flake's update, failing with a 404 the way it would if a concurrent hand
+  // deleted, transferred or locked that issue mid-run.
+  const goneCases = [
+    { write: "reopening it", gone: /^PATCH \/issues\/1$/, state: "closed" as const, config: null },
+    { write: "posting the occurrence", gone: /^POST \/issues\/1\/comments$/, state: "open" as const, config: null },
+    { write: "adding the actionable label", gone: /^POST \/issues\/1\/labels$/, state: "open" as const, config: '{"flakes":{"actionableAfter":1}}' },
+    { write: "refreshing the count", gone: /^PATCH \/issues\/1$/, state: "open" as const, config: null },
+  ];
+  for (const c of goneCases) {
+    test(`a 404 while ${c.write} costs only that flake, not the run`, async () => {
+      const gh = fakeGitHub({ now: NOW, gone: c.gone });
+      gh.seedIssue({ key: flake("fails").key, state: c.state });
+      const result = await publish({
+        ctx,
+        reports: [jobReport([flake("fails"), flake("other")])],
+        configText: c.config,
+        client: gh.client,
+        now: NOW,
+      });
+      assert.ok(result.notes.some((note) => note.startsWith("Could not update the flake issue for fails (test/a.test.ts): GitHub")));
+      assert.ok(!result.notes.some((note) => /cannot write issues/.test(note)), result.notes.join("\n"));
+      // The next flake is still recorded and linked, and the check still publishes.
+      assert.deepEqual(result.report.issues.map((i) => i.key), [flake("other").key]);
+      assert.equal(gh.issues.filter((i) => i.body.includes(flakeIssueMarker(flake("other").key))).length, 1);
+      assert.equal(gh.checkRuns.length, 1);
+    });
+  }
+
+  test("a 403 still ends the issue pass as a missing permission", async () => {
+    const gh = fakeGitHub({ now: NOW, forbid: /^POST \/issues\/1\/comments$/ });
+    gh.seedIssue({ key: flake("fails").key });
+    const result = await publish({ ctx, reports: [jobReport([flake("fails"), flake("other")])], configText: null, client: gh.client, now: NOW });
+    assert.ok(result.notes.some((note) => /cannot write issues \(grant `issues: write`\)/.test(note)));
+    assert.equal(gh.checkRuns.length, 1);
   });
 
   test("a fork PR writes nothing and says which writes it skipped", async () => {

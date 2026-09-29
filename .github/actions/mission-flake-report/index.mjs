@@ -4337,9 +4337,13 @@ var GitHubError = class extends Error {
   status;
   method;
   path;
-  /** The token lacks the permission (a fork PR, or a workflow that did not grant it). */
+  /**
+   * The token lacks the permission (a fork PR, or a workflow that did not grant it). Only a
+   * 403: a 404 on a write means the target is gone (a concurrent close, delete or transfer),
+   * which is a fact about one issue, not about the token.
+   */
   get forbidden() {
-    return this.status === 403 || this.status === 404 && this.method !== "GET";
+    return this.status === 403;
   }
 };
 function gitHubClient(opts) {
@@ -4491,8 +4495,7 @@ async function updateFlakeIssues(opts) {
     ];
     return dated.filter((item) => item.at !== void 0 && new Date(item.at) > since && parseFlakeOccurrences(item.text).length > 0).length;
   };
-  const results = [];
-  for (const [key, entries] of groups) {
+  const recordFlake = async (key, entries) => {
     const occurrence = occurrenceBlock(entries, ctx, now);
     let existing = byKey.get(key);
     if (!existing) {
@@ -4504,8 +4507,7 @@ async function updateFlakeIssues(opts) {
       });
       const canonical = indexByKey(await client.paginate(listPath)).get(key);
       if (!canonical || canonical.number >= created.number) {
-        results.push({ key, number: created.number, url: created.html_url, occurrences: 1, actionable: actionable2 });
-        continue;
+        return { key, number: created.number, url: created.html_url, occurrences: 1, actionable: actionable2 };
       }
       const retiredBody = (created.body ?? "").replace(flakeIssueMarker(key), flakeDuplicateMarker(canonical.number));
       await client.request("PATCH", `/repos/${repo}/issues/${created.number}`, {
@@ -4521,14 +4523,13 @@ Duplicate of #${canonical.number}, which another CI run opened at the same time.
     const runMarker = flakeRunMarker(ctx.runUrl);
     const recorded = await client.paginate(`${issuePath}/comments`);
     if ([existing.body, ...recorded.map((comment) => comment.body)].some((text) => text?.includes(runMarker))) {
-      results.push({
+      return {
         key,
         number: existing.number,
         url: existing.html_url,
         occurrences: await countOccurrences(existing),
         actionable: labelNames(existing).includes(flakes.actionableLabel)
-      });
-      continue;
+      };
     }
     const reopening = existing.state === "closed";
     let earlier = 0;
@@ -4548,16 +4549,32 @@ Duplicate of #${canonical.number}, which another CI run opened at the same time.
     const lineEnd = countAt === -1 ? -1 : body.indexOf("\n", countAt);
     const counted = countAt === -1 ? body : `${body.slice(0, countAt)}${countLine(occurrences, flakes)}${lineEnd === -1 ? "" : body.slice(lineEnd)}`;
     if (counted !== body) await client.request("PATCH", issuePath, { body: counted });
-    results.push({ key, number: existing.number, url: existing.html_url, occurrences, actionable });
+    return { key, number: existing.number, url: existing.html_url, occurrences, actionable };
+  };
+  const problems = [];
+  const isolated = async (what, step) => {
+    try {
+      await step();
+    } catch (err) {
+      if (!(err instanceof GitHubError) || err.forbidden) throw err;
+      problems.push(`Could not update the flake issue for ${what}: ${err.message}`);
+    }
+  };
+  const issues = [];
+  for (const [key, entries] of groups) {
+    const first = entries[0];
+    await isolated(`${first.name} (${first.file})`, async () => {
+      issues.push(await recordFlake(key, entries));
+    });
   }
   for (const issue of listed) {
     if (issue.pull_request || issue.state !== "closed") continue;
     const key = parseFlakeIssueKey(issue.body);
     if (key && groups.has(key)) continue;
     if (!labelNames(issue).includes(flakes.actionableLabel)) continue;
-    await removeLabel(client, `/repos/${repo}/issues/${issue.number}`, flakes.actionableLabel);
+    await isolated(`closed issue #${issue.number}`, () => removeLabel(client, `/repos/${repo}/issues/${issue.number}`, flakes.actionableLabel));
   }
-  return results;
+  return { issues, problems };
 }
 
 // src/flake-report-action/rerun.ts
@@ -4907,7 +4924,9 @@ async function publish(opts) {
       notes.push(`Skipped updating flake issues: ${config.error}`);
     } else {
       try {
-        merged.issues = await updateFlakeIssues({ client, ctx, flakes: config.flakes, report: merged, now });
+        const updated = await updateFlakeIssues({ client, ctx, flakes: config.flakes, report: merged, now });
+        merged.issues = updated.issues;
+        notes.push(...updated.problems);
       } catch (err) {
         if (!(err instanceof GitHubError && err.forbidden)) throw err;
         notes.push("Skipped updating flake issues: the token cannot write issues (grant `issues: write`).");

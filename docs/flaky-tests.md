@@ -104,7 +104,10 @@ One issue per flaky test, labelled with the `flakes.label` from the committed
   flake at once can each open an issue. Each re-lists after creating; the higher-numbered issue
   replaces its key marker with `<!-- mission-flake-duplicate:v1 of=<n> -->`, closes itself, and
   its occurrence goes to the lowest-numbered one. Removing a label that a concurrent run already
-  removed (a 404) counts as done, so it never reads as a missing permission. Occurrences are also recounted after each
+  removed (a 404) counts as done.
+- **One flake at a time.** Each flake's issue update is its own unit. A GitHub error on one (an
+  issue deleted, transferred or locked mid-run) is named in the job summary and the rest of the
+  run is still recorded. Only a 403 is read as a missing permission, and it ends the issue pass. Occurrences are also recounted after each
   comment is posted, so two runs recording at once still cross the threshold.
 - **Flakes again after a fix**: the action reopens the issue, drops the actionable label, and
   counting starts over from the reopen.
@@ -127,7 +130,8 @@ rest of CI keeps `contents: read`.
 
 A pull request from a fork runs with a read-only token whatever the workflow asks for. There the
 action writes the job summary and the merged report artifact only, and the summary says which
-writes it skipped. The same happens, per write, when a token lacks one of the two permissions.
+writes it skipped. The same happens, per write, when a token lacks one of the two permissions
+(GitHub answers 403).
 
 ## Changing the action
 

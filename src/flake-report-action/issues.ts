@@ -119,11 +119,7 @@ async function ensureLabel(client: GitHubClient, repo: string, name: string, col
   }
 }
 
-/**
- * Remove a label, treating "not on the issue" (404) as done: a concurrent run may have removed
- * it first. Left to propagate, that 404 would read as a missing permission and abandon every
- * remaining flake in the run.
- */
+/** Remove a label, treating "not on the issue" (404) as done: a concurrent run may have removed it first. */
 async function removeLabel(client: GitHubClient, issuePath: string, label: string): Promise<void> {
   try {
     await client.request("DELETE", `${issuePath}/labels/${enc(label)}`);
@@ -176,7 +172,13 @@ export interface UpdateFlakeIssuesOptions {
  * - occurrences are recounted after this run's comment is posted, so a concurrent run's comment
  *   is counted and the actionable label is added by whichever run sees the threshold crossed.
  */
-export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise<FlakeReportIssue[]> {
+export interface UpdateFlakeIssuesResult {
+  issues: FlakeReportIssue[];
+  /** Flakes whose issue could not be updated, and why; the rest of the run was still recorded. */
+  problems: string[];
+}
+
+export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise<UpdateFlakeIssuesResult> {
   const { client, ctx, flakes, now } = opts;
   const repo = ctx.repository;
   await ensureLabel(client, repo, flakes.label, "d4c5f9", "A test that failed and then passed on rerun in CI");
@@ -209,8 +211,8 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
       item.at !== undefined && new Date(item.at) > since && parseFlakeOccurrences(item.text).length > 0).length;
   };
 
-  const results: FlakeReportIssue[] = [];
-  for (const [key, entries] of groups) {
+  /** Record one test's occurrence on its issue, creating or reopening the issue as needed. */
+  const recordFlake = async (key: string, entries: FlakeReportTest[]): Promise<FlakeReportIssue> => {
     const occurrence = occurrenceBlock(entries, ctx, now);
     let existing = byKey.get(key);
     if (!existing) {
@@ -222,8 +224,7 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
       });
       const canonical = indexByKey(await client.paginate<Issue>(listPath)).get(key);
       if (!canonical || canonical.number >= created.number) {
-        results.push({ key, number: created.number, url: created.html_url, occurrences: 1, actionable });
-        continue;
+        return { key, number: created.number, url: created.html_url, occurrences: 1, actionable };
       }
       // Another run created this test's issue first: retire ours so only one carries the key.
       const retiredBody = (created.body ?? "").replace(flakeIssueMarker(key), flakeDuplicateMarker(canonical.number));
@@ -241,14 +242,13 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
     const runMarker = flakeRunMarker(ctx.runUrl);
     const recorded = await client.paginate<IssueComment>(`${issuePath}/comments`);
     if ([existing.body, ...recorded.map((comment) => comment.body)].some((text) => text?.includes(runMarker))) {
-      results.push({
+      return {
         key,
         number: existing.number,
         url: existing.html_url,
         occurrences: await countOccurrences(existing),
         actionable: labelNames(existing).includes(flakes.actionableLabel),
-      });
-      continue;
+      };
     }
     const reopening = existing.state === "closed";
     // Counted before this run's comment is posted too, so a list that lags behind the post
@@ -273,7 +273,31 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
       ? body
       : `${body.slice(0, countAt)}${countLine(occurrences, flakes)}${lineEnd === -1 ? "" : body.slice(lineEnd)}`;
     if (counted !== body) await client.request("PATCH", issuePath, { body: counted });
-    results.push({ key, number: existing.number, url: existing.html_url, occurrences, actionable });
+    return { key, number: existing.number, url: existing.html_url, occurrences, actionable };
+  };
+
+  /**
+   * Each flake, and each closed issue below, is its own unit. A 403 means the token cannot write
+   * issues at all, so it ends the pass for the caller to report. Any other GitHub error (an issue
+   * deleted, transferred or locked by a concurrent hand) costs only that one flake, noted by
+   * name, never the rest of the run.
+   */
+  const problems: string[] = [];
+  const isolated = async (what: string, step: () => Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (err) {
+      if (!(err instanceof GitHubError) || err.forbidden) throw err;
+      problems.push(`Could not update the flake issue for ${what}: ${err.message}`);
+    }
+  };
+
+  const issues: FlakeReportIssue[] = [];
+  for (const [key, entries] of groups) {
+    const first = entries[0]!;
+    await isolated(`${first.name} (${first.file})`, async () => {
+      issues.push(await recordFlake(key, entries));
+    });
   }
 
   // A closed issue is fixed: it should not stay on the actionable list.
@@ -282,7 +306,8 @@ export async function updateFlakeIssues(opts: UpdateFlakeIssuesOptions): Promise
     const key = parseFlakeIssueKey(issue.body);
     if (key && groups.has(key)) continue;
     if (!labelNames(issue).includes(flakes.actionableLabel)) continue;
-    await removeLabel(client, `/repos/${repo}/issues/${issue.number}`, flakes.actionableLabel);
+    await isolated(`closed issue #${issue.number}`, () =>
+      removeLabel(client, `/repos/${repo}/issues/${issue.number}`, flakes.actionableLabel));
   }
-  return results;
+  return { issues, problems };
 }

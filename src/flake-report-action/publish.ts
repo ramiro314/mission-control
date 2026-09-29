@@ -82,7 +82,9 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
       notes.push(`Skipped updating flake issues: ${config.error}`);
     } else {
       try {
-        merged.issues = await updateFlakeIssues({ client, ctx, flakes: config.flakes, report: merged, now });
+        const updated = await updateFlakeIssues({ client, ctx, flakes: config.flakes, report: merged, now });
+        merged.issues = updated.issues;
+        notes.push(...updated.problems);
       } catch (err) {
         if (!(err instanceof GitHubError && err.forbidden)) throw err;
         notes.push("Skipped updating flake issues: the token cannot write issues (grant `issues: write`).");
