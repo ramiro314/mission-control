@@ -30,6 +30,7 @@ import {
   newestInheritedSource,
   nodeStatusesForSubmission,
   reviewerStatus,
+  waitForCiStatus,
   selectedSubmission,
   sessionActionProgress,
   sessionActionStatus,
@@ -150,7 +151,9 @@ function projectWorkflowLadderStages(
           ? sessionActionStatus(nodeId ? statuses[nodeId] : undefined, actionState?.wait ?? null)
           : member.kind === "check"
             ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-            : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+            : member.kind === "wait_for_ci"
+              ? waitForCiStatus(nodeId ? statuses[nodeId] : undefined)
+              : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
       const name = node
         ? nodeLabel(graph, node, personaNames, actionNames)
         : member.kind === "check"

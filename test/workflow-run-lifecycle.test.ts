@@ -183,6 +183,22 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     detail: asJson({ nodeId: "n", attemptId: "a", code: "refused", detail: "x" }),
     kind: "opaque",
   },
+  ci_flake_report_missing: {
+    detail: asJson({ nodeId: "n", attemptId: "a", code: "ci_flake_report_missing", detail: "x" }),
+    kind: "opaque",
+  },
+  ci_missing: {
+    detail: asJson({ nodeId: "n", attemptId: "a", code: "ci_missing", detail: "x" }),
+    kind: "opaque",
+  },
+  ci_timeout: {
+    detail: asJson({ nodeId: "n", attemptId: "a", code: "ci_timeout", detail: "x" }),
+    kind: "opaque",
+  },
+  ci_pull_request_unknown: {
+    detail: asJson({ nodeId: "n", attemptId: "a", code: "ci_pull_request_unknown", detail: "x" }),
+    kind: "opaque",
+  },
   session_action_capture: {
     detail: asJson({ nodeId: "n", attemptId: "a", submissionId: "s" }),
     kind: "opaque",
@@ -1111,7 +1127,7 @@ test("every blocked-capable phase has a clause that beats the fallback", () => {
   // from the registry cannot quietly shrink what this test walks.
   const blockedCapable = WORKFLOW_RUN_PHASES
     .filter((phase) => WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked"));
-  assert.equal(blockedCapable.length, 28);
+  assert.equal(blockedCapable.length, 32);
 
   // One-directional, and deliberately so. The map also serves the triage column's PARKED rows,
   // which are `waiting_for_session`, so it legitimately holds keys that are not blocked-capable.

@@ -49,6 +49,7 @@ import {
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import { blockedPhaseClause, workflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
+import { readWaitForCiState, type WaitForCiBlockCode, type WaitForCiState } from "@shared/wait-for-ci.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -3892,4 +3893,69 @@ export function runRemedy(
   }
 
   return null;
+}
+
+/** A Wait for CI attempt's recorded state, or null for any other attempt. */
+export function waitForCiStateOf(
+  attempt: Pick<WorkflowNodeAttempt, "output"> | null | undefined,
+): WaitForCiState | null {
+  return attempt ? readWaitForCiState(attempt.output) : null;
+}
+
+/**
+ * Wait for CI's chips. Its own table, like a Check's, because its words differ: it waits on
+ * CI rather than reviewing, and an attempt stopped in `error` is a CI block, not a provider
+ * failure.
+ */
+const WAIT_FOR_CI_STATUSES: Record<
+  WorkflowNodeAttemptState | PersonaVerdict["verdict"],
+  PipelineStatus
+> = {
+  pass: { tone: "passed", label: "CI passed" },
+  fail: { tone: "failed", label: "CI failed" },
+  queued: { tone: "waiting", label: "Queued" },
+  running: { tone: "running", label: "Waiting for CI" },
+  retry_wait: { tone: "waiting", label: "Retrying" },
+  waiting: { tone: "running", label: "Waiting for CI" },
+  completed: { tone: "waiting", label: "No result" },
+  error: { tone: "failed", label: "Blocked" },
+  cancelled: { tone: "waiting", label: "Cancelled" },
+};
+
+export function waitForCiStatus(raw: string | undefined): PipelineStatus {
+  if (!raw) return { tone: "waiting", label: "Not started" };
+  return WAIT_FOR_CI_STATUSES[raw as keyof typeof WAIT_FOR_CI_STATUSES]
+    ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
+}
+
+/** What each Wait for CI block means to the person who has to clear it. */
+export const WAIT_FOR_CI_BLOCK_SENTENCES: Record<WaitForCiBlockCode, string> = {
+  ci_flake_report_missing:
+    "Every CI check passed, but no \"Flaky tests\" check appeared on the head commit. Rerun CI "
+    + "and wait for CI again, or add the flake report to this repository's CI (see Flaky tests "
+    + "in CI) and start a new round.",
+  ci_missing:
+    "No CI check appeared on the pull request's head commit before the timeout. Check that CI "
+    + "runs on pull requests and that GitHub Inspector is on, then wait for CI again.",
+  ci_timeout:
+    "CI was still running when the timeout ran out. Wait for CI again once it finishes, or "
+    + "raise the node's timeout in a new version.",
+  ci_pull_request_unknown:
+    "This node could not tell which commit to watch: the step before it recorded no pull "
+    + "request, or the pull request's head could not be identified. Start a new round so the "
+    + "Pull Request action runs again.",
+};
+
+/** One line saying what a Wait for CI attempt is waiting for, or what it decided. */
+export function waitForCiHeadline(state: WaitForCiState, now: number): string {
+  const pr = state.pullRequestNumber !== null ? `PR #${state.pullRequestNumber}` : "the pull request";
+  const head = state.expectedHeadOid ? state.expectedHeadOid.slice(0, 12) : "an unknown head";
+  if (state.disabled) return "Disabled for this run, so it passed without waiting for CI.";
+  if (state.outcome === "pass") return `CI passed on ${pr} at ${head}.`;
+  if (state.outcome === "fail") return `CI failed on ${pr} at ${head}.`;
+  if (state.outcome === "blocked" && state.blocked) {
+    return WAIT_FOR_CI_BLOCK_SENTENCES[state.blocked.code];
+  }
+  const elapsed = Math.max(0, Math.floor((now - state.waitingSince) / 60_000));
+  return `Waiting for CI on ${pr} at ${head} · ${elapsed} of ${state.timeoutMinutes} min.`;
 }

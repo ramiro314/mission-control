@@ -207,3 +207,64 @@ test("the reply prompt marks a truncated diff, so absence is never read as evide
   assert.ok(buildReplyPrompt(replyInput({ diffTruncated: true })).includes("## The diff (truncated)"));
   assert.ok(buildReplyPrompt(replyInput()).includes("## The diff"));
 });
+
+// ---- CI's flake report ------------------------------------------------------------------
+//
+// The Inspector reads the "Flaky tests" check's report for the head it reviews. Flakes are
+// informational: the policy says to raise one only when the pull request plausibly caused it,
+// and the list is fenced as untrusted data and capped like every other input.
+
+function flakeReport(count: number, omitted = 0): NonNullable<ReviewPromptInput["flakeSummary"]> {
+  const flakes = Array.from({ length: count }, (_, i) => ({
+    key: `key${i}`,
+    runner: "junit",
+    file: `test/flaky-${i}.test.ts`,
+    name: `suite > flaky ${i}`,
+    message: `timed out\n  at line ${i} `.padEnd(1000, "m"),
+    job: "unit (node 24, shard 1/6)",
+  }));
+  return {
+    version: 1,
+    commit: "abc",
+    ref: "feature",
+    pullRequest: 1,
+    runUrl: "https://github.com/owner/repo/actions/runs/1",
+    flakes,
+    failures: [],
+    errors: [],
+    issues: flakes.map((flake, i) => ({
+      key: flake.key,
+      number: 100 + i,
+      url: `https://github.com/owner/repo/issues/${100 + i}`,
+      occurrences: 2,
+      actionable: false,
+    })),
+    ...(omitted > 0 ? { omitted: { flakes: omitted, failures: 0 } } : {}),
+  };
+}
+
+test("no flake report, or one with no flakes, adds no flake section", () => {
+  assert.doesNotMatch(buildReviewPrompt(input()), /Flaky tests in CI/);
+  assert.doesNotMatch(buildReviewPrompt(input({ flakeSummary: null })), /Flaky tests in CI/);
+  assert.doesNotMatch(buildReviewPrompt(input({ flakeSummary: flakeReport(0) })), /Flaky tests in CI/);
+});
+
+test("flakes are fenced as data, compact, linked to their history, and informational", () => {
+  const prompt = buildReviewPrompt(input({ flakeSummary: flakeReport(1) }));
+  assert.match(prompt, /## Flaky tests in CI/);
+  assert.match(prompt, /Flakes are informational/);
+  assert.match(prompt, /ONLY when its test file is one this pull request changed/);
+  const fenced = prompt.slice(prompt.indexOf("<flaky-tests>"), prompt.indexOf("</flaky-tests>"));
+  assert.match(fenced, /- suite > flaky 0 - test\/flaky-0\.test\.ts in unit \(node 24, shard 1\/6\) - history: https:\/\/github\.com\/owner\/repo\/issues\/100/);
+  // The message is flattened to one line and cut, and says it was.
+  assert.match(fenced, /timed out at line 0 m+ \(truncated\)/);
+  // Before the diff, which stays last so the output contract keeps its recency.
+  assert.ok(prompt.indexOf("## Flaky tests in CI") < prompt.indexOf("## The diff"));
+});
+
+test("the flake list is capped and the cut is announced", () => {
+  const prompt = buildReviewPrompt(input({ flakeSummary: flakeReport(REVIEW_PROMPT_CAPS.flakeRows + 5, 7) }));
+  assert.equal((prompt.match(/^- suite > flaky /gm) ?? []).length, REVIEW_PROMPT_CAPS.flakeRows);
+  assert.match(prompt, /TRUNCATED: 12 more flaky tests are not listed/);
+  assert.ok(prompt.length < 20_000, `flake section grew the prompt to ${prompt.length} chars`);
+});

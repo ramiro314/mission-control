@@ -58,6 +58,24 @@ classified, and ends with a hidden machine-readable copy of the report:
 The summary is capped below GitHub's 65,535-character limit: failures and then flakes beyond
 the cap are counted in `omitted`, not listed. `parseFlakeSummary` reads the marker back.
 
+### Who reads it
+
+Mission Control reads the check through the GitHub Inspector's pull request query, which stores
+the head commit's check runs with the pull request. `parseFlakeSummary` parses the report from
+the full summary before anything is trimmed, so the marker at its end survives.
+
+- **[Wait for CI](workflows.md#wait-for-ci)** passes a pull request whose checks are all green
+  and which carries this check, flakes or not, and records the flake list on the run. Every
+  check green without this check blocks the run as `ci_flake_report_missing`: a repository that
+  does not publish the report cannot tell a flake from a pass. The check's own conclusion never
+  fails the node.
+- **The Inspector's review** lists the flakes and raises one only when the pull request touched
+  the flaky test's file or plausibly introduced the flakiness. See
+  [CI and flaky tests](inspector-and-shipping.md#ci-and-flaky-tests).
+
+A fork pull request whose token could not publish the check reads as a missing report, so Wait
+for CI blocks with that code rather than passing.
+
 ## The report format (v1)
 
 Defined in `src/shared/flake-report.ts`, which is browser-safe so both the action and the

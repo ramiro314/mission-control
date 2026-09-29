@@ -272,7 +272,8 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
     stage.kind === "session_action"
       ? [`action:${stage.member.sessionActionId}`]
       : stage.members.map((member) =>
-        member.kind === "persona" ? member.personaId : `check:${member.slot}`));
+        member.kind === "persona" ? member.personaId
+          : member.kind === "wait_for_ci" ? "wait_for_ci" : `check:${member.slot}`));
 };
 
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
@@ -1377,5 +1378,57 @@ test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", ()
       assert.equal(graphNode.persona.model, "gpt-6-sol");
       assert.deepEqual({ ...graphNode.persona, model: old.persona.model }, old.persona);
     }
+  }
+});
+
+test("No-Mistakes Review (Affected tests) is No-Mistakes Review with affected tests and Wait for CI", async () => {
+  const { NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_ID, NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG } =
+    await import("../src/shared/builtin-workflow.ts");
+  const defaults = DEFAULT_WORKFLOW_CONFIG;
+  const builtin = BUILTIN_WORKFLOWS.find((candidate) =>
+    candidate.definition.id === NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_ID);
+  assert.ok(builtin, "the slug is append-only; later phases rely on this id");
+  assert.equal(builtin.definition.id, "builtin-workflow:no-mistakes-review-affected-tests");
+  assert.equal(builtin.definition.name, "No-Mistakes Review (Affected tests)");
+  // One authored version plus the GPT-6 routing version appended on top of it.
+  assert.deepEqual(builtin.versions.map((version) => version.id), [
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG, 1),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG, 2),
+  ]);
+
+  const flagship = noMistakesReview();
+  const flagshipShape = shapeOf(flagship.definition.draft);
+  const expected = [
+    ...flagshipShape.map((stage) => stage.map((member) => member === "check:test" ? "check:affected-tests" : member)),
+    ["wait_for_ci"],
+  ];
+  assert.deepEqual(shapeOf(builtin.definition.draft), expected);
+  assert.ok(!shapeOf(builtin.definition.draft).flat().includes("check:test"), "the full local test gate must be gone");
+
+  const current = builtin.versions.at(-1)!;
+  const flagshipCurrent = flagship.versions.at(-1)!;
+  assert.deepEqual(current.completionPolicy, flagshipCurrent.completionPolicy);
+  assert.equal(current.resumptionPolicy, flagshipCurrent.resumptionPolicy);
+  assert.equal(current.evidenceReadinessPolicy, flagshipCurrent.evidenceReadinessPolicy);
+  assert.deepEqual(current.bindingDefaults, flagshipCurrent.bindingDefaults);
+  const routing = (version: typeof current) => version.graph.nodes.flatMap((node) =>
+    node.kind === "persona" ? [`${node.persona.sourcePersonaId}:${node.persona.runner}/${node.persona.model}`] : []);
+  assert.deepEqual(routing(current), routing(flagshipCurrent));
+
+  // Wait for CI sits right after the Pull Request action, with the default timeout.
+  const ci = current.graph.nodes.find((node) => node.kind === "wait_for_ci");
+  assert.ok(ci && ci.kind === "wait_for_ci");
+  assert.equal(ci.timeoutMinutes, 45);
+  assert.ok(current.graph.edges.some((edge) =>
+    edge.target === ci.id && edge.sourcePort === "complete" && edge.source === "nmr-pull-request"));
+  assert.deepEqual(validateWorkflowGraph({
+    graph: builtin.definition.draft,
+    sessionActions: BUILTIN_SESSION_ACTIONS,
+    completionPolicy: current.completionPolicy,
+  }).diagnostics, []);
+
+  // Kind defaults do not change in this phase.
+  for (const workflowId of Object.values(defaults.kindWorkflowDefaults)) {
+    assert.notEqual(workflowId, NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_ID);
   }
 });

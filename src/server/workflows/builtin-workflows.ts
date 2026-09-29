@@ -24,6 +24,7 @@ import {
   builtinWorkflowId,
   builtinWorkflowVersionId,
   NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+  NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG,
   GENERAL_REVIEW_WORKFLOW_SLUG,
   BUG_FIX_REVIEW_WORKFLOW_SLUG,
   PLAN_VALIDATION_WORKFLOW_SLUG,
@@ -38,6 +39,7 @@ import {
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
 import {
   BUILTIN_SESSION_ACTIONS,
   PULL_REQUEST_SESSION_ACTION_ID,
@@ -368,6 +370,9 @@ const NO_MISTAKES_REVIEW_NODES = {
   evidenceDocumentation: "nmr-evidence-documentation-join",
   pullRequest: "nmr-pull-request",
   end: "nmr-end",
+  // No-Mistakes Review (Affected tests) only.
+  affectedTests: "nmr-check-affected-tests",
+  waitForCi: "nmr-wait-for-ci",
 } as const;
 
 const reviewer = (nodeId: string, slug: string): StageMember =>
@@ -829,6 +834,33 @@ const NO_MISTAKES_REVIEW_V19: StagePipeline = {
   ],
 };
 
+
+/**
+ * No-Mistakes Review (Affected tests), version 1: No-Mistakes Review's latest pipeline with
+ * the `test` check replaced by `affected-tests`, and a Wait for CI stage after the pull
+ * request, so the full suite runs in GitHub CI rather than on this machine.
+ */
+const NO_MISTAKES_REVIEW_AFFECTED_TESTS_V1: StagePipeline = {
+  ...NO_MISTAKES_REVIEW_V19,
+  stages: [
+    ...NO_MISTAKES_REVIEW_V19.stages.map((stage): Stage => stage.kind !== "evaluation" ? stage : {
+      ...stage,
+      members: stage.members.map((member) =>
+        member.kind === "check" && member.slot === "test"
+          ? check(NO_MISTAKES_REVIEW_NODES.affectedTests, "affected-tests")
+          : member),
+    }),
+    {
+      kind: "evaluation",
+      joinId: null,
+      members: [{
+        nodeId: NO_MISTAKES_REVIEW_NODES.waitForCi,
+        kind: "wait_for_ci",
+        timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
+      }],
+    },
+  ],
+};
 
 /** Versions 1-16 keep the exact intent policy they shipped with. */
 const INTENT_CONFORMANCE_JUDGE_V16_SNAPSHOT: BuiltinPersonaSnapshotOverride = {
@@ -1640,6 +1672,30 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "off",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
+    }]),
+  }),
+  builtinWorkflow({
+    slug: NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG,
+    name: "No-Mistakes Review (Affected tests)",
+    description:
+      "No-Mistakes Review with local tests narrowed to the files a change affects: typecheck, "
+      + "affected tests, and lint, then the same eight review roles and the verified pull request. "
+      + "Wait for CI then holds the run until the pull request's full CI suite is green, passing "
+      + "when the only failures were flakes that passed on rerun and returning real failures for "
+      + "repair, before the final GitHub Inspector gate.",
+    versions: appendGpt6Version([{
+      pipeline: NO_MISTAKES_REVIEW_AFFECTED_TESTS_V1,
+      personaExecution: {
+        default: { runner: "codex", model: "gpt-5.6-terra" },
+        overrides: {
+          "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+        },
+      },
+      completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+      sourceDraftRevision: 1,
     }]),
   }),
 ];

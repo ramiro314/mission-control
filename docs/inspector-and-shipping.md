@@ -202,6 +202,22 @@ request. The console rail carries the same mark without the link, and only when 
 something to say - open findings or a failed round - because a rail line is scanned rather
 than read.
 
+### CI and flaky tests
+
+The same pull request query that reads the head also reads **CI on the head commit**, check by
+check, and stores it with the pull request, keyed to that commit. Nothing polls GitHub a second
+time for it. Two things read it:
+
+- A workflow's [Wait for CI](workflows.md#wait-for-ci) node, which decides from it whether the
+  pull request's CI passed, failed, or never reported.
+- The review itself. When the head carries a ["Flaky tests" check](flaky-tests.md#the-flaky-tests-check),
+  the review prompt lists its flaky tests - name, file, job, message, history issue - fenced as
+  untrusted data and capped at 20. Flakes are informational: the Inspector raises one only
+  when the flaky test's file is in the diff or the change plausibly introduced the flakiness,
+  and links its history issue. Like every finding, it can only land on a changed file.
+
+A review that ran before CI finished has no report to read; the next push's review will.
+
 ### The review model
 
 **[Settings → Models](models.md#the-github-inspectors-review)** names what the review and the

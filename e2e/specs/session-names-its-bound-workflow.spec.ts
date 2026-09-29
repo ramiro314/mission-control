@@ -178,7 +178,7 @@ async function dispatchWithNoMistakes(page: Page, daemon: DaemonHandle): Promise
   const noMistakesId = await afterWork.evaluate((el) => {
     const option = [...(el as HTMLSelectElement).options]
       .filter((o) => !o.value.startsWith("__"))
-      .find((o) => o.textContent?.includes("No-Mistakes Review"));
+      .find((o) => o.textContent?.includes("No-Mistakes Review (High Rigor)"));
     return option?.value ?? "";
   });
   expect(noMistakesId, "the built-in review workflow is offered by name").toContain(

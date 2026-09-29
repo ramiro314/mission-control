@@ -295,7 +295,7 @@ test("plan only defaults the Workflow, it does not lock it", async ({ dashboard 
   await kind.selectOption("plan");
   await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
 
-  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
+  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review (High Rigor)");
   await afterWork.selectOption(builtinId);
 
   // A plan CAN still hand off - the kind picks the default, it does not remove the choice -
@@ -309,7 +309,7 @@ test("a Workflow picked by hand after choosing plan is not reverted by a later k
   dashboard,
 }) => {
   const { kind, afterWork } = await openDispatch(dashboard);
-  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
+  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review (High Rigor)");
 
   // Plan puts the dispatch default aside, then the operator chooses for themselves.
   await kind.selectOption("plan");

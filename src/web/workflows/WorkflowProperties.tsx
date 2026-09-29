@@ -1,3 +1,4 @@
+import { WAIT_FOR_CI_EXPLANATION, WaitForCiTimeoutField } from "./WaitForCiFields.tsx";
 import type {
   PersonaView,
   SessionAction,
@@ -421,6 +422,16 @@ export function WorkflowProperties({
                 configures for that slot here. An unconfigured or unauthorized Command, or one
                 this build cannot run, passes with a note saying which.
               </p>
+            </>
+          )}
+          {selectedNode.kind === "wait_for_ci" && (
+            <>
+              <WaitForCiTimeoutField
+                value={selectedNode.timeoutMinutes}
+                readOnly={readOnly}
+                onChange={(timeoutMinutes) => replaceNode({ ...selectedNode, timeoutMinutes })}
+              />
+              <p>{WAIT_FOR_CI_EXPLANATION} Connect it only after a Pull Request action's complete route.</p>
             </>
           )}
           {selectedNode.kind === "session" && <p>Session is the one submission and repair boundary. It cannot be deleted.</p>}

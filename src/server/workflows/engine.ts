@@ -2,6 +2,7 @@ import { personaReviewInput, personaReviewInputDigest, personaContractViolation 
 import { createHash, randomUUID } from "node:crypto";
 import {
   PersonaVerdictSchema,
+  SessionActionCompletedOutputSchema,
   WorkflowCheckEvidenceSchema,
   WorkflowCheckOutcomeSchema,
   WorkflowContextSnapshotSchema,
@@ -68,6 +69,14 @@ import {
   type CheckScheduler,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
+import {
+  decideWaitForCi,
+  initialWaitForCiState,
+  readWaitForCiState,
+  type CiObservation,
+  type WaitForCiDecision,
+  type WaitForCiState,
+} from "@shared/wait-for-ci.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
@@ -140,6 +149,11 @@ export interface WorkflowEngineOptions {
    * the manager owns. The engine's whole job is to make the wait durable and say so.
    */
   onSessionActionWaiting?: (attemptId: string) => void;
+  /**
+   * Called once, after a Wait for CI attempt's waiting row is durable, so the manager can
+   * observe it at once rather than on its next sweep.
+   */
+  onWaitForCi?: (attemptId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
   /**
@@ -398,6 +412,52 @@ function disabledVerdict(node: WorkflowVerdictNode): PersonaVerdict | null {
   });
 }
 
+/**
+ * A settled Wait for CI decision as a verdict, the way `checkVerdict` makes one of a command.
+ *
+ * A failure asks for one change per failing check, with its conclusion, title, summary
+ * excerpt and link: failure detail comes from each check run's own title and summary, never
+ * from CI logs. Each cites the attempt as `kind: "check"` evidence, since the attempt's
+ * output is where those check runs are recorded.
+ */
+export function waitForCiVerdict(
+  decision: Extract<WaitForCiDecision, { kind: "pass" | "fail" }>,
+  attemptId: string,
+): PersonaVerdict | null {
+  const head = decision.state.expectedHeadOid?.slice(0, 12) ?? "the head commit";
+  if (decision.kind === "pass") {
+    const flakes = decision.state.flakeReport?.flakes.length ?? 0;
+    const summary = flakes === 0
+      ? `CI passed on ${head}.`
+      : `CI passed on ${head}, with ${flakes} flaky test${flakes === 1 ? "" : "s"} that passed on rerun.`;
+    return normalizePersonaVerdict({
+      verdict: "pass",
+      summary,
+      approvalDetails: { reason: summary, evidence: [] },
+      confidence: 1,
+    });
+  }
+  const names = decision.failing.map((check) => `"${check.name}"`).join(", ");
+  return normalizePersonaVerdict({
+    verdict: "fail",
+    summary: `CI failed on ${head}: ${names}.`,
+    requestedChanges: decision.failing.map((check) => {
+      const said = [check.title, check.summary].filter((part): part is string => Boolean(part));
+      const quote = said[0] ?? `The check concluded ${check.conclusion ?? "with a failure"}.`;
+      return {
+        title: `Fix the failing CI check "${check.name}"`,
+        rationale: [
+          `GitHub reports ${check.conclusion ?? "a failure"} for this check on the pull request's head commit.`,
+          ...said,
+          check.detailsUrl ? `Details: ${check.detailsUrl}` : null,
+        ].filter(Boolean).join("\n\n"),
+        evidence: [{ kind: "check" as const, path: attemptId, quote }],
+      };
+    }),
+    confidence: 1,
+  }, new Set(), new Set(), new Set([attemptId]));
+}
+
 /** The operator-disabled set, tolerant of rows written before the column existed. */
 function disabledNodes(run: WorkflowRun): readonly string[] {
   return run.disabledNodeIds ?? [];
@@ -413,6 +473,7 @@ export class WorkflowEngine {
   private readonly onSessionActionWaiting:
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
+  private readonly onWaitForCi: NonNullable<WorkflowEngineOptions["onWaitForCi"]>;
   private readonly checkLimit: CheckScheduler;
   /**
    * One test-running check at a time in this daemon, taken OUTSIDE `checkLimit`.
@@ -447,6 +508,7 @@ export class WorkflowEngine {
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
     this.onSessionActionWaiting = options.onSessionActionWaiting ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
+    this.onWaitForCi = options.onWaitForCi ?? (() => {});
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
     this.checkDeps = options.checkDeps ?? (() => ({}));
@@ -602,6 +664,32 @@ export class WorkflowEngine {
           const latest = this.store.latestAttemptForNode(submission.id, target.id);
           if (latest && latest.state !== "cancelled") continue;
           activatedActions.push(target.id);
+          continue;
+        }
+        // Wait for CI activates as ONE waiting attempt, like a session action, but it types
+        // nothing and holds no turn: it waits for the Inspector's CI snapshot of the head the
+        // Pull Request action proved, and `observeWaitForCi` settles it.
+        if (target.kind === "wait_for_ci") {
+          const latest = this.store.latestAttemptForNode(submission.id, target.id);
+          if (latest && latest.state !== "cancelled") continue;
+          const attempt = this.store.insertAttempt({
+            id: randomUUID(),
+            submissionId: submission.id,
+            nodeId: target.id,
+            attempt: (latest?.attempt ?? 0) + 1,
+            state: "waiting",
+            persona: null,
+            waitForCiState: this.initialCiWait(latestSubmission, target.timeoutMinutes),
+            inputFingerprint: `${submission.evidenceFingerprint}:${target.id}`,
+            now: this.now(),
+          });
+          this.store.appendEvent(submission.runId, "wait_for_ci_waiting", {
+            submissionId: submission.id,
+            nodeId: target.id,
+            attemptId: attempt.id,
+          }, this.now());
+          changed = true;
+          this.onWaitForCi(attempt.id);
           continue;
         }
         // One arm for both runnable kinds: they differ only in whether the attempt row
@@ -1668,6 +1756,106 @@ export class WorkflowEngine {
     }, now);
     this.onRunChanged(run.id);
     this.wake();
+  }
+
+  /**
+   * What a new Wait for CI attempt watches: the pull request the Pull Request action proved,
+   * read from the attempt that authorized this continuation. The head is filled in by the
+   * manager (`resolveWaitForCiHead`). A submission with no such source records nulls, and the
+   * first observation blocks it plainly.
+   */
+  private initialCiWait(submission: WorkflowSubmission, timeoutMinutes: number): WaitForCiState {
+    const source = submission.continuationNodeAttemptId
+      ? this.store.getAttempt(submission.continuationNodeAttemptId)
+      : null;
+    // The source action has COMPLETED by the time its continuation activates anything, so its
+    // output is the completed record, which keeps the adapter's expectation past completion.
+    const completed = source ? SessionActionCompletedOutputSchema.safeParse(source.output) : null;
+    const expectation = completed?.success ? completed.data.expectation : null;
+    const pr = expectation?.kind === "pull_request" ? expectation : null;
+    return initialWaitForCiState({
+      pullRequestKey: pr?.pullRequestKey ?? null,
+      pullRequestUrl: pr?.pullRequestUrl ?? null,
+      pullRequestNumber: pr?.pullRequestNumber ?? null,
+      // Resolved by the manager from the continuation's captured head, never taken from the
+      // adapter: its expectation can carry the head the Inspector last saw, a poll behind the
+      // push this action made. It is kept only as the fallback when the capture cannot resolve.
+      expectedHeadOid: null,
+      reportedHeadOid: pr?.expectedHeadOid ?? null,
+      timeoutMinutes,
+      now: this.now(),
+    });
+  }
+
+  /**
+   * Observe one waiting Wait for CI attempt and act on what it decides.
+   *
+   * `observe` reads the Inspector's stored CI snapshot for a pull request; this method never
+   * reaches GitHub. Returns true when anything durable changed. A disabled node passes without
+   * reading CI at all, on the terms every other disabled verdict node does.
+   */
+  observeWaitForCi(
+    attemptId: string,
+    observe: (pullRequestKey: string) => CiObservation | null,
+    now = this.now(),
+  ): boolean {
+    const attempt = this.store.getAttempt(attemptId);
+    const state = attempt?.state === "waiting" ? readWaitForCiState(attempt.output) : null;
+    if (!attempt || !state) return false;
+    const resolved = this.resolveAttempt(attempt);
+    if (!resolved || resolved.node.kind !== "wait_for_ci") return false;
+    const { submission, run, version, node } = resolved;
+    if (run.status !== "running" || submission.status !== "running") return false;
+    const decision: WaitForCiDecision = disabledNodes(run).includes(node.id)
+      ? { kind: "pass", state: { ...state, outcome: "pass", disabled: true } }
+      : decideWaitForCi(state, state.pullRequestKey ? observe(state.pullRequestKey) : null, now);
+    if (decision.kind === "wait") {
+      if (JSON.stringify(decision.state) === JSON.stringify(state)) return false;
+      const updated = this.store.updateWaitForCiState(attempt.id, decision.state, now);
+      if (updated) this.onRunChanged(run.id);
+      return updated !== null;
+    }
+    if (decision.kind === "block") {
+      const blocked = this.store.blockWaitForCiAttempt({
+        attemptId: attempt.id,
+        code: decision.code,
+        detail: decision.detail,
+        state: decision.state,
+        now,
+      });
+      if (blocked) this.onRunChanged(run.id);
+      return blocked !== null;
+    }
+    const verdict = decision.state.disabled
+      ? disabledVerdict(node)
+      : waitForCiVerdict(decision, attempt.id);
+    if (!verdict) return false;
+    const receiptPayload = jsonValue({
+      outcome: verdict.verdict,
+      persona: verdictAuthor(node),
+      verdict,
+      requestedChanges: verdictRequestedChanges(verdict).map((item) => item.title),
+    });
+    const settled = this.store.settleWaitForCiAttempt(attempt.id, {
+      verdict: jsonValue(verdict),
+      output: jsonValue(decision.state),
+      receipts: edgesFrom(version.graph, node.id, verdict.verdict).map((edge) => ({
+        edgeId: edge.id,
+        payload: receiptPayload,
+      })),
+    }, now);
+    if (!settled) return false;
+    this.store.appendEvent(run.id, decision.state.disabled ? "disabled_node_auto_passed" : "wait_for_ci_outcome", {
+      nodeId: node.id,
+      attemptId: attempt.id,
+      submissionId: submission.id,
+      outcome: verdict.verdict,
+      ...(decision.kind === "fail" ? { failing: decision.failing.map((check) => check.name) } : {}),
+      flakes: decision.state.flakeReport?.flakes.length ?? 0,
+    }, now);
+    this.advanceStructure(submission, version);
+    this.onRunChanged(run.id);
+    return true;
   }
 
   private blockSubmission(

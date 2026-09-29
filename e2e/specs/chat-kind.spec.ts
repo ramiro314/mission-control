@@ -43,7 +43,7 @@ async function builtinWorkflowId(afterWork: Locator): Promise<string> {
   )).not.toContain("loading");
   const id = await afterWork.evaluate((element) =>
     [...(element as HTMLSelectElement).options].find((option) =>
-      option.textContent?.startsWith("No-Mistakes Review"),
+      option.textContent?.startsWith("No-Mistakes Review (High Rigor)"),
     )?.value ?? "",
   );
   expect(id).not.toBe("");

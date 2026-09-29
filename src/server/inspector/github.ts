@@ -6,6 +6,8 @@ import { BODY_ONLY_FINDINGS_MARKER, isCleanReview, isOurs, parseMarker } from ".
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
+import { parseFlakeSummary, type FlakeReport } from "@shared/flake-report.ts";
+import { ciCheckRunsFromRollup, type CiCheckRun } from "@shared/wait-for-ci.ts";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -223,6 +225,12 @@ export interface PrSnapshot {
   reviewDecision: ReviewDecision;
   /** CI on the head commit, rolled up. `none` is "nothing reported", not "passing". */
   checks: ChecksState;
+  /**
+   * CI on the head commit, check by check, keyed to the commit it was read from (which is
+   * the head `headSha` names; both come from this one query). Null when GitHub returned no
+   * head commit. Read by the Wait for CI node and the Inspector's flake reading.
+   */
+  ci: { headSha: string; checkRuns: CiCheckRun[]; flakeReport: FlakeReport | null } | null;
 }
 
 export interface ThreadSnapshot {
@@ -263,11 +271,16 @@ interface ThreadPage {
   pageInfo: ThreadPageInfo;
 }
 
+const PR_QUERY_MAX_BUFFER = 32 * 1024 * 1024;
+
 const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+      commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:100){ nodes{
+        ... on CheckRun{ name status conclusion detailsUrl title summary }
+        ... on StatusContext{ context state targetUrl description }
+      } } } } } }
       reviewThreads(first:100){
         nodes{
           id isResolved path
@@ -339,7 +352,9 @@ export async function fetchPr(
       "-F",
       `number=${number}`,
     ],
-    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+    // Check run summaries can each be 65,535 characters, and the head commit carries up to 100
+    // of them, so this read gets more room than the default before it would fail the poll.
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: PR_QUERY_MAX_BUFFER },
   );
   if (res.code !== 0) return fail("gh api graphql", res);
   try {
@@ -388,7 +403,10 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   const reviewPage = toReviewPage(pr.reviews);
   const headCommit = (
     ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
-      commit?: { statusCheckRollup?: { state?: unknown } | null };
+      commit?: {
+        oid?: unknown;
+        statusCheckRollup?: { state?: unknown; contexts?: { nodes?: unknown[] } | null } | null;
+      };
     }[]
   )[0]?.commit;
   const createdAt = Date.parse(String(pr.createdAt ?? ""));
@@ -413,6 +431,15 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
         ? (pr.reviewDecision as ReviewDecision)
         : null,
     checks: toChecks(headCommit?.statusCheckRollup?.state),
+    ci: typeof headCommit?.oid === "string" && headCommit.oid
+      ? {
+          headSha: headCommit.oid,
+          ...ciCheckRunsFromRollup(
+            headCommit.statusCheckRollup?.contexts?.nodes ?? [],
+            parseFlakeSummary,
+          ),
+        }
+      : null,
     threads: threadNodes.filter(Boolean).map((raw) => {
       const t = raw as Record<string, unknown>;
       const commentNodes = ((t.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];

@@ -190,6 +190,11 @@ export const WORKFLOW_RUN_PHASES = [
   "unchanged_repository",
   ...WORKFLOW_INSPECTOR_GATE_PHASES,
   "evidence_reconciliation_error",
+  // The Wait for CI node's blocks, one phase per code. See `WAIT_FOR_CI_BLOCK_CODES`.
+  "ci_flake_report_missing",
+  "ci_missing",
+  "ci_timeout",
+  "ci_pull_request_unknown",
 ] as const;
 
 /**
@@ -302,6 +307,10 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   inspector_round_limit: ["blocked"],
   inspector_unadopted_pr: ["waiting_for_pr"],
   inspector_working_tree_not_pushed: ["waiting_for_session"],
+  ci_flake_report_missing: ["blocked"],
+  ci_missing: ["blocked"],
+  ci_timeout: ["blocked"],
+  ci_pull_request_unknown: ["blocked"],
 };
 
 /**
@@ -416,6 +425,12 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // resubmit" - the second half would be the button repeating itself into a column that
   // cannot hold it.
   reattached_resubmit_required: "reattached",
+  // The Wait for CI blocks. Each names what CI did not do, which is what the operator fixes
+  // before retrying the node.
+  ci_flake_report_missing: "no Flaky tests check",
+  ci_missing: "no CI on the PR",
+  ci_timeout: "CI timed out",
+  ci_pull_request_unknown: "no PR to watch",
 };
 
 /** The short cause for `phase`, or the phase code made readable when it is unmapped. */
@@ -587,6 +602,10 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   inspector_round_limit: ["maxRepairRounds", "parkedPhase"],
   inspector_unadopted_pr: [],
   inspector_working_tree_not_pushed: [],
+  ci_flake_report_missing: ["nodeId", "attemptId", "code", "detail"],
+  ci_missing: ["nodeId", "attemptId", "code", "detail"],
+  ci_timeout: ["nodeId", "attemptId", "code", "detail"],
+  ci_pull_request_unknown: ["nodeId", "attemptId", "code", "detail"],
 };
 
 /** The reserved key a phase detail carries the sticky gate under. See `withInspectorGate`. */

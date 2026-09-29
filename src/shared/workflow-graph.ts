@@ -79,6 +79,15 @@ export interface WorkflowNodeCapability {
   joinPredecessor: boolean;
 }
 
+/**
+ * Whether a Wait for CI node may follow an action with this completion. Only a Pull Request
+ * action proves a pull request and its head, which is what the node watches. One answer for
+ * the validator and the Pipeline editor, which offers the node only where this says yes.
+ */
+export function waitForCiMayFollow(kind: SessionActionCompletionKind): boolean {
+  return kind === "pull_request";
+}
+
 export const WORKFLOW_NODE_CAPABILITIES: Record<
   WorkflowDraftNode["kind"],
   WorkflowNodeCapability
@@ -124,6 +133,16 @@ export const WORKFLOW_NODE_CAPABILITIES: Record<
     sourcePorts: ["complete"],
     targetPorts: ["activate"],
     requiredSourcePorts: ["complete"],
+    joinPredecessor: false,
+  },
+  wait_for_ci: {
+    label: "Wait for CI",
+    role: "evaluation",
+    // A verdict like a Check's: green CI passes, a failing check is a requested change. It
+    // is not a Join predecessor because it only ever follows a Pull Request action, alone.
+    sourcePorts: ["pass", "fail"],
+    targetPorts: ["activate"],
+    requiredSourcePorts: ["pass", "fail"],
     joinPredecessor: false,
   },
   end: {
@@ -386,6 +405,29 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
           { nodeId: node.id },
         ));
       }
+    }
+  }
+
+  // Wait for CI reads the CI of the pull request the action before it opened, so that action
+  // is its only possible predecessor: a Pull Request session action's `complete` route. The
+  // completion kind is only knowable with the catalog, on the same terms as the rules above.
+  const actions = new Map((input.sessionActions ?? []).map((action) => [action.id, action]));
+  for (const node of graph.nodes) {
+    if (node.kind !== "wait_for_ci") continue;
+    const routes = validEdges.filter((edge) => edge.target === node.id);
+    const misplaced = routes.length === 0 || routes.some((edge) => {
+      const source = nodes.get(edge.source);
+      if (source?.kind !== "session_action" || edge.sourcePort !== "complete") return true;
+      const action = actions.get(source.sessionActionId);
+      return input.sessionActions !== undefined && action !== undefined
+        && !waitForCiMayFollow(action.completion.kind);
+    });
+    if (misplaced) {
+      diagnostics.push(diagnostic(
+        "wait_for_ci_placement",
+        "Wait for CI must follow a Pull Request session action's complete route, and nothing else.",
+        { nodeId: node.id },
+      ));
     }
   }
 

@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
+import { CiObservationSchema, type CiObservation } from "@shared/wait-for-ci.ts";
 import {
   APP_CONFIG_ENTRIES,
   type AppConfigEntry,
@@ -1833,6 +1834,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       observed_at        INTEGER,
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
       title              TEXT,           -- as of the last poll; NULL until one happens
+      observed_ci_json   TEXT,           -- the head commit's check runs, keyed to that commit
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -3766,6 +3768,13 @@ function migrate(d: DatabaseSync): void {
   // No index. The table gains single-digit rows a day and nothing selects on the title;
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
+  // What the poll's ONE PR query read about CI on the head commit: its check runs and the
+  // parsed "Flaky tests" report, as `CiObservation` JSON carrying the commit it was read for.
+  // Nullable with no default, on the four columns' terms above: NULL is "not looked at since
+  // the column existed", and a Wait for CI node reading it keeps waiting. Written by the same
+  // tick as `observed_head_sha`, so it is a durable form of what the poll already fetched,
+  // never a second poller.
+  addColumn(d, "inspector_prs", "observed_ci_json", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -13250,6 +13259,30 @@ export function updateInspectorPr(
       now,
       key,
     );
+}
+
+/** Record what the poll read about CI on a pull request's head commit. */
+export function recordInspectorCiObservation(key: string, observation: CiObservation): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET observed_ci_json = ? WHERE key = ?`)
+    .run(JSON.stringify(observation), key);
+}
+
+/**
+ * The last CI observation for a pull request, or null when none has been recorded or the
+ * stored JSON no longer parses. Callers compare its `headSha` with the head they care about.
+ */
+export function getInspectorCiObservation(key: string): CiObservation | null {
+  const row = openDb()
+    .prepare(`SELECT observed_ci_json FROM inspector_prs WHERE key = ?`)
+    .get(key) as { observed_ci_json: string | null } | undefined;
+  if (!row?.observed_ci_json) return null;
+  try {
+    const parsed = CiObservationSchema.safeParse(JSON.parse(row.observed_ci_json));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 export function getInspectorPr(key: string): InspectorPr | null {

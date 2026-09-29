@@ -29,7 +29,7 @@ test("intent guidance allows implementation flexibility while keeping explicit r
   }
 
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: /No-Mistakes Review \(High Rigor\)/ }).click();
   await dashboard.getByRole("button", { name: /Version 17/ }).click();
   const detail = dashboard.locator(".workflow-version-detail");
   const intent = detail.locator("details.workflow-version-persona")

@@ -71,6 +71,12 @@ export const WORKFLOW_PHASE_RECOVERY = {
   inspector_unadopted_pr: "resume",
   inspector_working_tree_not_pushed: "resume",
   evidence_reconciliation_error: "resume",
+  // A CI block is fixed outside the run - CI configured, rerun or repaired - and then the
+  // operator retries the node, which waits on the same head again.
+  ci_flake_report_missing: "retry",
+  ci_missing: "retry",
+  ci_timeout: "retry",
+  ci_pull_request_unknown: "resume",
 } satisfies Record<WorkflowRunPhase, PhaseRecovery>;
 
 export interface WorkflowRecoveryContext {
@@ -100,12 +106,16 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
     || (run.status === "blocked" && run.phase === "inspector_disabled");
 }
 
+/** The Wait for CI blocks the operator clears by retrying the node. */
+const WAIT_FOR_CI_RETRY_PHASES: readonly string[] = ["ci_flake_report_missing", "ci_missing", "ci_timeout"];
+
 export function infrastructureRecoveryAvailable(
   run: Pick<WorkflowRecoveryContext, "status" | "phase">,
   submission: WorkflowRecoveryContext["latest"],
   hasFailedAttempt: boolean,
 ): boolean {
-  return run.status === "blocked" && run.phase === "infrastructure_error"
+  return run.status === "blocked"
+    && (run.phase === "infrastructure_error" || WAIT_FOR_CI_RETRY_PHASES.includes(run.phase))
     && submission?.status === "failed" && hasFailedAttempt;
 }
 
@@ -153,7 +163,9 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
     recovery.operations.push("retry");
     recovery.primary = "retry";
     recovery.triage = "retry";
-    return recovery;
+    // A CI block's retry waits on the same head. When the fix needs a new commit (the flake
+    // report added to CI, say), a new round is the way on, so it is described as well.
+    if (!WAIT_FOR_CI_RETRY_PHASES.includes(c.phase)) return recovery;
   }
   if (workflowRunGaveUp(c) && c.latest && active && (inspectorOnly || !c.external)
     && c.maxRepairRounds < WORKFLOW_LIMITS.repairRoundsMax) {

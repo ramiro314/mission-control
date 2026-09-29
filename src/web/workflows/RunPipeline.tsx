@@ -32,6 +32,7 @@ import {
   checkStatus,
   newestInheritedSource,
   reviewerStatus,
+  waitForCiStatus,
   sessionActionStatus,
   stageStatus,
   type InheritedPass,
@@ -374,7 +375,9 @@ export function RunPipeline({
                         member.nodeId ? statuses[member.nodeId] : undefined,
                         member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
                       )
-                    : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
+                    : member.kind === "wait_for_ci"
+                      ? waitForCiStatus(member.nodeId ? statuses[member.nodeId] : undefined)
+                      : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
           };
         });
         // The stage toggle needs every member addressable AND switchable; a projection member
