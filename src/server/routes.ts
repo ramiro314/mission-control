@@ -30,6 +30,8 @@ import {
   CompleteTaskSchema,
   type TaskFreePreview,
   CompleteRetroNoChangeSchema,
+  SetAffectedTestsCommandSchema,
+  TestingSetupStartSchema,
   ComposerActivitySchema,
   CreatePersonaSchema,
   ImportPersonaSchema,
@@ -249,6 +251,7 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
+import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
@@ -4837,6 +4840,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
   });
 
+  /**
+   * `set_affected_tests_command`: the testing-setup skill's one Command write.
+   *
+   * The body names neither a slot nor a repository. The session is established from its env
+   * first, then the task it runs, and `setAffectedTestsCommand` refuses any session whose task
+   * is not a testing-setup task and writes only that task's repository's `affected-tests`
+   * override, through the same `WorkflowCommandManager.replace` the Command editor's PUT uses.
+   */
+  app.post("/mcp/workflow-commands/affected-tests", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, SetAffectedTestsCommandSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, command } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching active session" }, 404);
+    const result = setAffectedTestsCommand(
+      { task: registry.taskForSession(session.id, session.cwd ?? cwd), command },
+      workflowCommandManager(),
+    );
+    if (!result.ok) {
+      return c.json(result.code ? { error: result.error, code: result.code } : { error: result.error }, result.status);
+    }
+    return c.json({ repoRoot: result.repoRoot, command, replayed: result.replayed });
+  });
+
   app.get("/mcp/reviews/:id/wait", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
@@ -7808,6 +7836,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }
 
   app.post("/api/tours/:tourId/dispatch", (c) => runTourRecipe(c, "dispatch"));
+
+  // "Set up flake-aware testing" on a Trust row. The body names only a repository; the task's
+  // kind, intent, label, Workflow posture and Mission MCP tools are fixed by `startTestingSetup`,
+  // which also refuses before creating anything when the testing-setup skill cannot be invoked.
+  app.post("/api/repositories/testing-setup", async (c) => {
+    const parsed = await parseBody(c, TestingSetupStartSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await startTestingSetup(parsed.data.repoRoot, { tasks, commands: workflowCommandManager() });
+    if (result.kind === "refused") return c.json({ error: result.error }, result.status);
+    const { kind: _kind, ...body } = result;
+    return c.json(body);
+  });
 
   // An empty fleet has no real desk for See the work's third stop to reveal. Its preview
   // recipe creates one fixed Chat task through the manual-dispatch capability, which is the

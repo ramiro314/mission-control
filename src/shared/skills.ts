@@ -67,6 +67,13 @@ export const PULL_REQUEST_SKILL = "pull-request";
  */
 export const RETRO_SKILL = "retro";
 
+/**
+ * The skill the "Set up flake-aware testing" repository action requires: the audit, the single
+ * approval form, the apply step and the verification that bring a repository into the
+ * flake-aware testing contract. Durable like `RETRO_SKILL`, because the start route gates on it.
+ */
+export const TESTING_SETUP_SKILL = "testing-setup";
+
 /** The directory name a catalog id gets when we install it fresh. */
 export function missionSkillDirName(id: string): string {
   return `${SKILL_DIR_PREFIX}${id}`;

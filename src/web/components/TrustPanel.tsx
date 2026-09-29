@@ -4,7 +4,7 @@ import type { InspectorState } from "../useInspector.ts";
 import type { ShippingState } from "../useShipping.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { useUiConfig, updateUiConfig } from "../lib/uiConfig.ts";
-import { fetchRepos, resolveRepo } from "../lib/api.ts";
+import { api, fetchRepos, resolveRepo } from "../lib/api.ts";
 import {
   candidateRepos,
   checkExecutionGrants,
@@ -157,6 +157,13 @@ export function TrustPanel({
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // The one row whose "Set up flake-aware testing" was last clicked, and what came of it. One at a
+  // time because the answer is read once, beside the row it belongs to.
+  const [setup, setSetup] = useState<{
+    repo: string;
+    state: "busy" | "started" | "queued" | "refused";
+    text: string;
+  } | null>(null);
 
   // The workspace's git repos, for the add picker - same source the four panels used.
   useEffect(() => {
@@ -331,6 +338,33 @@ export function TrustPanel({
     await updateUiConfig({ trustStaged: [...stagedRef.current, root] });
   }
 
+  /**
+   * Start the testing-setup task for one repository. The daemon owns everything the task is -
+   * kind, intent, skill, tools - and refuses before creating anything when the skill is off, so
+   * the refusal is shown on the row that asked.
+   */
+  async function startTestingSetup(repo: string): Promise<void> {
+    if (setup?.state === "busy") return;
+    setSetup({ repo, state: "busy", text: "Starting…" });
+    const res = await api.startTestingSetup(repo);
+    if (!res.ok || !res.task) {
+      setSetup({ repo, state: "refused", text: res.error ?? "The testing setup task could not be started." });
+      return;
+    }
+    setSetup(res.launched
+      ? {
+        repo,
+        state: "started",
+        text: "Testing setup started. Its agent audits this repository and asks you to approve "
+          + "every change in one form before it changes anything.",
+      }
+      : {
+        repo,
+        state: "queued",
+        text: `Testing setup is in the backlog and has not launched yet: ${res.reason ?? "it will launch when it can"}.`,
+      });
+  }
+
   /** Whether each column's owning daemon has answered, so a cell can disable rather than lie. */
   const configPresent: Record<GrantColumn, boolean> = {
     foreman: Boolean(foreman.config),
@@ -411,6 +445,17 @@ export function TrustPanel({
             <Fragment key={row.repo}>
               <div className="trust-c trust-repo">
                 <RepositoryName path={row.repo} className="trust-repo-path" />
+                <Tooltip label="An agent audits this repository for flake-aware testing and asks you to approve every change before it opens a pull request">
+                  <button
+                    type="button"
+                    className="trust-setup"
+                    aria-label={`Set up flake-aware testing for ${row.repo}`}
+                    disabled={setup?.state === "busy"}
+                    onClick={() => void startTestingSetup(row.repo)}
+                  >
+                    Set up testing
+                  </button>
+                </Tooltip>
               </div>
               {COLUMNS.map((c) => cell(row, c))}
               <div className="trust-c trust-remove-c">
@@ -425,6 +470,14 @@ export function TrustPanel({
                   </button>
                 </Tooltip>
               </div>
+              {setup?.repo === row.repo && (
+                <p
+                  className={`trust-row-note${setup.state === "refused" ? " settings-error" : " settings-hint"}`}
+                  role={setup.state === "refused" ? "alert" : "status"}
+                >
+                  {setup.text}
+                </p>
+              )}
             </Fragment>
           ))}
         </div>

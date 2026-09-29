@@ -97,6 +97,17 @@ the fix pull request with `Fixes #<n>`. The [flaky tests guide](flaky-tests.md#f
 has the task source recipe that feeds it. The procedure lives in
 [`skills/deflake/SKILL.md`](../skills/deflake/SKILL.md).
 
+The **Testing setup** row brings a repository into the flake-aware testing contract. It is what
+the **Set up testing** action on a Trust row starts, and that action **fails closed while it is
+switched off** - `POST /api/repositories/testing-setup` answers 409 with the sentence that names
+this toggle and creates no task. The agent audits the repository, proposes every change in one
+`request_plan_decisions` form, applies only what was approved (a pull request with the CI and
+test-script changes, the copied report action, `.mission/testing.json` and the `.gitignore`
+entry, plus the repository's `affected-tests` Command through `set_affected_tests_command`), and
+verifies with one local `affected-tests` run and the "Flaky tests" check on the pull request's own
+CI. The [flaky tests guide](flaky-tests.md#setting-up-a-repository) has the details. The
+procedure lives in [`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md).
+
 The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. It estimates total non-test implementation effort and complexity before choosing the fewest
@@ -509,6 +520,10 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
   necessary for both and sufficient for neither.
+- **Set up testing** on a row starts the testing-setup task for that repository (see
+  [Setting up a repository](flaky-tests.md#setting-up-a-repository)). Its answer, the refusal
+  while the Testing setup skill is off or the task it started, appears under the row. It grants
+  nothing: the agent asks you to approve every change before making it.
 - **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
   first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
   off, one deliberate click each. A staged, ungranted repo is remembered per machine so it

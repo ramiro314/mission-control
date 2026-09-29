@@ -6314,6 +6314,39 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
+ * `set_affected_tests_command`: the one Command write an agent may make.
+ *
+ * Carries no slot and no repository on purpose. The slot is always `affected-tests` and the
+ * repository is always the calling session's task repository, both decided by the daemon, so a
+ * caller cannot name anything else to write. The argv is bounded like every Command argv, and
+ * the `{files}` / `{junit}` template rule is checked by the route with `commandTemplateProblem`.
+ */
+export const SetAffectedTestsCommandSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  command: WorkflowCommandArgvSchema,
+}).strict();
+export type SetAffectedTestsCommand = z.infer<typeof SetAffectedTestsCommandSchema>;
+
+/** `POST /api/repositories/testing-setup`: start the testing-setup task for one repository. */
+export const TestingSetupStartSchema = z.object({
+  repoRoot: z.string().min(1).max(4096),
+}).strict();
+export type TestingSetupStart = z.infer<typeof TestingSetupStartSchema>;
+
+/**
+ * What the start route did. `launched` is false when the task was created but its launch was
+ * refused (for example, no free worktree): the task stays in the backlog with `reason`, the way
+ * a retro follow-up that cannot launch yet is queued rather than lost.
+ */
+export interface TestingSetupStartResponse {
+  task: Task;
+  launched: boolean;
+  reason?: string;
+}
+
+/**
  * One row per kind this app launches (`HARNESS_LAUNCHED_TASK_KINDS`). An absent key follows
  * the kind's built-in, `null` is an explicit None, and a string names a workflow identity.
  * `pipeline` has no key: Conductor owns what runs after its work.

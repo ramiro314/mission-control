@@ -451,6 +451,7 @@ async function declaredMcpTools() {
       SUBMIT_SCOUT_ARTIFACTS_TOOL: "src/server/scouts/submission-tool.ts",
       SUBMIT_WORKFLOW_EVIDENCE_TOOL: "src/server/workflows/evidence-tool.ts",
       COMPLETE_RETRO_NO_CHANGE_TOOL: "src/server/retro-tool.ts",
+      SET_AFFECTED_TESTS_COMMAND_TOOL: "src/server/testing-setup-tool.ts",
       PLAN_DECISIONS_TOOL: "src/server/plans/tools.ts",
       PLAN_SCHEDULING_TOOL: "src/server/plans/tools.ts",
       PLAN_PUBLICATION_TOOL: "src/server/plans/tools.ts",
