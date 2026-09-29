@@ -190,27 +190,24 @@ export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
  * Put a controllable `node --version` on the daemon's PATH without changing the runtime that
  * actually executes fixture scripts. Every invocation other than the read-only version probe
  * delegates to the real Node binary, so fake CLIs with `#!/usr/bin/env node` keep working.
+ *
+ * Delegation is an `exec`, not a child, so the real Node keeps the pid its caller spawned.
+ * A wrapping child is what a caller's timeout SIGTERMs, and the real process underneath it
+ * was orphaned: `fake-cmux` in its hanging mode then outlived the test for good, in the
+ * worktree that ran the suite.
  */
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
   const nextBin = join(home, "bin", ".node-next");
+  const sh = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   mkdirSync(join(home, "bin"), { recursive: true });
   writeFileSync(
     nextBin,
     [
-      `#!${process.execPath}`,
-      'const { spawnSync } = require("node:child_process");',
-      `const reported = ${JSON.stringify(version)};`,
-      'if (process.argv.length === 3 && process.argv[2] === "--version") {',
-      '  process.stdout.write(`v${reported}\\n`);',
-      "  process.exit(0);",
-      "}",
-      'if (process.argv.length === 4 && process.argv[2] === "-p" && process.argv[3] === "process.execPath") {',
-      '  process.stdout.write(`${process.argv[1]}\\n`);',
-      "  process.exit(0);",
-      "}",
-      "const child = spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });",
-      "process.exit(child.status ?? 1);",
+      "#!/bin/sh",
+      `if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then printf 'v%s\\n' ${sh(version)}; exit 0; fi`,
+      `if [ "$#" -eq 2 ] && [ "$1" = "-p" ] && [ "$2" = "process.execPath" ]; then printf '%s\\n' "$0"; exit 0; fi`,
+      `exec ${sh(process.execPath)} "$@"`,
       "",
     ].join("\n"),
   );
