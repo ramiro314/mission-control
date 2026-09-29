@@ -23483,6 +23483,10 @@ button.sc-row:focus-visible {
 .trust-repo .trust-repo-path {
   margin-right: 8px;
 }
+.trust-setup:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .trust-setup:hover:not(:disabled) {
   color: var(--fg);
   border-color: var(--dim);

@@ -135,6 +135,9 @@ test("a request in flight on one row leaves every other row's action usable and 
   await first.click();
   await expect(first).toBeDisabled();
   await expect(second).toBeEnabled();
+  // Mid-request: the first row reads "Starting…" with its action dimmed, the second is usable.
+  await expect(dashboard.getByRole("status").filter({ hasText: "Starting…" })).toBeVisible();
+  await shoot(dashboard, "03a-first-row-in-flight");
 
   await second.click();
   const rows = dashboard.getByRole("table", { name: "Repository trust grants" });
@@ -142,6 +145,8 @@ test("a request in flight on one row leaves every other row's action usable and 
   await expect(refusals).toHaveCount(1);
   await expect(first).toBeDisabled();
   await expect(rows.getByText("Starting…")).toHaveCount(1);
+  // Still mid-request on the first row, and the second row already has its own answer.
+  await shoot(dashboard, "03b-second-row-answered-while-first-in-flight");
 
   release();
   await expect(refusals).toHaveCount(2);
