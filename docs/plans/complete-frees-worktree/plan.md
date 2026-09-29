@@ -1,6 +1,6 @@
 # Complete frees the task's worktree
 
-**Status:** Approved on 2026-09-27\
+**Status:** Approved on 2026-09-27. Superseded by upstream #1148 and removed in the 2026-09-29 upstream sync ([runbook](../../upstream-sync.md)).\
 **Scope:** One phase\
 **Background:** the worktree pool investigation and task lifecycle explainer from the planning session (local reports, not committed)
 

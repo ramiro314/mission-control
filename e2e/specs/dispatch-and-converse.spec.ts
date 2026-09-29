@@ -269,12 +269,6 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
 
   const dialog = dashboard.getByRole("dialog", { name: "Complete task and close session" });
   await expect(dialog).toBeVisible();
-  // This pins the plain complete-then-kill path. A clean task's "Free this task's worktree"
-  // box starts ticked, and freeing deliberately waits for the agent to stop before its
-  // safety re-check and teardown - see complete-frees-worktree.spec.ts - so untick it.
-  const free = dialog.getByRole("checkbox", { name: "Free this task's worktree" });
-  await expect(free).toBeChecked();
-  await free.uncheck();
   await dialog.getByRole("button", { name: "Complete & close" }).click();
 
   // The fake keeps its SDK subprocess alive for four seconds after stdin closes. The modal

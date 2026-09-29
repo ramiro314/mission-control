@@ -89,8 +89,6 @@ import type {
   StandingInstructionsView,
   WorktreesConfig,
   WorktreesConfigPatch,
-  CompleteTask,
-  TaskFreePreview,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
@@ -240,10 +238,6 @@ export interface CompleteTaskResult extends ActionResult {
   sessionClosureRequested?: boolean;
   confirmIncompleteScout?: boolean;
   problems?: string[];
-  /** Present only when `freeWorktree` was sent: whether the task's worktrees were freed. */
-  freed?: boolean;
-  /** Why they were not, while the task is still recorded `done`. */
-  freeError?: string;
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -1946,7 +1940,6 @@ export const api = {
     satisfyDependents?: boolean,
     requireStopped?: boolean,
     confirmIncompleteScout?: boolean,
-    freeWorktree?: CompleteTask["freeWorktree"],
   ) =>
     post<CompleteTaskResult>(`/api/tasks/${encodeURIComponent(id)}/complete`, {
       outcome,
@@ -1954,11 +1947,7 @@ export const api = {
       ...(satisfyDependents ? { satisfyDependents: true } : {}),
       ...(requireStopped ? { requireStopped: true } : {}),
       ...(confirmIncompleteScout ? { confirmIncompleteScout: true } : {}),
-      ...(freeWorktree ? { freeWorktree } : {}),
     }),
-  /** Whether Complete may free this task's worktrees by default; null when it cannot tell. */
-  taskFreePreview: (id: string) =>
-    fetchJson<TaskFreePreview>(`/api/tasks/${encodeURIComponent(id)}/free-preview`),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
   /**
    * The board's bulk edit: one change to several backlog tasks, written to all of them or

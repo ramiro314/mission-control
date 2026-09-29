@@ -545,9 +545,6 @@ export function App(): React.JSX.Element {
   // toggle/close lifecycle, while the System profile can ask that existing control to open.
   const [foremanOpenRequest, setForemanOpenRequest] = useState(0);
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
-  /** A completion's success line ("Task completed · worktree freed"), flashed after its dialog closes. */
-  const [completeNotice, setCompleteNotice] = useState<string | null>(null);
-  const completeNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
@@ -3819,11 +3816,6 @@ export function App(): React.JSX.Element {
               {launcherFocusError}
             </span>
           )}
-          {completeNotice && (
-            <span className="launch-flash" role="status">
-              {completeNotice}
-            </span>
-          )}
           {/* A READOUT, so it sits with the pulse rather than inside the action cluster
               below - which is three ranked groups of CONTROLS, and a figure dropped into
               them would break the rank it teaches. The bar's whole right-hand side is
@@ -4337,11 +4329,6 @@ export function App(): React.JSX.Element {
               completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
             }
             onCompleted={() => onKilled(completeSession.id)}
-            onNotice={(notice) => {
-              if (completeNoticeTimer.current) clearTimeout(completeNoticeTimer.current);
-              setCompleteNotice(notice);
-              completeNoticeTimer.current = setTimeout(() => setCompleteNotice(null), 5000);
-            }}
             onClose={closeComplete}
           />
         )}
