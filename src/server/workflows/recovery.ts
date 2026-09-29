@@ -12,6 +12,7 @@ import {
   type WorkflowSubmission,
 } from "@shared/workflow.ts";
 import { workflowRunPhaseRecognized, type WorkflowRunPhase } from "@shared/workflow-lifecycle.ts";
+import { WAIT_FOR_CI_BLOCK_CODES, type WaitForCiBlockCode } from "@shared/wait-for-ci.ts";
 
 type PhaseRecovery = "resume" | "decision" | "snapshot" | "repository" | "retry" | "dismiss";
 
@@ -106,8 +107,14 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
     || (run.status === "blocked" && run.phase === "inspector_disabled");
 }
 
-/** The Wait for CI blocks the operator clears by retrying the node. */
-const WAIT_FOR_CI_RETRY_PHASES: readonly string[] = ["ci_flake_report_missing", "ci_missing", "ci_timeout"];
+/**
+ * Whether this phase is a Wait for CI block the operator clears by retrying the node. Read off
+ * `WORKFLOW_PHASE_RECOVERY`'s own "retry" tag, so which blocks retry is stated once, there.
+ */
+function waitForCiRetryPhase(phase: string): boolean {
+  return (WAIT_FOR_CI_BLOCK_CODES as readonly string[]).includes(phase)
+    && WORKFLOW_PHASE_RECOVERY[phase as WaitForCiBlockCode] === "retry";
+}
 
 export function infrastructureRecoveryAvailable(
   run: Pick<WorkflowRecoveryContext, "status" | "phase">,
@@ -115,7 +122,7 @@ export function infrastructureRecoveryAvailable(
   hasFailedAttempt: boolean,
 ): boolean {
   return run.status === "blocked"
-    && (run.phase === "infrastructure_error" || WAIT_FOR_CI_RETRY_PHASES.includes(run.phase))
+    && (run.phase === "infrastructure_error" || waitForCiRetryPhase(run.phase))
     && submission?.status === "failed" && hasFailedAttempt;
 }
 
@@ -165,7 +172,7 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
     recovery.triage = "retry";
     // A CI block's retry waits on the same head. When the fix needs a new commit (the flake
     // report added to CI, say), a new round is the way on, so it is described as well.
-    if (!WAIT_FOR_CI_RETRY_PHASES.includes(c.phase)) return recovery;
+    if (!waitForCiRetryPhase(c.phase)) return recovery;
   }
   if (workflowRunGaveUp(c) && c.latest && active && (inspectorOnly || !c.external)
     && c.maxRepairRounds < WORKFLOW_LIMITS.repairRoundsMax) {

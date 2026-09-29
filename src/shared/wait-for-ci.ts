@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FLAKY_TESTS_CHECK_NAME, FlakeReportSchema, type FlakeReport } from "./flake-report.ts";
+import { classifyCheckEntry } from "./ci-checks.ts";
 
 // The Wait for CI node: what it reads, what it records, and how it decides.
 //
@@ -59,19 +60,6 @@ export const CiObservationSchema = z.object({
 });
 export type CiObservation = z.infer<typeof CiObservationSchema>;
 
-// CheckRun conclusions and StatusContext states that count as a failed check. SUCCESS,
-// NEUTRAL and SKIPPED pass, and so does anything unrecognised, matching `src/server/pr.ts`.
-const FAIL_CONCLUSIONS = new Set([
-  "FAILURE",
-  "TIMED_OUT",
-  "CANCELLED",
-  "ACTION_REQUIRED",
-  "STARTUP_FAILURE",
-  "STALE",
-]);
-const FAIL_STATES = new Set(["FAILURE", "ERROR"]);
-const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
-
 function text(value: unknown, max: number): string | null {
   if (typeof value !== "string" || value.trim() === "") return null;
   return value.length > max ? `${value.slice(0, max - 3)}...` : value;
@@ -90,12 +78,10 @@ export function ciCheckRunsFromRollup(
   for (const raw of contexts) {
     if (!raw || typeof raw !== "object" || checkRuns.length >= CI_CHECK_RUNS_MAX) continue;
     const node = raw as Record<string, unknown>;
+    const state = classifyCheckEntry(node);
+    if (state === null) continue;
     if (typeof node.status === "string" && typeof node.name === "string") {
-      const status = node.status.toUpperCase();
       const conclusion = typeof node.conclusion === "string" ? node.conclusion.toUpperCase() : null;
-      const state: CiCheckRunState = status !== "COMPLETED"
-        ? "pending"
-        : FAIL_CONCLUSIONS.has(conclusion ?? "") ? "failing" : "passing";
       if (node.name === FLAKY_TESTS_CHECK_NAME && typeof node.summary === "string") {
         flakeReport = parseReport(node.summary) ?? flakeReport;
       }
@@ -111,9 +97,6 @@ export function ciCheckRunsFromRollup(
     }
     if (typeof node.context === "string" && typeof node.state === "string") {
       const upper = node.state.toUpperCase();
-      const state: CiCheckRunState = FAIL_STATES.has(upper)
-        ? "failing"
-        : PENDING_STATES.has(upper) ? "pending" : "passing";
       checkRuns.push({
         name: node.context.slice(0, 500),
         state,

@@ -50,7 +50,7 @@ import {
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import { blockedPhaseClause, workflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import { readWaitForCiState, type WaitForCiBlockCode, type WaitForCiState } from "@shared/wait-for-ci.ts";
-import type { Stage } from "@shared/workflow-stages.ts";
+import type { Stage, StageMember } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
   SessionActionAttemptStateSchema,
@@ -3958,4 +3958,31 @@ export function waitForCiHeadline(state: WaitForCiState, now: number): string {
   }
   const elapsed = Math.max(0, Math.floor((now - state.waitingSince) / 60_000));
   return `Waiting for CI on ${pr} at ${head} · ${elapsed} of ${state.timeoutMinutes} min.`;
+}
+
+/**
+ * One stage member's chip, by kind. The ONE place that decides which status table a member
+ * reads - the run pipeline and both ladders call it - so a new member kind is taught here once.
+ *
+ * `raw` is the member's `nodeStatusesForSubmission` entry. `checkOutcome` is a Command's
+ * recorded status and `actionWait` a session action's wait; each is ignored for other kinds.
+ */
+export function memberPipelineStatus(
+  kind: StageMember["kind"] | "session_action",
+  raw: string | undefined,
+  detail: {
+    checkOutcome?: WorkflowCheckStatus | null;
+    actionWait?: SessionActionWaitReason | null;
+  } = {},
+): PipelineStatus {
+  switch (kind) {
+    case "session_action":
+      return sessionActionStatus(raw, detail.actionWait ?? null);
+    case "check":
+      return checkStatus(raw, detail.checkOutcome ?? null);
+    case "wait_for_ci":
+      return waitForCiStatus(raw);
+    case "persona":
+      return reviewerStatus(raw);
+  }
 }

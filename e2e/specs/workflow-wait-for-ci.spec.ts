@@ -343,3 +343,59 @@ async function shoot(page: Page, name: string): Promise<void> {
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 }
+
+test("a run blocked by Wait for CI says why in plain words, and offers to wait again", async ({ dashboard, daemon }) => {
+  test.setTimeout(360_000);
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-block");
+
+  // Every check green, no "Flaky tests" check. The node starts its grace period on the first
+  // sighting; backdating that start by six minutes lets the daemon's own sweep reach the block
+  // through the real decision, instead of this spec waiting five minutes of wall clock.
+  seedCi(daemon, head, [check("unit (node 24)", "passing"), check("lint", "passing")]);
+  await expect.poll(() => withDaemonDb(daemon, (db) => {
+    const row = db.prepare(
+      "SELECT output_json FROM workflow_node_attempts WHERE node_id = 'ci-node' AND state = 'waiting'",
+    ).get() as { output_json: string } | undefined;
+    return row ? (JSON.parse(row.output_json) as { greenWithoutReportSince: number | null }).greenWithoutReportSince : null;
+  }), { message: "the node never saw green CI without a report" }).not.toBeNull();
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare(
+      "SELECT id, output_json FROM workflow_node_attempts WHERE node_id = 'ci-node' AND state = 'waiting'",
+    ).get() as { id: string; output_json: string };
+    const state = JSON.parse(row.output_json) as { greenWithoutReportSince: number };
+    state.greenWithoutReportSince -= 6 * 60_000;
+    db.prepare("UPDATE workflow_node_attempts SET output_json = ? WHERE id = ?").run(JSON.stringify(state), row.id);
+  });
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.currentPhase, {
+    message: "the missing report never blocked the run",
+    timeout: 60_000,
+  }).toBe("ci_flake_report_missing");
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const ciRow = dashboard.locator('[aria-label="Workflow run pipeline"]')
+    .locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
+  await expect(ciRow).toContainText("Blocked");
+  await ciRow.click();
+  const card = dashboard.locator("article.wf-run-attempt", { hasText: "Wait for CI" });
+  const reason = card.locator(".wf-run-ci-headline");
+  await expect(reason).toHaveText(
+    'Every CI check passed, but no "Flaky tests" check appeared on the head commit. Rerun CI '
+    + "and wait for CI again, or add the flake report to this repository's CI (see Flaky tests "
+    + "in CI) and start a new round.",
+  );
+  await expect(reason).not.toContainText("Waiting for CI on");
+  await expect(card.getByRole("link", { name: PR_KEY })).toHaveAttribute("href", PR_URL);
+  // The triage clause names the cause, and the run offers the retry as its move.
+  await expect(dashboard.getByText("no Flaky tests check").first()).toBeVisible();
+  const again = dashboard.getByRole("button", { name: "Wait for CI again" });
+  await expect(again).toBeVisible();
+  await shoot(dashboard, "05-run-ci-blocked");
+  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}05-ci-blocked-card.png` });
+
+  // Waiting again reopens the same head with a fresh timeout.
+  await again.click();
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
+    message: "Wait for CI again did not reopen the run",
+  }).toBe("running");
+  await expect(ciRow).toContainText("Waiting for CI");
+});

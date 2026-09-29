@@ -352,3 +352,33 @@ test("a continuation through Wait for CI to End is still shipping-only, and owns
   assert.equal(sessionActionContinuationReachesOnlyEnd(reviewed, "pr"), false);
 });
 
+
+test("the PR card and Wait for CI classify a check by one shared rule", async () => {
+  const { classifyCheckEntry } = await import("../src/shared/ci-checks.ts");
+  const { readFileSync } = await import("node:fs");
+  assert.equal(classifyCheckEntry({ status: "IN_PROGRESS" }), "pending");
+  assert.equal(classifyCheckEntry({ status: "COMPLETED", conclusion: "stale" }), "failing");
+  assert.equal(classifyCheckEntry({ status: "COMPLETED", conclusion: "NEUTRAL" }), "passing");
+  assert.equal(classifyCheckEntry({ state: "EXPECTED" }), "pending");
+  assert.equal(classifyCheckEntry({ state: "ERROR" }), "failing");
+  assert.equal(classifyCheckEntry({ other: 1 }), null);
+  for (const path of ["../src/server/pr.ts", "../src/shared/wait-for-ci.ts"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.match(source, /classifyCheckEntry\(/, path);
+    assert.doesNotMatch(source, /FAIL_CONCLUSIONS/, `${path} keeps its own copy of the rule`);
+  }
+});
+
+test("which CI blocks retry is read from the recovery table, and only those offer retry", async () => {
+  const { WORKFLOW_PHASE_RECOVERY, infrastructureRecoveryAvailable } = await import("../src/server/workflows/recovery.ts");
+  const { WAIT_FOR_CI_BLOCK_CODES } = await import("../src/shared/wait-for-ci.ts");
+  const failed = { mode: "full_workflow", status: "failed", triggerSource: "manual", triggerKey: "k" } as never;
+  for (const code of WAIT_FOR_CI_BLOCK_CODES) {
+    assert.equal(
+      infrastructureRecoveryAvailable({ status: "blocked", phase: code }, failed, true),
+      WORKFLOW_PHASE_RECOVERY[code] === "retry",
+      code,
+    );
+  }
+  assert.equal(WORKFLOW_PHASE_RECOVERY.ci_pull_request_unknown, "resume");
+});
