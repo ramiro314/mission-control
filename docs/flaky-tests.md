@@ -21,7 +21,10 @@ Any repository on GitHub can be brought into this contract in one supervised tas
 testing"). It calls `POST /api/repositories/testing-setup`, which starts a ship task whose intent
 invokes the **Testing setup** skill ([`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md)).
 The skill must be switched on in **Settings → Skills**; while it is off the action is refused on
-the row with the sentence naming the toggle, and no task is created. The task has no review
+the row with the sentence naming the toggle, and no task is created. It is also refused while an
+earlier testing-setup task for the same repository is still open (in the backlog or live), so two
+agents never edit the same CI at once; once that task is done, failed or cancelled, the action
+starts a new one. The task has no review
 Workflow bound: the human approves every change in the skill's form, and the skill proves the
 result on its own pull request.
 

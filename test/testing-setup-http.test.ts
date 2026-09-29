@@ -251,3 +251,28 @@ test("the tool refuses a named slot or repository, a session that is not a testi
 
   assert.deepEqual(f.commands.get("affected-tests"), before, "no refusal wrote anything");
 });
+
+test("a second start is refused while the repository's setup task is open, and allowed once it is finished", async () => {
+  installSkill();
+  setSkillsConfig({ enabled: true, skills: { [TESTING_SETUP_SKILL]: true } });
+  const f = fixture();
+  const repo = gitRepo("duplicate");
+
+  const first = await start(f.app, repo);
+  assert.equal(first.status, 200);
+  const { task } = (await first.json()) as { task: Task };
+  const count = f.tasks.list().length;
+
+  const second = await start(f.app, repo);
+  assert.equal(second.status, 409);
+  assert.match(((await second.json()) as { error: string }).error, /already open .*Finish or cancel it before starting another/);
+  assert.equal(f.tasks.list().length, count, "the refused start files no second task");
+  assert.equal(f.launches.length, 1, "and launches no second agent");
+
+  // Another repository is not blocked by it.
+  assert.equal((await start(f.app, gitRepo("duplicate-other"))).status, 200);
+
+  // Once the first one is finished, running the setup again is allowed.
+  f.registry.upsertTask({ ...f.tasks.get(task.id)!, status: "done", updatedAt: Date.now() });
+  assert.equal((await start(f.app, repo)).status, 200);
+});

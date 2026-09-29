@@ -10,6 +10,7 @@ import type { TestingSetupStartResponse } from "@shared/protocol.ts";
 import { WORKFLOW_LIMITS, commandTemplateProblem, type WorkflowCommandView } from "@shared/workflow.ts";
 import { TESTING_SETUP_SKILL } from "@shared/skills.ts";
 import { skillLoadingAgents } from "@shared/harness-capabilities.ts";
+import { isTerminalTask } from "@shared/task-status.ts";
 import { PLAN_DECISIONS_TOOL } from "./plans/tools.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { resolveTaskRepoRoot } from "./repos.ts";
@@ -23,7 +24,7 @@ export type TestingSetupResult =
   | { kind: "refused"; status: 400 | 409; error: string };
 
 export interface TestingSetupDeps {
-  tasks: Pick<TaskManager, "create" | "dispatch" | "get">;
+  tasks: Pick<TaskManager, "create" | "dispatch" | "get" | "list">;
   resolveRepoRoot?: typeof resolveTaskRepoRoot;
   skillForAgent?: typeof skillInvocationForAgent;
   /** The ship kind's default harness; injected so a test does not read the Harnesses config. */
@@ -52,6 +53,23 @@ export async function startTestingSetup(
 ): Promise<TestingSetupResult> {
   const resolved = await (deps.resolveRepoRoot ?? resolveTaskRepoRoot)(repoRoot);
   if (!resolved.ok) return { kind: "refused", status: 400, error: resolved.error };
+
+  // One setup at a time per repository. A second agent auditing the same unmerged state would
+  // open a competing pull request with overlapping CI edits, so a start is refused while an
+  // earlier testing-setup task for this repository is still open (backlog or live). A finished,
+  // failed or cancelled one does not block, which is how "run it again later" works.
+  const open = deps.tasks.list().find((task) =>
+    task.repoRoot === resolved.repoRoot
+    && task.labels.includes(TESTING_SETUP_TASK_LABEL)
+    && !isTerminalTask(task.status));
+  if (open) {
+    return {
+      kind: "refused",
+      status: 409,
+      error: `A testing setup task for this repository is already ${open.status === "backlog" ? "in the backlog" : "open"} `
+        + `("${open.title}"). Finish or cancel it before starting another.`,
+    };
+  }
 
   const runner = testingSetupAgent(deps);
   if ("problem" in runner) {

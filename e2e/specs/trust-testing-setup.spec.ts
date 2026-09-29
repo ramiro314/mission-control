@@ -96,6 +96,16 @@ test("with the skill on, the action starts the testing-setup task", async ({ das
   expect(task!.intent).toContain("Invoke the testing-setup skill and follow it");
   expect(task!.title).toBe(`Set up flake-aware testing: ${basename(daemon.repo)}`);
   await shoot(dashboard, "02-started-skill-on");
+
+  // A second click while that task is open is refused on the row; no second agent starts.
+  const again = dashboard.waitForResponse((r) => r.url().endsWith("/api/repositories/testing-setup"));
+  await dashboard.getByRole("button", { name: `Set up flake-aware testing for ${daemon.repo}` }).click();
+  expect((await again).status()).toBe(409);
+  await expect(
+    dashboard.getByRole("alert").filter({ hasText: /A testing setup task for this repository is already/ }),
+  ).toBeVisible();
+  expect(await setupTasks(dashboard, daemon.baseURL)).toHaveLength(1);
+  await shoot(dashboard, "04-duplicate-refused");
 });
 
 test("a request in flight on one row leaves every other row's action usable and answered on its own row", async ({
