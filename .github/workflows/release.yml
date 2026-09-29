@@ -55,7 +55,7 @@ jobs:
     name: release-please
     steps:
       - name: Check out the release input
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           # The push range can contain several rebased commits. Full history lets the validator
           # walk exactly that first-parent range instead of guessing from a shallow checkout.
@@ -91,7 +91,7 @@ jobs:
       # runs in `ci.yml`'s `package` job, which is where it blocks an artifact.
       - name: Check out the released tag
         if: ${{ steps.release.outputs.release_created }}
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.release.outputs.tag_name }}
 
