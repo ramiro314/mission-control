@@ -6,7 +6,7 @@ gated on the planning session and mirrored to GitHub issues.
 | # | Title | Kind | Labels | Blocked by | Task | Issue |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Fork sync with upstream 1.26.0 and upstream-sync runbook | ship | upstream-sync | None | 934cd306-299f-4a3a-add6-176216b75bad | https://github.com/ramiro314/mission-control/issues/56 |
-| 3 | Fork ledger | ship | upstream-sync | 1 | TBD | TBD |
+| 3 | Fork ledger | ship | upstream-sync | 1 | 719fcf90-b069-4308-ac50-5b2301019d11 | https://github.com/ramiro314/mission-control/issues/58 |
 | 2 | Weekly upstream-sync recurring mission | ship | upstream-sync | 1, 3 | 497e6b23-880c-45e9-9b1f-6a42dcf5b969 | https://github.com/ramiro314/mission-control/issues/57 |
 
 ## Ticket 1: Fork sync with upstream 1.26.0 and upstream-sync runbook
@@ -67,7 +67,7 @@ Context: read docs/plans/upstream-sync/plan.md (decisions D12 to D19 and section
 
 ## Ticket 2: Weekly upstream-sync recurring mission
 
-Note: ticket 2 was filed before ticket 3 existed, so its task intent says it is blocked by ticket 1 only. When the amendment was filed, a blocker edge on ticket 3 was added to its task.
+Note: ticket 2 was filed before ticket 3 existed, so its task intent says it is blocked by ticket 1 only. When the amendment was filed, a blocker edge on ticket 3 was added to its Mission Control task. Issue #57 was pushed before ticket 3 existed, so on GitHub it links only to #56 as its blocker.
 
 <!-- ticket-2-body -->
 **What to build:** Every Monday at 09:00 local time, Mission Control files a task that brings the
