@@ -1,0 +1,312 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Upstream sync - plan</title><style>
+:root{color-scheme:light dark;--bg:#fbfaf8;--panel:#fff;--fg:#1c1e21;--muted:#62676e;--line:#e3dfd8;--accent:#b06a1f;--code:#f3f1ec}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--panel:#14181e;--fg:#e7ebf1;--muted:#98a2b1;--line:#242b34;--accent:#f6a733;--code:#0a0c0f}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:1.8em;line-height:1.25}h2{margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.3em}
+a{color:var(--accent)}code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:1px 4px;border-radius:4px}
+pre{background:var(--code);padding:12px;border-radius:8px;overflow-x:auto}pre code{padding:0}
+table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}
+.diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
+figcaption{color:var(--muted);font-size:13px}
+.b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
+</style></head><body><main><h1>Upstream sync: keep the fork building on top of teamupstart/mission-control</h1>
+<p>Status: approved 2026-09-29 after a four-round interview and plan review. Not implemented.</p>
+<h2>Goal</h2>
+<p><code>ramiro314/mission-control</code> (the fork, <code>origin</code>) should always be upstream
+<code>teamupstart/mission-control</code> (<code>upstream</code>) plus a small, deliberate layer of fork changes. This
+plan lands the first sync, writes down how every later sync is done, and schedules that sync
+to run weekly.</p>
+<h2>Where things stand (verified 2026-09-29)</h2>
+<ul>
+<li>Merge base: <code>7db363f4</code> (upstream #1138).</li>
+<li>The fork is 139 commits ahead of it (100 non-merge, fork PRs #1 to #53). Upstream is 9 ahead:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Upstream PR</th>
+<th>Change</th>
+<th>Kind</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>#1145</td>
+<td>Update the agent SDKs</td>
+<td>deps</td>
+</tr>
+<tr>
+<td>#1144</td>
+<td>Return a dispatched task to the backlog from its session (<code>POST /api/tasks/:id/requeue</code>)</td>
+<td>feature</td>
+</tr>
+<tr>
+<td>#1147</td>
+<td>Space the working indicator group</td>
+<td>UI fix</td>
+</tr>
+<tr>
+<td>#1146</td>
+<td>Recover desktop startup when daemon readiness is delayed</td>
+<td>fix</td>
+</tr>
+<tr>
+<td>#1148</td>
+<td>Return completed and safely killed task checkouts (DB migration included)</td>
+<td>behavior change</td>
+</tr>
+<tr>
+<td>#1149</td>
+<td>Plan: SDK-to-terminal workflow handoff repair</td>
+<td>docs</td>
+</tr>
+<tr>
+<td>#1137</td>
+<td>Release 1.26.0</td>
+<td>release</td>
+</tr>
+<tr>
+<td>#1150</td>
+<td>Collapse, normal and expanded widths for every board column</td>
+<td>feature</td>
+</tr>
+<tr>
+<td>#1152</td>
+<td>Plan: Upstart default telemetry to Datadog</td>
+<td>docs</td>
+</tr>
+</tbody></table>
+<ul>
+<li><p>30 files are touched on both sides. A trial merge of <code>upstream/main</code> into <code>origin/main</code>
+merges 25 on its own and leaves 5 textual conflicts:</p>
+<ol>
+<li><code>package.json</code>: dependency versions.</li>
+<li><code>package-lock.json</code>: follows from <code>package.json</code>.</li>
+<li><code>src/server/routes.ts</code>: the <code>POST /api/tasks/:id/complete</code> handler.</li>
+<li><code>docs/dispatch-and-backlog.md</code>: fork&#39;s &quot;Freeing the worktree when you complete a task&quot;
+against upstream&#39;s &quot;Send a dispatched task back to the backlog&quot;.</li>
+<li><code>docs/worktrees-and-checks.md</code>: task worktree retention prose.</li>
+</ol>
+</li>
+<li><p>There is one design conflict, and it&#39;s larger than the textual ones. Fork PR #17
+(<code>feat/complete-frees-worktree</code>, commits <code>3a21ea14</code>, <code>c6c8fe0a</code>, <code>de602866</code>) made freeing the
+worktree on Complete an <strong>opt-in</strong> checkbox, with a safety preview at
+<code>GET /api/tasks/:id/free-preview</code>. Upstream #1148 makes Complete <strong>always</strong> reset and return
+task-owned worktrees, and adds a safe automatic return after Kill. <code>CompleteModal.tsx</code> merges
+cleanly as text but would carry both behaviours.</p>
+</li>
+<li><p><code>.github/dependabot.yml</code> is fork-only. Its merged PRs moved versions away from upstream:</p>
+<ul>
+<li>#40: <code>@hono/node-server</code> 1.x to 2.x</li>
+<li>#41: <code>concurrently</code> 9 to 10</li>
+<li>#43: 16 minor and patch bumps</li>
+</ul>
+<p>It also has three open PRs: #38 (TypeScript 7), #39 (zod 4) and #42 (the github-actions group).</p>
+</li>
+<li><p>The fork&#39;s <code>Release</code> workflow fails on every push to fork <code>main</code>. It depends on Upstart&#39;s
+<code>mission-control-release</code> GitHub App and on conventional squash titles, and the fork has
+neither.</p>
+</li>
+</ul>
+<h2>Decisions</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Question</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>D1</td>
+<td>Fork #17 against upstream #1148</td>
+<td>Adopt upstream #1148. Remove the fork&#39;s checkbox, <code>free-preview</code> route, <code>freeWorktree</code> request field, <code>TaskFreePreview</code>, their docs, <code>test/complete-frees-worktree.test.ts</code> and <code>e2e/specs/complete-frees-worktree.spec.ts</code>.</td>
+</tr>
+<tr>
+<td>D2</td>
+<td>Dependency versions</td>
+<td>Remove Dependabot and roll back its changes. Every dependency takes upstream&#39;s version. <code>package.json</code> keeps only fork-only entries (the <code>build:flake-report-action</code> and <code>test:run</code> scripts, and any fork-only package such as the <code>esbuild</code> devDependency). <code>package-lock.json</code> is regenerated starting from upstream&#39;s lockfile. This supersedes round 1&#39;s &quot;newest of each&quot;.</td>
+</tr>
+<tr>
+<td>D3</td>
+<td>Sync model</td>
+<td>Merge-based. Each sync merges <code>upstream/main</code> into <code>sync/upstream-&lt;YYYY-MM-DD&gt;</code>, branched from fresh <code>origin/main</code>, and lands by PR into the fork&#39;s <code>main</code>. There is no rebase and no force-push, and upstream SHAs are kept.</td>
+</tr>
+<tr>
+<td>D4</td>
+<td>Upstream scope</td>
+<td>Take all 9 commits, including the 1.26.0 release and the Upstart Datadog plan doc.</td>
+</tr>
+<tr>
+<td>D5</td>
+<td>Dependabot</td>
+<td>Delete <code>.github/dependabot.yml</code>. Close open PRs #38, #39 and #42 with a comment linking the sync PR.</td>
+</tr>
+<tr>
+<td>D6</td>
+<td>Conflict policy for every sync</td>
+<td>Upstream wins. Re-apply a fork change on top of upstream when it still makes sense. Stop and <code>request_input</code> before removing or reworking any fork feature.</td>
+</tr>
+<tr>
+<td>D7</td>
+<td>Runbook</td>
+<td><code>docs/upstream-sync.md</code> is the source of truth, linked from <code>docs/README.md</code>, with a short <code>.agents/memory/upstream-sync.md</code> pointer indexed in <code>MEMORY.md</code>.</td>
+</tr>
+<tr>
+<td>D8</td>
+<td>Who merges a sync PR</td>
+<td>The human, after CI is green. The agent opens the PR and waits for CI, and never merges.</td>
+</tr>
+<tr>
+<td>D9</td>
+<td>Recurring sync</td>
+<td>A Mission Control recurring mission, Mondays 09:00 in the operator&#39;s local time zone. Missed runs collapse into one catch-up. The agent is inherited from the task kind. A run with nothing new upstream ends without a branch or PR.</td>
+</tr>
+<tr>
+<td>D10</td>
+<td>Fork <code>Release</code> workflow</td>
+<td>Disable it in the fork with <code>gh workflow disable release.yml -R ramiro314/mission-control</code>. The file stays byte-identical to upstream.</td>
+</tr>
+<tr>
+<td>D11</td>
+<td>Split</td>
+<td>Two tickets. Ticket 2 is blocked by ticket 1.</td>
+</tr>
+</tbody></table>
+<h2>Sync flow</h2>
+<figure class="diagram"><svg viewBox="0 0 980 230" role="img" aria-label="Weekly upstream sync flow">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" class="ah"/></marker></defs>
+<rect x="10" y="60" width="150" height="52" rx="8" class="b"/><text x="85" y="82" class="t">upstream/main</text><text x="85" y="100" class="s">teamupstart</text>
+<rect x="210" y="60" width="170" height="52" rx="8" class="b"/><text x="295" y="82" class="t">Recurring mission</text><text x="295" y="100" class="s">Mon 09:00, weekly</text>
+<rect x="430" y="60" width="190" height="52" rx="8" class="b"/><text x="525" y="82" class="t">sync/upstream-&lt;date&gt;</text><text x="525" y="100" class="s">merge off origin/main</text>
+<rect x="670" y="60" width="130" height="52" rx="8" class="b"/><text x="735" y="82" class="t">Sync PR</text><text x="735" y="100" class="s">gates + CI green</text>
+<rect x="840" y="60" width="130" height="52" rx="8" class="b"/><text x="905" y="82" class="t">origin/main</text><text x="905" y="100" class="s">ramiro314</text>
+<rect x="210" y="165" width="170" height="52" rx="8" class="b"/><text x="295" y="187" class="t">End, no PR</text><text x="295" y="205" class="s">nothing new upstream</text>
+<line x1="160" y1="86" x2="208" y2="86" class="l" marker-end="url(#a)"/>
+<line x1="380" y1="86" x2="428" y2="86" class="l" marker-end="url(#a)"/>
+<line x1="620" y1="86" x2="668" y2="86" class="l" marker-end="url(#a)"/>
+<line x1="800" y1="86" x2="838" y2="86" class="l" marker-end="url(#a)"/>
+<line x1="295" y1="112" x2="295" y2="163" class="l" marker-end="url(#a)"/>
+<path d="M480,60 C480,20 570,20 570,58" class="l" fill="none" marker-end="url(#a)"/>
+<text x="525" y="16" class="s">conflicts: D6 policy; fork feature at risk: request_input</text>
+<text x="819" y="130" class="s">human merges</text>
+</svg><figcaption>Weekly sync flow (rendering of the mermaid block in plan.md).</figcaption></figure>
+<h2>Ticket 1: first sync, rollback and runbook</h2>
+<p>Branch <code>sync/upstream-2026-09-29</code> (or the day it runs) from fresh <code>origin/main</code>. It lands as one PR
+to the fork.</p>
+<ol>
+<li><p><code>git fetch origin upstream</code>, then <code>git merge --no-ff upstream/main</code>. Resolve the conflicts:</p>
+<ul>
+<li><code>routes.ts</code>: take upstream&#39;s complete handler
+(<code>{ ...t, sessionClosureRequested: taskHasWorktrees(t) &amp;&amp; t.sessionId !== null }</code>) and
+delete the fork&#39;s <code>freeWorktree</code> branch and the <code>/api/tasks/:id/free-preview</code> route (D1).</li>
+<li><code>docs/dispatch-and-backlog.md</code> and <code>docs/worktrees-and-checks.md</code>: take upstream&#39;s sections
+and drop the fork&#39;s &quot;Freeing the worktree when you complete a task&quot; section and its links (D1).</li>
+<li><code>package.json</code> and <code>package-lock.json</code>: see step 3.</li>
+</ul>
+</li>
+<li><p>Remove the rest of fork #17 that merged without conflicts (D1):</p>
+<ul>
+<li><code>CompleteModal.tsx</code>: the checkbox, preview fetch and <code>freed</code> messaging.</li>
+<li><code>App.tsx</code>: its wiring.</li>
+<li><code>api.ts</code>: the free-preview call and the <code>freeWorktree</code> argument.</li>
+<li><code>protocol.ts</code>: <code>TaskFreePreview</code> and the <code>freeWorktree</code> fields.</li>
+<li><code>tasks.ts</code>: <code>worktreeFreeability</code>, if nothing else uses it.</li>
+<li><code>actions.ts</code>: the #17 additions.</li>
+<li>The #17 test, its e2e spec, the <code>dispatch-and-converse.spec.ts</code> lines #17 added, and its
+<code>test/fixtures/route-surface.json</code> entry.</li>
+</ul>
+<p>Search for <code>free-preview</code>, <code>freeWorktree</code>, <code>TaskFreePreview</code> and <code>worktreeFreeability</code> until
+no hits remain.</p>
+</li>
+<li><p>Roll back the dependencies (D2):</p>
+<ul>
+<li>Start <code>package.json</code> from upstream&#39;s and re-add only the fork-only entries.</li>
+<li>Start <code>package-lock.json</code> from upstream&#39;s, then run <code>npm install</code> to add those entries.</li>
+<li>Diff the dependency sections against <code>upstream/main</code>: the only differences left should be
+the fork-only entries.</li>
+</ul>
+</li>
+<li><p>Delete <code>.github/dependabot.yml</code> (D5).</p>
+</li>
+<li><p>Write <code>docs/upstream-sync.md</code> covering:</p>
+<ul>
+<li>the remotes;</li>
+<li>the merge model (D3);</li>
+<li>the conflict policy (D6), with this sync&#39;s #17 resolution as the worked example;</li>
+<li>the dependency rule (upstream versions plus fork-only entries);</li>
+<li>the fork-only surface a sync must preserve: flake-aware testing and its report action,
+shape tasks, tickets, wait-for-CI, and the fork-only <code>package.json</code> entries;</li>
+<li>the gates to run;</li>
+<li>the PR and CI hand-off (D8);</li>
+<li>the disabled Release workflow (D10);</li>
+<li>a &quot;nothing new&quot; early exit (<code>git rev-list --count origin/main..upstream/main</code> is 0).</li>
+</ul>
+<p>Link it from <code>docs/README.md</code>. Add <code>.agents/memory/upstream-sync.md</code> and its <code>MEMORY.md</code> line (D7).</p>
+</li>
+<li><p>Gates:</p>
+<ul>
+<li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>.</li>
+<li><code>npm run test:e2e</code>: it covers upstream&#39;s new specs (<code>task-worktree-return</code>, the board column
+widths, requeue) and the removal of <code>complete-frees-worktree</code>.</li>
+</ul>
+</li>
+<li><p>Push, open the PR with the <code>mission-pull-request</code> shape, and wait for CI to go green. The human
+merges (D8).</p>
+</li>
+<li><p>After the PR is open:</p>
+<ul>
+<li>Close Dependabot PRs #38, #39 and #42 with a comment linking it (D5).</li>
+<li>Run <code>gh workflow disable release.yml -R ramiro314/mission-control</code> (D10).</li>
+</ul>
+</li>
+</ol>
+<p>Acceptance:</p>
+<ul>
+<li>The PR merges <code>upstream/main</code> as a real merge, so <code>git merge-base --is-ancestor upstream/main HEAD</code> holds.</li>
+<li>No #17 symbols remain.</li>
+<li><code>package.json</code> dependencies equal upstream&#39;s apart from the fork-only entries.</li>
+<li><code>dependabot.yml</code> is gone.</li>
+<li>Every gate is green.</li>
+<li>The runbook exists and is linked.</li>
+</ul>
+<h2>Ticket 2: weekly recurring sync mission</h2>
+<p>Blocked by ticket 1, because the mission&#39;s task points at <code>docs/upstream-sync.md</code>.</p>
+<ol>
+<li>On the operator&#39;s daemon, create a recurring mission through Missions (or <code>POST /api/schedules</code>):<ul>
+<li>Name: &quot;Sync fork with upstream&quot;.</li>
+<li>Repository: the fork.</li>
+<li>Cadence: weekly, Mondays 09:00, local time zone.</li>
+<li>Missed-run policy: collapse into one catch-up.</li>
+<li>Overlap: skip when a previous run&#39;s task is still open.</li>
+<li>Agent: inherit.</li>
+<li>After work: None.</li>
+<li>Task body: &quot;Follow <code>docs/upstream-sync.md</code>. Exit without a branch or PR when upstream has
+nothing new.&quot;</li>
+</ul>
+</li>
+<li>Preview the next occurrences, then <strong>Save &amp; enable</strong>.</li>
+<li>Use <strong>Run now</strong> once to prove that it files the backlog task. Dispatch that task only when
+upstream has new commits; otherwise confirm the no-op path.</li>
+<li>Record the mission&#39;s name and cadence in <code>docs/upstream-sync.md</code>.</li>
+</ol>
+<p>Acceptance:</p>
+<ul>
+<li>The mission is enabled and its preview shows Mondays 09:00 local.</li>
+<li>A manual run files a task that references the runbook.</li>
+</ul>
+<h2>Out of scope</h2>
+<ul>
+<li>Sending fork features upstream.</li>
+<li>Changing fork CI files. The Release workflow is disabled through GitHub, not edited.</li>
+<li>Any product behavior beyond adopting upstream&#39;s.</li>
+</ul>
+<h2>Risks</h2>
+<ul>
+<li><strong>D1 is destructive.</strong> After the sync, Complete discards uncommitted local changes in task
+worktrees. That is upstream&#39;s intended behavior.</li>
+<li><strong>The rollback touches the lockfile.</strong> The hono 2.x to 1.x and concurrently 10 to 9
+downgrades are covered by the full test suite and e2e.</li>
+<li><strong>The mission spends model tokens weekly.</strong> The early exit keeps an idle week cheap.</li>
+</ul>
+</main></body></html>
