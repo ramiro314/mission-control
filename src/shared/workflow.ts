@@ -13,6 +13,7 @@ import type {
   SessionIntentGuard,
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
+import { AFFECTED_TESTS_FILES_PLACEHOLDER, AFFECTED_TESTS_JUNIT_PLACEHOLDER } from "./command-template.ts";
 import { repoAllowlisted } from "./allowlist.ts";
 import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
 
@@ -2982,10 +2983,9 @@ export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
   "affected-tests": "Only the tests this change touched, selected by Mission Control.",
 };
 
-/** The `affected-tests` argv element replaced by one element per selected test file. */
-export const AFFECTED_TESTS_FILES_PLACEHOLDER = "{files}";
-/** Replaced, wherever it appears inside an element, by the path JUnit results are read from. */
-export const AFFECTED_TESTS_JUNIT_PLACEHOLDER = "{junit}";
+// The `{files}` / `{junit}` placeholders live beside their one expansion, which the CI flake
+// report action bundles without this module.
+export { AFFECTED_TESTS_FILES_PLACEHOLDER, AFFECTED_TESTS_JUNIT_PLACEHOLDER };
 
 /**
  * Why `argv` cannot be this slot's command, or null when it can.

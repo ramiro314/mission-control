@@ -38,6 +38,7 @@ interface ChildProcessBoundary {
     | "locator-result"
     | "verified-migration-source"
     | "operator-command"
+    | "ci-workflow-command"
     | "resolved-path-parameter"
     | "test-provider";
   reason: string;
@@ -122,6 +123,11 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
+  ],
+  // Not daemon code: the CI flake report action, bundled into `.github/actions/`, runs on a
+  // GitHub runner and never through the executable locator.
+  "src/flake-report-action/index.ts": [
+    { operation: "spawn", command: "command", contract: "ci-workflow-command", reason: "the CI workflow's own rerun-command input, run once over the failed test files" },
   ],
 };
 
@@ -271,6 +277,8 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === 'join(plan.source, "Contents/MacOS/Mission Control")';
     case "operator-command":
       return boundary.command === "runtime.command";
+    case "ci-workflow-command":
+      return boundary.command === "command";
     case "resolved-path-parameter":
       return boundary.command === "executable";
     case "test-provider":

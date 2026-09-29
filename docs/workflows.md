@@ -854,7 +854,7 @@ packet say how many were left out.
 
 Every key has a default (`patterns` and `smokeSet` empty, `includeImporters` on, and the `flakes`
 values above), and an unknown key is refused with its name so a typo cannot silently do nothing.
-The `flakes` block is read by CI flake reporting, not by this check. The schema and merge live in
+The `flakes` block is read by [CI flake reporting](flaky-tests.md), not by this check. The schema and merge live in
 `src/shared/testing-config.ts`.
 
 A gitignored **`.mission/testing.local.json`** in your own checkout (the session's repository,

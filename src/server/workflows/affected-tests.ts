@@ -2,9 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { junitCaseKey, parseJUnit, type JUnitCase } from "@shared/junit.ts";
+import { expandTestCommandTemplate } from "@shared/command-template.ts";
 import {
-  AFFECTED_TESTS_FILES_PLACEHOLDER,
-  AFFECTED_TESTS_JUNIT_PLACEHOLDER,
   AFFECTED_TESTS_LIMITS,
   commandTemplateProblem,
   type WorkflowAffectedTestsReport,
@@ -31,16 +30,7 @@ import type { CheckSpawnOutcome } from "./check-supervisor.ts";
 const MAX_JUNIT_BYTES = 32 * 1024 * 1024;
 
 /** The template with `{files}` and `{junit}` filled in. */
-export function expandAffectedTestsTemplate(
-  template: readonly string[],
-  files: readonly string[],
-  junitPath: string,
-): string[] {
-  return template.flatMap((arg) =>
-    arg === AFFECTED_TESTS_FILES_PLACEHOLDER
-      ? [...files]
-      : [arg.split(AFFECTED_TESTS_JUNIT_PLACEHOLDER).join(junitPath)]);
-}
+export const expandAffectedTestsTemplate = expandTestCommandTemplate;
 
 /** What the executor hands this module once it holds a tree. */
 export interface AffectedTestsContext {
