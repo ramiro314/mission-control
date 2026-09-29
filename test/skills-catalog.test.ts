@@ -404,3 +404,28 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(text, /Do not list tests added or modified/i);
   assert.match(text, /Always list the failure modes and edge cases/i);
 });
+
+test("the shipped deflake skill reproduces first, limits timeouts, and proves the fix", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "deflake");
+  assert.ok(skill, "deflake should be in the catalog");
+  assert.equal(skill.name, "deflake");
+  assert.equal(skill.enforcement, "triggered");
+  assert.match(skill.description, /flaky/i);
+  assert.match(skill.description, /Flaky test:/);
+
+  const text = readFileSync(new URL("../skills/deflake/SKILL.md", import.meta.url), "utf8");
+  // It reads the issue through Phase 3's v1 markers, spelled exactly as the action writes them.
+  assert.match(text, /<!-- mission-flake:v1 key=<key> -->/);
+  assert.match(text, /<!-- mission-flake-occurrence:v1 at=<ISO time> -->/);
+  // Reproduce before changing anything, under load, with a measured rate.
+  assert.match(text, /\*\*reproduce first\.\*\*/);
+  assert.match(text, /Before changing anything, make the test fail/);
+  assert.match(text, /Starve the CPU/);
+  // A timeout is loosened only when the limit is wrong, and the PR says why.
+  assert.match(text, /\*\*Loosen a timeout only when the limit itself is wrong\*\*/);
+  // Same command, same load, before and after.
+  assert.match(text, /\*\*same\*\* command under the \*\*same\*\* load/);
+  assert.match(text, /before: .*\n.*after: /);
+  // Merging the fix closes the issue.
+  assert.match(text, /`Fixes #<issue>`/);
+});

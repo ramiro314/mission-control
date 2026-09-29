@@ -115,6 +115,27 @@ One issue per flaky test, labelled with the `flakes.label` from the committed
 The issue body marker and the occurrence marker are v1 contracts: the `deflake` skill reads an
 issue's history through them.
 
+## Fixing flakes from the backlog
+
+Issues only report a flake. To get each actionable one fixed, add a
+[GitHub Issues task source](dispatch-and-backlog.md#github-issues) for the repository, once:
+
+- **Labels (all of)**: `flaky-test, flaky-test:actionable` (your `flakes.label` and
+  `flakes.actionableLabel`).
+- **Labels (none of)**: `wontfix`, or whatever label marks a flake you have decided to live with.
+- **Labels (any of)**: blank.
+- **Default kind**: ship, so each task ends in a fix pull request.
+
+Each sweep then files one backlog task per open actionable flake issue, and nothing for a flake
+that has not reached the threshold yet. The task's intent carries the issue's URL and body, and
+the `Flaky test:` title and flake markers in it are what trigger the **Deflake** skill, so the
+source needs no intent of its own. With that skill switched on (see
+[Skills](skills-and-settings.md#skills-every-session-mixed-reload-behavior)), the agent reads the
+issue and its occurrence comments, reproduces the flake under load before changing anything,
+fixes its cause, proves the fix with a before and after repeated run at the same load, and opens
+the fix pull request with `Fixes #<n>`. Merging it closes the issue, and the next CI run drops
+the actionable label. Mission Control does not create this source for you.
+
 ## Settings
 
 The `flakes` block of the committed `.mission/testing.json` (see
