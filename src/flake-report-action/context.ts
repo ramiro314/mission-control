@@ -35,7 +35,8 @@ export function runContextFrom(env: Record<string, string | undefined>, event: u
     repository,
     apiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     commit: pr?.head?.sha ?? env.GITHUB_SHA ?? "",
-    ref: pr?.head?.ref ?? env.GITHUB_HEAD_REF ?? env.GITHUB_REF_NAME ?? "",
+    // `||`, not `??`: Actions sets GITHUB_HEAD_REF to "" (not unset) outside pull requests.
+    ref: pr?.head?.ref || env.GITHUB_HEAD_REF || env.GITHUB_REF_NAME || "",
     pullRequest: typeof pr?.number === "number" ? pr.number : null,
     runUrl: `${server}/${repository}/actions/runs/${env.GITHUB_RUN_ID ?? ""}`,
     readOnlyReason: fromFork ? "this pull request comes from a fork, so its token is read-only" : null,

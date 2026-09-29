@@ -432,7 +432,8 @@ describe("publish mode", () => {
     assert.equal(ctx.ref, "feat/x");
     assert.equal(ctx.pullRequest, 9);
     assert.equal(ctx.readOnlyReason, null);
-    const push = runContextFrom({ ...ENV, GITHUB_REF_NAME: "main" }, { ref: "refs/heads/main" });
+    // Actions sets GITHUB_HEAD_REF to "" outside pull requests; the live proof caught "(no branch)".
+    const push = runContextFrom({ ...ENV, GITHUB_HEAD_REF: "", GITHUB_REF_NAME: "main" }, { ref: "refs/heads/main" });
     assert.equal(push.commit, "mergesha");
     assert.equal(push.ref, "main");
     assert.equal(push.pullRequest, null);
