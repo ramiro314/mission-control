@@ -2416,69 +2416,25 @@ async function releaseBranch(root: string, branch: string | null, target: string
  */
 export async function resetWouldDestroyWork(session: Session): Promise<string | null> {
   if (!session.cwd) return "the session has no working directory";
-  return (await checkoutWouldLoseWork(session.cwd)).reasons[0] ?? null;
-}
-
-/** What discarding one checkout would lose. `reasons` is empty exactly when nothing. */
-export interface CheckoutLoss {
-  uncommitted: number;
-  localOnlyCommits: number;
-  reasons: string[];
-}
-
-/**
- * `resetWouldDestroyWork`'s Git reads for one path, shared with the Complete dialog's
- * "Free this task's worktree" check (`TaskManager.worktreeFreeability`). Same rules, same
- * sentences: uncommitted or untracked (non-ignored) files, then commits no `origin` ref
- * holds, and any Git failure is a reason rather than a pass.
- *
- * `excuseCommitsAncestorOf` lists merged pull requests' recorded head commits. Local-only
- * commits are excused only when HEAD is one of them or an ancestor of one, so a commit
- * made after the merged head is never excused, and a SHA this clone cannot find excuses
- * nothing. Uncommitted files are never excused. Omitted, as reset omits it, it excuses
- * nothing.
- */
-export async function checkoutWouldLoseWork(
-  path: string,
-  { excuseCommitsAncestorOf = [] }: { excuseCommitsAncestorOf?: readonly string[] } = {},
-): Promise<CheckoutLoss> {
-  const loss: CheckoutLoss = { uncommitted: 0, localOnlyCommits: 0, reasons: [] };
-  const top = await git(path, ["rev-parse", "--show-toplevel"]);
-  if (top.code !== 0 || !top.stdout.trim()) {
-    loss.reasons.push("it is not a git repository");
-    return loss;
-  }
+  const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) return "it is not a git repository";
   const root = top.stdout.trim();
 
   // Tracked edits and untracked files alike: `reset --hard` takes the first, `clean -fd`
   // takes the second. Ignored files (node_modules, .env) are not listed and survive.
   const status = await git(root, ["status", "--porcelain"]);
-  if (status.code !== 0) {
-    loss.reasons.push("its working tree could not be read");
-    return loss;
-  }
-  loss.uncommitted = status.stdout.split("\n").filter((l) => l.trim()).length;
-  if (loss.uncommitted > 0) loss.reasons.push(`it has ${loss.uncommitted} uncommitted file(s)`);
+  if (status.code !== 0) return "its working tree could not be read";
+  const changed = status.stdout.split("\n").filter((l) => l.trim()).length;
+  if (changed > 0) return `it has ${changed} uncommitted file(s)`;
 
   // Commits on HEAD that NO origin ref holds - the only ones a discard would end. A
   // pushed branch's commits are reachable from its own `origin/<branch>` ref, so an
   // agent that shipped reads 0 here whether its PR is open or merged; a commit that was
   // only ever committed locally reads 1 and refuses.
   const stranded = await git(root, ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]);
-  if (stranded.code !== 0) {
-    loss.reasons.push("its commits could not be compared against origin");
-    return loss;
-  }
-  loss.localOnlyCommits = Number(stranded.stdout.trim()) || 0;
-  if (loss.localOnlyCommits === 0) return loss;
-  for (const sha of excuseCommitsAncestorOf) {
-    if (!sha) continue;
-    // Exit 0 when HEAD is `sha` or reachable from it; 1 when not; 128 when Git cannot
-    // find `sha` at all. Only 0 excuses.
-    if ((await git(root, ["merge-base", "--is-ancestor", "HEAD", sha])).code === 0) return loss;
-  }
-  loss.reasons.push(`it has ${loss.localOnlyCommits} commit(s) no origin ref has`);
-  return loss;
+  if (stranded.code !== 0) return "its commits could not be compared against origin";
+  const n = Number(stranded.stdout.trim()) || 0;
+  return n > 0 ? `it has ${n} commit(s) no origin ref has` : null;
 }
 
 /**

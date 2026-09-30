@@ -772,13 +772,18 @@ according to the [merged-PR rule](inspector-and-shipping.md#when-a-tasks-pull-re
 merge, it reads `failed`, with `the agent's session ended with no outcome recorded`. Either
 way, it drops out of every count that means "executing".
 
-It settles; it is **not** torn down. The worktree, its branch and any terminal home name are
-all kept, and the row says so (`its worktree was kept; Clean up or re-dispatch it`). Freeing
-a checkout runs `git worktree remove --force` over whatever is in it, so that stays where
-every other destructive path in the app puts it: behind the confirmed **Clean up** button on
-the row, next to Mark done, which refuses to discard work for the same reason. A task that
-never had a worktree of its own - one you handed to an agent that was already running - has
-nothing to collect and says nothing about cleanup.
+An unrequested exit retains the worktree, branch and terminal ownership. An accepted **Kill**
+also requests a conditional return: after the session has gone, every attached checkout must
+be clean, published to origin, unoccupied, and still owned by that task. Unsafe or unknown
+checks preserve the resources, including local work. The task's failed outcome remains even
+when safe return succeeds. **Reset** retains its checkout; Reset followed by Kill can qualify
+for safe return after the task/session binding has been cleared.
+
+**Complete / Mark done** is final: it saves required archives, closes the owned session, and
+resets and returns task-owned worktrees, discarding residual local changes. Initial agent
+handoff to a workflow keeps those resources until final completion. **Clean up** remains the
+explicit way to discard a retained checkout. A task assigned to an existing agent without
+an owned worktree has no task checkout to collect.
 
 That reprieve is not indefinite. A terminal task's checkouts are removed automatically once
 **30 days pass without a Git-visible change** in any of them - see
@@ -806,29 +811,30 @@ evidence that anybody is finished with the work in a tree. The retention clock a
 already had survives the settlement rather than restarting, so a daemon restarted every day
 cannot postpone cleanup forever.
 
-#### Freeing the worktree when you complete a task
+### Send a dispatched task back to the backlog
 
-The **Complete** dialog can free the task's checkout in the same step. When the task holds a
-worktree Mission Control provisioned for it - a native pool slot, a `git` fallback worktree,
-or every repository of a multi-repo task - the dialog shows **Free this task's worktree**
-("worktrees" for a multi-repo task), with the note **Also closes this task's terminal**.
-Ticking it records `done` and then runs the same teardown as **Clean up**, so the slot goes
-back to the pool straight away instead of waiting for Clean up or the 30-day retention.
+When a dispatched task should run *later* rather than now, press **backlog** (<kbd>b</kbd>)
+in its session detail's footer. A confirm names the one cost, then the task goes back into
+the Backlog column at the [position it had](#the-backlog-order-is-the-one-you-set) before it
+was dispatched: re-enabled, with no outcome, error or pull-request link, ready to dispatch
+again (`POST /api/tasks/:id/requeue`).
 
-The box is ticked by default only when freeing is provably safe:
+On the way back the task is cancelled: the agent Mission Control launched for it is stopped,
+any scout report is archived, and its checkout is removed so the next attempt starts from a
+fresh one. **Uncommitted and unpushed work in that checkout is deleted**, which is the
+difference from Kill: Kill keeps the tree and settles the task `failed`. An agent you
+[handed the task to](#hand-a-shelved-task-to-an-agent-thats-already-running) is yours, so
+it keeps running; only the task leaves it.
 
-- no checkout has uncommitted or untracked (non-ignored) files, which are never excused; and
-- no checkout has commits that no `origin` ref holds, unless those commits are contained in
-  the recorded head of a pull request Mission Control saw merge for this task. A commit made
-  after that merged head is never excused.
+The control is disabled, with the reason in its tooltip, on a session with no task, a done
+task, a chat task (chat never sits in the backlog), and a Pipeline commission, which has a
+lifecycle of its own and is restarted by filing a new Pipeline task.
 
-When it is not safe the box starts clear and lists each reason. You can still tick it, and
-the work goes with the tree. When it is safe, the daemon checks again after stopping the
-agent and immediately before the teardown, and keeps the tree if anything has changed. A
-free that fails never undoes the completion: the task stays `done` and the dialog says
-`Task completed, but the worktree could not be freed: <reason>`. The box is absent for a
-task with nothing Mission Control provisioned, such as an assigned task or a pipeline task.
-Left unticked, Complete behaves exactly as it always has and the worktree is kept.
+A task that has already stopped - `cancelled` or `failed`, including one whose agent you
+killed - no longer has a session to press this from. It is re-filed from its own row in
+[Sitrep](attention-and-alerts.md#roundup)'s **Recent outcomes** instead: **Reschedule** asks
+for a confirming click, removes any checkout the task still holds, and puts it back at its
+old position, whether or not anything depends on it.
 
 ### Hold a backlog item back
 

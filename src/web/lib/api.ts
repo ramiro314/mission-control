@@ -89,8 +89,6 @@ import type {
   StandingInstructionsView,
   WorktreesConfig,
   WorktreesConfigPatch,
-  CompleteTask,
-  TaskFreePreview,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
@@ -237,12 +235,9 @@ export interface DispatchResult extends ActionResult {
  * problems it just verified so the operator confirms this exact missing archive state.
  */
 export interface CompleteTaskResult extends ActionResult {
+  sessionClosureRequested?: boolean;
   confirmIncompleteScout?: boolean;
   problems?: string[];
-  /** Present only when `freeWorktree` was sent: whether the task's worktrees were freed. */
-  freed?: boolean;
-  /** Why they were not, while the task is still recorded `done`. */
-  freeError?: string;
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -1932,6 +1927,9 @@ export const api = {
   // `completeTask(id, ..., true)` is the "it already landed" half. Refused (409) on a task
   // that is done or still live.
   rescheduleTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reschedule`, {}),
+  // Send a dispatched task back to the backlog at the rank it had, cancelling it first when it
+  // is still live. The session footer's Return to backlog; refused (409) on a done task.
+  requeueTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/requeue`, {}),
   // `satisfyDependents` is the operator's explicit override of the merge gate on
   // declared dependencies - omitted rather than sent as false so the request body stays
   // the one every existing caller already sends. See `CompleteTaskSchema`.
@@ -1942,7 +1940,6 @@ export const api = {
     satisfyDependents?: boolean,
     requireStopped?: boolean,
     confirmIncompleteScout?: boolean,
-    freeWorktree?: CompleteTask["freeWorktree"],
   ) =>
     post<CompleteTaskResult>(`/api/tasks/${encodeURIComponent(id)}/complete`, {
       outcome,
@@ -1950,11 +1947,7 @@ export const api = {
       ...(satisfyDependents ? { satisfyDependents: true } : {}),
       ...(requireStopped ? { requireStopped: true } : {}),
       ...(confirmIncompleteScout ? { confirmIncompleteScout: true } : {}),
-      ...(freeWorktree ? { freeWorktree } : {}),
     }),
-  /** Whether Complete may free this task's worktrees by default; null when it cannot tell. */
-  taskFreePreview: (id: string) =>
-    fetchJson<TaskFreePreview>(`/api/tasks/${encodeURIComponent(id)}/free-preview`),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
   /**
    * The board's bulk edit: one change to several backlog tasks, written to all of them or

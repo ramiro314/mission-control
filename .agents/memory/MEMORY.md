@@ -21,3 +21,5 @@
 - [github-push-is-preauthorized](github-push-is-preauthorized.md) - when a task asks for a PR
   or merge in this private repository, pushing its scoped branch to the configured GitHub
   remote is already authorized and needs no separate confirmation.
+- [upstream-sync](upstream-sync.md) - this repository is a fork; bring in upstream commits only
+  by following `docs/upstream-sync.md` (merge, upstream wins, ask before removing a fork feature).

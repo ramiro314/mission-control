@@ -1,3 +1,4 @@
+import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -28,7 +29,6 @@ import {
   AwayConfigPatchSchema,
   BacklogPlanSchema,
   CompleteTaskSchema,
-  type TaskFreePreview,
   CompleteRetroNoChangeSchema,
   SetAffectedTestsCommandSchema,
   TestingSetupStartSchema,
@@ -99,6 +99,7 @@ import {
   PendingTurnDeliverSchema,
   ReattachQueueSchema,
   ReorderTaskSchema,
+  RequeueTaskSchema,
   RescheduleTaskSchema,
   RenameSchema,
   ReorderQueueSchema,
@@ -5806,10 +5807,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    const acceptReturn = tasks.prepareKilledSessionReturn(session);
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
     const r = await requestSessionStop(session, sdkSessions);
+    if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
     // both real, and neither implies the other.
@@ -8247,6 +8250,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
+  // Send a dispatched task back to the backlog from its own session: a live one is cancelled
+  // first, a stopped one is re-filed as it stands. The same status mapping as reschedule, so
+  // a done task, a chat task, or a Pipeline commission is a 409 the operator can read.
+  app.post("/api/tasks/:id/requeue", async (c) => {
+    const parsed = await parseBody(c, RequeueTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.requeue(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
   // Free a terminal task's leftover worktree/agent, keeping its status + outcome.
   app.post("/api/tasks/:id/reclaim", async (c) => {
     const r = await tasks.reclaim(c.req.param("id"));
@@ -8285,39 +8298,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       throw error;
     }
     if (!t) return c.json({ error: "no such task" }, 404);
-    const free = parsed.data.freeWorktree;
-    if (!free) return c.json(t);
-    // Completion is recorded above and never rolled back: from here a failure is reported as
-    // `freeError` beside the `done` task, and the tree is left to Clean up or retention.
-    const id = t.id;
-    const preview = await tasks.worktreeFreeability(id);
-    if (!preview?.applicable) return c.json({ ...t, freed: false });
-    const freed = await tasks.reclaim(
-      id,
-      free === "ifSafe"
-        ? {
-            beforeTeardown: async () => {
-              const now = await tasks.worktreeFreeability(id);
-              if (!now) return "the task no longer exists";
-              return now.freeable ? null : now.reasons.join("; ");
-            },
-          }
-        : {},
-    );
-    const latest = tasks.get(id) ?? t;
-    return c.json(
-      freed.ok
-        ? { ...latest, freed: true }
-        : { ...latest, freed: false, freeError: freed.error ?? "the worktree could not be freed" },
-    );
-  });
-
-  // Read-only: would completing this task free its worktrees by default? The Complete
-  // dialog's checkbox default. Not broadcast; the dialog asks when it opens.
-  app.get("/api/tasks/:id/free-preview", async (c) => {
-    const preview = await tasks.worktreeFreeability(c.req.param("id"));
-    if (!preview) return c.json({ error: "no such task" }, 404);
-    return c.json(preview satisfies TaskFreePreview);
+    return c.json({ ...t, sessionClosureRequested: taskHasWorktrees(t) && t.sessionId !== null });
   });
 
   app.delete("/api/tasks/:id", async (c) => {
