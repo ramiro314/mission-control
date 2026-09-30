@@ -187,18 +187,19 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
   const { status, summary, busy, update } = state;
   const config = status?.config ?? null;
   const user = profile(state, "user");
-  const [endpoint, setEndpoint] = useState("");
-  const [headerName, setHeaderName] = useState("authorization");
+  // What the operator has typed and not yet saved, or null for a field they have not touched.
+  // An untouched field shows the daemon's copy; a typed one wins until it is saved or the panel
+  // remounts.
+  //
+  // Derived at render rather than copied into state by an effect, because the copy was a race:
+  // a config refresh commits, its effect is still queued with the "nothing typed yet" closure,
+  // a keystroke lands in between, and the effect then overwrites what was just typed with the
+  // stored value. A field with nothing to adopt has nothing to be overwritten by.
+  const [endpointDraft, setEndpointDraft] = useState<string | null>(null);
+  const [headerNameDraft, setHeaderNameDraft] = useState<string | null>(null);
   const [credential, setCredential] = useState("");
-  const [dirty, setDirty] = useState(false);
-
-  // Adopt the stored values whenever the daemon's copy changes, unless the operator is midway
-  // through an edit - in which case their typing wins until they save or the panel remounts.
-  useEffect(() => {
-    if (dirty || !config) return;
-    setEndpoint(config.user.endpoint);
-    setHeaderName(config.user.headerName);
-  }, [config, dirty]);
+  const endpoint = endpointDraft ?? config?.user.endpoint ?? "";
+  const headerName = headerNameDraft ?? config?.user.headerName ?? "authorization";
 
   const credentialAfter = credential.length > 0 || (status?.userCredentialConfigured ?? false);
   // The SAME predicate the daemon applies, imported rather than reimplemented - which is what
@@ -217,7 +218,8 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
       ...(credential.length > 0 ? { userCredential: credential } : {}),
     });
     if (ok) {
-      setDirty(false);
+      setEndpointDraft(null);
+      setHeaderNameDraft(null);
       // Never retained after a successful save. The daemon holds it in its own secret table and
       // has no read path for it; keeping a copy in a React state that survives a route change
       // would put it back in reach of anything that can read the page.
@@ -244,10 +246,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             value={endpoint}
             disabled={!config}
             aria-label="Telemetry export endpoint"
-            onChange={(e) => {
-              setDirty(true);
-              setEndpoint(e.target.value);
-            }}
+            onChange={(e) => setEndpointDraft(e.target.value)}
           />
         </label>
 
@@ -259,10 +258,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             value={headerName}
             disabled={!config}
             aria-label="Telemetry credential header name"
-            onChange={(e) => {
-              setDirty(true);
-              setHeaderName(e.target.value);
-            }}
+            onChange={(e) => setHeaderNameDraft(e.target.value)}
           />
         </label>
 
@@ -280,10 +276,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             value={credential}
             disabled={!config}
             aria-label="Telemetry export credential"
-            onChange={(e) => {
-              setDirty(true);
-              setCredential(e.target.value);
-            }}
+            onChange={(e) => setCredential(e.target.value)}
           />
         </label>
         <span className="kb-row-desc">
@@ -399,13 +392,10 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
   const config = status?.config ?? null;
   const unavailable = (state.summary?.productEnrollment ?? "unavailable") === "unavailable";
   const product = profile(state, "product");
-  const [endpoint, setEndpoint] = useState("");
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    if (dirty || !config) return;
-    setEndpoint(config.product.endpoint);
-  }, [config, dirty]);
+  // Typed and not yet saved, or null - derived rather than adopted by an effect, for the reason
+  // given on the personal destination above.
+  const [endpointDraft, setEndpointDraft] = useState<string | null>(null);
+  const endpoint = endpointDraft ?? config?.product.endpoint ?? "";
 
   // The same shared predicate the personal destination and the daemon both use. No credential is
   // stored for this profile, so `hasCredential` is false rather than optimistic.
@@ -437,10 +427,7 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
             value={endpoint}
             disabled={!config}
             aria-label="Product analytics endpoint"
-            onChange={(e) => {
-              setDirty(true);
-              setEndpoint(e.target.value);
-            }}
+            onChange={(e) => setEndpointDraft(e.target.value)}
           />
         </label>
 
@@ -455,7 +442,7 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
               aria-label="Save the product analytics destination"
               onClick={() => {
                 void update({ product: { endpoint: endpoint.trim() } }).then((ok) => {
-                  if (ok) setDirty(false);
+                  if (ok) setEndpointDraft(null);
                 });
               }}
             >
