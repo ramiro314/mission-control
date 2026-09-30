@@ -86,14 +86,27 @@ async function dispatch(page: Page, daemon: DaemonHandle, goal: string): Promise
   await expect(dialog).toBeHidden();
 }
 
-/** The one SDK session this spec dispatched: its checkout is what binds a hook to it. */
+/**
+ * The one SDK session this spec dispatched: its checkout is what binds a hook to it.
+ *
+ * Polled, because the board draws the dispatch as a "Provisioning its worktree" card before
+ * the session exists, so a single read could land before the session did.
+ */
 async function dispatchedCwd(daemon: DaemonHandle): Promise<string> {
-  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
-    cwd: string;
-    runtime: string;
-  }[];
-  const dispatched = sessions.filter((s) => s.runtime === "sdk");
-  expect(dispatched.length, "exactly one SDK session was dispatched").toBe(1);
+  let dispatched: { cwd: string; runtime: string }[] = [];
+  await expect
+    .poll(
+      async () => {
+        const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+          cwd: string;
+          runtime: string;
+        }[];
+        dispatched = sessions.filter((s) => s.runtime === "sdk");
+        return dispatched.length;
+      },
+      { message: "exactly one SDK session was dispatched" },
+    )
+    .toBe(1);
   return dispatched[0]!.cwd;
 }
 
