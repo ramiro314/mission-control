@@ -2143,3 +2143,13 @@ that requires tools - whether that bundle really serves them. Claude reads
 that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
 leaves whatever **Install integrations** registered machine-wide alone.
+
+
+### Scout reports from a session
+
+The **Scouts** detail tab, immediately left of **Diff**, lists reports explicitly published by this session. Press Shift+Y
+with the session selected to open it, or use the tab in either Board or Console detail.
+Selecting a report opens its source HTML in the Files preview. **Open archive** reads the
+immutable published copy in the archive reader with a source-session filter. Report publication is
+available from every task kind and from taskless sessions; it does not complete the task.
+See [Archives](archives.md) for titles, immutable retries, and retained provenance.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tmpdir } from "node:os";
 /**
  * A stand-in for the `claude` binary, speaking enough of Claude Code's control protocol
  * for the daemon's SDK-runtime driver to bind a session, run turns, and show a transcript.
@@ -860,6 +861,16 @@ function daemonToken() {
 
 /** The opaque credential the daemon provisioned for this exact scout checkout. */
 function scoutCredential() {
+  // The fake is the agent itself, so use its PID (a real MCP child uses its parent PID).
+  const servers = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
+  const locator = process.env.MISSION_SCOUT_SESSION_LOCATOR ?? Object.values(servers)
+    .find((server) => server.env?.MISSION_SCOUT_SESSION_LOCATOR)?.env.MISSION_SCOUT_SESSION_LOCATOR;
+  const identity = locator ? `session:${locator}` : `pid:${process.pid}`;
+  const key = createHash("sha256").update(identity).digest("hex");
+  try {
+    return readFileSync(join(tmpdir(), "mission-control-agent-capabilities",
+      `scouts-${process.env.MISSION_PORT ?? "7317"}`, key), "utf8").trim();
+  } catch { /* Legacy scout fixtures retain their original credential path below. */ }
   const direct = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
   if (direct) return direct;
   const isolatedFile = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
@@ -889,7 +900,9 @@ function scoutCredential() {
  */
 async function runScout(prompt) {
   const valid = !prompt.includes(SCOUT_INVALID);
-  const relative = `docs/reports/${SCOUT_SLUG}/report.html`;
+  const requested = /E2E_REPORT_(FIRST|SECOND|RETRY)/.exec(prompt)?.[1];
+  const slug = requested === "SECOND" ? "second-report" : requested ? "first-report" : SCOUT_SLUG;
+  const relative = `docs/reports/${slug}/report.html`;
   const target = join(process.cwd(), relative);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, scoutReportHtml(valid));
@@ -913,6 +926,7 @@ async function runScout(prompt) {
       },
       body: JSON.stringify({
         reportPath: relative,
+        ...(requested ? { title: requested === "SECOND" ? "Second finding" : "First finding" } : {}),
         summary: "Resume rebuilt the session without replaying the repository grant.",
         tags: ["resume", "permissions"],
         supporting: [],
@@ -1258,7 +1272,7 @@ rl.on("line", (line) => {
     // spec wrote - which is what makes the requirement's delivery the thing under test. The
     // turn is held open across the write and the submission because both are real I/O; the
     // card stays "working" until the archive exists, exactly as a real one would.
-    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED) {
+    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED || prompt.includes("E2E_REPORT_")) {
       beginScoutTurn(prompt);
       return;
     }

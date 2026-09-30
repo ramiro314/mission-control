@@ -782,11 +782,11 @@ test("a query typed before the preview loaded highlights by itself, and survives
   await modes.getByRole("button", { name: "Preview" }).click();
 
   const reloaded = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
-  await expect
-    .poll(async () => (await highlighted(reloaded)).count, {
-      message: "the highlight never came back after the srcDoc reload",
-    })
-    .toBe(2);
+  // The debounced edit can replace srcDoc while evaluate is reading its old context.
+  // Retry the whole read across that expected navigation, as well as the highlight count.
+  await expect(async () => {
+    expect((await highlighted(reloaded)).count).toBe(2);
+  }, "the highlight never came back after the srcDoc reload").toPass({ timeout: 20_000 });
   /*
    * And the reader is still on the hit they had selected.
    *
