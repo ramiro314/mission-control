@@ -45,6 +45,29 @@ is the case that earned it: the file-comment composer was untypable on both surf
 development build, and no spec here could see it, because a `fill()` never presses a key and
 the production build has no double-invoke. Everything else belongs on `dist/`.
 
+## Typing between a commit and its effects
+
+A render that a fetch or a server frame caused commits in one scheduler task and runs its
+`useEffect`s in a later one. A keystroke that lands between the two is handled first, and the
+effects then run with closures from before it. On an idle machine nothing fits in that gap; on
+a busy CI runner a `fill()` does, which is how an effect that copied the stored telemetry
+endpoint into form state emptied a field a spec had just filled.
+
+`e2e/fixtures/effect-gap.ts` opens that gap deliberately and types inside it, from within the
+page, so a spec fails every time against the bug instead of once in fifty CI runs:
+
+```ts
+await installEffectGap(page);            // before the load
+const typed = await typeInEffectGapWhenEnabled(control, field, "text");
+await control.check();                   // whatever disables `control` and starts the work
+await typed();
+await expect(field).toHaveValue("text");
+```
+
+`e2e/specs/telemetry-destination-draft.spec.ts` is the case that earned it. Reach for it only
+when the subject is input surviving a background refresh; the keystroke is synthetic, and the
+fixture's header says what it assumes about React's scheduler.
+
 ## Host concurrency
 
 Playwright uses at most four workers, and Mission Control permits one E2E invocation per user on
