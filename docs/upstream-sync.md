@@ -321,9 +321,6 @@ procedure created, and leave any other worktree in the list alone.
 | Fails on both trees | An upstream flake | Do not patch upstream's files unless the fix is small and clearly correct. Record it in the PR's "Known gaps" with both failure rates, and suggest sending it upstream under "Follow-up work". |
 | Fails on neither tree once the machine is idle | The machine | Change nothing, and undo any fix already made for it. |
 
-Compare the rates, not only pass against fail. A test that fails on both trees but clearly more
-often on the sync branch was made worse by the sync, and belongs to the first row.
-
 A patch to an upstream-owned file is a deviation from this runbook. It can conflict in the next
 sync, so list it in the PR (section 9) along with the failure rates before and after the patch.
 
