@@ -225,8 +225,27 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   await page.emulateMedia({ colorScheme: "dark" });
   await capture(page, restoredCard, "console-dark.png");
 
+  // Settle every card for this path BEFORE the file goes, or the click below can be lost.
+  //
+  // The fake agent echoes each injected turn, so the report is presented twice: once in the
+  // "you" turn and once in the reply this test drives, directly beneath it. Reopening the
+  // conversation lands on the log's tail, where only the lower card is inside the preload
+  // margin. The click then scrolls Refresh to the middle of the log, which brings the upper
+  // card into range, and its FIRST read is of a file that is already deleted. A refusal is
+  // not held at the reserved 420px, so that card collapses by a few hundred pixels while
+  // the pointer is on its way down, the button moves out from under it, and the card under
+  // test never hears a click. Scrolling first and waiting for both documents means the
+  // click has nothing left to scroll and the neighbour has nothing left to read.
+  const refresh = restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` });
+  await refresh.scrollIntoViewIfNeeded();
+  const reportCards = page.getByRole("region", { name: `Preview of ${REPORT}` });
+  await expect(reportCards).toHaveCount(2);
+  for (const reportCard of await reportCards.all()) {
+    await expect(reportCard).toHaveAttribute("data-preview-source", "loaded");
+  }
+
   unlinkSync(join(live.cwd, REPORT));
-  await restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` }).click();
+  await refresh.click();
   await expect(restoredCard.getByText("File no longer exists.")).toBeVisible();
   await expect(restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` })).toBeVisible();
   await expect(restoredCard.getByRole("button", { name: `Comment on ${REPORT} in Files` })).toBeVisible();
