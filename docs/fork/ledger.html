@@ -109,7 +109,7 @@ or issues.</p>
 <tr>
 <td>Upstream sync process and fork ledger</td>
 <td>Active</td>
-<td>#59, #62</td>
+<td>#59, #62, #66, weekly mission PR</td>
 </tr>
 <tr>
 <td>CodeQL advanced setup</td>
@@ -630,7 +630,7 @@ the workflow editor and ladder components, <code>TaskSourcesPanel.tsx</code>, <c
 </tr>
 <tr>
 <td>PRs</td>
-<td>#59 (plan), #62 (first sync, runbook), and the PR that added this ledger (all after the original backfill range)</td>
+<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), and the PR that recorded the weekly sync mission in the runbook (all after the original backfill range)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -642,12 +642,16 @@ the workflow editor and ladder components, <code>TaskSourcesPanel.tsx</code>, <c
 </tr>
 </tbody></table>
 <p><strong>Intent.</strong> Keep the fork equal to upstream plus a deliberate layer of fork changes: merge
-upstream on a schedule, let upstream win, ask before removing a fork feature, and record every
-fork feature here so a sync can spot conceptual conflicts.</p>
+upstream weekly through the &quot;Sync fork with upstream&quot; recurring mission, let upstream win, ask
+before removing a fork feature, and record every fork feature here so a sync can spot
+conceptual conflicts.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li>Syncs are merge commits on <code>sync/upstream-&lt;date&gt;</code> off <code>origin/main</code>, landed by PR; no rebase,
 no force-push; the human merges.</li>
+<li>The operator&#39;s daemon runs a recurring mission, &quot;Sync fork with upstream&quot;, Mondays at 09:00
+local time. It files a backlog task that follows the runbook and ends without a branch or PR
+when upstream has nothing new. The mission is daemon state, not a file in this repository.</li>
 <li>Dependency versions equal upstream&#39;s; <code>package.json</code> differs only by the fork-only entries
 listed in the runbook.</li>
 <li>The fork&#39;s <code>Release</code> workflow stays disabled in GitHub and <code>release.yml</code> stays byte-identical
@@ -660,6 +664,9 @@ to upstream&#39;s.</li>
 <li>Upstream stays reachable as <code>teamupstart/mission-control</code> with a <code>main</code> branch, and its
 history is never rewritten (the merge model needs upstream SHAs to stay stable).</li>
 <li><code>.github/workflows/release.yml</code> keeps its file name, so the GitHub disable keeps matching it.</li>
+<li>Recurring missions keep filing a backlog task per due instant, with the coalesce-latest,
+skip-active and auto-on-conclusion policies behaving as <code>docs/recurring-missions.md</code>
+describes. A &quot;nothing new&quot; run relies on auto-on-conclusion to close its task.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>AGENTS.md</code> (the &quot;Fork&quot; section), <code>docs/README.md</code> (two links),
 <code>.agents/memory/MEMORY.md</code> (one line).</p>

@@ -9,6 +9,26 @@ What the fork changes, feature by feature, is recorded in the
 [fork ledger](fork/ledger.md) ([rendered](fork/ledger.html)). Every sync reads it before
 merging (section 2) and updates it afterwards (section 7).
 
+## When a sync runs
+
+A [recurring mission](recurring-missions.md) named **Sync fork with upstream** runs this runbook
+weekly, **Mondays at 09:00** in the operator's local time zone (cron `0 9 * * 1`,
+`America/Los_Angeles`). It lives on the operator's daemon, not in this repository, so open
+**Missions** to see or edit it. Each run files one ordinary backlog task against this repository
+whose body tells the agent to follow this runbook and to exit without a branch or PR when upstream
+has nothing new (section 1).
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Missed runs | Coalesce to latest | A laptop closed for weeks files one catch-up sync, not one per Monday. |
+| Overlap | Skip if active | A sync still open, for example a PR waiting for the human to merge, is not stacked on. |
+| Agent | Inherit | The `ship` kind's agent in Settings -> Models runs it. |
+| After work | None | The runbook already ends at the PR and CI hand-off (section 9). |
+| Completion | Complete the task automatically | A "nothing new" run opens no PR, so no merge would ever close its task, and Skip if active would then skip every later Monday. |
+
+A sync can also be started by hand with **Run now** on the mission, or by filing the same task
+yourself.
+
 ## Remotes
 
 | Remote | Repository | Role |
