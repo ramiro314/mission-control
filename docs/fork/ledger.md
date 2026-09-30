@@ -49,7 +49,7 @@ or issues.
 | Per-task-kind default workflows | Active | #12 |
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
-| Upstream sync process and fork ledger | Active | #59, #62 |
+| Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | CodeQL advanced setup | Active | #65 |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -463,18 +463,22 @@ flakes into deflake tasks.
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #59 (plan), #62 (first sync, runbook), and the PR that added this ledger (all after the original backfill range) |
+| PRs | #59 (plan), #62 (first sync, runbook), #66 (this ledger), and the PR that recorded the weekly sync mission in the runbook (all after the original backfill range) |
 | Plan docs | [upstream-sync/plan.md](../plans/upstream-sync/plan.md), [tickets.md](../plans/upstream-sync/tickets.md) |
 | Upstream candidate | No. It exists only because this is a fork. |
 
 **Intent.** Keep the fork equal to upstream plus a deliberate layer of fork changes: merge
-upstream on a schedule, let upstream win, ask before removing a fork feature, and record every
-fork feature here so a sync can spot conceptual conflicts.
+upstream weekly through the "Sync fork with upstream" recurring mission, let upstream win, ask
+before removing a fork feature, and record every fork feature here so a sync can spot
+conceptual conflicts.
 
 **Behavior contracts.**
 
 - Syncs are merge commits on `sync/upstream-<date>` off `origin/main`, landed by PR; no rebase,
   no force-push; the human merges.
+- The operator's daemon runs a recurring mission, "Sync fork with upstream", Mondays at 09:00
+  local time. It files a backlog task that follows the runbook and ends without a branch or PR
+  when upstream has nothing new. The mission is daemon state, not a file in this repository.
 - Dependency versions equal upstream's; `package.json` differs only by the fork-only entries
   listed in the runbook.
 - The fork's `Release` workflow stays disabled in GitHub and `release.yml` stays byte-identical
@@ -487,6 +491,9 @@ fork feature here so a sync can spot conceptual conflicts.
 - Upstream stays reachable as `teamupstart/mission-control` with a `main` branch, and its
   history is never rewritten (the merge model needs upstream SHAs to stay stable).
 - `.github/workflows/release.yml` keeps its file name, so the GitHub disable keeps matching it.
+- Recurring missions keep filing a backlog task per due instant, with the coalesce-latest,
+  skip-active and auto-on-conclusion policies behaving as `docs/recurring-missions.md`
+  describes. A "nothing new" run relies on auto-on-conclusion to close its task.
 
 **Upstream surfaces touched.** `AGENTS.md` (the "Fork" section), `docs/README.md` (two links),
 `.agents/memory/MEMORY.md` (one line).
