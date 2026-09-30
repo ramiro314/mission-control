@@ -21,17 +21,27 @@ const DESTINATIONS = [
   {
     name: "the operator's own backend",
     field: "Telemetry export endpoint",
+    stored: "",
     typed: "http://telemetry.example.com:4318",
+  },
+  {
+    // Adopted by the same effect as the endpoint above it, so it lost the same race - back to
+    // the stored header name rather than to nothing.
+    name: "the credential header of the operator's own backend",
+    field: "Telemetry credential header name",
+    stored: "authorization",
+    typed: "x-api-key",
   },
   {
     name: "the product analytics collector",
     field: "Product analytics endpoint",
+    stored: "",
     typed: "http://127.0.0.1:14398",
   },
 ];
 
 for (const destination of DESTINATIONS) {
-  test(`an endpoint typed for ${destination.name} survives a config refresh landing under it`, async ({
+  test(`what is typed for ${destination.name} survives a config refresh landing under it`, async ({
     dashboard,
     daemon,
   }) => {
@@ -40,19 +50,19 @@ for (const destination of DESTINATIONS) {
     await dashboard.reload();
 
     const collect = dashboard.getByLabel("Collect Mission Control telemetry on this machine");
-    const endpoint = dashboard.getByLabel(destination.field);
+    const field = dashboard.getByLabel(destination.field);
     await expect(collect).toBeEnabled();
     // The panel has heard from the daemon, so nothing above the switch is still going to move.
     await expect(dashboard.getByText(/has not reported its telemetry state yet/)).toBeHidden();
-    await expect(endpoint).toHaveValue("");
+    await expect(field).toHaveValue(destination.stored);
 
     // The keystroke that used to lose: typed after the daemon's answer to the switch has
     // committed, and before that commit's effects have run.
-    const typed = await typeInEffectGapWhenEnabled(collect, endpoint, destination.typed);
+    const typed = await typeInEffectGapWhenEnabled(collect, field, destination.typed);
     await collect.check();
     await typed();
 
     await expect(collect).toBeChecked();
-    await expect(endpoint).toHaveValue(destination.typed);
+    await expect(field).toHaveValue(destination.typed);
   });
 }
