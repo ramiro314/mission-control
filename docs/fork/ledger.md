@@ -18,10 +18,10 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | --- | --- |
 | Last synced upstream | **1.26.0**, `upstream/main` at `104a5407` (upstream #1152) |
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
-| Fork commits ahead of upstream | **153** (111 excluding merge commits) |
+| Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **7** (plus 2 superseded or removed, and 10 standalone fixes) |
-| Measured at | `origin/main` `72950236`, 2026-09-29 |
+| Active fork features | **8** (plus 2 superseded or removed, and 10 standalone fixes) |
+| Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
 
@@ -38,7 +38,8 @@ of syncs, so it is a size gauge rather than a feature count.
 ## At a glance
 
 Every fork feature, and every merged fork PR in exactly one home. Numbers missing from the
-table are pull requests closed without merging (#36 to #39, #42, #60) or issues.
+table are pull requests closed without merging (#36 to #39, #42, #60), pull requests still open,
+or issues.
 
 | Feature | Status | PRs |
 | --- | --- | --- |
@@ -49,6 +50,7 @@ table are pull requests closed without merging (#36 to #39, #42, #60) or issues.
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62 |
+| CodeQL advanced setup | Active | #65 |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | Standalone fixes | Not a feature | #4, #13, #15, #18, #19, #21, #22, #23, #24, #33 |
@@ -461,7 +463,7 @@ flakes into deflake tasks.
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #59 (plan), #62 (first sync, runbook), and the PR that added this ledger (all after the original backfill range). |
+| PRs | #59 (plan), #62 (first sync, runbook), and the PR that added this ledger (all after the original backfill range) |
 | Plan docs | [upstream-sync/plan.md](../plans/upstream-sync/plan.md), [tickets.md](../plans/upstream-sync/tickets.md) |
 | Upstream candidate | No. It exists only because this is a fork. |
 
@@ -491,6 +493,35 @@ fork feature here so a sync can spot conceptual conflicts.
 
 **Fork-only files.** `docs/upstream-sync.md`, `docs/fork/`, `.agents/memory/upstream-sync.md`,
 `docs/plans/upstream-sync/`.
+
+### CodeQL advanced setup
+
+| Field | Value |
+| --- | --- |
+| Status | **Active** |
+| PRs | #65 |
+| Plan docs | None; the runbook's fork-only surface list records it |
+| Upstream candidate | No. The exclusion exists because upstream's test code looks new to the fork at every sync. |
+
+**Intent.** Code scanning through a committed workflow instead of GitHub's default setup, so
+`e2e/` and `test/` can be excluded. Otherwise every sync reports upstream's test code as new
+alerts on the fork.
+
+**Behavior contracts.**
+
+- CodeQL runs on pushes and PRs to `main` and weekly, over the same four languages default setup
+  scanned, with `paths-ignore: [e2e, test]`.
+- The repository's CodeQL default setup stays disabled in GitHub settings.
+
+**Upstream behavior it assumes.**
+
+- Upstream has no `.github/workflows/codeql.yml` of its own. If it adds one, the conflict policy
+  applies.
+- Test code stays under `e2e/` and `test/`.
+
+**Upstream surfaces touched.** None; both files are fork-only.
+
+**Fork-only files.** `.github/workflows/codeql.yml`, `.github/codeql/codeql-config.yml`.
 
 ## Superseded and removed
 
