@@ -357,3 +357,13 @@ Plans belong in `docs/plans/<name>/plan.md`; a written plan is not an implementa
 
 Read `.agents/memory/MEMORY.md` (this repository's agent memory) before starting work, and
 any entry it links that bears on your task.
+
+## Fork
+
+This checkout is a fork of `teamupstart/mission-control`. What the fork changes, one entry per
+feature, is recorded in the [fork ledger](docs/fork/ledger.md); upstream commits come in only
+through the [upstream-sync runbook](docs/upstream-sync.md).
+
+A fork PR that adds or changes a feature updates that feature's ledger entry (intent,
+contracts, assumed upstream behavior, surfaces, status, PRs) in the same PR, and re-renders
+`docs/fork/ledger.html` from `docs/fork/ledger.md`.

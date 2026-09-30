@@ -1,0 +1,879 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Fork ledger</title><style>
+:root{color-scheme:light dark;--bg:#fbfaf8;--panel:#fff;--fg:#1c1e21;--muted:#62676e;--line:#e3dfd8;--accent:#b06a1f;--code:#f3f1ec}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--panel:#14181e;--fg:#e7ebf1;--muted:#98a2b1;--line:#242b34;--accent:#f6a733;--code:#0a0c0f}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:1.8em;line-height:1.25}h2{margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.3em}
+a{color:var(--accent)}code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:1px 4px;border-radius:4px}
+pre{background:var(--code);padding:12px;border-radius:8px;overflow-x:auto}pre code{padding:0}
+table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}
+.diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
+figcaption{color:var(--muted);font-size:13px}
+.b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
+</style></head><body><main>
+<h1>Fork ledger</h1>
+<p><code>ramiro314/mission-control</code> is a fork of
+<a href="https://github.com/teamupstart/mission-control"><code>teamupstart/mission-control</code></a>. This ledger
+records everything the fork changes against upstream, one entry per fork <strong>feature</strong>, with the
+PRs that built it. It has two readers:</p>
+<ul>
+<li><strong>A sync agent</strong> checks each new upstream commit against every active entry&#39;s contracts,
+assumptions and surfaces to find conceptual conflicts that merge cleanly as text (see
+<a href="../upstream-sync.md">the upstream-sync runbook</a>, section 2).</li>
+<li><strong>The human</strong> reads the status header to see where the fork stands against the original.</li>
+</ul>
+<p>Rendered page: <a href="ledger.html">ledger.html</a>. Rules for keeping it current are at the end.</p>
+<h2>Status</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Last synced upstream</td>
+<td><strong>1.26.0</strong>, <code>upstream/main</code> at <code>104a5407</code> (upstream #1152)</td>
+</tr>
+<tr>
+<td>Sync date</td>
+<td>2026-09-29, fork PR #62 (merge commit <code>64a5dcd8</code>)</td>
+</tr>
+<tr>
+<td>Fork commits ahead of upstream</td>
+<td><strong>155</strong> (112 excluding merge commits)</td>
+</tr>
+<tr>
+<td>Upstream commits behind</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>Active fork features</td>
+<td><strong>8</strong> (plus 2 superseded or removed, and 10 standalone fixes)</td>
+</tr>
+<tr>
+<td>Measured at</td>
+<td><code>origin/main</code> <code>118ca860</code>, 2026-09-29</td>
+</tr>
+</tbody></table>
+<p>How the numbers are measured, from the fork checkout with both remotes fetched:</p>
+<pre><code class="language-sh">git show upstream/main:package.json | grep &#39;&quot;version&quot;&#39;   # synced version
+git rev-list --count upstream/main..origin/main              # ahead
+git rev-list --count --no-merges upstream/main..origin/main  # ahead, excluding merges
+git rev-list --count origin/main..upstream/main              # behind
+</code></pre>
+<p>&quot;Ahead&quot; counts every fork commit not in upstream, including the merge commits of fork PRs and
+of syncs, so it is a size gauge rather than a feature count.</p>
+<h2>At a glance</h2>
+<p>Every fork feature, and every merged fork PR in exactly one home. Numbers missing from the
+table are pull requests closed without merging (#36 to #39, #42, #60), pull requests still open,
+or issues.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>PRs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Shape tasks, grill and tickets</td>
+<td>Active</td>
+<td>#1, #3, #7, #9, #10</td>
+</tr>
+<tr>
+<td>Task-source relations and dependency sync</td>
+<td>Active</td>
+<td>#5, #8, #16, #20</td>
+</tr>
+<tr>
+<td>Decision forms</td>
+<td>Active</td>
+<td>#2, #6, #28, #30</td>
+</tr>
+<tr>
+<td>Per-task-kind default workflows</td>
+<td>Active</td>
+<td>#12</td>
+</tr>
+<tr>
+<td>MCP backlog listing and adoption across repositories</td>
+<td>Active</td>
+<td>#14</td>
+</tr>
+<tr>
+<td>Flake-aware testing</td>
+<td>Active</td>
+<td>#25, #26, #27, #29, #44, #48, #53</td>
+</tr>
+<tr>
+<td>Upstream sync process and fork ledger</td>
+<td>Active</td>
+<td>#59, #62</td>
+</tr>
+<tr>
+<td>CodeQL advanced setup</td>
+<td>Active</td>
+<td>#65</td>
+</tr>
+<tr>
+<td>Complete frees the worktree</td>
+<td>Superseded by upstream #1148 (2026-09-29, #62)</td>
+<td>#11, #17</td>
+</tr>
+<tr>
+<td>Dependabot</td>
+<td>Removed (2026-09-29, #62)</td>
+<td>#35, #40, #41, #43</td>
+</tr>
+<tr>
+<td>Standalone fixes</td>
+<td>Not a feature</td>
+<td>#4, #13, #15, #18, #19, #21, #22, #23, #24, #33</td>
+</tr>
+</tbody></table>
+<h2>Reading an entry</h2>
+<p>Each feature entry records:</p>
+<ul>
+<li><strong>Status</strong>: active, superseded by upstream, removed, or upstreamed, with the date and the sync
+PR for any change.</li>
+<li><strong>PRs</strong> and <strong>plan docs</strong> behind it, and whether it is an <strong>upstream candidate</strong>.</li>
+<li><strong>Intent</strong>: what it does and why the fork needs it.</li>
+<li><strong>Behavior contracts</strong>: what the fork promises. A sync must keep these true.</li>
+<li><strong>Upstream behavior it assumes</strong>: the upstream behavior the feature relies on. An upstream
+commit that changes one of these is a conceptual conflict even if it merges cleanly.</li>
+<li><strong>Upstream surfaces touched</strong>: upstream modules, routes, protocol types, DB columns, MCP tools
+and UI views the feature changes. An upstream commit touching one needs a look.</li>
+<li><strong>Fork-only files</strong>: paths upstream does not have. They never conflict textually, but they
+can stop compiling against a changed upstream API.</li>
+</ul>
+<h2>Active features</h2>
+<h3>Shape tasks, grill and tickets</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#1 (plan), #3, #7, #9, #10. Related, not claimed: #21 (standalone fix to Shape this)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/shape-task-kind/plan.md">shape-task-kind/plan.md</a> sections 1 to 5</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. Self-contained and built on upstream pieces, but it is a second planning path and bundles third-party-derived skills (credited in <code>NOTICE</code>).</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A new planning kind, <code>shape</code>, beside <code>plan</code>. It interviews the human in rounds of
+decision forms (grill) before writing a plan, then splits the approved plan into
+dependency-gated backlog tasks (tickets), which it can mirror to a task source. Upstream <code>plan</code>
+drafts first and asks afterwards, and cannot turn a plan into gated tasks or GitHub sub-issues.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>shape</code> always asks at least one round: one <code>request_plan_decisions</code> form per round, the
+recommended option first, plus a free-text Other. Dismissing a round stops the session. The
+plan review&#39;s follow-up is Create tickets or Stop, never <code>/phased-plan</code>.</li>
+<li>Dispatch is refused, naming the toggle, when a required planning skill is off
+(<code>PLANNING_SKILLS.shape</code> is <code>grill</code>, <code>htmlPlans</code>, <code>tickets</code>). After work defaults to Plan
+Validation. Shape can be put on the backlog, but schedules and MCP <code>create_task</code> cannot file it.</li>
+<li>The breakdown review is one decision form and nothing is created before Submit. Each ticket
+is New task or Adopt an open backlog task. On submit the skill writes
+<code>docs/plans/&lt;name&gt;/tickets.md</code> and its HTML, commits, then files tickets in dependency order;
+they are released when the planning PR merges.</li>
+<li><code>push_task</code> mirrors only a task that depends on the calling session, is idempotent
+(<code>alreadyPushed: true</code>), links blockers only to items already in that source, and parents
+them under the planning task&#39;s item.</li>
+<li><strong>Shape this</strong> works on any backlog task that is not already shape and keeps its source link,
+labels, priority and dependencies. A refused Shape this leaves the task unchanged (#21).</li>
+<li>Upstream&#39;s <code>plan</code> kind is unchanged.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>request_plan_decisions</code> and the html-plans review flow keep their form shape and follow-up
+mechanism (shape swaps <code>implementation-follow-up</code> for <code>shape-follow-up</code>).</li>
+<li><code>TASK_KINDS</code> is an append-only text enum. If upstream appends its own kind, the fork&#39;s
+<code>&quot;shape&quot;</code> collides in <code>src/shared/types.ts</code>; kind sets are also re-derived in the backlog,
+schedule and harness-launch predicates.</li>
+<li>Plan publication and wrap-up (Foreman <code>worker.ts</code>, <code>wrapup-eligibility.ts</code>,
+<code>taskCompletionContract</code>) treat &quot;complete when the planning PR merges&quot; as they do for <code>plan</code>.</li>
+<li>MCP <code>create_task</code> (<code>/mcp/tasks</code>, <code>/mcp/v2/tasks</code>) and <code>pushTask</code> (in-flight claim, seen-ledger
+row and task link in one transaction) keep their semantics.</li>
+<li>Backlog edit and dispatch routes and the dependency cycle and new-edge refusals
+(<code>bulkTaskPatch</code>, <code>TaskManager.update</code>) keep their semantics.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/server/{dispatcher,tasks,task-contract,routes,mission-mcp}.ts</code>,
+<code>src/server/plans/{skills,tools}.ts</code>, <code>src/server/foreman/{plan-publication,worker,wrapup-eligibility}.ts</code>,
+<code>src/mcp/server.ts</code>, <code>src/server/schedules/store.ts</code>, <code>src/server/archives/task-gateway.ts</code>,
+<code>src/server/task-sources/{push,github-issues}.ts</code>, <code>src/shared/{task,task-completion,types,protocol,task-source}.ts</code>,
+<code>src/shared/telemetry-sources/{primary-actions,action-exclusions}.ts</code>.</li>
+<li>Routes: new <code>POST /mcp/v3/tasks</code>, <code>POST /mcp/backlog</code>, <code>POST /mcp/push-task</code>,
+<code>POST /api/tasks/:id/shape</code> (#21); <code>GET /api/harnesses/config</code> and <code>GET /api/skills</code> list
+shape and grill.</li>
+<li>Protocol: <code>TASK_KINDS</code> (+<code>&quot;shape&quot;</code>), <code>MCP_TASK_KINDS</code>, <code>SCHEDULE_TASK_KINDS</code>,
+<code>isPlanningTaskKind</code>, <code>McpCreateTicketSchema</code>, <code>McpAdoptTicketSchema</code>,
+<code>McpCreateTaskV3Schema</code>, <code>McpListBacklogSchema</code>, <code>McpPushTaskSchema</code>,
+<code>PushDraft.blockedBy</code> and <code>.parent</code>.</li>
+<li>Registries: <code>PLANNING_SKILLS</code>, <code>KIND_MISSION_MCP_TOOLS.shape</code>, <code>MISSION_MCP_TOOLS</code>,
+<code>PRIMARY_ACTION_ROUTES</code>, <code>ACTION_EXCLUSIONS</code>.</li>
+<li>MCP tools: new <code>list_backlog_tasks</code> and <code>push_task</code>; <code>create_task</code> gains ticket and adopt fields.</li>
+<li>DB: none.</li>
+<li>UI: <code>DispatchModal.tsx</code>, <code>layouts/BacklogColumn.tsx</code> and <code>line/BacklogDrawer.tsx</code> (Shape this),
+<code>schedules/ScheduleEditor.tsx</code>, <code>src/web/lib/guided-dispatch-steps.ts</code>.</li>
+</ul>
+<p><strong>Fork-only files.</strong> <code>src/server/plans/shape.ts</code>, <code>src/mcp/unknown-route.ts</code>, <code>skills/grill/</code>,
+<code>skills/tickets/</code>, <code>docs/plans/shape-task-kind/</code>,
+<code>docs/reports/grill-tickets-implement-in-mission-control/</code>.</p>
+<h3>Task-source relations and dependency sync</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#5, #8, #16, #20. Related, not claimed: #44 (label filters, under flake-aware testing)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/shape-task-kind/plan.md">shape-task-kind/plan.md</a> section 6 and &quot;Data and compatibility&quot;</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. A source-agnostic extension of upstream&#39;s task-source capability model and keep-updated merge, useful without shape. Sending the <code>SOURCE_CONTENT_GROUPS</code> and edge-shape additions upstream first would remove the append-only collision risk.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Recover upstream blocking links (GitHub <code>blockedBy</code>) as Mission Control
+dependencies, so a swept item is never scheduled before its blockers; keep those edges in sync
+through keep-updated; store a sub-issue&#39;s parent for display. Upstream sweeps drop blocking
+links, and shape tickets mirrored to GitHub would otherwise drift from their local edges.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>A <code>canRelate</code> capability sits beside <code>canPush</code>, <code>canAnnotate</code> and <code>canResolve</code> (GitHub true,
+Jira false). Nothing branches on source kind; callers use <code>canRelateTo</code>.</li>
+<li>On sweep, a blocker becomes a task edge when it is already a task that can take one, and a
+<code>source</code> edge otherwise. A parent or sub-issue link never becomes an edge.</li>
+<li>Each sweep rechecks up to 25 waiting <code>source</code> edges, least recently checked first. Closed as
+completed satisfies the edge for good; closed as not planned raises the stopped-dependency
+warning with Remove dependency.</li>
+<li>An edge type this build does not know is kept, unsatisfied, and written back unchanged.</li>
+<li>The keep-updated <code>dependencies</code> group three-way merges only edges for this source&#39;s own items.
+A cycle holds the whole update for that task. Pushed tasks sync only this group.</li>
+<li>A push records the blockers it wrote as the dependencies baseline in the same transaction; a
+clean push with no blockers records an empty baseline.</li>
+<li><code>Task.sourceParent</code> is display-only, owned by the source, overwritten on refresh, and shown as
+&quot;Sub-issue of #M&quot;.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>tasks.dependencies</code> JSON and <code>parseTaskDependencies</code> accept extra edge variants. The fork&#39;s
+<code>isWorkDependency</code> filter keeps <code>registry.ts</code> PR reconciliation to task edges; a new upstream
+path that reads dependencies without it could release or block work on a <code>source</code> edge.</li>
+<li><code>SOURCE_CONTENT_GROUPS</code> is persisted in <code>task_source_sync</code> conflicts and append-only. An
+upstream group appended after <code>labels</code> would collide with the fork&#39;s <code>dependencies</code>.</li>
+<li>The keep-updated three-way merge (<code>reconcileSourceContent</code>, baseline JSON, sync review UI)
+and the <code>sweepOnce</code>, <code>ingestSweep</code>, <code>readLinked</code> flow keep their structure.</li>
+<li>The <code>pushTask</code> transaction still writes the ledger row and task link together.</li>
+<li><code>gh issue view/list --json blockedBy,parent,state,stateReason</code> and
+<code>gh issue create --blocked-by/--parent</code> keep their behavior.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/server/db.ts</code> (<code>parseTaskDependencies</code>, <code>serializeTaskDependencies</code>),
+<code>src/server/registry.ts</code>, <code>src/server/tasks.ts</code>,
+<code>src/server/task-sources/{index,ingest,sweeper,sync,push,github-issues}.ts</code>,
+<code>src/shared/{task-source,task-source-sync,types,protocol,backlog,task-bulk}.ts</code>.</li>
+<li>Routes: none new; the sync-resolve route also returns 409 on a cycle.</li>
+<li>Protocol: <code>TaskDependency</code> gains <code>source</code> and <code>unknown</code>; <code>TaskSourceItemState</code>, <code>canRelate</code>,
+candidate <code>blockedBy</code> and <code>parent</code>, <code>SourceContent.blockedBy</code>, <code>SOURCE_CONTENT_GROUPS</code>
+(+<code>&quot;dependencies&quot;</code>), <code>PUSHED_SOURCE_GROUPS</code>, <code>PushResult.blockedBy</code>, <code>Task.sourceParent</code>.</li>
+<li>DB: new column <code>tasks.source_parent</code> (#20); <code>tasks.dependencies</code> JSON gains <code>source</code> and
+<code>unknown</code> edges; <code>task_source_sync</code> payload gains the <code>dependencies</code> group.</li>
+<li>UI: <code>TaskSourceSync.tsx</code>, <code>DispatchModal.tsx</code>, <code>BacklogBulkEditModal.tsx</code>, <code>ReportPanel.tsx</code>,
+<code>session-bits.tsx</code>, <code>layouts/BacklogColumn.tsx</code>, <code>line/BacklogDrawer.tsx</code>.</li>
+</ul>
+<p><strong>Fork-only files.</strong> <code>src/server/task-sources/relations.ts</code>, <code>src/shared/task-dependency.ts</code>.</p>
+<h3>Decision forms</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#2, #6, #28 (plan), #30</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/shape-task-kind/plan.md">shape-task-kind/plan.md</a> section 7 (tickets 1 and 2), <a href="../plans/decision-other-radio/plan.md">decision-other-radio/plan.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes for #2 and #30 (generic UX, no wire change; #30 fixes &quot;cannot send Other only&quot;). Maybe for #6 (a model call per plan-decisions review and a DB column).</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Decision forms open on the agent&#39;s recommendation, so accepting it is one click. An
+invited Foreman may draft an answer but never send it, and its words stay attributed. On
+single-choice questions Other is its own radio, so an Other-only answer can be sent. Shape&#39;s
+grill rounds lean on all three.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>Every <code>request_plan_decisions</code> form, and every <code>request_input</code> form with options, opens with
+its <code>recommended</code> options selected (a radio takes the first, a checkbox group all). An
+untouched Submit returns exactly the recommendation; a &quot;Selected: ...&quot; line shows what Submit
+sends. A form with no recommendation opens empty with Submit disabled.</li>
+<li>In a session Foreman is invited into, Foreman may draft on plan-decisions forms under a
+&quot;Foreman&#39;s draft&quot; banner. A draft never overwrites a form the human touched, &quot;Revert to
+recommendation&quot; affects only drafted questions, and withdrawing the invite removes the draft.</li>
+<li>Foreman never resolves a plan-decisions review: <code>ReviewManager.resolve</code> refuses
+<code>by: &quot;foreman&quot;</code> with a 400.</li>
+<li>Other text from a Foreman draft submitted unchanged is marked <code>(Foreman draft, accepted)</code>;
+any edit makes it the human&#39;s. The server checks this against the live draft and strips a
+forged flag.</li>
+<li>On a single-choice question with <code>allowOther</code>, Other is a radio in the same group; a blank
+Other is unanswered; picking a listed option keeps but does not send the Other text. The wire
+shape stays <code>{ selected: [], other }</code>. Multi-choice questions are unchanged.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>PlanDecisions.tsx</code> renders both <code>request_plan_decisions</code> and option-carrying <code>request_input</code>
+reviews, and <code>isAnswered</code>, <code>formatResponse</code> and conversation replay accept an Other-only answer.</li>
+<li>Both MCP schemas carry <code>recommended</code> and <code>allowOther</code> per option. Upstream&#39;s tool text still
+says the form &quot;does not preselect&quot;; the fork diverges there.</li>
+<li>The Foreman pipeline: <code>classifyPending</code>, tier 0, the full reviewer returning
+<code>answer.form.answers</code>, <code>planFromVerdict</code>; the note <code>handledMarker</code>; the invite resolved live;
+<code>ForemanPickMark</code> matching.</li>
+<li>Foreman writes notes through <code>PUT /api/sessions/:id/note</code>, and <code>Registry.upsertNote</code> and
+<code>retireNoteAnsweredByYou</code> own the note lifecycle.</li>
+<li>The browser reads the agent&#39;s answer through <code>GET /mcp/reviews/:id/wait</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/web/components/{PlanDecisions,ReviewModal,ReviewAnswer,ForemanSettingsPanel}.tsx</code>,
+<code>src/server/foreman/{pending,triage,verdict,worker}.ts</code>, <code>src/server/registry.ts</code>
+(<code>foremanMayDraft</code>, <code>upsertNote</code>), <code>src/server/reviews.ts</code>,
+<code>src/shared/{types,protocol,review-item}.ts</code>, <code>src/mcp/server.ts</code> (tool text).</li>
+<li>Routes: <code>PUT /api/sessions/:id/note</code> (403 on a draft for an uninvited session).</li>
+<li>Protocol: <code>PlanDecisionAnswer.foremanDraftAccepted</code>, the session note <code>draft</code> field, Foreman
+situation <code>plan-decisions-review</code> and triage reason <code>plan-decisions-draft</code>.</li>
+<li>DB: new column <code>session_notes.draft</code> (#6).</li>
+<li>MCP tools: <code>request_plan_decisions</code>, <code>request_input</code> (description text only).</li>
+<li>UI: the review modal decision form, the Foreman settings panel.</li>
+</ul>
+<p><strong>Fork-only files.</strong> <code>src/server/foreman/decision-draft.ts</code>, <code>docs/plans/decision-other-radio/</code>.</p>
+<h3>Per-task-kind default workflows</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#12</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. Generic and useful, but the <code>shape</code> row is fork-only and the 400 on the legacy <code>defaultWorkflowId</code> field is an API change upstream would have to accept.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Upstream configures only Ship&#39;s default after-work workflow; bugfix, plan and shape
+were hardwired to their built-ins. The fork gives every harness-launched kind its own row, so a
+duplicated workflow can become any kind&#39;s default.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><strong>Settings → Workflows → Dispatch defaults</strong> has one row each for ship, bugfix, plan, shape,
+scout and chat (not pipeline), stored in one <code>kindWorkflowDefaults</code> map: absent follows
+<code>BUILTIN_KIND_WORKFLOW_DEFAULTS</code>, <code>null</code> is None, a string is a workflow id.</li>
+<li>Every task created without an explicit workflow resolves through <code>taskDefaultWorkflowId</code>: the
+dispatch form, <code>POST /api/tasks</code>, task-source sweeps, <code>POST /api/tasks/:id/shape</code>, and the
+Recurring Mission preset (bugfix and plan). An explicit choice, None included, wins; pipeline
+always resolves to None; changing a row does not retarget tasks already in the backlog.</li>
+<li>The legacy <code>defaultWorkflowId</code> migrates on read; <code>PUT /api/workflows/config</code> carrying it
+returns 400; old settings backups still restore.</li>
+<li>A workflow named by a row cannot be archived or deleted, and the refusal names the kinds.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>The built-in workflow ids (No-Mistakes Review, Plan Validation, Bug Fix Review) and which kind
+each belongs to. The fork removed upstream&#39;s <code>taskHasOwnDefaultWorkflow</code>.</li>
+<li><code>WorkflowPolicy.defaultWorkflowId</code> is upstream&#39;s field. An upstream rename, its own per-kind
+defaults, or a change to how the <code>workflows</code> <code>app_config</code> entry is written conflicts directly.</li>
+<li><code>HARNESS_LAUNCHED_TASK_KINDS</code> and <code>taskKindLaunchesHarness</code> decide which kinds get a row.</li>
+<li>The settings backup and restore registry (<code>APP_CONFIG_ENTRIES</code>, <code>parseSettingPayload</code>) and the
+workflow archive and delete routes.</li>
+<li>The dispatch form&#39;s Ship-default stash rules (<code>afterWorkForKind</code>) and the Recurring Mission
+editor&#39;s workflow preset.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/shared/task.ts</code> (<code>BUILTIN_KIND_WORKFLOW_DEFAULTS</code>, <code>taskDefaultWorkflowId</code>,
+<code>kindsDefaultingToWorkflow</code>), <code>src/shared/{protocol,workflow,app-config-entries}.ts</code>,
+<code>src/server/workflows/config.ts</code>, <code>src/server/settings-backups/{config-registry,restore}.ts</code>,
+<code>src/server/routes.ts</code>, <code>src/web/lib/{api,settings-search,task-draft}.ts</code>.</li>
+<li>Routes: <code>GET</code>/<code>PUT /api/workflows/config</code> (<code>kindWorkflowDefaults</code>), <code>DELETE /api/workflows/:id</code>
+and <code>POST /api/workflows/:id/delete</code> (the guard), <code>POST /api/tasks</code>, <code>POST /api/tasks/:id/shape</code>.</li>
+<li>Protocol: <code>WorkflowPolicy.kindWorkflowDefaults</code>, <code>KindWorkflowDefaults</code>,
+<code>StoredWorkflowPolicySchema</code>.</li>
+<li>DB: none; stored in the existing <code>app_config</code> <code>workflows</code> entry.</li>
+<li>UI: <code>WorkflowSettingsPanel.tsx</code> (Dispatch defaults), <code>DispatchModal.tsx</code>,
+<code>schedules/ScheduleEditor.tsx</code>.</li>
+</ul>
+<p><strong>Fork-only files.</strong> None outside tests and specs; everything edits upstream files.</p>
+<h3>MCP backlog listing and adoption across repositories</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#14</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/shape-task-kind/plan.md">shape-task-kind/plan.md</a> ticket 4 (#14 follows up #9)</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>No, unless shape goes upstream: it extends fork-only tools and routes. <code>resolveRepositorySelector</code> alone is a small generic helper.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A shape session&#39;s ticket breakdown can list and adopt backlog tasks from a named
+repository, not only its own, and adoption is locked so a guessed or stale task id cannot attach
+dependency edges to another repository&#39;s work. It builds on the fork-only <code>list_backlog_tasks</code>
+and <code>/mcp/v3/tasks</code> from the shape entry.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>list_backlog_tasks(repository?)</code> takes an absolute path or a unique directory name, resolved
+like <code>create_task</code>&#39;s selector: no match is 400, an ambiguous name 409 with candidates. With
+<code>repository</code>, both the tasks and the <code>mirror</code> choice come from that repository.</li>
+<li>Without <code>repository</code> the MCP wrapper calls the v1 <code>/mcp/backlog</code> route, so older daemons keep
+working; with it, <code>POST /mcp/v2/backlog</code>, and an older daemon answers 404 (&quot;daemon out of
+date&quot;) rather than the wrong backlog.</li>
+<li><code>create_task</code> with <code>adoptTaskId</code> returns 409 unless the task&#39;s primary repository is the
+caller&#39;s (a pooled worktree counts as its main checkout) or the named <code>repository</code>.</li>
+<li><code>McpListBacklogV2Schema</code> and <code>McpAdoptTicketSchema</code> are <code>.strict()</code>.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>resolveSelector</code> and <code>prepareTaskRepositories</code> in <code>src/server/task-repository-preparation.ts</code>
+keep their path-or-unique-name rules and 400/409 semantics.</li>
+<li><code>resolveTaskRepoRoot</code> maps a pooled worktree to its main checkout.</li>
+<li>Every new route must be classified in <code>primary-actions</code> or <code>action-exclusions</code>, and appear in
+the route-surface oracle.</li>
+<li>Upstream&#39;s <code>/mcp/tasks</code> and <code>/mcp/v2/tasks</code> stay beside the fork&#39;s <code>/mcp/v3/tasks</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/server/task-repository-preparation.ts</code> (adds <code>resolveRepositorySelector</code>),
+<code>src/server/routes.ts</code> (<code>adoptMcpTask</code>), <code>src/shared/protocol.ts</code>,
+<code>src/shared/telemetry-sources/action-exclusions.ts</code>, <code>src/mcp/server.ts</code>.</li>
+<li>Routes: new <code>POST /mcp/v2/backlog</code>; extends the fork&#39;s <code>POST /mcp/backlog</code> and <code>POST /mcp/v3/tasks</code>.</li>
+<li>Protocol: <code>McpListBacklogV2Schema</code>, <code>McpAdoptTicketSchema.targetRepository</code>.</li>
+<li>MCP tools: <code>list_backlog_tasks</code>, <code>create_task</code> (adoption).</li>
+<li>DB and UI: none.</li>
+</ul>
+<p><strong>Fork-only files.</strong> None of its own; it extends <code>skills/tickets/SKILL.md</code> from the shape entry.</p>
+<h3>Flake-aware testing</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#25 (plan), #26 (phase 1), #27 (phase 2), #29 (phase 3), #48 (phase 4), #53 (phase 5), #44 (phase 6)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/flake-aware-testing/plan.md">flake-aware-testing/plan.md</a>, <a href="../plans/flake-aware-testing/phased-plan.md">phased-plan.md</a> and its six phase docs</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe, in pieces. The check-test lease (#26), the label filters (#44) and Wait for CI (#48) are general; the rest is large and opinionated (about 60 fork-only files, a committed action bundle, CI permission and job changes).</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Workflow test checks ran the full suite on the laptop, where load made unrelated
+tests time out and burned repair rounds. The fork runs only the tests a change touches locally,
+leaves the full suite to GitHub CI, reports flakes instead of failing on them, and turns repeat
+flakes into deflake tasks.</p>
+<p><strong>Sub-capabilities.</strong></p>
+<ul>
+<li>Check-test lease (#26): one workflow test check at a time per OS user across all daemons;
+<code>checkTestLease</code> and <code>checkTestConcurrency</code> settings.</li>
+<li>Affected-tests check slot (#27): an <code>affected-tests</code> Command slot with <code>{files}</code> and <code>{junit}</code>
+placeholders, selection from <code>.mission/testing.json</code>, one local rerun, JUnit repair packets.</li>
+<li>CI flake reporting (#29): the <code>mission-flake-report</code> action, a &quot;Flaky tests&quot; check run, one
+<code>flaky-test</code> issue per test, labeled <code>flaky-test:actionable</code> at 3 occurrences in 30 days.</li>
+<li>Wait for CI and flake-aware Inspector (#48): a <code>wait_for_ci</code> workflow node, CI flakes in the
+Inspector prompt, and the built-in <code>no-mistakes-review-affected-tests</code> workflow.</li>
+<li>Testing-setup skill (#53): the <code>testing-setup</code> skill, a &quot;Set up testing&quot; action on
+<strong>Settings → Trust</strong> rows, and the <code>set_affected_tests_command</code> MCP tool.</li>
+<li>Flake cleanup (#44): &quot;all of&quot; and &quot;none of&quot; label filters on GitHub Issues task sources, and
+the <code>deflake</code> skill. Placed here because it is phase 6 of this plan; the filters exist so a
+task source can sweep <code>flaky-test:actionable</code> issues for the deflake skill.</li>
+</ul>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>Only test-slot checks (<code>test</code>, <code>affected-tests</code>) take the lease. Lint, typecheck and build
+never wait. The command timeout starts when the lease is granted; the wait has its own
+60-minute limit and counts as an infrastructure failure. Test checks get
+<code>MISSION_TEST_CONCURRENCY=3</code> by default.</li>
+<li>An <code>affected-tests</code> template must use <code>{files}</code> as a whole argv element and contain <code>{junit}</code>,
+or it is refused on save. Failed test files rerun once: fail twice fails the check, fail then
+pass is a reported local flake. A check that selects nothing does not spend the Command budget.</li>
+<li>In CI, a unit test that fails then passes on a file rerun does not fail the job. For E2E,
+Playwright <code>flaky</code> is a flake and <code>unexpected</code> a real failure.</li>
+<li>&quot;Flaky tests&quot; is posted on the PR head commit: <code>neutral</code> if anything flaked, <code>success</code>
+otherwise. Only the <code>flake report</code> job has <code>checks: write</code> and <code>issues: write</code>.</li>
+<li>Wait for CI passes only when every check is green and a &quot;Flaky tests&quot; check is present. It
+fails with a repair packet on any other failing check, blocks without spending a repair round
+on timeout or missing checks, and adds no GitHub polling of its own.</li>
+<li>A task source whose &quot;none of&quot; labels overlap its &quot;all of&quot; or &quot;any of&quot; labels is rejected.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>The <code>.github/workflows/ci.yml</code> layout: unit shards through
+<code>.github/actions/run-unit-shard/action.yml</code>, Playwright E2E shards, <code>--test-shard</code>.</li>
+<li><code>npm test</code> runs <code>node --test</code> with the <code>./test/setup-state.mjs</code> and <code>tsx</code> preloads and reads
+<code>MISSION_TEST_CONCURRENCY</code>.</li>
+<li>Workflow check slots and the Command library (<code>WorkflowCommandManager</code>, check runtime and
+supervisor, the per-run Command budget and repair packets).</li>
+<li>The Inspector polls each PR once and stores it in <code>inspector_prs</code> keyed by
+<code>observed_head_sha</code>; the Inspector review prompt.</li>
+<li>The Pull Request action node and the No-Mistakes Review built-in workflow.</li>
+<li>The GitHub Issues task source with <code>labelsAny</code>, and the skills catalog&#39;s <code>category</code> and
+<code>enforcement</code> model.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/server/workflows/{engine,checks,check-runtime,check-supervisor,store,manager,recovery,builtin-workflows}.ts</code>,
+<code>src/server/inspector/{github,prompt,worker}.ts</code>, <code>src/server/{index,diff,pr,routes,mission-mcp}.ts</code>,
+<code>src/server/settings-backups/restore.ts</code>, <code>src/server/task-sources/github-issues.ts</code>,
+<code>src/mcp/server.ts</code>, <code>src/shared/{workflow,protocol,app-config-entries,builtin-workflow,task-source,skills,workflow-graph,workflow-lifecycle,workflow-stages,workflow-actions}.ts</code>.</li>
+<li>Routes: <code>GET</code>/<code>PUT /api/workflows/config</code> (adds <code>checkTestLease</code>, <code>checkTestConcurrency</code>);
+new <code>POST /api/repositories/testing-setup</code> and <code>POST /mcp/workflow-commands/affected-tests</code>.</li>
+<li>Protocol: workflow node kind <code>wait_for_ci</code>; Command slot <code>affected-tests</code>; <code>labelsAll</code> and
+<code>labelsNone</code> on <code>GithubIssuesConfigSchema</code>; workflow config <code>checkTestLease</code> and
+<code>checkTestConcurrency</code>.</li>
+<li>DB: <code>inspector_prs.observed_ci_json</code>.</li>
+<li>MCP tool: <code>set_affected_tests_command</code>.</li>
+<li>CI: <code>.github/workflows/ci.yml</code> (the <code>flake report</code> job, the E2E flake step),
+<code>.github/actions/run-unit-shard/action.yml</code>, <code>e2e/playwright.config.ts</code>.</li>
+<li><code>package.json</code>: <code>test</code> delegates to <code>test:run</code>; <code>build:flake-report-action</code>; devDependency
+<code>esbuild</code>.</li>
+<li>UI: <code>WorkflowSettingsPanel.tsx</code> (Test checks card), <code>CommandLibrary.tsx</code>, <code>WorkflowRuns.tsx</code>,
+the workflow editor and ladder components, <code>TaskSourcesPanel.tsx</code>, <code>TrustPanel.tsx</code>.</li>
+</ul>
+<p><strong>Fork-only files.</strong> <code>.github/actions/mission-flake-report/</code> (generated), <code>.mission/testing.json</code>,
+<code>scripts/build-flake-report-action.ts</code>, <code>src/flake-report-action/</code>,
+<code>src/server/util/host-lease.ts</code>, <code>src/server/{test-selection,testing-config,testing-setup,testing-setup-tool}.ts</code>,
+<code>src/server/workflows/affected-tests.ts</code>,
+<code>src/shared/{junit,testing-config,flake-report,command-template,ci-checks,wait-for-ci}.ts</code>,
+<code>src/web/workflows/WaitForCi{Fields,Panel}.tsx</code>, <code>skills/deflake/</code>, <code>skills/testing-setup/</code>,
+<code>docs/flaky-tests.md</code>, <code>docs/plans/flake-aware-testing/</code>.</p>
+<h3>Upstream sync process and fork ledger</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#59 (plan), #62 (first sync, runbook), and the PR that added this ledger (all after the original backfill range)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/upstream-sync/plan.md">upstream-sync/plan.md</a>, <a href="../plans/upstream-sync/tickets.md">tickets.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>No. It exists only because this is a fork.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Keep the fork equal to upstream plus a deliberate layer of fork changes: merge
+upstream on a schedule, let upstream win, ask before removing a fork feature, and record every
+fork feature here so a sync can spot conceptual conflicts.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>Syncs are merge commits on <code>sync/upstream-&lt;date&gt;</code> off <code>origin/main</code>, landed by PR; no rebase,
+no force-push; the human merges.</li>
+<li>Dependency versions equal upstream&#39;s; <code>package.json</code> differs only by the fork-only entries
+listed in the runbook.</li>
+<li>The fork&#39;s <code>Release</code> workflow stays disabled in GitHub and <code>release.yml</code> stays byte-identical
+to upstream&#39;s.</li>
+<li>Every fork PR that adds or changes a feature updates its entry here and re-renders
+<code>ledger.html</code> (the &quot;Fork&quot; section of <code>AGENTS.md</code>).</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>Upstream stays reachable as <code>teamupstart/mission-control</code> with a <code>main</code> branch, and its
+history is never rewritten (the merge model needs upstream SHAs to stay stable).</li>
+<li><code>.github/workflows/release.yml</code> keeps its file name, so the GitHub disable keeps matching it.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>AGENTS.md</code> (the &quot;Fork&quot; section), <code>docs/README.md</code> (two links),
+<code>.agents/memory/MEMORY.md</code> (one line).</p>
+<p><strong>Fork-only files.</strong> <code>docs/upstream-sync.md</code>, <code>docs/fork/</code>, <code>.agents/memory/upstream-sync.md</code>,
+<code>docs/plans/upstream-sync/</code>.</p>
+<h3>CodeQL advanced setup</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#65</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td>None; the runbook&#39;s fork-only surface list records it</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>No. The exclusion exists because upstream&#39;s test code looks new to the fork at every sync.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Code scanning through a committed workflow instead of GitHub&#39;s default setup, so
+<code>e2e/</code> and <code>test/</code> can be excluded. Otherwise every sync reports upstream&#39;s test code as new
+alerts on the fork.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>CodeQL runs on pushes and PRs to <code>main</code> and weekly, over the same four languages default setup
+scanned, with <code>paths-ignore: [e2e, test]</code>.</li>
+<li>The repository&#39;s CodeQL default setup stays disabled in GitHub settings.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>Upstream has no <code>.github/workflows/codeql.yml</code> of its own. If it adds one, the conflict policy
+applies.</li>
+<li>Test code stays under <code>e2e/</code> and <code>test/</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> None; both files are fork-only.</p>
+<p><strong>Fork-only files.</strong> <code>.github/workflows/codeql.yml</code>, <code>.github/codeql/codeql-config.yml</code>.</p>
+<h2>Superseded and removed</h2>
+<h3>Complete frees the worktree</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Superseded by upstream</strong> #1148, 2026-09-29, sync PR #62</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#11 (plan), #17</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/complete-frees-worktree/plan.md">complete-frees-worktree/plan.md</a> (kept as history)</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>No. Upstream solved the same problem its own way.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent (as built).</strong> Worktrees piled up after tasks were completed. #17 added an opt-in
+&quot;Free the worktree&quot; checkbox to the Complete dialog, backed by a safety preview at
+<code>GET /api/tasks/:id/free-preview</code> that refused to free a checkout with unpushed or uncommitted work.</p>
+<p><strong>What replaced it.</strong> Upstream #1148 makes Complete always reset and return task-owned
+worktrees, and returns a safely killed task&#39;s checkout automatically. The sync removed the
+checkbox, the preview route, the <code>freeWorktree</code> request field, <code>TaskFreePreview</code>,
+<code>worktreeFreeability</code>, and their tests, e2e spec and route-surface entry (plan decision D1). The
+runbook&#39;s worked example records the resolution. Consequence: Complete now discards uncommitted
+changes in task worktrees, which is upstream&#39;s intended behavior.</p>
+<h3>Dependabot</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Removed</strong> 2026-09-29, sync PR #62</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#35 (config), #40 (<code>@hono/node-server</code> 1.x to 2.x), #41 (<code>concurrently</code> 9 to 10), #43 (13 grouped minor and patch bumps)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/upstream-sync/plan.md">upstream-sync/plan.md</a> decisions D2 and D5</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>No.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent (as built).</strong> Automated dependency bumps for the fork.</p>
+<p><strong>Why it was removed.</strong> It moved versions away from upstream, which made every sync fight the
+lockfile. The sync deleted <code>.github/dependabot.yml</code>, rolled every dependency back to upstream&#39;s
+version, and closed the open Dependabot PRs. The fork now takes new versions only through the
+sync.</p>
+<h2>Standalone fixes</h2>
+<p>Fixes that are not part of a fork feature. None had an upstream equivalent on <code>upstream/main</code>
+at <code>104a5407</code> (checked by each fix&#39;s key symbol).</p>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Merged</th>
+<th>What it fixes</th>
+<th>Surface touched</th>
+<th>Upstream candidate</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>#4</td>
+<td>2026-09-27</td>
+<td>The ship and bugfix handoff told sessions not to commit, so workflow Checks tested the base HEAD. Sessions now commit locally before reporting complete.</td>
+<td><code>src/shared/task-completion.ts</code>, <code>src/server/task-contract.ts</code>, <code>src/server/foreman/ship-shepherd.ts</code></td>
+<td>Yes: upstream still defers the commit.</td>
+</tr>
+<tr>
+<td>#13</td>
+<td>2026-09-27</td>
+<td>The Backlog drawer&#39;s next-up mark was clipped on narrow rows; the test preload now also clears inherited <code>*_BIN</code> overrides.</td>
+<td><code>src/web/styles.css</code>, <code>test/setup-state.mjs</code>, <code>AGENTS.md</code></td>
+<td>Maybe: the <code>*_BIN</code> preload part is generic; the CSS part follows the fork&#39;s Shape this button.</td>
+</tr>
+<tr>
+<td>#15</td>
+<td>2026-09-28</td>
+<td>The WezTerm socket locator&#39;s fixed 1 s timeout made <code>terminal-emulator-spawn</code> flaky under load; the timeout is now injectable.</td>
+<td><code>src/server/terminal/wezterm-socket.ts</code>, <code>src/server/terminal/wezterm.ts</code></td>
+<td>Yes: a generic test flake.</td>
+</tr>
+<tr>
+<td>#18</td>
+<td>2026-09-28</td>
+<td>A tooltip stayed stranded after its disabled anchor was swapped for an enabled one.</td>
+<td><code>src/web/components/Tooltip.tsx</code></td>
+<td>Maybe: the fix is generic; its spec uses the fork&#39;s shape dispatch refusal.</td>
+</tr>
+<tr>
+<td>#19</td>
+<td>2026-09-28</td>
+<td>SDK one-shots (Personas, Inspector) loaded claude.ai MCP connectors such as Gmail send and Drive share.</td>
+<td><code>src/server/llm/claude-sdk.ts</code>, <code>src/server/llm/claude-grant.ts</code>, <code>src/server/harness/claude/sdk-types.ts</code></td>
+<td>Yes: a security issue that applies upstream as is.</td>
+</tr>
+<tr>
+<td>#21</td>
+<td>2026-09-28</td>
+<td>A refused Shape this left the task converted to shape; it is now one atomic <code>POST /api/tasks/:id/shape</code>. Related to Shape tasks, grill and tickets.</td>
+<td><code>src/server/routes.ts</code>, <code>src/server/tasks.ts</code>, <code>line/BacklogDrawer.tsx</code>, <code>layouts/BacklogColumn.tsx</code></td>
+<td>No: shape does not exist upstream.</td>
+</tr>
+<tr>
+<td>#22</td>
+<td>2026-09-28</td>
+<td>Persona and Foreman verdicts were rejected when the model sent <code>null</code> for optional fields; retries now name the real schema miss.</td>
+<td><code>src/server/workflows/verdict.ts</code>, <code>src/server/foreman/verdict.ts</code>, <code>src/server/llm/structured.ts</code>, <code>src/server/workflows/engine.ts</code></td>
+<td>Yes: generic workflow reliability.</td>
+</tr>
+<tr>
+<td>#23</td>
+<td>2026-09-28</td>
+<td>A slot quarantined during acquire kept a phantom owner and could never be destroyed; reconcile recovers slots already stuck.</td>
+<td><code>src/server/worktrees/manager.ts</code>, <code>src/server/worktrees/store.ts</code></td>
+<td>Yes: #1148 changed <code>manager.ts</code> but not this path.</td>
+</tr>
+<tr>
+<td>#24</td>
+<td>2026-09-28</td>
+<td>Codex &quot;model unsupported&quot; and &quot;quota exhausted&quot; failures were retried as infrastructure failures; they are now typed, not retried, and shown.</td>
+<td><code>src/server/llm/codex.ts</code>, <code>src/shared/llm.ts</code>, <code>src/server/llm/structured.ts</code>, <code>src/server/workflows/engine.ts</code></td>
+<td>Yes: generic; adds an <code>error_code</code> value.</td>
+</tr>
+<tr>
+<td>#33</td>
+<td>2026-09-29</td>
+<td>The e2e fake <code>node</code> shim orphaned fake processes on timeout (it now <code>exec</code>s); also repairs the review-answer spec after #30.</td>
+<td><code>e2e/fixtures/conductor.ts</code>, <code>e2e/specs/review-answers-in-conversation.spec.ts</code></td>
+<td>Maybe: the shim fix is generic; the spec fix follows fork #30.</td>
+</tr>
+</tbody></table>
+<h2>Keeping this ledger current</h2>
+<ul>
+<li><p><strong>A fork PR that adds or changes a feature</strong> updates that feature&#39;s entry here (or adds a new
+one, and a row in &quot;At a glance&quot;) in the same PR. A standalone fix adds a row to the fixes
+table. This rule is stated in the &quot;Fork&quot; section of <code>AGENTS.md</code>.</p>
+</li>
+<li><p><strong>Every upstream sync</strong> checks the new upstream commits against each active entry before
+merging, and updates statuses and the status header afterwards, following
+<a href="../upstream-sync.md">docs/upstream-sync.md</a> sections 2 and 7.</p>
+</li>
+<li><p><strong>Re-render the HTML</strong> whenever this file changes, in the same commit. <code>ledger.html</code> is this
+file converted with <code>marked</code> (already in <code>node_modules</code>) and wrapped in the page shell at the
+top of the current <code>ledger.html</code> (everything up to <code>&lt;main&gt;</code>), keeping its inline light and
+dark styles:</p>
+<pre><code class="language-sh">npx marked --gfm -i docs/fork/ledger.md -o /tmp/ledger-body.html
+</code></pre>
+<p>Replace everything between <code>&lt;main&gt;</code> and <code>&lt;/main&gt;</code> in <code>ledger.html</code> with that output. Nothing
+checks this mechanically; review does.</p>
+</li>
+</ul>
+</main></body></html>
