@@ -227,6 +227,9 @@ git merge-base --is-ancestor upstream/main HEAD && echo "upstream/main is an anc
 git diff upstream/main -- package.json
 ```
 
+When a gate fails, do not fix anything yet. First work out where the failure comes from, with
+[When a gate fails: the sync, upstream, or the machine](#when-a-gate-fails-the-sync-upstream-or-the-machine).
+
 ## 9. Pull request and CI hand-off
 
 - Push `sync/upstream-<date>` to `origin` and open one PR against the fork's `main`, following
@@ -238,6 +241,117 @@ git diff upstream/main -- package.json
   section 7.
 - Wait for the PR's CI to go green and fix what fails.
 - **The human merges.** The agent never merges a sync PR.
+
+## When a gate fails: the sync, upstream, or the machine
+
+A gate that fails on the sync branch has one of three causes, and each has a different answer:
+the sync broke it, it was already failing on upstream, or the machine is the problem. Decide
+which before changing any file. In the first sync (PR #62) this was the most expensive work:
+
+- Two unit files hung and `desktop-startup` timed out only because the machine was at a load
+  average near 250. They passed unmodified after a reboot, and the fixes written for them were
+  reverted.
+- `board-empty-columns` and `workflow-builder-electron` failed on a clean `upstream/main`
+  checkout too.
+- A quick baseline checkout that shared the branch's `node_modules` produced 35 failures of its
+  own, so it could not be trusted.
+
+### First checks
+
+Record the machine load, then rerun the failing file or spec alone:
+
+```sh
+uptime
+sysctl -n hw.ncpu   # core count on macOS; `nproc` on Linux
+node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
+npm run test:e2e -- e2e/specs/<spec>.spec.ts
+```
+
+A load average above the core count is heavy load. A failure seen only under heavy load is
+suspect: do not act on it until it has been rerun on an idle machine. If the load does not come
+down (other sessions, a stuck process), ask the human instead of patching the test.
+
+### A clean upstream baseline
+
+If the failure survives the rerun, build a baseline: a separate worktree at `upstream/main`
+with its own `npm ci` and its own `npm run build`. Never symlink or copy the sync branch's
+`node_modules` or `dist` into it. The baseline is only evidence if nothing in it comes from the
+branch under test.
+
+From the sync branch's checkout:
+
+```sh
+git fetch upstream
+BASELINE=../mission-control-upstream-baseline
+git worktree add --detach "$BASELINE" upstream/main
+(cd "$BASELINE" && npm ci && npm run build)
+```
+
+The sync branch needs its own `npm run build` too, which the gates in section 8 already ran.
+
+### Compare both trees
+
+Run the same test on both trees with repeats, one tree at a time, and record `uptime` before
+each run. A single pass or a single failure says nothing about a flake. Two things skew the
+comparison if they are skipped:
+
+- **Let the load settle between runs.** The first tree's run raises the load average on its
+  own, so wait until `uptime` is back under the core count before starting the second tree.
+- **Run the test once in the baseline with its output visible before repeating it.** The first
+  run in a fresh worktree does one-time setup (an Electron test downloads the Electron binary),
+  and that must not be counted as a failure of the test.
+
+A Playwright spec, run once in the sync branch's checkout and once in `$BASELINE`:
+
+```sh
+uptime
+npm run test:e2e -- e2e/specs/<spec>.spec.ts --repeat-each=10
+```
+
+The last lines of the output give the failure rate: `failed` over `failed` plus `passed`.
+
+A `node --test` file, run once in each tree:
+
+```sh
+uptime
+fail=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts > /dev/null 2>&1 || fail=$((fail + 1))
+done
+echo "failed $fail/10"
+```
+
+Remove the baseline worktree when the comparison is done, and confirm it is gone:
+
+```sh
+git worktree remove "$BASELINE"
+git worktree list
+```
+
+No `--force` is needed: `node_modules`, `dist` and `test-results` are ignored, so the baseline
+counts as clean. If git refuses, the baseline holds a tracked change or an untracked file, which
+means something edited it; look at that before removing it. Remove only the worktree this
+procedure created, and leave any other worktree in the list alone.
+
+### What to do in each case
+
+| Result | Cause | Action |
+| --- | --- | --- |
+| Fails only on the sync branch | The sync | Fix it in the sync PR, as a follow-up commit on the sync branch (section 3). |
+| Fails on both trees | An upstream flake | Do not patch upstream's files unless the fix is small and clearly correct. Record it in the PR's "Known gaps" with both failure rates, and suggest sending it upstream under "Follow-up work". |
+| Fails on neither tree once the machine is idle | The machine | Change nothing, and undo any fix already made for it. |
+
+A patch to an upstream-owned file is a deviation from this runbook. It can conflict in the next
+sync, so list it in the PR (section 9) along with the failure rates before and after the patch.
+
+### Evidence for the PR
+
+Put in the PR description, under "Evidence" or "Known gaps", for each test that was compared:
+
+- The SHA of each tree (`git rev-parse --short HEAD` in both).
+- The exact commands that were run.
+- The failure rate on the sync branch and on `upstream/main`, as `failed/runs`.
+- The `uptime` line recorded before each run.
 
 ## The fork's Release workflow is disabled
 
