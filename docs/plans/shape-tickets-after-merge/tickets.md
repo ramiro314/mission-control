@@ -7,10 +7,10 @@ on the machinery the previous one adds.
 
 | # | Title | Kind | Labels | Blocked by | Task | Issue |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Tickets follow-up links its tickets to the merged shape task | ship | shape-tickets-after-merge | None | _pending_ | _pending_ |
-| 2 | Create tickets from a merged shape task | ship | shape-tickets-after-merge | 1 | _pending_ | _pending_ |
-| 3 | Plan review's Create tickets starts the follow-up when the plan merges | ship | shape-tickets-after-merge | 2 | _pending_ | _pending_ |
-| 4 | Ticket choice marker on shape tasks | ship | shape-tickets-after-merge | 3 | _pending_ | _pending_ |
+| 1 | Tickets follow-up links its tickets to the merged shape task | ship | shape-tickets-after-merge | None | `64153ddd-3ae3-435d-bc9e-80f7d1fca1a5` | [#79](https://github.com/ramiro314/mission-control/issues/79) |
+| 2 | Create tickets from a merged shape task | ship | shape-tickets-after-merge | 1 | `9eb46013-dcc1-42fc-8c3b-3c8fb6dac1a9` | [#80](https://github.com/ramiro314/mission-control/issues/80) |
+| 3 | Plan review's Create tickets starts the follow-up when the plan merges | ship | shape-tickets-after-merge | 2 | `3af50049-129d-4427-9b9c-08c6194db71f` | [#81](https://github.com/ramiro314/mission-control/issues/81) |
+| 4 | Ticket choice marker on shape tasks | ship | shape-tickets-after-merge | 3 | `64e5c4a6-8365-4f09-b357-dcb5cf781b71` | [#82](https://github.com/ramiro314/mission-control/issues/82) |
 
 ## Ticket 1: Tickets follow-up links its tickets to the merged shape task
 
