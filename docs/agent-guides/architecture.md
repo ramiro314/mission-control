@@ -125,6 +125,8 @@ New final completions persist a `task_worktree_returns` obligation in the same t
 the done status and optional session closure. Startup resumes only those explicit obligations;
 historical done tasks are never backfilled and keep the existing retention policy. The obligation
 survives partial return and is cleared when the last checkout returns or the task attempt changes.
+A refused return is retried 30 seconds later, doubling with each consecutive refusal up to 15
+minutes, because every attempt reads the whole process table.
 
 A handoff from SDK to terminal clears the task binding before stopping the driver, waits for the driver pump, starts through the normal unique-spawn path, then rebinds after discovery.
 

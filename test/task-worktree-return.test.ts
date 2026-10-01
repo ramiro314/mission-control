@@ -12,7 +12,7 @@ import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-return-"));
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager, completedReturnRetryDelay, COMPLETED_RETURN_RETRY_CAP_MS } = await import("../src/server/tasks.ts");
 const { WorktreeTeardownError, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
 const { getTaskSessionClosure, openTaskSessionClosure, openDb, closeDb, taskOwesWorktreeReturn,
@@ -344,6 +344,36 @@ test("a partial completion return retains its obligation until the secondary tre
   await w.manager.settleWorktreeReturns();
   assert.deepEqual(w.state.released, ["/pool/one", "/pool/two"]);
   assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
+});
+
+test("a completion return that keeps being refused backs off instead of retrying every 30 seconds", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const info = t.mock.method(console, "info", () => {});
+  const attempts = () => info.mock.calls
+    .filter((call) => String(call.arguments[0]).includes("worktree_return_started")).length;
+  const sweepAfter = async (ms: number) => {
+    now += ms;
+    await w.manager.sweepMissionSessionClosures();
+    await w.manager.settleWorktreeReturns();
+  };
+  const w = world({ sessionId: null });
+  w.sessions.clear();
+  w.state.archiveRefused = true;
+  await w.manager.complete(w.task.id, "finished");
+  await w.manager.settleWorktreeReturns();
+  assert.equal(attempts(), 1);
+  await sweepAfter(30_001);
+  assert.equal(attempts(), 2, "the first refusal retries after 30 seconds");
+  await sweepAfter(30_001);
+  assert.equal(attempts(), 2, "the second refusal doubles the wait");
+  await sweepAfter(30_000);
+  assert.equal(attempts(), 3);
+  w.state.archiveRefused = false;
+  await sweepAfter(120_001);
+  assert.equal(attempts(), 4);
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.equal(completedReturnRetryDelay(40), COMPLETED_RETURN_RETRY_CAP_MS, "the wait is capped");
 });
 
 test("reopening an attempt clears its completion-return obligation", async () => {

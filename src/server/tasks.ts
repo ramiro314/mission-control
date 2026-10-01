@@ -799,6 +799,23 @@ export const MISSION_SESSION_CLOSURE_DEADLINE_MS = 240_000;
 export const MISSION_SESSION_CLOSURE_RETRY_MS = 10_000;
 
 /**
+ * When a refused completion return may run again: 30 seconds after the first refusal, doubling
+ * with each consecutive one, never longer than 15 minutes apart.
+ *
+ * Every attempt pays for up to three occupancy guards, each a pair of system-wide `ps` reads
+ * plus an `lsof` over every pid this user owns. A flat 30 seconds made a return that can never
+ * succeed (a checkout something keeps open, or a provider that keeps refusing) cost that much
+ * forever, once per stuck task. The obligation itself stays durable in SQLite, so backing off
+ * only spaces the attempts out; it never abandons the return.
+ */
+export const COMPLETED_RETURN_RETRY_MS = 30_000;
+export const COMPLETED_RETURN_RETRY_CAP_MS = 15 * 60_000;
+
+export function completedReturnRetryDelay(refusals: number): number {
+  return Math.min(COMPLETED_RETURN_RETRY_MS * 2 ** refusals, COMPLETED_RETURN_RETRY_CAP_MS);
+}
+
+/**
  * When asking stops being enough and the session is retired instead.
  *
  * Three minutes, deliberately INSIDE the four-minute guarantee rather than at it. Retirement
@@ -939,6 +956,8 @@ export class TaskManager {
    */
   private readonly cleanupReservations = new Set<string>();
   private readonly nextCompletedReturn = new Map<string, number>();
+  /** Consecutive refused completion returns per task; see `completedReturnRetryDelay`. */
+  private readonly completedReturnRefusals = new Map<string, number>();
   private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
@@ -1084,6 +1103,7 @@ export class TaskManager {
       if (e.type === "task_remove") {
         this.autoCompleted.delete(e.id);
         this.nextCompletedReturn.delete(e.id);
+        this.completedReturnRefusals.delete(e.id);
       }
       if (
         e.type === "task_upsert" &&
@@ -5915,9 +5935,12 @@ export class TaskManager {
       taskId: task.id,
       repoKeys: taskCleanupRepoKeys(task),
       run: async () => {
-        // Closure sweeps can run in quick succession. Refused return retries at a bounded
-        // cadence, while the explicit durable obligation survives daemon restart.
-        if (reason === "complete") this.nextCompletedReturn.set(task.id, Date.now() + 30_000);
+        // Closure sweeps can run in quick succession. Refused return retries at a bounded,
+        // backing-off cadence, while the explicit durable obligation survives daemon restart.
+        const refusals = this.completedReturnRefusals.get(task.id) ?? 0;
+        if (reason === "complete") {
+          this.nextCompletedReturn.set(task.id, Date.now() + completedReturnRetryDelay(refusals));
+        }
         const context = { taskId: task.id, reason };
         console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
         let outcome: "returned" | "retained" | "failed" = "failed";
@@ -5926,11 +5949,16 @@ export class TaskManager {
           const result = await this.returnFinishedWorktrees(task.id, ownership, reason, stoppedSessionId);
           outcome = result.ok ? "returned" : "retained";
           detail = result.error;
-          if (result.ok) this.nextCompletedReturn.delete(task.id);
         } catch (error) {
           detail = readFailureClass(error);
           throw error;
         } finally {
+          if (outcome === "returned") {
+            this.nextCompletedReturn.delete(task.id);
+            this.completedReturnRefusals.delete(task.id);
+          } else if (reason === "complete") {
+            this.completedReturnRefusals.set(task.id, refusals + 1);
+          }
           console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail })}`);
         }
       },
