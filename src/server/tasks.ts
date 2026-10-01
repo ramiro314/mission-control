@@ -43,7 +43,7 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
-import { shapeTicketsFollowupIntent } from "./shape-tickets.ts";
+import { SHAPE_TICKETS_OUTCOME_TEXT, shapeTicketsFollowupIntent } from "./shape-tickets.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
@@ -285,12 +285,6 @@ export interface CreateShapeTicketsFollowupInput {
   sourcePrUrl: string;
   agent: AgentType;
 }
-
-/** What a tickets follow-up's task outcome reads, per `complete_shape_tickets` outcome. */
-export const SHAPE_TICKETS_OUTCOME_TEXT: Record<ShapeTicketsOutcome, string> = {
-  filed: "Tickets filed",
-  dismissed: "Breakdown dismissed: no tickets filed",
-};
 
 export type CompleteShapeTicketsResult =
   | { ok: true; task: Task; sourceTaskId: string; replayed: boolean }

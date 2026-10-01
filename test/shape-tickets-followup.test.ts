@@ -14,9 +14,9 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { bindTaskWorkEpisode, shapeTicketFollowupForTask } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { SHAPE_TICKETS_OUTCOME_TEXT, TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
 const { startShapeTicketsFollowup } = await import("../src/server/shape-tickets-followup.ts");
-const { withShapeTicketsCompletion } = await import("../src/server/shape-tickets.ts");
+const { SHAPE_TICKETS_OUTCOME_TEXT, withShapeTicketsCompletion } = await import("../src/server/shape-tickets.ts");
 const { COMPLETE_SHAPE_TICKETS_TOOL } = await import("../src/server/plans/tools.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 
@@ -171,11 +171,11 @@ test("Create tickets files a linked tickets-only shape task, re-sends the source
   assert.notEqual(retry.body.task.id, followup.id);
   assert.equal(registry.getTask(source.id)!.shapeTickets?.followupTaskId, retry.body.task.id, "newest first");
 
-  // A done follow-up refuses another one.
-  registry.upsertTask({ ...registry.getTask(retry.body.task.id)!, status: "done" });
+  // A follow-up that filed its tickets refuses another one.
+  registry.upsertTask({ ...registry.getTask(retry.body.task.id)!, status: "done", outcome: SHAPE_TICKETS_OUTCOME_TEXT.filed });
   const afterDone = await createTickets(app, source.id);
   assert.equal(afterDone.status, 409);
-  assert.match(afterDone.body.error, /already finished/);
+  assert.match(afterDone.body.error, /already filed its tickets/);
 });
 
 test("the follow-up runs on the source's agent when it can run tickets, else on the default", async () => {
@@ -405,4 +405,18 @@ test("a relation whose follow-up task was never created is not reported as the n
   });
   registry.upsertTask({ ...registry.getTask(source.id)!, updatedAt: Date.now() });
   assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { followupTaskId: real.id, canCreate: false });
+});
+
+test("a dismissed breakdown does not withdraw Create tickets, and the retry is accepted", async () => {
+  const { registry, tasks, app, upserts } = setup();
+  const { source, payload } = runningFollowup(registry, tasks, "redo-src");
+  assert.equal(registry.getTask(source.id)!.shapeTickets?.canCreate, false, "blocked while it runs");
+
+  upserts.length = 0;
+  assert.equal((await complete(app, { ...payload, outcome: "dismissed" })).status, 200);
+  // Re-sent with the action offered again: the dismissed follow-up filed nothing.
+  assert.equal(upserts.filter((task) => task.id === source.id).at(-1)?.shapeTickets?.canCreate, true);
+  const retry = await createTickets(app, source.id);
+  assert.equal(retry.status, 200);
+  assert.equal(registry.getTask(source.id)!.shapeTickets?.followupTaskId, retry.body.task.id);
 });

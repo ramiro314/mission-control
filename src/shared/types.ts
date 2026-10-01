@@ -2383,7 +2383,8 @@ export interface TaskShapeTickets {
   followupTaskId: string | null;
   /**
    * Whether **Create tickets** would be accepted now: the task is a done shape task whose
-   * pull request merged, and none of its follow-ups is live or done. The route re-checks.
+   * pull request merged, and none of its follow-ups is live or filed tickets (one whose
+   * breakdown was dismissed does not count). The route re-checks.
    */
   canCreate: boolean;
 }

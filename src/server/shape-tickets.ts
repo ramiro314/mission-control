@@ -1,3 +1,4 @@
+import type { ShapeTicketsOutcome } from "@shared/protocol.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { Task, TaskShapeTickets } from "@shared/types.ts";
 import {
@@ -24,6 +25,17 @@ export type TaskLookup = (id: string) => Task | undefined;
 
 const durableLookup: TaskLookup = (id) => getDurableTask(id) ?? undefined;
 
+/**
+ * What a tickets follow-up's task outcome reads, per `complete_shape_tickets` outcome.
+ *
+ * Here rather than beside the completion, because the acceptance rule below reads it back:
+ * a follow-up that ended `dismissed` filed nothing, so it does not block another.
+ */
+export const SHAPE_TICKETS_OUTCOME_TEXT: Record<ShapeTicketsOutcome, string> = {
+  filed: "Tickets filed",
+  dismissed: "Breakdown dismissed: no tickets filed",
+};
+
 export type ShapeTicketsAcceptance =
   | { ok: true; posture: Extract<RetroPrPosture, { kind: "merged" }> }
   | { ok: false; reason: string };
@@ -34,7 +46,8 @@ export type ShapeTicketsAcceptance =
  * The task must be a `shape` task that is done with a merged pull-request posture, the same
  * check the post-merge Retro makes (`retroPrPostureForTask`), and none of its follow-ups may
  * be live (backlog, dispatching, running) or done. A cancelled or failed follow-up does not
- * count, so the action can be retried after one.
+ * count, so the action can be retried after one, and neither does one whose breakdown was
+ * dismissed: it filed nothing, so another one cannot duplicate its tickets.
  */
 export function shapeTicketsAcceptance(
   task: Task,
@@ -61,7 +74,8 @@ export function shapeTicketsAcceptance(
     const existing = lookup(followup.followupTaskId);
     if (!existing) continue;
     if (existing.status === "done") {
-      return { ok: false, reason: `Its tickets follow-up "${existing.title}" already finished.` };
+      if (existing.outcome === SHAPE_TICKETS_OUTCOME_TEXT.dismissed) continue;
+      return { ok: false, reason: `Its tickets follow-up "${existing.title}" already filed its tickets.` };
     }
     if (existing.status === "backlog" || isActiveTask(existing.status)) {
       return { ok: false, reason: `Its tickets follow-up "${existing.title}" is already ${existing.status}.` };
