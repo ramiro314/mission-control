@@ -154,6 +154,48 @@ test("pending shows Tickets after merge on the card and in the drawer, then the 
   await expect(followupDrawer).toContainText("tickets-only mode", { timeout: 30_000 });
   await expect(followupDrawer).toContainText(PR_URL);
   await shoot(dashboard, "04-started-opens-followup", followupDrawer);
+
+  // The follow-up finishes itself, as the tickets skill does once the breakdown is dismissed,
+  // and its session closes. The choice stays started, and the link still has somewhere to go:
+  // the follow-up's own Recent outcomes row, which is where a finished task's outcome is.
+  let followupSession: (SessionRow & { task?: { id: string } | null }) | undefined;
+  await expect.poll(async () => {
+    followupSession = (await api<Array<SessionRow & { task?: { id: string } | null }>>(daemon, "/api/sessions"))
+      .find((s) => s.task?.id === followup!.id && s.state !== "exited");
+    return Boolean(followupSession?.agentSessionId);
+  }).toBe(true);
+  const done = await fetch(`${daemon.baseURL}/mcp/shape-tickets/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": harnessToken(daemon) },
+    body: JSON.stringify({
+      env: {},
+      sessionId: followupSession!.agentSessionId,
+      cwd: followupSession!.cwd,
+      outcome: "dismissed",
+    }),
+  });
+  expect(done.ok, await done.clone().text()).toBe(true);
+  await expect
+    .poll(async () => {
+      const row = (await tasks(daemon)).find((t) => t.id === followup!.id);
+      const live = (await api<Array<SessionRow & { task?: { id: string } | null }>>(daemon, "/api/sessions"))
+        .some((s) => s.task?.id === followup!.id && s.state !== "exited");
+      return `${row?.status}:${live}`;
+    }, { timeout: 30_000, message: "the follow-up is done and its session closed" })
+    .toBe("done:false");
+  expect(await shapeTicketsOf(daemon, task.id)).toMatchObject({ state: "started", followupTaskId: followup!.id });
+
+  const finished = await openSitrep(dashboard);
+  const sourceRow = finished.locator(".report-row").filter({ hasText: task.title }).filter({ hasNotText: followupTitle(task) });
+  const followupRow = finished.locator(".report-row").filter({ hasText: followupTitle(task) });
+  await expect(followupRow).not.toHaveAttribute("aria-current", "true");
+  await sourceRow.getByRole("link", { name: "Tickets", exact: true }).click();
+  // The click lands: the Sitrep stays open on the follow-up's row, marked and in view.
+  await expect(dashboard.getByRole("heading", { name: "Sitrep" })).toBeVisible();
+  await expect(followupRow).toHaveAttribute("aria-current", "true");
+  await expect(followupRow).toBeInViewport();
+  await expect(followupRow).toContainText("done");
+  await shoot(dashboard, "08-started-opens-finished-followup", finished);
 });
 
 test("a refused follow-up shows Tickets queued, linking to it in the backlog", async ({ dashboard, daemon }) => {

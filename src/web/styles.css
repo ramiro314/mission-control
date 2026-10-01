@@ -12156,6 +12156,13 @@ select:not([multiple]) option:focus-visible {
   padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
 }
+/* The row a link elsewhere opened (`openTask` on a finished task): marked so the click visibly
+   lands somewhere. Inset by its own shadow so it does not shift the rows around it. */
+.report-row.is-focused {
+  background: color-mix(in oklab, var(--select) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--select);
+  outline: none;
+}
 .report-row:last-child {
   border-bottom: none;
 }

@@ -386,7 +386,8 @@ session is open, and on its **Recent outcomes** row in the Sitrep once it has fi
 **Tickets after merge** while the choice waits for the merge, **Tickets queued** while a refused
 follow-up waits in the backlog, **Tickets** once the follow-up is dispatched, and **Tickets
 lapsed** when the choice lapsed. **Tickets queued** and **Tickets** are links that open the
-follow-up: its session while it runs, or its backlog editor while it waits. Stop, no answer yet,
+follow-up: its session while it runs, its backlog editor while it waits, or its own Recent
+outcomes row, scrolled to and highlighted, once it has finished. Stop, no answer yet,
 and every other kind of task show nothing.
 
 The follow-up hands the merged plan to the bundled [Tickets skill](skills-and-settings.md).

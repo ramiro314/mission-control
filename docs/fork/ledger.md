@@ -122,7 +122,8 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   drawer's detail band, and on the Sitrep's Recent outcomes row (where a finished shape task
   lives once its session closes at the merge): `pending` is the note **Tickets after merge**,
   `queued` **Tickets queued** and `started` **Tickets**, each a link-role button opening
-  `followupTaskId` through the app's one `openTask` (live session, backlog editor, or Sitrep),
+  `followupTaskId` through the app's one `openTask` (a session that has not exited, the backlog
+  editor, or the Sitrep scrolled to that task's Recent outcomes row and marked `aria-current`),
   and `lapsed` the note **Tickets lapsed**. Every other state, a queued or started choice with no
   follow-up left to open, and every non-shape task draw nothing.
 - Dispatch is refused, naming the toggle, when a required planning skill is off

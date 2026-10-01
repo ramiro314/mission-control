@@ -448,6 +448,11 @@ export function App(): React.JSX.Element {
   // here rather than shadowed by a copy taken at open time.
   const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  /** The task row `openTask` asked the Sitrep to show; forgotten whenever the Sitrep closes. */
+  const [reportFocus, setReportFocus] = useState<{ taskId: string; nonce: number } | null>(null);
+  useEffect(() => {
+    if (!reportOpen) setReportFocus(null);
+  }, [reportOpen]);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
     else endFeatureVisit("report");
@@ -1738,16 +1743,22 @@ export function App(): React.JSX.Element {
   );
   /**
    * Open any task where it lives: focus its live session, reopen its backlog editor, or show
-   * the Sitrep, where a finished task's outcome is. The ensemble member list and the shape
-   * tickets marker both open tasks through this, so they agree on where a task is.
+   * the Sitrep scrolled to the task's own Recent outcomes row, where a finished task's outcome
+   * is. The ensemble member list and the shape tickets marker both open tasks through this, so
+   * they agree on where a task is.
+   *
+   * The row is named by a fresh request each time, so a click from inside the Sitrep (a shape
+   * task's link to its finished follow-up) still moves it rather than reopening what is open.
    */
   const openTask = useCallback(
     (taskId: string): void => {
       const task = tasks.find((candidate) => candidate.id === taskId);
       if (!task) return;
-      const liveSession = task.sessionId
-        ? sessions.find((session) => session.id === task.sessionId)
-        : sessions.find((session) => session.task?.id === taskId);
+      // An exited session lingers in the list until it is evicted, but has nothing left to
+      // show, so a task that just finished is opened where its outcome is instead.
+      const liveSession = sessions.find((session) =>
+        session.state !== "exited" &&
+        (task.sessionId ? session.id === task.sessionId : session.task?.id === taskId));
       if (liveSession) {
         setReportOpen(false);
         navigate({ page: "fleet" });
@@ -1762,6 +1773,7 @@ export function App(): React.JSX.Element {
         return;
       }
       navigate({ page: "fleet" });
+      setReportFocus({ taskId, nonce: Date.now() });
       setReportOpen(true);
     },
     [tasks, sessions, layout, navigate, openTaskEditor],
@@ -4519,6 +4531,7 @@ export function App(): React.JSX.Element {
                     openTaskEditor(id);
                   }}
                   onOpenTask={openTask}
+                  focusTask={reportFocus}
                   onOpenSchedule={onOpenSchedule}
                   scheduleNameById={scheduleNameById}
                 />

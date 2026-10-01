@@ -214,7 +214,8 @@ and is drawn by one component, <code>ShapeTicketsMarker</code>, on the board car
 drawer&#39;s detail band, and on the Sitrep&#39;s Recent outcomes row (where a finished shape task
 lives once its session closes at the merge): <code>pending</code> is the note <strong>Tickets after merge</strong>,
 <code>queued</code> <strong>Tickets queued</strong> and <code>started</code> <strong>Tickets</strong>, each a link-role button opening
-<code>followupTaskId</code> through the app&#39;s one <code>openTask</code> (live session, backlog editor, or Sitrep),
+<code>followupTaskId</code> through the app&#39;s one <code>openTask</code> (a session that has not exited, the backlog
+editor, or the Sitrep scrolled to that task&#39;s Recent outcomes row and marked <code>aria-current</code>),
 and <code>lapsed</code> the note <strong>Tickets lapsed</strong>. Every other state, a queued or started choice with no
 follow-up left to open, and every non-shape task draw nothing.</li>
 <li>Dispatch is refused, naming the toggle, when a required planning skill is off

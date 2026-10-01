@@ -1,5 +1,5 @@
 import { featureAction } from "../lib/experience.ts";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
 import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { taskHoldsCleanupResources } from "@shared/task-repos.ts";
@@ -231,6 +231,7 @@ export function ReportPanel({
   onOpenReviews,
   onEditTask,
   onOpenTask,
+  focusTask = null,
   onOpenSchedule,
   scheduleNameById,
   backlogTrust = null,
@@ -251,6 +252,11 @@ export function ReportPanel({
   onEditTask: (taskId: string) => void;
   /** Open any task where it lives, closing this panel when it lives elsewhere. */
   onOpenTask?: (taskId: string) => void;
+  /**
+   * A finished task someone asked to open: its Recent outcomes row is scrolled to and marked
+   * current. A fresh `nonce` per request, so asking again from inside this panel still moves.
+   */
+  focusTask?: { taskId: string; nonce: number } | null;
   /** Close this panel and open Recurring Missions from a generated task's provenance. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for provenance copy on backlog and recent rows. */
@@ -290,7 +296,20 @@ export function ReportPanel({
   }, [sessions]);
 
   const backlog = useMemo(() => backlogTasks(tasks), [tasks]);
-  const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
+  const focusTaskId = focusTask?.taskId ?? null;
+  // A task asked for by name is drawn even when it has aged past the cap, or the request
+  // would land on nothing.
+  const recent = useMemo(() => {
+    const finished = finishedTasks(tasks);
+    const shown = finished.slice(0, RECENT_TASKS_CAP);
+    const asked = focusTaskId ? finished.find((t) => t.id === focusTaskId) : undefined;
+    return asked && !shown.includes(asked) ? [...shown, asked] : shown;
+  }, [tasks, focusTaskId]);
+  const focusedRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    focusedRowRef.current?.scrollIntoView?.({ block: "center" });
+    focusedRowRef.current?.focus({ preventScroll: true });
+  }, [focusTask?.nonce]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   // Built once for the whole Backlog section rather than per row, the way the board
   // column does it - the dependency walk is linear off this shared index.
@@ -531,7 +550,13 @@ export function ReportPanel({
 
         <Section title="Recent outcomes" tone="neutral" count={recent.length} empty="No finished tasks yet.">
           {recent.map((t) => (
-            <div className="report-row" key={t.id}>
+            <div
+              className={`report-row${t.id === focusTaskId ? " is-focused" : ""}`}
+              key={t.id}
+              ref={t.id === focusTaskId ? focusedRowRef : undefined}
+              tabIndex={t.id === focusTaskId ? -1 : undefined}
+              aria-current={t.id === focusTaskId ? "true" : undefined}
+            >
               <div className="report-row-main">
                 <span className="report-name">{t.title}</span>
                 <span className={`report-status status-${t.status}`}>{t.status}</span>
