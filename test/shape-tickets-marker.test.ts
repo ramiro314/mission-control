@@ -8,7 +8,10 @@ import { shapeTicketsMarker } from "../src/web/lib/shape-tickets.ts";
 import { ShapeTicketsMarker } from "../src/web/components/ShapeTicketsMarker.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import { shapeTaskForSession } from "../src/web/components/layouts/types.ts";
+import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
+import { RECENT_TASKS_CAP } from "../src/shared/session.ts";
 import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 /**
  * A shape task's tickets marker: which state draws what, and the one shape a browser cannot
@@ -92,4 +95,49 @@ test("the board card draws the marker among its flags, from the whole task the v
     onOpenTask: () => {},
   }));
   assert.match(html, /<span class="tile-marks">.*<span class="tile-flag tf-shape-tickets shape-tickets-pending" role="note" aria-label="Tickets after merge"/s);
+});
+
+// The Tickets link on a finished follow-up opens the Sitrep on that follow-up's own row
+// (`ReportPanel.focusTask`). The row a person asked for has to be there to land on, even
+// when it has aged out of Recent outcomes, and must not be drawn twice when it has not.
+const finishedRows = (count: number): Task[] =>
+  Array.from({ length: count }, (_, i) =>
+    mkTask({ id: `done-${i}`, title: `Finished ${i}`, status: "done", updatedAt: 10_000 - i }));
+
+const sitrep = (tasks: Task[], focusTaskId: string): string =>
+  renderToStaticMarkup(withOverlayHost(createElement(ReportPanel, {
+    sessions: [],
+    tasks,
+    backlogPlan: null,
+    onClose: () => {},
+    onOpenReviews: () => {},
+    onEditTask: () => {},
+    focusTask: { taskId: focusTaskId, nonce: 1 },
+  })));
+
+const recentRowCount = (html: string): number => (html.match(/<div class="report-row[ "]/g) ?? []).length;
+const focusedRow = (title: string): RegExp =>
+  new RegExp(`<div class="report-row is-focused" tabindex="-1" aria-current="true"><div class="report-row-main"><span class="report-name">${title}</span>`);
+
+test("a focused task past the Recent outcomes cap is still drawn, once, as the current row", () => {
+  const tasks = finishedRows(RECENT_TASKS_CAP + 1);
+  const oldest = `Finished ${RECENT_TASKS_CAP}`;
+
+  const unfocused = sitrep(tasks, "no-such-task");
+  assert.equal(recentRowCount(unfocused), RECENT_TASKS_CAP);
+  assert.doesNotMatch(unfocused, new RegExp(`>${oldest}<`));
+  assert.doesNotMatch(unfocused, /aria-current/);
+
+  const html = sitrep(tasks, `done-${RECENT_TASKS_CAP}`);
+  assert.equal(recentRowCount(html), RECENT_TASKS_CAP + 1);
+  assert.match(html, focusedRow(oldest));
+  assert.equal(html.match(/aria-current="true"/g)?.length, 1);
+});
+
+test("a focused task already within the cap is marked in place, not appended again", () => {
+  const html = sitrep(finishedRows(RECENT_TASKS_CAP + 1), "done-3");
+  assert.equal(recentRowCount(html), RECENT_TASKS_CAP);
+  assert.equal(html.match(/>Finished 3</g)?.length, 1);
+  assert.match(html, focusedRow("Finished 3"));
+  assert.equal(html.match(/aria-current="true"/g)?.length, 1);
 });
