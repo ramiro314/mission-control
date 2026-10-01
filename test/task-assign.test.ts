@@ -1309,6 +1309,41 @@ test("a plan is refused before the reset when its planning skills cannot be invo
   );
 });
 
+test("an assigned shape task is stamped as delivered under the tickets-after-merge contract", async () => {
+  // The assignment seam delivers the same shaping contract a dispatch does, so it stamps the
+  // task the same way: without it the plan review would never be recorded and the merge would
+  // never start the tickets follow-up.
+  const { shapeTicketsStateFor } = await import("../src/server/db.ts");
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shape-stamp-");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "shape", intent: "shape the archives reading UI" }));
+  assert.equal(shapeTicketsStateFor("t1"), null, "a backlog shape task is not stamped yet");
+  const sent: Array<string | null | undefined> = [];
+  r.on("event", (e: { type: string; task?: Task }) => {
+    if (e.type === "task_upsert" && e.task?.id === "t1") sent.push(e.task.shapeTickets?.state);
+  });
+  let typed: string | null = null;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    requirePlanSkills: () => ({
+      ok: true,
+      commands: { grill: "/grill", htmlPlans: "/html-plans", tickets: "/tickets" },
+    }),
+    reset: cleanReset,
+    inject: async (_session, prompt) => {
+      typed = prompt;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.match(typed!, /Create tickets after the plan merges/, "the deferred-tickets contract was typed");
+  assert.equal(shapeTicketsStateFor("t1"), "awaiting-review");
+  assert.ok(sent.includes("awaiting-review"), "the stamped state was re-sent on the wire");
+  assert.equal(r.getTask("t1")?.shapeTickets?.state, "awaiting-review");
+});
+
 test("an assigned plan is typed the invocations THAT SESSION could actually run", async () => {
   // The resolver is the session-scoped one, so what lands in the pane is what this
   // conversation can load - not what a freshly launched agent of the same harness could.

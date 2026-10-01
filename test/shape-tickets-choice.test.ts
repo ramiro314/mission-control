@@ -328,23 +328,7 @@ test("a plan PR read CLOSED by the poller signals the task once and lapses a pen
   const url = "https://github.com/acme/demo/pull/601";
   const f = shaping("closed");
   choose(f, "pending");
-  // The live session's branch lookup observed the PR open, so the binding carries it.
-  f.registry.reconcilePrs(
-    new Map([[f.id, {
-      url,
-      number: 601,
-      state: "open" as const,
-      checks: null,
-      branch: "shape/work",
-      agentSessionId: `${f.id}-episode`,
-      episodeId: f.episode.episodeId,
-      createdAt: f.episode.startedAt,
-      mergedAt: null,
-      headSha: "head",
-      worktreeHeadSha: "head",
-    }]]),
-    new Set(),
-  );
+  observeOpenPr(f, url, 601);
   assert.ok(f.registry.taskPrPollTargets().includes(url));
   const closures: string[] = [];
   f.registry.onTaskPrClosed((e) => closures.push(`${e.taskId} ${e.url}`));
@@ -398,16 +382,86 @@ test("a plan PR read CLOSED by the poller signals the task once and lapses a pen
   assert.equal(shapeTicketsStateFor(f.taskId), "started");
 });
 
-test("a merged PR emits no closure", async () => {
+/** The live session's branch lookup observed `url` open, so the task's binding carries it. */
+function observeOpenPr(f: Fixture, url: string, number: number): void {
+  f.registry.reconcilePrs(
+    new Map([[f.id, {
+      url,
+      number,
+      state: "open" as const,
+      checks: null,
+      branch: "shape/work",
+      agentSessionId: `${f.id}-episode`,
+      episodeId: f.episode.episodeId,
+      createdAt: f.episode.startedAt,
+      mergedAt: null,
+      headSha: "head",
+      worktreeHeadSha: "head",
+    }]]),
+    new Set(),
+  );
+}
+
+test("a task-bound PR the by-URL poller reads merged emits no closure and never lapses the choice", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
   const url = "https://github.com/acme/demo/pull/603";
   const f = shaping("merged-no-close");
   choose(f, "pending");
+  observeOpenPr(f, url, 603);
+  assert.ok(f.registry.taskPrPollTargets().includes(url), "the URL is polled by itself");
   const closures: string[] = [];
   f.registry.onTaskPrClosed((e) => closures.push(e.url));
-  await pollAndReconcilePrs(f.registry, async () => null, async (candidate) =>
-    candidate === url ? { state: "merged" as const, mergedAt: NOW } : null);
-  assert.deepEqual(closures, []);
-  assert.equal(shapeTicketsStateFor(f.taskId), "pending");
+  // What the poller classified as closed, before the registry's own merged-binding guard.
+  const handedClosed: string[] = [];
+  const reconcile = f.registry.reconcilePrClosures.bind(f.registry);
+  f.registry.reconcilePrClosures = (urls) => {
+    handedClosed.push(...urls);
+    reconcile(urls);
+  };
+
+  const asked: string[] = [];
+  await pollAndReconcilePrs(f.registry, async () => null, async (candidate) => {
+    asked.push(candidate);
+    return candidate === url ? { state: "merged" as const, mergedAt: NOW } : null;
+  });
+  await settled();
+
+  assert.ok(asked.includes(url), "the merged lookup was asked about this URL");
+  assert.deepEqual(handedClosed, [], "the poller does not classify a merged PR as closed");
+  assert.deepEqual(closures, [], "a merge is not a closure");
+  // The merge completed the idle agent's task instead, which started the follow-up: its launch
+  // is refused here (every skill is off), so the choice reads queued. Never lapsed.
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(shapeTicketsStateFor(f.taskId), "queued");
+  assert.equal(shapeTicketFollowupsForSource(f.taskId).length, 1);
+});
+
+test("an automatic start refused because a follow-up is already live leaves the choice pending", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = shaping("refused-start");
+  const launched = acceptDispatch(f.tasks);
+  choose(f, "pending");
+  // A follow-up already waits in the backlog for this source when the merge lands.
+  const existing = f.tasks.createShapeTicketsFollowup({
+    sourceTask: f.registry.getTask(f.taskId)!,
+    sourceEpisodeId: f.episode.episodeId,
+    sourceSessionId: f.id,
+    sourcePrUrl: "https://github.com/acme/demo/pull/604",
+    agent: "claude",
+  });
+  merged(f, "https://github.com/acme/demo/pull/604");
+
+  agentGone(f);
+  await settled();
+
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.deepEqual(
+    shapeTicketFollowupsForSource(f.taskId).map((relation) => relation.followupTaskId),
+    [existing.id],
+    "no second follow-up",
+  );
+  assert.deepEqual(launched, [], "nothing was dispatched");
+  assert.equal(shapeTicketsStateFor(f.taskId), "pending", "neither started nor queued");
 });
 
 // ---------------------------------------------------------------------------
