@@ -1942,7 +1942,11 @@ The MCP tools are:
   ignored. The adopted task must belong to the calling repository or to the one `repository`
   names (resolved like any selector); a task from any other repository is refused with 409. A call carrying
   `kind`, `labels` or `adoptTaskId` uses its own versioned route, so an older daemon answers 404
-  and creates nothing rather than filing a plain ship task or a duplicate of the adopted one. Omit the selectors to keep the calling repository as primary.
+  and creates nothing rather than filing a plain ship task or a duplicate of the adopted one.
+  `dependsOnCurrentSession` gates the task on the calling session's work, released when its pull
+  request merges. Called from a tickets follow-up (a shape task slicing a plan that has already
+  merged), it instead links the task to that merged shape task with an edge that is already
+  satisfied, so the task waits only on its other blockers. Omit the selectors to keep the calling repository as primary.
   Otherwise, each selector is an absolute local checkout path or a unique repository directory
   name; `repository` changes the primary and `additionalRepositories` attaches the rest. A linked
   worktree resolves to the **repo that owns it**, including an absolute path outside the configured
@@ -1967,7 +1971,8 @@ The MCP tools are:
   blockers and to its planning task's item. A task already pushed to that source returns its
   item with `alreadyPushed: true` instead of filing another; a failure flagged `outcomeUnknown`
   means the item may exist, so check the tracker before retrying. A task that does not wait on the
-  calling session is refused. The shape kind pre-approves it
+  calling session is refused; from a tickets follow-up, a task that waits on the merged shape task
+  it slices is accepted too, and is filed under that shape task's item. The shape kind pre-approves it
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape

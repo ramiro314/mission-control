@@ -166,7 +166,7 @@ can stop compiling against a changed upstream API.</li>
 </tr>
 <tr>
 <td>Plan docs</td>
-<td><a href="../plans/shape-task-kind/plan.md">shape-task-kind/plan.md</a> sections 1 to 5</td>
+<td><a href="../plans/shape-task-kind/plan.md">shape-task-kind/plan.md</a> sections 1 to 5; <a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge/plan.md</a> (in progress)</td>
 </tr>
 <tr>
 <td>Upstream candidate</td>
@@ -191,7 +191,14 @@ is New task or Adopt an open backlog task. On submit the skill writes
 they are released when the planning PR merges.</li>
 <li><code>push_task</code> mirrors only a task that depends on the calling session, is idempotent
 (<code>alreadyPushed: true</code>), links blockers only to items already in that source, and parents
-them under the planning task&#39;s item.</li>
+them under the planning task&#39;s item. From a tickets follow-up session it also accepts a task
+that depends on the follow-up&#39;s source shape task.</li>
+<li>A tickets follow-up is recorded in <code>shape_ticket_followups</code> against its merged source shape
+task (episode, session and PR URL), one row per follow-up, so a source can take another after a
+cancelled or failed one. From that follow-up&#39;s session, <code>create_task</code> with
+<code>dependsOnCurrentSession</code> links the ticket to the source shape task with an already-satisfied
+edge pinned to that merge, never to the follow-up
+(<a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge</a> sections 3 and 5).</li>
 <li><strong>Shape this</strong> works on any backlog task that is not already shape and keeps its source link,
 labels, priority and dependencies. A refused Shape this leaves the task unchanged (#21).</li>
 <li>Upstream&#39;s <code>plan</code> kind is unchanged.</li>
@@ -227,7 +234,8 @@ shape and grill.</li>
 <li>Registries: <code>PLANNING_SKILLS</code>, <code>KIND_MISSION_MCP_TOOLS.shape</code>, <code>MISSION_MCP_TOOLS</code>,
 <code>PRIMARY_ACTION_ROUTES</code>, <code>ACTION_EXCLUSIONS</code>.</li>
 <li>MCP tools: new <code>list_backlog_tasks</code> and <code>push_task</code>; <code>create_task</code> gains ticket and adopt fields.</li>
-<li>DB: none.</li>
+<li>DB: new <code>shape_ticket_followups</code> table (created with the base schema, so an existing database
+gains it on open).</li>
 <li>UI: <code>DispatchModal.tsx</code>, <code>layouts/BacklogColumn.tsx</code> and <code>line/BacklogDrawer.tsx</code> (Shape this),
 <code>schedules/ScheduleEditor.tsx</code>, <code>src/web/lib/guided-dispatch-steps.ts</code>.</li>
 </ul>

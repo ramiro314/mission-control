@@ -684,3 +684,84 @@ test("adoption refuses a task from neither the caller's nor the named repository
   assert.equal(adopted.body.adopted, true);
   assert.deepEqual(edgesOf(adopted.body).slice(0, 1), [`task:${blocker.body.id}`]);
 });
+
+// ---------------------------------------------------------------------------
+// Tickets follow-ups: a shape task in tickets-only mode slicing a merged plan
+// ---------------------------------------------------------------------------
+
+/**
+ * A live session running a tickets follow-up of a merged shape task, as the relation records
+ * it: the follow-up is the session's task, and the shape task it slices is done.
+ */
+async function followupHarness(name: string) {
+  const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
+  const { mkTask } = await import("./helpers/session-fixture.ts");
+  const harness = ticketHarness(name);
+  const sourceId = `${name}-shape`;
+  const followupId = `${name}-followup`;
+  harness.registry.upsertTask(mkTask({
+    id: sourceId, title: "Shape archive exports", kind: "shape", status: "done", repoRoot: harness.repo,
+  }));
+  harness.registry.upsertTask(mkTask({
+    id: followupId, title: "Tickets: Shape archive exports", kind: "shape", status: "running",
+    repoRoot: harness.repo, sessionId: harness.sessionId,
+  }));
+  const relation = reserveShapeTicketFollowup({
+    followupTaskId: followupId,
+    sourceTaskId: sourceId,
+    sourceEpisodeId: `${name}-merged-episode`,
+    sourceSessionId: `${name}-shape-session`,
+    sourcePrUrl: `https://github.com/acme/${name}/pull/7`,
+    now: Date.now(),
+  }).relation;
+  assert.equal(harness.registry.getSession(harness.sessionId)?.task?.id, followupId);
+  return { ...harness, sourceId, followupId, relation };
+}
+
+test("a tickets follow-up's own gate links the ticket to the merged shape task, already satisfied", async () => {
+  const { tasks, sourceId, followupId, relation, file } = await followupHarness("followup-gate");
+
+  const first = await file({ title: "Refactor the export seam", intent: "The seam." });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.deepEqual(edgesOf(first.body), [`task:${sourceId}`], "no edge to the follow-up");
+  const [edge] = first.body.dependencies;
+  assert.equal(edge.episodeId, relation.sourceEpisodeId, "pinned to the merged episode");
+  assert.equal(edge.sessionId, relation.sourceSessionId);
+  assert.equal(edge.prUrl, relation.sourcePrUrl);
+  assert.equal(typeof edge.satisfiedAt, "number", "already satisfied");
+  assert.equal(first.body.status, "backlog");
+  assert.deepEqual(tasks.dependencyBlockers(tasks.get(first.body.id)!), [], "eligible at once");
+
+  // Its own blockers still hold it back, and nothing else does.
+  const second = await file({ title: "Export UI", intent: "UI.", dependsOnTaskIds: [first.body.id] });
+  assert.deepEqual(edgesOf(second.body), [`task:${first.body.id}`, `task:${sourceId}`]);
+  assert.deepEqual(
+    tasks.dependencyBlockers(tasks.get(second.body.id)!).map((blocker) => blocker.taskId),
+    [first.body.id],
+  );
+  assert.ok(tasks.list().every((task) =>
+    task.dependencies.every((dependency) => dependency.type !== "task" || dependency.taskId !== followupId)));
+});
+
+test("adopting from a tickets follow-up adds the satisfied edge to the merged shape task", async () => {
+  const { repo, tasks, sourceId, adopt } = await followupHarness("followup-adopt");
+  const existing = tasks.create({
+    repoRoot: repo, intent: "Existing work.", title: "Existing", kind: "ship", agent: "claude", backlog: true,
+  });
+  const adopted = await adopt(existing.id);
+  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+  assert.deepEqual(edgesOf(adopted.body), [`task:${sourceId}`]);
+  assert.equal(typeof adopted.body.dependencies[0].satisfiedAt, "number");
+
+  // Adopting again keeps the one edge, and when it was first linked.
+  const again = await adopt(existing.id);
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.body.dependencies, adopted.body.dependencies);
+});
+
+test("a follow-up session without dependsOnCurrentSession files a ticket with no edge", async () => {
+  const { file } = await followupHarness("followup-ungated");
+  const ticket = await file({ title: "Free", intent: "f", dependsOnCurrentSession: false });
+  assert.equal(ticket.status, 200);
+  assert.deepEqual(ticket.body.dependencies, []);
+});

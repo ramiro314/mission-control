@@ -27,7 +27,7 @@ process.env.HARNESS_WORKSPACE_DIRS = repos;
 process.env.HARNESS_REPOS_CACHE_MS = "0";
 
 const { ensureToken } = await import("../src/server/auth.ts");
-const { openDb, countTaskSourceSeen, getTask } = await import("../src/server/db.ts");
+const { openDb, countTaskSourceSeen, getTask, reserveShapeTicketFollowup } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
@@ -149,11 +149,15 @@ function setup() {
     pushTask: (taskId: string, sourceId?: string) => post("/mcp/push-task", { taskId, ...(sourceId ? { sourceId } : {}) }),
     backlog: () => post("/mcp/backlog", { repoRoot: root }),
     post,
+    registry,
+    session,
   };
 }
 
 beforeEach(() => {
-  openDb().exec("DELETE FROM tasks; DELETE FROM task_source_seen; DELETE FROM app_config;");
+  openDb().exec(
+    "DELETE FROM tasks; DELETE FROM task_source_seen; DELETE FROM app_config; DELETE FROM shape_ticket_followups;",
+  );
   rmSync(record, { force: true });
   rmSync(counter, { force: true });
   process.env.MISSION_GH_BIN = GH.created;
@@ -304,4 +308,91 @@ test("list_backlog_tasks naming a repository reports that repository's mirror ch
     assert.deepEqual(body.mirror.sources.map((source) => source.id), ["src-gh"]);
     assert.equal(body.mirror.unavailable, null);
   }
+});
+
+/**
+ * The shape task has merged and is done, and a tickets follow-up runs in a second live
+ * session. A ticket that follow-up files waits on the shape task, not on the follow-up.
+ */
+function followupSetup() {
+  const base = setup();
+  const { registry, session } = base;
+  registry.upsertTask({ ...registry.getTask("shape")!, status: "done" });
+  registry.applyDiscovery([
+    {
+      syntheticId: "shape-session", agent: "claude", name: "shape archive exports", nameSource: "process",
+      cwd: root, gitBranch: "shape/archive-exports", gitRoot: root, repoRoot: root, pid: 101, tty: null,
+      terminals: [], startedAt: Date.now(),
+    },
+    {
+      syntheticId: "tickets-session", agent: "claude", name: "tickets archive exports", nameSource: "process",
+      cwd: root, gitBranch: "tickets/archive-exports", gitRoot: root, repoRoot: root, pid: 102, tty: null,
+      terminals: [], startedAt: Date.now(),
+    },
+  ]);
+  const followupSession = registry.snapshot().sessions.find((s) => s.name === "tickets archive exports")!;
+  registry.upsertTask(mkTask({
+    id: "tickets", kind: "shape", status: "running", repoRoot: root, sessionId: followupSession.id,
+  }));
+  reserveShapeTicketFollowup({
+    followupTaskId: "tickets",
+    sourceTaskId: "shape",
+    sourceEpisodeId: "merged-episode",
+    sourceSessionId: session.id,
+    sourcePrUrl: "https://github.com/acme/demo/pull/9",
+    now: Date.now(),
+  });
+  const asFollowup = (path: string, body: Record<string, unknown>) =>
+    base.post(path, { sessionId: followupSession.id, ...body });
+  return { ...base, followupSession, asFollowup };
+}
+
+test("a tickets follow-up pushes the tickets it filed, each under the merged shape task's issue", async () => {
+  configure(GITHUB);
+  const { asFollowup } = followupSetup();
+  const filed = await asFollowup("/mcp/v3/tasks", {
+    repoRoot: root, title: "Export seam", intent: "**What to build:** the seam.", dependsOnCurrentSession: true,
+  });
+  assert.equal(filed.status, 200, await filed.clone().text());
+  const ticket = await filed.json() as Task;
+  assert.deepEqual(ticket.dependencies.map((edge) => edge.type === "task" && edge.taskId), ["shape"]);
+  assert.ok(ticket.dependencies[0]!.satisfiedAt, "linked to the merged shape task, already satisfied");
+
+  const pushed = await asFollowup("/mcp/push-task", { taskId: ticket.id });
+  assert.equal(pushed.status, 200, await pushed.clone().text());
+  const body = await pushed.json() as { source: TaskSourceRef; parent: TaskSourceRef };
+  assert.deepEqual(body.source, issue(21));
+  assert.deepEqual(body.parent, issue(1), "filed under the shape task's issue");
+  const [argv] = ghCalls();
+  assert.deepEqual(argv!.slice(argv!.indexOf("--parent")), ["--parent", issue(1).url]);
+
+  // Tickets the shaping session filed wait on the same shape task, so they count as well.
+  assert.equal((await asFollowup("/mcp/push-task", { taskId: "ticket-1" })).status, 200);
+});
+
+test("a tickets follow-up still cannot push a task that waits on neither it nor its shape task", async () => {
+  configure(GITHUB);
+  const { asFollowup, registry } = followupSetup();
+  registry.upsertTask(mkTask({
+    id: "other-shape-ticket", title: "Another plan's ticket", status: "backlog", repoRoot: root,
+    dependencies: [taskEdge("some-other-shape", "some-other-session")],
+  }));
+  for (const taskId of ["someone-else", "other-shape-ticket"]) {
+    const res = await asFollowup("/mcp/push-task", { taskId });
+    assert.equal(res.status, 403, taskId);
+    assert.match((await res.json() as { error: string }).error, /only a task that waits on this session/);
+  }
+  assert.equal(ghCalls().length, 0, "nothing was spawned");
+});
+
+test("from a session that is not a tickets follow-up, an edge to the shape task alone does not pass", async () => {
+  configure(GITHUB);
+  const { registry, post } = setup();
+  registry.upsertTask(mkTask({
+    id: "shape-only-ticket", title: "Waits on the shape task, not this session", status: "backlog", repoRoot: root,
+    dependencies: [taskEdge("shape", "an-earlier-session")],
+  }));
+  const res = await post("/mcp/push-task", { taskId: "shape-only-ticket" });
+  assert.equal(res.status, 403);
+  assert.equal(ghCalls().length, 0);
 });

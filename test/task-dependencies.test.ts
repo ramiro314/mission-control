@@ -2847,3 +2847,80 @@ test("a scout dependency waits for its merged PR, while dependency cycles are re
   assert.equal(cycle.ok, false);
   assert.match(cycle.error ?? "", /cycle/);
 });
+
+test("a tickets follow-up session gates on its merged shape task, not on itself", async () => {
+  const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+
+  // The shape task, bound to the episode whose PR merged.
+  registry.upsertTask(baseTask({ id: "fu-shape", title: "Shape exports", kind: "shape", status: "running", worktreePath: "/wt/fu-shape" }));
+  registry.applyDiscovery([discovered("fu-shape-session", "/wt/fu-shape", { gitBranch: "shape/exports" })]);
+  registry.applyHook({ agent: "claude", event: "Stop", sessionId: "fu-shape-agent", cwd: "/wt/fu-shape", transcriptPath: null, env: {} });
+  registry.upsertTask({ ...registry.getTask("fu-shape")!, sessionId: "fu-shape-session" });
+  registry.bindTaskToWorkEpisode("fu-shape", "fu-shape-session");
+  const merged = registry.workEpisodeForSession("fu-shape-session")!;
+  registry.upsertTask({ ...registry.getTask("fu-shape")!, status: "done" });
+
+  // The follow-up's session has no work identity yet; it does not need one to link a ticket.
+  registry.upsertTask(baseTask({ id: "fu-tickets", title: "Tickets: Shape exports", kind: "shape", status: "running", worktreePath: "/wt/fu-tickets" }));
+  registry.applyDiscovery([
+    discovered("fu-shape-session", "/wt/fu-shape", { gitBranch: "shape/exports" }),
+    discovered("fu-tickets-session", "/wt/fu-tickets", { gitBranch: "tickets/exports" }),
+  ]);
+  registry.upsertTask({ ...registry.getTask("fu-tickets")!, sessionId: "fu-tickets-session" });
+  reserveShapeTicketFollowup({
+    followupTaskId: "fu-tickets",
+    sourceTaskId: "fu-shape",
+    sourceEpisodeId: merged.episodeId,
+    sourceSessionId: "fu-shape-session",
+    sourcePrUrl: "https://github.com/example/repo/pull/41",
+    now: Date.now(),
+  });
+
+  const ticket = tasks.create({
+    ...createInput,
+    title: "A ticket",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: "fu-tickets-session" }],
+  });
+  assert.equal(ticket.dependencies.length, 1);
+  const edge = ticket.dependencies[0]!;
+  assert.equal(edge.type, "task");
+  assert.equal(edge.type === "task" && edge.taskId, "fu-shape");
+  assert.equal(edge.sessionId, "fu-shape-session");
+  assert.equal(edge.episodeId, merged.episodeId);
+  assert.equal(edge.agentSessionId, merged.agentSessionId, "read from the merged episode's binding");
+  assert.equal(edge.prUrl, "https://github.com/example/repo/pull/41");
+  assert.ok(edge.satisfiedAt, "already satisfied");
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(ticket.id)!), []);
+
+  // An edit that keeps the edge keeps it satisfied, though its target is done.
+  const edited = await tasks.update(ticket.id, {
+    title: "A ticket, renamed",
+    dependencies: [{ type: "task", taskId: "fu-shape" }],
+  });
+  assert.equal(edited.ok, true, edited.ok ? "" : edited.error);
+  assert.deepEqual(registry.getTask(ticket.id)!.dependencies, ticket.dependencies);
+});
+
+test("a follow-up whose shape task is gone refuses its gate instead of linking nothing", async () => {
+  const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.upsertTask(baseTask({ id: "fu-orphan", kind: "shape", status: "running", worktreePath: "/wt/fu-orphan" }));
+  registry.applyDiscovery([discovered("fu-orphan-session", "/wt/fu-orphan")]);
+  registry.upsertTask({ ...registry.getTask("fu-orphan")!, sessionId: "fu-orphan-session" });
+  reserveShapeTicketFollowup({
+    followupTaskId: "fu-orphan",
+    sourceTaskId: "fu-missing-shape",
+    sourceEpisodeId: "missing-episode",
+    sourceSessionId: "missing-session",
+    sourcePrUrl: "https://github.com/example/repo/pull/42",
+    now: Date.now(),
+  });
+  assert.throws(
+    () => tasks.create({ ...createInput, backlog: true, dependencies: [{ type: "session", sessionId: "fu-orphan-session" }] }),
+    /shape task this follow-up slices is no longer available/,
+  );
+});

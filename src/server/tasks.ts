@@ -96,11 +96,13 @@ import {
   primaryRepoPrForTask,
   reserveRetroFollowup,
   retroFollowupForTask,
+  shapeTicketFollowupForTask,
   taskReposFor,
   taskWorkEpisodeForTask,
   upsertTask as dbUpsertTask,
   workEpisodeRepoPrsForTask,
   updatePipelineCommissionRecovery,
+  type ShapeTicketFollowupRelation,
   type TaskSessionClosureRow,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
@@ -2560,6 +2562,16 @@ export class TaskManager {
         if (!session) {
           throw new TaskDependencyError("dependency session is no longer active");
         }
+        // A tickets follow-up gating a ticket on itself means "linked to the merged shape
+        // task": the follow-up opens no PR, so an edge on it would never be released.
+        const followup = session.task ? shapeTicketFollowupForTask(session.task.id) : null;
+        if (followup) {
+          dependency = this.shapeTicketSourceEdge(followup, existing.get(`task:${followup.sourceTaskId}`), selectedAt);
+          const key = dependencyKey(dependency);
+          if (!seen.has(key)) resolved.push(dependency);
+          seen.add(key);
+          continue;
+        }
         const episode = this.registry.workEpisodeForSession(session.id);
         if (!session.agentSessionId || !episode || episode.awaitingAgentRebind) {
           throw new TaskDependencyError("dependency session has no stable work identity yet");
@@ -2647,6 +2659,41 @@ export class TaskManager {
       throw new TaskDependencyError("task dependencies cannot form a cycle");
     }
     return resolved;
+  }
+
+  /**
+   * The edge a ticket filed from a tickets follow-up carries instead of one on the follow-up:
+   * a task edge to the source shape task, pinned to its merged episode and already satisfied.
+   *
+   * Built here rather than through a `task` input because `newTaskEdgeRefusal` refuses a new
+   * edge to a task that is done, and the source always is. Only the follow-up's own session
+   * reaches this, so no client can satisfy an edge by naming a task.
+   */
+  private shapeTicketSourceEdge(
+    followup: ShapeTicketFollowupRelation,
+    previous: TaskDependency | undefined,
+    selectedAt: number,
+  ): TaskDependency {
+    const source = this.registry.getTask(followup.sourceTaskId) ?? getDurableTask(followup.sourceTaskId);
+    if (!source) {
+      throw new TaskDependencyError("the shape task this follow-up slices is no longer available");
+    }
+    const binding = [
+      this.registry.workEpisodeForTask(source.id),
+      ...historicalTaskWorkEpisodeBindingsForTask(source.id),
+    ].find((candidate) => candidate?.episodeId === followup.sourceEpisodeId);
+    return {
+      type: "task",
+      taskId: source.id,
+      title: source.title,
+      sessionId: followup.sourceSessionId,
+      episodeId: followup.sourceEpisodeId,
+      agentSessionId: binding?.agentSessionId ?? null,
+      branch: binding?.branch ?? null,
+      prUrl: followup.sourcePrUrl,
+      selectedAt: previous?.selectedAt ?? selectedAt,
+      satisfiedAt: previous?.satisfiedAt ?? Date.now(),
+    };
   }
 
   /**
