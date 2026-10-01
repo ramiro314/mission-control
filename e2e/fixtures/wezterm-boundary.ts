@@ -31,8 +31,21 @@ export function weztermEmulator(): ReturnType<typeof nativeWeztermEmulator> {
   adapter.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
   const list = adapter.list!;
   let previous: Awaited<ReturnType<typeof list>> = null;
-  // Hold the last discovery observation across the deliberately widened restart gap.
-  // This never bypasses the final write boundary, which must reject that stale handle.
-  adapter.list = async () => read()?.freezeDiscovery ? previous : (previous = await list());
+  // Hold the last successful discovery observation across the deliberately widened restart
+  // gap. This never bypasses the final write boundary, which must reject that stale handle.
+  //
+  // A listing already in flight when the spec freezes can finish after it has stopped the
+  // socket. Its result is null, and storing it would make every frozen tick report unknown
+  // inventory, drop the session's pane handle, and turn the stale refusal into "no terminal
+  // pane". So a listing that ends frozen returns the held observation, and only a
+  // successful one ever replaces it.
+  const frozen = () => read()?.freezeDiscovery === true;
+  adapter.list = async () => {
+    if (frozen()) return previous;
+    const panes = await list();
+    if (frozen()) return previous;
+    if (panes) previous = panes;
+    return panes;
+  };
   return adapter;
 }
