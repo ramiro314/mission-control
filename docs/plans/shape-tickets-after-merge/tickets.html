@@ -276,7 +276,9 @@
 <main class="wrap">
 <h1>Shape: create tickets after the plan merges - tickets</h1>
 <p>Sliced from the approved <a href="plan.md">plan</a>. The breakdown review was approved on 2026-09-30: four
-new tasks, mirrored to GitHub issues. Every ticket is gated on the shaping session, so none
+new tasks, mirrored to GitHub issues. Workflow repair round 1 revised the bodies of tickets 2, 3
+and 4 below to match the repaired plan. The tasks and issues filed before that repair still
+carry the earlier text (see Filed text below). Every ticket is gated on the shaping session, so none
 starts before the plan&#39;s pull request merges. The tickets form one chain, because each builds
 on the machinery the previous one adds.</p>
 <div class="scroll"><table>
@@ -342,48 +344,65 @@ on the machinery the previous one adds.</p>
 <p><strong>Test seams:</strong> unit tests for MCP <code>create_task</code> and task dependencies with a seeded follow-up relation; a push-route test for the gate and the parent; a migration test.</p>
 <p>Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 3 and 5) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
 <h2>Ticket 2: Create tickets from a merged shape task</h2>
-<p><strong>What to build:</strong> on a shape task that completed through its plan PR merge, and that has no live or done tickets follow-up, the operator can choose <strong>Create tickets</strong> from the task&#39;s action menu on the board card or in the drawer. Mission Control creates a linked <code>Tickets: &lt;shape title&gt;</code> shape task in tickets-only mode and dispatches it. Its agent is told to run only the tickets skill against the merged plan, with no grilling and no plan drafting. The tickets it files link to the shape task (ticket 1), and it completes once tickets are filed or the breakdown is dismissed. The tickets skill no longer writes or commits a tickets file.</p>
+<p><strong>What to build:</strong> on a shape task that completed through its plan PR merge, and that has no live or done tickets follow-up, the operator can choose <strong>Create tickets</strong> from the task&#39;s action menu on the board card or in the drawer. Mission Control creates and dispatches a linked <code>Tickets: &lt;shape title&gt;</code> shape task in tickets-only mode: it runs only the tickets skill against the merged plan. The tickets it files link to the shape task (ticket 1). It completes, and its session closes, once tickets are filed or the breakdown is dismissed, through a completion tool only follow-ups are granted. In a follow-up the tickets skill skips the tickets file. Every other caller, including old-prompt shaping sessions, keeps the current flow.</p>
 <p><strong>Blocked by:</strong> ticket 1 (Tickets follow-up links its tickets to the merged shape task).</p>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-<li><input disabled="" type="checkbox"> The action is offered, and its route accepted, only for a <code>shape</code> task that is done through its merge quorum with no live or done follow-up. Otherwise it is refused with a 409 and a reason, and duplicates are refused.</li>
-<li><input disabled="" type="checkbox"> The follow-up keeps the source&#39;s repositories and has After work set to None explicitly (not the shape Dispatch default). It uses the source&#39;s agent, or the default when that agent cannot run the tickets skill.</li>
-<li><input disabled="" type="checkbox"> A refused dispatch leaves the follow-up in the backlog with the reason.</li>
+<li><input disabled="" type="checkbox"> The action is offered, and its route accepted, only for a <code>shape</code> task that is done with a merged PR posture (the post-merge Retro&#39;s check) and no live or done follow-up. Otherwise it is refused with a 409 and a reason, and duplicates are refused.</li>
+<li><input disabled="" type="checkbox"> The wire task carries a derived <code>shapeTickets</code> field with the newest follow-up&#39;s id and whether Create tickets is allowed. The menu item reads it, and a follow-up status change re-sends the source task.</li>
+<li><input disabled="" type="checkbox"> The follow-up keeps the source&#39;s repositories, has After work explicitly None (not the shape Dispatch default), and uses the source&#39;s agent, or the default when that agent cannot run the tickets skill.</li>
+<li><input disabled="" type="checkbox"> A refused dispatch leaves it in the backlog with the reason.</li>
 <li><input disabled="" type="checkbox"> The tickets-only contract names the source task, its merged PR and branch. It invokes only the tickets skill, and asks with <code>request_input</code> when the merged PR does not show exactly one plan file.</li>
-<li><input disabled="" type="checkbox"> The tickets skill drops the tickets file, its commit and push, and the &quot;record the ids&quot; step. Its final report is the record.</li>
-<li><input disabled="" type="checkbox"> Shape docs and the fork ledger&#39;s shape entry (with the re-rendered ledger page) describe the manual action.</li>
+<li><input disabled="" type="checkbox"> A new MCP tool, granted only to follow-up launches, completes the follow-up with outcome <code>filed</code> or <code>dismissed</code> and requests session closure. It is refused for other sessions and idempotent on replay. A test proves the follow-up reaches <code>done</code> after filing and after a dismissed breakdown.</li>
+<li><input disabled="" type="checkbox"> The tickets skill gains a follow-up mode that skips the tickets file, its commit and push, and the &quot;record the ids&quot; step, and ends by calling that tool. In-session mode is unchanged.</li>
+<li><input disabled="" type="checkbox"> Shape docs and the fork ledger&#39;s shape entry (re-rendered page) describe the manual action.</li>
 <li><input disabled="" type="checkbox"> A Playwright spec clicks <strong>Create tickets</strong> on a merged shape task and sees the follow-up card, with every agent faked.</li>
 </ul>
-<p><strong>Test seams:</strong> unit tests for the follow-up service and the route&#39;s accept and refuse cases; shape prompt tests for the tickets-only variant; an e2e spec for the menu action.</p>
+<p><strong>Test seams:</strong> unit tests for the follow-up service, the route, the completion tool and the wire field; shape prompt and skill contract tests for both modes; an e2e spec for the menu action.</p>
 <p>Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 4, 5, 6, 7 and 9) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
 <h2>Ticket 3: Plan review&#39;s Create tickets starts the follow-up when the plan merges</h2>
-<p><strong>What to build:</strong> a newly dispatched shape task no longer files tickets in its shaping turn. Its plan review offers <strong>Create tickets after the plan merges</strong> or <strong>Stop</strong>, and Mission Control records the answer on the task. When the shape task completes through its plan PR merge with Create tickets recorded, the tickets follow-up from ticket 2 is created and dispatched automatically. If the task ends any other way, the choice lapses and nothing is created. Shape sessions dispatched before this ships keep today&#39;s behavior and are never followed up automatically.</p>
+<p><strong>What to build:</strong> a newly dispatched shape task no longer files tickets in its shaping turn. Its plan review offers <strong>Create tickets after the plan merges</strong> or <strong>Stop</strong>, and Mission Control records the answer on the task. When the shape task completes through its plan PR merge with Create tickets recorded, the tickets follow-up from ticket 2 is created and dispatched automatically. The choice reads as started only once dispatch succeeds, or as queued while a refused follow-up waits in the backlog. If the task ends any other way, or its PR is closed unmerged, the choice lapses and nothing is created. Shape sessions dispatched before this ships keep today&#39;s behavior.</p>
 <p><strong>Blocked by:</strong> ticket 2 (Create tickets from a merged shape task).</p>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
 <li><input disabled="" type="checkbox"> A new task field records the choice. It is stamped as awaiting review when a shape task is dispatched under the new contract, and stays empty for every existing row and every other kind.</li>
 <li><input disabled="" type="checkbox"> A resolved plan review carrying <code>shape-follow-up</code> sets the choice to pending or stop. The latest resolved review wins, a dismissal writes nothing, and an unstamped task is never written.</li>
-<li><input disabled="" type="checkbox"> Merge-quorum completion of a pending shape task starts exactly one follow-up and marks it started. Completion without the merge, or an unmerged close, marks it lapsed. A merge with the shape task&#39;s workflow run still open or failed still starts it.</li>
+<li><input disabled="" type="checkbox"> Before the lapse work: confirm how a task-bound PR&#39;s closed, unmerged state can be read (today the PR poller treats it as no PR), and record it in the pull request.</li>
+<li><input disabled="" type="checkbox"> Merge-quorum completion of a pending shape task starts exactly one follow-up. The choice becomes started only after dispatch succeeds. A refused dispatch makes it queued, and queued becomes started when that follow-up is dispatched later. A merge with the shape task&#39;s workflow run still open or failed still starts it.</li>
+<li><input disabled="" type="checkbox"> Completion or cancellation without the merge marks a pending choice lapsed. A new task-level PR-closed signal does the same for an unmerged close. Nothing is created; lapsed is final.</li>
 <li><input disabled="" type="checkbox"> The shaping contract shows the new copy (same decision and option ids) and no longer invokes the tickets skill. The workflow-bound shape completion contract no longer expects ticket or phase tasks. The plan kind&#39;s contract is unchanged.</li>
-<li><input disabled="" type="checkbox"> The field is carried on the wire task. Shape docs and the fork ledger entry describe the automatic path.</li>
+<li><input disabled="" type="checkbox"> The recorded choice fills the wire task&#39;s <code>shapeTickets</code> state. Shape docs and the fork ledger entry describe the automatic path.</li>
 <li><input disabled="" type="checkbox"> The shape-kind Playwright spec reads the new copy.</li>
 </ul>
-<p><strong>Test seams:</strong> shape prompt and completion-contract unit tests; a review-resolution stamping test; a merge-completion test beside the task completion reconciler tests; a migration test; the shape-kind e2e spec.</p>
-<p>Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 1, 2, 4 and 9, and Data and compatibility) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<p><strong>Test seams:</strong> shape prompt and completion-contract unit tests; a review-resolution stamping test; a merge-completion test beside the task completion reconciler tests (started, queued, lapsed); a closed-PR signal test beside the PR poller tests; a migration test; the shape-kind e2e spec.</p>
+<p>Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 1, 2, 4 and 9, Data and compatibility, and Assumptions to confirm during implementation) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
 <h2>Ticket 4: Ticket choice marker on shape tasks</h2>
-<p><strong>What to build:</strong> a shape task&#39;s board card and drawer show what will happen, or what happened, to its tickets. <strong>Tickets after merge</strong> shows while Create tickets is pending. Once the follow-up is created, a link to it shows. <strong>Tickets lapsed</strong> shows when the choice lapsed. Nothing shows otherwise.</p>
+<p><strong>What to build:</strong> a shape task&#39;s board card and drawer show what will happen, or what happened, to its tickets. <strong>Tickets after merge</strong> shows while Create tickets is pending. <strong>Tickets queued</strong> with a link shows while a refused follow-up waits in the backlog. Once the follow-up is dispatched, a link to it shows. <strong>Tickets lapsed</strong> shows when the choice lapsed. Nothing shows otherwise.</p>
 <p><strong>Blocked by:</strong> ticket 3 (Plan review&#39;s Create tickets starts the follow-up when the plan merges).</p>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
 <li><input disabled="" type="checkbox"> Pending shows &quot;Tickets after merge&quot; on the card and in the drawer.</li>
-<li><input disabled="" type="checkbox"> Started shows a link that opens the follow-up task.</li>
+<li><input disabled="" type="checkbox"> Queued shows &quot;Tickets queued&quot; and started shows &quot;Tickets&quot;, each with a link that opens the follow-up task.</li>
 <li><input disabled="" type="checkbox"> Lapsed shows &quot;Tickets lapsed&quot;.</li>
 <li><input disabled="" type="checkbox"> Any other value, and every non-shape task, shows no marker.</li>
-<li><input disabled="" type="checkbox"> A Playwright spec covers all three states, selected by role and accessible name, with every agent faked.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers all four states, selected by role and accessible name, with every agent faked.</li>
 <li><input disabled="" type="checkbox"> The fork ledger&#39;s shape entry lists the marker.</li>
 </ul>
-<p><strong>Test seams:</strong> a Playwright spec driving a shape task through pending, started and lapsed; a static-markup test where it pins a shape the browser cannot.</p>
+<p><strong>Test seams:</strong> a Playwright spec driving a shape task through pending, queued, started and lapsed; a static-markup test where it pins a shape the browser cannot.</p>
 <p>Context: read docs/plans/shape-tickets-after-merge/plan.md (section 8) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2>Filed text</h2>
+<p>The four tasks and issues #79 to #82 were filed from the pre-repair breakdown. Ticket 1 is
+unchanged. Tickets 2, 3 and 4 differ from the filed text:</p>
+<ul>
+<li><strong>Ticket 2:</strong> completion through a follow-up-only tool, the skill&#39;s follow-up mode instead of
+dropping the tickets file, and the wire field.</li>
+<li><strong>Ticket 3:</strong> <code>started</code> only after dispatch, the <code>queued</code> state, and the closed-PR signal
+with its resolve-first step.</li>
+<li><strong>Ticket 4:</strong> the queued marker.</li>
+</ul>
+<p>Each body points at <code>plan.md</code>, which carries the repaired design. Mission Control&#39;s MCP surface
+cannot edit a filed task&#39;s intent, so the operator should update the three filed task intents
+and issues from the bodies above before those tasks are dispatched.</p>
 </main>
 </body>
 </html>

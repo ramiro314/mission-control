@@ -1,7 +1,9 @@
 # Shape: create tickets after the plan merges - tickets
 
 Sliced from the approved [plan](plan.md). The breakdown review was approved on 2026-09-30: four
-new tasks, mirrored to GitHub issues. Every ticket is gated on the shaping session, so none
+new tasks, mirrored to GitHub issues. Workflow repair round 1 revised the bodies of tickets 2, 3
+and 4 below to match the repaired plan. The tasks and issues filed before that repair still
+carry the earlier text (see Filed text below). Every ticket is gated on the shaping session, so none
 starts before the plan's pull request merges. The tickets form one chain, because each builds
 on the machinery the previous one adds.
 
@@ -31,55 +33,74 @@ Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 3 and 5) fi
 
 ## Ticket 2: Create tickets from a merged shape task
 
-**What to build:** on a shape task that completed through its plan PR merge, and that has no live or done tickets follow-up, the operator can choose **Create tickets** from the task's action menu on the board card or in the drawer. Mission Control creates a linked `Tickets: <shape title>` shape task in tickets-only mode and dispatches it. Its agent is told to run only the tickets skill against the merged plan, with no grilling and no plan drafting. The tickets it files link to the shape task (ticket 1), and it completes once tickets are filed or the breakdown is dismissed. The tickets skill no longer writes or commits a tickets file.
+**What to build:** on a shape task that completed through its plan PR merge, and that has no live or done tickets follow-up, the operator can choose **Create tickets** from the task's action menu on the board card or in the drawer. Mission Control creates and dispatches a linked `Tickets: <shape title>` shape task in tickets-only mode: it runs only the tickets skill against the merged plan. The tickets it files link to the shape task (ticket 1). It completes, and its session closes, once tickets are filed or the breakdown is dismissed, through a completion tool only follow-ups are granted. In a follow-up the tickets skill skips the tickets file. Every other caller, including old-prompt shaping sessions, keeps the current flow.
 
 **Blocked by:** ticket 1 (Tickets follow-up links its tickets to the merged shape task).
 
 **Acceptance criteria:**
-- [ ] The action is offered, and its route accepted, only for a `shape` task that is done through its merge quorum with no live or done follow-up. Otherwise it is refused with a 409 and a reason, and duplicates are refused.
-- [ ] The follow-up keeps the source's repositories and has After work set to None explicitly (not the shape Dispatch default). It uses the source's agent, or the default when that agent cannot run the tickets skill.
-- [ ] A refused dispatch leaves the follow-up in the backlog with the reason.
+- [ ] The action is offered, and its route accepted, only for a `shape` task that is done with a merged PR posture (the post-merge Retro's check) and no live or done follow-up. Otherwise it is refused with a 409 and a reason, and duplicates are refused.
+- [ ] The wire task carries a derived `shapeTickets` field with the newest follow-up's id and whether Create tickets is allowed. The menu item reads it, and a follow-up status change re-sends the source task.
+- [ ] The follow-up keeps the source's repositories, has After work explicitly None (not the shape Dispatch default), and uses the source's agent, or the default when that agent cannot run the tickets skill.
+- [ ] A refused dispatch leaves it in the backlog with the reason.
 - [ ] The tickets-only contract names the source task, its merged PR and branch. It invokes only the tickets skill, and asks with `request_input` when the merged PR does not show exactly one plan file.
-- [ ] The tickets skill drops the tickets file, its commit and push, and the "record the ids" step. Its final report is the record.
-- [ ] Shape docs and the fork ledger's shape entry (with the re-rendered ledger page) describe the manual action.
+- [ ] A new MCP tool, granted only to follow-up launches, completes the follow-up with outcome `filed` or `dismissed` and requests session closure. It is refused for other sessions and idempotent on replay. A test proves the follow-up reaches `done` after filing and after a dismissed breakdown.
+- [ ] The tickets skill gains a follow-up mode that skips the tickets file, its commit and push, and the "record the ids" step, and ends by calling that tool. In-session mode is unchanged.
+- [ ] Shape docs and the fork ledger's shape entry (re-rendered page) describe the manual action.
 - [ ] A Playwright spec clicks **Create tickets** on a merged shape task and sees the follow-up card, with every agent faked.
 
-**Test seams:** unit tests for the follow-up service and the route's accept and refuse cases; shape prompt tests for the tickets-only variant; an e2e spec for the menu action.
+**Test seams:** unit tests for the follow-up service, the route, the completion tool and the wire field; shape prompt and skill contract tests for both modes; an e2e spec for the menu action.
 
 Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 4, 5, 6, 7 and 9) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
 
 ## Ticket 3: Plan review's Create tickets starts the follow-up when the plan merges
 
-**What to build:** a newly dispatched shape task no longer files tickets in its shaping turn. Its plan review offers **Create tickets after the plan merges** or **Stop**, and Mission Control records the answer on the task. When the shape task completes through its plan PR merge with Create tickets recorded, the tickets follow-up from ticket 2 is created and dispatched automatically. If the task ends any other way, the choice lapses and nothing is created. Shape sessions dispatched before this ships keep today's behavior and are never followed up automatically.
+**What to build:** a newly dispatched shape task no longer files tickets in its shaping turn. Its plan review offers **Create tickets after the plan merges** or **Stop**, and Mission Control records the answer on the task. When the shape task completes through its plan PR merge with Create tickets recorded, the tickets follow-up from ticket 2 is created and dispatched automatically. The choice reads as started only once dispatch succeeds, or as queued while a refused follow-up waits in the backlog. If the task ends any other way, or its PR is closed unmerged, the choice lapses and nothing is created. Shape sessions dispatched before this ships keep today's behavior.
 
 **Blocked by:** ticket 2 (Create tickets from a merged shape task).
 
 **Acceptance criteria:**
 - [ ] A new task field records the choice. It is stamped as awaiting review when a shape task is dispatched under the new contract, and stays empty for every existing row and every other kind.
 - [ ] A resolved plan review carrying `shape-follow-up` sets the choice to pending or stop. The latest resolved review wins, a dismissal writes nothing, and an unstamped task is never written.
-- [ ] Merge-quorum completion of a pending shape task starts exactly one follow-up and marks it started. Completion without the merge, or an unmerged close, marks it lapsed. A merge with the shape task's workflow run still open or failed still starts it.
+- [ ] Before the lapse work: confirm how a task-bound PR's closed, unmerged state can be read (today the PR poller treats it as no PR), and record it in the pull request.
+- [ ] Merge-quorum completion of a pending shape task starts exactly one follow-up. The choice becomes started only after dispatch succeeds. A refused dispatch makes it queued, and queued becomes started when that follow-up is dispatched later. A merge with the shape task's workflow run still open or failed still starts it.
+- [ ] Completion or cancellation without the merge marks a pending choice lapsed. A new task-level PR-closed signal does the same for an unmerged close. Nothing is created; lapsed is final.
 - [ ] The shaping contract shows the new copy (same decision and option ids) and no longer invokes the tickets skill. The workflow-bound shape completion contract no longer expects ticket or phase tasks. The plan kind's contract is unchanged.
-- [ ] The field is carried on the wire task. Shape docs and the fork ledger entry describe the automatic path.
+- [ ] The recorded choice fills the wire task's `shapeTickets` state. Shape docs and the fork ledger entry describe the automatic path.
 - [ ] The shape-kind Playwright spec reads the new copy.
 
-**Test seams:** shape prompt and completion-contract unit tests; a review-resolution stamping test; a merge-completion test beside the task completion reconciler tests; a migration test; the shape-kind e2e spec.
+**Test seams:** shape prompt and completion-contract unit tests; a review-resolution stamping test; a merge-completion test beside the task completion reconciler tests (started, queued, lapsed); a closed-PR signal test beside the PR poller tests; a migration test; the shape-kind e2e spec.
 
-Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 1, 2, 4 and 9, and Data and compatibility) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
+Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 1, 2, 4 and 9, Data and compatibility, and Assumptions to confirm during implementation) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
 
 ## Ticket 4: Ticket choice marker on shape tasks
 
-**What to build:** a shape task's board card and drawer show what will happen, or what happened, to its tickets. **Tickets after merge** shows while Create tickets is pending. Once the follow-up is created, a link to it shows. **Tickets lapsed** shows when the choice lapsed. Nothing shows otherwise.
+**What to build:** a shape task's board card and drawer show what will happen, or what happened, to its tickets. **Tickets after merge** shows while Create tickets is pending. **Tickets queued** with a link shows while a refused follow-up waits in the backlog. Once the follow-up is dispatched, a link to it shows. **Tickets lapsed** shows when the choice lapsed. Nothing shows otherwise.
 
 **Blocked by:** ticket 3 (Plan review's Create tickets starts the follow-up when the plan merges).
 
 **Acceptance criteria:**
 - [ ] Pending shows "Tickets after merge" on the card and in the drawer.
-- [ ] Started shows a link that opens the follow-up task.
+- [ ] Queued shows "Tickets queued" and started shows "Tickets", each with a link that opens the follow-up task.
 - [ ] Lapsed shows "Tickets lapsed".
 - [ ] Any other value, and every non-shape task, shows no marker.
-- [ ] A Playwright spec covers all three states, selected by role and accessible name, with every agent faked.
+- [ ] A Playwright spec covers all four states, selected by role and accessible name, with every agent faked.
 - [ ] The fork ledger's shape entry lists the marker.
 
-**Test seams:** a Playwright spec driving a shape task through pending, started and lapsed; a static-markup test where it pins a shape the browser cannot.
+**Test seams:** a Playwright spec driving a shape task through pending, queued, started and lapsed; a static-markup test where it pins a shape the browser cannot.
 
 Context: read docs/plans/shape-tickets-after-merge/plan.md (section 8) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn't, and record any deviation in the pull request. Implement only this ticket.
+
+## Filed text
+
+The four tasks and issues #79 to #82 were filed from the pre-repair breakdown. Ticket 1 is
+unchanged. Tickets 2, 3 and 4 differ from the filed text:
+
+- **Ticket 2:** completion through a follow-up-only tool, the skill's follow-up mode instead of
+  dropping the tickets file, and the wire field.
+- **Ticket 3:** `started` only after dispatch, the `queued` state, and the closed-PR signal
+  with its resolve-first step.
+- **Ticket 4:** the queued marker.
+
+Each body points at `plan.md`, which carries the repaired design. Mission Control's MCP surface
+cannot edit a filed task's intent, so the operator should update the three filed task intents
+and issues from the bodies above before those tasks are dispatched.

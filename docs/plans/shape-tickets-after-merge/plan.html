@@ -287,6 +287,10 @@ the automatic path does not.</p>
 <p>Settled through three grilling rounds (18 decisions) and one plan-review question (decision
 19), recorded below. Approved in the plan review on 2026-09-30, with Create tickets as the
 follow-up.</p>
+<p>Workflow repair round 1 (Plan Validation) reconciled decisions 11 and 18 with the shared skill
+and with how tasks complete. It also settled <code>started</code> ordering, the closed-PR signal and the
+wire data. Those mechanisms are marked &quot;repair round 1&quot; where they appear. No recorded human
+answer changed.</p>
 <h2>Goals</h2>
 <ul>
 <li>Tickets are sliced only from a plan that has merged, whether or not a workflow is bound.</li>
@@ -378,7 +382,7 @@ merge, gated on the planning session.</li>
 <td>11</td>
 <td>2</td>
 <td>How does the follow-up finish?</td>
-<td><strong>Completes on its own</strong> once tickets are filed or the breakdown is dismissed</td>
+<td><strong>Completes on its own</strong> once tickets are filed or the breakdown is dismissed (mechanism settled in repair round 1: section 6)</td>
 </tr>
 <tr>
 <td>12</td>
@@ -414,13 +418,13 @@ merge, gated on the planning session.</li>
 <td>17</td>
 <td>3</td>
 <td>Marker over its life</td>
-<td><strong>Pending (&quot;Tickets after merge&quot;), then a link to the follow-up, or &quot;Tickets lapsed&quot;</strong></td>
+<td><strong>Pending (&quot;Tickets after merge&quot;), then a link to the follow-up, or &quot;Tickets lapsed&quot;</strong>. Repair round 1 adds &quot;Tickets queued&quot; with the same link while a refused follow-up waits (section 8)</td>
 </tr>
 <tr>
 <td>18</td>
 <td>3</td>
 <td>Sessions in flight under the old prompt</td>
-<td><strong>Left alone</strong>: they file tickets in-session as before, and are never stamped</td>
+<td><strong>Left alone</strong>: they file tickets in-session as before, and are never stamped. The shared <code>tickets</code> skill keeps that in-session flow (repair round 1: section 5)</td>
 </tr>
 <tr>
 <td>19</td>
@@ -508,18 +512,22 @@ direct their use.</li>
 </tr>
 <tr>
 <td><code>lapsed</code></td>
-<td>Was <code>pending</code>, but the shape task ended without its merge quorum.</td>
+<td>Was <code>pending</code>, but the shape task ended without its merge quorum, or its PR closed unmerged. Final.</td>
+</tr>
+<tr>
+<td><code>queued</code></td>
+<td>The follow-up was created, but its dispatch was refused. It waits in the backlog with the reason. The relation table names it.</td>
 </tr>
 <tr>
 <td><code>started</code></td>
-<td>The follow-up was created. The relation table names it.</td>
+<td>The follow-up was created <strong>and dispatched</strong>. The relation table names it.</td>
 </tr>
 </tbody></table></div>
 <p>When <code>ReviewManager.resolve</code> resolves a <code>plan-decisions</code> review whose decisions include
 <code>shape-follow-up</code>, the server finds the session&#39;s task. If that task is <code>shape</code> and its
 <code>shape_tickets</code> is not <code>NULL</code>, it writes <code>pending</code> or <code>stop</code> from the selection. A later
 resolved review overwrites an earlier one (decision 7). A dismissed review writes nothing.
-The column is carried on the wire <code>Task</code> so the UI can render the marker.</p>
+What the UI needs travels on the wire <code>Task</code> as one derived field (section 8).</p>
 <h3>3. The follow-up relation</h3>
 <p>A sibling of <code>retro_followups</code>, <code>shape_ticket_followups</code>, built the same way: reserve the
 follow-up id first, then create the ordinary task under it.</p>
@@ -539,13 +547,30 @@ and its <code>shape_tickets</code> is <code>pending</code>, <code>TaskManager</c
 the shape task&#39;s repositories (primary and attached), After work: None, and the agent picked
 by the Retro follow-up&#39;s runner rule: the shape task&#39;s agent, or the default when that agent
 cannot run <code>tickets</code> (decision 15).</li>
-<li>Set the source&#39;s <code>shape_tickets</code> to <code>started</code>.</li>
-<li>Dispatch it. If dispatch is refused, the task stays in the backlog with the reason as its
-error (decision 9), as a Retro follow-up does.</li>
+<li>Dispatch it, granting the follow-up&#39;s completion tool (section 6).</li>
+<li>Only when dispatch succeeds, set the source&#39;s <code>shape_tickets</code> to <code>started</code>. If dispatch is
+refused, the follow-up stays in the backlog with the reason as its error (decision 9), as a
+Retro follow-up does, and the source becomes <code>queued</code>. A <code>queued</code> source becomes <code>started</code>
+when that follow-up is later dispatched by hand or by autopilot: the dispatch path checks
+the relation table.</li>
 </ol>
-<p>A shape task that becomes <code>done</code> or <code>cancelled</code> without its merge quorum (completed by hand, or
-its PR closed unmerged), with <code>shape_tickets</code> still <code>pending</code>, moves to <code>lapsed</code> (decisions 5
-and 16). Nothing is created.</p>
+<p><strong>Lapsing</strong> (decisions 5 and 16). A <code>pending</code> choice becomes <code>lapsed</code>, and nothing is created,
+on either signal:</p>
+<ul>
+<li><strong>Completed or cancelled without the merge quorum.</strong> <code>TaskManager</code>&#39;s completion and
+cancellation paths see this directly, because they are not the merge-settlement path.</li>
+<li><strong>PR closed unmerged.</strong> No signal exists today. The PR poller treats a closed, unmerged PR as
+&quot;no PR&quot; (<code>PrState</code> is only <code>open | merged</code>; <code>queryPr</code> and <code>queryPrUrl</code> drop <code>CLOSED</code>, and
+<code>Registry.reconcilePrs</code> just clears the session&#39;s PR fields). No task event fires. The
+Inspector sees closed PRs, but only the ones it has adopted. So this plan adds the signal:
+in <code>pollAndReconcilePrs</code> (<code>pr.ts</code>), a task-bound PR URL whose raw state reads <code>CLOSED</code>
+emits a new <code>Registry.onTaskPrClosed</code>, modelled on <code>onTaskPrMerged</code>. <code>TaskManager</code>
+subscribes beside its <code>onTaskPrMerged</code> subscription and lapses a <code>pending</code> shape task whose
+current episode&#39;s PR it names. Cadence is the PR poller&#39;s (20 s, with by-URL back-off up
+to 5 minutes).</li>
+</ul>
+<p><code>lapsed</code> is final. If a closed PR is reopened and later merges, no follow-up starts on its own.
+The manual action (section 7) is available once the task is done through that merge.</p>
 <h3>5. The tickets-only contract and its edges</h3>
 <p>The follow-up is recognised by its row in <code>shape_ticket_followups</code>. For it,
 <code>shapeContractAppendix</code> renders a tickets-only variant:</p>
@@ -571,39 +596,83 @@ with an item, so mirrored tickets stay sub-issues of the shape task&#39;s issue.
 <li>The <code>push_task</code> route&#39;s gate also accepts a task whose edge targets the calling session&#39;s
 task&#39;s source shape task, so the follow-up can mirror what it filed.</li>
 </ul>
-<p><code>skills/tickets/SKILL.md</code> changes to match:</p>
+<p><code>skills/tickets/SKILL.md</code> is one shared file. Decision 18 still needs the in-session flow for
+shape sessions already running under the old prompt, so the skill gains a <strong>follow-up mode</strong>
+instead of losing its old steps (repair round 1):</p>
 <ul>
-<li>Section 4 drops writing, committing and pushing <code>tickets.md</code> and <code>tickets.html</code>, and the
-&quot;record the ids&quot; step.</li>
-<li>Filing keeps <code>dependsOnCurrentSession: true</code>, now documented as &quot;linked to the merged shape
-task&quot;. The final report (the ticket-to-task map, edges and the parallel set) is the record.</li>
-<li>The skill&#39;s description says it runs in a tickets follow-up after the plan merges.</li>
+<li><strong>Follow-up mode</strong>, when the delivered contract says the session is a tickets follow-up:
+section 4 skips writing, committing and pushing <code>tickets.md</code> and <code>tickets.html</code>, and the
+&quot;record the ids&quot; step. The plan pointer already resolves on the merged default branch.
+<code>dependsOnCurrentSession: true</code> is documented as &quot;linked to the merged shape task&quot;. The final
+report (the ticket-to-task map, edges and parallel set) is the record. The skill ends by
+calling the completion tool (section 6).</li>
+<li><strong>In-session mode</strong>, every other caller, including an old-prompt shaping session: section 4
+is unchanged. It still writes, commits and pushes the tickets file before filing, so the plan
+pointer resolves in a pushed commit before any task names it.</li>
+<li><strong>Ownership:</strong> ticket 2 adds follow-up mode, because it introduces the follow-up. Ticket 3
+does not touch the skill. Removing in-session mode once no old-prompt session can remain is
+a later cleanup, outside this plan.</li>
 </ul>
 <h3>6. How the follow-up finishes</h3>
-<p>The follow-up has no PR and no workflow. It completes through Foreman&#39;s ordinary completion
-judgement against its intent: either the breakdown was submitted and every approved ticket was
-filed (and pushed when mirroring was chosen), or the breakdown was dismissed and nothing was
-filed (decision 11). A <code>create_task</code> failure leaves it for the human, as the skill already
-says.</p>
+<p>The follow-up has no PR and no workflow, and today nothing completes such a task on its own
+(repair round 1, verified):</p>
+<ul>
+<li>Foreman&#39;s prompted wrap-up records an empty diff as <code>outcome: &quot;empty&quot;</code> and holds it, without
+running a verifier (<code>foreman/worker.ts</code>).</li>
+<li><code>concludeScheduledMissionRun</code> completes an empty or retired run only for a scheduled
+occurrence with <code>auto-on-conclusion</code>.</li>
+<li>Every other automatic completion (<code>settleIfEpisodeFinished</code>, <code>settleMergedTask</code>) needs a
+merged PR, and <code>agentWentAway</code> without a merge ends the task as <strong>failed</strong>.</li>
+</ul>
+<p>So decision 11 gets its own narrow path, copied from the Retro&#39;s <code>complete_retro_no_change</code>
+chain:</p>
+<ul>
+<li>A new MCP tool, <code>complete_shape_tickets</code>, is granted only to tickets follow-up launches
+(<code>missionMcp.tools</code> on dispatch, as <code>retro.ts</code> grants its tool). It takes an outcome,
+<code>filed</code> or <code>dismissed</code>.</li>
+<li>Its <code>/mcp/...</code> route resolves the session from its env. <code>TaskManager</code> resolves the task from
+the session, requires a row in <code>shape_ticket_followups</code> and an active status, replays
+idempotently, and then calls <code>complete</code>. The route also closes the session, the way the
+generic <code>POST /api/tasks/:id/complete</code> requests closure, so the worktree is returned.</li>
+<li>The tickets skill&#39;s follow-up mode calls it after the last ticket is filed (and pushed when
+mirroring was chosen) with <code>filed</code>, or after a dismissed breakdown with <code>dismissed</code>.</li>
+<li>A <code>create_task</code> failure does not call it. The follow-up stays active for the human, as the
+skill already says, and <strong>Complete &amp; close</strong> remains the manual way out.</li>
+</ul>
 <h3>7. The manual action</h3>
 <p><code>POST /api/tasks/:id/shape-tickets</code> starts a follow-up by hand. It shares the service in
 section 4 and is accepted only when all of these hold:</p>
 <ul>
-<li>the task is <code>shape</code> and <code>done</code> through its merge quorum;</li>
-<li>no follow-up for it is live or done.</li>
+<li>the task is <code>shape</code> and <code>done</code>, and its PR posture is merged: the same check
+<code>startPostMergeRetro</code> makes (<code>retroPrPostureForTask</code> reports <code>merged</code> and the task status is
+<code>done</code>);</li>
+<li>no follow-up for it is live (backlog, queued or active) or done.</li>
 </ul>
 <p>It is accepted whatever <code>shape_tickets</code> holds, <code>stop</code>, <code>lapsed</code> and <code>NULL</code> included. That
 covers the late opt-in after Stop. For a lapsed choice it applies only once the task has
 actually merged. An in-flight old-style task that already filed tickets in-session can take a
 second slicing only by this explicit click.</p>
 <p>A <strong>Create tickets</strong> item appears in the task&#39;s action menu on the board card and in the
-drawer when the route would accept. A refusal returns 409 with the reason.</p>
+drawer when <code>shapeTickets.canCreate</code> (section 8) is true. The route re-checks rather than
+trusting the client, and a refusal returns 409 with the reason.</p>
 <h3>8. The marker</h3>
+<p><strong>Wire data</strong> (repair round 1). The wire <code>Task</code> gains one derived, server-computed field for
+shape tasks, <code>null</code> for every other kind:</p>
+<pre><code class="language-ts">shapeTickets: {
+  state: &quot;awaiting-review&quot; | &quot;pending&quot; | &quot;stop&quot; | &quot;lapsed&quot; | &quot;queued&quot; | &quot;started&quot; | null;
+  followupTaskId: string | null; // newest row in shape_ticket_followups for this source
+  canCreate: boolean;            // section 7&#39;s acceptance rule, computed by the same helper
+} | null
+</code></pre>
+<p>It lives in <code>src/shared/</code> beside <code>Task</code>, and the server recomputes it whenever the source task
+changes, a follow-up row is written, or a follow-up&#39;s status changes. That last case sends a
+<code>task_upsert</code> for the source as well, so the marker and the menu item follow the follow-up
+without a reload.</p>
 <p>On a shape task&#39;s card and drawer:</p>
 <div class="scroll"><table>
 <thead>
 <tr>
-<th><code>shape_tickets</code></th>
+<th><code>shapeTickets.state</code></th>
 <th>Marker</th>
 </tr>
 </thead>
@@ -612,8 +681,12 @@ drawer when the route would accept. A refusal returns 409 with the reason.</p>
 <td><strong>Tickets after merge</strong></td>
 </tr>
 <tr>
+<td><code>queued</code></td>
+<td><strong>Tickets queued:</strong> a link to the follow-up task (<code>followupTaskId</code>)</td>
+</tr>
+<tr>
 <td><code>started</code></td>
-<td><strong>Tickets:</strong> a link to the follow-up task</td>
+<td><strong>Tickets:</strong> a link to the follow-up task (<code>followupTaskId</code>)</td>
 </tr>
 <tr>
 <td><code>lapsed</code></td>
@@ -650,7 +723,8 @@ trigger is the same: the merge.</li>
 <p><strong>Phase 2: the tickets follow-up.</strong> It is created with an explicit <code>workflowId: null</code>
 (After work: None), as the Retro follow-up is. Without that, the shape kind&#39;s Dispatch default
 would bind Plan Validation to a task that produces no plan, diff or PR. Its only gate is the
-breakdown review you submit, and Foreman&#39;s completion judgement then closes it (section 6).</p>
+breakdown review you submit, and its own <code>complete_shape_tickets</code> call then closes it
+(section 6).</p>
 <p><strong>The tickets themselves.</strong> They are filed with <code>create_task</code>, which takes no workflow field,
 so each ticket gets its own kind&#39;s Dispatch default when it is created. That is the built-in
 No-Mistakes Review for <code>ship</code> and Bug Fix Review for <code>bugfix</code>, exactly as today.</p>
@@ -680,31 +754,45 @@ completion contract has no phase lines.</li>
 <li>A review-resolution test: a <code>shape-follow-up</code> answer stamps <code>pending</code> or <code>stop</code>, the latest
 review wins, dismissal writes nothing, and a <code>NULL</code> task is never stamped.</li>
 <li>A merge test beside <code>task-completion-reconciler.test.ts</code>: merge-quorum completion with
-<code>pending</code> creates and dispatches exactly one follow-up; a refused dispatch leaves it
-backlogged with the reason; completion without merge and an unmerged close set <code>lapsed</code>.</li>
+<code>pending</code> creates and dispatches exactly one follow-up and only then sets <code>started</code>; a
+refused dispatch leaves it backlogged with the reason and sets <code>queued</code>, which becomes
+<code>started</code> when that follow-up is dispatched later; completion or cancellation without the
+merge sets <code>lapsed</code>.</li>
+<li>A closed-PR test beside the PR poller tests: a task-bound PR URL reading <code>CLOSED</code> emits
+<code>onTaskPrClosed</code> once, and a <code>pending</code> shape task becomes <code>lapsed</code> with no follow-up
+created; a merged or open PR emits nothing.</li>
+<li>A follow-up completion test beside the retro no-change tests: <code>complete_shape_tickets</code> with
+<code>filed</code> and with <code>dismissed</code> takes the follow-up to <code>done</code> and requests session closure; it
+is refused from a session whose task is not a tickets follow-up, and a replay is idempotent.</li>
+<li><code>tickets</code> skill contract test: follow-up mode skips the tickets file and calls the completion
+tool; in-session mode still writes, commits and pushes the tickets file before filing.</li>
+<li>A wire test: <code>shapeTickets</code> derives <code>state</code>, <code>followupTaskId</code> and <code>canCreate</code> for each state,
+is <code>null</code> for other kinds, and a follow-up status change re-sends the source task.</li>
 <li><code>mcp-create-task.test.ts</code> and <code>task-dependencies.test.ts</code>: from a follow-up session,
 <code>dependsOnCurrentSession</code> yields a satisfied edge to the source shape task, and the ticket
 is immediately eligible.</li>
 <li>A push test: <code>push_task</code> from the follow-up passes the gate and parents the item under the
 shape task&#39;s item.</li>
 <li>Manual route tests: accepted after Stop and after a cancelled follow-up; refused while one is
-live or done, and before the merge.</li>
+live (including <code>queued</code>) or done, and before the merge.</li>
 <li>Migration: an existing database opens with the new column and table.</li>
 </ul>
 <p>End-to-end (<code>e2e/</code>, required for the UI changes):</p>
 <ul>
 <li><code>shape-kind.spec.ts</code>: the delivered contract reads &quot;Create tickets after the plan merges&quot;.</li>
 <li>A new spec: a shape task with <code>pending</code> shows <strong>Tickets after merge</strong>; after a simulated
-merge it shows the follow-up link and the follow-up card exists; a Stop task offers <strong>Create
-tickets</strong> in its menu, and clicking it creates the follow-up; a lapsed task shows <strong>Tickets
-lapsed</strong>. All agents faked, selected by role and label.</li>
+merge it shows the follow-up link and the follow-up card exists; a queued follow-up shows
+<strong>Tickets queued</strong> with its link; a Stop task offers <strong>Create tickets</strong> in its menu, and
+clicking it creates the follow-up; a lapsed task shows <strong>Tickets lapsed</strong>. All agents faked,
+selected by role and label.</li>
 </ul>
 <h2>Documentation</h2>
 <ul>
 <li><code>docs/dispatch-and-backlog.md</code>, <code>docs/sessions.md</code> and <code>docs/skills-and-settings.md</code>: the
 tickets step now runs after the merge, in a follow-up task.</li>
 <li>The fork ledger&#39;s &quot;Shape tasks, grill and tickets&quot; entry: behavior contracts (follow-up,
-marker, manual action, <code>push_task</code> gate), surfaces and PRs, with <code>docs/fork/ledger.html</code>
+marker, manual action, <code>push_task</code> gate, <code>complete_shape_tickets</code>, <code>onTaskPrClosed</code>, the
+skill&#39;s two modes), surfaces and PRs, with <code>docs/fork/ledger.html</code>
 re-rendered.</li>
 <li><code>docs/plans/shape-task-kind/plan.md</code> stays as the historical plan. The ledger points here
 for the change.</li>
@@ -729,14 +817,19 @@ for the change.</li>
 <td>Hook both paths through one helper</td>
 </tr>
 <tr>
-<td>A PR closed unmerged reaches the task as a terminal state the lapse rule can see</td>
-<td>70%, unverified</td>
-<td>Lapse on the next sweep that reads the PR as closed, or leave <code>pending</code> until the task ends</td>
+<td>A task-bound PR URL&#39;s raw <code>CLOSED</code> state is readable in <code>pollAndReconcilePrs</code> before <code>queryPrUrl</code> maps it to <code>null</code></td>
+<td>85%, verified that the by-URL poller queries the state and drops <code>CLOSED</code> (<code>pr.ts</code>); not yet verified which URLs count as task-bound</td>
+<td>Read it from the Inspector&#39;s <code>onInspectionUpdated</code> (<code>observedState === &quot;CLOSED&quot;</code>) for adopted PRs, and add the shape task&#39;s PR URL to the by-URL poll set. Resolve this first in ticket 3, before the lapse work</td>
 </tr>
 <tr>
 <td>The merged PR&#39;s file list reliably shows one <code>docs/plans/&lt;name&gt;/plan.md</code></td>
 <td>85%</td>
 <td>The follow-up asks the human for the path with <code>request_input</code></td>
+</tr>
+<tr>
+<td><code>complete_shape_tickets</code> can close the session from its MCP route, as the generic completion route requests closure</td>
+<td>80%, inferred from <code>sessionClosureRequested</code> on <code>POST /api/tasks/:id/complete</code> and <code>completeInBackground(..., closeSessionId)</code></td>
+<td>Complete the task and leave closure to the existing completed-task session sweep, or to <strong>Complete &amp; close</strong></td>
 </tr>
 </tbody></table></div>
 </main>
