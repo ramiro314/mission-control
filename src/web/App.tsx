@@ -30,6 +30,7 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
+import { taskOpenTarget, type TaskOpenTarget } from "./lib/open-task.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
@@ -1742,42 +1743,67 @@ export function App(): React.JSX.Element {
     [navigate],
   );
   /**
-   * Open any task where it lives: focus its live session, reopen its backlog editor, or show
-   * the Sitrep scrolled to the task's own Recent outcomes row, where a finished task's outcome
-   * is. The ensemble member list and the shape tickets marker both open tasks through this, so
-   * they agree on where a task is.
+   * Open any task where it lives (`taskOpenTarget`): focus its live session, reopen its backlog
+   * editor, or show the Sitrep scrolled to a finished task's own Recent outcomes row. The
+   * ensemble member list and the shape tickets marker both open tasks through this, so they
+   * agree on where a task is.
    *
    * The row is named by a fresh request each time, so a click from inside the Sitrep (a shape
    * task's link to its finished follow-up) still moves it rather than reopening what is open.
+   *
+   * A task in flight with nothing to show yet (provisioning, or an exited session not yet
+   * followed by its status) has no row in the Sitrep, so the click shows the fleet, where a
+   * provisioning task has its placeholder card, and is kept until the task has somewhere to
+   * land: its session once it is up, or its outcome row once it finishes.
    */
+  const [pendingOpenTaskId, setPendingOpenTaskId] = useState<string | null>(null);
+  const landTask = useCallback(
+    (taskId: string, target: TaskOpenTarget): void => {
+      switch (target.kind) {
+        case "session":
+          setReportOpen(false);
+          navigate({ page: "fleet" });
+          setFilter("");
+          setSelectedId(target.sessionId);
+          if (layout === "board") setBoardOpen(true);
+          return;
+        case "editor":
+          setReportOpen(false);
+          openTaskEditor(taskId);
+          return;
+        case "sitrep":
+          navigate({ page: "fleet" });
+          setReportFocus({ taskId, nonce: Date.now() });
+          setReportOpen(true);
+          return;
+        case "wait":
+          setReportOpen(false);
+          navigate({ page: "fleet" });
+          return;
+      }
+    },
+    [layout, navigate, openTaskEditor],
+  );
   const openTask = useCallback(
     (taskId: string): void => {
       const task = tasks.find((candidate) => candidate.id === taskId);
       if (!task) return;
-      // An exited session lingers in the list until it is evicted, but has nothing left to
-      // show, so a task that just finished is opened where its outcome is instead.
-      const liveSession = sessions.find((session) =>
-        session.state !== "exited" &&
-        (task.sessionId ? session.id === task.sessionId : session.task?.id === taskId));
-      if (liveSession) {
-        setReportOpen(false);
-        navigate({ page: "fleet" });
-        setFilter("");
-        setSelectedId(liveSession.id);
-        if (layout === "board") setBoardOpen(true);
-        return;
-      }
-      if (task.status === "backlog") {
-        setReportOpen(false);
-        openTaskEditor(taskId);
-        return;
-      }
-      navigate({ page: "fleet" });
-      setReportFocus({ taskId, nonce: Date.now() });
-      setReportOpen(true);
+      const target = taskOpenTarget(task, sessions);
+      setPendingOpenTaskId(target.kind === "wait" ? taskId : null);
+      landTask(taskId, target);
     },
-    [tasks, sessions, layout, navigate, openTaskEditor],
+    [tasks, sessions, landTask],
   );
+  // The click on a task that had nowhere to land yet, completed once it does. A task that
+  // leaves flight for the backlog (requeued) or disappears is let go rather than opened later.
+  useEffect(() => {
+    if (!pendingOpenTaskId) return;
+    const task = tasks.find((candidate) => candidate.id === pendingOpenTaskId);
+    const target = task ? taskOpenTarget(task, sessions) : null;
+    if (target?.kind === "wait") return;
+    setPendingOpenTaskId(null);
+    if (target?.kind === "session" || target?.kind === "sitrep") landTask(pendingOpenTaskId, target);
+  }, [pendingOpenTaskId, tasks, sessions, landTask]);
   /**
    * Open one pipeline run, through the route helper that owns the address shape.
    *

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ShapeTicketsState, Task, TaskKind } from "../src/shared/types.ts";
 import { SHAPE_TICKETS_STATES } from "../src/shared/types.ts";
 import { shapeTicketsMarker } from "../src/web/lib/shape-tickets.ts";
+import { taskOpenTarget } from "../src/web/lib/open-task.ts";
 import { ShapeTicketsMarker } from "../src/web/components/ShapeTicketsMarker.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import { shapeTaskForSession } from "../src/web/components/layouts/types.ts";
@@ -140,4 +141,27 @@ test("a focused task already within the cap is marked in place, not appended aga
   assert.equal(html.match(/>Finished 3</g)?.length, 1);
   assert.match(html, focusedRow("Finished 3"));
   assert.equal(html.match(/aria-current="true"/g)?.length, 1);
+});
+
+// Where the follow-up link (and every other "open task") lands. The Sitrep draws finished
+// tasks only, so a task in flight with no session up must never be sent there to land on
+// nothing: it waits for its session, or for its outcome.
+test("opening a task lands on its live session, its editor, a finished row, or waits", () => {
+  const running = mkTask({ id: "f", status: "running", sessionId: "s1" });
+  const up = mkSession({ id: "s1", state: "working" });
+  const exited = mkSession({ id: "s1", state: "exited" });
+  assert.deepEqual(taskOpenTarget(running, [up]), { kind: "session", sessionId: "s1" });
+  // A session that exited and is not yet evicted is not somewhere to land.
+  assert.deepEqual(taskOpenTarget(running, [exited]), { kind: "wait" });
+  // Provisioning, before the session exists, matched by the session's task when unbound.
+  const dispatching = mkTask({ id: "f", status: "dispatching", sessionId: null });
+  assert.deepEqual(taskOpenTarget(dispatching, []), { kind: "wait" });
+  assert.deepEqual(
+    taskOpenTarget(dispatching, [mkSession({ id: "s2", state: "idle", task: mkTaskSummary({ id: "f" }) })]),
+    { kind: "session", sessionId: "s2" },
+  );
+  assert.deepEqual(taskOpenTarget(mkTask({ status: "backlog", sessionId: null }), []), { kind: "editor" });
+  for (const status of ["done", "failed", "cancelled"] as const) {
+    assert.deepEqual(taskOpenTarget(mkTask({ status, sessionId: "s1" }), [exited]), { kind: "sitrep" }, status);
+  }
 });
