@@ -80,7 +80,7 @@ Each feature entry records:
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, pending (issue #81: tickets start at merge). Related, not claimed: #21 (standalone fix to Shape this) |
+| PRs | #1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge). Related, not claimed: #21 (standalone fix to Shape this) |
 | Plan docs | [shape-task-kind/plan.md](../plans/shape-task-kind/plan.md) sections 1 to 5; [shape-tickets-after-merge/plan.md](../plans/shape-tickets-after-merge/plan.md) (in progress) |
 | Upstream candidate | Maybe. Self-contained and built on upstream pieces, but it is a second planning path and bundles third-party-derived skills (credited in `NOTICE`). |
 
