@@ -8099,15 +8099,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   /**
-   * "Shape this": convert a backlog task to shape and dispatch it, as one request.
-   *
-   * Every refusal the dispatch could give is asked of the task AS CONVERTED before anything
-   * is written - the planning skills (`planDispatchBlock`, reached through
-   * `backlogDispatchRefusal`), the parked and dependency gates, and the shape review's
-   * Workflow gates - so a refused Shape this leaves the task exactly as it was. The edit is
-   * `shapeThisPatch`: the kind and its review, nothing else, so the source link stays.
-   */
-  /**
    * **Create tickets** on a merged shape task: create and dispatch its tickets follow-up.
    *
    * `startShapeTicketsFollowup` re-checks `shapeTicketsAcceptance` rather than trusting the
@@ -8121,6 +8112,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(result);
   });
 
+  /**
+   * "Shape this": convert a backlog task to shape and dispatch it, as one request.
+   *
+   * Every refusal the dispatch could give is asked of the task AS CONVERTED before anything
+   * is written - the planning skills (`planDispatchBlock`, reached through
+   * `backlogDispatchRefusal`), the parked and dependency gates, and the shape review's
+   * Workflow gates - so a refused Shape this leaves the task exactly as it was. The edit is
+   * `shapeThisPatch`: the kind and its review, nothing else, so the source link stays.
+   */
   app.post("/api/tasks/:id/shape", async (c) => {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;

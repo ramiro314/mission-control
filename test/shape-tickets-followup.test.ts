@@ -363,3 +363,46 @@ test("complete_shape_tickets is refused for a follow-up that is no longer active
   assert.equal(registry.getTask(cancelled.followup.id)!.status, "cancelled");
   assert.equal(registry.getTask(cancelled.followup.id)!.outcome, null);
 });
+
+test("deleting a backlogged follow-up re-sends its source, which offers Create tickets again", async () => {
+  const { registry, tasks, app, upserts } = setup();
+  const source = mergedShape(registry, "delete-src");
+  // Launch refused (every skill is off here), so the follow-up waits in the backlog.
+  const created = await createTickets(app, source.id);
+  assert.equal(created.body.kind, "queued");
+  assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { followupTaskId: created.body.task.id, canCreate: false });
+
+  upserts.length = 0;
+  const removed = await tasks.remove(created.body.task.id);
+  assert.equal(removed.ok, true);
+  assert.deepEqual(
+    upserts.filter((task) => task.id === source.id).at(-1)?.shapeTickets,
+    { followupTaskId: null, canCreate: true },
+    "the source is re-sent without a reload",
+  );
+  assert.equal((await createTickets(app, source.id)).status, 200, "and the route agrees");
+});
+
+test("a relation whose follow-up task was never created is not reported as the newest follow-up", async () => {
+  const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
+  const { registry, tasks } = setup();
+  const source = mergedShape(registry, "orphan-src");
+  const real = tasks.createShapeTicketsFollowup({
+    sourceTask: source,
+    sourceEpisodeId: `${source.id}-episode`,
+    sourceSessionId: `${source.id}-session`,
+    sourcePrUrl: PR,
+    agent: "claude",
+  });
+  // What a create that threw after its reservation leaves behind: a newer row naming nothing.
+  reserveShapeTicketFollowup({
+    followupTaskId: "orphan-never-created",
+    sourceTaskId: source.id,
+    sourceEpisodeId: `${source.id}-episode`,
+    sourceSessionId: `${source.id}-session`,
+    sourcePrUrl: PR,
+    now: Date.now() + 60_000,
+  });
+  registry.upsertTask({ ...registry.getTask(source.id)!, updatedAt: Date.now() });
+  assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { followupTaskId: real.id, canCreate: false });
+});

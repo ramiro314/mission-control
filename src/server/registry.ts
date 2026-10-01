@@ -6597,14 +6597,14 @@ export class Registry extends EventEmitter {
   private readonly taskLookup = (id: string): Task | undefined => this.tasks.get(id) ?? getDurableTask(id);
 
   /**
-   * Re-send a tickets follow-up's source shape task when the follow-up is created or changes
-   * status, so the source's `shapeTickets` (newest follow-up, whether Create tickets is
-   * allowed) follows it without a reload. A source outside the bounded in-memory board is
-   * skipped: nothing is drawing it.
+   * Re-send a tickets follow-up's source shape task when the follow-up is created, changes
+   * status, or is deleted, so the source's `shapeTickets` (newest follow-up, whether Create
+   * tickets is allowed) follows it without a reload. Deleting a task keeps its relation row,
+   * which is how a deleted follow-up still finds its source here. A source outside the
+   * bounded in-memory board is skipped: nothing is drawing it.
    */
-  private refreshShapeTicketsSource(task: Task): void {
-    if (task.kind !== "shape") return;
-    const relation = shapeTicketFollowupForTask(task.id);
+  private refreshShapeTicketsSource(followupTaskId: string): void {
+    const relation = shapeTicketFollowupForTask(followupTaskId);
     if (!relation) return;
     const source = this.tasks.get(relation.sourceTaskId);
     if (!source) return;
@@ -6651,7 +6651,7 @@ export class Registry extends EventEmitter {
     }
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
-    if (previous?.status !== task.status) this.refreshShapeTicketsSource(task);
+    if (task.kind === "shape" && previous?.status !== task.status) this.refreshShapeTicketsSource(task.id);
     this.syncSessionsForWorktree(task.worktreePath);
     // Pipeline tasks deliberately have neither `sessionId` nor a Mission Control worktree.
     // Their nested agents still need their task card refreshed when the durable provider
@@ -6711,6 +6711,8 @@ export class Registry extends EventEmitter {
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
+    // A deleted tickets follow-up no longer blocks Create tickets on its source.
+    if (!t || t.kind === "shape") this.refreshShapeTicketsSource(id);
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
     this.cleanupDependencyProvenance();

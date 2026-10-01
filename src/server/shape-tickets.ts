@@ -75,7 +75,9 @@ export function shapeTicketsSummary(task: Task, lookup: TaskLookup = durableLook
   if (task.kind !== "shape") return null;
   const followups = shapeTicketFollowupsForSource(task.id);
   return {
-    followupTaskId: followups[0]?.followupTaskId ?? null,
+    // The newest follow-up that still exists. A relation outlives a deleted follow-up, and one
+    // whose task was never created (its create threw after the reservation) names nothing.
+    followupTaskId: followups.find((followup) => lookup(followup.followupTaskId))?.followupTaskId ?? null,
     canCreate: shapeTicketsAcceptance(task, lookup, followups).ok,
   };
 }
