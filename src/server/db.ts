@@ -94,7 +94,9 @@ import type {
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  SHAPE_TICKETS_STATES,
   TASK_KINDS,
+  type ShapeTicketsState,
 } from "@shared/types.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
@@ -3723,6 +3725,12 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "base_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
   addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
+  // A shape task's recorded Create tickets choice (`SHAPE_TICKETS_STATES`). Nullable with no
+  // backfill, and NULL is the true answer for every existing row: a shape session already in
+  // flight was told to file its tickets in-session, so nothing may follow it up at merge.
+  // Written only through its own accessors below, never by `upsertTask`, so a stale Task
+  // snapshot written back can never undo a choice the review or the merge recorded.
+  addColumn(d, "tasks", "shape_tickets", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
   // tmux-specific `tmux_session` now that the name is resolved against ANY backend
@@ -6221,6 +6229,43 @@ export function reserveRetroFollowup(input: {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/** A shape task's recorded Create tickets choice, or null when none applies. */
+export function shapeTicketsStateFor(taskId: string): ShapeTicketsState | null {
+  const row = openDb()
+    .prepare(`SELECT shape_tickets FROM tasks WHERE id = ?`)
+    .get(taskId) as { shape_tickets: string | null } | undefined;
+  return readPersistedEnum(SHAPE_TICKETS_STATES, row?.shape_tickets);
+}
+
+/**
+ * Move a shape task's Create tickets choice to `next`, only from one of `from`.
+ *
+ * Compare-and-set in one statement, so each transition is decided against the value actually
+ * stored: the review, the merge, the PR poller and a later dispatch can each race the others,
+ * and none of them may write over a state it did not expect. `null` in `from` means "never
+ * stamped", which only the dispatch stamp asks for. Returns whether the row moved.
+ */
+export function transitionShapeTicketsState(
+  taskId: string,
+  from: readonly (ShapeTicketsState | null)[],
+  next: ShapeTicketsState,
+): boolean {
+  const values = from.filter((state): state is ShapeTicketsState => state !== null);
+  const clauses = [
+    ...(from.includes(null) ? ["shape_tickets IS NULL"] : []),
+    ...(values.length > 0 ? [`shape_tickets IN (${values.map(() => "?").join(", ")})`] : []),
+  ];
+  if (clauses.length === 0) return false;
+  const result = openDb()
+    .prepare(
+      `UPDATE tasks SET shape_tickets = ?
+        WHERE id = ? AND kind = 'shape' AND (${clauses.join(" OR ")})
+          AND NOT EXISTS (SELECT 1 FROM shape_ticket_followups WHERE followup_task_id = tasks.id)`,
+    )
+    .run(next, taskId, ...values);
+  return Number(result.changes) > 0;
 }
 
 /** The merged shape task a tickets follow-up slices, when this task is one. */

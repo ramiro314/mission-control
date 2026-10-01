@@ -166,7 +166,7 @@ can stop compiling against a changed upstream API.</li>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92. Related, not claimed: #21 (standalone fix to Shape this)</td>
+<td>#1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, pending (issue #81: tickets start at merge). Related, not claimed: #21 (standalone fix to Shape this)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -185,14 +185,34 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
 <ul>
 <li><code>shape</code> always asks at least one round: one <code>request_plan_decisions</code> form per round, the
 recommended option first, plus a free-text Other. Dismissing a round stops the session. The
-plan review&#39;s follow-up is Create tickets or Stop, never <code>/phased-plan</code>.</li>
+plan review&#39;s follow-up is Create tickets after the plan merges or Stop (decision
+<code>shape-follow-up</code>, options <code>create-tickets</code> and <code>stop</code>), never <code>/phased-plan</code>. The shaping
+turn does not invoke <code>tickets</code> and files no tasks; a workflow-bound shape task&#39;s completion
+contract (<code>taskCompletionContract(&quot;shape&quot;, true)</code>) is the plan&#39;s minus phases, and expects no
+ticket or phase tasks. The plan kind&#39;s contract is unchanged.</li>
+<li>Tickets after merge (<a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge</a>
+sections 2 and 4). <code>tasks.shape_tickets</code> records the choice, written only by its own
+compare-and-set accessors (never <code>upsertTask</code>). It is stamped <code>awaiting-review</code> when a shaping
+task (not a follow-up) is delivered its contract at either seam, so every row from before this
+change and every other kind stays NULL and is never acted on. An answered plan-decisions
+review carrying <code>shape-follow-up</code> sets <code>pending</code> or <code>stop</code> (latest wins, dismissal writes
+nothing). When a shape task completes with its merge quorum (<code>mergeOutcomeFor</code>, checked in
+<code>finishCompletion</code>) and the choice is <code>pending</code> or <code>lapsed</code>, <code>TaskManager</code> starts the
+follow-up through the manual action&#39;s service, so the same acceptance rule allows exactly one.
+The choice becomes <code>started</code> only once dispatch is accepted, or <code>queued</code> when it is refused;
+<code>queued</code> becomes <code>started</code> when <code>TaskManager.dispatch</code> later accepts that follow-up. A
+completion without the merge, a cancel or a failure lapses <code>pending</code>, as does
+<code>Registry.onTaskPrClosed</code>: the by-URL PR poller now reports a task-bound URL whose raw state is
+<code>CLOSED</code>, and the registry announces it once per (task, current episode, URL). <code>lapsed</code> is not
+final: a later merge-quorum completion still starts the follow-up. Workflow run state is never
+read. <code>Task.shapeTickets.state</code> carries the choice on the wire.</li>
 <li>Dispatch is refused, naming the toggle, when a required planning skill is off
 (<code>PLANNING_SKILLS.shape</code> is <code>grill</code>, <code>htmlPlans</code>, <code>tickets</code>). After work defaults to Plan
 Validation. Shape can be put on the backlog, but schedules and MCP <code>create_task</code> cannot file it.</li>
 <li>The breakdown review is one decision form and nothing is created before Submit. Each ticket
-is New task or Adopt an open backlog task. On submit the skill writes
-<code>docs/plans/&lt;name&gt;/tickets.md</code> and its HTML, commits, then files tickets in dependency order;
-they are released when the planning PR merges.</li>
+is New task or Adopt an open backlog task. In-session mode (a shape session dispatched before
+tickets moved after the merge) writes <code>docs/plans/&lt;name&gt;/tickets.md</code> and its HTML, commits,
+then files tickets in dependency order; they are released when the planning PR merges.</li>
 <li><code>push_task</code> mirrors only a task that depends on the calling session, is idempotent
 (<code>alreadyPushed: true</code>), links blockers only to items already in that source, and parents
 them under the planning task&#39;s item. From a tickets follow-up session it also accepts a task
@@ -237,6 +257,13 @@ mechanism (shape swaps <code>implementation-follow-up</code> for <code>shape-fol
 schedule and harness-launch predicates.</li>
 <li>Plan publication and wrap-up (Foreman <code>worker.ts</code>, <code>wrapup-eligibility.ts</code>,
 <code>taskCompletionContract</code>) treat &quot;complete when the planning PR merges&quot; as they do for <code>plan</code>.</li>
+<li>Merge completion runs through <code>TaskManager.finishCompletion</code>, and <code>mergeOutcomeFor</code> is the
+merge-quorum predicate every merge path completes on. Cancel and agent-gone failures publish a
+<code>task_upsert</code> with the terminal status. <code>reviews</code> resolution stays in
+<code>ReviewManager.resolve</code> with <code>selections</code> as <code>PlanDecisionAnswer[]</code>.</li>
+<li>The PR poller asks <code>gh pr view &lt;url&gt; --json state,mergedAt</code> for task-bound URLs
+(<code>taskPrPollTargets</code>) that no live branch lookup observed, and the branch lookup still drops a
+closed, unmerged PR.</li>
 <li>MCP <code>create_task</code> (<code>/mcp/tasks</code>, <code>/mcp/v2/tasks</code>) and <code>pushTask</code> (in-flight claim, seen-ledger
 row and task link in one transaction) keep their semantics.</li>
 <li>Backlog edit and dispatch routes and the dependency cycle and new-edge refusals
@@ -244,12 +271,13 @@ row and task link in one transaction) keep their semantics.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong></p>
 <ul>
-<li>Modules: <code>src/server/{dispatcher,tasks,task-contract,routes,mission-mcp}.ts</code>,
+<li>Modules: <code>src/server/{dispatcher,tasks,task-contract,routes,mission-mcp,reviews,pr}.ts</code>,
 <code>src/server/plans/{skills,tools}.ts</code>, <code>src/server/foreman/{plan-publication,worker,wrapup-eligibility}.ts</code>,
 <code>src/mcp/server.ts</code>, <code>src/server/schedules/store.ts</code>, <code>src/server/archives/task-gateway.ts</code>,
 <code>src/server/task-sources/{push,github-issues}.ts</code>, <code>src/shared/{task,task-completion,types,protocol,task-source}.ts</code>,
 <code>src/shared/telemetry-sources/{primary-actions,action-exclusions}.ts</code>, <code>src/server/registry.ts</code>
-(derives <code>Task.shapeTickets</code> on publish).</li>
+(derives <code>Task.shapeTickets</code> on publish; <code>onTaskPrClosed</code>, <code>reconcilePrClosures</code>,
+<code>republishShapeTickets</code> made public).</li>
 <li>Routes: new <code>POST /mcp/v3/tasks</code>, <code>POST /mcp/backlog</code>, <code>POST /mcp/push-task</code>,
 <code>POST /api/tasks/:id/shape</code> (#21), <code>POST /api/tasks/:id/shape-tickets</code>,
 <code>POST /mcp/shape-tickets/complete</code>; <code>GET /api/harnesses/config</code> and <code>GET /api/skills</code> list
@@ -257,13 +285,15 @@ shape and grill.</li>
 <li>Protocol: <code>TASK_KINDS</code> (+<code>&quot;shape&quot;</code>), <code>MCP_TASK_KINDS</code>, <code>SCHEDULE_TASK_KINDS</code>,
 <code>isPlanningTaskKind</code>, <code>McpCreateTicketSchema</code>, <code>McpAdoptTicketSchema</code>,
 <code>McpCreateTaskV3Schema</code>, <code>McpListBacklogSchema</code>, <code>McpPushTaskSchema</code>,
-<code>PushDraft.blockedBy</code> and <code>.parent</code>, <code>CompleteShapeTicketsSchema</code>, <code>Task.shapeTickets</code>.</li>
+<code>PushDraft.blockedBy</code> and <code>.parent</code>, <code>CompleteShapeTicketsSchema</code>, <code>Task.shapeTickets</code>
+(with <code>state</code>), <code>SHAPE_TICKETS_STATES</code>.</li>
 <li>Registries: <code>PLANNING_SKILLS</code>, <code>KIND_MISSION_MCP_TOOLS.shape</code>, <code>MISSION_MCP_TOOLS</code>,
 <code>PRIMARY_ACTION_ROUTES</code>, <code>ACTION_EXCLUSIONS</code>.</li>
 <li>MCP tools: new <code>list_backlog_tasks</code>, <code>push_task</code> and <code>complete_shape_tickets</code>; <code>create_task</code>
 gains ticket and adopt fields.</li>
 <li>DB: new <code>shape_ticket_followups</code> table (created with the base schema, so an existing database
-gains it on open).</li>
+gains it on open); new nullable <code>tasks.shape_tickets</code> column (<code>addColumn</code> in the migration
+path, no backfill).</li>
 <li>UI: <code>DispatchModal.tsx</code>, <code>layouts/BacklogColumn.tsx</code> and <code>line/BacklogDrawer.tsx</code> (Shape this),
 <code>ReportPanel.tsx</code> (Create tickets), <code>schedules/ScheduleEditor.tsx</code>,
 <code>src/web/lib/guided-dispatch-steps.ts</code>.</li>

@@ -407,6 +407,14 @@ export interface TaskPrMerged {
   mergedAt: number;
 }
 
+/** A task's current pull request was observed closed without merging. */
+export interface TaskPrClosed {
+  taskId: string;
+  /** The episode whose pull request closed: the task's current binding. */
+  episodeId: string;
+  url: string;
+}
+
 /**
  * A pull request that has just become a TASK's, in one of its repositories.
  *
@@ -1657,6 +1665,47 @@ export class Registry extends EventEmitter {
   onTaskPrMerged(fn: (e: TaskPrMerged) => void): () => void {
     this.on("task_pr_merged", fn);
     return () => this.off("task_pr_merged", fn);
+  }
+
+  /**
+   * Fired once when a task's CURRENT pull request is observed closed without merging.
+   *
+   * The PR poller otherwise reads a closed, unmerged pull request as "no PR" and clears only
+   * the session's chip, so nothing at the task level heard about it. Emitted from
+   * `reconcilePrClosures`, which the by-URL poller feeds with the task-bound URLs whose raw
+   * state read `CLOSED`. A closed PR can be reopened and merged later; this says only that it
+   * was closed when it was looked at, so a listener must not treat it as final.
+   *
+   * Listeners must not throw; this runs inside the PR poller's reconciliation.
+   */
+  onTaskPrClosed(fn: (e: TaskPrClosed) => void): () => void {
+    this.on("task_pr_closed", fn);
+    return () => this.off("task_pr_closed", fn);
+  }
+
+  /** (task, episode, url) closures already announced, so a backed-off re-poll stays quiet. */
+  private readonly announcedPrClosures = new Set<string>();
+
+  /**
+   * Announce every task whose current binding's pull request the by-URL poller saw closed.
+   *
+   * The current binding only, and only while its merge is unrecorded: a closed PR on an
+   * episode the task already rolled past says nothing about the work it is doing now.
+   */
+  reconcilePrClosures(closedUrls: ReadonlySet<string>): void {
+    if (closedUrls.size === 0) return;
+    for (const task of [...this.tasks.values()]) {
+      const binding = taskWorkEpisodeForTask(task.id);
+      if (!binding?.prUrl || binding.mergedAt !== null || !closedUrls.has(binding.prUrl)) continue;
+      const key = `${task.id}\0${binding.episodeId}\0${binding.prUrl}`;
+      if (this.announcedPrClosures.has(key)) continue;
+      this.announcedPrClosures.add(key);
+      this.emit("task_pr_closed", {
+        taskId: task.id,
+        episodeId: binding.episodeId,
+        url: binding.prUrl,
+      } satisfies TaskPrClosed);
+    }
   }
 
   /**
@@ -6608,8 +6657,13 @@ export class Registry extends EventEmitter {
     if (relation) this.republishShapeTickets(relation.sourceTaskId);
   }
 
-  /** Re-derive and re-send one in-memory shape task's `shapeTickets`. */
-  private republishShapeTickets(sourceTaskId: string): void {
+  /**
+   * Re-derive and re-send one in-memory shape task's `shapeTickets`.
+   *
+   * Public because the recorded Create tickets choice is written by its own accessors rather
+   * than through `upsertTask`, so whoever moves it calls this to put the new state on the wire.
+   */
+  republishShapeTickets(sourceTaskId: string): void {
     const source = this.tasks.get(sourceTaskId);
     if (source?.kind !== "shape") return;
     const next = this.withShapeTickets(source);

@@ -145,27 +145,26 @@ test("the contract grills before html-plans, and never skips the interview", () 
   assert.match(appendix, /not a change/);
 });
 
-test("the plan review's follow-up is Create tickets / Stop, replacing the phased follow-up", () => {
+test("the plan review's follow-up is Create tickets after the plan merges / Stop, replacing the phased follow-up", () => {
   const appendix = shapeContractAppendix(CLAUDE_SKILLS);
   assert.match(appendix, new RegExp(SHAPE_FOLLOW_UP_DECISION_ID));
-  assert.match(appendix, /`create-tickets` \(Create tickets, recommended\) and `stop` \(Stop\)/);
-  assert.match(appendix, /replaces the skill's phased\s+implementation follow-up/);
+  // Same decision and option ids, new copy.
+  assert.match(appendix, /`create-tickets` \(Create tickets after the plan merges, recommended\) and `stop` \(Stop\)/);
+  assert.match(appendix, /replaces the\s+skill's phased implementation follow-up/);
   assert.ok(!appendix.includes("/phased-plan"), "a shape task is never told to phase");
 });
 
-test("Create tickets hands the approved plan to the tickets skill, and nothing precedes the breakdown", () => {
+test("the shaping turn stops at the plan: it never invokes tickets and files no tasks", () => {
   const appendix = shapeContractAppendix(CLAUDE_SKILLS);
-  const html = appendix.indexOf("/html-plans");
-  const tickets = appendix.indexOf("/tickets");
-  assert.ok(tickets > html, "tickets is invoked after the plan is written");
+  assert.ok(!appendix.includes("/tickets"), "the tickets skill is not invoked in the shaping turn");
   assert.match(appendix, /On Stop, keep the approved plan and finish without tickets/);
-  assert.match(appendix, new RegExp(`On Create tickets, invoke the ${SHAPE_TICKETS_SKILL_ID} skill`));
-  assert.match(appendix, /breakdown review/);
-  assert.match(appendix, /Nothing is\s+written or created before that form is submitted, and a dismissed breakdown creates nothing/);
-  assert.match(appendix, new RegExp(`files each ticket with \`${escape(PLAN_SCHEDULING_TOOL)}\``));
-  assert.match(appendix, /in dependency order, gated on this session/);
-  assert.match(appendix, new RegExp(`mirror the tickets[\\s\\S]*\`${escape(PUSH_TASK_TOOL)}\`, blockers first`));
-  assert.doesNotMatch(appendix, /not available on this build/);
+  assert.match(appendix, new RegExp(`On Create tickets after the plan merges, do not slice the plan and do not invoke the ${SHAPE_TICKETS_SKILL_ID} skill`));
+  assert.match(appendix, /Mission\s+Control records the choice from the review/);
+  assert.match(appendix, /once the plan's pull request merges it starts a linked\s+follow-up task that slices the merged plan into tickets/);
+  assert.match(appendix, /This shaping turn files no tasks and pushes no\s+items/);
+  assert.match(appendix, new RegExp(`do not call \`${escape(PLAN_SCHEDULING_TOOL)}\` or \`${escape(PUSH_TASK_TOOL)}\``));
+  assert.doesNotMatch(appendix, /gated on this session/);
+  assert.doesNotMatch(appendix, /breakdown review/);
 });
 
 test("the bundled tickets skill slices, reviews, and files the way the contract promises", () => {
@@ -269,10 +268,12 @@ test("the tickets skill has a follow-up mode, and keeps its in-session flow", ()
   assert.ok(write > 0 && push > write && file > push && record > file, "in-session order is unchanged");
 });
 
-test("a shape task takes the plan's completion handoff when a workflow is bound", () => {
+test("a shape task takes its own completion handoff when a workflow is bound, expecting no tickets", () => {
   const bound = withTaskKindContract(mkTask({ workflowId: "wf" }), "shape it", { planSkills: CLAUDE_SKILLS });
   assert.match(bound, /## Shape task completion handoff/);
   assert.match(bound, /the human has reviewed and approved the plan/);
+  assert.match(bound, /no ticket or phase tasks are required from this turn/);
+  assert.doesNotMatch(bound, /phase files|every phase task depends on the planning session/);
   assert.match(bound, /do not create or update a pull request, act on pull-request review feedback, wait for pull-request CI, or merge the pull request/);
   assert.match(bound, new RegExp(PLAN_PUBLICATION_TOOL));
 

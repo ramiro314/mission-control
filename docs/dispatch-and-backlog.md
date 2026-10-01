@@ -360,28 +360,49 @@ option it recommends listed first and a free-text **Other**. Facts it can look u
 asked. Rounds continue until nothing is left to ask, and there is always at least one, however
 detailed the request. Dismissing a round stops the session without a plan. Once the interview
 is done it writes `plan.md` and `plan.html` and requests the plan review, whose follow-up is
-**Create tickets** or **Stop** instead of plan's phased follow-up.
+**Create tickets after the plan merges** or **Stop** instead of plan's phased follow-up.
 
-**Create tickets** hands the approved plan to the bundled [Tickets skill](skills-and-settings.md).
+**Tickets are sliced only after the plan merges.** The shaping turn files no tasks: Mission
+Control records your answer on the task when you submit the plan review, and the latest
+submitted review wins (a dismissed one records nothing). When the shape task then completes
+through its plan's pull request merging (every repository it changed, for a multi-repo task)
+with **Create tickets after the plan merges** recorded, Mission Control creates and dispatches
+its tickets follow-up (see **Create tickets from a merged shape task** below) automatically, so the tickets
+are cut from the plan as merged, review repairs included. The choice counts as started only once
+that dispatch is accepted. When the launch is refused, the follow-up waits in the backlog with
+the reason, the choice reads as queued, and it counts as started once you or the autopilot
+launch that follow-up. Nothing reads the shape task's workflow run, so a merge with Plan
+Validation still open, or after it failed, starts the follow-up all the same: merging is your
+acceptance of the plan, and the breakdown review is still yours. If the task ends any other way
+(completed by hand without the merge, cancelled, or failed) or its pull request is closed
+without merging, the choice **lapses** and nothing is created. A lapse is not final: a task
+whose replacement pull request later merges still gets its follow-up. **Stop**, or no answer,
+creates nothing at the merge, and **Create tickets** on the merged task stays the way in. A
+shape session dispatched before this behavior shipped is never recorded and keeps filing its
+tickets in its own turn, as below.
+
+The follow-up hands the merged plan to the bundled [Tickets skill](skills-and-settings.md).
 It slices the plan into tickets (one ticket is one task is one pull request) and opens the
 **breakdown review**, your final approval: one `request_plan_decisions` form listing every
 ticket with what blocks it and what it delivers, and, per ticket, **New task** or **Adopt** one of
 the repository's open backlog tasks. Nothing exists before you submit it, and dismissing it files
-nothing. On submit the agent writes `docs/plans/<name>/tickets.md` (and its HTML page), commits
-and pushes it, then files each ticket through `create_task` in dependency order: each waits on
-its blocking tickets and on the shape session, so none starts before the planning pull request
-merges. Adopting a backlog task only adds those edges to it; its title, intent, kind and labels
-stay yours. A ticket task can be `ship` or `bugfix` and carry labels; its priority is left for
-you. Ticket tasks are created switched on, so the backlog autopilot may start them once their
-dependencies release: approving the breakdown is that consent. `tickets.md` maps each ticket to
-its task id, or to the task it adopted. No task source is needed for any of this.
+nothing. On submit the agent files each ticket through `create_task` in dependency order, each
+waiting on its blocking tickets. Adopting a backlog task only adds those edges to it; its title,
+intent, kind and labels stay yours. A ticket task can be `ship` or `bugfix` and carry labels; its
+priority is left for you. Ticket tasks are created switched on, so the backlog autopilot may
+start them once their dependencies release: approving the breakdown is that consent. No task
+source is needed for any of this. A shape session dispatched under the earlier contract runs the
+skill in its own turn instead: on submit it writes `docs/plans/<name>/tickets.md` (and its HTML
+page), commits and pushes it, then files each ticket gated on the shape session, so none starts
+before the planning pull request merges, and `tickets.md` maps each ticket to its task id.
 
 The breakdown review ends with one more choice: **mirror the tickets to a task source**, yes or no.
 It opens on **yes** when the repository has a source that can [receive a pushed
 task](#push-a-task-to-github), and on **no** otherwise, with the reason beside it (no source is
 configured, or the configured ones cannot receive tasks). A source kind that cannot push is never
 offered. On yes, right after the tickets are filed, the agent [pushes](#push-a-task-to-github) each
-one with the `push_task` tool, blockers first, and `tickets.md` records each issue's URL. When the
+one with the `push_task` tool, blockers first (an in-session run also records each issue's URL in
+`tickets.md`). When the
 source can relate items, as GitHub can, each issue is marked **blocked by** the issues of the
 tickets that block it, and filed as a **sub-issue** of the shape task's own issue when the shape
 task came from one. If a push fails, the Mission Control tasks stay, the tickets that depend on the
@@ -389,8 +410,10 @@ failed one are not pushed, and the failure is reported. Retrying is safe: a tick
 an issue is never filed again, and a push whose outcome is unknown is not retried until someone has
 checked the tracker.
 
-**Create tickets from a merged shape task.** Once a shape task is done because its plan's pull
-request merged, its row under **Recent outcomes** in the Sitrep offers **Create tickets**. It is
+**Create tickets from a merged shape task.** The follow-up the merge starts is the same one this
+action starts by hand, for a task that chose Stop, lapsed, or was shaped before the choice was
+recorded. Once a shape task is done because its plan's pull request merged, its row under
+**Recent outcomes** in the Sitrep offers **Create tickets**. It is
 offered only while the task has no tickets follow-up that is waiting, running or done, and the
 daemon re-checks that rule, refusing with the reason when it no longer holds. The click creates
 and dispatches a linked shape task, `Tickets: <shape title>`, in **tickets-only mode**: it keeps
@@ -414,8 +437,9 @@ those tickets to slice the plan afresh. Tickets the shaping session filed itself
 merge, never count.
 
 A shape task needs **Grill, HTML Plans and Tickets switched on**. With any of them off the
-dispatch is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
-ownership rules and archive capture, and its default After work is **Plan Validation**. It can
+dispatch is refused on the form, naming the toggle. It takes plan's pull-request ownership rules
+and archive capture, and plan's completion boundary without phases or tickets: a bound workflow's
+verifier expects no ticket or phase tasks from the shaping turn, and its default After work is **Plan Validation**. It can
 be added to the backlog, [converted from a backlog card](#shape-a-shelved-task) with **shape
 this**, and filed by a task source whose default kind is shape, but Foreman's backlog autopilot never
 launches one, because the interview needs you there to answer it. Recurring Missions and the

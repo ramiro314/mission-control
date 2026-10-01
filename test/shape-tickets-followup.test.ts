@@ -79,13 +79,13 @@ test("the wire task derives shapeTickets for shape tasks only, and allows Create
   assert.equal(registry.getTask("wire-ship")!.shapeTickets ?? null, null, "no field for another kind");
 
   registry.upsertTask(mkTask({ id: "wire-running", kind: "shape", status: "running" }));
-  assert.deepEqual(registry.getTask("wire-running")!.shapeTickets, { followupTaskId: null, canCreate: false });
+  assert.deepEqual(registry.getTask("wire-running")!.shapeTickets, { state: null, followupTaskId: null, canCreate: false });
 
   registry.upsertTask(mkTask({ id: "wire-unmerged", kind: "shape", status: "done" }));
-  assert.deepEqual(registry.getTask("wire-unmerged")!.shapeTickets, { followupTaskId: null, canCreate: false });
+  assert.deepEqual(registry.getTask("wire-unmerged")!.shapeTickets, { state: null, followupTaskId: null, canCreate: false });
 
   mergedShape(registry, "wire-merged");
-  assert.deepEqual(registry.getTask("wire-merged")!.shapeTickets, { followupTaskId: null, canCreate: true });
+  assert.deepEqual(registry.getTask("wire-merged")!.shapeTickets, { state: null, followupTaskId: null, canCreate: true });
 });
 
 test("Create tickets is refused with a 409 and a reason unless the task is a done, merged shape task", async () => {
@@ -152,7 +152,7 @@ test("Create tickets files a linked tickets-only shape task, re-sends the source
 
   // The source was re-sent with its newest follow-up and no longer offers the action.
   const sent = upserts.filter((task) => task.id === source.id).at(-1);
-  assert.deepEqual(sent?.shapeTickets, { followupTaskId: followup.id, canCreate: false });
+  assert.deepEqual(sent?.shapeTickets, { state: null, followupTaskId: followup.id, canCreate: false });
 
   // A live (backlogged) follow-up refuses a duplicate.
   const duplicate = await createTickets(app, source.id);
@@ -164,7 +164,7 @@ test("Create tickets files a linked tickets-only shape task, re-sends the source
   registry.upsertTask({ ...registry.getTask(followup.id)!, status: "cancelled" });
   assert.deepEqual(
     upserts.filter((task) => task.id === source.id).at(-1)?.shapeTickets,
-    { followupTaskId: followup.id, canCreate: true },
+    { state: null, followupTaskId: followup.id, canCreate: true },
   );
   const retry = await createTickets(app, source.id);
   assert.equal(retry.status, 200, "a cancelled follow-up can be retried");
@@ -291,7 +291,7 @@ test("complete_shape_tickets takes the follow-up to done after filing, requests 
   // The follow-up's status change re-sent the source, though its summary did not move.
   assert.deepEqual(
     upserts.filter((task) => task.id === source.id).at(-1)?.shapeTickets,
-    { followupTaskId: followup.id, canCreate: false },
+    { state: null, followupTaskId: followup.id, canCreate: false },
   );
 
   const replay = await complete(app, { ...payload, outcome: "filed" });
@@ -370,14 +370,14 @@ test("deleting a backlogged follow-up re-sends its source, which offers Create t
   // Launch refused (every skill is off here), so the follow-up waits in the backlog.
   const created = await createTickets(app, source.id);
   assert.equal(created.body.kind, "queued");
-  assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { followupTaskId: created.body.task.id, canCreate: false });
+  assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { state: null, followupTaskId: created.body.task.id, canCreate: false });
 
   upserts.length = 0;
   const removed = await tasks.remove(created.body.task.id);
   assert.equal(removed.ok, true);
   assert.deepEqual(
     upserts.filter((task) => task.id === source.id).at(-1)?.shapeTickets,
-    { followupTaskId: null, canCreate: true },
+    { state: null, followupTaskId: null, canCreate: true },
     "the source is re-sent without a reload",
   );
   assert.equal((await createTickets(app, source.id)).status, 200, "and the route agrees");
@@ -404,7 +404,7 @@ test("a relation whose follow-up task was never created is not reported as the n
     now: Date.now() + 60_000,
   });
   registry.upsertTask({ ...registry.getTask(source.id)!, updatedAt: Date.now() });
-  assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { followupTaskId: real.id, canCreate: false });
+  assert.deepEqual(registry.getTask(source.id)!.shapeTickets, { state: null, followupTaskId: real.id, canCreate: false });
 });
 
 test("a dismissed breakdown does not withdraw Create tickets, and the retry is accepted", async () => {

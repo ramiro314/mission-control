@@ -2377,8 +2377,34 @@ export interface Task {
   completedAt: number | null;
 }
 
+/**
+ * The plan review's Create tickets choice, as Mission Control recorded it on a shape task.
+ *
+ * Persisted in `tasks.shape_tickets`, which is NULL for every row this never applied to: a
+ * shape task dispatched before the choice was recorded (it files tickets in-session), a
+ * tickets follow-up, and every other kind. Append-only: values are stored, never renamed.
+ *
+ * - `awaiting-review`: dispatched under the contract that defers tickets to the merge.
+ * - `pending` / `stop`: the latest resolved plan review chose Create tickets / Stop.
+ * - `lapsed`: was pending, but the task ended without its merge or its pull request closed
+ *   unmerged. Not final: a later merge-quorum completion still starts the follow-up.
+ * - `queued`: the follow-up was created, but its launch was refused; it waits in the backlog.
+ * - `started`: the follow-up was created and dispatched.
+ */
+export const SHAPE_TICKETS_STATES = [
+  "awaiting-review",
+  "pending",
+  "stop",
+  "lapsed",
+  "queued",
+  "started",
+] as const;
+export type ShapeTicketsState = (typeof SHAPE_TICKETS_STATES)[number];
+
 /** What a shape task knows about the linked shape tasks that slice its merged plan. */
 export interface TaskShapeTickets {
+  /** The recorded Create tickets choice and what became of it, or null when none applies. */
+  state: ShapeTicketsState | null;
   /** The newest tickets follow-up of this task, whatever its status, or null when none. */
   followupTaskId: string | null;
   /**

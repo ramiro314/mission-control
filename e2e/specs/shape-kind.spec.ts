@@ -62,7 +62,7 @@ async function submit(dialog: Locator): Promise<void> {
   await go.click();
 }
 
-test("a dispatched shape task is told to grill first, then plan, and to offer Create tickets", async ({
+test("a dispatched shape task is told to grill first, then plan, and to offer Create tickets after the plan merges", async ({
   dashboard,
   daemon,
 }) => {
@@ -83,15 +83,18 @@ test("a dispatched shape task is told to grill first, then plan, and to offer Cr
   const card = dashboard.locator(".console-detail");
   await expect(card).toContainText(TASK, { timeout: 30_000 });
   await expect(card).toContainText("Mission Control shape");
-  // The three skills, in this harness's own syntax, and the grilling rules the kind exists for.
+  // The two skills the shaping turn runs, in this harness's own syntax, and the grilling rules
+  // the kind exists for.
   await expect(card).toContainText("/grill");
   await expect(card).toContainText("/html-plans");
-  await expect(card).toContainText("/tickets");
   await expect(card).toContainText("request_plan_decisions");
   await expect(card).toContainText("Ask at least one round");
   await expect(card).toContainText("A dismissed round ends the work");
-  // The review's follow-up is Create tickets / Stop, never plan's phased follow-up.
-  await expect(card).toContainText("Create tickets");
+  // The review's follow-up is Create tickets after the plan merges / Stop, never plan's phased
+  // follow-up. The shaping turn itself never slices: a follow-up task does, after the merge.
+  await expect(card).toContainText("Create tickets after the plan merges, recommended");
+  await expect(card).toContainText("This shaping turn files no tasks and pushes no");
+  await expect(card).not.toContainText("/tickets");
   await expect(card).not.toContainText("/phased-plan");
   await expect(card).not.toContainText("Mission Control plan ---");
   // And the session's task pill names the kind.

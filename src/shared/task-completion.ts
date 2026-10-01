@@ -111,6 +111,30 @@ const PLAN_CONTRACT: TaskCompletionContract = {
 };
 
 /**
+ * A workflow-bound shape task's boundary: the plan's, without phases or tickets.
+ *
+ * The shaping turn delivers an approved plan and nothing scheduled from it. A Create tickets
+ * answer is recorded by Mission Control and acted on only after the plan's pull request
+ * merges, by a follow-up task, so the verifier must not expect ticket or phase tasks here.
+ * Worded as "not required" rather than "forbidden", because a shape session dispatched before
+ * this contract still files its tickets in-session and is judged by this same record.
+ */
+const SHAPE_CONTRACT: TaskCompletionContract = {
+  kind: "shape",
+  owner: "Mission Control",
+  boundary: "the shaping handoff to the bound workflow",
+  complete: [
+    "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
+    "the plan's Markdown and rendered HTML are complete and consistent",
+    "no ticket or phase tasks are required from this turn: Mission Control records a Create tickets choice and files the tickets in a follow-up task after the plan's pull request merges",
+    "the plan is committed and pushed",
+    "the verification the planning work requires has been run",
+    "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
+  ],
+  deferred: PLAN_CONTRACT.deferred,
+};
+
+/**
  * The contract per kind, or null for a kind that draws no such boundary.
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
@@ -140,8 +164,8 @@ export function taskCompletionContract(
   kind: TaskKind | null | undefined,
   workflowBound = false,
 ): TaskCompletionContract | null {
-  // Shape delivers a plan too, so it takes the plan's boundary under its own kind.
-  if (isPlanningTaskKind(kind) && workflowBound) return kind === "plan" ? PLAN_CONTRACT : { ...PLAN_CONTRACT, kind };
+  // Shape delivers a plan too, so it defers what the plan defers, with its own completion list.
+  if (isPlanningTaskKind(kind) && workflowBound) return kind === "plan" ? PLAN_CONTRACT : SHAPE_CONTRACT;
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 
