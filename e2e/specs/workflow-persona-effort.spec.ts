@@ -82,9 +82,13 @@ test("a workflow node's effort is chosen beside its model, persists, and is froz
   await row.getByRole("combobox", { name: `Provider for ${INTENT}` }).selectOption("codex");
   await row.getByRole("combobox", { name: `Model for ${INTENT}` }).selectOption("gpt-5.6-sol");
 
-  // The levels offered are this provider and model's: Codex does not offer `max` on this one.
+  // The levels offered are this provider and model's, from the shared capability table:
+  // Codex offers `max` on gpt-5.6-sol but not on gpt-5.6-luna.
   await expect(effort).toBeVisible();
+  await expect(effort.locator("option", { hasText: /^max$/ })).toHaveCount(1);
+  await row.getByRole("combobox", { name: `Model for ${INTENT}` }).selectOption("gpt-5.6-luna");
   await expect(effort.locator("option", { hasText: /^max$/ })).toHaveCount(0);
+  await row.getByRole("combobox", { name: `Model for ${INTENT}` }).selectOption("gpt-5.6-sol");
   await effort.selectOption("xhigh");
   await expect(row).toContainText("codex · gpt-5.6-sol · xhigh effort · this workflow");
   await shoot(dashboard, "node-effort");
@@ -153,11 +157,13 @@ test("a Persona's own effort is edited beside its model and survives a save and 
   await shoot(dashboard, "persona-effort");
 
   // A built-in stays read-only: its effort is set per workflow node instead.
-  const builtin = (await api<Array<{ id: string; builtin: boolean }>>(daemon, "/api/personas"))
+  const builtin = (await api<Array<{ name: string; builtin: boolean }>>(daemon, "/api/personas"))
     .find((candidate) => candidate.builtin)!;
-  await dashboard.goto(`${daemon.baseURL}/#/library/personas/${builtin.id}`);
+  await dashboard.getByRole("complementary", { name: "Persona library" })
+    .getByText(builtin.name, { exact: true }).click();
+  await expect(dashboard.locator("section.persona-fields").getByLabel("Name")).toHaveValue(builtin.name);
   await dashboard.getByRole("button", { name: /^effort\b/ }).click();
-  await expect(dashboard.getByRole("group", { name: "Effort override" }).getByRole("combobox"))
+  await expect(dashboard.getByRole("combobox", { name: `Effort for ${builtin.name}` }))
     .toBeDisabled();
 });
 
