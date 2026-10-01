@@ -46,7 +46,10 @@ supports. Saving an effort the provider and model do not offer is refused rather
 Published versions freeze the effort with the model, and it is recorded on each attempt and
 model call beside the model and shown wherever that model is shown (`codex · gpt-6-sol · high
 effort`). A configured effort the resolved model turns out not to support (an environment
-model override, say) is flagged as unsupported and the call runs at the provider default.
+model override, say) is flagged as unsupported and the call runs at the provider default. The
+dropped level is recorded on the attempt and logged as `persona_effort_unsupported`, and the
+run detail prints it (`codex · gpt-5.6-luna · max effort unsupported, provider default`), so
+a reviewer never runs shallower than configured without saying so.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
 copying it. See [per-node provider and model](#per-node-provider-and-model). Built-in

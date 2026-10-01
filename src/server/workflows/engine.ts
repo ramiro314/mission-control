@@ -1156,8 +1156,28 @@ export class WorkflowEngine {
     // spawns nothing, so it must resolve nothing.
     const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
     const effort = execution.effort?.level ?? null;
-    const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now(), effort);
+    // Still run at the provider default - a CLI would reject the level - but never silently:
+    // the dropped level is recorded on the attempt, which the run detail prints, and logged.
+    const effortUnsupported = execution.effort?.unsupported ?? null;
+    const claimed = this.store.claimAttempt(
+      initial.id,
+      execution.runner.id,
+      execution.model.id,
+      this.now(),
+      effort,
+      effortUnsupported,
+    );
     if (!claimed) return;
+    if (effortUnsupported) {
+      workflowLog("warn", {
+        event: "persona_effort_unsupported",
+        run: run.id,
+        submission: submission.id,
+        runner: execution.runner.id,
+        model: execution.model.id,
+        effort: effortUnsupported,
+      });
+    }
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success) {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");

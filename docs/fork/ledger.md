@@ -556,7 +556,9 @@ intended.
 - One vocabulary (`THINKING_LEVELS`) and one capability check (`launchEffortLevels`, through
   `personaEffortLevels`). An unsupported effort is refused on Persona create and update, is an
   `unsupported_effort` publish-blocking diagnostic on a node, and at run time is reported as
-  `effort.unsupported` rather than passed or silently dropped.
+  `effort.unsupported` rather than passed or silently dropped: the call runs at the provider
+  default, the dropped level is stored on `workflow_node_attempts.effort_unsupported`, logged
+  as `persona_effort_unsupported`, and printed on the run's routing line.
 - Publish freezes the Persona's effort in its snapshot and the node's in its override.
 - The effort that ran is recorded on `workflow_node_attempts.effort` and
   `workflow_llm_calls.effort`, and shown beside the model on every routing line.
@@ -575,7 +577,7 @@ intended.
 execution view, attempt and call types, diagnostic codes), `src/shared/protocol.ts` (Persona and
 override schemas), `src/shared/workflow-graph.ts`, `src/shared/llm.ts` (`LlmRunOptions.effort`),
 `src/server/db.ts` (`personas.effort`, `workflow_node_attempts.effort`,
-`workflow_llm_calls.effort`), `src/server/workflows/{personas,store,engine}.ts`,
+`workflow_node_attempts.effort_unsupported`, `workflow_llm_calls.effort`), `src/server/workflows/{personas,store,engine}.ts`,
 `src/server/routes.ts` (`persona_unsupported_effort`), the four LLM transports and
 `src/server/claude-cli.ts`, settings-backup Persona schema, and the Persona editor, node routing
 editor, version history and run views.

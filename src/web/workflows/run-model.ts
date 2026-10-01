@@ -3007,8 +3007,31 @@ export interface VerdictMeta {
   model: string | null;
   /** The effort recorded with the model; null for the provider default. */
   effort: ThinkingLevel | null;
+  /** A configured effort the model could not run, so the call ran at the provider default. */
+  effortUnsupported: ThinkingLevel | null;
   durationMs: number | null;
   costUsd: number | null;
+}
+
+/**
+ * `runner · model`, plus the effort when one was passed, for an attempt or a call - or null
+ * when it ran no model. What actually ran, as recorded, never re-resolved from settings. A
+ * configured effort the model could not run is named as such (`max effort unsupported,
+ * provider default`) rather than dropped from the line.
+ */
+export function recordedRoutingLabel(
+  record: {
+    runner: string | null;
+    model: string | null;
+    effort?: ThinkingLevel | null;
+    effortUnsupported?: ThinkingLevel | null;
+  },
+): string | null {
+  if (!record.runner || !record.model) return null;
+  return routingLine(record.runner, record.model, {
+    level: record.effort ?? null,
+    unsupported: record.effort ? null : record.effortUnsupported ?? null,
+  });
 }
 
 /**
@@ -3019,16 +3042,6 @@ export interface VerdictMeta {
  * operator changes a default. Cost is summed from the workflow-owned calls this attempt
  * made, and stays `null` unless every one of them reported a price.
  */
-/**
- * `runner · model`, plus the effort when one was passed, for an attempt or a call - or null
- * when it ran no model. What actually ran, as recorded, never re-resolved from settings.
- */
-export function recordedRoutingLabel(
-  record: { runner: string | null; model: string | null; effort?: ThinkingLevel | null },
-): string | null {
-  return record.runner && record.model ? routingLine(record.runner, record.model, record.effort) : null;
-}
-
 export function verdictMeta(
   attempt: WorkflowNodeAttempt,
   calls: readonly WorkflowLlmCall[],
@@ -3039,6 +3052,7 @@ export function verdictMeta(
     runner: attempt.runner,
     model: attempt.model,
     effort: attempt.effort ?? null,
+    effortUnsupported: attempt.effortUnsupported ?? null,
     durationMs: attempt.startedAt !== null && attempt.finishedAt !== null
       ? Math.max(0, attempt.finishedAt - attempt.startedAt)
       : null,

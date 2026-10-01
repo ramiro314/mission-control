@@ -4607,6 +4607,12 @@ export interface WorkflowNodeAttempt {
    * recorded before effort existed.
    */
   effort?: ThinkingLevel;
+  /**
+   * A configured effort the resolved provider and model could not run, so the call ran at the
+   * provider default instead. Recorded beside `effort` so the drop is visible on the run rather
+   * than silent; only ever present when `effort` is absent.
+   */
+  effortUnsupported?: ThinkingLevel;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
   retryAt: number | null;

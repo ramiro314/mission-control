@@ -1969,6 +1969,7 @@ const WorkflowNodeAttemptRowSchema = z.object({
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
   effort: nullableText.optional(),
+  effort_unsupported: nullableText.optional(),
   verdict_json: nullableText,
   output_json: nullableText,
   retry_at: nullableInteger,
@@ -2073,6 +2074,9 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
     ...withEffort(row.effort),
+    ...(readPersonaEffort(row.effort_unsupported)
+      ? { effortUnsupported: readPersonaEffort(row.effort_unsupported)! }
+      : {}),
     verdict: parseNullableJson(
       "workflow_node_attempts",
       row.id,
@@ -8299,6 +8303,8 @@ export class WorkflowStore {
     now = Date.now(),
     /** Recorded with the model it was resolved for; null is the provider default. */
     effort: ThinkingLevel | null = null,
+    /** A configured level the model could not run, recorded so the drop stays visible. */
+    effortUnsupported: ThinkingLevel | null = null,
   ): WorkflowNodeAttempt | null {
     return this.mutate(() => {
       const initial = this.getAttempt(id);
@@ -8312,7 +8318,8 @@ export class WorkflowStore {
       }
       const result = this.db.prepare(
         `UPDATE workflow_node_attempts
-            SET state = 'running', runner_id = ?, model_id = ?, effort = ?, started_at = ?,
+            SET state = 'running', runner_id = ?, model_id = ?, effort = ?, effort_unsupported = ?,
+                started_at = ?,
                 updated_at = ?, retry_at = NULL,
                 operator_directive_json = COALESCE(operator_directive_json, ?)
           WHERE id = ? AND state IN ('queued', 'retry_wait')`,
@@ -8320,6 +8327,7 @@ export class WorkflowStore {
         runner,
         model,
         effort,
+        effortUnsupported,
         now,
         now,
         snapshot ? JSON.stringify(snapshot) : null,
