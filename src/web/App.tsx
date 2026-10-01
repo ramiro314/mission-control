@@ -30,7 +30,13 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
-import { taskOpenTarget, type TaskOpenTarget } from "./lib/open-task.ts";
+import {
+  pendingTaskOpenState,
+  taskOpenTarget,
+  type PendingTaskOpen,
+  type TaskOpenTarget,
+  type TaskOpenView,
+} from "./lib/open-task.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
@@ -1754,9 +1760,13 @@ export function App(): React.JSX.Element {
    * A task in flight with nothing to show yet (provisioning, or an exited session not yet
    * followed by its status) has no row in the Sitrep, so the click shows the fleet, where a
    * provisioning task has its placeholder card, and is kept until the task has somewhere to
-   * land: its session once it is up, or its outcome row once it finishes.
+   * land: its session once it is up, or its outcome row once it finishes. Only briefly, and
+   * only while the view is the one the click left (`pendingTaskOpenState`): once the person
+   * moves on, it is dropped rather than moving them later.
    */
-  const [pendingOpenTaskId, setPendingOpenTaskId] = useState<string | null>(null);
+  const [pendingOpen, setPendingOpen] = useState<PendingTaskOpen | null>(null);
+  const modalOpen = dispatchRequest !== null || missionsOpen || reviewSessionId !== null;
+  const taskOpenView: TaskOpenView = { page: route.page, selectedId, sitrepOpen: reportOpen, modalOpen };
   const landTask = useCallback(
     (taskId: string, target: TaskOpenTarget): void => {
       switch (target.kind) {
@@ -1789,21 +1799,35 @@ export function App(): React.JSX.Element {
       const task = tasks.find((candidate) => candidate.id === taskId);
       if (!task) return;
       const target = taskOpenTarget(task, sessions);
-      setPendingOpenTaskId(target.kind === "wait" ? taskId : null);
+      // The view the `wait` landing leaves: the fleet, Sitrep closed, selection untouched.
+      setPendingOpen(target.kind === "wait"
+        ? {
+            taskId,
+            view: { page: "fleet", selectedId, sitrepOpen: false, modalOpen },
+            fromPage: route.page,
+            at: Date.now(),
+          }
+        : null);
       landTask(taskId, target);
     },
-    [tasks, sessions, landTask],
+    [tasks, sessions, landTask, selectedId, modalOpen, route.page],
   );
-  // The click on a task that had nowhere to land yet, completed once it does. A task that
-  // leaves flight for the backlog (requeued) or disappears is let go rather than opened later.
+  // The click on a task that had nowhere to land yet, completed once it does. Dropped instead
+  // when the person has moved on or it waited too long, and when the task leaves flight for
+  // the backlog (requeued) or disappears.
+  const { page: viewPage, selectedId: viewSelected, sitrepOpen: viewSitrep, modalOpen: viewModal } = taskOpenView;
   useEffect(() => {
-    if (!pendingOpenTaskId) return;
-    const task = tasks.find((candidate) => candidate.id === pendingOpenTaskId);
+    if (!pendingOpen) return;
+    const view = { page: viewPage, selectedId: viewSelected, sitrepOpen: viewSitrep, modalOpen: viewModal };
+    const standing = pendingTaskOpenState(pendingOpen, view, Date.now());
+    if (standing === "drop") setPendingOpen(null);
+    if (standing !== "stands") return;
+    const task = tasks.find((candidate) => candidate.id === pendingOpen.taskId);
     const target = task ? taskOpenTarget(task, sessions) : null;
     if (target?.kind === "wait") return;
-    setPendingOpenTaskId(null);
-    if (target?.kind === "session" || target?.kind === "sitrep") landTask(pendingOpenTaskId, target);
-  }, [pendingOpenTaskId, tasks, sessions, landTask]);
+    setPendingOpen(null);
+    if (target?.kind === "session" || target?.kind === "sitrep") landTask(pendingOpen.taskId, target);
+  }, [pendingOpen, tasks, sessions, landTask, viewPage, viewSelected, viewSitrep, viewModal]);
   /**
    * Open one pipeline run, through the route helper that owns the address shape.
    *

@@ -218,6 +218,7 @@ lives once its session closes at the merge): <code>pending</code> is the note <s
 (<code>src/web/lib/open-task.ts</code>) says: a session that has not exited, the backlog editor, or, for a
 finished task only, the Sitrep scrolled to its Recent outcomes row and marked <code>aria-current</code>;
 an in-flight task with no session yet shows the fleet and is opened once one of those exists,
+but only within 30 s and while the view is the one the click left (<code>pendingTaskOpenState</code>),
 and <code>lapsed</code> the note <strong>Tickets lapsed</strong>. Every other state, a queued or started choice with no
 follow-up left to open, and every non-shape task draw nothing.</li>
 <li>Dispatch is refused, naming the toggle, when a required planning skill is off

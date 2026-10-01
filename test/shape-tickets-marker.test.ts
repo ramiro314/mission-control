@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ShapeTicketsState, Task, TaskKind } from "../src/shared/types.ts";
 import { SHAPE_TICKETS_STATES } from "../src/shared/types.ts";
 import { shapeTicketsMarker } from "../src/web/lib/shape-tickets.ts";
-import { taskOpenTarget } from "../src/web/lib/open-task.ts";
+import { PENDING_TASK_OPEN_MS, pendingTaskOpenState, taskOpenTarget } from "../src/web/lib/open-task.ts";
 import { ShapeTicketsMarker } from "../src/web/components/ShapeTicketsMarker.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import { shapeTaskForSession } from "../src/web/components/layouts/types.ts";
@@ -164,4 +164,26 @@ test("opening a task lands on its live session, its editor, a finished row, or w
   for (const status of ["done", "failed", "cancelled"] as const) {
     assert.deepEqual(taskOpenTarget(mkTask({ status, sessionId: "s1" }), [exited]), { kind: "sitrep" }, status);
   }
+});
+
+// A click that had to wait lands only while the person is still where it left them, and only
+// briefly: a slow launch must never move someone who has since chosen something else.
+test("a waiting open lands only on the view it left, and only briefly", () => {
+  const left = { page: "fleet", selectedId: "s-mine", sitrepOpen: false, modalOpen: false };
+  const pending = { taskId: "f", view: left, fromPage: "ensembles", at: 1_000 };
+  assert.equal(pendingTaskOpenState(pending, left, 1_000), "stands");
+  assert.equal(pendingTaskOpenState(pending, left, 1_000 + PENDING_TASK_OPEN_MS), "stands");
+  assert.equal(pendingTaskOpenState(pending, left, 1_001 + PENDING_TASK_OPEN_MS), "drop");
+  // The route still names the page the click came from until its hash change lands.
+  assert.equal(pendingTaskOpenState(pending, { ...left, page: "ensembles" }, 1_500), "settling");
+  // They moved on: another page, another session, the Sitrep, a modal.
+  assert.equal(pendingTaskOpenState(pending, { ...left, page: "library" }, 1_500), "drop");
+  assert.equal(pendingTaskOpenState(pending, { ...left, selectedId: "s-other" }, 1_500), "drop");
+  assert.equal(pendingTaskOpenState(pending, { ...left, sitrepOpen: true }, 1_500), "drop");
+  assert.equal(pendingTaskOpenState(pending, { ...left, modalOpen: true }, 1_500), "drop");
+  // Still on the page it came from, but having done something there, is moving on too.
+  assert.equal(pendingTaskOpenState(pending, { ...left, page: "ensembles", modalOpen: true }, 1_500), "drop");
+  // From the fleet itself there is nothing to settle.
+  const fromFleet = { ...pending, fromPage: "fleet" };
+  assert.equal(pendingTaskOpenState(fromFleet, { ...left, selectedId: null }, 1_500), "drop");
 });

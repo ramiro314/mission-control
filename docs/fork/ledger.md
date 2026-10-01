@@ -126,6 +126,7 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   (`src/web/lib/open-task.ts`) says: a session that has not exited, the backlog editor, or, for a
   finished task only, the Sitrep scrolled to its Recent outcomes row and marked `aria-current`;
   an in-flight task with no session yet shows the fleet and is opened once one of those exists,
+  but only within 30 s and while the view is the one the click left (`pendingTaskOpenState`),
   and `lapsed` the note **Tickets lapsed**. Every other state, a queued or started choice with no
   follow-up left to open, and every non-shape task draw nothing.
 - Dispatch is refused, naming the toggle, when a required planning skill is off
