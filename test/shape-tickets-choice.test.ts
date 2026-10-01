@@ -347,6 +347,8 @@ test("a plan PR read CLOSED by the poller signals the task once and lapses a pen
     delete process.env.HARNESS_GH_BIN;
   }
   assert.deepEqual(closures, [`${f.taskId} ${url}`], "once, however often it is re-polled");
+  const announced = (f.registry as unknown as { announcedPrClosures: Map<string, string> }).announcedPrClosures;
+  assert.equal(announced.size, 1, "one entry per task, not one per poll");
   assert.equal(shapeTicketsStateFor(f.taskId), "lapsed");
   assert.equal(f.registry.getTask(f.taskId)?.status, "running", "a closed PR does not end the task");
   assert.deepEqual(shapeTicketFollowupsForSource(f.taskId), [], "nothing is created");
@@ -461,6 +463,23 @@ test("an automatic start refused because a follow-up is already live leaves the 
   );
   assert.deepEqual(launched, [], "nothing was dispatched");
   assert.equal(shapeTicketsStateFor(f.taskId), "pending", "neither started nor queued");
+});
+
+test("a removed task's announced closure is dropped, so the record never outgrows the board", () => {
+  const url = "https://github.com/acme/demo/pull/605";
+  const f = shaping("closure-prune");
+  observeOpenPr(f, url, 605);
+  const closures: string[] = [];
+  f.registry.onTaskPrClosed((e) => closures.push(e.url));
+  const announced = (f.registry as unknown as { announcedPrClosures: Map<string, string> }).announcedPrClosures;
+
+  f.registry.reconcilePrClosures(new Set([url]));
+  assert.deepEqual(closures, [url]);
+  assert.ok(announced.has(f.taskId));
+
+  f.registry.removeTask(f.taskId);
+  f.registry.reconcilePrClosures(new Set());
+  assert.equal(announced.has(f.taskId), false, "the removed task's entry is gone");
 });
 
 // ---------------------------------------------------------------------------

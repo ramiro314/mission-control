@@ -1683,8 +1683,12 @@ export class Registry extends EventEmitter {
     return () => this.off("task_pr_closed", fn);
   }
 
-  /** (task, episode, url) closures already announced, so a backed-off re-poll stays quiet. */
-  private readonly announcedPrClosures = new Set<string>();
+  /**
+   * The closure last announced per task, as `episode\0url`, so a backed-off re-poll stays
+   * quiet. One entry per task, overwritten when its binding moves to another episode or PR,
+   * and dropped once the task leaves the in-memory board, so it never outgrows the board.
+   */
+  private readonly announcedPrClosures = new Map<string, string>();
 
   /**
    * Announce every task whose current binding's pull request the by-URL poller saw closed.
@@ -1693,13 +1697,17 @@ export class Registry extends EventEmitter {
    * episode the task already rolled past says nothing about the work it is doing now.
    */
   reconcilePrClosures(closedUrls: ReadonlySet<string>): void {
+    // Before the early return, so a removed or evicted task's entry goes on the next tick.
+    for (const taskId of this.announcedPrClosures.keys()) {
+      if (!this.tasks.has(taskId)) this.announcedPrClosures.delete(taskId);
+    }
     if (closedUrls.size === 0) return;
     for (const task of [...this.tasks.values()]) {
       const binding = taskWorkEpisodeForTask(task.id);
       if (!binding?.prUrl || binding.mergedAt !== null || !closedUrls.has(binding.prUrl)) continue;
-      const key = `${task.id}\0${binding.episodeId}\0${binding.prUrl}`;
-      if (this.announcedPrClosures.has(key)) continue;
-      this.announcedPrClosures.add(key);
+      const key = `${binding.episodeId}\0${binding.prUrl}`;
+      if (this.announcedPrClosures.get(task.id) === key) continue;
+      this.announcedPrClosures.set(task.id, key);
       this.emit("task_pr_closed", {
         taskId: task.id,
         episodeId: binding.episodeId,
