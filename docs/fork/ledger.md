@@ -593,6 +593,7 @@ at `104a5407` (checked by each fix's key symbol).
 | #23 | 2026-09-28 | A slot quarantined during acquire kept a phantom owner and could never be destroyed; reconcile recovers slots already stuck. | `src/server/worktrees/manager.ts`, `src/server/worktrees/store.ts` | Yes: #1148 changed `manager.ts` but not this path. |
 | #24 | 2026-09-28 | Codex "model unsupported" and "quota exhausted" failures were retried as infrastructure failures; they are now typed, not retried, and shown. | `src/server/llm/codex.ts`, `src/shared/llm.ts`, `src/server/llm/structured.ts`, `src/server/workflows/engine.ts` | Yes: generic; adds an `error_code` value. |
 | #33 | 2026-09-29 | The e2e fake `node` shim orphaned fake processes on timeout (it now `exec`s); also repairs the review-answer spec after #30. | `e2e/fixtures/conductor.ts`, `e2e/specs/review-answers-in-conversation.spec.ts` | Maybe: the shim fix is generic; the spec fix follows fork #30. |
+| pending | pending | Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with `ps` and `lsof`, at ~28 concurrent `ps` and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and `test:run` sets a 180 s per-test timeout. | `src/server/tasks.ts`, `package.json`, `test/helpers/task-manager.ts` | Yes for the backoff: upstream has the same flat 30 s retry. The `test:run` flags belong to the fork's flake-aware testing. |
 
 ## Keeping this ledger current
 

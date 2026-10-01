@@ -870,6 +870,13 @@ at <code>104a5407</code> (checked by each fix&#39;s key symbol).</p>
 <td><code>e2e/fixtures/conductor.ts</code>, <code>e2e/specs/review-answers-in-conversation.spec.ts</code></td>
 <td>Maybe: the shim fix is generic; the spec fix follows fork #30.</td>
 </tr>
+<tr>
+<td>pending</td>
+<td>pending</td>
+<td>Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with <code>ps</code> and <code>lsof</code>, at ~28 concurrent <code>ps</code> and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and <code>test:run</code> sets a 180 s per-test timeout.</td>
+<td><code>src/server/tasks.ts</code>, <code>package.json</code>, <code>test/helpers/task-manager.ts</code></td>
+<td>Yes for the backoff: upstream has the same flat 30 s retry. The <code>test:run</code> flags belong to the fork&#39;s flake-aware testing.</td>
+</tr>
 </tbody></table>
 <h2>Keeping this ledger current</h2>
 <ul>

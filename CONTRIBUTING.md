@@ -77,6 +77,13 @@ preflight or add Chromium flags.
 runners with an explicit worker and shard allocation so its behavior does not depend on the local
 fallback and pull request jobs remain isolated from shared self-hosted infrastructure.
 
+`npm test` and every `test:run` caller (CI shards, flake reruns, the `affected-tests` Command)
+give each test 180 seconds unless the test sets its own `timeout`; before, a test that never
+settled ran until someone killed it. The timeout cannot see a file whose tests all passed while
+background work keeps its event loop alive, and `--test-force-exit` is not the answer here: it
+cancels every test a file registers after a top-level `await import(...)`. Stop what a test
+starts. A hand-typed single-file `node --test` command carries no timeout.
+
 ## Test layers
 
 The repository has four complementary test layers:
