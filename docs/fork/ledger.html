@@ -10,8 +10,7 @@ table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{
 .diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
 figcaption{color:var(--muted);font-size:13px}
 .b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
-</style></head><body><main>
-<h1>Fork ledger</h1>
+</style></head><body><main><h1>Fork ledger</h1>
 <p><code>ramiro314/mission-control</code> is a fork of
 <a href="https://github.com/teamupstart/mission-control"><code>teamupstart/mission-control</code></a>. This ledger
 records everything the fork changes against upstream, one entry per fork <strong>feature</strong>, with the
@@ -49,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>8</strong> (plus 2 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>9</strong> (plus 2 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -115,6 +114,11 @@ or issues.</p>
 <td>CodeQL advanced setup</td>
 <td>Active</td>
 <td>#65</td>
+</tr>
+<tr>
+<td>Persona reasoning effort</td>
+<td>Active</td>
+<td>Pending (branch <code>feat/persona-effort</code>)</td>
 </tr>
 <tr>
 <td>Complete frees the worktree</td>
@@ -722,6 +726,73 @@ applies.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> None; both files are fork-only.</p>
 <p><strong>Fork-only files.</strong> <code>.github/workflows/codeql.yml</code>, <code>.github/codeql/codeql-config.yml</code>.</p>
+<h3>Persona reasoning effort</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>Pending (branch <code>feat/persona-effort</code>)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td>None; <a href="../workflows.md">docs/workflows.md</a> &quot;Per-node provider and model&quot; describes it</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. It extends upstream&#39;s own Persona and node-override routing and adds no fork-only concept.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> An operator chooses the reasoning effort (<code>low</code> to <code>max</code>) a workflow Persona call
+runs at, the same way they already choose its model. Without it every Persona call ran at the
+provider default, which on Claude Opus 5.5 is <code>medium</code>, so Opus reviewers ran shallower than
+intended.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>Effort is optional at two levels: <code>Persona.effort</code> and <code>WorkflowNodeExecutionOverride.effort</code>.
+Resolution is node override, then Persona, then provider default, in the existing
+<code>resolveWorkflowNodeExecution</code> / <code>resolvePersonaExecution</code> path. An override without an effort
+runs at the provider default, never at the Persona&#39;s level.</li>
+<li>Unset effort passes no flag at all, so existing Personas, drafts, versions and bindings behave
+exactly as before with no migration step. A Persona with no effort freezes byte-identically.</li>
+<li>One vocabulary (<code>THINKING_LEVELS</code>) and one capability check (<code>launchEffortLevels</code>, through
+<code>personaEffortLevels</code>). An unsupported effort is refused on Persona create and update, is an
+<code>unsupported_effort</code> publish-blocking diagnostic on a node, and at run time is reported as
+<code>effort.unsupported</code> rather than passed or silently dropped: the call runs at the provider
+default, the dropped level is stored on <code>workflow_node_attempts.effort_unsupported</code>, logged
+as <code>persona_effort_unsupported</code>, and printed on the run&#39;s routing line.</li>
+<li>Publish freezes the Persona&#39;s effort in its snapshot and the node&#39;s in its override.</li>
+<li>The effort that ran is recorded on <code>workflow_node_attempts.effort</code> and
+<code>workflow_llm_calls.effort</code>, and shown beside the model on every routing line.</li>
+<li>Built-in Personas stay read-only; a node override is how their effort is set.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>HarnessCapabilities.effort.levelsFor</code> and <code>launchArgs</code> for <code>claude</code> and <code>codex</code>, and that the
+headless <code>LlmRunnerId</code> values name the same providers as those harness ids.</li>
+<li><code>claude -p</code> accepts <code>--effort</code>, <code>codex exec</code> accepts <code>-c model_reasoning_effort=</code>, the Claude
+Agent SDK accepts <code>effort</code> and the Codex SDK accepts <code>modelReasoningEffort</code>.</li>
+<li>Persona nodes resolve through <code>resolveWorkflowNodeExecution</code>, and <code>personaSnapshotOf</code> is the one
+snapshot builder.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/shared/workflow.ts</code> (Persona, PersonaSnapshot, override,
+execution view, attempt and call types, diagnostic codes), <code>src/shared/protocol.ts</code> (Persona and
+override schemas), <code>src/shared/workflow-graph.ts</code>, <code>src/shared/llm.ts</code> (<code>LlmRunOptions.effort</code>),
+<code>src/server/db.ts</code> (<code>personas.effort</code>, <code>workflow_node_attempts.effort</code>,
+<code>workflow_node_attempts.effort_unsupported</code>, <code>workflow_llm_calls.effort</code>), <code>src/server/workflows/{personas,store,engine}.ts</code>,
+<code>src/server/routes.ts</code> (<code>persona_unsupported_effort</code>), the four LLM transports and
+<code>src/server/claude-cli.ts</code>, settings-backup Persona schema, and the Persona editor, node routing
+editor, version history and run views.</p>
+<p><strong>Fork-only files.</strong> <code>src/web/workflows/EffortSelect.tsx</code>, <code>test/persona-effort.test.ts</code>,
+<code>e2e/specs/workflow-persona-effort.spec.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>
