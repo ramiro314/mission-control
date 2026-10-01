@@ -20,7 +20,9 @@ import {
  *
  * The plan review's follow-up is the one place this contract overrides a skill. `html-plans`
  * always ends a root review with the phased-plan follow-up; a shape review ends with Create
- * tickets / Stop instead, so the contract names that decision in full.
+ * tickets after the plan merges / Stop instead, so the contract names that decision in full.
+ * The shaping turn itself never slices: Mission Control records the choice on the task and
+ * a tickets follow-up runs `tickets` once the plan has merged.
  */
 
 /** The marker that opens the appendix. A stable anchor for tests and for a human reading a pane. */
@@ -37,6 +39,12 @@ export const SHAPE_TICKETS_SKILL_ID = "tickets";
 
 /** The follow-up decision that closes a shape task's plan review. */
 export const SHAPE_FOLLOW_UP_DECISION_ID = "shape-follow-up";
+
+/**
+ * The plan review's `create-tickets` option, as the human reads it. Tickets are sliced after
+ * the plan's pull request merges, by a follow-up task, so the label says when.
+ */
+export const SHAPE_CREATE_TICKETS_LABEL = "Create tickets after the plan merges";
 
 /** The already-resolved, per-harness lines that invoke the shape task's skills. */
 export interface ShapeSkillInvocations {
@@ -122,16 +130,13 @@ export function shapeContractAppendix(
     `   ${skills.htmlPlans}`,
     `4. Request the plan review with \`${PLAN_DECISIONS_TOOL}\`. On a shape task its last decision is`,
     `   \`${SHAPE_FOLLOW_UP_DECISION_ID}\`, "What should happen after this plan is approved?", with the options`,
-    "   `create-tickets` (Create tickets, recommended) and `stop` (Stop). It replaces the skill's phased",
-    "   implementation follow-up; do not offer that one here.",
+    `   \`create-tickets\` (${SHAPE_CREATE_TICKETS_LABEL}, recommended) and \`stop\` (Stop). It replaces the`,
+    "   skill's phased implementation follow-up; do not offer that one here.",
     "5. On Stop, keep the approved plan and finish without tickets.",
-    `6. On Create tickets, invoke the ${SHAPE_TICKETS_SKILL_ID} skill. It slices the plan into tickets and opens the`,
-    `   breakdown review, one \`${PLAN_DECISIONS_TOOL}\` form that is the human's final approval. Nothing is`,
-    `   written or created before that form is submitted, and a dismissed breakdown creates nothing. On submit`,
-    `   it writes the tickets file, commits and pushes it, then files each ticket with \`${PLAN_SCHEDULING_TOOL}\``,
-    "   in dependency order, gated on this session. When the breakdown chose to mirror the tickets, it pushes",
-    `   each filed ticket to the task source with \`${PUSH_TASK_TOOL}\`, blockers first. On this harness:`,
-    `   ${skills.tickets}`,
+    `6. On ${SHAPE_CREATE_TICKETS_LABEL}, do not slice the plan and do not invoke the ${SHAPE_TICKETS_SKILL_ID} skill. Mission`,
+    "   Control records the choice from the review, and once the plan's pull request merges it starts a linked",
+    "   follow-up task that slices the merged plan into tickets. This shaping turn files no tasks and pushes no",
+    `   items: do not call \`${PLAN_SCHEDULING_TOOL}\` or \`${PUSH_TASK_TOOL}\`.`,
     "",
     `Before publication, call \`${PLAN_PUBLICATION_TOOL}\` to refresh who owns the pull request. A failed or unavailable read is not permission to publish directly.`,
   ];

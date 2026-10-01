@@ -74,7 +74,7 @@ import {
 } from "./mission-mcp.ts";
 import { planningSkillsForAgent, type PlanningSkillsForAgent } from "./plans/skills.ts";
 import { withTaskKindContract } from "./task-contract.ts";
-import { withShapeTicketsCompletion } from "./shape-tickets.ts";
+import { stampShapeTicketsAwaitingReview, withShapeTicketsCompletion } from "./shape-tickets.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
   discardScoutPromptBoundary,
@@ -613,6 +613,9 @@ export class Dispatcher {
           workflowEvidence,
         });
       const intent = composeTurnOne(standingPrefix);
+      // The contract just composed defers a shape task's tickets to its merge, so the task is
+      // stamped as delivered under it. Only a never-stamped shaping task moves (see the helper).
+      stampShapeTicketsAwaitingReview(provisioned, this.registry);
       // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
       // channel turns out to be unusable once the driver is already talking to its subprocess.
       //

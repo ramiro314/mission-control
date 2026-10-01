@@ -35,7 +35,7 @@ interface TaskRow {
   worktreePath: string | null;
   sessionId: string | null;
   error: string | null;
-  shapeTickets?: { followupTaskId: string | null; canCreate: boolean } | null;
+  shapeTickets?: { state: string | null; followupTaskId: string | null; canCreate: boolean } | null;
 }
 
 interface SessionRow {
@@ -163,9 +163,10 @@ async function mergedShapeTask(page: Page, daemon: DaemonHandle): Promise<TaskRo
     .poll(async () => (await api<Array<{ url: string }>>(daemon, "/api/inspector/prs")).map((p) => p.url))
     .toEqual([PR_URL]);
 
-  // Before the merge the task is not done, so nothing is offered.
+  // Before the merge the task is not done, so nothing is offered. The dispatch stamped it as
+  // delivered under the contract that defers tickets to the merge; no plan review was answered.
   const running = (await tasks(daemon)).find((t) => t.id === task.id)!;
-  expect(running.shapeTickets).toEqual({ followupTaskId: null, canCreate: false });
+  expect(running.shapeTickets).toEqual({ state: "awaiting-review", followupTaskId: null, canCreate: false });
 
   // The plan PR merges; the poller observes it and merge settlement takes the shape task to done.
   scriptPullRequest(daemon, task, true);
@@ -175,8 +176,9 @@ async function mergedShapeTask(page: Page, daemon: DaemonHandle): Promise<TaskRo
       message: "the shape task completes through its plan PR merge",
     })
     .toBe("done");
+  // No Create tickets choice was recorded, so the merge started nothing on its own.
   const source = (await tasks(daemon)).find((t) => t.id === task.id)!;
-  expect(source.shapeTickets).toEqual({ followupTaskId: null, canCreate: true });
+  expect(source.shapeTickets).toEqual({ state: "awaiting-review", followupTaskId: null, canCreate: true });
   return source;
 }
 
@@ -207,7 +209,7 @@ test("Create tickets on a merged shape task dispatches its tickets-only follow-u
   await expect(create).toBeHidden();
   await expect
     .poll(async () => (await tasks(daemon)).find((t) => t.id === source.id)?.shapeTickets)
-    .toEqual({ followupTaskId: followup!.id, canCreate: false });
+    .toEqual({ state: "awaiting-review", followupTaskId: followup!.id, canCreate: false });
   await shoot(dashboard, "02-action-withdrawn", row);
 
   // The follow-up's card is on the board, and its session was told tickets-only mode.
@@ -256,5 +258,5 @@ test("a Create tickets whose launch is refused leaves the follow-up in the backl
   expect(followup).toMatchObject({ kind: "shape", status: "backlog", workflowId: null });
   expect(followup!.error).toContain("Enable Skills and the grill skill");
   expect((await tasks(daemon)).find((t) => t.id === source.id)?.shapeTickets)
-    .toEqual({ followupTaskId: followup!.id, canCreate: false });
+    .toEqual({ state: "awaiting-review", followupTaskId: followup!.id, canCreate: false });
 });

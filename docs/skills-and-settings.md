@@ -150,18 +150,20 @@ left to ask. It adapts Matt Pocock's `grilling` skill (MIT, credited in the skil
 `NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills plugin. The
 procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
 
-The **Tickets** row carries what a shape task does after its plan review chooses **Create
-tickets**. It slices the approved plan the `/to-tickets` way: tracer-bullet vertical slices, each
+The **Tickets** row carries what a shape task's tickets follow-up runs once the plan has merged,
+whether the plan review chose **Create tickets after the plan merges** or you clicked **Create
+tickets** on the merged task; the shaping turn itself no longer invokes it. It slices the plan the `/to-tickets` way: tracer-bullet vertical slices, each
 sized to one fresh context window, refactoring first, and expand-contract for a wide refactor.
 Each ticket body (what to build, acceptance criteria, blocked by, test seams, and a pointer to the
 plan; no other file paths, under 3000 characters) becomes the task's intent. It then opens the
 **breakdown review**, your final approval, as one `request_plan_decisions` form. Only after you
 submit it does it write `docs/plans/<name>/tickets.md` and its HTML page, commit and push them,
 and file each ticket with `create_task`; a dismissed breakdown files nothing. In a shape task's
-tickets follow-up (**Create tickets** on a merged shape task) it runs in **follow-up mode**: the
+tickets follow-up it runs in **follow-up mode**: the
 plan has already merged, so it writes, commits and pushes no tickets file and records no ids in
 one, and it ends by calling `complete_shape_tickets`, which completes the follow-up and closes
-its session. Every other caller keeps the flow above. It adapts Matt
+its session. Every other caller, including a shape session dispatched before tickets moved
+after the merge, keeps the flow above. It adapts Matt
 Pocock's `to-tickets` skill (MIT, credited in the skill and in `NOTICE`) and does not depend on the
 mattpocock-skills plugin. The procedure lives in
 [`skills/tickets/SKILL.md`](../skills/tickets/SKILL.md).

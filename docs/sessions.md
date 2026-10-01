@@ -1973,8 +1973,9 @@ The MCP tools are:
   means the item may exist, so check the tracker before retrying. A task that does not wait on the
   calling session is refused; from a tickets follow-up, a task that waits on the merged shape task
   it slices is accepted too, and is filed under that shape task's item. The shape kind pre-approves it
-- `complete_shape_tickets(outcome)` - granted only to a shape task's tickets follow-up (see
-  [Create tickets from a merged shape task](dispatch-and-backlog.md)). It reports `filed` after
+- `complete_shape_tickets(outcome)` - granted only to a shape task's tickets follow-up, which
+  Mission Control starts when the plan's pull request merges with Create tickets recorded, or
+  which you start by hand (see [Create tickets from a merged shape task](dispatch-and-backlog.md)). It reports `filed` after
   the approved tickets are filed, or `dismissed` after a dismissed breakdown, and Mission Control
   completes the follow-up and closes its session. It takes no task id: the daemon resolves the
   task from the calling session and refuses any session whose task is not a tickets follow-up.

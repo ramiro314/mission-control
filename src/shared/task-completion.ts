@@ -91,23 +91,57 @@ const SHIP_CONTRACT: TaskCompletionContract = {
   ],
 };
 
+/**
+ * The planning requirements plan and shape share, in one place, so a workflow-bound shape task
+ * is never verified against a stale copy of the plan's boundary. Each kind adds only its own
+ * middle: plan its phases, shape the absence of tickets.
+ */
+const PLANNING_APPROVED_PLAN = [
+  "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
+  "the plan's Markdown and rendered HTML are complete and consistent",
+] as const;
+const PLANNING_VERIFIED_HANDOFF = [
+  "the verification the planning work requires has been run",
+  "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
+] as const;
+
 const PLAN_CONTRACT: TaskCompletionContract = {
   kind: "plan",
   owner: "Mission Control",
   boundary: "the planning handoff to the bound workflow",
   complete: [
-    "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
-    "the plan's Markdown and rendered HTML are complete and consistent",
+    ...PLANNING_APPROVED_PLAN,
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
     "artifacts referenced by phase tasks are committed and pushed, with exact paths verified before scheduling, and every phase task depends on the planning session",
-    "the verification the planning work requires has been run",
-    "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
+    ...PLANNING_VERIFIED_HANDOFF,
   ],
   // Plans need durable artifacts before scheduling. Push is deliberately retained.
   deferred: [
     ...SHIP_CONTRACT.deferred.filter((action) => action.id !== "push"),
     { id: "merge", imperative: "merge the pull request", noun: "merging the pull request" },
   ],
+};
+
+/**
+ * A workflow-bound shape task's boundary: the plan's, without phases or tickets.
+ *
+ * The shaping turn delivers an approved plan and nothing scheduled from it. A Create tickets
+ * answer is recorded by Mission Control and acted on only after the plan's pull request
+ * merges, by a follow-up task, so the verifier must not expect ticket or phase tasks here.
+ * Worded as "not required" rather than "forbidden", because a shape session dispatched before
+ * this contract still files its tickets in-session and is judged by this same record.
+ */
+const SHAPE_CONTRACT: TaskCompletionContract = {
+  kind: "shape",
+  owner: "Mission Control",
+  boundary: "the shaping handoff to the bound workflow",
+  complete: [
+    ...PLANNING_APPROVED_PLAN,
+    "no ticket or phase tasks are required from this turn: Mission Control records a Create tickets choice and files the tickets in a follow-up task after the plan's pull request merges",
+    "the plan is committed and pushed",
+    ...PLANNING_VERIFIED_HANDOFF,
+  ],
+  deferred: PLAN_CONTRACT.deferred,
 };
 
 /**
@@ -140,8 +174,8 @@ export function taskCompletionContract(
   kind: TaskKind | null | undefined,
   workflowBound = false,
 ): TaskCompletionContract | null {
-  // Shape delivers a plan too, so it takes the plan's boundary under its own kind.
-  if (isPlanningTaskKind(kind) && workflowBound) return kind === "plan" ? PLAN_CONTRACT : { ...PLAN_CONTRACT, kind };
+  // Shape delivers a plan too, so it defers what the plan defers, with its own completion list.
+  if (isPlanningTaskKind(kind) && workflowBound) return kind === "plan" ? PLAN_CONTRACT : SHAPE_CONTRACT;
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 

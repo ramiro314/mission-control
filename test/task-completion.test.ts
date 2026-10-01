@@ -317,8 +317,21 @@ test("a workflow-bound plan defers its PR but still publishes artifacts before s
 test("unbound plans keep skill-owned PR creation and other kinds keep their contract", () => {
   assert.equal(taskCompletionContract("plan", false), null);
   assert.equal(taskCompletionContract("shape", false), null);
-  // Shape delivers a plan, so a bound shape task takes the plan's boundary under its own kind.
-  assert.deepEqual(taskCompletionContract("shape", true), { ...taskCompletionContract("plan", true), kind: "shape" });
+  // Shape delivers a plan, so a bound shape task defers what the plan defers. Its completion
+  // list is its own: the shaping turn files no ticket or phase tasks.
+  const shape = taskCompletionContract("shape", true)!;
+  const plan = taskCompletionContract("plan", true)!;
+  assert.equal(shape.kind, "shape");
+  assert.deepEqual(shape.deferred, plan.deferred);
+  assert.ok(shape.complete.some((requirement) => /no ticket or phase tasks are required from this turn/.test(requirement)));
+  assert.ok(!shape.complete.some((requirement) => /phase files|phase task depends/.test(requirement)));
+  assert.ok(plan.complete.some((requirement) => /phase files/.test(requirement)), "the plan kind's contract is unchanged");
+  // Every planning requirement that is not about phases is the plan's own entry, shared rather
+  // than copied, so an edit to the plan's boundary reaches the shape boundary too.
+  const shared = plan.complete.filter((requirement) => !/phase/.test(requirement));
+  assert.equal(shared.length, 4);
+  for (const requirement of shared) assert.ok(shape.complete.includes(requirement), requirement);
+  assert.equal(shape.complete.length, shared.length + 2, "shape adds only its no-tickets and plan-pushed lines");
   for (const kind of TASK_KINDS.filter((kind) => kind !== "plan" && kind !== "shape")) {
     assert.equal(taskCompletionContract(kind, true), taskCompletionContract(kind, false));
   }

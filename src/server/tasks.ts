@@ -43,7 +43,17 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
-import { SHAPE_TICKETS_OUTCOME_TEXT, shapeTicketsFollowupIntent } from "./shape-tickets.ts";
+import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
+import {
+  SHAPE_TICKETS_OUTCOME_TEXT,
+  lapseShapeTickets,
+  markShapeTicketsQueued,
+  markShapeTicketsStarted,
+  promoteQueuedShapeTickets,
+  shapeTicketsAwaitMerge,
+  shapeTicketsFollowupIntent,
+  stampShapeTicketsAwaitingReview,
+} from "./shape-tickets.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
@@ -983,6 +993,8 @@ export class TaskManager {
   private autoCompleted = new Map<string, string>();
   /** Re-entrancy guard for `reconcileMergedTasks`, which its own completions can re-enter. */
   private reconcilingMergedTasks = false;
+  /** Shape tasks whose automatic tickets follow-up is being started, so a replay cannot race it. */
+  private readonly startingShapeTickets = new Set<string>();
   /** The self-rescheduling closure sweep, alive only while a closure is actually owed. */
   private closureTimer: ReturnType<typeof setTimeout> | null = null;
   /** When that timer is due, so an earlier kick can pre-empt a pending retry. */
@@ -1116,6 +1128,16 @@ export class TaskManager {
         // cleanup until discovery or the SDK supervisor confirms that it stopped.
         this.scheduleMissionSessionClosureSweep(0);
       }
+      // A shape task that ENDED without its merge - cancelled, or failed - lapses a pending
+      // Create tickets choice. A `done` one is decided in `finishCompletion`, which can tell a
+      // merge-quorum completion from a hand-completed one.
+      if (
+        e.type === "task_upsert" &&
+        e.task.kind === "shape" &&
+        (e.task.status === "cancelled" || e.task.status === "failed")
+      ) {
+        this.lapseShapeTicketsOf(e.task.id);
+      }
       if (e.type === "task_remove") {
         this.autoCompleted.delete(e.id);
         this.nextCompletedReturn.delete(e.id);
@@ -1162,6 +1184,9 @@ export class TaskManager {
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
     registry.onTaskPrMerged((e) => this.settleMergedTask(e));
+    // A shape task's plan PR closed without merging: a pending Create tickets choice lapses.
+    // Not final - a replacement PR that later merges still starts the follow-up.
+    registry.onTaskPrClosed((e) => this.lapseShapeTicketsOf(e.taskId));
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
     registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
@@ -3325,6 +3350,12 @@ export class TaskManager {
       // unpinned; the model a session actually ran on is recorded on the SESSION, which is
       // where it belongs and where the card reads it from.
       void this.dispatcher.dispatch(id, options);
+      // A tickets follow-up whose first launch was refused left its source `queued`; this
+      // later dispatch, by hand or by the autopilot, is the one it was waiting for.
+      if (t.kind === "shape") {
+        const source = shapeTicketFollowupForTask(t.id)?.sourceTaskId;
+        if (source) promoteQueuedShapeTickets(source, this.registry);
+      }
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
   }
@@ -4709,6 +4740,9 @@ export class TaskManager {
       // nothing mid-life.
       const launched = this.registry.standingInstructionsFor(s.id);
       const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
+      // Delivered the contract that defers a shape task's tickets to its merge: stamp it, as
+      // the dispatch seam does.
+      stampShapeTicketsAwaitingReview(ready, this.registry);
       r = await inject(
         this.registry.getSession(s.id) ?? s,
         withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
@@ -5363,11 +5397,69 @@ export class TaskManager {
       console.error("[writeback] enqueue on completion failed:", id, err);
     }
     if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    if (updated.kind === "shape") this.settleShapeTicketsOnCompletion(t);
     if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
       this.enqueueFinishedWorktreeReturn(updated, "complete");
       this.scheduleMissionSessionClosureSweep();
     }
     return updated;
+  }
+
+  /**
+   * A shape task just completed: act on its recorded Create tickets choice.
+   *
+   * Through its merge quorum - the same `mergeOutcomeFor` every merge path completes on, so a
+   * multi-repo shape task waits for every repository it changed - a pending choice starts the
+   * tickets follow-up, and so does a lapsed one: the human chose Create tickets and the plan
+   * did merge, through a replacement PR if the first was closed. Without the merge, a pending
+   * choice lapses. Nothing here reads workflow run state, so a merge with the shape task's
+   * workflow still open or failed starts the follow-up all the same.
+   *
+   * Never throws: this runs inside `finishCompletion`, after the completion is persisted.
+   */
+  private settleShapeTicketsOnCompletion(before: Task): void {
+    try {
+      if (!this.mergeOutcomeFor(before)) {
+        this.lapseShapeTicketsOf(before.id);
+        return;
+      }
+      if (shapeTicketsAwaitMerge(before.id)) void this.startShapeTicketsAfterMerge(before.id);
+    } catch (error) {
+      console.error("[shape] settling the tickets choice on completion failed:", before.id, error);
+    }
+  }
+
+  /** Lapse a pending Create tickets choice; the transition re-sends the task when it moved. */
+  private lapseShapeTicketsOf(taskId: string): void {
+    try {
+      lapseShapeTickets(taskId, this.registry);
+    } catch (error) {
+      console.error("[shape] lapsing the tickets choice failed:", taskId, error);
+    }
+  }
+
+  /**
+   * Create and dispatch a merged shape task's tickets follow-up, then record what happened.
+   *
+   * The follow-up service is the manual **Create tickets** action's, so the same acceptance
+   * rule (done, merged, no live or done follow-up) is what guarantees exactly one, with the
+   * in-flight set closing the window between two completions of one task. The choice reads
+   * `started` only once the dispatch was accepted, or `queued` while a refused follow-up waits
+   * in the backlog with the reason; `dispatch` moves `queued` on when it is launched later.
+   */
+  private async startShapeTicketsAfterMerge(taskId: string): Promise<void> {
+    if (this.startingShapeTickets.has(taskId)) return;
+    this.startingShapeTickets.add(taskId);
+    try {
+      const result = await startShapeTicketsFollowup(taskId, { tasks: this });
+      if (result.kind === "started") markShapeTicketsStarted(taskId, this.registry);
+      else if (result.kind === "queued") markShapeTicketsQueued(taskId, this.registry);
+      else console.warn(`[shape] tickets follow-up for ${taskId} was not started: ${result.error}`);
+    } catch (error) {
+      console.error("[shape] starting the tickets follow-up failed:", taskId, error);
+    } finally {
+      this.startingShapeTickets.delete(taskId);
+    }
   }
 
   /**

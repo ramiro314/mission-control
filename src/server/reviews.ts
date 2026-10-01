@@ -16,6 +16,7 @@ import {
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { verifyDraftProvenance } from "./foreman/decision-draft.ts";
 import type { Registry } from "./registry.ts";
+import { recordShapeTicketsChoice, shapeFollowUpChoice } from "./shape-tickets.ts";
 import {
   inTransaction,
   insertReview,
@@ -443,7 +444,31 @@ export class ReviewManager {
         }
       }
     }
-    return this.settle(cur, status, storedResponse, by, storedSelections);
+    const settled = this.settle(cur, status, storedResponse, by, storedSelections);
+    if (status === "answered") this.recordShapeFollowUp(settled);
+    return settled;
+  }
+
+  /**
+   * Copy a shape plan review's `shape-follow-up` answer onto the session's task.
+   *
+   * Only an answered `plan-decisions` review reaches here, so a dismissal writes nothing, and
+   * the store refuses a task that was never stamped (a shape session dispatched before the
+   * choice was recorded, which files its tickets in-session). The latest answer wins. A
+   * failure is logged rather than thrown: the answer is already stored and delivered.
+   */
+  private recordShapeFollowUp(review: ReviewItem): void {
+    if (review.kind !== "plan-decisions") return;
+    const choice = shapeFollowUpChoice(review.selections);
+    if (!choice) return;
+    try {
+      const session = this.registry.getSession(review.sessionId);
+      const task = this.registry.taskForSession(review.sessionId, session?.cwd ?? null);
+      if (task?.kind !== "shape") return;
+      recordShapeTicketsChoice(task.id, choice, this.registry);
+    } catch (error) {
+      console.error("[reviews] recording the shape follow-up choice failed:", review.id, error);
+    }
   }
 
   /**

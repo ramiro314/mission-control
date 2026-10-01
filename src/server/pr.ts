@@ -31,7 +31,13 @@ import { run } from "./util/exec.ts";
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
 type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
-type PrStateMatch = { state: PrState; mergedAt: number | null };
+/**
+ * What the by-URL poller learned about one pull request. `closed` is a pull request closed
+ * without merging: the session poller still reads it as "no PR", but a task bound to it is
+ * told (`Registry.reconcilePrClosures`). `null` is "nothing to report", which an injected
+ * lookup may still return for a closed PR.
+ */
+type PrStateMatch = { state: PrState | "closed"; mergedAt: number | null };
 type PrStateLookup = "error" | PrStateMatch | null;
 
 const PR_URL_CONCURRENCY = 4;
@@ -172,7 +178,7 @@ async function queryPrUrl(url: string): Promise<PrStateLookup> {
   try {
     const parsed = JSON.parse(res.stdout) as { state?: unknown; mergedAt?: unknown };
     const state = prStateOf(parsed);
-    if (state === null) return parsed.state === "CLOSED" ? null : "error";
+    if (state === null) return parsed.state === "CLOSED" ? { state: "closed", mergedAt: null } : "error";
     if (state === "open") return { state, mergedAt: null };
     const mergedAt = typeof parsed.mergedAt === "string" ? Date.parse(parsed.mergedAt) : Number.NaN;
     return Number.isFinite(mergedAt) ? { state, mergedAt } : "error";
@@ -338,6 +344,7 @@ export async function pollAndReconcilePrs(
     [...found.values(), ...repoFound.values()].map((match) => [match.url, match]),
   );
   const mergedUrls = new Map<string, number>();
+  const closedUrls = new Set<string>();
   const dueUrls = urlState.due(linkedUrls, now);
   for (const url of linkedUrls) {
     const match = observed.get(url);
@@ -355,6 +362,10 @@ export async function pollAndReconcilePrs(
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
       }
+      // Read from the URL itself, which is the only place a closed, unmerged state survives:
+      // the branch lookup drops it, and the URL is asked about here precisely because the
+      // branch lookup no longer observes an open PR for it.
+      if (result !== "error" && result?.state === "closed") closedUrls.add(url);
     },
   );
   registry.reconcilePrs(found, skip);
@@ -370,6 +381,9 @@ export async function pollAndReconcilePrs(
     [...mergedUrls].filter(([url]) => operationalUrls.has(url)),
   );
   registry.reconcilePrMerges(operationalMerges);
+  // Closures carry no completion authority, but they do move task state (a pending shape
+  // choice lapses), so they take the same operational filter as merges.
+  registry.reconcilePrClosures(new Set([...closedUrls].filter((url) => operationalUrls.has(url))));
   // And the observation-only half, which has authority over nothing. It emits the verified
   // late-delivery fact and stamps the retained row, carrying the attribution frozen when the
   // pull request was first associated rather than whatever the task is bound to today.

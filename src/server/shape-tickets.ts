@@ -1,19 +1,21 @@
 import type { ShapeTicketsOutcome } from "@shared/protocol.ts";
 import { isActiveTask } from "@shared/task-status.ts";
-import type { Task, TaskShapeTickets } from "@shared/types.ts";
+import type { PlanDecisionAnswer, ShapeTicketsState, Task, TaskShapeTickets } from "@shared/types.ts";
 import {
   getTask as getDurableTask,
   historicalTaskWorkEpisodeBindingsForTask,
   retroPrPostureForTask,
   shapeTicketFollowupForTask,
   shapeTicketFollowupsForSource,
+  shapeTicketsStateFor,
   taskEdgeSelectionsTo,
   taskWorkEpisodeForTask,
+  transitionShapeTicketsState,
   type RetroPrPosture,
   type ShapeTicketFollowupRelation,
 } from "./db.ts";
 import type { MissionMcpRequirement } from "./mission-mcp.ts";
-import type { ShapeTicketsFollowupFacts } from "./plans/shape.ts";
+import { SHAPE_FOLLOW_UP_DECISION_ID, type ShapeTicketsFollowupFacts } from "./plans/shape.ts";
 import { COMPLETE_SHAPE_TICKETS_TOOL } from "./plans/tools.ts";
 
 // What Mission Control knows about a shape task's tickets follow-ups, read from
@@ -106,6 +108,7 @@ export function shapeTicketsSummary(task: Task, lookup: TaskLookup = durableLook
   if (task.kind !== "shape") return null;
   const followups = shapeTicketFollowupsForSource(task.id);
   return {
+    state: shapeTicketsStateFor(task.id),
     // The newest follow-up that still exists. A relation outlives a deleted follow-up, and one
     // whose task was never created (its create threw after the reservation) names nothing.
     followupTaskId: followups.find((followup) => lookup(followup.followupTaskId))?.followupTaskId ?? null,
@@ -157,4 +160,105 @@ export function shapeTicketsFollowupIntent(source: Pick<Task, "id" | "title">, p
     `Its plan merged in ${prUrl}. Slice that plan into tickets, get the breakdown approved, and`,
     "file the approved tickets as backlog tasks linked to that shape task.",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// The recorded choice: `tasks.shape_tickets`, one transition per signal
+// ---------------------------------------------------------------------------
+
+/**
+ * What puts a shape task's moved choice on the wire: the Registry.
+ *
+ * The choice is written by its own accessor rather than through `upsertTask`, so a move is
+ * invisible to the dashboard until the task is re-sent. Every transition below takes this and
+ * re-sends the task whenever the row moved, so no caller can move the choice and forget to.
+ */
+export interface ShapeTicketsPublisher {
+  republishShapeTickets(taskId: string): void;
+}
+
+/** One compare-and-set move, re-sent on the wire when it happened. */
+function moveShapeTickets(
+  publisher: ShapeTicketsPublisher,
+  taskId: string,
+  from: readonly (ShapeTicketsState | null)[],
+  next: ShapeTicketsState,
+): boolean {
+  const moved = transitionShapeTicketsState(taskId, from, next);
+  if (moved) publisher.republishShapeTickets(taskId);
+  return moved;
+}
+
+/** The choices a merge-quorum completion acts on: the human chose Create tickets. */
+const AWAITING_MERGE: readonly ShapeTicketsState[] = ["pending", "lapsed"];
+
+/**
+ * Stamp a shape task dispatched under the contract that defers tickets to the merge.
+ *
+ * Only a never-stamped shaping task moves: a retried dispatch keeps the choice its earlier
+ * review recorded, and a tickets follow-up is never stamped (the store refuses it). This is
+ * the discriminator that keeps a shape session already in flight under the old prompt, which
+ * files tickets in-session, from ever being followed up at its merge.
+ */
+export function stampShapeTicketsAwaitingReview(
+  task: Pick<Task, "id" | "kind">,
+  publisher: ShapeTicketsPublisher,
+): boolean {
+  return task.kind === "shape" && moveShapeTickets(publisher, task.id, [null], "awaiting-review");
+}
+
+/**
+ * What a resolved plan review's `shape-follow-up` answer records, or null when it carries none.
+ *
+ * Read by option id, never by label, so the copy can change without changing the meaning.
+ */
+export function shapeFollowUpChoice(
+  selections: readonly PlanDecisionAnswer[] | null | undefined,
+): Extract<ShapeTicketsState, "pending" | "stop"> | null {
+  const answer = selections?.find((selection) => selection.decisionId === SHAPE_FOLLOW_UP_DECISION_ID);
+  if (!answer) return null;
+  if (answer.selected.includes("create-tickets")) return "pending";
+  if (answer.selected.includes("stop")) return "stop";
+  return null;
+}
+
+/**
+ * Record the latest resolved plan review's choice on a stamped shape task.
+ *
+ * The latest review wins, so pending and stop overwrite each other, and a lapsed choice takes
+ * a new answer (a recovery session re-asking after a closed PR). An unstamped task is never
+ * written, and neither is one whose follow-up already exists (queued or started).
+ */
+export function recordShapeTicketsChoice(
+  taskId: string,
+  choice: Extract<ShapeTicketsState, "pending" | "stop">,
+  publisher: ShapeTicketsPublisher,
+): boolean {
+  return moveShapeTickets(publisher, taskId, ["awaiting-review", "pending", "stop", "lapsed"], choice);
+}
+
+/** A pending choice lapses: the task ended without its merge, or its PR closed unmerged. */
+export function lapseShapeTickets(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, ["pending"], "lapsed");
+}
+
+/** Whether a merge-quorum completion should start this task's follow-up. */
+export function shapeTicketsAwaitMerge(taskId: string): boolean {
+  const state = shapeTicketsStateFor(taskId);
+  return state !== null && AWAITING_MERGE.includes(state);
+}
+
+/** The automatic follow-up was created and dispatched. */
+export function markShapeTicketsStarted(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, AWAITING_MERGE, "started");
+}
+
+/** A queued follow-up was dispatched later, by hand or by the autopilot. */
+export function promoteQueuedShapeTickets(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, ["queued"], "started");
+}
+
+/** The automatic follow-up was created, but its launch was refused. */
+export function markShapeTicketsQueued(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, AWAITING_MERGE, "queued");
 }
