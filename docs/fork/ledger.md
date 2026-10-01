@@ -80,7 +80,7 @@ Each feature entry records:
 | --- | --- |
 | Status | **Active** |
 | PRs | #1 (plan), #3, #7, #9, #10. Related, not claimed: #21 (standalone fix to Shape this) |
-| Plan docs | [shape-task-kind/plan.md](../plans/shape-task-kind/plan.md) sections 1 to 5 |
+| Plan docs | [shape-task-kind/plan.md](../plans/shape-task-kind/plan.md) sections 1 to 5; [shape-tickets-after-merge/plan.md](../plans/shape-tickets-after-merge/plan.md) (in progress) |
 | Upstream candidate | Maybe. Self-contained and built on upstream pieces, but it is a second planning path and bundles third-party-derived skills (credited in `NOTICE`). |
 
 **Intent.** A new planning kind, `shape`, beside `plan`. It interviews the human in rounds of
@@ -102,7 +102,14 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   they are released when the planning PR merges.
 - `push_task` mirrors only a task that depends on the calling session, is idempotent
   (`alreadyPushed: true`), links blockers only to items already in that source, and parents
-  them under the planning task's item.
+  them under the planning task's item. From a tickets follow-up session it also accepts a task
+  that depends on the follow-up's source shape task.
+- A tickets follow-up is recorded in `shape_ticket_followups` against its merged source shape
+  task (episode, session and PR URL), one row per follow-up, so a source can take another after a
+  cancelled or failed one. From that follow-up's session, `create_task` with
+  `dependsOnCurrentSession` links the ticket to the source shape task with an already-satisfied
+  edge pinned to that merge, never to the follow-up
+  ([shape-tickets-after-merge](../plans/shape-tickets-after-merge/plan.md) sections 3 and 5).
 - **Shape this** works on any backlog task that is not already shape and keeps its source link,
   labels, priority and dependencies. A refused Shape this leaves the task unchanged (#21).
 - Upstream's `plan` kind is unchanged.
@@ -138,7 +145,8 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
 - Registries: `PLANNING_SKILLS`, `KIND_MISSION_MCP_TOOLS.shape`, `MISSION_MCP_TOOLS`,
   `PRIMARY_ACTION_ROUTES`, `ACTION_EXCLUSIONS`.
 - MCP tools: new `list_backlog_tasks` and `push_task`; `create_task` gains ticket and adopt fields.
-- DB: none.
+- DB: new `shape_ticket_followups` table (created with the base schema, so an existing database
+  gains it on open).
 - UI: `DispatchModal.tsx`, `layouts/BacklogColumn.tsx` and `line/BacklogDrawer.tsx` (Shape this),
   `schedules/ScheduleEditor.tsx`, `src/web/lib/guided-dispatch-steps.ts`.
 

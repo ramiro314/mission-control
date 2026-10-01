@@ -467,6 +467,7 @@ import {
   discardWritebacks,
   forgetTaskSourceSeen,
   retryWritebacks,
+  shapeTicketFollowupForTask,
   getSkillsAcks,
   loadHumanResolvedReviews,
   loadInspectionsAdoptedSince,
@@ -4784,7 +4785,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * together and a sweep never re-files the item. Two things are added for an agent caller:
    *
    *  - it may push only a task that waits on the calling session - a ticket it filed or
-   *    adopted - so a session cannot publish somebody else's backlog;
+   *    adopted - so a session cannot publish somebody else's backlog. A tickets follow-up's
+   *    tickets wait on its source shape task instead (`shapeTicketSourceEdge`), so from that
+   *    session an edge to the source counts too;
    *  - a task already linked to that source answers 200 with `alreadyPushed: true`, so a
    *    retry after a lost reply is idempotent instead of a 409 the agent has to interpret.
    *
@@ -4800,8 +4803,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no matching active session" }, 404);
     const task = tasks.get(taskId);
     if (!task) return c.json({ error: "no such task" }, 404);
+    const sourceTaskId = session.task ? shapeTicketFollowupForTask(session.task.id)?.sourceTaskId : undefined;
     const gated = task.dependencies.some((edge) =>
-      (edge.type === "task" || edge.type === "session") && edge.sessionId === session.id);
+      (edge.type === "task" || edge.type === "session") &&
+      (edge.sessionId === session.id || (edge.type === "task" && edge.taskId === sourceTaskId)));
     if (!gated) {
       return c.json({ error: "push_task mirrors only a task that waits on this session - one it filed or adopted" }, 403);
     }

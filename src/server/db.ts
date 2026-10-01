@@ -532,6 +532,22 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       UNIQUE (retro_task_id)
     );
 
+    -- Each tickets follow-up of a merged shape task: a shape task in tickets-only mode that
+    -- slices the merged plan. Built like retro_followups (the relation names the follow-up,
+    -- the Task row stays the only lifecycle state), but keyed by the follow-up rather than
+    -- the source episode, so a source can take another follow-up after a cancelled or failed
+    -- one. The source's merged episode, session and PR URL are what a ticket filed from the
+    -- follow-up is pinned to.
+    CREATE TABLE IF NOT EXISTS shape_ticket_followups (
+      followup_task_id  TEXT PRIMARY KEY,
+      source_task_id    TEXT NOT NULL,
+      source_episode_id TEXT NOT NULL,
+      source_session_id TEXT NOT NULL,
+      source_pr_url     TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+
     -- Every decision Foreman has faced on a session, append-only: the question it
     -- was asked, what it concluded, and what was actually sent back.
     --
@@ -5639,6 +5655,39 @@ function retroFollowupFromRow(row: RetroFollowupRow): RetroFollowupRelation {
   };
 }
 
+/** One tickets follow-up of a merged shape task, and the merge its tickets are pinned to. */
+export interface ShapeTicketFollowupRelation {
+  followupTaskId: string;
+  sourceTaskId: string;
+  sourceEpisodeId: string;
+  sourceSessionId: string;
+  sourcePrUrl: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+type ShapeTicketFollowupRow = {
+  followup_task_id: string;
+  source_task_id: string;
+  source_episode_id: string;
+  source_session_id: string;
+  source_pr_url: string;
+  created_at: number;
+  updated_at: number;
+};
+
+function shapeTicketFollowupFromRow(row: ShapeTicketFollowupRow): ShapeTicketFollowupRelation {
+  return {
+    followupTaskId: row.followup_task_id,
+    sourceTaskId: row.source_task_id,
+    sourceEpisodeId: row.source_episode_id,
+    sourceSessionId: row.source_session_id,
+    sourcePrUrl: row.source_pr_url,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 type SessionWorkEpisodeRow = {
   episode_id: string;
   session_id: string;
@@ -6161,6 +6210,54 @@ export function reserveRetroFollowup(input: {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/** The merged shape task a tickets follow-up slices, when this task is one. */
+export function shapeTicketFollowupForTask(
+  followupTaskId: string,
+): ShapeTicketFollowupRelation | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM shape_ticket_followups WHERE followup_task_id = ?`)
+    .get(followupTaskId) as unknown as ShapeTicketFollowupRow | undefined;
+  return row ? shapeTicketFollowupFromRow(row) : null;
+}
+
+/**
+ * Reserve a tickets follow-up id against its merged source, before its Task row is created.
+ *
+ * Replaying the same follow-up id returns the row already written, so a retry after a crash
+ * between the two writes recreates that exact Task. Whether a source may take ANOTHER
+ * follow-up (none live or done) is the caller's rule, read from the Task rows.
+ */
+export function reserveShapeTicketFollowup(input: {
+  followupTaskId: string;
+  sourceTaskId: string;
+  sourceEpisodeId: string;
+  sourceSessionId: string;
+  sourcePrUrl: string;
+  now: number;
+}): { relation: ShapeTicketFollowupRelation; created: boolean } {
+  const result = openDb()
+    .prepare(
+      `INSERT INTO shape_ticket_followups
+         (followup_task_id, source_task_id, source_episode_id, source_session_id, source_pr_url,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (followup_task_id) DO NOTHING`,
+    )
+    .run(
+      input.followupTaskId,
+      input.sourceTaskId,
+      input.sourceEpisodeId,
+      input.sourceSessionId,
+      input.sourcePrUrl,
+      input.now,
+      input.now,
+    );
+  return {
+    relation: shapeTicketFollowupForTask(input.followupTaskId)!,
+    created: Number(result.changes) > 0,
+  };
 }
 
 export function deleteHistoricalTaskWorkEpisodeBinding(
