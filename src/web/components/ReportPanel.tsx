@@ -610,22 +610,24 @@ export function ReportPanel({
                   follow-up. The server derives `shapeTickets.canCreate` with the same rule its
                   route re-checks, so the button is offered exactly when the click would be
                   accepted. */}
-              {(t.shapeTickets?.canCreate || ticketsNote?.id === t.id) && (
+              {t.shapeTickets?.canCreate && (
                 <div className="report-row-actions">
-                  {t.shapeTickets?.canCreate && (
-                    <Tooltip label="Create a linked shape task that slices this task's merged plan into tickets">
-                      <button
-                        className="btn btn-send"
-                        disabled={ticketsBusy === t.id}
-                        onClick={() => void createTickets(t.id)}
-                      >
-                        {ticketsBusy === t.id ? "Creating tickets…" : "Create tickets"}
-                      </button>
-                    </Tooltip>
-                  )}
-                  {ticketsNote?.id === t.id && (
-                    <span className="report-sub dim" role="status">{ticketsNote.text}</span>
-                  )}
+                  <Tooltip label="Create a linked shape task that slices this task's merged plan into tickets">
+                    <button
+                      className="btn btn-send"
+                      disabled={ticketsBusy === t.id}
+                      onClick={() => void createTickets(t.id)}
+                    >
+                      {ticketsBusy === t.id ? "Creating tickets…" : "Create tickets"}
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
+              {/* Its own full-width line, like the cleanup note above: a launch refusal is a
+                  sentence, and squeezed beside the title it would overprint it. */}
+              {ticketsNote?.id === t.id && (
+                <div className="report-row-main report-row-note">
+                  <span className="report-sub dim" role="status">{ticketsNote.text}</span>
                 </div>
               )}
               {t.status === "failed" && !taskHoldsCleanupResources(t) && (

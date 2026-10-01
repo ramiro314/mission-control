@@ -148,3 +148,42 @@ test("workflow-required evidence is refused early, while one successful probe re
   assert.equal(verified, 1, "an extension still owes the existing bundle tool check");
   assert.equal(spawned, true, registry.getTask("installed-pi")!.error!);
 });
+
+test("a tickets follow-up's launch is granted complete_shape_tickets, and another shape launch is not", async () => {
+  const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
+  const { COMPLETE_SHAPE_TICKETS_TOOL } = await import("../src/server/plans/tools.ts");
+  const clone = repo();
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "launch-followup", kind: "shape", agent: "claude", status: "backlog", repoRoot: clone }));
+  registry.upsertTask(mkTask({ id: "launch-shaping", kind: "shape", agent: "claude", status: "backlog", repoRoot: clone }));
+  reserveShapeTicketFollowup({
+    followupTaskId: "launch-followup",
+    sourceTaskId: "launch-source",
+    sourceEpisodeId: "launch-episode",
+    sourceSessionId: "launch-session",
+    sourcePrUrl: "https://github.com/acme/demo/pull/7",
+    now: 1,
+  });
+
+  // The launch's resolved tool list, read at the published-tools check, which is the last
+  // stop before the agent is spawned. Stopping there keeps the test off any real process.
+  const launched = async (id: string): Promise<string[]> => {
+    let tools: string[] | null = null;
+    await new Dispatcher(registry, async () => {}, {
+      resolveRuntime: () => "terminal",
+      planSkills: () => ({ ok: true, commands: { grill: "/grill", htmlPlans: "/html-plans", tickets: "/tickets" } }),
+      verifyMissionMcpTools: async (requested) => {
+        tools = [...requested];
+        return { ok: false, reason: "captured at the published-tools check" };
+      },
+    }).dispatch(id);
+    assert.ok(tools, registry.getTask(id)?.error ?? "the launch must reach the tools check");
+    return tools;
+  };
+
+  const followupTools = await launched("launch-followup");
+  assert.ok(followupTools.includes(COMPLETE_SHAPE_TICKETS_TOOL), followupTools.join(", "));
+  const shapingTools = await launched("launch-shaping");
+  assert.ok(!shapingTools.includes(COMPLETE_SHAPE_TICKETS_TOOL), shapingTools.join(", "));
+  assert.ok(shapingTools.includes("request_plan_decisions"), "both are shape launches");
+});

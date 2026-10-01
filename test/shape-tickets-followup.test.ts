@@ -339,3 +339,27 @@ test("complete_shape_tickets is refused for a session that is not running a tick
   assert.equal(registry.getTask("not-followup")!.status, "running");
   void tasks;
 });
+
+test("complete_shape_tickets is refused for a follow-up that is no longer active", async () => {
+  const { registry, tasks, app } = setup();
+
+  // Failed but still holding its worktree, so the session is still attributed to it: the
+  // refusal comes from the status check, and nothing is completed.
+  const failed = runningFollowup(registry, tasks, "failed-src");
+  registry.upsertTask({ ...registry.getTask(failed.followup.id)!, status: "failed", updatedAt: Date.now() });
+  const refused = await complete(app, { ...failed.payload, outcome: "filed" });
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /this tickets follow-up is failed, so it cannot report an outcome/);
+  assert.equal(registry.getTask(failed.followup.id)!.status, "failed");
+  assert.equal(registry.getTask(failed.followup.id)!.outcome, null);
+
+  // Cancelled: the Registry no longer attributes the session to it at all, so the call is
+  // refused before the status check, and the task stays cancelled.
+  const cancelled = runningFollowup(registry, tasks, "cancelled-src");
+  registry.upsertTask({ ...registry.getTask(cancelled.followup.id)!, status: "cancelled", updatedAt: Date.now() });
+  const gone = await complete(app, { ...cancelled.payload, outcome: "dismissed" });
+  assert.equal(gone.status, 404);
+  assert.match(gone.body.error, /no task is attributed to this session/);
+  assert.equal(registry.getTask(cancelled.followup.id)!.status, "cancelled");
+  assert.equal(registry.getTask(cancelled.followup.id)!.outcome, null);
+});

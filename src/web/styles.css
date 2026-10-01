@@ -12124,14 +12124,17 @@ select:not([multiple]) option:focus-visible {
 .report-row:last-child {
   border-bottom: none;
 }
-.report-row:has(.report-row-cleanup) {
+.report-row:has(.report-row-cleanup),
+.report-row:has(.report-row-note) {
   flex-wrap: wrap;
 }
-.report-row-main.report-row-cleanup {
+.report-row-main.report-row-cleanup,
+.report-row-main.report-row-note {
   flex-basis: 100%;
   order: 1;
 }
-.report-row-cleanup .report-sub {
+.report-row-cleanup .report-sub,
+.report-row-note .report-sub {
   white-space: normal;
   overflow-wrap: anywhere;
 }

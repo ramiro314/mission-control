@@ -34,6 +34,7 @@ interface TaskRow {
   repoRoot: string;
   worktreePath: string | null;
   sessionId: string | null;
+  error: string | null;
   shapeTickets?: { followupTaskId: string | null; canCreate: boolean } | null;
 }
 
@@ -142,16 +143,17 @@ async function openSitrep(page: Page): Promise<Locator> {
   });
 }
 
-test("Create tickets on a merged shape task dispatches its tickets-only follow-up", async ({
-  dashboard,
-  daemon,
-}) => {
+async function setShapeSkills(daemon: DaemonHandle, grill: boolean): Promise<void> {
   await api(daemon, "/api/skills/config", {
     enabled: true,
-    skills: { grill: true, "html-plans": true, tickets: true },
+    skills: { grill, "html-plans": true, tickets: true },
   }, "PUT");
+}
 
-  await dispatchShape(dashboard, daemon);
+/** Dispatch a shape task, open its plan PR, and merge it: the task completes through the merge. */
+async function mergedShapeTask(page: Page, daemon: DaemonHandle): Promise<TaskRow> {
+  await setShapeSkills(daemon, true);
+  await dispatchShape(page, daemon);
   const { session, task } = await settled(daemon);
   // The agent's own branch, as a shaping session cuts one before opening its plan PR.
   execFileSync("git", ["-C", task.worktreePath!, "switch", "-q", "-c", "plans/exports"]);
@@ -175,6 +177,14 @@ test("Create tickets on a merged shape task dispatches its tickets-only follow-u
     .toBe("done");
   const source = (await tasks(daemon)).find((t) => t.id === task.id)!;
   expect(source.shapeTickets).toEqual({ followupTaskId: null, canCreate: true });
+  return source;
+}
+
+test("Create tickets on a merged shape task dispatches its tickets-only follow-up", async ({
+  dashboard,
+  daemon,
+}) => {
+  const source = await mergedShapeTask(dashboard, daemon);
 
   const outcomes = await openSitrep(dashboard);
   const row = outcomes.locator(".report-row").filter({ hasText: source.title });
@@ -215,4 +225,36 @@ test("Create tickets on a merged shape task dispatches its tickets-only follow-u
   await expect(card).toContainText("complete_shape_tickets");
   await expect(card).not.toContainText("/grill");
   await shoot(dashboard, "03-followup-tickets-only-contract", card);
+});
+
+test("a Create tickets whose launch is refused leaves the follow-up in the backlog and says why on the row", async ({
+  dashboard,
+  daemon,
+}) => {
+  const source = await mergedShapeTask(dashboard, daemon);
+  // Switched off after the merge: Create tickets is still offered, but the follow-up's launch
+  // is refused by the shape kind's skill gate.
+  await setShapeSkills(daemon, false);
+
+  const outcomes = await openSitrep(dashboard);
+  const row = outcomes.locator(".report-row").filter({ hasText: source.title });
+  await row.getByRole("button", { name: "Create tickets" }).click();
+
+  // The row says the follow-up is waiting in the backlog, and why.
+  const note = row.getByRole("status");
+  await expect(note).toContainText("tickets task is waiting in the backlog:");
+  await expect(note).toContainText("Enable Skills and the grill skill");
+  await expect(row.getByRole("button", { name: "Create tickets" })).toBeHidden();
+  // On its own line below the title, never printed over it.
+  const titleBox = await row.getByText(source.title, { exact: true }).boundingBox();
+  const noteBox = await note.boundingBox();
+  expect(titleBox && noteBox && noteBox.y >= titleBox.y + titleBox.height).toBe(true);
+  await shoot(dashboard, "04-create-tickets-queued", row);
+
+  // The follow-up exists in the backlog, carrying that reason as its error.
+  const followup = (await tasks(daemon)).find((t) => t.title === `Tickets: ${source.title}`);
+  expect(followup).toMatchObject({ kind: "shape", status: "backlog", workflowId: null });
+  expect(followup!.error).toContain("Enable Skills and the grill skill");
+  expect((await tasks(daemon)).find((t) => t.id === source.id)?.shapeTickets)
+    .toEqual({ followupTaskId: followup!.id, canCreate: false });
 });
