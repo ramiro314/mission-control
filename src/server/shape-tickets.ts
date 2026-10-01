@@ -7,6 +7,7 @@ import {
   retroPrPostureForTask,
   shapeTicketFollowupForTask,
   shapeTicketFollowupsForSource,
+  taskEdgeSelectionsTo,
   taskWorkEpisodeForTask,
   type RetroPrPosture,
   type ShapeTicketFollowupRelation,
@@ -44,10 +45,16 @@ export type ShapeTicketsAcceptance =
  * Whether **Create tickets** may start a follow-up for this task now.
  *
  * The task must be a `shape` task that is done with a merged pull-request posture, the same
- * check the post-merge Retro makes (`retroPrPostureForTask`), and none of its follow-ups may
- * be live (backlog, dispatching, running) or done. A cancelled or failed follow-up does not
- * count, so the action can be retried after one, and neither does one whose breakdown was
- * dismissed: it filed nothing, so another one cannot duplicate its tickets.
+ * check the post-merge Retro makes (`retroPrPostureForTask`). None of its follow-ups may be
+ * live (backlog, dispatching, running) or done with its tickets filed, and none that ENDED
+ * otherwise - cancelled, failed, dismissed, or deleted - may have filed any ticket.
+ *
+ * "Filed" is read from the tickets themselves: a ticket a follow-up files carries a task edge
+ * to the source, selected when it was filed, so any such edge selected at or after an ended
+ * follow-up was created is that follow-up's (or a later one's) work. Tickets an old-style
+ * shaping session filed in-session were selected before the merge, so before any follow-up
+ * existed, and never block. A follow-up stopped after a failed `create_task` has usually filed
+ * the tickets before it, and a fresh follow-up would file them again.
  */
 export function shapeTicketsAcceptance(
   task: Task,
@@ -70,15 +77,25 @@ export function shapeTicketsAcceptance(
       reason: "This shape task has no merged pull request, so there is no merged plan to slice.",
     };
   }
+  let selections: number[] | null = null;
   for (const followup of followups) {
     const existing = lookup(followup.followupTaskId);
-    if (!existing) continue;
-    if (existing.status === "done") {
-      if (existing.outcome === SHAPE_TICKETS_OUTCOME_TEXT.dismissed) continue;
+    if (existing?.status === "done" && existing.outcome !== SHAPE_TICKETS_OUTCOME_TEXT.dismissed) {
       return { ok: false, reason: `Its tickets follow-up "${existing.title}" already filed its tickets.` };
     }
-    if (existing.status === "backlog" || isActiveTask(existing.status)) {
+    if (existing && (existing.status === "backlog" || isActiveTask(existing.status))) {
       return { ok: false, reason: `Its tickets follow-up "${existing.title}" is already ${existing.status}.` };
+    }
+    // Ended without completing as filed. Read the tickets once, only when it comes to this.
+    selections ??= taskEdgeSelectionsTo(task.id);
+    const filed = selections.filter((selectedAt) => selectedAt >= followup.createdAt).length;
+    if (filed > 0) {
+      return {
+        ok: false,
+        reason: `An earlier tickets follow-up ${existing ? `("${existing.title}", ${existing.status}) ` : ""}`
+          + `filed ${filed} ticket${filed === 1 ? "" : "s"} before it ended, and another would file them again. `
+          + "File the rest by hand, or delete those tickets to slice the plan afresh.",
+      };
     }
   }
   return { ok: true, posture };

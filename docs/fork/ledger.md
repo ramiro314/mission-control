@@ -113,9 +113,12 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
 - **Create tickets** on a merged shape task (the Sitrep's Recent outcomes row) creates and
   dispatches `Tickets: <shape title>`, a linked shape task in tickets-only mode, through
   `POST /api/tasks/:id/shape-tickets`. Accepted only for a done shape task with a merged PR
-  posture (`retroPrPostureForTask`, the post-merge Retro's check) and no live follow-up and
-  none that filed its tickets (a dismissed breakdown does not block a retry, a refinement of
-  the plan's decision 12); otherwise 409 with the reason. The follow-up keeps the source's repositories, has
+  posture (`retroPrPostureForTask`, the post-merge Retro's check), no live follow-up, none done
+  with its tickets filed, and none that ended otherwise (cancelled, failed, dismissed, deleted)
+  after filing any ticket: a task edge to the source selected at or after that follow-up was
+  created. A dismissed breakdown that filed nothing does not block a retry, a refinement of the
+  plan's decision 12. Otherwise 409 with the reason. Deleting a follow-up, or a ticket one
+  filed, re-sends the source. The follow-up keeps the source's repositories, has
   After work None (`workflowId: null`), and runs on the source's agent, or the configured shape
   agent when that one cannot run `tickets`. A refused launch leaves it in the backlog with the
   reason as its error. The wire `Task.shapeTickets` (`followupTaskId`, `canCreate`) is derived

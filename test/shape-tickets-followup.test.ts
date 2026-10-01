@@ -420,3 +420,52 @@ test("a dismissed breakdown does not withdraw Create tickets, and the retry is a
   assert.equal(retry.status, 200);
   assert.equal(registry.getTask(source.id)!.shapeTickets?.followupTaskId, retry.body.task.id);
 });
+
+test("an ended follow-up that filed tickets keeps blocking Create tickets until those tickets are gone", async () => {
+  const { registry, tasks, app, upserts } = setup();
+  const { source, followup } = runningFollowup(registry, tasks, "partial-src");
+
+  // An in-session ticket from the old flow: its edge to the source predates every follow-up,
+  // so it is never read as a follow-up's work.
+  registry.upsertTask(mkTask({
+    id: "partial-in-session",
+    status: "backlog",
+    dependencies: [{
+      type: "task",
+      taskId: source.id,
+      title: source.title,
+      sessionId: `${source.id}-session`,
+      episodeId: `${source.id}-episode`,
+      agentSessionId: null,
+      branch: null,
+      prUrl: PR,
+      selectedAt: 1_000,
+      satisfiedAt: 2_000,
+    }],
+  }));
+
+  // The follow-up files one ticket the way the skill does, then its next create_task fails
+  // and the human cancels it.
+  const ticket = tasks.create({
+    repoRoot: "/repos/primary",
+    title: "Ticket 1",
+    intent: "the first ticket",
+    kind: "ship",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: followup.sessionId }],
+  });
+  assert.equal(ticket.dependencies[0]?.type === "task" && ticket.dependencies[0].taskId, source.id);
+  registry.upsertTask({ ...registry.getTask(followup.id)!, status: "cancelled", updatedAt: Date.now() });
+
+  assert.equal(registry.getTask(source.id)!.shapeTickets?.canCreate, false);
+  const refused = await createTickets(app, source.id);
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /filed 1 ticket before it ended, and another would file them again/);
+
+  // With the partial work removed, slicing afresh is allowed, and the source is re-sent so the
+  // Sitrep offers it again; the in-session ticket does not block.
+  upserts.length = 0;
+  assert.equal((await tasks.remove(ticket.id)).ok, true);
+  assert.equal(upserts.filter((task) => task.id === source.id).at(-1)?.shapeTickets?.canCreate, true);
+  assert.equal((await createTickets(app, source.id)).status, 200);
+});

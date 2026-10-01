@@ -6605,9 +6605,13 @@ export class Registry extends EventEmitter {
    */
   private refreshShapeTicketsSource(followupTaskId: string): void {
     const relation = shapeTicketFollowupForTask(followupTaskId);
-    if (!relation) return;
-    const source = this.tasks.get(relation.sourceTaskId);
-    if (!source) return;
+    if (relation) this.republishShapeTickets(relation.sourceTaskId);
+  }
+
+  /** Re-derive and re-send one in-memory shape task's `shapeTickets`. */
+  private republishShapeTickets(sourceTaskId: string): void {
+    const source = this.tasks.get(sourceTaskId);
+    if (source?.kind !== "shape") return;
     const next = this.withShapeTickets(source);
     this.tasks.set(next.id, next);
     this.emitEvent({ type: "task_upsert", task: next });
@@ -6711,8 +6715,12 @@ export class Registry extends EventEmitter {
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
-    // A deleted tickets follow-up no longer blocks Create tickets on its source.
+    // A deleted tickets follow-up no longer blocks Create tickets on its source, and neither
+    // does a deleted ticket an ended follow-up had filed (`shapeTicketsAcceptance`).
     if (!t || t.kind === "shape") this.refreshShapeTicketsSource(id);
+    for (const edge of t?.dependencies ?? []) {
+      if (edge.type === "task") this.republishShapeTickets(edge.taskId);
+    }
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
     this.cleanupDependencyProvenance();

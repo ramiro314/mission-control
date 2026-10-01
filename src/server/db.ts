@@ -6222,6 +6222,26 @@ export function shapeTicketFollowupForTask(
   return row ? shapeTicketFollowupFromRow(row) : null;
 }
 
+/**
+ * When each task that waits on `taskId` through a task edge first selected that edge.
+ *
+ * A tickets follow-up's tickets carry such an edge to the source shape task, selected when the
+ * ticket was filed, so this is how the Create tickets rule sees what an ended follow-up filed.
+ * Read from SQLite rather than the board, because the tickets may be off the bounded board.
+ */
+export function taskEdgeSelectionsTo(taskId: string): number[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT json_extract(edge.value, '$.selectedAt') AS selected_at
+         FROM tasks, json_each(tasks.dependencies) AS edge
+        WHERE json_valid(tasks.dependencies)
+          AND json_extract(edge.value, '$.type') = 'task'
+          AND json_extract(edge.value, '$.taskId') = ?`,
+    )
+    .all(taskId) as Array<{ selected_at: unknown }>;
+  return rows.flatMap((row) => (typeof row.selected_at === "number" ? [row.selected_at] : []));
+}
+
 /** Every tickets follow-up of one source shape task, newest first. */
 export function shapeTicketFollowupsForSource(sourceTaskId: string): ShapeTicketFollowupRelation[] {
   const rows = openDb()

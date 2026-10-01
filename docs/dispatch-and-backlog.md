@@ -406,8 +406,12 @@ shape task's issue. The follow-up finishes itself through `complete_shape_ticket
 tickets are filed, or once you dismiss the breakdown, and its session closes. A failed
 `create_task` or `push_task` leaves it open for you instead. When its launch is refused, the
 follow-up waits in the backlog with the reason, for you to launch. After a cancelled or failed
-follow-up, or one whose breakdown you dismissed, **Create tickets** is offered again: none of
-them filed anything.
+follow-up, or one whose breakdown you dismissed, **Create tickets** is offered again, but only
+when that follow-up filed no tickets. One that stopped partway, for example after a failed
+`create_task`, has usually filed the tickets before the failure, and a fresh follow-up would
+file them a second time. So it is refused with the count: file the rest by hand, or delete
+those tickets to slice the plan afresh. Tickets the shaping session filed itself, before the
+merge, never count.
 
 A shape task needs **Grill, HTML Plans and Tickets switched on**. With any of them off the
 dispatch is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
