@@ -276,9 +276,19 @@ test("a spent repair-round Command skips while both execution slots are occupied
       .toContainText("Round 2", { timeout: 10_000 });
     const testTile = dashboard.locator(".wf-pipeline-strip li.wf-pipeline-reviewer")
       .filter({ hasText: "test" });
-    await expect(testTile).toContainText("Skipped", { timeout: 5_000 });
+    // Not a latency budget. "Round 2" appears while the round is still capturing evidence
+    // (about 1.5s idle, far longer on a loaded runner), and only then is `test` created and
+    // resolved. Both slots stay held until `release` below, so a Command that waited for
+    // one would sit at Queued past any timeout: the claim does not depend on this number.
+    await expect(testTile).toContainText("Skipped", { timeout: 30_000 });
     await expect(testTile).not.toContainText("Queued");
 
+    // Hover only once round 2 has settled. The Persona's round-2 verdict swaps the run
+    // header's one-line "No action needed" banner for the two-line "Your move" one, which
+    // pushes the strip down. A hover that lands first is left over the tile instead of the
+    // chip, the chip's tooltip closes on mouseleave, and nothing reopens it.
+    await expect(dashboard.locator("header.wf-run-head .wf-run-posture"))
+      .toContainText("the next round is yours to start", { timeout: 40_000 });
     const status = testTile.locator(".wf-pipeline-status");
     await status.hover();
     await expect(dashboard.locator(".tooltip", {
