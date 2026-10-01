@@ -30,6 +30,13 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
+import {
+  pendingTaskOpenState,
+  taskOpenTarget,
+  type PendingTaskOpen,
+  type TaskOpenTarget,
+  type TaskOpenView,
+} from "./lib/open-task.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
@@ -448,6 +455,11 @@ export function App(): React.JSX.Element {
   // here rather than shadowed by a copy taken at open time.
   const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  /** The task row `openTask` asked the Sitrep to show; forgotten whenever the Sitrep closes. */
+  const [reportFocus, setReportFocus] = useState<{ taskId: string; nonce: number } | null>(null);
+  useEffect(() => {
+    if (!reportOpen) setReportFocus(null);
+  }, [reportOpen]);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
     else endFeatureVisit("report");
@@ -1737,6 +1749,86 @@ export function App(): React.JSX.Element {
     [navigate],
   );
   /**
+   * Open any task where it lives (`taskOpenTarget`): focus its live session, reopen its backlog
+   * editor, or show the Sitrep scrolled to a finished task's own Recent outcomes row. The
+   * ensemble member list and the shape tickets marker both open tasks through this, so they
+   * agree on where a task is.
+   *
+   * The row is named by a fresh request each time, so a click from inside the Sitrep (a shape
+   * task's link to its finished follow-up) still moves it rather than reopening what is open.
+   *
+   * A task in flight with nothing to show yet (provisioning, or an exited session not yet
+   * followed by its status) has no row in the Sitrep, so the click shows the fleet, where a
+   * provisioning task has its placeholder card, and is kept until the task has somewhere to
+   * land: its session once it is up, or its outcome row once it finishes. Only briefly, and
+   * only while the view is the one the click left (`pendingTaskOpenState`): once the person
+   * moves on, it is dropped rather than moving them later.
+   */
+  const [pendingOpen, setPendingOpen] = useState<PendingTaskOpen | null>(null);
+  const modalOpen = dispatchRequest !== null || missionsOpen || reviewSessionId !== null;
+  const taskOpenView: TaskOpenView = { page: route.page, selectedId, sitrepOpen: reportOpen, modalOpen };
+  const landTask = useCallback(
+    (taskId: string, target: TaskOpenTarget): void => {
+      switch (target.kind) {
+        case "session":
+          setReportOpen(false);
+          navigate({ page: "fleet" });
+          setFilter("");
+          setSelectedId(target.sessionId);
+          if (layout === "board") setBoardOpen(true);
+          return;
+        case "editor":
+          setReportOpen(false);
+          openTaskEditor(taskId);
+          return;
+        case "sitrep":
+          navigate({ page: "fleet" });
+          setReportFocus({ taskId, nonce: Date.now() });
+          setReportOpen(true);
+          return;
+        case "wait":
+          setReportOpen(false);
+          navigate({ page: "fleet" });
+          return;
+      }
+    },
+    [layout, navigate, openTaskEditor],
+  );
+  const openTask = useCallback(
+    (taskId: string): void => {
+      const task = tasks.find((candidate) => candidate.id === taskId);
+      if (!task) return;
+      const target = taskOpenTarget(task, sessions);
+      // The view the `wait` landing leaves: the fleet, Sitrep closed, selection untouched.
+      setPendingOpen(target.kind === "wait"
+        ? {
+            taskId,
+            view: { page: "fleet", selectedId, sitrepOpen: false, modalOpen },
+            fromPage: route.page,
+            at: Date.now(),
+          }
+        : null);
+      landTask(taskId, target);
+    },
+    [tasks, sessions, landTask, selectedId, modalOpen, route.page],
+  );
+  // The click on a task that had nowhere to land yet, completed once it does. Dropped instead
+  // when the person has moved on or it waited too long, and when the task leaves flight for
+  // the backlog (requeued) or disappears.
+  const { page: viewPage, selectedId: viewSelected, sitrepOpen: viewSitrep, modalOpen: viewModal } = taskOpenView;
+  useEffect(() => {
+    if (!pendingOpen) return;
+    const view = { page: viewPage, selectedId: viewSelected, sitrepOpen: viewSitrep, modalOpen: viewModal };
+    const standing = pendingTaskOpenState(pendingOpen, view, Date.now());
+    if (standing === "drop") setPendingOpen(null);
+    if (standing !== "stands") return;
+    const task = tasks.find((candidate) => candidate.id === pendingOpen.taskId);
+    const target = task ? taskOpenTarget(task, sessions) : null;
+    if (target?.kind === "wait") return;
+    setPendingOpen(null);
+    if (target?.kind === "session" || target?.kind === "sitrep") landTask(pendingOpen.taskId, target);
+  }, [pendingOpen, tasks, sessions, landTask, viewPage, viewSelected, viewSitrep, viewModal]);
+  /**
    * Open one pipeline run, through the route helper that owns the address shape.
    *
    * No filter is kept: the pipelines rail has none. Its grouping comes from the daemon's
@@ -2776,6 +2868,7 @@ export function App(): React.JSX.Element {
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
     onEditTask: openTaskEditor,
+    onOpenTask: openTask,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
     workflowBindingBySession,
@@ -4082,26 +4175,7 @@ export function App(): React.JSX.Element {
                   ...(ensembleId ? { ensembleId } : {}),
                 })}
                 onOpenSession={openSessionOnFleet}
-                onOpenTask={(taskId) => {
-                  const task = tasks.find((candidate) => candidate.id === taskId);
-                  if (!task) return;
-                  const liveSession = task.sessionId
-                    ? sessions.find((session) => session.id === task.sessionId)
-                    : sessions.find((session) => session.task?.id === taskId);
-                  if (liveSession) {
-                    navigate({ page: "fleet" });
-                    setFilter("");
-                    setSelectedId(liveSession.id);
-                    if (layout === "board") setBoardOpen(true);
-                    return;
-                  }
-                  if (task.status === "backlog") {
-                    openTaskEditor(taskId);
-                    return;
-                  }
-                  navigate({ page: "fleet" });
-                  setReportOpen(true);
-                }}
+                onOpenTask={openTask}
                 onOpenWorkflowRun={openWorkflowRun}
               />
             </ExecutionPage>
@@ -4506,6 +4580,8 @@ export function App(): React.JSX.Element {
                     setReportOpen(false);
                     openTaskEditor(id);
                   }}
+                  onOpenTask={openTask}
+                  focusTask={reportFocus}
                   onOpenSchedule={onOpenSchedule}
                   scheduleNameById={scheduleNameById}
                 />

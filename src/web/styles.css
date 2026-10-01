@@ -1242,6 +1242,41 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   font: inherit;
 }
 
+/* A shape task's tickets marker (`ShapeTicketsMarker`): a flag on the board card, a chip in
+   the drawer and the Sitrep row. A lapsed choice is the one that wants a look, so it takes
+   the attention tone; the rest stay neutral. The two that open the follow-up are buttons. */
+.shape-tickets-row {
+  display: flex;
+}
+.shape-tickets-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--neutral) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--neutral) 9%, var(--panel));
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.tf-shape-tickets {
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+}
+.shape-tickets-open {
+  cursor: pointer;
+}
+.shape-tickets-open:hover {
+  border-color: currentcolor;
+}
+.shape-tickets-lapsed {
+  border-color: color-mix(in oklab, var(--attention) 48%, var(--border));
+  color: var(--attention);
+}
+
 .rail-ensemble {
   display: inline-flex;
   align-items: center;
@@ -12120,6 +12155,13 @@ select:not([multiple]) option:focus-visible {
   gap: 10px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
+}
+/* The row a link elsewhere opened (`openTask` on a finished task): marked so the click visibly
+   lands somewhere. Inset by its own shadow so it does not shift the rows around it. */
+.report-row.is-focused {
+  background: color-mix(in oklab, var(--select) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--select);
+  outline: none;
 }
 .report-row:last-child {
   border-bottom: none;

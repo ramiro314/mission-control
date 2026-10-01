@@ -80,7 +80,7 @@ Each feature entry records:
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge). Related, not claimed: #21 (standalone fix to Shape this) |
+| PRs | #1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge), pending (tickets marker, issue #82). Related, not claimed: #21 (standalone fix to Shape this) |
 | Plan docs | [shape-task-kind/plan.md](../plans/shape-task-kind/plan.md) sections 1 to 5; [shape-tickets-after-merge/plan.md](../plans/shape-tickets-after-merge/plan.md) (in progress) |
 | Upstream candidate | Maybe. Self-contained and built on upstream pieces, but it is a second planning path and bundles third-party-derived skills (credited in `NOTICE`). |
 
@@ -116,6 +116,19 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   `CLOSED`, and the registry announces it once per (task, current episode, URL). `lapsed` is not
   final: a later merge-quorum completion still starts the follow-up. Workflow run state is never
   read. `Task.shapeTickets.state` carries the choice on the wire.
+- The tickets marker ([shape-tickets-after-merge](../plans/shape-tickets-after-merge/plan.md)
+  section 8) reads `Task.shapeTickets` through `shapeTicketsMarker` (`src/web/lib/shape-tickets.ts`)
+  and is drawn by one component, `ShapeTicketsMarker`, on the board card's flag row, in the board
+  drawer's detail band, and on the Sitrep's Recent outcomes row (where a finished shape task
+  lives once its session closes at the merge): `pending` is the note **Tickets after merge**,
+  `queued` **Tickets queued** and `started` **Tickets**, each a link-role button opening
+  `followupTaskId` through the app's one `openTask`, which lands where `taskOpenTarget`
+  (`src/web/lib/open-task.ts`) says: a session that has not exited, the backlog editor, or, for a
+  finished task only, the Sitrep scrolled to its Recent outcomes row and marked `aria-current`;
+  an in-flight task with no session yet shows the fleet and is opened once one of those exists,
+  but only within 30 s and while the view is the one the click left (`pendingTaskOpenState`),
+  and `lapsed` the note **Tickets lapsed**. Every other state, a queued or started choice with no
+  follow-up left to open, and every non-shape task draw nothing.
 - Dispatch is refused, naming the toggle, when a required planning skill is off
   (`PLANNING_SKILLS.shape` is `grill`, `htmlPlans`, `tickets`). After work defaults to Plan
   Validation. Shape can be put on the backlog, but schedules and MCP `create_task` cannot file it.
@@ -205,11 +218,15 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   gains it on open); new nullable `tasks.shape_tickets` column (`addColumn` in the migration
   path, no backfill).
 - UI: `DispatchModal.tsx`, `layouts/BacklogColumn.tsx` and `line/BacklogDrawer.tsx` (Shape this),
-  `ReportPanel.tsx` (Create tickets), `schedules/ScheduleEditor.tsx`,
-  `src/web/lib/guided-dispatch-steps.ts`.
+  `ReportPanel.tsx` (Create tickets and the tickets marker), `schedules/ScheduleEditor.tsx`,
+  `src/web/lib/guided-dispatch-steps.ts`; the tickets marker in `layouts/SessionTile.tsx`,
+  `layouts/ConsoleDetail.tsx`, `layouts/BoardView.tsx`, `layouts/types.ts`
+  (`SessionViewProps.onOpenTask`, `shapeTaskForSession`), `App.tsx` (`openTask`, shared with the
+  ensemble member list) and `styles.css`.
 
 **Fork-only files.** `src/server/plans/shape.ts`, `src/server/shape-tickets.ts`,
-`src/server/shape-tickets-followup.ts`, `src/mcp/unknown-route.ts`, `skills/grill/`,
+`src/server/shape-tickets-followup.ts`, `src/web/lib/shape-tickets.ts`,
+`src/web/components/ShapeTicketsMarker.tsx`, `src/mcp/unknown-route.ts`, `skills/grill/`,
 `skills/tickets/`, `docs/plans/shape-task-kind/`,
 `docs/reports/grill-tickets-implement-in-mission-control/`.
 

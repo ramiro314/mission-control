@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { AssignResetConfirm, Session } from "@shared/types.ts";
+import type { AssignResetConfirm, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
@@ -26,6 +26,7 @@ import {
 import { EffortPicker } from "../EffortPicker.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
+import { ShapeTicketsMarker } from "../ShapeTicketsMarker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
@@ -68,6 +69,8 @@ export function SessionTile({
   pipelineRun = null,
   pipelineCommission = null,
   shortcutChord = null,
+  shapeTask = null,
+  onOpenTask,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -129,6 +132,10 @@ export function SessionTile({
    * Console rail, and every card while the operator has the item switched off.
    */
   shortcutChord?: string | null;
+  /** The whole task behind a shape session, for its tickets marker; null for every other kind. */
+  shapeTask?: Task | null;
+  /** Open a task where it lives; the tickets marker opens the follow-up through it. */
+  onOpenTask?: (taskId: string) => void;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
@@ -477,6 +484,8 @@ export function SessionTile({
               : undefined
           }
         />
+        {/* What happens to a shape task's tickets at its merge, or what happened. */}
+        <ShapeTicketsMarker task={shapeTask} onOpenTask={onOpenTask} variant="tile" />
       </span>
 
       {/* Only rendered while a compatible card is in the air, so it costs the tile
