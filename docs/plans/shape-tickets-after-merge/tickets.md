@@ -2,8 +2,8 @@
 
 Sliced from the approved [plan](plan.md). The breakdown review was approved on 2026-09-30: four
 new tasks, mirrored to GitHub issues. Workflow repair round 1 revised the bodies of tickets 2, 3
-and 4 below to match the repaired plan. The tasks and issues filed before that repair still
-carry the earlier text (see Filed text below). Every ticket is gated on the shaping session, so none
+and 4 to match the repaired plan, and the filed tasks and issues were updated to match (see
+Filed text below). Every ticket is gated on the shaping session, so none
 starts before the plan's pull request merges. The tickets form one chain, because each builds
 on the machinery the previous one adds.
 
@@ -63,7 +63,7 @@ Context: read docs/plans/shape-tickets-after-merge/plan.md (sections 4, 5, 6, 7 
 - [ ] A resolved plan review carrying `shape-follow-up` sets the choice to pending or stop. The latest resolved review wins, a dismissal writes nothing, and an unstamped task is never written.
 - [ ] Before the lapse work: confirm how a task-bound PR's closed, unmerged state can be read (today the PR poller treats it as no PR), and record it in the pull request.
 - [ ] Merge-quorum completion of a pending shape task starts exactly one follow-up. The choice becomes started only after dispatch succeeds. A refused dispatch makes it queued, and queued becomes started when that follow-up is dispatched later. A merge with the shape task's workflow run still open or failed still starts it.
-- [ ] Completion or cancellation without the merge marks a pending choice lapsed. A new task-level PR-closed signal does the same for an unmerged close. Nothing is created; lapsed is final.
+- [ ] Completion or cancellation without the merge marks a pending choice lapsed. A new task-level PR-closed signal does the same for an unmerged close. Nothing is created. A lapsed task that later merges (a replaced PR) still starts it.
 - [ ] The shaping contract shows the new copy (same decision and option ids) and no longer invokes the tickets skill. The workflow-bound shape completion contract no longer expects ticket or phase tasks. The plan kind's contract is unchanged.
 - [ ] The recorded choice fills the wire task's `shapeTickets` state. Shape docs and the fork ledger entry describe the automatic path.
 - [ ] The shape-kind Playwright spec reads the new copy.
@@ -92,15 +92,8 @@ Context: read docs/plans/shape-tickets-after-merge/plan.md (section 8) first. Th
 
 ## Filed text
 
-The four tasks and issues #79 to #82 were filed from the pre-repair breakdown. Ticket 1 is
-unchanged. Tickets 2, 3 and 4 differ from the filed text:
-
-- **Ticket 2:** completion through a follow-up-only tool, the skill's follow-up mode instead of
-  dropping the tickets file, and the wire field.
-- **Ticket 3:** `started` only after dispatch, the `queued` state, and the closed-PR signal
-  with its resolve-first step.
-- **Ticket 4:** the queued marker.
-
-Each body points at `plan.md`, which carries the repaired design. Mission Control's MCP surface
-cannot edit a filed task's intent, so the operator should update the three filed task intents
-and issues from the bodies above before those tasks are dispatched.
+The four tasks and issues #79 to #82 were first filed from the pre-repair breakdown. After
+Plan Validation repair round 1 and GitHub Inspector's review on PR #83, with the human's
+approval, the intents of tickets 2, 3 and 4 were replaced in Mission Control (task update
+route) and issues #80 to #82 were edited to match, before the plan PR merged. Every filed task
+intent and issue body now equals its ticket body above. Ticket 1 was never changed.

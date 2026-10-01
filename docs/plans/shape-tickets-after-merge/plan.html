@@ -512,7 +512,7 @@ direct their use.</li>
 </tr>
 <tr>
 <td><code>lapsed</code></td>
-<td>Was <code>pending</code>, but the shape task ended without its merge quorum, or its PR closed unmerged. Final.</td>
+<td>Was <code>pending</code>, but the shape task ended without its merge quorum, or its PR closed unmerged. Not final: a later merge-quorum completion of the same task still starts the follow-up (section 4).</td>
 </tr>
 <tr>
 <td><code>queued</code></td>
@@ -541,7 +541,9 @@ or done (decision 12).</li>
 <h3>4. The merge starts the follow-up</h3>
 <p>When a shape task reaches <code>done</code> through its merge (the existing merge-quorum completion in
 <code>settleMergedTask</code> and <code>reconcileMergedTasks</code>, the same gate <code>startPostMergeRetro</code> waits for)
-and its <code>shape_tickets</code> is <code>pending</code>, <code>TaskManager</code> starts the follow-up:</p>
+and its <code>shape_tickets</code> is <code>pending</code> or <code>lapsed</code>, <code>TaskManager</code> starts the follow-up. A
+<code>lapsed</code> choice is included because the human chose Create tickets and the plan did merge
+(see the lapse rule below):</p>
 <ol>
 <li>Reserve the relation row and create a <code>shape</code> task titled <code>Tickets: &lt;shape title&gt;</code>, with
 the shape task&#39;s repositories (primary and attached), After work: None, and the agent picked
@@ -569,8 +571,13 @@ subscribes beside its <code>onTaskPrMerged</code> subscription and lapses a <cod
 current episode&#39;s PR it names. Cadence is the PR poller&#39;s (20 s, with by-URL back-off up
 to 5 minutes).</li>
 </ul>
-<p><code>lapsed</code> is final. If a closed PR is reopened and later merges, no follow-up starts on its own.
-The manual action (section 7) is available once the task is done through that merge.</p>
+<p><code>lapsed</code> is <strong>not final</strong> (GitHub Inspector on PR #83). Lapsing records that nothing was
+created and shows <strong>Tickets lapsed</strong>. But a plan PR is often closed and then replaced on the
+same task: after a branch rename, or by a recovery session that reopens the work. If that
+task later completes through a merge quorum, the merge trigger above treats <code>lapsed</code> like
+<code>pending</code> and starts the follow-up. The human&#39;s choice is honored once the plan actually
+merges. Only a <code>stop</code> choice, or the absence of any choice, keeps the merge from starting one.
+Then the manual action (section 7) remains the way in.</p>
 <h3>5. The tickets-only contract and its edges</h3>
 <p>The follow-up is recognised by its row in <code>shape_ticket_followups</code>. For it,
 <code>shapeContractAppendix</code> renders a tickets-only variant:</p>
@@ -757,7 +764,8 @@ review wins, dismissal writes nothing, and a <code>NULL</code> task is never sta
 <code>pending</code> creates and dispatches exactly one follow-up and only then sets <code>started</code>; a
 refused dispatch leaves it backlogged with the reason and sets <code>queued</code>, which becomes
 <code>started</code> when that follow-up is dispatched later; completion or cancellation without the
-merge sets <code>lapsed</code>.</li>
+merge sets <code>lapsed</code>; a <code>lapsed</code> task that later completes through a merge quorum (a replaced
+PR on the same task) starts exactly one follow-up.</li>
 <li>A closed-PR test beside the PR poller tests: a task-bound PR URL reading <code>CLOSED</code> emits
 <code>onTaskPrClosed</code> once, and a <code>pending</code> shape task becomes <code>lapsed</code> with no follow-up
 created; a merged or open PR emits nothing.</li>

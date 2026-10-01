@@ -277,8 +277,8 @@
 <h1>Shape: create tickets after the plan merges - tickets</h1>
 <p>Sliced from the approved <a href="plan.md">plan</a>. The breakdown review was approved on 2026-09-30: four
 new tasks, mirrored to GitHub issues. Workflow repair round 1 revised the bodies of tickets 2, 3
-and 4 below to match the repaired plan. The tasks and issues filed before that repair still
-carry the earlier text (see Filed text below). Every ticket is gated on the shaping session, so none
+and 4 to match the repaired plan, and the filed tasks and issues were updated to match (see
+Filed text below). Every ticket is gated on the shaping session, so none
 starts before the plan&#39;s pull request merges. The tickets form one chain, because each builds
 on the machinery the previous one adds.</p>
 <div class="scroll"><table>
@@ -369,7 +369,7 @@ on the machinery the previous one adds.</p>
 <li><input disabled="" type="checkbox"> A resolved plan review carrying <code>shape-follow-up</code> sets the choice to pending or stop. The latest resolved review wins, a dismissal writes nothing, and an unstamped task is never written.</li>
 <li><input disabled="" type="checkbox"> Before the lapse work: confirm how a task-bound PR&#39;s closed, unmerged state can be read (today the PR poller treats it as no PR), and record it in the pull request.</li>
 <li><input disabled="" type="checkbox"> Merge-quorum completion of a pending shape task starts exactly one follow-up. The choice becomes started only after dispatch succeeds. A refused dispatch makes it queued, and queued becomes started when that follow-up is dispatched later. A merge with the shape task&#39;s workflow run still open or failed still starts it.</li>
-<li><input disabled="" type="checkbox"> Completion or cancellation without the merge marks a pending choice lapsed. A new task-level PR-closed signal does the same for an unmerged close. Nothing is created; lapsed is final.</li>
+<li><input disabled="" type="checkbox"> Completion or cancellation without the merge marks a pending choice lapsed. A new task-level PR-closed signal does the same for an unmerged close. Nothing is created. A lapsed task that later merges (a replaced PR) still starts it.</li>
 <li><input disabled="" type="checkbox"> The shaping contract shows the new copy (same decision and option ids) and no longer invokes the tickets skill. The workflow-bound shape completion contract no longer expects ticket or phase tasks. The plan kind&#39;s contract is unchanged.</li>
 <li><input disabled="" type="checkbox"> The recorded choice fills the wire task&#39;s <code>shapeTickets</code> state. Shape docs and the fork ledger entry describe the automatic path.</li>
 <li><input disabled="" type="checkbox"> The shape-kind Playwright spec reads the new copy.</li>
@@ -391,18 +391,11 @@ on the machinery the previous one adds.</p>
 <p><strong>Test seams:</strong> a Playwright spec driving a shape task through pending, queued, started and lapsed; a static-markup test where it pins a shape the browser cannot.</p>
 <p>Context: read docs/plans/shape-tickets-after-merge/plan.md (section 8) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
 <h2>Filed text</h2>
-<p>The four tasks and issues #79 to #82 were filed from the pre-repair breakdown. Ticket 1 is
-unchanged. Tickets 2, 3 and 4 differ from the filed text:</p>
-<ul>
-<li><strong>Ticket 2:</strong> completion through a follow-up-only tool, the skill&#39;s follow-up mode instead of
-dropping the tickets file, and the wire field.</li>
-<li><strong>Ticket 3:</strong> <code>started</code> only after dispatch, the <code>queued</code> state, and the closed-PR signal
-with its resolve-first step.</li>
-<li><strong>Ticket 4:</strong> the queued marker.</li>
-</ul>
-<p>Each body points at <code>plan.md</code>, which carries the repaired design. Mission Control&#39;s MCP surface
-cannot edit a filed task&#39;s intent, so the operator should update the three filed task intents
-and issues from the bodies above before those tasks are dispatched.</p>
+<p>The four tasks and issues #79 to #82 were first filed from the pre-repair breakdown. After
+Plan Validation repair round 1 and GitHub Inspector&#39;s review on PR #83, with the human&#39;s
+approval, the intents of tickets 2, 3 and 4 were replaced in Mission Control (task update
+route) and issues #80 to #82 were edited to match, before the plan PR merged. Every filed task
+intent and issue body now equals its ticket body above. Ticket 1 was never changed.</p>
 </main>
 </body>
 </html>
