@@ -100,7 +100,7 @@ type Fixture = ReturnType<typeof shaping>;
 
 /** Record a choice the way the review would, on a task stamped at delivery. */
 function choose(f: Fixture, choice: "pending" | "stop"): void {
-  assert.ok(stampShapeTicketsAwaitingReview({ id: f.taskId, kind: "shape" }));
+  assert.ok(stampShapeTicketsAwaitingReview({ id: f.taskId, kind: "shape" }, f.registry));
   assert.ok(transitionShapeTicketsState(f.taskId, ["awaiting-review"], choice));
 }
 
@@ -158,18 +158,17 @@ test("only a shaping task delivered under the new contract is stamped; every oth
   });
 
   assert.equal(shapeTicketsStateFor("stamp-shape"), null, "an existing row is empty");
-  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-ship", kind: "ship" }), false);
-  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-followup", kind: "shape" }), false, "a follow-up is never stamped");
+  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-ship", kind: "ship" }, registry), false);
+  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-followup", kind: "shape" }, registry), false, "a follow-up is never stamped");
   assert.equal(shapeTicketsStateFor("stamp-followup"), null);
-  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-shape", kind: "shape" }), true);
+  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-shape", kind: "shape" }, registry), true);
   assert.equal(shapeTicketsStateFor("stamp-shape"), "awaiting-review");
-  registry.republishShapeTickets("stamp-shape");
   assert.equal(registry.getTask("stamp-shape")?.shapeTickets?.state, "awaiting-review", "the wire state reads the column");
   assert.equal(registry.getTask("stamp-ship")?.shapeTickets ?? null, null);
 
   // A retried dispatch keeps the choice an earlier review recorded.
   transitionShapeTicketsState("stamp-shape", ["awaiting-review"], "pending");
-  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-shape", kind: "shape" }), false);
+  assert.equal(stampShapeTicketsAwaitingReview({ id: "stamp-shape", kind: "shape" }, registry), false);
   assert.equal(shapeTicketsStateFor("stamp-shape"), "pending");
 
   // A stale Task snapshot written back cannot undo it: the column is not `upsertTask`'s.
@@ -200,7 +199,7 @@ test("a resolved plan review records pending or stop; the latest wins, a dismiss
   answer("create-tickets");
   assert.equal(shapeTicketsStateFor(f.taskId), null, "an unstamped task is never written");
 
-  stampShapeTicketsAwaitingReview({ id: f.taskId, kind: "shape" });
+  stampShapeTicketsAwaitingReview({ id: f.taskId, kind: "shape" }, f.registry);
   answer("create-tickets");
   assert.equal(shapeTicketsStateFor(f.taskId), "pending");
   assert.equal(f.registry.getTask(f.taskId)?.shapeTickets?.state, "pending", "re-sent on the wire");

@@ -167,6 +167,32 @@ export function shapeTicketsFollowupIntent(source: Pick<Task, "id" | "title">, p
 // ---------------------------------------------------------------------------
 
 /**
+ * What puts a shape task's moved choice on the wire: the Registry.
+ *
+ * The choice is written by its own accessor rather than through `upsertTask`, so a move is
+ * invisible to the dashboard until the task is re-sent. Every transition below takes this and
+ * re-sends the task whenever the row moved, so no caller can move the choice and forget to.
+ */
+export interface ShapeTicketsPublisher {
+  republishShapeTickets(taskId: string): void;
+}
+
+/** One compare-and-set move, re-sent on the wire when it happened. */
+function moveShapeTickets(
+  publisher: ShapeTicketsPublisher,
+  taskId: string,
+  from: readonly (ShapeTicketsState | null)[],
+  next: ShapeTicketsState,
+): boolean {
+  const moved = transitionShapeTicketsState(taskId, from, next);
+  if (moved) publisher.republishShapeTickets(taskId);
+  return moved;
+}
+
+/** The choices a merge-quorum completion acts on: the human chose Create tickets. */
+const AWAITING_MERGE: readonly ShapeTicketsState[] = ["pending", "lapsed"];
+
+/**
  * Stamp a shape task dispatched under the contract that defers tickets to the merge.
  *
  * Only a never-stamped shaping task moves: a retried dispatch keeps the choice its earlier
@@ -174,8 +200,11 @@ export function shapeTicketsFollowupIntent(source: Pick<Task, "id" | "title">, p
  * the discriminator that keeps a shape session already in flight under the old prompt, which
  * files tickets in-session, from ever being followed up at its merge.
  */
-export function stampShapeTicketsAwaitingReview(task: Pick<Task, "id" | "kind">): boolean {
-  return task.kind === "shape" && transitionShapeTicketsState(task.id, [null], "awaiting-review");
+export function stampShapeTicketsAwaitingReview(
+  task: Pick<Task, "id" | "kind">,
+  publisher: ShapeTicketsPublisher,
+): boolean {
+  return task.kind === "shape" && moveShapeTickets(publisher, task.id, [null], "awaiting-review");
 }
 
 /**
@@ -203,32 +232,33 @@ export function shapeFollowUpChoice(
 export function recordShapeTicketsChoice(
   taskId: string,
   choice: Extract<ShapeTicketsState, "pending" | "stop">,
+  publisher: ShapeTicketsPublisher,
 ): boolean {
-  return transitionShapeTicketsState(taskId, ["awaiting-review", "pending", "stop", "lapsed"], choice);
+  return moveShapeTickets(publisher, taskId, ["awaiting-review", "pending", "stop", "lapsed"], choice);
 }
 
 /** A pending choice lapses: the task ended without its merge, or its PR closed unmerged. */
-export function lapseShapeTickets(taskId: string): boolean {
-  return transitionShapeTicketsState(taskId, ["pending"], "lapsed");
+export function lapseShapeTickets(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, ["pending"], "lapsed");
 }
 
 /** Whether a merge-quorum completion should start this task's follow-up. */
 export function shapeTicketsAwaitMerge(taskId: string): boolean {
   const state = shapeTicketsStateFor(taskId);
-  return state === "pending" || state === "lapsed";
+  return state !== null && AWAITING_MERGE.includes(state);
 }
 
 /** The automatic follow-up was created and dispatched. */
-export function markShapeTicketsStarted(taskId: string): boolean {
-  return transitionShapeTicketsState(taskId, ["pending", "lapsed"], "started");
+export function markShapeTicketsStarted(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, AWAITING_MERGE, "started");
 }
 
 /** A queued follow-up was dispatched later, by hand or by the autopilot. */
-export function promoteQueuedShapeTickets(taskId: string): boolean {
-  return transitionShapeTicketsState(taskId, ["queued"], "started");
+export function promoteQueuedShapeTickets(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, ["queued"], "started");
 }
 
 /** The automatic follow-up was created, but its launch was refused. */
-export function markShapeTicketsQueued(taskId: string): boolean {
-  return transitionShapeTicketsState(taskId, ["pending", "lapsed"], "queued");
+export function markShapeTicketsQueued(taskId: string, publisher: ShapeTicketsPublisher): boolean {
+  return moveShapeTickets(publisher, taskId, AWAITING_MERGE, "queued");
 }

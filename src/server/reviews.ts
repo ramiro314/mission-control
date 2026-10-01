@@ -465,7 +465,7 @@ export class ReviewManager {
       const session = this.registry.getSession(review.sessionId);
       const task = this.registry.taskForSession(review.sessionId, session?.cwd ?? null);
       if (task?.kind !== "shape") return;
-      if (recordShapeTicketsChoice(task.id, choice)) this.registry.republishShapeTickets(task.id);
+      recordShapeTicketsChoice(task.id, choice, this.registry);
     } catch (error) {
       console.error("[reviews] recording the shape follow-up choice failed:", review.id, error);
     }

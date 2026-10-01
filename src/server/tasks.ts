@@ -3354,7 +3354,7 @@ export class TaskManager {
       // later dispatch, by hand or by the autopilot, is the one it was waiting for.
       if (t.kind === "shape") {
         const source = shapeTicketFollowupForTask(t.id)?.sourceTaskId;
-        if (source && promoteQueuedShapeTickets(source)) this.registry.republishShapeTickets(source);
+        if (source) promoteQueuedShapeTickets(source, this.registry);
       }
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
@@ -4742,7 +4742,7 @@ export class TaskManager {
       const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
       // Delivered the contract that defers a shape task's tickets to its merge: stamp it, as
       // the dispatch seam does.
-      if (stampShapeTicketsAwaitingReview(ready)) this.registry.republishShapeTickets(ready.id);
+      stampShapeTicketsAwaitingReview(ready, this.registry);
       r = await inject(
         this.registry.getSession(s.id) ?? s,
         withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
@@ -5429,10 +5429,10 @@ export class TaskManager {
     }
   }
 
-  /** Lapse a pending Create tickets choice, and re-send the task when it moved. */
+  /** Lapse a pending Create tickets choice; the transition re-sends the task when it moved. */
   private lapseShapeTicketsOf(taskId: string): void {
     try {
-      if (lapseShapeTickets(taskId)) this.registry.republishShapeTickets(taskId);
+      lapseShapeTickets(taskId, this.registry);
     } catch (error) {
       console.error("[shape] lapsing the tickets choice failed:", taskId, error);
     }
@@ -5452,15 +5452,9 @@ export class TaskManager {
     this.startingShapeTickets.add(taskId);
     try {
       const result = await startShapeTicketsFollowup(taskId, { tasks: this });
-      const moved = result.kind === "started"
-        ? markShapeTicketsStarted(taskId)
-        : result.kind === "queued"
-          ? markShapeTicketsQueued(taskId)
-          : false;
-      if (result.kind === "refused") {
-        console.warn(`[shape] tickets follow-up for ${taskId} was not started: ${result.error}`);
-      }
-      if (moved) this.registry.republishShapeTickets(taskId);
+      if (result.kind === "started") markShapeTicketsStarted(taskId, this.registry);
+      else if (result.kind === "queued") markShapeTicketsQueued(taskId, this.registry);
+      else console.warn(`[shape] tickets follow-up for ${taskId} was not started: ${result.error}`);
     } catch (error) {
       console.error("[shape] starting the tickets follow-up failed:", taskId, error);
     } finally {

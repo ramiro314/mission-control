@@ -6660,8 +6660,9 @@ export class Registry extends EventEmitter {
   /**
    * Re-derive and re-send one in-memory shape task's `shapeTickets`.
    *
-   * Public because the recorded Create tickets choice is written by its own accessors rather
-   * than through `upsertTask`, so whoever moves it calls this to put the new state on the wire.
+   * Public as the `ShapeTicketsPublisher` every Create tickets transition is handed: the choice
+   * is written by its own accessor rather than through `upsertTask`, and the transition calls
+   * this whenever it moved the row.
    */
   republishShapeTickets(sourceTaskId: string): void {
     const source = this.tasks.get(sourceTaskId);

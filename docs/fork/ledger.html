@@ -192,7 +192,9 @@ contract (<code>taskCompletionContract(&quot;shape&quot;, true)</code>) is the p
 ticket or phase tasks. The plan kind&#39;s contract is unchanged.</li>
 <li>Tickets after merge (<a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge</a>
 sections 2 and 4). <code>tasks.shape_tickets</code> records the choice, written only by its own
-compare-and-set accessors (never <code>upsertTask</code>). It is stamped <code>awaiting-review</code> when a shaping
+compare-and-set accessor (never <code>upsertTask</code>), through named transitions in
+<code>shape-tickets.ts</code> that each take the Registry as <code>ShapeTicketsPublisher</code> and re-send the task
+whenever the row moved. It is stamped <code>awaiting-review</code> when a shaping
 task (not a follow-up) is delivered its contract at either seam, so every row from before this
 change and every other kind stays NULL and is never acted on. An answered plan-decisions
 review carrying <code>shape-follow-up</code> sets <code>pending</code> or <code>stop</code> (latest wins, dismissal writes
@@ -277,7 +279,7 @@ row and task link in one transaction) keep their semantics.</li>
 <code>src/server/task-sources/{push,github-issues}.ts</code>, <code>src/shared/{task,task-completion,types,protocol,task-source}.ts</code>,
 <code>src/shared/telemetry-sources/{primary-actions,action-exclusions}.ts</code>, <code>src/server/registry.ts</code>
 (derives <code>Task.shapeTickets</code> on publish; <code>onTaskPrClosed</code>, <code>reconcilePrClosures</code>,
-<code>republishShapeTickets</code> made public).</li>
+<code>republishShapeTickets</code> made public as the transitions&#39; publisher).</li>
 <li>Routes: new <code>POST /mcp/v3/tasks</code>, <code>POST /mcp/backlog</code>, <code>POST /mcp/push-task</code>,
 <code>POST /api/tasks/:id/shape</code> (#21), <code>POST /api/tasks/:id/shape-tickets</code>,
 <code>POST /mcp/shape-tickets/complete</code>; <code>GET /api/harnesses/config</code> and <code>GET /api/skills</code> list

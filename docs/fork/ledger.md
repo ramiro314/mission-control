@@ -100,7 +100,9 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   ticket or phase tasks. The plan kind's contract is unchanged.
 - Tickets after merge ([shape-tickets-after-merge](../plans/shape-tickets-after-merge/plan.md)
   sections 2 and 4). `tasks.shape_tickets` records the choice, written only by its own
-  compare-and-set accessors (never `upsertTask`). It is stamped `awaiting-review` when a shaping
+  compare-and-set accessor (never `upsertTask`), through named transitions in
+  `shape-tickets.ts` that each take the Registry as `ShapeTicketsPublisher` and re-send the task
+  whenever the row moved. It is stamped `awaiting-review` when a shaping
   task (not a follow-up) is delivered its contract at either seam, so every row from before this
   change and every other kind stays NULL and is never acted on. An answered plan-decisions
   review carrying `shape-follow-up` sets `pending` or `stop` (latest wins, dismissal writes
@@ -185,7 +187,7 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   `src/server/task-sources/{push,github-issues}.ts`, `src/shared/{task,task-completion,types,protocol,task-source}.ts`,
   `src/shared/telemetry-sources/{primary-actions,action-exclusions}.ts`, `src/server/registry.ts`
   (derives `Task.shapeTickets` on publish; `onTaskPrClosed`, `reconcilePrClosures`,
-  `republishShapeTickets` made public).
+  `republishShapeTickets` made public as the transitions' publisher).
 - Routes: new `POST /mcp/v3/tasks`, `POST /mcp/backlog`, `POST /mcp/push-task`,
   `POST /api/tasks/:id/shape` (#21), `POST /api/tasks/:id/shape-tickets`,
   `POST /mcp/shape-tickets/complete`; `GET /api/harnesses/config` and `GET /api/skills` list

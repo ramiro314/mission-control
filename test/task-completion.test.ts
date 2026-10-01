@@ -326,6 +326,12 @@ test("unbound plans keep skill-owned PR creation and other kinds keep their cont
   assert.ok(shape.complete.some((requirement) => /no ticket or phase tasks are required from this turn/.test(requirement)));
   assert.ok(!shape.complete.some((requirement) => /phase files|phase task depends/.test(requirement)));
   assert.ok(plan.complete.some((requirement) => /phase files/.test(requirement)), "the plan kind's contract is unchanged");
+  // Every planning requirement that is not about phases is the plan's own entry, shared rather
+  // than copied, so an edit to the plan's boundary reaches the shape boundary too.
+  const shared = plan.complete.filter((requirement) => !/phase/.test(requirement));
+  assert.equal(shared.length, 4);
+  for (const requirement of shared) assert.ok(shape.complete.includes(requirement), requirement);
+  assert.equal(shape.complete.length, shared.length + 2, "shape adds only its no-tickets and plan-pushed lines");
   for (const kind of TASK_KINDS.filter((kind) => kind !== "plan" && kind !== "shape")) {
     assert.equal(taskCompletionContract(kind, true), taskCompletionContract(kind, false));
   }

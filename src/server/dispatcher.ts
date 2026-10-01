@@ -615,7 +615,7 @@ export class Dispatcher {
       const intent = composeTurnOne(standingPrefix);
       // The contract just composed defers a shape task's tickets to its merge, so the task is
       // stamped as delivered under it. Only a never-stamped shaping task moves (see the helper).
-      if (stampShapeTicketsAwaitingReview(provisioned)) this.registry.republishShapeTickets(provisioned.id);
+      stampShapeTicketsAwaitingReview(provisioned, this.registry);
       // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
       // channel turns out to be unusable once the driver is already talking to its subprocess.
       //
