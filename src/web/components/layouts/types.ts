@@ -57,6 +57,11 @@ export interface SessionViewProps {
   /** Reopen the dispatch modal over a backlog task, to correct it or send it now. */
   onEditTask: (taskId: string) => void;
   /**
+   * Open any task where it lives: its live session, its backlog editor, or the Sitrep.
+   * Optional so a host with no app around it (the Board card preview) draws a note instead.
+   */
+  onOpenTask?: (taskId: string) => void;
+  /**
    * Foreman's reading of the backlog (dependencies + order), or null when it has none.
    *
    * Lives on the shared bundle rather than being fetched by `BacklogColumn`, per the
@@ -293,6 +298,19 @@ export function ensembleSummaryFor(
 ): EnsembleSummary | null {
   const runId = s.task?.ensemble?.runId;
   return (runId ? p.ensembleSummaryByRun?.get(runId) : null) ?? null;
+}
+
+/**
+ * The whole task behind a shape session, for its tickets marker.
+ *
+ * `Session.task` is a summary and does not carry the derived `shapeTickets`, so the card and
+ * the drawer read it from the task list the view already holds. Null for every other kind,
+ * which skips the lookup on nearly every card.
+ */
+export function shapeTaskForSession(p: Pick<SessionViewProps, "tasks">, s: Session): Task | null {
+  if (s.task?.kind !== "shape") return null;
+  const id = s.task.id;
+  return p.tasks.find((task) => task.id === id) ?? null;
 }
 
 /** Resolve the durable commission through either task projection or exact provider run. */

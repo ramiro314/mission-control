@@ -61,11 +61,14 @@ import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/
 import {
   ensembleSummaryFor,
   pipelineCommissionForSession,
+  shapeTaskForSession,
   type SessionViewProps,
 } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { ShapeTicketsMarker } from "../ShapeTicketsMarker.tsx";
+import { shapeTicketsMarker } from "../../lib/shape-tickets.ts";
 import { detailTabs, type DetailTabId } from "../../lib/detailTabs.ts";
 import { unreadAgentReplies } from "../../lib/fileComments.ts";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
@@ -203,6 +206,7 @@ export function ConsoleDetail({
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
+  const shapeTask = shapeTaskForSession(view, session);
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
     ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
@@ -436,7 +440,8 @@ export function ConsoleDetail({
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+  const showShapeTickets = shapeTicketsMarker(shapeTask) !== null;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || showShapeTickets;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.
@@ -689,6 +694,13 @@ export function ConsoleDetail({
           {/* The shared leaf is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
           <TaskRepoPrs repoPrs={session.task.repoPrs} />
+          {/* What happens to a shape task's tickets at its merge, or what happened. A <div>
+              because a <dl> holds only groups, and only when there is a marker to draw. */}
+          {showShapeTickets && (
+            <div className="shape-tickets-row">
+              <ShapeTicketsMarker task={shapeTask} onOpenTask={view.onOpenTask} variant="chip" />
+            </div>
+          )}
           </>
         )}
       </dl>

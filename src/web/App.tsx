@@ -1737,6 +1737,36 @@ export function App(): React.JSX.Element {
     [navigate],
   );
   /**
+   * Open any task where it lives: focus its live session, reopen its backlog editor, or show
+   * the Sitrep, where a finished task's outcome is. The ensemble member list and the shape
+   * tickets marker both open tasks through this, so they agree on where a task is.
+   */
+  const openTask = useCallback(
+    (taskId: string): void => {
+      const task = tasks.find((candidate) => candidate.id === taskId);
+      if (!task) return;
+      const liveSession = task.sessionId
+        ? sessions.find((session) => session.id === task.sessionId)
+        : sessions.find((session) => session.task?.id === taskId);
+      if (liveSession) {
+        setReportOpen(false);
+        navigate({ page: "fleet" });
+        setFilter("");
+        setSelectedId(liveSession.id);
+        if (layout === "board") setBoardOpen(true);
+        return;
+      }
+      if (task.status === "backlog") {
+        setReportOpen(false);
+        openTaskEditor(taskId);
+        return;
+      }
+      navigate({ page: "fleet" });
+      setReportOpen(true);
+    },
+    [tasks, sessions, layout, navigate, openTaskEditor],
+  );
+  /**
    * Open one pipeline run, through the route helper that owns the address shape.
    *
    * No filter is kept: the pipelines rail has none. Its grouping comes from the daemon's
@@ -2776,6 +2806,7 @@ export function App(): React.JSX.Element {
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
     onEditTask: openTaskEditor,
+    onOpenTask: openTask,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
     workflowBindingBySession,
@@ -4082,26 +4113,7 @@ export function App(): React.JSX.Element {
                   ...(ensembleId ? { ensembleId } : {}),
                 })}
                 onOpenSession={openSessionOnFleet}
-                onOpenTask={(taskId) => {
-                  const task = tasks.find((candidate) => candidate.id === taskId);
-                  if (!task) return;
-                  const liveSession = task.sessionId
-                    ? sessions.find((session) => session.id === task.sessionId)
-                    : sessions.find((session) => session.task?.id === taskId);
-                  if (liveSession) {
-                    navigate({ page: "fleet" });
-                    setFilter("");
-                    setSelectedId(liveSession.id);
-                    if (layout === "board") setBoardOpen(true);
-                    return;
-                  }
-                  if (task.status === "backlog") {
-                    openTaskEditor(taskId);
-                    return;
-                  }
-                  navigate({ page: "fleet" });
-                  setReportOpen(true);
-                }}
+                onOpenTask={openTask}
                 onOpenWorkflowRun={openWorkflowRun}
               />
             </ExecutionPage>
@@ -4506,6 +4518,7 @@ export function App(): React.JSX.Element {
                     setReportOpen(false);
                     openTaskEditor(id);
                   }}
+                  onOpenTask={openTask}
                   onOpenSchedule={onOpenSchedule}
                   scheduleNameById={scheduleNameById}
                 />

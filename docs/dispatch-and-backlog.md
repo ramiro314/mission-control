@@ -381,6 +381,14 @@ creates nothing at the merge, and **Create tickets** on the merged task stays th
 shape session dispatched before this behavior shipped is never recorded and keeps filing its
 tickets in its own turn, as below.
 
+The shape task shows where that choice stands, on its board card and in its drawer while its
+session is open, and on its **Recent outcomes** row in the Sitrep once it has finished:
+**Tickets after merge** while the choice waits for the merge, **Tickets queued** while a refused
+follow-up waits in the backlog, **Tickets** once the follow-up is dispatched, and **Tickets
+lapsed** when the choice lapsed. **Tickets queued** and **Tickets** are links that open the
+follow-up: its session while it runs, or its backlog editor while it waits. Stop, no answer yet,
+and every other kind of task show nothing.
+
 The follow-up hands the merged plan to the bundled [Tickets skill](skills-and-settings.md).
 It slices the plan into tickets (one ticket is one task is one pull request) and opens the
 **breakdown review**, your final approval: one `request_plan_decisions` form listing every

@@ -166,7 +166,7 @@ can stop compiling against a changed upstream API.</li>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge). Related, not claimed: #21 (standalone fix to Shape this)</td>
+<td>#1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge), pending (tickets marker, issue #82). Related, not claimed: #21 (standalone fix to Shape this)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -208,6 +208,15 @@ completion without the merge, a cancel or a failure lapses <code>pending</code>,
 <code>CLOSED</code>, and the registry announces it once per (task, current episode, URL). <code>lapsed</code> is not
 final: a later merge-quorum completion still starts the follow-up. Workflow run state is never
 read. <code>Task.shapeTickets.state</code> carries the choice on the wire.</li>
+<li>The tickets marker (<a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge</a>
+section 8) reads <code>Task.shapeTickets</code> through <code>shapeTicketsMarker</code> (<code>src/web/lib/shape-tickets.ts</code>)
+and is drawn by one component, <code>ShapeTicketsMarker</code>, on the board card&#39;s flag row, in the board
+drawer&#39;s detail band, and on the Sitrep&#39;s Recent outcomes row (where a finished shape task
+lives once its session closes at the merge): <code>pending</code> is the note <strong>Tickets after merge</strong>,
+<code>queued</code> <strong>Tickets queued</strong> and <code>started</code> <strong>Tickets</strong>, each a link-role button opening
+<code>followupTaskId</code> through the app&#39;s one <code>openTask</code> (live session, backlog editor, or Sitrep),
+and <code>lapsed</code> the note <strong>Tickets lapsed</strong>. Every other state, a queued or started choice with no
+follow-up left to open, and every non-shape task draw nothing.</li>
 <li>Dispatch is refused, naming the toggle, when a required planning skill is off
 (<code>PLANNING_SKILLS.shape</code> is <code>grill</code>, <code>htmlPlans</code>, <code>tickets</code>). After work defaults to Plan
 Validation. Shape can be put on the backlog, but schedules and MCP <code>create_task</code> cannot file it.</li>
@@ -297,11 +306,15 @@ gains ticket and adopt fields.</li>
 gains it on open); new nullable <code>tasks.shape_tickets</code> column (<code>addColumn</code> in the migration
 path, no backfill).</li>
 <li>UI: <code>DispatchModal.tsx</code>, <code>layouts/BacklogColumn.tsx</code> and <code>line/BacklogDrawer.tsx</code> (Shape this),
-<code>ReportPanel.tsx</code> (Create tickets), <code>schedules/ScheduleEditor.tsx</code>,
-<code>src/web/lib/guided-dispatch-steps.ts</code>.</li>
+<code>ReportPanel.tsx</code> (Create tickets and the tickets marker), <code>schedules/ScheduleEditor.tsx</code>,
+<code>src/web/lib/guided-dispatch-steps.ts</code>; the tickets marker in <code>layouts/SessionTile.tsx</code>,
+<code>layouts/ConsoleDetail.tsx</code>, <code>layouts/BoardView.tsx</code>, <code>layouts/types.ts</code>
+(<code>SessionViewProps.onOpenTask</code>, <code>shapeTaskForSession</code>), <code>App.tsx</code> (<code>openTask</code>, shared with the
+ensemble member list) and <code>styles.css</code>.</li>
 </ul>
 <p><strong>Fork-only files.</strong> <code>src/server/plans/shape.ts</code>, <code>src/server/shape-tickets.ts</code>,
-<code>src/server/shape-tickets-followup.ts</code>, <code>src/mcp/unknown-route.ts</code>, <code>skills/grill/</code>,
+<code>src/server/shape-tickets-followup.ts</code>, <code>src/web/lib/shape-tickets.ts</code>,
+<code>src/web/components/ShapeTicketsMarker.tsx</code>, <code>src/mcp/unknown-route.ts</code>, <code>skills/grill/</code>,
 <code>skills/tickets/</code>, <code>docs/plans/shape-task-kind/</code>,
 <code>docs/reports/grill-tickets-implement-in-mission-control/</code>.</p>
 <h3>Task-source relations and dependency sync</h3>
