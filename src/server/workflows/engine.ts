@@ -1155,7 +1155,8 @@ export class WorkflowEngine {
     // reached only once the skip above has declined to reuse an earned pass: a skipped judge
     // spawns nothing, so it must resolve nothing.
     const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
-    const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
+    const effort = execution.effort?.level ?? null;
+    const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now(), effort);
     if (!claimed) return;
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success) {
@@ -1207,6 +1208,7 @@ export class WorkflowEngine {
           purpose: "persona_review",
           runner: execution.runner.id,
           model: execution.model.id,
+          ...(effort ? { effort } : {}),
           attempt,
           state: "running",
           startedAt: this.now(),
@@ -1250,7 +1252,12 @@ export class WorkflowEngine {
       const correction = violation
         ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
       const result = await runStructured(
-        (request) => runner.run(request, { model: execution.model.id, timeoutMs: PERSONA_TIMEOUT_MS, images }),
+        (request) => runner.run(request, {
+          model: execution.model.id,
+          ...(effort ? { effort } : {}),
+          timeoutMs: PERSONA_TIMEOUT_MS,
+          images,
+        }),
         index === 0 ? prompt : `${prompt}\n\nCorrection required: ${correction}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
           const reply = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);

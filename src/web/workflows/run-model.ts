@@ -33,12 +33,13 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
-import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "@shared/types.ts";
+import type { InspectorComment, InspectorCommentStatus, InspectorSeverity, ThinkingLevel } from "@shared/types.ts";
 import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isVerdictNode,
+  routingLine,
   sessionActionWaitsOnOperator,
   verdictAuthor,
   workflowResumptionWithheldSentence,
@@ -3004,6 +3005,8 @@ export function shortSha(sha: string | null | undefined): string | null {
 export interface VerdictMeta {
   runner: string | null;
   model: string | null;
+  /** The effort recorded with the model; null for the provider default. */
+  effort: ThinkingLevel | null;
   durationMs: number | null;
   costUsd: number | null;
 }
@@ -3016,6 +3019,16 @@ export interface VerdictMeta {
  * operator changes a default. Cost is summed from the workflow-owned calls this attempt
  * made, and stays `null` unless every one of them reported a price.
  */
+/**
+ * `runner · model`, plus the effort when one was passed, for an attempt or a call - or null
+ * when it ran no model. What actually ran, as recorded, never re-resolved from settings.
+ */
+export function recordedRoutingLabel(
+  record: { runner: string | null; model: string | null; effort?: ThinkingLevel | null },
+): string | null {
+  return record.runner && record.model ? routingLine(record.runner, record.model, record.effort) : null;
+}
+
 export function verdictMeta(
   attempt: WorkflowNodeAttempt,
   calls: readonly WorkflowLlmCall[],
@@ -3025,6 +3038,7 @@ export function verdictMeta(
   return {
     runner: attempt.runner,
     model: attempt.model,
+    effort: attempt.effort ?? null,
     durationMs: attempt.startedAt !== null && attempt.finishedAt !== null
       ? Math.max(0, attempt.finishedAt - attempt.startedAt)
       : null,

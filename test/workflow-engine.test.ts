@@ -571,6 +571,71 @@ test("a Persona call carries its own timeout rather than inheriting the runner's
   assert.deepEqual(budgets, [600_000]);
 });
 
+test("a node's effort reaches the provider and is recorded on the attempt and its call", async () => {
+  // The override names an effort; the resolver seam (the Persona tier) names a different one,
+  // so a pass here proves the node override won and that the level that RAN is what is stored.
+  const effortGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      {
+        id: "p",
+        kind: "persona",
+        persona: persona("effort", "Effort", "claude", "review"),
+        position: { x: 100, y: 0 },
+        executionOverride: { runner: "claude", model: "claude-opus-5-5", effort: "xhigh" },
+      },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("effort", effortGraph);
+  const efforts: Array<string | undefined> = [];
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "effort",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      efforts.push(opts?.effort);
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+      effort: { level: "low", unsupported: null },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-effort");
+  await waitFor(() => store.getRun("run-effort")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(efforts, ["xhigh"]);
+  const [attempt] = store.listAttemptsForRun("run-effort").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.model, "claude-opus-5-5");
+  assert.equal(attempt?.effort, "xhigh");
+  const calls = openDb().prepare(
+    `SELECT effort FROM workflow_llm_calls WHERE run_id = 'run-effort'`,
+  ).all() as unknown as Array<{ effort: string | null }>;
+  assert.deepEqual(calls.map((call) => call.effort), ["xhigh"]);
+});
+
 test("each structured provider attempt has its own durable LLM call receipt", async () => {
   const retryParseGraph: PublishedWorkflowGraph = {
     nodes: [

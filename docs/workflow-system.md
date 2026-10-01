@@ -19,7 +19,12 @@ revision, timestamps, and text. This applies changed feedback once without makin
 directive force perpetual rechecks; removing and recreating a directive cannot revive a pass
 from its earlier revision sequence.
 A Persona node also carries an optional `executionOverride` - one explicit
-`{ runner, model }` pair chosen by the workflow rather than by the reviewer. It lives on the
+`{ runner, model, effort? }` choice made by the workflow rather than by the reviewer. Effort
+uses the shared `THINKING_LEVELS` vocabulary and is checked with `personaEffortLevels`, which
+reads the same `launchEffortLevels` capability table sessions and tasks use; an unsupported
+level is an `unsupported_effort` graph diagnostic rather than a parse failure, so stored graphs
+stay readable. The Persona's own `effort` is frozen into its snapshot only when set, so a
+Persona with none publishes byte-identically to a pre-effort version. It lives on the
 node in both the draft and published graph JSON, is frozen beside the Persona snapshot at
 publish rather than folded into it, and is absent when the node inherits, so no migration
 touches an existing graph.

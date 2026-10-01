@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **8** (plus 2 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **9** (plus 2 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -51,6 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | CodeQL advanced setup | Active | #65 |
+| Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | Standalone fixes | Not a feature | #4, #13, #15, #18, #19, #21, #22, #23, #24, #33 |
@@ -529,6 +530,58 @@ alerts on the fork.
 **Upstream surfaces touched.** None; both files are fork-only.
 
 **Fork-only files.** `.github/workflows/codeql.yml`, `.github/codeql/codeql-config.yml`.
+
+### Persona reasoning effort
+
+| Field | Value |
+| --- | --- |
+| Status | **Active** |
+| PRs | Pending (branch `feat/persona-effort`) |
+| Plan docs | None; [docs/workflows.md](../workflows.md) "Per-node provider and model" describes it |
+| Upstream candidate | Yes. It extends upstream's own Persona and node-override routing and adds no fork-only concept. |
+
+**Intent.** An operator chooses the reasoning effort (`low` to `max`) a workflow Persona call
+runs at, the same way they already choose its model. Without it every Persona call ran at the
+provider default, which on Claude Opus 5.5 is `medium`, so Opus reviewers ran shallower than
+intended.
+
+**Behavior contracts.**
+
+- Effort is optional at two levels: `Persona.effort` and `WorkflowNodeExecutionOverride.effort`.
+  Resolution is node override, then Persona, then provider default, in the existing
+  `resolveWorkflowNodeExecution` / `resolvePersonaExecution` path. An override without an effort
+  runs at the provider default, never at the Persona's level.
+- Unset effort passes no flag at all, so existing Personas, drafts, versions and bindings behave
+  exactly as before with no migration step. A Persona with no effort freezes byte-identically.
+- One vocabulary (`THINKING_LEVELS`) and one capability check (`launchEffortLevels`, through
+  `personaEffortLevels`). An unsupported effort is refused on Persona create and update, is an
+  `unsupported_effort` publish-blocking diagnostic on a node, and at run time is reported as
+  `effort.unsupported` rather than passed or silently dropped.
+- Publish freezes the Persona's effort in its snapshot and the node's in its override.
+- The effort that ran is recorded on `workflow_node_attempts.effort` and
+  `workflow_llm_calls.effort`, and shown beside the model on every routing line.
+- Built-in Personas stay read-only; a node override is how their effort is set.
+
+**Upstream behavior it assumes.**
+
+- `HarnessCapabilities.effort.levelsFor` and `launchArgs` for `claude` and `codex`, and that the
+  headless `LlmRunnerId` values name the same providers as those harness ids.
+- `claude -p` accepts `--effort`, `codex exec` accepts `-c model_reasoning_effort=`, the Claude
+  Agent SDK accepts `effort` and the Codex SDK accepts `modelReasoningEffort`.
+- Persona nodes resolve through `resolveWorkflowNodeExecution`, and `personaSnapshotOf` is the one
+  snapshot builder.
+
+**Upstream surfaces touched.** `src/shared/workflow.ts` (Persona, PersonaSnapshot, override,
+execution view, attempt and call types, diagnostic codes), `src/shared/protocol.ts` (Persona and
+override schemas), `src/shared/workflow-graph.ts`, `src/shared/llm.ts` (`LlmRunOptions.effort`),
+`src/server/db.ts` (`personas.effort`, `workflow_node_attempts.effort`,
+`workflow_llm_calls.effort`), `src/server/workflows/{personas,store,engine}.ts`,
+`src/server/routes.ts` (`persona_unsupported_effort`), the four LLM transports and
+`src/server/claude-cli.ts`, settings-backup Persona schema, and the Persona editor, node routing
+editor, version history and run views.
+
+**Fork-only files.** `src/web/workflows/EffortSelect.tsx`, `test/persona-effort.test.ts`,
+`e2e/specs/workflow-persona-effort.spec.ts`.
 
 ## Superseded and removed
 
