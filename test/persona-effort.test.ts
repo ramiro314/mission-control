@@ -29,7 +29,14 @@ const {
   WorkflowDraftGraphSchema,
 } = await import("../src/shared/protocol.ts");
 const { validateWorkflowGraph } = await import("../src/shared/workflow-graph.ts");
-const { normalizePersonaName, personaEffortLevels, personaSnapshotOf } = await import("../src/shared/workflow.ts");
+const {
+  normalizePersonaName,
+  personaEffortLabel,
+  personaEffortLevels,
+  personaSnapshotOf,
+  routingLine,
+} = await import("../src/shared/workflow.ts");
+const { personaRoutingLabel } = await import("../src/web/library/library-model.ts");
 
 const db = openDb();
 const store = new WorkflowStore(db);
@@ -226,4 +233,23 @@ test("publish freezes the Persona's effort; editing the Persona later leaves the
   assert.equal(resolveWorkflowNodeExecution(overridden, resolve).effort?.level, "max");
   // And a Persona with no effort freezes without the key, byte-identical to a pre-effort version.
   assert.equal("effort" in personaSnapshotOf({ ...created.persona, effort: null }), false);
+});
+
+test("a configured but unsupported effort is visible on every routing line, never silently dropped", () => {
+  const unsupported = { level: null, unsupported: "max" } as const;
+  assert.equal(personaEffortLabel(unsupported), "max effort unsupported, provider default");
+  assert.equal(
+    routingLine("codex", "gpt-5.6-luna", unsupported),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  // The library, palette and editors read the resolved execution through this one label.
+  const execution = resolvePersonaExecution(snapshot({ runner: "codex", model: "gpt-5.6-luna", effort: "max" }), CLAUDE, undefined);
+  assert.equal(
+    personaRoutingLabel({ execution }),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  // A level that applies is named; no effort at all reads exactly as it did before effort existed.
+  assert.equal(routingLine("claude", "claude-opus-5-5", { level: "high", unsupported: null }), "claude · claude-opus-5-5 · high effort");
+  assert.equal(routingLine("claude", "claude-opus-5-5", { level: null, unsupported: null }), "claude · claude-opus-5-5");
+  assert.equal(personaEffortLabel({ level: null, unsupported: null }), null);
 });
