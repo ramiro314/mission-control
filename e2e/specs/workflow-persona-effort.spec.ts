@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -126,6 +127,65 @@ test("a workflow node's effort is chosen beside its model, persists, and is froz
   await shoot(routing, "published-effort");
 });
 
+test("an effort the node's model cannot run stays selected, is flagged, and blocks Publish", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: BUILTIN_BUTTON }).click();
+  await dashboard.getByRole("button", { name: "Duplicate", exact: true }).click();
+  await expect(dashboard.getByRole("button").filter({ has: dashboard.getByText(COPY, { exact: true }) }))
+    .toBeVisible({ timeout: 15_000 });
+  const workflowId = (await api<Array<{ id: string; name: string }>>(daemon, "/api/workflows"))
+    .find((summary) => summary.name === COPY)!.id;
+
+  const row = reviewerRow(dashboard, INTENT);
+  await row.getByRole("button", { name: new RegExp(`^Model routing for ${INTENT}`) }).click();
+  await row.getByRole("combobox", { name: `Model routing for ${INTENT}` }).selectOption("override");
+  await row.getByRole("combobox", { name: `Provider for ${INTENT}` }).selectOption("codex");
+  const model = row.getByRole("combobox", { name: `Model for ${INTENT}` });
+  const effort = row.getByRole("combobox", { name: `Effort for ${INTENT}` });
+  await model.selectOption("gpt-5.6-sol");
+  await effort.selectOption("max");
+  await expect
+    .poll(() => overrides(daemon, workflowId), { timeout: 15_000 })
+    .toEqual([{ runner: "codex", model: "gpt-5.6-sol", effort: "max" }]);
+
+  // Now move to a model that has no `max`. The choice is kept and flagged, never dropped.
+  await model.selectOption("gpt-5.6-luna");
+  await expect(effort).toHaveValue("max");
+  await expect(effort.locator("option:checked")).toHaveText("max (unsupported)");
+  await expect(row.getByRole("status").filter({ hasText: "do not support max effort" })).toBeVisible();
+  // The row's routing line flags it too, rather than reading as a level the node will get.
+  await expect(row).toContainText("codex · gpt-5.6-luna · max effort unsupported, provider default · this workflow");
+  await expect
+    .poll(() => overrides(daemon, workflowId), { message: "the flagged level is saved, not silently cleared", timeout: 15_000 })
+    .toEqual([{ runner: "codex", model: "gpt-5.6-luna", effort: "max" }]);
+
+  // And Publish refuses it. The workflow list counts the error, and the Graph view's validation
+  // rail names the rule.
+  await expect(dashboard.getByRole("button", { name: "Publish" })).toBeDisabled();
+  await expect(dashboard.getByRole("button").filter({ has: dashboard.getByText(COPY, { exact: true }) }))
+    .toContainText("1 errors");
+  await shoot(dashboard, "node-effort-unsupported");
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+  const rail = dashboard.getByRole("complementary", { name: "Workflow properties and validation" });
+  await expect(rail).toContainText("codex · gpt-5.6-luna does not support max effort.", { timeout: 15_000 });
+  await expect(rail.locator("code.workflow-diagnostic-code", { hasText: "unsupported_effort" })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: "Publish" })).toBeDisabled();
+  const diagnostic = rail.locator("li").filter({ hasText: "unsupported_effort" });
+  await diagnostic.scrollIntoViewIfNeeded();
+  await shoot(diagnostic.locator("xpath=.."), "node-effort-unsupported-diagnostic");
+  // The publish route refuses it too, so the gate is not only a disabled button.
+  const refused = await fetch(`${daemon.baseURL}/api/workflows/${workflowId}/publish`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedDraftRevision: (await api<{ workflow: { draftRevision: number } }>(daemon, `/api/workflows/${workflowId}`)).workflow.draftRevision }),
+  });
+  expect(refused.ok).toBe(false);
+  expect(await refused.text()).toContain("unsupported_effort");
+});
+
 test("a Persona's own effort is edited beside its model and survives a save and a reload", async ({
   dashboard,
   daemon,
@@ -167,47 +227,22 @@ test("a Persona's own effort is edited beside its model and survives a save and 
     .toBeDisabled();
 });
 
-test("a published node effort is the effort a run launches with and reports beside the model", async ({
-  dashboard,
-  daemon,
-}) => {
-  const persona = await api<{ id: string }>(daemon, "/api/personas", {
-    name: "E2E effort reviewer",
-    guidanceMarkdown: "# E2E effort reviewer\n\nE2E_PASS_VERDICT",
-  });
-  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E effort workflow",
-    draft: {
-      nodes: [
-        { id: "s", kind: "session", position: { x: 0, y: 0 } },
-        {
-          id: "r",
-          kind: "persona",
-          personaId: persona.id,
-          position: { x: 220, y: 0 },
-          executionOverride: { runner: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
-        },
-        { id: "e", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
-      ],
-      edges: [
-        { id: "a", source: "s", sourcePort: "submitted", target: "r", targetPort: "activate" },
-        { id: "b", source: "r", sourcePort: "pass", target: "e", targetPort: "terminal" },
-        { id: "c", source: "r", sourcePort: "fail", target: "s", targetPort: "return_for_changes" },
-      ],
-    },
-  });
-  const published = await api<{ version: { id: string } }>(
-    daemon,
-    `/api/workflows/${workflow.workflow.id}/publish`,
-    { expectedDraftRevision: 1 },
-  );
-
-  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  await dashboard.getByRole("button", { name: "Dispatch" }).click();
-  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+/**
+ * Dispatch a session, bind a published version to it, submit, and wait for the run to finish.
+ * Returns the run id and the `codex exec` argv lines the fake recorded.
+ */
+async function runPublished(
+  page: Page,
+  daemon: DaemonHandle,
+  versionId: string,
+  requestId: string,
+): Promise<{ runId: string; codexExecs: string[] }> {
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
-  await dashboard.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill("hold a session for the effort spec");
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
@@ -224,14 +259,14 @@ test("a published node effort is the effort a run launches with and reports besi
     .toBe("idle");
 
   const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
-    workflowVersionId: published.version.id,
+    workflowVersionId: versionId,
     sessionId,
     deliveryMode: "preview",
   });
   const submitted = await api<{ run: { id: string } }>(
     daemon,
     `/api/workflow-bindings/${binding.id}/submit`,
-    { requestId: "e2e-node-effort" },
+    { requestId },
   );
   await expect
     .poll(async () => (await api<{ run: { status: string } }>(
@@ -242,15 +277,100 @@ test("a published node effort is the effort a run launches with and reports besi
 
   const codexDir = join(daemon.recordDir, "codex");
   expect(existsSync(codexDir), "the Codex fake should have been launched").toBeTruthy();
-  const invocations = readdirSync(codexDir)
+  const codexExecs = readdirSync(codexDir)
     .filter((name) => name.startsWith("invocation-"))
     .map((name) => JSON.parse(readFileSync(join(codexDir, name), "utf8")) as { argv: string[] })
     .map((record) => record.argv.join(" "))
     .filter((argv) => argv.startsWith("exec"));
-  expect(invocations.some((argv) => argv.includes("model_reasoning_effort=xhigh"))).toBeTruthy();
+  return { runId: submitted.run.id, codexExecs };
+}
 
-  await dashboard.goto(`${daemon.baseURL}/#/runs/${submitted.run.id}`);
+/** A one-reviewer draft whose single Persona node is `node`. */
+function oneReviewerDraft(node: Record<string, unknown>) {
+  return {
+    nodes: [
+      { id: "s", kind: "session", position: { x: 0, y: 0 } },
+      { id: "r", kind: "persona", position: { x: 220, y: 0 }, ...node },
+      { id: "e", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+    ],
+    edges: [
+      { id: "a", source: "s", sourcePort: "submitted", target: "r", targetPort: "activate" },
+      { id: "b", source: "r", sourcePort: "pass", target: "e", targetPort: "terminal" },
+      { id: "c", source: "r", sourcePort: "fail", target: "s", targetPort: "return_for_changes" },
+    ],
+  };
+}
+
+test("a published node effort is the effort a run launches with and reports beside the model", async ({
+  dashboard,
+  daemon,
+}) => {
+  const persona = await api<{ id: string }>(daemon, "/api/personas", {
+    name: "E2E effort reviewer",
+    guidanceMarkdown: "# E2E effort reviewer\n\nE2E_PASS_VERDICT",
+  });
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E effort workflow",
+    draft: oneReviewerDraft({
+      personaId: persona.id,
+      executionOverride: { runner: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
+    }),
+  });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+
+  const { runId, codexExecs } = await runPublished(dashboard, daemon, published.version.id, "e2e-node-effort");
+  expect(codexExecs.some((argv) => argv.includes("model_reasoning_effort=xhigh"))).toBeTruthy();
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   await expect(dashboard.locator(".wf-pipeline-reviewer").filter({ hasText: "E2E effort reviewer" }))
     .toContainText("codex · gpt-5.6-sol · xhigh effort", { timeout: 15_000 });
   await shoot(dashboard, "run-detail-effort");
+});
+
+test("an effort the run's model cannot run is not passed, and run detail says so beside the model", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Every write path refuses this combination, so it is seeded the way a capability change or
+  // a restored row would leave it: a Persona on gpt-5.6-luna whose stored effort is `max`.
+  // Publish freezes it, and the run is what has to notice.
+  const persona = await api<{ id: string }>(daemon, "/api/personas", {
+    name: "E2E dropped effort reviewer",
+    guidanceMarkdown: "# E2E dropped effort reviewer\n\nE2E_PASS_VERDICT",
+    runner: "codex",
+    model: "gpt-5.6-luna",
+  });
+  withDaemonDb(daemon, (db) => {
+    db.prepare("UPDATE personas SET effort = 'max' WHERE id = ?").run(persona.id);
+  });
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E dropped effort workflow",
+    draft: oneReviewerDraft({ personaId: persona.id }),
+  });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  const version = await api<{ graph: { nodes: Array<{ kind: string; persona?: { effort?: string } }> } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/versions/1`,
+  );
+  expect(version.graph.nodes.find((node) => node.kind === "persona")?.persona?.effort).toBe("max");
+
+  const { runId, codexExecs } = await runPublished(dashboard, daemon, published.version.id, "e2e-dropped-effort");
+  expect(codexExecs.some((argv) => argv.includes("gpt-5.6-luna"))).toBeTruthy();
+  expect(
+    codexExecs.some((argv) => argv.includes("model_reasoning_effort")),
+    "an effort the model cannot run must not reach the CLI",
+  ).toBe(false);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  await expect(dashboard.locator(".wf-pipeline-reviewer").filter({ hasText: "E2E dropped effort reviewer" }))
+    .toContainText("codex · gpt-5.6-luna · max effort unsupported, provider default", { timeout: 15_000 });
+  await shoot(dashboard, "run-detail-effort-unsupported");
 });

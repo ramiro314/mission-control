@@ -1,6 +1,6 @@
 import { DEFAULT_LLM_RUNNER_ID, type LlmRunnerId } from "@shared/llm.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
-import { routingLine } from "@shared/workflow.ts";
+import { resolvePersonaEffort, routingLine } from "@shared/workflow.ts";
 import type { PersonaSnapshot, PersonaView, WorkflowNodeExecutionOverride } from "@shared/workflow.ts";
 
 /** What seeds a new override: the Persona's resolved provider, model and effort. */
@@ -73,7 +73,10 @@ export function nodeRoutingLabel(
   inherited: string | null,
 ): string {
   if (override) {
-    return `${routingLine(override.runner, override.model, override.effort)} · ${NODE_ROUTING_SOURCE_LABEL.workflow}`;
+    // Resolved against the override's own pair, so a level that pair cannot run reads as
+    // unsupported on the row rather than as a level the node will get.
+    const effort = resolvePersonaEffort(override.runner, override.model, override.effort);
+    return `${routingLine(override.runner, override.model, effort)} · ${NODE_ROUTING_SOURCE_LABEL.workflow}`;
   }
   return inherited === null
     ? "no reviewer this build can resolve"

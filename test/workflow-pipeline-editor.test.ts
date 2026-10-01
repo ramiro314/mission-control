@@ -465,6 +465,11 @@ test("the routing form carries effort: seeded from the Persona, committed with t
   assert.equal(sameNodeExecutionOverride(saved, { ...saved, effort: "high" }), false);
   assert.equal(sameNodeExecutionOverride({ runner: "claude", model: "m" }, { runner: "claude", model: "m" }), true);
   assert.equal(nodeRoutingLabel(saved, null), "claude · claude-opus-5-5 · max effort · this workflow");
+  // A level the override's own pair cannot run is flagged on the row, not printed as if it applied.
+  assert.equal(
+    nodeRoutingLabel({ runner: "codex", model: "gpt-5.6-luna", effort: "max" }, null),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default · this workflow",
+  );
   // No effort reads exactly as it did before effort existed.
   assert.equal(nodeRoutingLabel({ runner: "claude", model: "m" }, null), "claude · m · this workflow");
 });
