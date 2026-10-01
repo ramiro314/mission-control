@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +29,12 @@ test("a stale WezTerm action reports refusal and fresh discovery restores delive
   await start();
   try {
     const state = { cwd: daemon.repo, requestedTitle: "", tabTitle: "", argv: [], startedAt: Date.now(), socket, freezeDiscovery: false };
-    const save = () => writeFileSync(join(daemon.home, "terminal-boundary.json"), JSON.stringify(state));
+    // The daemon reads this file on every tick, so it must never see it half-written.
+    const save = () => {
+      const path = join(daemon.home, "terminal-boundary.json");
+      writeFileSync(`${path}.tmp`, JSON.stringify(state));
+      renameSync(`${path}.tmp`, path);
+    };
     save();
     const session = async (): Promise<Session | undefined> =>
       ((await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[]).find((s) => s.pid === 900002);
@@ -49,7 +54,9 @@ test("a stale WezTerm action reports refusal and fresh discovery restores delive
     };
     await working();
     state.freezeDiscovery = true; save();
-    // Allow any already-started observation to settle before replacing the socket.
+    // Wait until the session holds the original pane. From here every tick replays it: the
+    // fixture discards a listing that straddles the freeze, so replacing the socket below
+    // cannot drop the handle the stale action has to be refused through.
     await expect.poll(async () => (await session())?.terminals[0]?.incarnation).toBe(original.terminals[0]!.incarnation);
     await stop(); await start();
     const failed = dashboard.waitForResponse((r) => r.url().endsWith("/interrupt") && r.request().method() === "POST");
