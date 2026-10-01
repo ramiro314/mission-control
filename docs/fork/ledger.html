@@ -199,6 +199,23 @@ cancelled or failed one. From that follow-up&#39;s session, <code>create_task</c
 <code>dependsOnCurrentSession</code> links the ticket to the source shape task with an already-satisfied
 edge pinned to that merge, never to the follow-up
 (<a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge</a> sections 3 and 5).</li>
+<li><strong>Create tickets</strong> on a merged shape task (the Sitrep&#39;s Recent outcomes row) creates and
+dispatches <code>Tickets: &lt;shape title&gt;</code>, a linked shape task in tickets-only mode, through
+<code>POST /api/tasks/:id/shape-tickets</code>. Accepted only for a done shape task with a merged PR
+posture (<code>retroPrPostureForTask</code>, the post-merge Retro&#39;s check) and no live or done
+follow-up; otherwise 409 with the reason. The follow-up keeps the source&#39;s repositories, has
+After work None (<code>workflowId: null</code>), and runs on the source&#39;s agent, or the configured shape
+agent when that one cannot run <code>tickets</code>. A refused launch leaves it in the backlog with the
+reason as its error. The wire <code>Task.shapeTickets</code> (<code>followupTaskId</code>, <code>canCreate</code>) is derived
+by the Registry on every publish of a shape task, and a follow-up&#39;s status change re-sends its
+source.</li>
+<li>The tickets-only contract names the source task, its merged PR and branch, invokes only
+<code>tickets</code>, and asks with <code>request_input</code> when the merged PR does not show exactly one plan.
+<code>complete_shape_tickets</code> (<code>filed</code> or <code>dismissed</code>), granted only to follow-up launches, completes
+the follow-up and closes its session; it is refused for any other session and idempotent on
+replay. The tickets skill&#39;s follow-up mode skips the tickets file, its commit and push, and the
+&quot;record the ids&quot; step; in-session mode is unchanged
+(<a href="../plans/shape-tickets-after-merge/plan.md">shape-tickets-after-merge</a> sections 5 to 7).</li>
 <li><strong>Shape this</strong> works on any backlog task that is not already shape and keeps its source link,
 labels, priority and dependencies. A refused Shape this leaves the task unchanged (#21).</li>
 <li>Upstream&#39;s <code>plan</code> kind is unchanged.</li>
@@ -223,23 +240,28 @@ row and task link in one transaction) keep their semantics.</li>
 <code>src/server/plans/{skills,tools}.ts</code>, <code>src/server/foreman/{plan-publication,worker,wrapup-eligibility}.ts</code>,
 <code>src/mcp/server.ts</code>, <code>src/server/schedules/store.ts</code>, <code>src/server/archives/task-gateway.ts</code>,
 <code>src/server/task-sources/{push,github-issues}.ts</code>, <code>src/shared/{task,task-completion,types,protocol,task-source}.ts</code>,
-<code>src/shared/telemetry-sources/{primary-actions,action-exclusions}.ts</code>.</li>
+<code>src/shared/telemetry-sources/{primary-actions,action-exclusions}.ts</code>, <code>src/server/registry.ts</code>
+(derives <code>Task.shapeTickets</code> on publish).</li>
 <li>Routes: new <code>POST /mcp/v3/tasks</code>, <code>POST /mcp/backlog</code>, <code>POST /mcp/push-task</code>,
-<code>POST /api/tasks/:id/shape</code> (#21); <code>GET /api/harnesses/config</code> and <code>GET /api/skills</code> list
+<code>POST /api/tasks/:id/shape</code> (#21), <code>POST /api/tasks/:id/shape-tickets</code>,
+<code>POST /mcp/shape-tickets/complete</code>; <code>GET /api/harnesses/config</code> and <code>GET /api/skills</code> list
 shape and grill.</li>
 <li>Protocol: <code>TASK_KINDS</code> (+<code>&quot;shape&quot;</code>), <code>MCP_TASK_KINDS</code>, <code>SCHEDULE_TASK_KINDS</code>,
 <code>isPlanningTaskKind</code>, <code>McpCreateTicketSchema</code>, <code>McpAdoptTicketSchema</code>,
 <code>McpCreateTaskV3Schema</code>, <code>McpListBacklogSchema</code>, <code>McpPushTaskSchema</code>,
-<code>PushDraft.blockedBy</code> and <code>.parent</code>.</li>
+<code>PushDraft.blockedBy</code> and <code>.parent</code>, <code>CompleteShapeTicketsSchema</code>, <code>Task.shapeTickets</code>.</li>
 <li>Registries: <code>PLANNING_SKILLS</code>, <code>KIND_MISSION_MCP_TOOLS.shape</code>, <code>MISSION_MCP_TOOLS</code>,
 <code>PRIMARY_ACTION_ROUTES</code>, <code>ACTION_EXCLUSIONS</code>.</li>
-<li>MCP tools: new <code>list_backlog_tasks</code> and <code>push_task</code>; <code>create_task</code> gains ticket and adopt fields.</li>
+<li>MCP tools: new <code>list_backlog_tasks</code>, <code>push_task</code> and <code>complete_shape_tickets</code>; <code>create_task</code>
+gains ticket and adopt fields.</li>
 <li>DB: new <code>shape_ticket_followups</code> table (created with the base schema, so an existing database
 gains it on open).</li>
 <li>UI: <code>DispatchModal.tsx</code>, <code>layouts/BacklogColumn.tsx</code> and <code>line/BacklogDrawer.tsx</code> (Shape this),
-<code>schedules/ScheduleEditor.tsx</code>, <code>src/web/lib/guided-dispatch-steps.ts</code>.</li>
+<code>ReportPanel.tsx</code> (Create tickets), <code>schedules/ScheduleEditor.tsx</code>,
+<code>src/web/lib/guided-dispatch-steps.ts</code>.</li>
 </ul>
-<p><strong>Fork-only files.</strong> <code>src/server/plans/shape.ts</code>, <code>src/mcp/unknown-route.ts</code>, <code>skills/grill/</code>,
+<p><strong>Fork-only files.</strong> <code>src/server/plans/shape.ts</code>, <code>src/server/shape-tickets.ts</code>,
+<code>src/server/shape-tickets-followup.ts</code>, <code>src/mcp/unknown-route.ts</code>, <code>skills/grill/</code>,
 <code>skills/tickets/</code>, <code>docs/plans/shape-task-kind/</code>,
 <code>docs/reports/grill-tickets-implement-in-mission-control/</code>.</p>
 <h3>Task-source relations and dependency sync</h3>

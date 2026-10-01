@@ -19,6 +19,15 @@ This skill adapts Matt Pocock's `to-tickets` skill (MIT License, Copyright (c) 2
 delivery: the breakdown is approved in a Mission Control decision form, and the tickets become
 backlog tasks with dependency edges rather than files or tracker issues.
 
+## Two modes
+
+- **Follow-up mode**, when the delivered contract says this session is a **tickets follow-up**
+  of a merged shape task (tickets-only mode). The plan has already merged, so the plan pointer
+  resolves on the default branch, and the tasks and any mirrored items are the record. Section 4
+  says what this mode skips, and the session ends by calling `complete_shape_tickets`.
+- **In-session mode**, every other caller, including a shaping session that reaches this skill
+  from its own plan review. Everything below applies as written.
+
 ## 1. Slice the plan
 
 Work from the approved plan and the decisions it records. Read the code it touches, so ticket
@@ -116,7 +125,8 @@ Then call `request_plan_decisions` once:
 The tool blocks until the human submits or dismisses:
 
 - **Dismissed:** stop. Write nothing, commit nothing, create nothing. Never read a dismissal as
-  approval, and never fall back to your recommendations. Say the breakdown was dismissed.
+  approval, and never fall back to your recommendations. Say the breakdown was dismissed. In
+  follow-up mode, then call `complete_shape_tickets` with outcome `dismissed`.
 - **Submitted with Other text on any ticket:** that is a change request, not an approval. Revise
   the breakdown and ask again with a fresh breakdown review. Nothing is filed from a form that
   asked for changes.
@@ -125,6 +135,12 @@ The tool blocks until the human submits or dismisses:
 - **Submitted:** the breakdown is approved as shown. Go on.
 
 ## 4. On submit
+
+**In follow-up mode, skip steps 1, 2 and 5**: write no tickets file, commit and push nothing, and
+record no ids in a file. The plan the tickets point at has already merged. File and mirror the
+tickets (steps 3 and 4) exactly as below, with one difference: `dependsOnCurrentSession: true`
+links each ticket to the **merged shape task** with an edge that is already satisfied, so a
+ticket waits only on its own blockers. Your final report (step 6) is the record.
 
 1. **Write** `docs/plans/<name>/tickets.md` beside the plan: every ticket in dependency order with
    its title, kind, labels, blocked-by and full body, and a **Task** column that will hold its
@@ -140,7 +156,8 @@ The tool blocks until the human submits or dismisses:
    - `dependsOnTaskIds`: the task ids of this ticket's blockers, as earlier calls returned them
      (an adopted blocker's id is the adopted task's id);
    - `dependsOnCurrentSession: true` on every ticket, so none starts before this planning session's
-     pull request merges the plan it points at;
+     pull request merges the plan it points at. In follow-up mode it links the ticket to the merged
+     shape task instead, already satisfied;
    - for an adopted ticket, send `adoptTaskId: <task id>` with only `dependsOnTaskIds` and
      `dependsOnCurrentSession`, plus the same `repository` you passed to `list_backlog_tasks` when
      you named one. Nothing is created: those edges are added to that task and the rest
@@ -162,23 +179,28 @@ The tool blocks until the human submits or dismisses:
 
 If a `create_task` call fails, stop there: do not file the tickets that depend on it. Tasks
 already filed stay. Before retrying a call whose outcome you do not know, check
-`list_backlog_tasks` so a retry never files a ticket twice. Record in `tickets.md` which tickets
-were filed and which were not, and report the failure.
+`list_backlog_tasks` so a retry never files a ticket twice. Record in `tickets.md` (in-session
+mode) which tickets were filed and which were not, and report the failure. In follow-up mode, do
+not call `complete_shape_tickets`: the follow-up stays open for the human.
 
 If a `push_task` call fails:
 
 - The Mission Control tasks stay. They are the source of truth; never delete or re-file them.
 - Do not push the tickets that depend on the failed one, directly or through another ticket: their
   blocked-by links would be missing. Keep pushing the tickets that do not depend on it.
-- Record the failure in the Issue column (`not pushed: <reason>`), and report which tickets were
-  pushed, which failed, and which were held back.
+- Record the failure in the Issue column (`not pushed: <reason>`, in-session mode), and report
+  which tickets were pushed, which failed, and which were held back.
 - A retry is idempotent: `push_task` on a ticket that already has an item returns that item with
   `alreadyPushed: true` and files nothing. A failure that says nothing was published is safe to
   retry once. An `outcomeUnknown` failure means the item may exist: do not retry it. Tell the
   human to check the tracker first, because a blind retry files a duplicate.
 
-Finish by reporting the tickets file, the ticket-to-task map (new and adopted), the blocking
-edges, and which tickets can run in parallel.
+6. **Report.** Finish by reporting the tickets file (in-session mode only), the ticket-to-task map
+   (new and adopted), the blocking edges, and which tickets can run in parallel.
+7. **Follow-up mode only: complete.** After the last ticket is filed, and pushed when mirroring was
+   chosen, call `complete_shape_tickets` with outcome `filed`. It completes the follow-up task and
+   closes this session, so it is the last call you make. When a `create_task` or `push_task` call
+   failed, do not call it: report the failure and leave the follow-up open for the human.
 
 ## What not to do
 

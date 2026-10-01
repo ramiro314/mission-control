@@ -74,6 +74,7 @@ import {
 } from "./mission-mcp.ts";
 import { planningSkillsForAgent, type PlanningSkillsForAgent } from "./plans/skills.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { withShapeTicketsCompletion } from "./shape-tickets.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
   discardScoutPromptBoundary,
@@ -390,7 +391,11 @@ export class Dispatcher {
         return;
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
-      const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence);
+      const missionMcp = kindMissionMcpRequirement(
+        task,
+        withShapeTicketsCompletion(task, options.missionMcp ?? null),
+        workflowEvidence,
+      );
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.

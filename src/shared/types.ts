@@ -2364,10 +2364,28 @@ export interface Task {
    * FAILED are the task's own record, and a maintenance note must never overwrite either.
    */
   automaticCleanup: TaskAutomaticCleanup | null;
+  /**
+   * A shape task's tickets follow-up, derived by the server and null for every other kind.
+   *
+   * Optional because it is a projection, not a column: the server fills it on every
+   * `task_upsert` it publishes, and re-sends the source whenever one of its follow-ups moves.
+   */
+  shapeTickets?: TaskShapeTickets | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
   completedAt: number | null;
+}
+
+/** What a shape task knows about the linked shape tasks that slice its merged plan. */
+export interface TaskShapeTickets {
+  /** The newest tickets follow-up of this task, whatever its status, or null when none. */
+  followupTaskId: string | null;
+  /**
+   * Whether **Create tickets** would be accepted now: the task is a done shape task whose
+   * pull request merged, and none of its follow-ups is live or done. The route re-checks.
+   */
+  canCreate: boolean;
 }
 
 // ---- backlog autopilot (Foreman scheduling the backlog) ----

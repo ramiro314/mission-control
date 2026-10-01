@@ -230,6 +230,14 @@ export interface DispatchResult extends ActionResult {
   fix?: WorkflowLaunchFix;
 }
 
+/** **Create tickets** on a merged shape task: its follow-up, launched or waiting with a reason. */
+export interface ShapeTicketsResult extends ActionResult {
+  kind?: "started" | "queued";
+  task?: Task;
+  /** Why the follow-up's launch was refused; it waits in the backlog. */
+  reason?: string;
+}
+
 /**
  * A scout completion refusal that is also a confirmation prompt. The daemon includes the
  * problems it just verified so the operator confirms this exact missing archive state.
@@ -1856,6 +1864,10 @@ export const api = {
    */
   shapeBacklog: (id: string) =>
     post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/shape`, { overrideDisabled: true }),
+  // Create and dispatch a done, merged shape task's tickets follow-up. 409 with the reason
+  // when the task is not eligible (see `shapeTicketsAcceptance`).
+  createShapeTickets: (id: string) =>
+    post<ShapeTicketsResult>(`/api/tasks/${encodeURIComponent(id)}/shape-tickets`, {}),
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>

@@ -6222,6 +6222,17 @@ export function shapeTicketFollowupForTask(
   return row ? shapeTicketFollowupFromRow(row) : null;
 }
 
+/** Every tickets follow-up of one source shape task, newest first. */
+export function shapeTicketFollowupsForSource(sourceTaskId: string): ShapeTicketFollowupRelation[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM shape_ticket_followups WHERE source_task_id = ?
+       ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(sourceTaskId) as unknown as ShapeTicketFollowupRow[];
+  return rows.map(shapeTicketFollowupFromRow);
+}
+
 /**
  * Reserve a tickets follow-up id against its merged source, before its Task row is created.
  *

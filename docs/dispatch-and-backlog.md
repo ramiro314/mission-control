@@ -389,6 +389,25 @@ failed one are not pushed, and the failure is reported. Retrying is safe: a tick
 an issue is never filed again, and a push whose outcome is unknown is not retried until someone has
 checked the tracker.
 
+**Create tickets from a merged shape task.** Once a shape task is done because its plan's pull
+request merged, its row under **Recent outcomes** in the Sitrep offers **Create tickets**. It is
+offered only while the task has no tickets follow-up that is waiting, running or done, and the
+daemon re-checks that rule, refusing with the reason when it no longer holds. The click creates
+and dispatches a linked shape task, `Tickets: <shape title>`, in **tickets-only mode**: it keeps
+the shape task's repositories, runs with After work **None** rather than the shape default, and
+uses the shape task's agent, or the configured shape agent when that one cannot run the Tickets
+skill. Its contract names the shape task, its merged pull request and branch, and runs only the
+Tickets skill against the merged plan; when that pull request does not show exactly one
+`docs/plans/<name>/plan.md`, the agent asks you which plan to slice. The breakdown review is
+the same, but no tickets file is written or committed: the tasks, and any mirrored issues, are
+the record. Each ticket is linked to the merged shape task with an edge that is already
+satisfied, so it waits only on its own blockers, and mirrored tickets stay sub-issues of the
+shape task's issue. The follow-up finishes itself through `complete_shape_tickets` once the
+tickets are filed, or once you dismiss the breakdown, and its session closes. A failed
+`create_task` or `push_task` leaves it open for you instead. When its launch is refused, the
+follow-up waits in the backlog with the reason, for you to launch. After a cancelled or failed
+follow-up, **Create tickets** is offered again.
+
 A shape task needs **Grill, HTML Plans and Tickets switched on**. With any of them off the
 dispatch is refused on the form, naming the toggle. It takes plan's completion boundary, pull-request
 ownership rules and archive capture, and its default After work is **Plan Validation**. It can

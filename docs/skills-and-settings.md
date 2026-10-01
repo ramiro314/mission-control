@@ -157,7 +157,11 @@ Each ticket body (what to build, acceptance criteria, blocked by, test seams, an
 plan; no other file paths, under 3000 characters) becomes the task's intent. It then opens the
 **breakdown review**, your final approval, as one `request_plan_decisions` form. Only after you
 submit it does it write `docs/plans/<name>/tickets.md` and its HTML page, commit and push them,
-and file each ticket with `create_task`; a dismissed breakdown files nothing. It adapts Matt
+and file each ticket with `create_task`; a dismissed breakdown files nothing. In a shape task's
+tickets follow-up (**Create tickets** on a merged shape task) it runs in **follow-up mode**: the
+plan has already merged, so it writes, commits and pushes no tickets file and records no ids in
+one, and it ends by calling `complete_shape_tickets`, which completes the follow-up and closes
+its session. Every other caller keeps the flow above. It adapts Matt
 Pocock's `to-tickets` skill (MIT, credited in the skill and in `NOTICE`) and does not depend on the
 mattpocock-skills plugin. The procedure lives in
 [`skills/tickets/SKILL.md`](../skills/tickets/SKILL.md).

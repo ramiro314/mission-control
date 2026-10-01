@@ -35,7 +35,12 @@ import { reportProductFeedback, reportProductIssueWithConfirmation } from "./pro
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import {
+  MAX_TASK_EXTRA_REPOS,
+  ProductIssueDraftSchema,
+  SHAPE_TICKETS_OUTCOMES,
+  WorkflowCommandExitCodeSchema,
+} from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { isUnknownRoute } from "./unknown-route.ts";
@@ -948,6 +953,50 @@ server.registerTool(
         body.replayed
           ? `Mission Control is already tracking ${path}.`
           : `Mission Control now tracks Pipeline files and diffs in ${path}.`,
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// How a shape task's TICKETS FOLLOW-UP finishes. It accepts no task id: the daemon derives the
+// calling Task from inherited session evidence and refuses unless that Task is recorded as a
+// tickets follow-up. Completing it also closes the session, so this is the last call it makes.
+server.registerTool(
+  "complete_shape_tickets",
+  {
+    title: "Finish a tickets follow-up",
+    description:
+      "Use only in a shape task's tickets follow-up, as its last call. Report `filed` after the " +
+      "last approved ticket is filed (and pushed, when mirroring was chosen), or `dismissed` when " +
+      "the breakdown review was dismissed. Mission Control completes this task and closes its " +
+      "session. Do not call it after a failed create_task.",
+    inputSchema: {
+      outcome: z.enum(SHAPE_TICKETS_OUTCOMES).describe("`filed` or `dismissed`"),
+    },
+  },
+  async ({ outcome }) => {
+    try {
+      const res = await http("/mcp/shape-tickets/complete", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        outcome,
+      });
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused to finish the tickets follow-up (${res.status}): ${await res.text()}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as { replayed?: boolean };
+      return textResult(
+        body.replayed
+          ? "This tickets follow-up was already finished with that outcome."
+          : outcome === "filed"
+            ? "Tickets follow-up complete: tickets filed. Mission Control is closing this session."
+            : "Tickets follow-up complete: breakdown dismissed, nothing filed. Mission Control is closing this session.",
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
