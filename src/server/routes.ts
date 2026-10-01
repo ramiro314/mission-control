@@ -30,6 +30,7 @@ import {
   BacklogPlanSchema,
   CompleteTaskSchema,
   CompleteRetroNoChangeSchema,
+  CompleteShapeTicketsSchema,
   SetAffectedTestsCommandSchema,
   TestingSetupStartSchema,
   ComposerActivitySchema,
@@ -252,6 +253,7 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
+import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -4843,6 +4845,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return pushOutcomeResponse(c, r);
   });
 
+  /**
+   * `complete_shape_tickets`: a tickets follow-up reports `filed` or `dismissed`.
+   *
+   * The session is resolved from its env and `completeShapeTickets` refuses any session whose
+   * task is not in `shape_ticket_followups`. Completion records the durable closure of a
+   * dispatched follow-up's session, which `sessionClosureRequested` reports as the generic
+   * completion route does.
+   */
+  app.post("/mcp/shape-tickets/complete", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, CompleteShapeTicketsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, outcome } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching active session" }, 404);
+    const result = await tasks.completeShapeTickets(session.id, cwd, outcome);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({
+      task: result.task,
+      sourceTaskId: result.sourceTaskId,
+      replayed: result.replayed,
+      sessionClosureRequested: taskHasWorktrees(result.task) && result.task.sessionId !== null,
+    });
+  });
+
   app.post("/mcp/retros/no-change", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CompleteRetroNoChangeSchema);
@@ -8078,6 +8105,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
+  });
+
+  /**
+   * **Create tickets** on a merged shape task: create and dispatch its tickets follow-up.
+   *
+   * `startShapeTicketsFollowup` re-checks `shapeTicketsAcceptance` rather than trusting the
+   * menu, so a task that is not a done, merged shape task, or that already has a live or done
+   * follow-up, is a 409 with the reason. A follow-up whose launch is refused is still created
+   * and answers `queued` with that reason; it waits in the backlog.
+   */
+  app.post("/api/tasks/:id/shape-tickets", async (c) => {
+    const result = await startShapeTicketsFollowup(c.req.param("id"), { tasks });
+    if (result.kind === "refused") return c.json({ error: result.error }, result.status);
+    return c.json(result);
   });
 
   /**

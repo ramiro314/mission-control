@@ -33,3 +33,10 @@ export const BACKLOG_LIST_TOOL = "list_backlog_tasks" as const;
 
 /** How a shape task's breakdown mirrors each filed ticket to the repository's task source. */
 export const PUSH_TASK_TOOL = "push_task" as const;
+
+/**
+ * How a shape task's tickets follow-up finishes: it reports `filed` or `dismissed`, and
+ * Mission Control completes the follow-up and closes its session. Granted only to a tickets
+ * follow-up's launch, and refused for any session whose task is not one.
+ */
+export const COMPLETE_SHAPE_TICKETS_TOOL = "complete_shape_tickets" as const;

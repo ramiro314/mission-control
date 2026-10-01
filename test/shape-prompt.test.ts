@@ -24,6 +24,7 @@ import {
 } from "../src/server/plans/skills.ts";
 import {
   BACKLOG_LIST_TOOL,
+  COMPLETE_SHAPE_TICKETS_TOOL,
   PLAN_DECISIONS_TOOL,
   PLAN_PUBLICATION_TOOL,
   PLAN_SCHEDULING_TOOL,
@@ -193,6 +194,79 @@ test("the bundled tickets skill slices, reviews, and files the way the contract 
   assert.match(skill, /MIT License/);
   assert.doesNotMatch(skill, /mattpocock-skills:/);
   assert.match(src("NOTICE"), /skills\/tickets[\s\S]*Copyright \(c\) 2026 Matt Pocock/);
+});
+
+// ---------------------------------------------------------------------------
+// Tickets-only mode: a follow-up of a merged shape task
+// ---------------------------------------------------------------------------
+
+test("a tickets follow-up gets the tickets-only contract, naming its merged source", async () => {
+  const { bindTaskWorkEpisode, reserveShapeTicketFollowup } = await import("../src/server/db.ts");
+  bindTaskWorkEpisode({
+    taskId: "contract-source",
+    episodeId: "contract-episode",
+    sessionId: "contract-session",
+    agentSessionId: "agent:contract",
+    branch: "shape/exports",
+    prUrl: "https://github.com/acme/demo/pull/7",
+    prHeadSha: "a".repeat(40),
+    mergedAt: 2_000,
+    boundAt: 100,
+    updatedAt: 2_000,
+  });
+  reserveShapeTicketFollowup({
+    followupTaskId: "contract-followup",
+    sourceTaskId: "contract-source",
+    sourceEpisodeId: "contract-episode",
+    sourceSessionId: "contract-session",
+    sourcePrUrl: "https://github.com/acme/demo/pull/7",
+    now: 1,
+  });
+  const followup = mkTask({ id: "contract-followup", title: "Tickets: Shape exports" });
+  const delivered = withTaskKindContract(followup, followup.intent, { planSkills: CLAUDE_SKILLS });
+
+  assert.match(delivered, new RegExp(escape(SHAPE_APPENDIX_MARKER)));
+  assert.match(delivered, /tickets follow-up of a merged shape task, in tickets-only mode/);
+  assert.match(delivered, /Source shape task: .*\(contract-source\)/);
+  assert.match(delivered, /Merged pull request: https:\/\/github\.com\/acme\/demo\/pull\/7/);
+  assert.match(delivered, /Merged branch: shape\/exports/);
+  // Only the tickets skill, in follow-up mode.
+  assert.match(delivered, new RegExp(`Invoke the ${SHAPE_TICKETS_SKILL_ID} skill in follow-up mode[\\s\\S]*/tickets`));
+  assert.ok(!delivered.includes("/grill"), "no interview");
+  assert.ok(!delivered.includes("/html-plans"), "no plan is written");
+  assert.doesNotMatch(delivered, /No workflow was selected/, "no pull request is opened");
+  // Exactly one plan file, or ask.
+  assert.match(delivered, /does not show exactly one such plan[\s\S]*`request_input`/);
+  // Skips the tickets file, links each ticket to the merged shape task, and finishes through the tool.
+  assert.match(delivered, /do not write, commit or push `tickets\.md` or `tickets\.html`/);
+  assert.match(delivered, /`dependsOnCurrentSession: true`, which links it to the merged shape task/);
+  assert.match(delivered, new RegExp(`\`${COMPLETE_SHAPE_TICKETS_TOOL}\` with outcome \`filed\``));
+  assert.match(delivered, /`dismissed` when the breakdown review is dismissed/);
+  assert.match(delivered, /If a create_task or push_task call fails, do not call\s+it/);
+
+  // Every other shape task keeps the shaping contract.
+  const shaping = withTaskKindContract(mkTask({ id: "contract-shaping" }), "shape it", { planSkills: CLAUDE_SKILLS });
+  assert.match(shaping, /\/grill/);
+  assert.doesNotMatch(shaping, /tickets-only mode/);
+  assert.ok(!shaping.includes(COMPLETE_SHAPE_TICKETS_TOOL));
+});
+
+test("the tickets skill has a follow-up mode, and keeps its in-session flow", () => {
+  const skill = src(`skills/${SHAPE_TICKETS_SKILL_ID}/SKILL.md`);
+  // Follow-up mode: no tickets file, no commit or push, no "record the ids", ends with the tool.
+  assert.match(skill, /\*\*Follow-up mode\*\*, when the delivered contract says this session is a \*\*tickets follow-up\*\*/);
+  assert.match(skill, /In follow-up mode, skip steps 1, 2 and 5\*\*: write no tickets file, commit and push nothing, and\s+record no ids/);
+  assert.match(skill, new RegExp(`call \`${COMPLETE_SHAPE_TICKETS_TOOL}\` with outcome \`filed\``));
+  assert.match(skill, new RegExp(`follow-up mode, then call \`${COMPLETE_SHAPE_TICKETS_TOOL}\` with outcome \`dismissed\``));
+  assert.match(skill, /links each ticket to the \*\*merged shape task\*\*/);
+  assert.match(skill, /In follow-up mode, do\s+not call `complete_shape_tickets`: the follow-up stays open/);
+  // In-session mode: unchanged, the tickets file is written, committed and pushed before filing.
+  assert.match(skill, /\*\*In-session mode\*\*, every other caller/);
+  const write = skill.indexOf("1. **Write** `docs/plans/<name>/tickets.md`");
+  const push = skill.indexOf("2. **Commit and push** the plan and the tickets files");
+  const file = skill.indexOf("3. **File the tickets** with `create_task`");
+  const record = skill.indexOf("5. **Record the ids.**");
+  assert.ok(write > 0 && push > write && file > push && record > file, "in-session order is unchanged");
 });
 
 test("a shape task takes the plan's completion handoff when a workflow is bound", () => {

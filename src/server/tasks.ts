@@ -29,6 +29,7 @@ import type {
   PipelineRetry,
   PromptedCompletionDisposition,
   ReorderTask,
+  ShapeTicketsOutcome,
   TaskDependencyInput,
   UpdateTask,
 } from "@shared/protocol.ts";
@@ -42,6 +43,7 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { SHAPE_TICKETS_OUTCOME_TEXT, shapeTicketsFollowupIntent } from "./shape-tickets.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
@@ -95,6 +97,7 @@ import {
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
   reserveRetroFollowup,
+  reserveShapeTicketFollowup,
   retroFollowupForTask,
   shapeTicketFollowupForTask,
   taskReposFor,
@@ -273,6 +276,19 @@ export interface CreateRetroFollowupInput {
 }
 
 export const RETRO_NO_CHANGE_OUTCOME = "Retro complete: no memory changes approved";
+
+export interface CreateShapeTicketsFollowupInput {
+  sourceTask: Task;
+  sourceEpisodeId: string;
+  sourceSessionId: string;
+  /** The merged pull request the follow-up's tickets are pinned to. */
+  sourcePrUrl: string;
+  agent: AgentType;
+}
+
+export type CompleteShapeTicketsResult =
+  | { ok: true; task: Task; sourceTaskId: string; replayed: boolean }
+  | { ok: false; status: 404 | 409; error: string };
 
 export type CompleteRetroNoChangeOutcome =
   | { ok: true; task: Task; sourceTaskId: string; replayed: boolean }
@@ -2505,6 +2521,18 @@ export class TaskManager {
     return getDurableTask(id);
   }
 
+  /**
+   * Leave a refused launch's reason on the backlog row it left behind, so the card says why it
+   * is waiting. A dispatch clears `error` when it starts, so a later launch removes it.
+   */
+  recordBacklogRefusal(id: string, reason: string): Task | undefined {
+    const task = this.registry.getTask(id);
+    if (!task || task.status !== "backlog" || task.error === reason) return task;
+    const next = { ...task, error: reason, updatedAt: Date.now() };
+    this.registry.upsertTask(next);
+    return next;
+  }
+
   /** Explicit blockers are enforced on every path that can start a task. */
   dependencyBlockers(task: Task): BacklogBlocker[] {
     return declaredBlockers(task, this.registry.listTasks());
@@ -3026,6 +3054,90 @@ export class TaskManager {
       );
     }
     return task;
+  }
+
+  /**
+   * Create a shape task's tickets follow-up: `Tickets: <shape title>`, in tickets-only mode.
+   *
+   * Built like `createRetroFollowup`: the relation row is reserved under a fresh id first, then
+   * the ordinary Task is created under it, so the relation is what marks the task a follow-up
+   * when its contract is delivered. It keeps the source's repositories and is created with an
+   * explicit `workflowId: null` (After work: None) rather than the shape kind's Dispatch
+   * default, which would bind a plan review to a task that produces no plan, diff or PR.
+   * Whether the source may take another follow-up is `shapeTicketsAcceptance`'s rule.
+   */
+  createShapeTicketsFollowup(input: CreateShapeTicketsFollowupInput): Task {
+    const reserved = reserveShapeTicketFollowup({
+      followupTaskId: randomUUID(),
+      sourceTaskId: input.sourceTask.id,
+      sourceEpisodeId: input.sourceEpisodeId,
+      sourceSessionId: input.sourceSessionId,
+      sourcePrUrl: input.sourcePrUrl,
+      now: Date.now(),
+    }).relation;
+    return this.create(
+      {
+        repoRoot: input.sourceTask.repoRoot,
+        extraRepoRoots: input.sourceTask.extraRepos.map((repo) => repo.repoRoot),
+        title: `Tickets: ${input.sourceTask.title}`.slice(0, 120),
+        intent: shapeTicketsFollowupIntent(input.sourceTask, input.sourcePrUrl),
+        kind: "shape",
+        agent: input.agent,
+        workflowId: null,
+        backlog: true,
+      },
+      { id: reserved.followupTaskId },
+    );
+  }
+
+  /**
+   * Finish exactly the tickets follow-up running in the authenticated caller's session.
+   *
+   * The `complete_retro_no_change` chain: no caller-supplied task id, session attribution
+   * selects the Task, and the durable relation proves it is a follow-up. Completion goes
+   * through `complete`, which records the durable closure of a dispatched follow-up's session
+   * with the outcome. Replaying the same outcome is a no-op; a different one is refused.
+   */
+  async completeShapeTickets(
+    sessionId: string,
+    cwd: string | null,
+    outcome: ShapeTicketsOutcome,
+  ): Promise<CompleteShapeTicketsResult> {
+    const task = this.registry.taskForSession(sessionId, cwd);
+    if (!task) {
+      return { ok: false, status: 404, error: "no task is attributed to this session" };
+    }
+    const relation = shapeTicketFollowupForTask(task.id);
+    if (!relation) {
+      return {
+        ok: false,
+        status: 409,
+        error: "this session is not running a shape task's tickets follow-up",
+      };
+    }
+    const text = SHAPE_TICKETS_OUTCOME_TEXT[outcome];
+    if (task.status === "done") {
+      if (task.outcome !== text) {
+        return {
+          ok: false,
+          status: 409,
+          error: "this tickets follow-up already completed with a different outcome",
+        };
+      }
+      return { ok: true, task, sourceTaskId: relation.sourceTaskId, replayed: true };
+    }
+    if (!isActiveTask(task.status)) {
+      return {
+        ok: false,
+        status: 409,
+        error: `this tickets follow-up is ${task.status}, so it cannot report an outcome`,
+      };
+    }
+    const completed = await this.complete(task.id, text);
+    if (!completed) {
+      return { ok: false, status: 404, error: "the tickets follow-up no longer exists" };
+    }
+    return { ok: true, task: completed, sourceTaskId: relation.sourceTaskId, replayed: false };
   }
 
   /**

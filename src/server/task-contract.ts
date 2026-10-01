@@ -13,6 +13,7 @@ import {
   type PlanningSkillInvocationsByKind,
 } from "./plans/skills.ts";
 import { scoutReportAppendix } from "./scouts/prompt.ts";
+import { shapeTicketsFollowupFacts } from "./shape-tickets.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
 import { executionAuthorizationContract } from "./execution-authorization.ts";
 import {
@@ -111,7 +112,9 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   plan: planningContract("plan", planContractAppendix),
   pipeline: () => null,
   chat: () => null,
-  shape: planningContract("shape", shapeContractAppendix),
+  // A tickets follow-up (a row in `shape_ticket_followups`) gets the tickets-only variant.
+  shape: planningContract("shape", (skills, workflowBound, task) =>
+    shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id))),
 };
 
 /**
@@ -120,10 +123,10 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
  */
 function planningContract<K extends PlanningTaskKind>(
   kind: K,
-  render: (skills: PlanningSkillInvocationsByKind[K], workflowBound: boolean) => string,
+  render: (skills: PlanningSkillInvocationsByKind[K], workflowBound: boolean, task: Task) => string,
 ): (task: Task, inputs: TaskContractInputs) => string {
   return (task, inputs) => [
-    render(requirePlanningSkills(task, inputs, kind), task.workflowId !== null),
+    render(requirePlanningSkills(task, inputs, kind), task.workflowId !== null, task),
     ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
   ].join("\n\n");
 }

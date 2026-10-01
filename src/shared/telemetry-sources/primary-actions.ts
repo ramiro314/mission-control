@@ -30,6 +30,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/tasks/:id/reorder", "task.reorder", "tasks"],
   ["POST", "/api/tasks/:id/reschedule", "task.reschedule", "tasks"],
   ["POST", "/api/tasks/:id/requeue", "task.requeue", "tasks"],
+  ["POST", "/api/tasks/:id/shape-tickets", "task.shape_tickets", "tasks"],
+  ["POST", "/mcp/shape-tickets/complete", "task.shape_tickets_complete", "tasks"],
   ["DELETE", "/api/tasks/:id", "task.delete", "tasks"],
   ["PUT", "/api/task-sources/config", "task.sources_configure", "tasks"],
   ["POST", "/api/task-sources/:id/sweep", "task.import", "tasks"],

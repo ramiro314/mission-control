@@ -926,6 +926,23 @@ export const CompleteRetroNoChangeSchema = z.object({
 }).strict();
 export type CompleteRetroNoChange = z.infer<typeof CompleteRetroNoChangeSchema>;
 
+/** How a shape task's tickets follow-up ended: tickets filed, or the breakdown dismissed. */
+export const SHAPE_TICKETS_OUTCOMES = ["filed", "dismissed"] as const;
+export type ShapeTicketsOutcome = (typeof SHAPE_TICKETS_OUTCOMES)[number];
+
+/**
+ * Identity added by the bundled MCP bridge when a tickets follow-up finishes, plus the one
+ * outcome it reports. No task id: the daemon attributes the live session, then permits this
+ * only for a task recorded in `shape_ticket_followups`.
+ */
+export const CompleteShapeTicketsSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  outcome: z.enum(SHAPE_TICKETS_OUTCOMES),
+}).strict();
+export type CompleteShapeTickets = z.infer<typeof CompleteShapeTicketsSchema>;
+
 /**
  * What the human picked for one decision, echoed back by option id.
  *

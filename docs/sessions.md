@@ -1973,6 +1973,12 @@ The MCP tools are:
   means the item may exist, so check the tracker before retrying. A task that does not wait on the
   calling session is refused; from a tickets follow-up, a task that waits on the merged shape task
   it slices is accepted too, and is filed under that shape task's item. The shape kind pre-approves it
+- `complete_shape_tickets(outcome)` - granted only to a shape task's tickets follow-up (see
+  [Create tickets from a merged shape task](dispatch-and-backlog.md)). It reports `filed` after
+  the approved tickets are filed, or `dismissed` after a dismissed breakdown, and Mission Control
+  completes the follow-up and closes its session. It takes no task id: the daemon resolves the
+  task from the calling session and refuses any session whose task is not a tickets follow-up.
+  Replaying the same outcome is a no-op; a different one is refused
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape

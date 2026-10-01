@@ -263,6 +263,10 @@ export function ReportPanel({
   // and Reschedule side by side, and arming one must not arm the other.
   const [confirmReschedule, setConfirmReschedule] = useState<string | null>(null);
   const [rescheduleError, setRescheduleError] = useState<{ id: string; text: string } | null>(null);
+  // Create tickets on a merged shape task: busy while the follow-up is created and launched,
+  // then a note on the row when it was refused or is waiting in the backlog.
+  const [ticketsBusy, setTicketsBusy] = useState<string | null>(null);
+  const [ticketsNote, setTicketsNote] = useState<{ id: string; text: string } | null>(null);
 
   // Escape is handled by the Overlay this panel renders into, NOT by App - App
   // suppresses the app's global session keys while any overlay is up, so the overlay layer
@@ -343,6 +347,19 @@ export function ReportPanel({
     const r = await api.rescheduleTask(taskId);
     setConfirmReschedule(null);
     if (!r.ok) setRescheduleError({ id: taskId, text: r.error ?? "could not reschedule" });
+  }
+
+  // The follow-up's card appears through `task_upsert`, and this row's own `shapeTickets`
+  // stops offering the action the same way, so success needs nothing drawn here.
+  async function createTickets(taskId: string): Promise<void> {
+    setTicketsBusy(taskId);
+    setTicketsNote(null);
+    const r = await api.createShapeTickets(taskId);
+    setTicketsBusy(null);
+    if (!r.ok) setTicketsNote({ id: taskId, text: r.error ?? "could not create tickets" });
+    else if (r.kind === "queued") {
+      setTicketsNote({ id: taskId, text: `tickets task is waiting in the backlog: ${r.reason ?? "its launch was refused"}` });
+    }
   }
 
   // Abort an active agent and reclaim its worktree. Two-click confirm so a stray
@@ -587,6 +604,30 @@ export function ReportPanel({
                   {rescheduleError?.id === t.id && (
                     <span className="report-sub dim" role="status">{rescheduleError.text}</span>
                   )}
+                </div>
+              )}
+              {/* A shape task whose plan merged can have its tickets sliced by a linked
+                  follow-up. The server derives `shapeTickets.canCreate` with the same rule its
+                  route re-checks, so the button is offered exactly when the click would be
+                  accepted. */}
+              {t.shapeTickets?.canCreate && (
+                <div className="report-row-actions">
+                  <Tooltip label="Create a linked shape task that slices this task's merged plan into tickets">
+                    <button
+                      className="btn btn-send"
+                      disabled={ticketsBusy === t.id}
+                      onClick={() => void createTickets(t.id)}
+                    >
+                      {ticketsBusy === t.id ? "Creating tickets…" : "Create tickets"}
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
+              {/* Its own full-width line, like the cleanup note above: a launch refusal is a
+                  sentence, and squeezed beside the title it would overprint it. */}
+              {ticketsNote?.id === t.id && (
+                <div className="report-row-main report-row-note">
+                  <span className="report-sub dim" role="status">{ticketsNote.text}</span>
                 </div>
               )}
               {t.status === "failed" && !taskHoldsCleanupResources(t) && (

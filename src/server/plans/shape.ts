@@ -1,7 +1,14 @@
 import { PLAN_PAGE_FILENAME, PLAN_SOURCE_PATH_SHAPE } from "@shared/plans.ts";
+import { SHAPE_TICKETS_OUTCOMES } from "@shared/protocol.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
 import { PLAN_HTML_SKILL_ID } from "./prompt.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL } from "./tools.ts";
+import {
+  COMPLETE_SHAPE_TICKETS_TOOL,
+  PLAN_DECISIONS_TOOL,
+  PLAN_PUBLICATION_TOOL,
+  PLAN_SCHEDULING_TOOL,
+  PUSH_TASK_TOOL,
+} from "./tools.ts";
 
 /**
  * The delivery contract of a `shape` task: grill first, then plan.
@@ -41,7 +48,65 @@ export interface ShapeSkillInvocations {
   tickets: string;
 }
 
-export function shapeContractAppendix(skills: ShapeSkillInvocations, workflowBound = false): string {
+/**
+ * The merged shape task a tickets follow-up slices, as its contract names it.
+ *
+ * Read from `shape_ticket_followups` by the caller, so this module stays free of the database.
+ */
+export interface ShapeTicketsFollowupFacts {
+  sourceTaskId: string;
+  sourceTitle: string;
+  /** The merged pull request the follow-up's tickets are pinned to. */
+  prUrl: string;
+  /** The source's branch on that merged episode, when it was recorded. */
+  branch: string | null;
+}
+
+const [SHAPE_TICKETS_FILED, SHAPE_TICKETS_DISMISSED] = SHAPE_TICKETS_OUTCOMES;
+
+/**
+ * A tickets follow-up's contract: tickets-only mode.
+ *
+ * The plan already merged, so there is no interview, no plan to write and no pull request to
+ * open. The one skill it runs is `tickets`, in follow-up mode, and it ends through the one
+ * completion tool only follow-up launches are granted.
+ */
+export function shapeTicketsFollowupAppendix(tickets: string, facts: ShapeTicketsFollowupFacts): string {
+  return [
+    SHAPE_APPENDIX_MARKER,
+    "This is a tickets follow-up of a merged shape task, in tickets-only mode. Its deliverable is the",
+    "approved tickets, filed as backlog tasks. Do not grill, do not write or revise the plan, do not",
+    "implement anything, and open no pull request.",
+    "",
+    `Source shape task: ${facts.sourceTitle} (${facts.sourceTaskId})`,
+    `Merged pull request: ${facts.prUrl}`,
+    `Merged branch: ${facts.branch ?? "not recorded"}`,
+    "",
+    "1. Find the plan. This worktree was cut from the merged default branch, so the plan reads as merged,",
+    "   review repairs included. Use the `docs/plans/<name>/plan.md` that the merged pull request added or",
+    "   changed. When its file list does not show exactly one such plan, ask the human which plan to slice",
+    "   with `request_input`, offering the candidates you found. Do not guess.",
+    `2. Invoke the ${SHAPE_TICKETS_SKILL_ID} skill in follow-up mode against that plan, and no other skill. On this harness:`,
+    `   ${tickets}`,
+    "3. Follow-up mode skips the tickets file: do not write, commit or push `tickets.md` or `tickets.html`,",
+    "   and skip recording the ids in them. The breakdown review is unchanged: one",
+    `   \`${PLAN_DECISIONS_TOOL}\` form, and nothing is created before it is submitted. File each approved ticket`,
+    `   with \`${PLAN_SCHEDULING_TOOL}\` and \`dependsOnCurrentSession: true\`, which links it to the merged shape task`,
+    "   above with an edge that is already satisfied. When the breakdown chose to mirror, push each filed",
+    `   ticket with \`${PUSH_TASK_TOOL}\`, blockers first.`,
+    `4. Finish by calling \`${COMPLETE_SHAPE_TICKETS_TOOL}\` with outcome \`${SHAPE_TICKETS_FILED}\` after the last ticket is filed`,
+    `   (and pushed, when mirroring was chosen), or \`${SHAPE_TICKETS_DISMISSED}\` when the breakdown review is dismissed.`,
+    "   It completes this task and closes its session. If a create_task or push_task call fails, do not call",
+    "   it: report the failure and leave this task open for the human.",
+  ].join("\n");
+}
+
+export function shapeContractAppendix(
+  skills: ShapeSkillInvocations,
+  workflowBound = false,
+  followup: ShapeTicketsFollowupFacts | null = null,
+): string {
+  if (followup) return shapeTicketsFollowupAppendix(skills.tickets, followup);
   const lines = [
     SHAPE_APPENDIX_MARKER,
     "This is a shape task. The deliverable is a plan built from an interview with the human, then",

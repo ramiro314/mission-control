@@ -158,6 +158,7 @@ import {
   clearQueue as clearQueueDb,
   deleteQueueItem,
   deleteTask as dbDeleteTask,
+  getTask as getDurableTask,
   getQueueItem,
   getQueueRow,
   getSessionGoal,
@@ -166,6 +167,7 @@ import {
   listQueueRows,
   listPendingTurns,
   loadActiveTasks,
+  shapeTicketFollowupForTask,
   loadResourceHoldingTerminalTasks,
   loadPrPendingTerminalTasks,
   loadPendingReviews,
@@ -287,6 +289,7 @@ import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
+import { shapeTicketsSummary } from "./shape-tickets.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -1124,6 +1127,9 @@ export class Registry extends EventEmitter {
     // whose pull request has yet to be seen merged. Past the cap it would not be loaded, so
     // nothing would poll that pull request and the merge would never be observed.
     for (const t of loadPrPendingTerminalTasks()) this.tasks.set(t.id, t);
+    for (const t of this.tasks.values()) {
+      if (t.kind === "shape") this.tasks.set(t.id, this.withShapeTickets(t));
+    }
     for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
     // Seed the live catalog so a reconnect snapshot is truthful before the scheduler's first
     // tick. Empty on every machine that has never saved a schedule.
@@ -6578,6 +6584,40 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * A shape task with its derived `shapeTickets` recomputed; every other task unchanged.
+   *
+   * Derived on publish, like `automaticCleanup` is on load, so the field rides the ordinary
+   * `task_upsert` and needs no event of its own.
+   */
+  private withShapeTickets(task: Task): Task {
+    if (task.kind !== "shape") return task;
+    return { ...task, shapeTickets: shapeTicketsSummary(task, this.taskLookup) };
+  }
+
+  private readonly taskLookup = (id: string): Task | undefined => this.tasks.get(id) ?? getDurableTask(id);
+
+  /**
+   * Re-send a tickets follow-up's source shape task when the follow-up is created, changes
+   * status, or is deleted, so the source's `shapeTickets` (newest follow-up, whether Create
+   * tickets is allowed) follows it without a reload. Deleting a task keeps its relation row,
+   * which is how a deleted follow-up still finds its source here. A source outside the
+   * bounded in-memory board is skipped: nothing is drawing it.
+   */
+  private refreshShapeTicketsSource(followupTaskId: string): void {
+    const relation = shapeTicketFollowupForTask(followupTaskId);
+    if (relation) this.republishShapeTickets(relation.sourceTaskId);
+  }
+
+  /** Re-derive and re-send one in-memory shape task's `shapeTickets`. */
+  private republishShapeTickets(sourceTaskId: string): void {
+    const source = this.tasks.get(sourceTaskId);
+    if (source?.kind !== "shape") return;
+    const next = this.withShapeTickets(source);
+    this.tasks.set(next.id, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  /**
    * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
    *
    * Called by the retention service after it moves the ledger, and it re-reads rather than
@@ -6600,7 +6640,8 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
   }
 
-  private publishTask(task: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+  private publishTask(published: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+    const task = this.withShapeTickets(published);
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -6614,6 +6655,7 @@ export class Registry extends EventEmitter {
     }
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
+    if (task.kind === "shape" && previous?.status !== task.status) this.refreshShapeTicketsSource(task.id);
     this.syncSessionsForWorktree(task.worktreePath);
     // Pipeline tasks deliberately have neither `sessionId` nor a Mission Control worktree.
     // Their nested agents still need their task card refreshed when the durable provider
@@ -6673,6 +6715,12 @@ export class Registry extends EventEmitter {
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
+    // A deleted tickets follow-up no longer blocks Create tickets on its source, and neither
+    // does a deleted ticket an ended follow-up had filed (`shapeTicketsAcceptance`).
+    if (!t || t.kind === "shape") this.refreshShapeTicketsSource(id);
+    for (const edge of t?.dependencies ?? []) {
+      if (edge.type === "task") this.republishShapeTickets(edge.taskId);
+    }
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
     this.cleanupDependencyProvenance();
