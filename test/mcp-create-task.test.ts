@@ -340,9 +340,9 @@ test("a planning session in repo A can gate a task whose primary is repo B", asy
   assert.equal(created.dependencies[0]?.satisfiedAt, null);
 });
 
-test("MCP create_task never files a shape task, on either route", async () => {
-  // Shape opens with an interview only a human can answer, so it is not offered to agents
-  // filing work. The tool has no `kind` field: a caller that sends one anyway gets `ship`.
+test("the v1 and v2 create_task routes file any kind as ship", async () => {
+  // The selector-free and v2 routes predate `kind`: a caller that sends one anyway gets
+  // `ship`. Only the v3 route files another kind.
   const repo = gitRepo("shape-refused");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
@@ -473,15 +473,21 @@ test("a new ticket needs its title and intent, and nothing unknown rides along",
   assert.equal(count(), 0);
 });
 
-test("create_task files implementation kinds only", async () => {
+test("create_task files the backlog kinds an operator can ask for, and refuses the rest", async () => {
   const { file, count } = ticketHarness("ticket-kind");
-  for (const kind of ["shape", "plan", "scout", "chat"]) {
+  for (const kind of ["chat", "pipeline"]) {
     const refused = await file({ title: `A ${kind} ticket`, intent: "No.", kind });
     assert.equal(refused.status, 400, `${kind} is refused`);
   }
   assert.equal(count(), 0);
   const defaulted = await file({ title: "Default kind", intent: "Yes.", labels: ["x"] });
   assert.equal(defaulted.body.kind, "ship");
+  for (const kind of ["scout", "plan", "shape"]) {
+    const filed = await file({ title: `A ${kind} task`, intent: "Yes.", kind });
+    assert.equal(filed.status, 200, `${kind} is filed`);
+    assert.equal(filed.body.kind, kind);
+    assert.equal(filed.body.status, "backlog");
+  }
 });
 
 test("adopting a backlog task only adds the ticket's edges to it", async () => {
