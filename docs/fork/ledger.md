@@ -80,7 +80,7 @@ Each feature entry records:
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge), pending (tickets marker, issue #82). Related, not claimed: #21 (standalone fix to Shape this) |
+| PRs | #1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge), pending (tickets marker, issue #82), pending (MCP `create_task` files scout, plan and shape). Related, not claimed: #21 (standalone fix to Shape this) |
 | Plan docs | [shape-task-kind/plan.md](../plans/shape-task-kind/plan.md) sections 1 to 5; [shape-tickets-after-merge/plan.md](../plans/shape-tickets-after-merge/plan.md) (in progress) |
 | Upstream candidate | Maybe. Self-contained and built on upstream pieces, but it is a second planning path and bundles third-party-derived skills (credited in `NOTICE`). |
 
@@ -131,7 +131,9 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
   follow-up left to open, and every non-shape task draw nothing.
 - Dispatch is refused, naming the toggle, when a required planning skill is off
   (`PLANNING_SKILLS.shape` is `grill`, `htmlPlans`, `tickets`). After work defaults to Plan
-  Validation. Shape can be put on the backlog, but schedules and MCP `create_task` cannot file it.
+  Validation. Shape can be put on the backlog and filed by MCP `create_task` (v3 route, with
+  scout and plan; chat and pipeline stay refused), but schedules cannot file it, and Foreman's
+  autopilot never launches it.
 - The breakdown review is one decision form and nothing is created before Submit. Each ticket
   is New task or Adopt an open backlog task. In-session mode (a shape session dispatched before
   tickets moved after the merge) writes `docs/plans/<name>/tickets.md` and its HTML, commits,
@@ -213,7 +215,8 @@ drafts first and asks afterwards, and cannot turn a plan into gated tasks or Git
 - Registries: `PLANNING_SKILLS`, `KIND_MISSION_MCP_TOOLS.shape`, `MISSION_MCP_TOOLS`,
   `PRIMARY_ACTION_ROUTES`, `ACTION_EXCLUSIONS`.
 - MCP tools: new `list_backlog_tasks`, `push_task` and `complete_shape_tickets`; `create_task`
-  gains ticket and adopt fields.
+  gains ticket and adopt fields, and its `kind` takes `scout`, `plan` and `shape` beside `ship`
+  and `bugfix`.
 - DB: new `shape_ticket_followups` table (created with the base schema, so an existing database
   gains it on open); new nullable `tasks.shape_tickets` column (`addColumn` in the migration
   path, no backfill).

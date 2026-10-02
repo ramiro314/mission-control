@@ -166,7 +166,7 @@ can stop compiling against a changed upstream API.</li>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge), pending (tickets marker, issue #82). Related, not claimed: #21 (standalone fix to Shape this)</td>
+<td>#1 (plan), #3, #7, #9, #10, #83 (plan: tickets after merge), #87, #92, #99 (tickets start at merge), pending (tickets marker, issue #82), pending (MCP <code>create_task</code> files scout, plan and shape). Related, not claimed: #21 (standalone fix to Shape this)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -223,7 +223,9 @@ and <code>lapsed</code> the note <strong>Tickets lapsed</strong>. Every other st
 follow-up left to open, and every non-shape task draw nothing.</li>
 <li>Dispatch is refused, naming the toggle, when a required planning skill is off
 (<code>PLANNING_SKILLS.shape</code> is <code>grill</code>, <code>htmlPlans</code>, <code>tickets</code>). After work defaults to Plan
-Validation. Shape can be put on the backlog, but schedules and MCP <code>create_task</code> cannot file it.</li>
+Validation. Shape can be put on the backlog and filed by MCP <code>create_task</code> (v3 route, with
+scout and plan; chat and pipeline stay refused), but schedules cannot file it, and Foreman&#39;s
+autopilot never launches it.</li>
 <li>The breakdown review is one decision form and nothing is created before Submit. Each ticket
 is New task or Adopt an open backlog task. In-session mode (a shape session dispatched before
 tickets moved after the merge) writes <code>docs/plans/&lt;name&gt;/tickets.md</code> and its HTML, commits,
@@ -305,7 +307,8 @@ shape and grill.</li>
 <li>Registries: <code>PLANNING_SKILLS</code>, <code>KIND_MISSION_MCP_TOOLS.shape</code>, <code>MISSION_MCP_TOOLS</code>,
 <code>PRIMARY_ACTION_ROUTES</code>, <code>ACTION_EXCLUSIONS</code>.</li>
 <li>MCP tools: new <code>list_backlog_tasks</code>, <code>push_task</code> and <code>complete_shape_tickets</code>; <code>create_task</code>
-gains ticket and adopt fields.</li>
+gains ticket and adopt fields, and its <code>kind</code> takes <code>scout</code>, <code>plan</code> and <code>shape</code> beside <code>ship</code>
+and <code>bugfix</code>.</li>
 <li>DB: new <code>shape_ticket_followups</code> table (created with the base schema, so an existing database
 gains it on open); new nullable <code>tasks.shape_tickets</code> column (<code>addColumn</code> in the migration
 path, no backfill).</li>

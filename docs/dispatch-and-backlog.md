@@ -451,8 +451,10 @@ and archive capture, and plan's completion boundary without phases or tickets: a
 verifier expects no ticket or phase tasks from the shaping turn, and its default After work is **Plan Validation**. It can
 be added to the backlog, [converted from a backlog card](#shape-a-shelved-task) with **shape
 this**, and filed by a task source whose default kind is shape, but Foreman's backlog autopilot never
-launches one, because the interview needs you there to answer it. Recurring Missions and the
-MCP `create_task` tool cannot create shape tasks; `create_task` files only `ship` and `bugfix`. The plan kind is unchanged.
+launches one, because the interview needs you there to answer it. Recurring Missions cannot create
+shape tasks. The MCP `create_task` tool can, when you ask a session to file one: it takes `ship`
+(the default), `bugfix`, `scout`, `plan` or `shape`, and the filed task obeys its kind's backlog
+rules, so a shape task waits on the board for you to launch it. The plan kind is unchanged.
 
 **pipeline** hands the whole run to the enabled external engine. It preselects **None** for
 After work because Mission Control has no task worktree or agent completion boundary to hand

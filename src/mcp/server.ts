@@ -336,9 +336,10 @@ server.registerTool(
 server.registerTool(
   "create_task",
   {
-    title: "Schedule an implementation task",
+    title: "Schedule a backlog task",
     description:
-      "Create one ship (or bugfix) task in the Mission Control backlog. It targets the current " +
+      "Create one task in the Mission Control backlog: ship by default, or the bugfix, scout, " +
+      "plan or shape kind the operator asked for. It targets the current " +
       "repository unless an absolute local checkout path or unique repository directory name is " +
       "supplied, and it can attach additional local repositories to the same task. " +
       "The task uses the kind's default agent, model, and reasoning effort. Pass direct prerequisite " +
@@ -403,7 +404,11 @@ server.registerTool(
       kind: z
         .enum(MCP_TASK_KINDS)
         .optional()
-        .describe("ship (the default) builds a change; bugfix fixes a defect"),
+        .describe(
+          "ship (the default) builds a change; bugfix fixes a defect; scout investigates and " +
+            "reports; plan produces a reviewed plan; shape interviews the operator, then produces a " +
+            "reviewed plan. Choose scout, plan or shape only when the operator asked for that kind",
+        ),
       labels: z
         .array(z.string().min(1))
         .max(MAX_LABELS)
