@@ -352,8 +352,9 @@ export function taskHasNoProvisionedResources(task: Task): boolean {
 
 /**
  * The kinds an agent may file through MCP `create_task`: every backlog kind a human can hand
- * work to. A ticket is still built by a ship agent, or by a bugfix agent when it fixes a
- * defect; scout, plan and shape are there for the operator who asks a session to file one.
+ * work to. Scout, plan and shape are there for the operator who asks a session to file one.
+ * A shape breakdown's ticket is the same v3 call, so this enum does not restrict tickets to
+ * ship and bugfix; the bundled `tickets` skill does.
  * The kind's own backlog rules still apply, so a shape task waits for its human because
  * Foreman's autopilot never launches one. Chat and pipeline stay out: chat cannot enter the
  * backlog, and a pipeline commission is the provider's to start.

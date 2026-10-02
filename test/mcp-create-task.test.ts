@@ -340,7 +340,7 @@ test("a planning session in repo A can gate a task whose primary is repo B", asy
   assert.equal(created.dependencies[0]?.satisfiedAt, null);
 });
 
-test("MCP create_task never files a shape task, on either route", async () => {
+test("the v1 and v2 create_task routes file any kind as ship", async () => {
   // The selector-free and v2 routes predate `kind`: a caller that sends one anyway gets
   // `ship`. Only the v3 route files another kind.
   const repo = gitRepo("shape-refused");
