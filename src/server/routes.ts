@@ -1,3 +1,6 @@
+import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
+import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
+import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -1090,6 +1093,7 @@ export interface RouteDeps {
   away?: AwayWatcher;
   personas?: PersonaManager;
   workflows?: WorkflowManager;
+  sessionTransfers?: SessionTransferCoordinator;
   /**
    * The Recurring Missions service. The schedule routes answer 503 when it is absent rather
    * than constructing a second manager here.
@@ -1198,6 +1202,7 @@ export const ROUTE_DEP_NAMES = [
   "away",
   "personas",
   "workflows",
+  "sessionTransfers",
   "schedules",
   "ensembles",
   "sdkSessions",
@@ -1900,6 +1905,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflows?.resumeNeedsEvidence(session) ?? false,
       task ? Boolean(ensembles?.store.memberForTask(task.id)) : false));
   };
+  let transfers = deps.sessionTransfers ?? handoffDeps?.transfers;
+  const transferCoordinator = (): SessionTransferCoordinator => {
+    if (!transfers) {
+      // The daemon injects its already-started owner. Legacy compositions only need an
+      // owner when they use a transfer; constructing unrelated routes must not recover
+      // durable work or subscribe to services those routes do not consume.
+      transfers = new SessionTransferCoordinator(registry, {
+        workflows, reviews, settleTask: handoffDeps?.settleTask ?? ((id) => tasks.settleAfterFailedHandoff(id)),
+        taskBlocked: (id) => tasks.taskCleanupIsReserved?.(id) ?? false,
+      });
+      transfers.start();
+    }
+    return transfers;
+  };
   const defaultHandoffDeps: HandoffDeps = {
     spawn: spawnManagedResume,
     waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
@@ -1911,7 +1930,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     session: Session,
     backend?: Parameters<typeof launchTerminal>[0],
   ) => {
-    if (!sdkSessions) {
+    if (!sdkSessions && session.runtime === "sdk" && session.state !== "exited") {
       return {
         ok: false as const,
         error: "this build has no session supervisor",
@@ -1919,9 +1938,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       };
     }
     let label = "default terminal";
+    const handoff = { ...defaultHandoffDeps, transfers: transferCoordinator() };
     const deps = backend
       ? {
-          ...defaultHandoffDeps,
+          ...handoff,
+          backend,
           spawn: async (input: Parameters<typeof spawnManagedResume>[0]) => {
             const launched = await launchManagedAgentTerminal(backend, input, terminalLauncher);
             label = launched.label;
@@ -1941,15 +1962,40 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             };
           },
         }
-      : defaultHandoffDeps;
-    const result = await handOffToTerminal(
-      registry,
-      sdkSessions,
-      session,
-      deps,
-    );
+      : handoff;
+    const result = session.state === "exited"
+      ? await deps.transfers.resumeExited(session, sdkSessions, deps)
+      : await handOffToTerminal(registry, sdkSessions!, session, deps);
     return { ...result, label };
   };
+  app.get("/api/session-transfers", (c) => {
+    const parsed = SessionTransferQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    if (parsed.data.sourceSessionId) {
+      const transfer = latestTransferForSource(parsed.data.sourceSessionId);
+      return c.json({ transfers: transfer ? [transferSummary(transfer)] : [], overflow: 0 });
+    }
+    return c.json(sessionTransferPage(parsed.data.offset, parsed.data.limit));
+  });
+  app.get("/api/session-transfers/:id", (c) => {
+    const transfer = getSessionTransfer(c.req.param("id"));
+    return transfer ? c.json(transferSummary(transfer)) : c.json({ error: "no such terminal transfer" }, 404);
+  });
+  app.post("/api/session-transfers/:id/recheck", async (c) => {
+    const parsed = await parseBody(c, RecheckSessionTransferSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!getSessionTransfer(c.req.param("id"))) return c.json({ error: "no such terminal transfer" }, 404);
+    return c.json({ ok: true, transfer: transferSummary(await transferCoordinator().recheck(c.req.param("id"))) });
+  });
+  app.post("/api/session-transfers/:id/resolve", async (c) => {
+    const parsed = await parseBody(c, ResolveSessionTransferSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!getSessionTransfer(c.req.param("id"))) return c.json({ error: "no such terminal transfer" }, 404);
+    try {
+      return c.json({ ok: true, transfer: transferSummary(await transferCoordinator().resolve(c.req.param("id"), parsed.data.revision)) });
+    } catch (error) { return c.json({ ok: false, error: error instanceof Error ? error.message : "Transfer cannot be ended safely" }, 409); }
+  });
+
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
     if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
@@ -3674,6 +3720,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { backend, payload } = parsed.data;
 
     if (payload === "agent") {
+      const reserved = transferForNote(noteKeyFor(session));
+      if (reserved) return c.json({ ok: false, error: "This conversation is already being handed over. Check its transfer in Sitrep", transfer: transferSummary(reserved) }, 409);
+      if (transferRetiredSource(session.id)) return c.json({ ok: false, error: "This source has already continued in terminal. Focus its successor or check the transfer in Sitrep" }, 409);
       // The daemon owns this rule and the browser reads the SAME predicate to shape the
       // button. A session with a live pane is focusable, and resuming beside it would put
       // a second process on one conversation file - so this refuses and names the action
@@ -3706,8 +3755,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               sessionId: handedOff.sessionId,
               launchOutcome: handedOff.launchOutcome,
               resumeLeaseId: handedOff.resumeLeaseId,
+              transfer: handedOff.transfer,
             }
-          : { ok: false, backend, label: handedOff.label, error: handedOff.error };
+          : { ok: false, backend, label: handedOff.label, error: handedOff.error, transfer: handedOff.transfer };
         return handedOff.ok ? c.json(body) : c.json(body, 409);
       }
       if (action !== "resume") {
@@ -3722,6 +3772,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           { ok: false, error: known?.message ?? "Pipeline workspace is unavailable" },
           409,
         );
+      }
+      const continuity = registry.listTasks().some((task) => task.sessionId === session.id && isActiveTask(task.status))
+        || Boolean(workflows?.store.activeBindingsForNote(noteKeyFor(session)).length);
+      if (continuity) {
+        const result = await handoffSession({ ...session, cwd: workspaceRoot }, backend);
+        return c.json(result, result.ok ? 200 : 409);
       }
       if (agentResumeClaims.has(session.id)) {
         return c.json({ ok: false, error: "this conversation is already being resumed" }, 409);
@@ -4814,6 +4870,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, SubmitWorkflowEvidenceSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.sessionId && (transferForNote(parsed.data.sessionId) || transferForSource(parsed.data.sessionId))) {
+      return c.json({ error: "Handoff awaiting discovery. Retry evidence registration after the terminal transfer is verified", code: "handoff_awaiting_discovery", retryable: true }, 409);
+    }
     const session = registry.findSessionByEnv(
       parsed.data.env,
       parsed.data.sessionId,

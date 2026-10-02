@@ -1,3 +1,4 @@
+import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -67,6 +68,8 @@ function hydrateSettingsStatus(status: SettingsStatus): SettingsStatus {
 }
 
 export interface MissionState {
+  sessionTransfers: SessionTransferPage;
+  latestSessionTransfer: SessionTransferSummary | null;
   sessions: Session[];
   /** Inert startup rows only; real sessions with the same stable id always suppress them. */
   restoringSessions: RestoringSession[];
@@ -213,6 +216,8 @@ export interface MissionState {
  * auto-refresh mechanism - no polling from the client.
  */
 export function useEventStream(): MissionState {
+  const [sessionTransfers, setSessionTransfers] = useState<SessionTransferPage>({ transfers: [], overflow: 0 });
+  const [latestSessionTransfer, setLatestSessionTransfer] = useState<SessionTransferSummary | null>(null);
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
   const [restoringSessions, setRestoringSessions] = useState<Map<string, RestoringSession>>(
     new Map(),
@@ -309,7 +314,13 @@ export function useEventStream(): MissionState {
         return;
       }
       switch (msg.type) {
+        case "session_transfers":
+          setSessionTransfers(msg.page);
+          if (msg.changed) setLatestSessionTransfer(msg.changed);
+          break;
         case "snapshot":
+          setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
+          setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
           setRestoringSessions(
             new Map((msg.restoringSessions ?? []).map((session) => [session.id, session])),
@@ -679,6 +690,8 @@ export function useEventStream(): MissionState {
   );
 
   return {
+    sessionTransfers,
+    latestSessionTransfer,
     sessions: sessionsList,
     restoringSessions: restoringSessionsList,
     reviews: reviewsList,
