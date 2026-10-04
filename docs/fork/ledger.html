@@ -48,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>9</strong> (plus 2 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>8</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -111,11 +111,6 @@ or issues.</p>
 <td>#59, #62, #66, weekly mission PR</td>
 </tr>
 <tr>
-<td>CodeQL advanced setup</td>
-<td>Active</td>
-<td>#65</td>
-</tr>
-<tr>
 <td>Persona reasoning effort</td>
 <td>Active</td>
 <td>Pending (branch <code>feat/persona-effort</code>)</td>
@@ -129,6 +124,11 @@ or issues.</p>
 <td>Dependabot</td>
 <td>Removed (2026-09-29, #62)</td>
 <td>#35, #40, #41, #43</td>
+</tr>
+<tr>
+<td>CodeQL advanced setup</td>
+<td>Removed (2026-10-04, pending)</td>
+<td>#65</td>
 </tr>
 <tr>
 <td>Standalone fixes</td>
@@ -762,48 +762,6 @@ describes. A &quot;nothing new&quot; run relies on auto-on-conclusion to close i
 <code>.agents/memory/MEMORY.md</code> (one line).</p>
 <p><strong>Fork-only files.</strong> <code>docs/upstream-sync.md</code>, <code>docs/fork/</code>, <code>.agents/memory/upstream-sync.md</code>,
 <code>docs/plans/upstream-sync/</code>.</p>
-<h3>CodeQL advanced setup</h3>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Value</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Status</td>
-<td><strong>Active</strong></td>
-</tr>
-<tr>
-<td>PRs</td>
-<td>#65</td>
-</tr>
-<tr>
-<td>Plan docs</td>
-<td>None; the runbook&#39;s fork-only surface list records it</td>
-</tr>
-<tr>
-<td>Upstream candidate</td>
-<td>No. The exclusion exists because upstream&#39;s test code looks new to the fork at every sync.</td>
-</tr>
-</tbody></table>
-<p><strong>Intent.</strong> Code scanning through a committed workflow instead of GitHub&#39;s default setup, so
-<code>e2e/</code> and <code>test/</code> can be excluded. Otherwise every sync reports upstream&#39;s test code as new
-alerts on the fork.</p>
-<p><strong>Behavior contracts.</strong></p>
-<ul>
-<li>CodeQL runs on pushes and PRs to <code>main</code> and weekly, over the same four languages default setup
-scanned, with <code>paths-ignore: [e2e, test]</code>.</li>
-<li>The repository&#39;s CodeQL default setup stays disabled in GitHub settings.</li>
-</ul>
-<p><strong>Upstream behavior it assumes.</strong></p>
-<ul>
-<li>Upstream has no <code>.github/workflows/codeql.yml</code> of its own. If it adds one, the conflict policy
-applies.</li>
-<li>Test code stays under <code>e2e/</code> and <code>test/</code>.</li>
-</ul>
-<p><strong>Upstream surfaces touched.</strong> None; both files are fork-only.</p>
-<p><strong>Fork-only files.</strong> <code>.github/workflows/codeql.yml</code>, <code>.github/codeql/codeql-config.yml</code>.</p>
 <h3>Persona reasoning effort</h3>
 <table>
 <thead>
@@ -936,6 +894,36 @@ changes in task worktrees, which is upstream&#39;s intended behavior.</p>
 lockfile. The sync deleted <code>.github/dependabot.yml</code>, rolled every dependency back to upstream&#39;s
 version, and closed the open Dependabot PRs. The fork now takes new versions only through the
 sync.</p>
+<h3>CodeQL advanced setup</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Removed</strong> 2026-10-04, PR pending</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#65</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>No.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent (as built).</strong> Code scanning through a committed workflow instead of GitHub&#39;s default
+setup, so <code>e2e/</code> and <code>test/</code> could be excluded from alerts.</p>
+<p><strong>Why it was removed.</strong> The fork no longer runs CodeQL. The removal deleted
+<code>.github/workflows/codeql.yml</code> and <code>.github/codeql/codeql-config.yml</code>. The repository&#39;s CodeQL
+default setup stays disabled, so nothing scans the fork.</p>
 <h2>Standalone fixes</h2>
 <p>Fixes that are not part of a fork feature. None had an upstream equivalent on <code>upstream/main</code>
 at <code>104a5407</code> (checked by each fix&#39;s key symbol).</p>

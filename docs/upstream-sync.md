@@ -174,10 +174,6 @@ The full list, with each feature's contracts and surfaces, is the
 - **The fork-only `package.json` entries** in section 5.
 - **Fork-only docs**: this runbook, `.agents/memory/upstream-sync.md`, and the plans under
   `docs/plans/` that upstream does not have.
-- **CodeQL advanced setup**: `.github/workflows/codeql.yml` and
-  `.github/codeql/codeql-config.yml`, which exclude `e2e/` and `test/` from code scanning so
-  upstream's test code is not reported as new at each sync. The repository's CodeQL default
-  setup stays disabled. If upstream adds its own CodeQL workflow, the conflict policy applies.
 
 ## 7. Update the fork ledger
 
