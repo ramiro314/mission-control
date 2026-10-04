@@ -291,6 +291,10 @@ conflict.</li>
 <p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
+<p>GitHub Inspector review on PR #103 made two more changes. Conflicts in a workflow-owned
+session whose run is not at a Wait for CI attempt are surfaced as <code>workflow-not-gating</code>.
+Episodes and escalations are matched by PR URL alone. Both are marked &quot;Inspector review&quot;
+where they appear.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
 observation to the head it was observed on (§1, §3, §4, Edge cases). It also extended the E2E
 spec to the session header and the settings toggle, on a task-backed session (Testing). These
@@ -486,6 +490,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>It closes when the PR is observed <code>mergeable</code>, merged, or closed, or when no session and no task reference it any longer.</li>
 <li>While the current head&#39;s mergeability is unknown, for example straight after a fix push, an open episode stays as it is. It is neither closed nor re-opened until GitHub answers for that head.</li>
 <li>It records <code>since</code>, <code>baseRef</code>, <code>headSha</code>, <code>taskId</code>, <code>sessionId</code> and <code>escalated</code>.</li>
+<li><strong>Identity is the PR URL alone.</strong> <code>headSha</code> is the <em>latest</em> head observed <code>conflicting</code>, and it advances on every new conflicting head. It is a display and log field, never part of the episode&#39;s identity (Inspector review).</li>
 </ul>
 </li>
 <li><strong>Unhandled reason.</strong> An episode is <em>unhandled</em>, and becomes a blocked PR, when one of these holds:<ul>
@@ -503,12 +508,24 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p><code>nudges-exhausted</code>: Foreman reported an escalation for this episode (see §3).</p>
 </li>
-<li><p><strong>Never unhandled:</strong> a session an active workflow owns (<code>activeWorkflowOwnsSession</code>). The workflow is handling it, and if its repair budget runs out, the existing workflow alerts take over.</p>
+<li><p><code>workflow-not-gating</code>: an active workflow owns the session (<code>activeWorkflowOwnsSession</code>), so Foreman stays out, but the run is <strong>not</strong> currently at a Wait for CI attempt watching this PR. This covers two cases (Inspector review):</p>
+<ul>
+<li>The workflow has no Wait for CI node.</li>
+<li>The base moved after Wait for CI had already passed, and the run is now in a later node.</li>
+</ul>
+<p>The Pull Request action&#39;s conflict line is read once at dispatch and cannot react later, so the conflict is surfaced to the operator.</p>
+</li>
+<li><p><strong>Handled by the workflow:</strong> the owning run&#39;s active node is a Wait for CI attempt whose <code>pullRequestKey</code> is this PR. That node fails on the conflict and starts a repair round (§4), and the run&#39;s existing budget and <code>workflow-repeat</code> alerts take over from there. Such an episode is not unhandled.</p>
 </li>
 </ul>
 </li>
 <li><strong>Publication.</strong> The set of unhandled episodes goes out as a new <code>blocked_prs</code> snapshot <code>ServerEvent</code>. It is emitted when the set changes, and on connect. <code>src/web/useEventStream.ts</code> handles it exhaustively, per the change contracts.</li>
-<li><strong>Foreman&#39;s escalation route.</strong> <code>POST /api/pr-conflicts/escalate</code> takes <code>{ prUrl, headSha }</code>. Its body is parsed with a Zod schema. It marks the matching open episode <code>escalated</code>, and does nothing if the episode has already closed.</li>
+<li><strong>Foreman&#39;s escalation route.</strong> <code>POST /api/pr-conflicts/escalate</code> takes <code>{ prUrl, headSha }</code>. Its body is parsed with a Zod schema.<ul>
+<li>It finds the open episode <strong>by <code>prUrl</code> alone</strong> and marks it <code>escalated</code>. <code>headSha</code> is recorded as the head Foreman escalated on.</li>
+<li>It does nothing only when no episode is open for that URL.</li>
+<li>A cap escalation on the 4th conflicting head therefore always lands, even though that head is not the one the episode opened on (Inspector review).</li>
+</ul>
+</li>
 </ul>
 <h3 id="3-foreman-the-conflict-dimension-srcserverforemanreview-followupts-workerts">3. Foreman: the conflict dimension (<code>src/server/foreman/review-followup.ts</code>, <code>worker.ts</code>)</h3>
 <ul>
@@ -575,7 +592,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>PR number and title link.</li>
 <li>Repository and base branch.</li>
 <li>Owning task or session.</li>
-<li>Why it needs you: &quot;session ended&quot;, &quot;Foreman can&#39;t drive this session&quot;, or &quot;Foreman&#39;s 3 nudges didn&#39;t resolve it&quot;.</li>
+<li>Why it needs you: &quot;session ended&quot;, &quot;Foreman can&#39;t drive this session&quot;, &quot;Foreman&#39;s 3 nudges didn&#39;t resolve it&quot;, or &quot;the workflow isn&#39;t waiting on CI for this PR&quot;.</li>
 <li>&quot;Conflicting for Nm&quot;.</li>
 <li>Links to open the PR and the session.</li>
 </ul>
@@ -622,6 +639,10 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then.</p>
 </li>
+<li><p><strong>Workflow without a live Wait for CI</strong> (Inspector review). The run has no Wait for CI node, or the base moved after Wait for CI passed. The episode is <code>workflow-not-gating</code> and goes to the inbox. Foreman still does not type into the session, because the workflow owns it.</p>
+</li>
+<li><p><strong>Conflict spanning several heads.</strong> The episode stays one episode keyed by PR URL, and <code>headSha</code> tracks the latest conflicting head.</p>
+</li>
 <li><p><strong>PR closed or merged while blocked.</strong> The episode closes, and the inbox row and chip mark clear.</p>
 </li>
 <li><p><strong>Draft PRs.</strong> They are treated the same way. A draft can still conflict, and the fix is the same.</p>
@@ -641,8 +662,11 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><code>pr-conflicts.ts</code>:<ul>
 <li>Episode open and close.</li>
 <li>Each unhandled reason.</li>
-<li>A workflow-owned session is never unhandled.</li>
-<li>Escalation of an already closed episode is ignored.</li>
+<li>A workflow-owned session whose run is at a Wait for CI attempt for this PR is handled.</li>
+<li>The same session with no Wait for CI node, or with the run past it, is <code>workflow-not-gating</code>.</li>
+<li><code>headSha</code> advances on each new conflicting head without opening a new episode.</li>
+<li>Escalating on head 4, after nudges on heads 1 to 3, marks the open episode <code>escalated</code>.</li>
+<li>Escalation with no open episode for the URL is ignored.</li>
 <li><code>blocked_prs</code> is emitted only on change.</li>
 </ul>
 </li>
