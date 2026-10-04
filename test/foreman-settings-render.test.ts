@@ -446,7 +446,7 @@ test("pre-PR recovery, review comments, and CI render as independent default-on 
     assert.notEqual(at, -1, label);
     assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/, label);
   }
-  assert.match(html, /Invited managed Ship tasks only, in Live trusted repos/);
+  assert.match(html, /Invited managed Ship tasks, plus the gaps of a held Plan or Shape completion, in\s+Live trusted repos/);
   assert.match(html, /Stops as soon as any\s+task-owned pull request appears/);
   assert.match(html, /Does not create a PR\. Once one exists, sends failing CI back to its session/);
   assert.match(html, /New workflow PR instructions also ask the session to follow CI through completion/);
