@@ -432,28 +432,37 @@ test(`the daemon admits held-gap claims for a ${kind} task and refuses its idle 
   });
   assert.equal(held.status, 200, await held.clone().text());
 
-  const idle = seed(`-idle-${kind}`, null, kind);
-  registry.getSession(idle.sessionId)!.lastActivity = Date.now() - 5 * 60_000;
-  const idleIdentity = {
-    taskId: idle.taskId,
-    logicalKey: idle.noteKey,
-    generation: 1,
-    episodeKey: "intent:1:1",
-    decisionGeneration: null,
-    decisionOutcome: null,
-    reason: "idle_empty" as const,
-    attempt: 1,
+  // The same idle seed for the planning kind and a ship control, so the only difference
+  // between the admitted claim and the refused one is the task kind.
+  const idleClaim = async (suffix: string, idleKind: "ship" | typeof kind) => {
+    const idle = seed(suffix, null, idleKind);
+    registry.getSession(idle.sessionId)!.lastActivity = Date.now() - 5 * 60_000;
+    const idleIdentity = {
+      taskId: idle.taskId,
+      logicalKey: idle.noteKey,
+      generation: 1,
+      episodeKey: "intent:1:1",
+      decisionGeneration: null,
+      decisionOutcome: null,
+      reason: "idle_empty" as const,
+      attempt: 1,
+    };
+    return app.request(`/api/sessions/${idle.sessionId}/queue/ship-recovery/claim`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        ...idleIdentity,
+        marker: shipRecoveryMarker(idleIdentity),
+        payloadSummary: "Resume the bounded task.",
+      }),
+    });
   };
-  const refused = await app.request(`/api/sessions/${idle.sessionId}/queue/ship-recovery/claim`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      ...idleIdentity,
-      marker: shipRecoveryMarker(idleIdentity),
-      payloadSummary: "Resume the bounded task.",
-    }),
-  });
+  const control = await idleClaim(`-idle-control-${kind}`, "ship");
+  assert.equal(control.status, 200, `the idle seed must be claimable for ship: ${await control.clone().text()}`);
+  const refused = await idleClaim(`-idle-${kind}`, kind);
   assert.equal(refused.status, 409, "a planning task never receives an implementation instruction");
+  // The policy refusal, not the stale-task guard ahead of it: the task is still current.
+  assert.deepEqual(await refused.json(), { error: "the ship recovery attempt is no longer eligible" });
 });
 }
 

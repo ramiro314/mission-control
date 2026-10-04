@@ -2336,7 +2336,11 @@ test("a ship objective that demands a PR still completes at the delivered bounda
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });
 
-test("a genuinely unfinished managed ship task receives its held gaps in the same pass", async () => {
+// Shape rides the same worker path: before planning kinds took held-gap recovery, its held
+// completion was consumed in silence and its bound workflow never started. Both worker gates
+// (the hold branch and `resolveShipRecoveryCandidate`) must admit it for this case to deliver.
+for (const kind of ["ship", "shape"] as const) {
+test(`a genuinely unfinished managed ${kind} task receives its held gaps in the same pass`, async () => {
   // The other half of the boundary: deferring the pull request must not defer anything
   // else. This verifier answers incomplete for a reason that has nothing to do with the
   // PR, so the hold stands - and now says what it believed was missing, which is the state
@@ -2369,7 +2373,9 @@ process.stdin.on("end", () => {
   chmodSync(bin, 0o755);
   writeFileSync(log, "");
 
-  const session = mkSession(repo, { task: mkTaskSummary({ kind: "ship", workflowId: null }) });
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind, workflowId: kind === "shape" ? "wf-shape" : null }),
+  });
   const stopAt = Date.now() - 120_000;
   let queue = mkQueue(repo);
   let deliveredAt = 0;
@@ -2402,6 +2408,12 @@ process.stdin.on("end", () => {
     }
     if (p === "/api/sessions/s1/workflow-evidence") {
       return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
+    }
+    if (p === "/api/sessions/s1/plan-publication") {
+      return {
+        status: 200,
+        json: { owner: "workflow", bindingId: "b-shape", workflowVersionId: "v-shape", triggerMode: "foreman_complete" },
+      };
     }
     if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {
@@ -2516,6 +2528,11 @@ process.stdin.on("end", () => {
     (injects[0]!.body as { text?: string }).text ?? "",
     /src\/up\.ts: no test covers the 500 retry/,
   );
+  // A planning task is told to finish its plan, never to start implementing it.
+  assert.match(
+    (injects[0]!.body as { text?: string }).text ?? "",
+    kind === "shape" ? /planning turn[\s\S]*do not implement the plan/ : /implementation turn/,
+  );
   assert.equal(deliveries.length, 1, `delivery was not resolved exactly once\n${out}`);
   assert.equal(
     (deliveries[0]!.body as { delivery?: string }).delivery,
@@ -2541,5 +2558,6 @@ process.stdin.on("end", () => {
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
 });
+}
 
 });
