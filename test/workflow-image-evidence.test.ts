@@ -611,6 +611,87 @@ test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-
   }
 });
 
+test("re-registering a rewritten checkout path under a new id reserves only the latest registration", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-rerun-repo-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "reports/\n");
+    mkdirSync(join(repo, "reports"));
+    const logPath = join(repo, "reports", "suites.log");
+    const store = new WorkflowStore();
+    const stageLog = (clientItemId: string, now: number) => stageAgentWorkflowEvidence({
+      store,
+      noteKey: "rerun-note",
+      task: taskAt(repo),
+      fallbackRoot: repo,
+      images: [],
+      artifacts: [{
+        kind: "text",
+        clientItemId,
+        path: "reports/suites.log",
+        caption: "Suite output",
+        repositoryScope: "repo-01",
+      }],
+      now,
+    });
+    // The observed sequence: register a log, rerun the suite into the same file, register again.
+    writeFileSync(logPath, "ok 1 - first run\n");
+    await stageLog("suites-log", 1);
+    writeFileSync(logPath, "ok 1 - first run\nok 2 - rerun\n");
+    await stageLog("suites-log-2", 2);
+
+    const binding = store.insertBinding({
+      id: "rerun-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "rerun-note",
+      sessionId: "rerun-session",
+      sessionAgent: "codex",
+      sessionName: "rerun evidence",
+      sessionCwd: repo,
+      sessionRepoRoot: repo,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 3,
+    });
+    const created = store.createInitialSubmission(
+      { id: "rerun-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "rerun-run", now: 4 },
+      {
+        id: "rerun-submission",
+        triggerSource: "manual",
+        triggerKey: "rerun-run",
+        evidenceGroupKey: "manual:rerun-note:rerun-run",
+        context: {},
+        evidence: {},
+        now: 4,
+      },
+    );
+    assert.deepEqual(
+      store.listReservedWorkflowEvidence(created.submission.id).map((item) => item.clientItemId),
+      ["suites-log-2"],
+    );
+    const captured = await captureSubmissionTextArtifacts(store, created.submission.id, 5);
+    assert.deepEqual(captured.map((item) => item.content), ["ok 1 - first run\nok 2 - rerun\n"]);
+
+    // The superseded row is still in the tray, and a later submission must not pick it up either.
+    const later = store.createInitialSubmission(
+      { id: "rerun-run-2", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "rerun-run-2", now: 6 },
+      {
+        id: "rerun-submission-2",
+        triggerSource: "manual",
+        triggerKey: "rerun-run-2",
+        evidenceGroupKey: "manual:rerun-note:rerun-run-2",
+        context: {},
+        evidence: {},
+        now: 6,
+      },
+    );
+    assert.deepEqual(store.listReservedWorkflowEvidence(later.submission.id), []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("completed command output is staged directly and frozen as immutable text evidence", async () => {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-command-evidence-")));
   const store = new WorkflowStore();
