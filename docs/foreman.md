@@ -291,7 +291,8 @@ own completion policy asked for it. Both mean the run is over with nothing to sh
 exactly the case no merge will ever settle. Nothing else changes: every other outcome, and
 every task that did not come from a mission, still completes the way it always has.
 
-**Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
+**Pre-PR recovery applies only to invited, task-owned `ship` and `bugfix` sessions, plus the
+held gaps of `plan` and `shape` sessions.** Its popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
 ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
@@ -307,6 +308,12 @@ existing **Keep pre-PR ship tasks moving** switch and every ownership, delivery,
 repository-trust gate above. A task-less session or any session a human owns remains silent. The
 quiet-window shepherd is unchanged and remains the backstop when immediate delivery could not be
 claimed or reached no pane.
+
+A planning task (`plan` or `shape`) takes the held-gap relay and nothing else. Without it a held
+planning completion was consumed in silence: the agent never heard the gaps, and its bound Workflow
+never started. Its packet names the planning turn, says not to implement the plan, and keeps push in
+that turn as the planning contract does, deferring only the pull request onward. Every other cause
+below is an implementation instruction, so a planning task skips it.
 
 Known states use structural instructions: relay the verifier's held gaps, resume an empty
 checkout, or continue an already-authorized direct shipping handoff whose pull request did not

@@ -122,6 +122,22 @@ test("a background task reporting in never overwrites the captured ask", () => {
   assert.equal(r.getGoal(s.id)?.prompt, "fix the reset bug");
 });
 
+test("a subagent hand-back never becomes a prompt revision", () => {
+  // The revision is half of the intent episode key that stamps workflow evidence, so a
+  // hand-back counted here hid the agent's registered evidence from Foreman's verifier.
+  const { r, s, env } = withSession("g2b", "%12b");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "fix the reset bug" }));
+  r.applyHook(
+    evt({
+      event: "UserPromptSubmit",
+      env,
+      prompt: "<agent-message from=\"a6961b05d1246c869\">\n[Subagent hand-back] Found it in store.ts.\n</agent-message>",
+    }),
+  );
+  assert.equal(r.getGoal(s.id)?.prompt, "fix the reset bug");
+  assert.equal(r.getGoal(s.id)?.promptRevision, 1);
+});
+
 test("a goal survives a restart and re-attaches by agent session id", () => {
   const { r, s, env } = withSession("g3", "%13");
   r.applyHook(evt({ event: "UserPromptSubmit", env, sessionId: "agent-g3", prompt: "ship the goal feature" }));

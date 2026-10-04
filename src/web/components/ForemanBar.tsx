@@ -642,7 +642,7 @@ export function ForemanPopover({
       */}
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Pull requests</legend>
-        <Tooltip label="Resume an eligible invited ship task after its quiet window, only before its first task-owned pull request">
+        <Tooltip label="Resume an eligible invited ship task after its quiet window, or relay a held plan or shape completion's gaps, only before its first task-owned pull request">
           <label className="alert-row">
             <input
               type="checkbox"
@@ -653,8 +653,8 @@ export function ForemanPopover({
           </label>
         </Tooltip>
         <p className="alert-hint dim">
-          Invited managed Ship tasks only, in Live trusted repos. Stops as soon as any
-          task-owned pull request appears.
+          Invited managed Ship tasks, plus the gaps of a held Plan or Shape completion, in
+          Live trusted repos. Stops as soon as any task-owned pull request appears.
         </p>
         <Tooltip label="Nudge a parked session back onto its open PR to resolve GitHub Inspector comments">
           <label className="alert-row">

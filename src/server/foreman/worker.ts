@@ -1,5 +1,4 @@
 import { isActiveTask } from "@shared/task-status.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -125,6 +124,7 @@ import {
   decideImmediateHeldGapDelivery,
   decideShipShepherd,
   shipRecoveryBrief,
+  takesShipRecovery,
 } from "./ship-shepherd.ts";
 import type {
   ShipRecoveryDeliveryOutcome,
@@ -1143,7 +1143,7 @@ async function resolveShipRecoveryCandidate(
   deliveryRoute: ShipRecoveryDeliveryRoute,
 ): Promise<ShipRecoveryCandidate | null> {
   const task = session.task;
-  if (!task || !isShippingTaskKind(task.kind)) return null;
+  if (!task || !takesShipRecovery(task.kind)) return null;
 
   // Queue and Workflow are durable owners outside the card snapshot. Failure to read
   // either holds this candidate: missing evidence can never become permission to type.
@@ -2431,7 +2431,7 @@ export async function processPromptedWrapup(
   if (plan.kind === "hold") {
     if (
       cfg.keepShipTasksMoving
-      && current.session.task && isShippingTaskKind(current.session.task.kind)
+      && current.session.task && takesShipRecovery(current.session.task.kind)
       && isActiveTask(current.session.task.status)
     ) {
       const latestSessions = await client.sessions().catch(() => null);

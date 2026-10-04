@@ -48,7 +48,7 @@ const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 function seed(
   suffix = "",
   decision: Parameters<typeof consumePromptedGeneration>[0]["decision"] = null,
-  kind: "ship" | "bugfix" = "ship",
+  kind: "ship" | "bugfix" | "plan" | "shape" = "ship",
 ): { sessionId: string; noteKey: string; taskId: string } {
   const sessionId = `ship-recovery-session${suffix}`;
   const noteKey = `ship-recovery-conversation${suffix}`;
@@ -401,6 +401,61 @@ test("the daemon admits immediate held-gap claims through the existing recovery 
     lastDelivery: "escalated",
   });
 });
+
+for (const kind of ["plan", "shape"] as const) {
+test(`the daemon admits held-gap claims for a ${kind} task and refuses its idle recovery`, async () => {
+  const heldDecision = {
+    outcome: "held" as const,
+    summary: "The plan's evidence is not registered.",
+    gaps: [{ id: "evidence", path: "docs/plans/x/plan.md", detail: "Register the plan text." }],
+  };
+  const { sessionId, noteKey, taskId } = seed(`-held-${kind}`, heldDecision, kind);
+  const identity = {
+    taskId,
+    logicalKey: noteKey,
+    generation: 1,
+    episodeKey: "intent:1:1",
+    decisionGeneration: 1,
+    decisionOutcome: "held" as const,
+    reason: "held_gaps" as const,
+    attempt: 1,
+  };
+  const held = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      ...identity,
+      marker: shipRecoveryMarker(identity),
+      payloadSummary: "Deliver the held completion gaps.",
+      deliveryRoute: "immediate-held",
+    }),
+  });
+  assert.equal(held.status, 200, await held.clone().text());
+
+  const idle = seed(`-idle-${kind}`, null, kind);
+  registry.getSession(idle.sessionId)!.lastActivity = Date.now() - 5 * 60_000;
+  const idleIdentity = {
+    taskId: idle.taskId,
+    logicalKey: idle.noteKey,
+    generation: 1,
+    episodeKey: "intent:1:1",
+    decisionGeneration: null,
+    decisionOutcome: null,
+    reason: "idle_empty" as const,
+    attempt: 1,
+  };
+  const refused = await app.request(`/api/sessions/${idle.sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      ...idleIdentity,
+      marker: shipRecoveryMarker(idleIdentity),
+      payloadSummary: "Resume the bounded task.",
+    }),
+  });
+  assert.equal(refused.status, 409, "a planning task never receives an implementation instruction");
+});
+}
 
 test("held-round accounting is episode-scoped and legacy predecessors reset safely", () => {
   const { noteKey } = seed("-held-rounds", {

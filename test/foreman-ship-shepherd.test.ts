@@ -775,6 +775,48 @@ test("bugfix shares ship recovery and its live-delivery boundaries", () => {
   }
 });
 
+test("planning tasks receive their held gaps, and no other recovery", () => {
+  // A held plan or shape completion used to be consumed in silence: the agent never heard
+  // the gaps, nothing re-armed the claim, and the bound workflow never started.
+  const heldQueue = queue({ promptedDecision: decision("held") });
+  const recent = { lastActivity: NOW - 2 * 60_000 };
+  for (const kind of ["plan", "shape"] as const) {
+    const task = mkTaskSummary({ id: "task-1", kind, status: "running" });
+    const immediate = decideImmediateHeldGapDelivery(input({
+      session: session({ ...recent, task }),
+      queue: heldQueue,
+    }));
+    const backstop = decideShipShepherd(input({ session: session({ task }), queue: heldQueue }));
+    assert.equal(immediate.kind, "recover", kind);
+    assert.equal(backstop.kind, "recover", kind);
+    if (immediate.kind !== "recover" || backstop.kind !== "recover") continue;
+    assert.equal(immediate.reason, "held_gaps");
+    assert.equal(immediate.payload, backstop.payload);
+    const payload = immediate.payload ?? "";
+    assert.match(payload, /planning turn/);
+    assert.match(payload, /test\/widget\.test\.ts: Cover the retry branch\./);
+    assert.match(payload, /do not implement the plan/);
+    // Planning keeps push in its own turn; only the pull request onward is deferred.
+    assert.match(payload, /Commit and push the scoped plan changes/);
+    assert.match(payload, /do not create a pull request, merge, or expand repository scope/);
+    assert.doesNotMatch(payload, /implementation turn|do not push/);
+
+    // Every other cause instructs implementation, which a planning task must never receive.
+    for (const [name, over] of [
+      ["idle empty", { queue: queue() }],
+      ["idle ambiguous", { queue: queue(), diffHasChanges: true }],
+      ["direct handoff", { queue: queue({ promptedDecision: decision("direct_handoff") }) }],
+      ["verification failed", { queue: queue({ promptedDecision: decision("verification_failed") }) }],
+    ] as const) {
+      assert.deepEqual(
+        decideShipShepherd(input({ session: session({ task }), ...over })),
+        { kind: "skip", why: "a planning task takes only held-gap recovery" },
+        `${kind}: ${name}`,
+      );
+    }
+  }
+});
+
 test("fixed recovery prompts that name a local commit never pass through the recovery reviewer's guard", () => {
   // `forbiddenRecoveryInstruction` rejects any text naming "commit", and it runs only on the
   // model reviewer's instruction, which the worker requests only when `needsReview` is true.
