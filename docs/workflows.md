@@ -2335,6 +2335,19 @@ eligible under the same human intent. If no
 Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged.
 
+**A completed run latches its binding.** Every claim that starts or resubmits a run, prompted or
+queue-drain, stamps it with the claiming intent episode. Once that run is `completed`, a prompted
+claim under the same episode is **latched**: it consumes the generation with the
+`workflow_latched` outcome, records `claim_latched` on the completed run, starts and resubmits
+nothing, and still answers claimed so Foreman does not fall through to the Ship it? card or
+Straight to PR. That is what stops the Pull Request action's own turn, Inspector fixes and
+background wake-ups from starting another run on the open pull request. Only an accepted human
+prompt advances the episode and re-arms the binding for exactly one more run. Cancelled runs and
+runs created before the stamp existed never latch, and queue-drain claims are never refused.
+Two residuals are accepted: a drain claim on a session with no recorded goal leaves the stamp
+empty, and on the terminal runtime a daemon restart between a packet's delivery and its prompt
+echo makes that one packet read as human.
+
 #### The repair loop, end to end
 
 One confirmed Live delivery can explicitly re-arm only the queue-drain guard, and only when the
@@ -2353,6 +2366,11 @@ So the whole cycle runs without you:
    and opens round N+1.
 5. The graph re-runs **from the top** - every reviewer, against fresh evidence. Attempts are
    keyed by submission, so round N+1 starts with an empty slate rather than resuming round N.
+
+The loop runs while the run is active, so the completion latch never interrupts it: a gated run
+stays active until GitHub Inspector passes. Once the run completes, the turns that follow it
+under the same human instruction are latched, and a new human instruction is what starts the
+next run.
 
 **Expect roughly fourteen seconds of apparent silence at step 4**, and know that it is the
 design rather than a hang. Foreman's loop ticks every four seconds and a session must be

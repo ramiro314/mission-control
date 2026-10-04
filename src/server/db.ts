@@ -1033,7 +1033,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       check_budget_epoch_round INTEGER,
       intent_json           TEXT,
       run_criteria_json     TEXT,
-      intent_provenance_json TEXT
+      intent_provenance_json TEXT,
+      claim_episode_key     TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -3196,6 +3197,16 @@ function migrate(d: DatabaseSync): void {
   // this means the row is intact and suspicious - so it is a column of its own rather than a
   // value folded into the other.
   addColumn(d, "workflow_runs", "intent_provenance_json", "TEXT");
+
+  // ---- Completion latch ------------------------------------------------------------------
+  //
+  // The intent episode (`intent:<objective_version>:<prompt_revision>`) of the last Foreman
+  // claim that started or resubmitted this run. A `completed` run stamped with an episode
+  // latches its binding: a later prompted claim under that same episode starts nothing.
+  // Nullable with no default and no backfill: a run written before this column existed was
+  // never stamped, and a null stamp never latches, so an upgrade costs at most one more run
+  // per binding - and that run stamps itself.
+  addColumn(d, "workflow_runs", "claim_episode_key", "TEXT");
 
   // ---- SessionAction continuation segments -------------------------------------------
   //

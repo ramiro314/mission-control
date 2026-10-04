@@ -3920,7 +3920,7 @@ export type WorkflowCompletionClaimResult =
       claimed: true;
       runId: WorkflowRunId;
       submissionId: WorkflowSubmissionId | null;
-      state: "started" | "resubmitted" | "already_claimed" | "blocked";
+      state: "started" | "resubmitted" | "already_claimed" | "blocked" | "latched";
     };
 
 /** JSON that has crossed a validation boundary. */

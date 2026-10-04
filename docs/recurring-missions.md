@@ -194,7 +194,7 @@ The **completion policy** closes that:
 request for) and `retired` (consumed with no wrap-up action - a scout report, a review-only
 artifact, another non-shipping settled turn). A `held` verdict is Foreman saying the work is
 *unfinished*; `verification_failed` means no model judged it at all; `asked`,
-`workflow_claimed` and `direct_handoff` all mean shipping is still under way and the merge
+`workflow_claimed`, `workflow_latched` and `direct_handoff` all mean shipping is still under way and the merge
 paths still own the completion. None of those conclude anything. The list lives in
 `foremanConcludedMission` (`src/shared/schedules.ts`), beside the policy it serves.
 

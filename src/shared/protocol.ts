@@ -4678,6 +4678,11 @@ export const PromptedWrapupSchema = z.object({
   (body) => body.decision?.outcome !== "workflow_claimed",
   { message: "Only the Workflow claim transaction may record a workflow_claimed outcome" },
 ).refine(
+  // `workflow_latched` is the same transaction's other answer, reserved for the same reason:
+  // accepting it here would let an ordinary consume claim a completed run latched a binding.
+  (body) => body.decision?.outcome !== "workflow_latched",
+  { message: "Only the Workflow claim transaction may record a workflow_latched outcome" },
+).refine(
   // `direct_handoff_undelivered` is a CORRECTION, reachable only from a stored
   // `direct_handoff` for a generation this route already consumed. A consumption that
   // opened with it would be claiming an injection failed that nothing ever attempted.
@@ -6634,7 +6639,7 @@ export const WorkflowCompletionClaimResultSchema = z.discriminatedUnion("claimed
     claimed: z.literal(true),
     runId: z.string().min(1),
     submissionId: z.string().min(1).nullable(),
-    state: z.enum(["started", "resubmitted", "already_claimed", "blocked"]),
+    state: z.enum(["started", "resubmitted", "already_claimed", "blocked", "latched"]),
   }),
 ]);
 

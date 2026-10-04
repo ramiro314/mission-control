@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **8** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **9** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -51,6 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
+| PR publication ownership | Active | #110 (plan), pending (completion latch) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
@@ -641,6 +642,64 @@ editor, version history and run views.
 
 **Fork-only files.** `src/web/workflows/EffortSelect.tsx`, `test/persona-effort.test.ts`,
 `e2e/specs/workflow-persona-effort.spec.ts`.
+
+### PR publication ownership
+
+| Field | Value |
+| --- | --- |
+| Status | **Active**. Part A (completion latch) implemented; Part B (PR authority as a grant) planned. |
+| PRs | #110 (plan), pending (completion latch) |
+| Plan docs | [pr-publication-ownership/plan.md](../plans/pr-publication-ownership/plan.md) |
+| Upstream candidate | Yes. Upstream has the same post-completion re-run: its Foreman claim and store are unchanged here apart from the latch. |
+
+**Intent.** A pull request is opened only by the workflow's Pull Request action or by a direct
+command of the human. Forensics found the visible symptom was not an early PR but a **new
+workflow run starting after the PR existed**: the Pull Request action's own turn, Inspector
+fixes and background wake-ups each settled under unchanged intent and claimed a fresh run on
+the binding. The completion latch stops that. The grant holders (the workflow Pull Request
+action, the Runs UI "Ask the session to open a PR", Foreman's Ship it? card, Straight to PR and
+ship-shepherd handoff, and a human-typed request in the session) are Part B of the plan and not
+yet implemented.
+
+**Behavior contracts.**
+
+- Every Foreman claim that starts or resubmits a run, prompted or queue-drain, stamps
+  `workflow_runs.claim_episode_key` with `intent:<objective_version>:<prompt_revision>` read
+  from `session_goals` in the claim transaction.
+- A prompted claim with no active run, on a binding with a `completed` run stamped with the
+  claim's episode, is **latched**: it consumes the generation with the `workflow_latched`
+  outcome, appends `claim_latched` on the completed run, starts and resubmits nothing, and
+  answers `claimed: true` with state `latched`, so Foreman does not fall through to the Ship it?
+  card or Straight to PR.
+- Only an accepted human prompt advances the episode and re-arms the binding, for exactly one
+  run. Cancelled runs and unstamped (pre-upgrade) runs never latch; queue-drain claims are never
+  refused; in-run repair rounds still resubmit the same run.
+- `workflow_latched` is appended to `PROMPTED_COMPLETION_OUTCOMES` and, like `workflow_claimed`,
+  is refused on the ordinary consume route.
+- Accepted residuals: a drain claim on a session with no recorded goal leaves the stamp null,
+  and on the terminal runtime a daemon restart between a packet's delivery and its echo makes
+  that packet read as human and re-arms the latch.
+
+**Upstream behavior it assumes.**
+
+- `WorkflowStore.claimForemanCompletion` is the one transaction that creates or resubmits a run
+  for a Foreman completion, and it consumes the prompted generation through
+  `consumePromptedGeneration`.
+- The intent episode key is `intent:<objective_version>:<prompt_revision>`, advanced only by
+  accepted human prompts; daemon-injected turns are kept out of the Goal by the SDK `origin`
+  and the terminal injection ledger.
+- The Straight to PR direct-handoff latch keyed by intent episode, which this mirrors.
+
+**Upstream surfaces touched.** `src/server/workflows/store.ts` (`claimForemanCompletion`,
+`consumePromptedGuard`), `src/server/db.ts` (`workflow_runs.claim_episode_key`),
+`src/shared/types.ts` (`PROMPTED_COMPLETION_OUTCOMES`), `src/shared/workflow.ts` and
+`src/shared/protocol.ts` (`WorkflowCompletionClaimResult` state `latched`, the consume-route
+refinement), `src/server/foreman/worker.ts` (latched log line), and
+`docs/{work-queues,workflows,foreman,recurring-missions}.md`,
+`docs/agent-guides/{change-contracts,architecture}.md`.
+
+**Fork-only files.** `test/workflow-completion-latch.test.ts`,
+`docs/plans/pr-publication-ownership/`.
 
 ## Superseded and removed
 
