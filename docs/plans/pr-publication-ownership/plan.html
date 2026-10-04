@@ -1,0 +1,450 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PR publication ownership: stop post-completion workflow re-runs and make PR authority a grant</title><style>
+:root{color-scheme:dark;--bg:#10151d;--panel:#1a2432;--ink:#edf3fa;--muted:#b8c9dc;--line:#52647c;--link:#9bcfff;--new:#1f3a2a}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f4f7fb;--panel:#fff;--ink:#132239;--muted:#344d68;--line:#8899ad;--link:#064b8b;--new:#e3f4e8}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{max-width:1080px;margin:auto;padding:44px 24px 80px}h1{font-size:clamp(28px,3.6vw,42px);line-height:1.15;letter-spacing:-.02em;margin:0 0 25px}h2{font-size:25px;margin:42px 0 15px}h3{font-size:20px;margin:28px 0 12px}p,li{max-width:94ch;overflow-wrap:anywhere}a{color:var(--link)}code{font:.88em/1.6 ui-monospace,monospace;overflow-wrap:anywhere}pre{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.wide{overflow-x:auto;max-width:100%;border:1px solid var(--line);border-radius:10px;margin:20px 0;background:var(--panel)}table{border-collapse:collapse;min-width:660px;width:100%;font-size:15px}th,td{padding:11px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}svg{display:block;min-width:900px;width:100%;height:auto}svg rect{fill:var(--panel);stroke:var(--line)}svg rect.new{fill:var(--new);stroke:var(--link);stroke-width:2}svg text{fill:var(--ink);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted)}svg path{stroke:var(--link);fill:none;stroke-width:2}svg polygon{fill:var(--link)}li{margin:7px 0}
+</style></head><body><main>
+<h1>PR publication ownership: stop post-completion workflow re-runs and make PR authority a grant</h1>
+<p>Status: shaped on 2026-10-04 from shape task &quot;Fix premature PR creation&quot; and approved as written by the operator the same day, with &quot;Create tickets after the plan merges&quot; chosen as the follow-up. Not implemented.</p>
+<h2>Problem</h2>
+<p>The operator reported: &quot;A PR is often created before the workflow even begins. PRs should only be
+created by the Pull Request action in a workflow or by direct command of the user.&quot;</p>
+<p>Forensics on the live state (read-only <code>harness.db</code> and Claude transcripts, 2026-09-23 to
+2026-10-04, every ship/bugfix task on Claude SDK) found that the PR is almost never opened early.
+What the operator sees is a <strong>new workflow run starting after the PR already exists</strong>.</p>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Count</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Ship/bugfix tasks with a bound workflow and a PR</td>
+<td>81</td>
+</tr>
+<tr>
+<td>...whose first <code>gh pr create</code> came 0-4 min after the daemon typed <code>/mission-pull-request</code></td>
+<td>80</td>
+</tr>
+<tr>
+<td>...whose PR came from a human typing &quot;create the PR&quot; before Foreman claimed (dungeon-game#8)</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Tasks with new workflow runs started after their PR existed</td>
+<td>25</td>
+</tr>
+<tr>
+<td>Runs started after the binding already had a completed run (29 bindings)</td>
+<td>38</td>
+</tr>
+<tr>
+<td>...of those later cancelled by the operator</td>
+<td>15</td>
+</tr>
+</tbody></table></div>
+<p>Of the runs that started after the PR existed, these turns triggered them:</p>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Trigger turn</th>
+<th>Runs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>The Pull Request action&#39;s own turn</td>
+<td>13</td>
+</tr>
+<tr>
+<td>Inspector feedback fixes</td>
+<td>11</td>
+</tr>
+<tr>
+<td>A Claude background-task wake-up after the PR action</td>
+<td>8</td>
+</tr>
+<tr>
+<td>A human asking to rebase</td>
+<td>2</td>
+</tr>
+</tbody></table></div>
+<p>Verified example: on metalmind#286&#39;s binding <code>8418bac5</code>, run <code>2c4064ad</code> completed. Run
+<code>c9de7f5a</code> started 16 seconds later and run <code>b902d130</code> 11 seconds after that one completed,
+each claimed as a fresh <code>prompted</code> completion on the open PR.</p>
+<p><strong>Root cause.</strong> Foreman claims every completed prompted work-cycle generation under unchanged
+intent (<code>promptedCompletionMarker</code> in <code>src/server/foreman/workflow-claim.ts</code> hashes the
+generation). <code>WorkflowStore.claimForemanCompletion</code> (<code>src/server/workflows/store.ts</code>, the
+<code>if (!run)</code> branch near line 6845) starts a new run whenever the binding has no <em>active</em> run. A
+<em>completed</em> run therefore leaves the binding claimable again by the very next turn, including
+the PR action&#39;s own turn. The repair loop relies on later generations claiming
+(<code>docs/workflows.md</code>, &quot;a later completed generation under unchanged intent can claim the binding
+exactly once&quot;). Nothing stops that once the run has completed. <code>docs/work-queues.md</code> states
+it outright: &quot;Only direct shipping latches - submitting a bound Foreman Complete Workflow does
+not&quot;.</p>
+<p><strong>Secondary exposure.</strong> No agent was observed opening a PR on its own initiative. Still, the
+prompts hand out PR authority as a standing permission and several texts contradict the ship
+handoff:</p>
+<ul>
+<li>Every dispatched task gets &quot;Mission Control execution authorization&quot;
+(<code>src/server/execution-authorization.ts</code>): &quot;When this task or the current workflow asks for a
+pull request, the operator has already authorized you to ... create or update that pull
+request. Act directly&quot;. So any intent or repo instruction that mentions a PR switches it on.</li>
+<li>The multi-repo manifest says &quot;Commit and push in each repository you change, and open ONE pull
+request per repository&quot; (<code>src/server/dispatcher.ts</code>, near line 2830). It is prepended to the
+intent, ahead of the ship handoff that forbids the same thing.</li>
+<li>Phase task intents written by the phased-plan skill require &quot;open a reviewable pull request&quot;.</li>
+<li>Unbound plan and shape tasks, the no-workflow ensemble winner, retro-as-task, deflake and
+testing-setup are told to open their own PR.</li>
+</ul>
+<h2>Decisions (recorded from the interview)</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>observed-vectors</td>
+<td>Where were premature PRs seen?</td>
+<td>Ship/bugfix tasks with a workflow bound</td>
+</tr>
+<tr>
+<td>approach</td>
+<td>Shape of the fix</td>
+<td>Make PR authorization a grant, not a standing permission</td>
+</tr>
+<tr>
+<td>enforcement</td>
+<td>Hard enforcement?</td>
+<td>Prompts plus a <code>gh pr create</code> block. <strong>Superseded by <code>scope</code>: the block is deferred</strong></td>
+</tr>
+<tr>
+<td>user-command</td>
+<td>What counts as a direct user command</td>
+<td>Human-typed message in the session; Foreman &quot;Ship it?&quot; click; Runs &quot;Ask the session to open a PR&quot;; Foreman &quot;Straight to PR&quot; setting</td>
+</tr>
+<tr>
+<td>plan-shape-unbound</td>
+<td>Unbound plan/shape tasks</td>
+<td>Defer like ship: commit and push, Foreman&#39;s PR path opens it</td>
+</tr>
+<tr>
+<td>self-publishing-skills</td>
+<td>retro, deflake, testing-setup, ensemble winner</td>
+<td>Follow the same rule: defer to the workflow or Foreman</td>
+</tr>
+<tr>
+<td>push-policy</td>
+<td>Does <code>git push</code> also wait for a grant?</td>
+<td>Block only PR creation; the prompt still says don&#39;t push</td>
+</tr>
+<tr>
+<td>grant-lifetime</td>
+<td>How long a grant lasts</td>
+<td>Until the session&#39;s PR exists; updating it is then always allowed</td>
+</tr>
+<tr>
+<td>untasked-sessions</td>
+<td>Are untasked sessions under the rule?</td>
+<td>No, only dispatched task sessions</td>
+</tr>
+<tr>
+<td>on-block</td>
+<td>Behavior on a blocked PR</td>
+<td>Denial message plus a recorded attempt (applies to the deferred hook)</td>
+</tr>
+<tr>
+<td>scope</td>
+<td>Plan scope after the forensics</td>
+<td>Fix the re-trigger, plus the prompt-level grant changes; defer the hook</td>
+</tr>
+<tr>
+<td>claim-rule</td>
+<td>What may start another run after a completed run</td>
+<td>Nothing until the human gives a new instruction (latch per intent episode, like Straight to PR)</td>
+</tr>
+<tr>
+<td>human-pr-before-claim</td>
+<td>Human asks for a PR before the claim</td>
+<td>Allow it; the bound workflow still runs once against the open PR</td>
+</tr>
+<tr>
+<td>latch-key</td>
+<td>Which human messages re-arm</td>
+<td>Any accepted human prompt (episode key)</td>
+</tr>
+<tr>
+<td>latch-on-cancel</td>
+<td>Does a cancelled run latch?</td>
+<td>No, only completed runs latch</td>
+</tr>
+<tr>
+<td>merged-before-review</td>
+<td>Human-requested PR merged before the workflow ran</td>
+<td>Accept it: the merge closes the task, no change</td>
+</tr>
+<tr>
+<td>prompt-changes</td>
+<td>Prompt changes in scope</td>
+<td>All five: authorization split, manifest, phased-plan intent template, unbound plan/shape, skills and ensemble text</td>
+</tr>
+<tr>
+<td>follow-ups</td>
+<td>Findings recorded as follow-ups</td>
+<td>Deferred <code>gh pr create</code> block; duplicate human-prompt capture; agent merged a PR</td>
+</tr>
+<tr>
+<td>latch-ui</td>
+<td>Show the latch in the dashboard?</td>
+<td>No UI change; the recorded Foreman reason is enough</td>
+</tr>
+</tbody></table></div>
+<h2>Design</h2>
+<h3>Part A: latch a binding after its completed run</h3>
+<p><strong>Rule.</strong> A prompted Foreman completion claim on a binding is <strong>latched</strong> when that binding has a
+<code>completed</code> run whose claim episode equals the claim&#39;s <code>expectedIntent.episodeKey</code>. A latched
+claim:</p>
+<ul>
+<li>consumes the generation in the same compare-and-set as every other claim outcome;</li>
+<li>creates no run and resubmits nothing;</li>
+<li>returns <code>claimed: true</code>, so the worker treats the session as owned and does <strong>not</strong> fall
+through to the Ship it? card or Straight to PR (falling through would publish a second time).</li>
+</ul>
+<p>Any accepted human prompt bumps <code>promptRevision</code> and with it the episode key, so the next
+completion after it claims normally. Daemon-injected turns (workflow session actions, Inspector
+packets, Foreman wrap-ups) and Claude <code>&lt;task-notification&gt;</code> wake-ups never advance the episode,
+so they stay latched.</p>
+<div class="wide"><svg viewBox="0 0 1000 330" role="img" aria-label="Foreman completion claim with the new latched branch">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+<rect x="20" y="135" width="200" height="60" rx="8"/><text x="120" y="160" text-anchor="middle">Foreman: prompted</text><text x="120" y="182" text-anchor="middle" class="small">completion verified</text>
+<rect x="290" y="135" width="210" height="60" rx="8"/><text x="395" y="170" text-anchor="middle">claimForemanCompletion</text>
+<path d="M220 165 H285" marker-end="url(#a)"/>
+<rect x="590" y="15" width="390" height="56" rx="8"/><text x="785" y="38" text-anchor="middle" class="small">active run waiting_for_session</text><text x="785" y="58" text-anchor="middle">resubmit same run (repair round)</text>
+<rect x="590" y="95" width="390" height="56" rx="8"/><text x="785" y="118" text-anchor="middle" class="small">active run, other status</text><text x="785" y="138" text-anchor="middle">blocked: guard consumed</text>
+<rect x="590" y="175" width="390" height="62" rx="8" class="new"/><text x="785" y="198" text-anchor="middle" class="small">NEW: no active run, completed run with same episode</text><text x="785" y="222" text-anchor="middle">latched: consumed, no run, no wrap-up</text>
+<rect x="590" y="260" width="390" height="56" rx="8"/><text x="785" y="283" text-anchor="middle" class="small">no active run, no completed run this episode</text><text x="785" y="303" text-anchor="middle">start new run</text>
+<path d="M500 150 C540 150 550 43 585 43" marker-end="url(#a)"/><path d="M500 160 C540 160 550 123 585 123" marker-end="url(#a)"/><path d="M500 170 C540 170 550 206 585 206" marker-end="url(#a)"/><path d="M500 180 C540 180 550 288 585 288" marker-end="url(#a)"/>
+</svg></div>
+<p><strong>What stays the same.</strong></p>
+<ul>
+<li>In-run repair rounds, both Persona failures and GitHub Inspector <code>restart_workflow</code> and
+<code>inspector_only</code> feedback. A gated run stays active until Inspector passes, so it never reaches
+the latch.</li>
+<li>Operator-cancelled runs do not latch. Status <code>cancelled</code> is not <code>completed</code>.</li>
+<li>Queue-drain claims. Drain needs new queue items to fire again, and those are human work. The
+latch applies to <code>completionKind: &quot;prompted&quot;</code> only.</li>
+<li>dungeon-game#8 (<code>human-pr-before-claim</code>). When a human asks for a PR before the claim and the PR
+stays open, the next generation claims under the new episode and the bound workflow runs once
+against the open PR. Today&#39;s code already behaves this way, so it is pinned by a test, not
+changed. If the PR is merged in that turn, the task closes on merge and nothing runs
+(<code>merged-before-review</code>).</li>
+</ul>
+<p><strong>Changes.</strong></p>
+<ol>
+<li><strong>Schema</strong> (<code>src/server/db.ts</code>, migration beside its upgrade path):
+<code>addColumn(d, &quot;workflow_runs&quot;, &quot;claim_episode_key&quot;, &quot;TEXT&quot;)</code>.</li>
+<li><strong>Claim transaction</strong> (<code>WorkflowStore.claimForemanCompletion</code>, <code>src/server/workflows/store.ts</code>):<ul>
+<li>Write <code>claim_episode_key</code> whenever a prompted claim starts a run or resubmits one, so the
+stamp is the episode of the last claim that fed the run.</li>
+<li>In the <code>if (!run)</code> branch, before creating a run, look up a <code>completed</code> run on the binding
+with <code>claim_episode_key = expectedIntent.episodeKey</code>. If one exists, consume the guard with
+the new outcome, append a <code>claim_latched</code> workflow event naming that run, and return
+<code>{ claimed: true, runId: &lt;completed run&gt;, submissionId: null, state: &quot;latched&quot; }</code>.</li>
+<li>Runs created before the upgrade have a null stamp and never latch. At most one more run can
+occur per pre-upgrade binding, and that run stamps itself.</li>
+</ul>
+</li>
+<li><strong>Wire types:</strong><ul>
+<li>Add <code>&quot;latched&quot;</code> to the claimed <code>state</code> union of <code>WorkflowCompletionClaimResult</code>
+(<code>src/shared/workflow.ts</code>) and to its schema in <code>src/shared/protocol.ts</code>.</li>
+<li>Append <code>&quot;workflow_latched&quot;</code> to <code>PROMPTED_COMPLETION_OUTCOMES</code> (<code>src/shared/types.ts</code>).
+Append only, never reorder. Document it as: &quot;a bound Workflow already completed a run for
+this intent episode; nothing was started and nothing was handed off&quot;.</li>
+<li>The protocol refinement that reserves <code>workflow_claimed</code> to the claim transaction reserves
+<code>workflow_latched</code> the same way.</li>
+</ul>
+</li>
+<li><strong>Worker</strong> (<code>src/server/foreman/worker.ts</code>): a claimed result already returns <code>true</code>. Log
+<code>latched</code> distinctly (&quot;workflow latched: run X already completed for this instruction&quot;). No
+other change.</li>
+<li><strong>Docs:</strong><ul>
+<li><code>docs/work-queues.md</code>: replace &quot;Only direct shipping latches...&quot; with the two latches.</li>
+<li><code>docs/workflows.md</code>: in the Foreman complete paragraph and &quot;The repair loop, end to end&quot;,
+say that a completed run latches its binding for the claiming episode and a new human
+instruction re-arms it.</li>
+<li><code>docs/agent-guides/change-contracts.md</code>: in &quot;Prompted completion: one generation, one
+reason, one write&quot;, add <code>workflow_latched</code> beside <code>workflow_claimed</code> as a claim-transaction
+outcome.</li>
+</ul>
+</li>
+</ol>
+<h3>Part B: PR authority is a grant, not a standing permission</h3>
+<p>The grant holders are:</p>
+<ul>
+<li>the workflow Pull Request action;</li>
+<li>the Runs UI &quot;Ask the session to open a PR&quot; (<code>renderPrHandoff</code>);</li>
+<li>Foreman&#39;s PR instructions: the Ship it? card, Straight to PR <code>WRAPUP_PR</code>, and the ship
+shepherd&#39;s direct handoff;</li>
+<li>a human-typed message in the session that asks for one.</li>
+</ul>
+<p>No initial task prompt grants it.</p>
+<ol>
+<li><strong>Execution authorization</strong> (<code>src/server/execution-authorization.ts</code>): split the PR clause.<ul>
+<li>The <strong>task authorization</strong>, rendered by <code>task-contract.ts</code> for every dispatched task, drops
+&quot;When this task ... asks for a pull request ... authorized&quot;. In its place it says: do not
+push or open a pull request on your own initiative, even when the task text or repository
+instructions mention one. Mission Control&#39;s workflow Pull Request action, a Foreman PR
+instruction, or the human asking in this session grants that. Once a pull request for this
+task exists, you may push to update it. It keeps &quot;does not authorize merge, another
+repository, or another external write&quot;.</li>
+<li>The <strong>grant authorization</strong> keeps today&#39;s wording (&quot;the operator has already authorized
+you to commit ..., push ..., and create or update that pull request ... Act directly
+without asking&quot;). <code>executionAuthorizationContract</code> gains an explicit <code>pullRequestGrant</code>
+flag, and two callers in <code>src/server/workflows/feedback.ts</code> set it:<ul>
+<li>the session-action packet (near line 731), only when the action&#39;s contract completes on a
+pull request (<code>completion.kind === &quot;pull_request&quot;</code>, the built-in Pull Request action). An
+authored action of any other kind does not get it;</li>
+<li><code>renderPrHandoff</code>, through <code>finalizePacket</code> (near line 249).</li>
+</ul>
+</li>
+<li><strong>Repair and Inspector packets</strong>, the other <code>finalizePacket</code> callers, leave the flag off.
+They carry the task authorization&#39;s update-only sentence and not the creation grant, so an
+in-run repair before the PR stage cannot be read as permission to open one.</li>
+</ul>
+</li>
+<li><strong>Multi-repo manifest</strong> (<code>src/server/dispatcher.ts</code>, near line 2830). Replace the &quot;Commit and
+push ... open ONE pull request&quot; lines with: &quot;Commit in each repository you change. Mission
+Control&#39;s workflow or Foreman opens one pull request per repository you changed. A repository
+you did not change needs no commit and no pull request.&quot;</li>
+<li><strong>phased-plan intent template</strong> (<code>skills/phased-plan/SKILL.md</code>, &quot;the bar&quot; near lines 231-232,
+the example near 268-272, and the <code>create_task</code> example near 280). Replace &quot;open a reviewable
+pull request&quot; with &quot;commit the phase; Mission Control publishes it as a reviewable pull request
+whose merge releases dependent phases&quot;. The tickets template only uses the PR as the place to
+record deviations and needs no change.</li>
+<li><strong>Unbound plan and shape.</strong><ul>
+<li><code>src/server/plans/prompt.ts</code> (near line 127) and <code>src/server/plans/shape.ts</code> (near line 155):
+the no-workflow branch says commit and push the approved plan, report complete, and end the
+turn, because Foreman&#39;s Ship it? or Straight to PR path opens the plan&#39;s pull request. The
+same applies where those texts and <code>skills/phased-plan/SKILL.md</code> (near lines 294-335) tell
+an owner-<code>skill</code> session to open the PR itself.</li>
+<li><code>src/shared/task-completion.ts</code>: <code>planningTaskCompletionContract</code> returns a deferral contract
+for unbound plan and shape too, not only workflow-bound ones. The Foreman verifier then
+judges &quot;PR not opened&quot; as expected, not as a gap.</li>
+<li>The <code>get_plan_publication_context</code> description (<code>src/mcp/server.ts</code>) stops saying a skill
+owner &quot;may follow its direct PR path&quot;. The <code>owner</code> values stay unchanged on the wire.</li>
+</ul>
+</li>
+<li><strong>Self-publishing skills and ensemble text:</strong><ul>
+<li><code>skills/retro/SKILL.md</code> (near lines 243-247), <code>skills/deflake/SKILL.md</code> (section 5 near line<ol start="103">
+<li>and <code>skills/testing-setup/SKILL.md</code> (near line 193): commit and report. The PR is opened
+by the workflow&#39;s Pull Request action or Foreman. Deflake carries <code>Fixes #&lt;issue&gt;</code> in its
+completion report and commit message so the pull-request skill puts it in the description.</li>
+</ol>
+</li>
+<li><code>skills/pull-request/SKILL.md</code>: one precondition line saying it runs under a grant (one of
+the four holders above).</li>
+<li><code>src/server/ensembles/engine.ts</code> (near line 3343), the no-workflow winner: &quot;commit, report
+complete, and Foreman&#39;s Ship it? card publishes it&quot;, replacing &quot;push, and open a pull request
+yourself&quot;.</li>
+</ul>
+</li>
+<li><strong>Docs:</strong> <code>docs/dispatch-and-backlog.md</code> (multi-repo section) and
+<code>docs/agent-guides/architecture.md</code> where it describes the execution authorization.</li>
+</ol>
+<h3>Fork ledger</h3>
+<p>The implementation PR adds a ledger entry for PR publication ownership. It records: the
+completion latch, the grant holders, assumed upstream behavior (Foreman prompted claim, Straight to
+PR latch), surfaces (store claim, execution authorization, planning prompts, skills), status and PRs.
+It also re-renders <code>docs/fork/ledger.html</code>.</p>
+<h2>Verification</h2>
+<p>Focused tests, by file, with the repo loader
+(<code>node --test --import ./test/setup-state.mjs --import tsx &lt;file&gt;</code>):</p>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Proves</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>test/workflow-foreman-claim.test.ts</code> (new cases)</td>
+<td>After a completed run, a prompted claim at the same episode returns <code>latched</code>, creates no run, consumes the generation with <code>workflow_latched</code>, and appends <code>claim_latched</code>. A claim under a new episode starts a run. A cancelled run does not latch. A pre-upgrade null stamp does not latch. A resubmission restamps the episode.</td>
+</tr>
+<tr>
+<td><code>test/workflow-repair-cycle.test.ts</code></td>
+<td>Repair rounds (Persona and Inspector <code>waiting_for_session</code>) still resubmit the same run.</td>
+</tr>
+<tr>
+<td><code>test/prompted-wrapup-worker-e2e.test.ts</code> or <code>test/dispatched-launch-reaches-workflow.test.ts</code></td>
+<td>Through the worker: a run completes, the PR action&#39;s own turn settles, and no second run and no wrap-up instruction appear. A human-typed prompt then produces exactly one new run. A human-requested PR before the claim still gets one run (dungeon-game#8 shape).</td>
+</tr>
+<tr>
+<td><code>test/task-completion.test.ts</code>, <code>test/chat-task-kind.test.ts</code>, <code>test/task-assign.test.ts</code>, <code>test/standing-instructions-delivery.test.ts</code></td>
+<td>Initial task prompts carry the task authorization without the creation grant.</td>
+</tr>
+<tr>
+<td><code>test/workflow-feedback.test.ts</code>, <code>test/session-action-durability.test.ts</code></td>
+<td>The PR action packet carries the grant. Repair and Inspector packets carry only update-only wording.</td>
+</tr>
+<tr>
+<td><code>test/multi-repo-provisioning.test.ts</code></td>
+<td>The manifest no longer tells the agent to open PRs.</td>
+</tr>
+<tr>
+<td><code>test/plan-prompt.test.ts</code>, <code>test/shape-prompt.test.ts</code>, <code>test/plan-publication.test.ts</code>, <code>test/plan-completion-guard.test.ts</code></td>
+<td>Unbound plan and shape defer, with a deferral completion contract.</td>
+</tr>
+<tr>
+<td><code>test/skills-catalog.test.ts</code></td>
+<td>Skill text changes keep the catalog valid.</td>
+</tr>
+</tbody></table></div>
+<p>Then run <code>npm run typecheck</code> and <code>npm run lint</code>. There is no UI change, so no Playwright spec
+(<code>latch-ui</code>).</p>
+<p><strong>Acceptance criteria.</strong></p>
+<ol>
+<li>A completed bound run is never followed by another automatic run until a human-typed prompt.</li>
+<li>In-run repair rounds and Inspector feedback rounds behave as before.</li>
+<li>No initial task prompt, intent template, or skill instructs or authorizes opening a PR.
+Only the four grant holders do.</li>
+<li>Unbound plan and shape tasks reach Foreman&#39;s Ship it?/Straight to PR path without a verifier
+hold.</li>
+</ol>
+<h2>Out of scope and follow-ups</h2>
+<ul>
+<li><strong>Deferred <code>gh pr create</code> block</strong> (<code>enforcement</code>, <code>push-policy</code>, <code>grant-lifetime</code>,
+<code>untasked-sessions</code>, <code>on-block</code> are recorded for it). Findings for whoever picks it up:<ul>
+<li>Claude terminal: the PreToolUse hook is already installed with matcher <code>*</code>, but the bridge
+fails open after 800 ms.</li>
+<li>Claude SDK: the daemon owns in-process <code>hooks.PreToolUse</code>. <code>canUseTool</code> does not fire under
+bypass.</li>
+<li>Pi: has a <code>tool_call</code> event that can block; Mission Control does not subscribe to it.</li>
+<li>Codex: the terminal hook ignores decisions, and the Codex SDK under full access sends no
+approval requests, so it cannot be enforced there.</li>
+<li>Detection today is a regex that misses <code>gh api .../pulls</code>, <code>gh --repo o/r pr create</code>, <code>hub</code>,
+and GitHub MCP tools.</li>
+<li>The human-versus-daemon prompt ledger is in memory only, so it reads as human after a
+restart.</li>
+</ul>
+</li>
+<li><strong>Duplicate human-prompt capture:</strong> 44 of 206 steering rows exactly repeat the previous
+revision, across 24 of 40 conversations. Each repeat holds intent unresolved for about 60 s
+(the reconciler debounce).</li>
+<li><strong>Agent merged a PR:</strong> in dungeon-game#8 the agent ran the merge inside the human-requested turn,
+although the authorization says it does not authorize merge.</li>
+<li><strong>Not changed:</strong> this repository&#39;s <code>AGENTS.md</code> (&quot;Requested PR and CI work&quot;) and the ship
+handoff, which already defer correctly.</li>
+</ul>
+<h2>Risks</h2>
+<ul>
+<li><strong>Verifier cost:</strong> each post-completion turn still spends one Foreman verifier call before the
+daemon answers <code>latched</code>. That is about 34 calls over the 12-day sample, accepted to keep the
+latch in one place.</li>
+<li><strong>Re-runs after any human prompt:</strong> &quot;thanks&quot; or &quot;status?&quot; after a completed run starts one full
+re-review run (<code>latch-key</code>). This was chosen for parity with Straight to PR.</li>
+<li><strong>Old builds:</strong> a build that cannot read <code>workflow_latched</code> reads the decision as absent, per
+the append-only contract.</li>
+</ul>
+</main></body></html>
