@@ -67,9 +67,9 @@ handoff:
 | approach | Shape of the fix | Make PR authorization a grant, not a standing permission |
 | enforcement | Hard enforcement? | Prompts plus a `gh pr create` block. **Superseded by `scope`: the block is deferred** |
 | user-command | What counts as a direct user command | Human-typed message in the session; Foreman "Ship it?" click; Runs "Ask the session to open a PR"; Foreman "Straight to PR" setting |
-| plan-shape-unbound | Unbound plan/shape tasks | Defer like ship: commit and push, Foreman's PR path opens it |
+| plan-shape-unbound | Unbound plan/shape tasks | Defer like ship: commit and push, Foreman's PR path opens it. The push is the kind-contract exception to the task authorization's no-push default (Part B item 1), as bound plan/shape contracts already require. |
 | self-publishing-skills | retro, deflake, testing-setup, ensemble winner | Follow the same rule: defer to the workflow or Foreman |
-| push-policy | Does `git push` also wait for a grant? | Block only PR creation; the prompt still says don't push |
+| push-policy | Does `git push` also wait for a grant? | Block only PR creation; the prompt still says don't push. Plan and shape are the one exception, through their kind contract (`plan-shape-unbound`). |
 | grant-lifetime | How long a grant lasts | Until the session's PR exists; updating it is then always allowed |
 | untasked-sessions | Are untasked sessions under the rule? | No, only dispatched task sessions |
 | on-block | Behavior on a blocked PR | Denial message plus a recorded attempt (applies to the deferred hook) |
@@ -208,6 +208,15 @@ No initial task prompt grants it.
      instruction, or the human asking in this session grants that. Once a pull request for this
      task exists, you may push to update it. It keeps "does not authorize merge, another
      repository, or another external write".
+   - **One push exception, owned by the kind contract.** The no-push default gives way only
+     where the task's own kind contract explicitly requires a push. Today that is the plan and
+     shape contracts: the bound ones already say "Commit and push the plan before ending the
+     turn" (`src/server/plans/shape.ts` near line 152, and `src/server/plans/prompt.ts` near line
+     123, "Keep the skill's commit-and-push requirement"), and item 4 extends this to unbound
+     ones (`plan-shape-unbound`). The task authorization says this in one sentence ("unless your
+     task's completion contract below requires pushing its branch"). No kind contract ever
+     authorizes opening a pull request, so the two texts never conflict. Every other kind
+     (ship, bugfix, chat, and the skill-driven tasks in item 5) commits without pushing.
    - The **grant authorization** keeps today's wording ("the operator has already authorized
      you to commit ..., push ..., and create or update that pull request ... Act directly
      without asking"). `executionAuthorizationContract` gains an explicit `pullRequestGrant`
@@ -232,6 +241,8 @@ No initial task prompt grants it.
    - `src/server/plans/prompt.ts` (near line 127) and `src/server/plans/shape.ts` (near line 155):
      the no-workflow branch says commit and push the approved plan, report complete, and end the
      turn, because Foreman's Ship it? or Straight to PR path opens the plan's pull request. The
+     push is the kind-contract exception named in item 1, which keeps unbound and bound planning
+     tasks the same. Pushing is allowed; opening the pull request is not. The
      same applies where those texts and `skills/phased-plan/SKILL.md` (near lines 294-335) tell
      an owner-`skill` session to open the PR itself.
    - `src/shared/task-completion.ts`: `planningTaskCompletionContract` returns a deferral contract
@@ -240,8 +251,8 @@ No initial task prompt grants it.
    - The `get_plan_publication_context` description (`src/mcp/server.ts`) stops saying a skill
      owner "may follow its direct PR path". The `owner` values stay unchanged on the wire.
 5. **Self-publishing skills and ensemble text:**
-   - `skills/retro/SKILL.md` (near lines 243-247), `skills/deflake/SKILL.md` (section 5 near line
-     103) and `skills/testing-setup/SKILL.md` (near line 193): commit and report. The PR is opened
+   - `skills/retro/SKILL.md` (near lines 243-247), `skills/deflake/SKILL.md`
+     (section 5, near line 103) and `skills/testing-setup/SKILL.md` (near line 193): commit and report. The PR is opened
      by the workflow's Pull Request action or Foreman. Deflake carries `Fixes #<issue>` in its
      completion report and commit message so the pull-request skill puts it in the description.
    - `skills/pull-request/SKILL.md`: one precondition line saying it runs under a grant (one of

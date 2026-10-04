@@ -128,7 +128,7 @@ testing-setup are told to open their own PR.</li>
 <tr>
 <td>plan-shape-unbound</td>
 <td>Unbound plan/shape tasks</td>
-<td>Defer like ship: commit and push, Foreman&#39;s PR path opens it</td>
+<td>Defer like ship: commit and push, Foreman&#39;s PR path opens it. The push is the kind-contract exception to the task authorization&#39;s no-push default (Part B item 1), as bound plan/shape contracts already require.</td>
 </tr>
 <tr>
 <td>self-publishing-skills</td>
@@ -138,7 +138,7 @@ testing-setup are told to open their own PR.</li>
 <tr>
 <td>push-policy</td>
 <td>Does <code>git push</code> also wait for a grant?</td>
-<td>Block only PR creation; the prompt still says don&#39;t push</td>
+<td>Block only PR creation; the prompt still says don&#39;t push. Plan and shape are the one exception, through their kind contract (<code>plan-shape-unbound</code>).</td>
 </tr>
 <tr>
 <td>grant-lifetime</td>
@@ -374,6 +374,15 @@ instructions mention one. Mission Control&#39;s workflow Pull Request action, a 
 instruction, or the human asking in this session grants that. Once a pull request for this
 task exists, you may push to update it. It keeps &quot;does not authorize merge, another
 repository, or another external write&quot;.</li>
+<li><strong>One push exception, owned by the kind contract.</strong> The no-push default gives way only
+where the task&#39;s own kind contract explicitly requires a push. Today that is the plan and
+shape contracts: the bound ones already say &quot;Commit and push the plan before ending the
+turn&quot; (<code>src/server/plans/shape.ts</code> near line 152, and <code>src/server/plans/prompt.ts</code> near line
+123, &quot;Keep the skill&#39;s commit-and-push requirement&quot;), and item 4 extends this to unbound
+ones (<code>plan-shape-unbound</code>). The task authorization says this in one sentence (&quot;unless your
+task&#39;s completion contract below requires pushing its branch&quot;). No kind contract ever
+authorizes opening a pull request, so the two texts never conflict. Every other kind
+(ship, bugfix, chat, and the skill-driven tasks in item 5) commits without pushing.</li>
 <li>The <strong>grant authorization</strong> keeps today&#39;s wording (&quot;the operator has already authorized
 you to commit ..., push ..., and create or update that pull request ... Act directly
 without asking&quot;). <code>executionAuthorizationContract</code> gains an explicit <code>pullRequestGrant</code>
@@ -402,6 +411,8 @@ record deviations and needs no change.</li>
 <li><code>src/server/plans/prompt.ts</code> (near line 127) and <code>src/server/plans/shape.ts</code> (near line 155):
 the no-workflow branch says commit and push the approved plan, report complete, and end the
 turn, because Foreman&#39;s Ship it? or Straight to PR path opens the plan&#39;s pull request. The
+push is the kind-contract exception named in item 1, which keeps unbound and bound planning
+tasks the same. Pushing is allowed; opening the pull request is not. The
 same applies where those texts and <code>skills/phased-plan/SKILL.md</code> (near lines 294-335) tell
 an owner-<code>skill</code> session to open the PR itself.</li>
 <li><code>src/shared/task-completion.ts</code>: <code>planningTaskCompletionContract</code> returns a deferral contract
@@ -412,12 +423,10 @@ owner &quot;may follow its direct PR path&quot;. The <code>owner</code> values s
 </ul>
 </li>
 <li><strong>Self-publishing skills and ensemble text:</strong><ul>
-<li><code>skills/retro/SKILL.md</code> (near lines 243-247), <code>skills/deflake/SKILL.md</code> (section 5 near line<ol start="103">
-<li>and <code>skills/testing-setup/SKILL.md</code> (near line 193): commit and report. The PR is opened
+<li><code>skills/retro/SKILL.md</code> (near lines 243-247), <code>skills/deflake/SKILL.md</code>
+(section 5, near line 103) and <code>skills/testing-setup/SKILL.md</code> (near line 193): commit and report. The PR is opened
 by the workflow&#39;s Pull Request action or Foreman. Deflake carries <code>Fixes #&lt;issue&gt;</code> in its
 completion report and commit message so the pull-request skill puts it in the description.</li>
-</ol>
-</li>
 <li><code>skills/pull-request/SKILL.md</code>: one precondition line saying it runs under a grant (one of
 the four holders above).</li>
 <li><code>src/server/ensembles/engine.ts</code> (near line 3343), the no-workflow winner: &quot;commit, report
