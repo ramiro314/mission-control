@@ -48,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>8</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>9</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -114,6 +114,11 @@ or issues.</p>
 <td>Persona reasoning effort</td>
 <td>Active</td>
 <td>Pending (branch <code>feat/persona-effort</code>)</td>
+</tr>
+<tr>
+<td>PR publication ownership</td>
+<td>Active</td>
+<td>#110 (plan), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
 </tr>
 <tr>
 <td>Complete frees the worktree</td>
@@ -829,6 +834,63 @@ override schemas), <code>src/shared/workflow-graph.ts</code>, <code>src/shared/l
 editor, version history and run views.</p>
 <p><strong>Fork-only files.</strong> <code>src/web/workflows/EffortSelect.tsx</code>, <code>test/persona-effort.test.ts</code>,
 <code>e2e/specs/workflow-persona-effort.spec.ts</code>.</p>
+<h3>PR publication ownership</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong>, in progress: the unbound plan and shape deferral has landed; the completion latch and the grant split are later PRs from the same plan</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#110 (plan), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/pr-publication-ownership/plan.md">docs/plans/pr-publication-ownership/plan.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. It removes a planning-only exception to upstream&#39;s own Foreman wrap-up path and adds no fork-only concept.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A dispatched task session does not open its own pull request on its initial turn.
+Mission Control&#39;s publishers do: the bound workflow&#39;s Pull Request action, or Foreman&#39;s Ship it?
+card and Straight to PR instruction. Upstream already worked this way for ship tasks and for
+workflow-bound plan and shape tasks, but an unbound plan or shape task was told to open its PR
+itself, and the phased-plan skill wrote phase tasks that did the same. That gave those sessions a
+second, self-directed publication path beside Foreman&#39;s.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>taskCompletionContract</code> is kind-only. <code>plan</code> and <code>shape</code> return their planning contract whether
+or not a workflow is bound, so the Foreman verifier judges an unopened PR as deferred, not as a
+gap, for unbound planning tasks too.</li>
+<li>The plan and shape prompts render the completion handoff for both cases. The unbound branch says
+commit and push the plan, report complete, end the turn, and that Foreman&#39;s Ship it? or Straight
+to PR path opens the PR. Pushing stays part of the planning turn; opening the PR never is.</li>
+<li>No planning prompt, skill text, or <code>get_plan_publication_context</code> description tells an
+owner-<code>skill</code> session to open the PR itself. The tool&#39;s <code>owner</code> wire values
+(<code>workflow</code>, <code>skill</code>, <code>unavailable</code>) are unchanged.</li>
+<li>Phase task intents written by the phased-plan skill ask the agent to commit the phase; Mission
+Control publishes it as a reviewable PR whose merge releases dependent phases.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>Foreman&#39;s prompted wrap-up falls through to the Ship it? card or Straight to PR when a planning
+task&#39;s completion claim returns <code>no_binding</code> and publication ownership is <code>skill</code>.</li>
+<li>The verify prompt renders a non-null completion contract as trusted policy above the evidence.</li>
+<li>The phased-plan skill reads <code>get_plan_publication_context</code> after scheduling.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/shared/task-completion.ts</code>, <code>src/server/plans/prompt.ts</code>,
+<code>src/server/plans/shape.ts</code>, <code>src/server/plans/tools.ts</code>, <code>src/server/foreman/worker.ts</code> (the
+contract lookup), the <code>get_plan_publication_context</code> description in <code>src/mcp/server.ts</code>, and
+<code>skills/phased-plan/SKILL.md</code>.</p>
+<p><strong>Fork-only files.</strong> None yet.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

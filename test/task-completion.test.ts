@@ -86,13 +86,16 @@ function mkVerifyInput(overrides: Partial<VerifyInput> = {}): VerifyInput {
   };
 }
 
-test("every task kind declares a completion boundary, and ship and bugfix defer work", () => {
+/** The kinds whose initial turn defers publication to Mission Control. */
+const DEFERRING_KINDS: ReadonlySet<TaskKind> = new Set(["ship", "bugfix", "plan", "shape"]);
+
+test("every task kind declares a completion boundary, and ship, bugfix, plan and shape defer work", () => {
   // The registry is exhaustive at the type level; this asserts the VALUES, so a kind added
   // with a copy-pasted contract it does not want is visible here rather than in a verdict.
   for (const kind of TASK_KINDS) {
     const contract = taskCompletionContract(kind);
-    if (kind === "ship" || kind === "bugfix") {
-      assert.ok(contract, "a ship task has a deferred post-completion boundary");
+    if (DEFERRING_KINDS.has(kind)) {
+      assert.ok(contract, `a ${kind} task has a deferred post-completion boundary`);
       assert.equal(contract.kind, kind);
       assert.ok(contract.complete.length > 0);
       assert.ok(contract.deferred.length > 0);
@@ -176,7 +179,7 @@ test("a caller that supplies no contract gets the prompt it always got", () => {
 });
 
 test("no other task kind's delivery gains a completion boundary it did not ask for", () => {
-  for (const kind of TASK_KINDS.filter((k): k is TaskKind => k !== "ship" && k !== "bugfix")) {
+  for (const kind of TASK_KINDS.filter((k): k is TaskKind => !DEFERRING_KINDS.has(k))) {
     const contract = taskCompletionContract(kind);
     assert.equal(contract, null);
     const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));
@@ -293,7 +296,7 @@ test("bugfix receives the same implementation and deferred-shipping instructions
 });
 
 test("a workflow-bound plan defers its PR but still publishes artifacts before scheduling", () => {
-  const contract = taskCompletionContract("plan", true);
+  const contract = taskCompletionContract("plan");
   assert.ok(contract);
   assert.deepEqual(contract.deferred.map((action) => action.id), ["pull-request", "review", "ci", "merge"]);
   assert.ok(contract.complete.some((requirement) => /human.*approved/.test(requirement)));
@@ -314,13 +317,16 @@ test("a workflow-bound plan defers its PR but still publishes artifacts before s
   assert.match(delivered, /end this turn/);
 });
 
-test("unbound plans keep skill-owned PR creation and other kinds keep their contract", () => {
-  assert.equal(taskCompletionContract("plan", false), null);
-  assert.equal(taskCompletionContract("shape", false), null);
-  // Shape delivers a plan, so a bound shape task defers what the plan defers. Its completion
-  // list is its own: the shaping turn files no ticket or phase tasks.
-  const shape = taskCompletionContract("shape", true)!;
-  const plan = taskCompletionContract("plan", true)!;
+test("unbound plan and shape defer their PR exactly like bound ones", () => {
+  // No planning session opens its own pull request: the bound workflow's Pull Request action or
+  // Foreman's wrap-up does. So the boundary is kind-only, and the verifier judges "PR not
+  // opened" as expected for an unbound plan too, instead of holding it.
+  const plan = taskCompletionContract("plan")!;
+  const shape = taskCompletionContract("shape")!;
+  assert.ok(plan.deferred.some((action) => action.id === "pull-request"));
+  assert.ok(!plan.deferred.some((action) => action.id === "push"), "pushing the plan stays part of the turn");
+  // Shape delivers a plan, so it defers what the plan defers. Its completion list is its own:
+  // the shaping turn files no ticket or phase tasks.
   assert.equal(shape.kind, "shape");
   assert.deepEqual(shape.deferred, plan.deferred);
   assert.ok(shape.complete.some((requirement) => /no ticket or phase tasks are required from this turn/.test(requirement)));
@@ -332,16 +338,17 @@ test("unbound plans keep skill-owned PR creation and other kinds keep their cont
   assert.equal(shared.length, 4);
   for (const requirement of shared) assert.ok(shape.complete.includes(requirement), requirement);
   assert.equal(shape.complete.length, shared.length + 2, "shape adds only its no-tickets and plan-pushed lines");
-  for (const kind of TASK_KINDS.filter((kind) => kind !== "plan" && kind !== "shape")) {
-    assert.equal(taskCompletionContract(kind, true), taskCompletionContract(kind, false));
-  }
+
   const task = mkTask({ kind: "plan" });
   const delivered = withTaskKindContract(task, task.intent, {
     planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
   });
-  assert.match(delivered, /phased-plan skill owns.*pull request/);
+  assert.match(delivered, /## Plan task completion handoff/);
+  assert.match(delivered, /No workflow was selected\. Foreman's Ship it\? or Straight to PR path opens the plan's pull request/);
+  assert.ok(delivered.includes(`do not ${deferredImperativeList(plan)}`));
+  for (const requirement of plan.complete) assert.ok(delivered.includes(requirement), requirement);
   assert.match(delivered, /get_plan_publication_context/);
-  assert.doesNotMatch(delivered, /## Plan task completion handoff/);
+  assert.doesNotMatch(delivered, /phased-plan skill owns.*pull request|create the plan's ordinary pull request|direct PR path/);
 });
 
 test("the ship handoff commits locally before completion and defers only publication", () => {

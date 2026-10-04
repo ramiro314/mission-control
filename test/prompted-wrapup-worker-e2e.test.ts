@@ -2336,6 +2336,105 @@ test("a ship objective that demands a PR still completes at the delivered bounda
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });
 
+/** The PR-demanding objective an unbound plan task carries. */
+const PLAN_GOAL = "write and agree the uploader retry plan, then open its pull request";
+const planGoalRecord = { ...goalRecord, objective: PLAN_GOAL, prompt: PLAN_GOAL, focus: PLAN_GOAL };
+
+// An unbound plan defers its pull request exactly like a bound one: it commits and pushes the
+// approved plan and ends the turn, and Foreman's own wrap-up publishes it. Before the planning
+// boundary applied to unbound plans, the verifier read "open its pull request" in the objective,
+// found none, and held the completion, so the plan never reached a publish instruction.
+for (const wrapup of ["ask", "pr"] as const) {
+test(`an unbound plan settles after a committed, pushed turn and reaches the ${wrapup === "ask" ? "Ship it? card" : "Straight to PR instruction"}`, async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkBoundaryAwareClaude();
+  const session = mkSession(repo, { task: mkTaskSummary({ kind: "plan", workflowId: null }) });
+  const stopAt = Date.now() - 120_000;
+  let queue = mkQueue(repo);
+  let settledAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return { status: 200, json: [{ ...session, lastSeen: Date.now(), lastActivity: stopAt }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: planGoalRecord };
+    if (p === "/api/sessions/s1/plan-publication") return { status: 200, json: { owner: "skill" } };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/docs/plans/x/plan.md b/docs/plans/x/plan.md\n+# Plan\n",
+          truncated: false,
+          headSha: "abc123",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/workflow-evidence") {
+      return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return { status: 200, json: { messages: [{ role: "user", text: PLAN_GOAL, tools: [] }], truncated: false } };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      if (wrapup === "ask") settledAt = Date.now();
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/inject") {
+      settledAt = Date.now();
+      return { status: 200, json: { ok: true } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: queue };
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 20_000,
+    until: () => settledAt !== 0 && Date.now() - settledAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  const prompt = readFileSync(fake.prompt, "utf8");
+  assert.ok(prompt.includes("## Trusted completion boundary"), `the unbound plan reached the verifier without its boundary\n${out}`);
+  assert.ok(prompt.includes("the planning handoff before publication"), out);
+  assert.ok(prompt.includes(PLAN_GOAL), "the objective is unchanged - it is not rewritten");
+
+  const consumed = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  const injects = stub.to("POST", "/api/sessions/s1/inject");
+  assert.equal(consumed.length, 1, `the verified plan was not consumed exactly once\n${out}`);
+  const body = consumed[0]!.body as { ask?: boolean; decision?: { outcome: string } };
+  assert.notEqual(body.decision?.outcome, "held", `the verifier held an unbound plan for its unopened PR\n${out}`);
+  if (wrapup === "ask") {
+    assert.equal(body.ask, true, `the Ship it? card was not raised\n${out}`);
+    assert.equal(body.decision?.outcome, "asked", out);
+    assert.equal(injects.length, 0, out);
+  } else {
+    assert.equal(injects.length, 1, `Straight to PR did not type its instruction exactly once\n${out}`);
+    assert.ok(isWrapupPayload((injects[0]!.body as { text?: string }).text ?? ""), "the instruction is the PR wrap-up");
+    assert.ok(stub.calls.indexOf(consumed[0]!) < stub.calls.indexOf(injects[0]!), "injected before consume");
+  }
+  assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
+});
+}
+
 test("a held shape completion gets its gaps, and its corrected re-completion starts the bound workflow", async () => {
   // The reported symptom end to end: a workflow-bound shape task whose completion is held must
   // not sit forever. Foreman relays the gaps, the agent fixes them and stops again, and that

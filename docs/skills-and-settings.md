@@ -117,10 +117,13 @@ this as its final selectable follow-up; choosing it passes the approved plan and
 into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
 Phased Plan commits and pushes its artifacts before scheduling. It then reads
-`get_plan_publication_context`: a bound workflow owns the PR and the planning turn ends;
-without a binding, the skill opens and follows the PR itself. Manual bindings wait for manual
-submission. Missing tools, unreadable context, pending bindings, and paused bindings do not
-permit direct publication. Phase tasks stay blocked until the planning PR merges.
+`get_plan_publication_context` and ends the planning turn either way: a bound workflow's PR
+action opens the PR, and without a binding Foreman's Ship it? card or Straight to PR instruction
+does. The skill opens the PR only when one of those later instructions asks it to. Manual
+bindings wait for manual submission. Missing tools, unreadable context, pending bindings, and
+paused bindings do not permit publication. Phase tasks stay blocked until the planning PR merges.
+Each phase task's intent asks its agent to commit the phase; Mission Control publishes it as a
+reviewable pull request whose merge releases dependent phases.
 
 Repository analysis now drives each phase task's `create_task` selectors. Work in the source-plan
 repository keeps the current-repository default. Work implemented only in repository B makes B the

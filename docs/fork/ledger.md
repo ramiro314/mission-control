@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **8** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **9** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -51,6 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
+| PR publication ownership | Active | #110 (plan), pending (branch `feat/unbound-plan-shape-deferral`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
@@ -641,6 +642,50 @@ editor, version history and run views.
 
 **Fork-only files.** `src/web/workflows/EffortSelect.tsx`, `test/persona-effort.test.ts`,
 `e2e/specs/workflow-persona-effort.spec.ts`.
+
+### PR publication ownership
+
+| Field | Value |
+| --- | --- |
+| Status | **Active**, in progress: the unbound plan and shape deferral has landed; the completion latch and the grant split are later PRs from the same plan |
+| PRs | #110 (plan), pending (branch `feat/unbound-plan-shape-deferral`) |
+| Plan docs | [docs/plans/pr-publication-ownership/plan.md](../plans/pr-publication-ownership/plan.md) |
+| Upstream candidate | Yes. It removes a planning-only exception to upstream's own Foreman wrap-up path and adds no fork-only concept. |
+
+**Intent.** A dispatched task session does not open its own pull request on its initial turn.
+Mission Control's publishers do: the bound workflow's Pull Request action, or Foreman's Ship it?
+card and Straight to PR instruction. Upstream already worked this way for ship tasks and for
+workflow-bound plan and shape tasks, but an unbound plan or shape task was told to open its PR
+itself, and the phased-plan skill wrote phase tasks that did the same. That gave those sessions a
+second, self-directed publication path beside Foreman's.
+
+**Behavior contracts.**
+
+- `taskCompletionContract` is kind-only. `plan` and `shape` return their planning contract whether
+  or not a workflow is bound, so the Foreman verifier judges an unopened PR as deferred, not as a
+  gap, for unbound planning tasks too.
+- The plan and shape prompts render the completion handoff for both cases. The unbound branch says
+  commit and push the plan, report complete, end the turn, and that Foreman's Ship it? or Straight
+  to PR path opens the PR. Pushing stays part of the planning turn; opening the PR never is.
+- No planning prompt, skill text, or `get_plan_publication_context` description tells an
+  owner-`skill` session to open the PR itself. The tool's `owner` wire values
+  (`workflow`, `skill`, `unavailable`) are unchanged.
+- Phase task intents written by the phased-plan skill ask the agent to commit the phase; Mission
+  Control publishes it as a reviewable PR whose merge releases dependent phases.
+
+**Upstream behavior it assumes.**
+
+- Foreman's prompted wrap-up falls through to the Ship it? card or Straight to PR when a planning
+  task's completion claim returns `no_binding` and publication ownership is `skill`.
+- The verify prompt renders a non-null completion contract as trusted policy above the evidence.
+- The phased-plan skill reads `get_plan_publication_context` after scheduling.
+
+**Upstream surfaces touched.** `src/shared/task-completion.ts`, `src/server/plans/prompt.ts`,
+`src/server/plans/shape.ts`, `src/server/plans/tools.ts`, `src/server/foreman/worker.ts` (the
+contract lookup), the `get_plan_publication_context` description in `src/mcp/server.ts`, and
+`skills/phased-plan/SKILL.md`.
+
+**Fork-only files.** None yet.
 
 ## Superseded and removed
 

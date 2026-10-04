@@ -1,4 +1,3 @@
-import { isPlanningTaskKind } from "./task.ts";
 import { type TaskKind } from "./types.ts";
 
 /**
@@ -92,8 +91,8 @@ const SHIP_CONTRACT: TaskCompletionContract = {
 };
 
 /**
- * The planning requirements plan and shape share, in one place, so a workflow-bound shape task
- * is never verified against a stale copy of the plan's boundary. Each kind adds only its own
+ * The planning requirements plan and shape share, in one place, so a shape task is never
+ * verified against a stale copy of the plan's boundary. Each kind adds only its own
  * middle: plan its phases, shape the absence of tickets.
  */
 const PLANNING_APPROVED_PLAN = [
@@ -108,7 +107,7 @@ const PLANNING_VERIFIED_HANDOFF = [
 const PLAN_CONTRACT: TaskCompletionContract = {
   kind: "plan",
   owner: "Mission Control",
-  boundary: "the planning handoff to the bound workflow",
+  boundary: "the planning handoff before publication",
   complete: [
     ...PLANNING_APPROVED_PLAN,
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
@@ -123,7 +122,7 @@ const PLAN_CONTRACT: TaskCompletionContract = {
 };
 
 /**
- * A workflow-bound shape task's boundary: the plan's, without phases or tickets.
+ * A shape task's boundary: the plan's, without phases or tickets.
  *
  * The shaping turn delivers an approved plan and nothing scheduled from it. A Create tickets
  * answer is recorded by Mission Control and acted on only after the plan's pull request
@@ -134,7 +133,7 @@ const PLAN_CONTRACT: TaskCompletionContract = {
 const SHAPE_CONTRACT: TaskCompletionContract = {
   kind: "shape",
   owner: "Mission Control",
-  boundary: "the shaping handoff to the bound workflow",
+  boundary: "the shaping handoff before publication",
   complete: [
     ...PLANNING_APPROVED_PLAN,
     "no ticket or phase tasks are required from this turn: Mission Control records a Create tickets choice and files the tickets in a follow-up task after the plan's pull request merges",
@@ -150,32 +149,27 @@ const SHAPE_CONTRACT: TaskCompletionContract = {
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
  * uses one: a new task kind does not compile until it has said what its completion
  * boundary is, including saying it has none. Ship and Bugfix defer post-completion work;
- * workflow-bound plans defer publication follow-through. Other kinds and unbound plans
- * are judged against their objective unchanged.
+ * plan and shape defer publication follow-through whether or not a workflow is bound: the
+ * bound workflow's Pull Request action or Foreman's wrap-up opens the planning pull request.
+ * Other kinds are judged against their objective unchanged.
  */
 const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> = {
   ship: SHIP_CONTRACT,
   bugfix: { ...SHIP_CONTRACT, kind: "bugfix", boundary: "the initial implementation handoff of a dispatched bugfix task" },
   scout: null,
-  plan: null,
+  plan: PLAN_CONTRACT,
   pipeline: null,
   chat: null,
-  shape: null,
+  shape: SHAPE_CONTRACT,
 };
 
 /**
  * The trusted initial completion contract for a durable task kind, or null.
  *
- * Ship/Bugfix keep a kind-only boundary. Plans defer PR work only when a workflow owns it;
- * an unbound phased-plan skill retains its direct publication path. Callers resolve the
- * binding structurally, never from transcript prose or Persona evidence eligibility.
+ * Kind-only by design: no agent opens its own pull request on the initial turn, so the
+ * boundary does not depend on whether a workflow is bound.
  */
-export function taskCompletionContract(
-  kind: TaskKind | null | undefined,
-  workflowBound = false,
-): TaskCompletionContract | null {
-  // Shape delivers a plan too, so it defers what the plan defers, with its own completion list.
-  if (isPlanningTaskKind(kind) && workflowBound) return kind === "plan" ? PLAN_CONTRACT : SHAPE_CONTRACT;
+export function taskCompletionContract(kind: TaskKind | null | undefined): TaskCompletionContract | null {
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 

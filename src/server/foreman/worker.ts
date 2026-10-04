@@ -2098,7 +2098,7 @@ export async function processPromptedWrapup(
     log(`${session.name}: prompted wrap-up held - plan publication ownership is unavailable`);
     return false;
   }
-  const completionContract = taskCompletionContract(session.task?.kind, planPublication?.owner === "workflow");
+  const completionContract = taskCompletionContract(session.task?.kind);
   const [diff, transcriptRead, evidenceRead] = await Promise.all([
     client.diff(session.id).catch(() => null),
     client.transcriptSize(session.id).then(
