@@ -449,6 +449,9 @@ test("a session that cannot be typed into files a retro task against its reposit
   assert.ok(task.intent.includes("retro skill"));
   // The honest limit is stated rather than glossed.
   assert.match(task.intent, /transcript may no longer be readable/);
+  // It commits and reports; Foreman's wrap-up publishes the pull request.
+  assert.match(task.intent, /Commit it and report complete; Foreman's wrap-up publishes it as this task's own pull request\./);
+  assert.ok(!task.intent.includes("ships any other task"));
   assert.equal(f.tasks.get(task.id)?.id, task.id, "the task is really in the backlog");
 });
 
