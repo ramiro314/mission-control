@@ -372,3 +372,10 @@ Then run `npm run typecheck` and `npm run lint`. There is no UI change, so no Pl
   re-review run (`latch-key`). This was chosen for parity with Straight to PR.
 - **Old builds:** a build that cannot read `workflow_latched` reads the decision as absent, per
   the append-only contract.
+
+## Rendering
+
+`plan.html` is generated. Run `node docs/plans/pr-publication-ownership/render-plan.mjs` after
+any edit here, and add `--check` to confirm the page is current. The claim-flow diagram's source
+is `claim-flow.svg`, which the renderer inlines in place of the mermaid block above. Change the
+two together.

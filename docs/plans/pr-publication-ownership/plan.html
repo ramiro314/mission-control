@@ -588,4 +588,9 @@ re-review run (<code>latch-key</code>). This was chosen for parity with Straight
 <li><strong>Old builds:</strong> a build that cannot read <code>workflow_latched</code> reads the decision as absent, per
 the append-only contract.</li>
 </ul>
+<h2>Rendering</h2>
+<p><code>plan.html</code> is generated. Run <code>node docs/plans/pr-publication-ownership/render-plan.mjs</code> after
+any edit here, and add <code>--check</code> to confirm the page is current. The claim-flow diagram&#39;s source
+is <code>claim-flow.svg</code>, which the renderer inlines in place of the mermaid block above. Change the
+two together.</p>
 </main></body></html>
