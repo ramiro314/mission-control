@@ -1,7 +1,8 @@
 import { classifyCheckEntry, type CiCheckEntryState } from "@shared/ci-checks.ts";
 import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
-import type { PrChecks, PrState } from "@shared/types.ts";
+import type { PrChecks, PrMergeable, PrState } from "@shared/types.ts";
+import { prMergeableFromGitHub } from "@shared/pr-mergeable.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
@@ -37,7 +38,14 @@ type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "ep
  * told (`Registry.reconcilePrClosures`). `null` is "nothing to report", which an injected
  * lookup may still return for a closed PR.
  */
-type PrStateMatch = { state: PrState | "closed"; mergedAt: number | null };
+type PrStateMatch = {
+  state: PrState | "closed";
+  mergedAt: number | null;
+  /** Null when GitHub answered `UNKNOWN`, or when an injected lookup did not ask. */
+  mergeable?: PrMergeable | null;
+  baseRef?: string | null;
+  headSha?: string | null;
+};
 type PrStateLookup = "error" | PrStateMatch | null;
 
 const PR_URL_CONCURRENCY = 4;
@@ -108,7 +116,7 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
         "--state",
         "all",
         "--json",
-        "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid",
+        "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid,mergeable,baseRefName",
         "--limit",
         "20",
       ],
@@ -126,12 +134,14 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
     const open = arr.find((p) => prStateOf(p) === "open");
     const match = open ?? arr.find((p) => prStateOf(p) === "merged");
     if (!match) return null;
-    const { url, number, createdAt, mergedAt, headRefOid } = match as {
+    const { url, number, createdAt, mergedAt, headRefOid, mergeable, baseRefName } = match as {
       url?: unknown;
       number?: unknown;
       createdAt?: unknown;
       mergedAt?: unknown;
       headRefOid?: unknown;
+      mergeable?: unknown;
+      baseRefName?: unknown;
     };
     const state = prStateOf(match);
     const createdAtMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
@@ -149,6 +159,8 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
       mergedAt: state === "merged" ? mergedAtMs : null,
       headSha: headRefOid,
       worktreeHeadSha,
+      mergeable: prMergeableFromGitHub(mergeable),
+      baseRef: typeof baseRefName === "string" ? baseRefName : null,
     };
   } catch {
     return "error";
@@ -171,17 +183,32 @@ async function queryHead(dir: string): Promise<string | null> {
 }
 
 async function queryPrUrl(url: string): Promise<PrStateLookup> {
-  const res = await run(ghBin(), ["pr", "view", url, "--json", "state,mergedAt"], {
-    timeoutMs: 8000,
-  });
+  const res = await run(
+    ghBin(),
+    ["pr", "view", url, "--json", "state,mergedAt,mergeable,baseRefName,headRefOid"],
+    { timeoutMs: 8000 },
+  );
   if (res.code !== 0) return "error";
   try {
-    const parsed = JSON.parse(res.stdout) as { state?: unknown; mergedAt?: unknown };
+    const parsed = JSON.parse(res.stdout) as {
+      state?: unknown;
+      mergedAt?: unknown;
+      mergeable?: unknown;
+      baseRefName?: unknown;
+      headRefOid?: unknown;
+    };
+    const facts = {
+      mergeable: prMergeableFromGitHub(parsed.mergeable),
+      baseRef: typeof parsed.baseRefName === "string" ? parsed.baseRefName : null,
+      headSha: typeof parsed.headRefOid === "string" ? parsed.headRefOid : null,
+    };
     const state = prStateOf(parsed);
-    if (state === null) return parsed.state === "CLOSED" ? { state: "closed", mergedAt: null } : "error";
-    if (state === "open") return { state, mergedAt: null };
+    if (state === null) {
+      return parsed.state === "CLOSED" ? { state: "closed", mergedAt: null, ...facts } : "error";
+    }
+    if (state === "open") return { state, mergedAt: null, ...facts };
     const mergedAt = typeof parsed.mergedAt === "string" ? Date.parse(parsed.mergedAt) : Number.NaN;
-    return Number.isFinite(mergedAt) ? { state, mergedAt } : "error";
+    return Number.isFinite(mergedAt) ? { state, mergedAt, ...facts } : "error";
   } catch {
     return "error";
   }
@@ -345,6 +372,7 @@ export async function pollAndReconcilePrs(
   );
   const mergedUrls = new Map<string, number>();
   const closedUrls = new Set<string>();
+  const urlResults = new Map<string, PrStateMatch>();
   const dueUrls = urlState.due(linkedUrls, now);
   for (const url of linkedUrls) {
     const match = observed.get(url);
@@ -359,6 +387,7 @@ export async function pollAndReconcilePrs(
     async (url) => {
       const result = await lookupUrl(url);
       urlState.record(url, result, now);
+      if (result !== "error" && result !== null) urlResults.set(url, result);
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
       }
@@ -372,6 +401,22 @@ export async function pollAndReconcilePrs(
   // After the session pass, and deliberately: `reconcilePrs` can settle a task through the
   // primary's merge, and the per-repo pass then has the task's own row already up to date.
   registry.reconcileRepoPrs(repoFound, repoSkip);
+  // Mergeability only, onto every snapshot that names one of these pull requests. After both
+  // branch passes, so a by-URL read never races the branch poller's own answer for the same
+  // session, and with no authority over `prState` or completion - those stay below.
+  registry.reconcilePrUrlMergeability(
+    new Map(
+      [...urlResults].map(([url, r]) => [
+        url,
+        {
+          open: r.state === "open",
+          mergeable: r.mergeable ?? null,
+          baseRef: r.baseRef ?? null,
+          headSha: r.headSha ?? null,
+        },
+      ]),
+    ),
+  );
   // FILTERED to the operational harvest. Existing behaviour is byte-identical for every URL
   // that was already eligible, and a telemetry-only URL cannot enter `mergedPrFor`, complete
   // a task or satisfy a dependency edge by having been polled on the same tick. A URL that

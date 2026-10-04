@@ -13,6 +13,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
+import { currentMergeability } from "@shared/pr-mergeable.ts";
 import type { DeadSourceBlocker } from "@shared/backlog.ts";
 import {
   compactTokens,
@@ -1617,6 +1618,26 @@ export interface PrChipView {
   title: string;
   /** Wording for the failing-checks affordance, wherever a surface has room for one. */
   failingTitle: string;
+  /**
+   * "Conflicts with `<base>`" while the PR, or any repository's PR of a multi-repo task,
+   * conflicts with its base on its current head; null otherwise. Doubles as the mark's
+   * accessible name.
+   */
+  conflictTitle: string | null;
+}
+
+/**
+ * The conflict wording for a session, or null. Reads through `currentMergeability`, so an
+ * observation kept from an earlier head never draws the mark.
+ */
+function conflictTitleFor(session: Session): string | null {
+  const candidates = [
+    session,
+    ...(session.task?.repoPrs ?? []).flatMap((entry) => (entry.feedback ? [entry.feedback] : [])),
+  ];
+  const conflicting = candidates.find((pr) => currentMergeability(pr) === "conflicting");
+  if (!conflicting) return null;
+  return `Conflicts with ${conflicting.prBaseRef ?? "its base branch"}`;
 }
 
 /**
@@ -1647,10 +1668,26 @@ export function prChipView(session: Session): PrChipView | null {
         ? `Pull request ${label} merged - open on GitHub`
         : `Open pull request ${label} - open on GitHub`,
     failingTitle: "A CI check failed on this pull request - open on GitHub",
+    conflictTitle: conflictTitleFor(session),
   };
 }
 
-/** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
+/**
+ * The folded conflict mark the tile and the rail append to their one-line PR label. A
+ * labelled image rather than bare text, so the mark has the same accessible name everywhere.
+ */
+function PrConflictMark({ title }: { title: string }): React.JSX.Element {
+  return (
+    <span className="pr-conflict-mark" role="img" aria-label={title}>
+      {" ⇄"}
+    </span>
+  );
+}
+
+/**
+ * The PR chip, plus the "a CI check failed" alert beside it when checks are failing and the
+ * "conflicts with its base" alert when GitHub reports a merge conflict.
+ */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
@@ -1682,6 +1719,20 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
           </a>
         </Tooltip>
       )}
+      {view.conflictTitle && (
+        <Tooltip label={view.conflictTitle}>
+          <a
+            className="pr-conflict-alert"
+            href={view.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={view.conflictTitle}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MergeConflictIcon />
+          </a>
+        </Tooltip>
+      )}
     </>
   );
 }
@@ -1699,12 +1750,13 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
 export function PrRailMark({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
-  const title = view.failing ? view.failingTitle : view.title;
+  const title = view.conflictTitle ?? (view.failing ? view.failingTitle : view.title);
   return (
     <Tooltip label={title}>
       <span className={`rail-pr ${view.tone}`}>
         {view.label}
         {view.failing && " ⚠"}
+        {view.conflictTitle && <PrConflictMark title={view.conflictTitle} />}
       </span>
     </Tooltip>
   );
@@ -1721,7 +1773,7 @@ export function PrRailMark({ session }: { session: Session }): React.JSX.Element
 export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
-  const title = view.failing ? view.failingTitle : view.title;
+  const title = view.conflictTitle ?? (view.failing ? view.failingTitle : view.title);
   return (
     <Tooltip label={title}>
       <a
@@ -1735,6 +1787,7 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
       >
         {view.label}
         {view.failing && " ⚠"}
+        {view.conflictTitle && <PrConflictMark title={view.conflictTitle} />}
       </a>
     </Tooltip>
   );
@@ -2107,6 +2160,25 @@ export function ChecksFailedIcon(): React.JSX.Element {
       <path
         fill="currentColor"
         d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Merge-conflict glyph for the "conflicts with its base" alert: two opposing arrows, the same
+ * figure as the `⇄` the tile and the rail fold into their label.
+ */
+export function MergeConflictIcon(): React.JSX.Element {
+  return (
+    <svg className="pr-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden focusable="false">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M2.5 5h10.5M10 2.5 13 5l-3 2.5M13.5 11H3M6 8.5 3 11l3 2.5"
       />
     </svg>
   );

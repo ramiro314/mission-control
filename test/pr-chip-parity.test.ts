@@ -9,7 +9,7 @@ import {
   PrTileFlag,
   prChipView,
 } from "../src/web/components/session-bits.tsx";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 /**
  * What is at stake: the four session drawings agreeing about whether a session HAS a pull
@@ -103,4 +103,58 @@ test("failing checks are surfaced on all three, each in its own vocabulary", () 
   assert.ok(render(PrChip, over).includes("pr-checks-alert"));
   assert.ok(render(PrTileFlag, over).includes("⚠"));
   assert.ok(render(PrRailMark, over).includes("⚠"));
+});
+
+test("a conflict on the current head is marked on all three, named after the base", () => {
+  const over = {
+    prUrl: "https://github.com/o/r/pull/264",
+    prNumber: 264,
+    prMergeable: { state: "conflicting", headSha: "A" },
+    prBaseRef: "main",
+    prHeadSha: "A",
+  } as const;
+  for (const { name, component } of DRAWINGS) {
+    assert.ok(
+      render(component, over).includes('aria-label="Conflicts with main"'),
+      `${name} should mark the conflict`,
+    );
+  }
+});
+
+test("no mark for a mergeable PR, or a conflict kept from an earlier head", () => {
+  const base = { prUrl: "https://github.com/o/r/pull/264", prNumber: 264, prBaseRef: "main" } as const;
+  const mergeable = { ...base, prMergeable: { state: "mergeable", headSha: "A" }, prHeadSha: "A" } as const;
+  // Pushed B, GitHub still computing: the kept observation describes A, not B.
+  const stale = { ...base, prMergeable: { state: "conflicting", headSha: "A" }, prHeadSha: "B" } as const;
+  for (const { name, component } of DRAWINGS) {
+    assert.ok(!render(component, mergeable).includes("Conflicts with"), `${name}: mergeable`);
+    assert.ok(!render(component, stale).includes("Conflicts with"), `${name}: stale head`);
+  }
+});
+
+test("a conflicting repository of a multi-repo task marks the session's chip", () => {
+  const view = prChipView(mkSession({
+    prUrl: "https://github.com/o/r/pull/264",
+    prNumber: 264,
+    task: mkTaskSummary({
+      repoPrs: [
+        {
+          repoRoot: "/other",
+          primary: false,
+          prUrl: "https://github.com/o/other/pull/7",
+          prState: "open",
+          mergedAt: null,
+          feedback: {
+            prNumber: 7,
+            prChecks: null,
+            prMergeable: { state: "conflicting", headSha: "C" },
+            prBaseRef: "develop",
+            prHeadSha: "C",
+            inspector: null,
+          },
+        },
+      ],
+    }),
+  }));
+  assert.equal(view?.conflictTitle, "Conflicts with develop");
 });
