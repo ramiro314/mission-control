@@ -198,7 +198,9 @@ The grant holders are:
   shepherd's direct handoff;
 - a human-typed message in the session that asks for one.
 
-No initial task prompt grants it.
+No initial task prompt grants it, with one stated exception: an unbound chat task. There, the
+dispatch intent is the human's own first message in the session, so it counts as that fourth
+holder (`chat-publication`, item 6). A chat task with a workflow bound gets no such exception.
 
 1. **Execution authorization** (`src/server/execution-authorization.ts`): split the PR clause.
    - The **task authorization**, rendered by `task-contract.ts` for every dispatched task, drops
@@ -306,7 +308,10 @@ Then run `npm run typecheck` and `npm run lint`. There is no UI change, so no Pl
    exception is a run claimed when the session had no recorded goal (Part A, accepted residual).
 2. In-run repair rounds and Inspector feedback rounds behave as before.
 3. No initial task prompt, intent template, or skill instructs or authorizes opening a PR.
-   Only the four grant holders do.
+   Only the four grant holders do. The one stated exception is an unbound chat task's
+   `KIND_CONTRACT.chat` paragraph (Part B item 6). It treats a PR request in the dispatch intent
+   as the human's in-session request, and tests assert that exception explicitly. Every other
+   kind, including chat with a workflow bound, renders no creation grant.
 4. Unbound plan and shape tasks reach Foreman's Ship it?/Straight to PR path without a verifier
    hold.
 5. Every path told to defer has the publisher named in Part B's table. Unbound ship-kind tasks
