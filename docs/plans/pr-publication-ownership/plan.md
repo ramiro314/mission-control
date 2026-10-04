@@ -1,6 +1,6 @@
 # PR publication ownership: stop post-completion workflow re-runs and make PR authority a grant
 
-Status: shaped on 2026-10-04 from shape task "Fix premature PR creation" and approved as written by the operator the same day, with "Create tickets after the plan merges" chosen as the follow-up. Not implemented.
+Status: shaped on 2026-10-04 from shape task "Fix premature PR creation" and approved as written by the operator the same day, with "Create tickets after the plan merges" chosen as the follow-up. Revised in Plan Validation repair round 1 (publisher table for deferred paths, unbound chat decision, drain-started run stamping). Not implemented.
 
 ## Problem
 
@@ -82,6 +82,11 @@ handoff:
 | prompt-changes | Prompt changes in scope | All five: authorization split, manifest, phased-plan intent template, unbound plan/shape, skills and ensemble text |
 | follow-ups | Findings recorded as follow-ups | Deferred `gh pr create` block; duplicate human-prompt capture; agent merged a PR |
 | latch-ui | Show the latch in the dashboard? | No UI change; the recorded Foreman reason is enough |
+| chat-publication (repair round 1) | How an unbound chat task gets its PR published | The chat task's dispatch intent counts as a human-typed message in the session |
+
+Repair round 1 also records one design choice the plan review asked for, made from the code and
+not put to the human: every claim that starts or resubmits a run stamps the episode, queue-drain
+claims included (see Part A, Changes 2).
 
 ## Design
 
@@ -116,8 +121,10 @@ flowchart LR
   `inspector_only` feedback. A gated run stays active until Inspector passes, so it never reaches
   the latch.
 - Operator-cancelled runs do not latch. Status `cancelled` is not `completed`.
-- Queue-drain claims. Drain needs new queue items to fire again, and those are human work. The
-  latch applies to `completionKind: "prompted"` only.
+- Queue-drain claims are never refused by the latch. Drain needs new queue items to fire again,
+  and those are human work. The latch refuses `completionKind: "prompted"` claims only. A run
+  that a drain claim started is still stamped, so the prompted completion of its own Pull Request
+  turn on an emptied queue is latched like any other.
 - dungeon-game#8 (`human-pr-before-claim`). When a human asks for a PR before the claim and the PR
   stays open, the next generation claims under the new episode and the bound workflow runs once
   against the open PR. Today's code already behaves this way, so it is pinned by a test, not
@@ -129,8 +136,18 @@ flowchart LR
 1. **Schema** (`src/server/db.ts`, migration beside its upgrade path):
    `addColumn(d, "workflow_runs", "claim_episode_key", "TEXT")`.
 2. **Claim transaction** (`WorkflowStore.claimForemanCompletion`, `src/server/workflows/store.ts`):
-   - Write `claim_episode_key` whenever a prompted claim starts a run or resubmits one, so the
-     stamp is the episode of the last claim that fed the run.
+   - Write `claim_episode_key` whenever **any** claim, prompted or queue-drain, starts a run or
+     resubmits one, so the stamp is the episode of the last claim that fed the run. The value is
+     `intent:<objective_version>:<prompt_revision>` from the session's `session_goals` row for
+     the claim's note key, read in the same transaction. The transaction already reads that row
+     for prompted claims; it now reads it for drain claims too, without changing what a drain
+     claim checks or accepts. A resolved prompted episode key uses the same formula, so a
+     drain-started run and the prompted claim of its own PR turn compare equal unless a human
+     prompt came in between.
+   - **Accepted residual:** when no `session_goals` row exists at claim time (a drain on a session
+     whose goal was never recorded), the stamp stays null and never latches. If that session's
+     goal is recorded later, without a human prompt, one extra run can still occur. A pinned test
+     states it.
    - In the `if (!run)` branch, before creating a run, look up a `completed` run on the binding
      with `claim_episode_key = expectedIntent.episodeKey`. If one exists, consume the guard with
      the new outcome, append a `claim_latched` workflow event naming that run, and return
@@ -158,6 +175,20 @@ flowchart LR
      outcome.
 
 ### Part B: PR authority is a grant, not a standing permission
+
+**Every deferred path has a publisher.** Traced from the code (repair round 1):
+
+| Path | Task kind and workflow | Publisher after the change |
+|---|---|---|
+| testing-setup (`startTestingSetup`, `src/server/testing-setup.ts`) | `ship`, `workflowId: null` | Foreman's prompted wrap-up (Ship it? card or Straight to PR) and the ship shepherd's direct handoff |
+| Retro follow-up (`createRetroFollowup`, `src/server/tasks.ts`) | `ship`, `workflowId: null` | The same as testing-setup |
+| deflake (GitHub-issue task source, `src/server/task-sources/ingest.ts`) | The source's configured kind, `ship` unless configured otherwise, with that kind's default workflow (`BUILTIN_KIND_WORKFLOW_DEFAULTS`) | The bound workflow's Pull Request action, or Foreman's wrap-up when the kind's workflow is None. A source configured as `chat` follows the chat row. |
+| Ensemble no-workflow winner (`src/server/ensembles/engine.ts`) | Its task's kind (`ship`) | Foreman's wrap-up (Ship it? card) |
+| Unbound plan or shape | `plan` / `shape`, `workflowId: null` | Foreman's wrap-up (item 4 below) |
+| Unbound chat | `chat`, `workflowId: null`; Foreman retires chat without a workflow (`automaticWrapupBlock`) | The human (`chat-publication`): the chat task's dispatch intent counts as a human-typed message in the session (item 6 below) |
+| Chat with a workflow bound | `chat`, a workflow | The workflow's Pull Request action, as for ship |
+| pipeline | Launched through Conductor (`dispatchPipeline` in `src/server/dispatcher.ts`) | Conductor. Mission Control's task contract never reaches these sessions, and this plan does not change them. |
+| scout | `scout` | None by design: its report contract forbids publishing. Unchanged. |
 
 The grant holders are:
 
@@ -218,7 +249,15 @@ No initial task prompt grants it.
    - `src/server/ensembles/engine.ts` (near line 3343), the no-workflow winner: "commit, report
      complete, and Foreman's Ship it? card publishes it", replacing "push, and open a pull request
      yourself".
-6. **Docs:** `docs/dispatch-and-backlog.md` (multi-repo section) and
+6. **Unbound chat** (`chat-publication`). A chat task with no workflow has no automatic
+   publisher, so its dispatch intent is the human's first message in the session and is treated
+   as one. `KIND_CONTRACT.chat` in `src/server/task-contract.ts`, which today renders nothing,
+   renders one chat paragraph when no workflow is bound. If the dispatch message or a later human
+   message in this session asks for a pull request, that request is the grant. Otherwise, commit,
+   then say in the reply that the work is committed and not published, and that asking in this
+   session publishes it. A chat task with a workflow bound gets the plain task authorization and
+   defers to the workflow like ship.
+7. **Docs:** `docs/dispatch-and-backlog.md` (multi-repo section) and
    `docs/agent-guides/architecture.md` where it describes the execution authorization.
 
 ### Fork ledger
@@ -235,13 +274,15 @@ Focused tests, by file, with the repo loader
 
 | Test | Proves |
 |---|---|
-| `test/workflow-foreman-claim.test.ts` (new cases) | After a completed run, a prompted claim at the same episode returns `latched`, creates no run, consumes the generation with `workflow_latched`, and appends `claim_latched`. A claim under a new episode starts a run. A cancelled run does not latch. A pre-upgrade null stamp does not latch. A resubmission restamps the episode. |
+| `test/workflow-foreman-claim.test.ts` (new cases) | After a completed run, a prompted claim at the same episode returns `latched`, creates no run, consumes the generation with `workflow_latched`, and appends `claim_latched`. A claim under a new episode starts a run. A cancelled run does not latch. A pre-upgrade null stamp does not latch. A resubmission restamps the episode. **A run started by a queue-drain claim is stamped from `session_goals`, and after it completes, a prompted claim at that episode is latched.** A drain claim on a session with no `session_goals` row leaves the stamp null, which is the accepted residual. |
 | `test/workflow-repair-cycle.test.ts` | Repair rounds (Persona and Inspector `waiting_for_session`) still resubmit the same run. |
 | `test/prompted-wrapup-worker-e2e.test.ts` or `test/dispatched-launch-reaches-workflow.test.ts` | Through the worker: a run completes, the PR action's own turn settles, and no second run and no wrap-up instruction appear. A human-typed prompt then produces exactly one new run. A human-requested PR before the claim still gets one run (dungeon-game#8 shape). |
 | `test/task-completion.test.ts`, `test/chat-task-kind.test.ts`, `test/task-assign.test.ts`, `test/standing-instructions-delivery.test.ts` | Initial task prompts carry the task authorization without the creation grant. |
 | `test/workflow-feedback.test.ts`, `test/session-action-durability.test.ts` | The PR action packet carries the grant. Repair and Inspector packets carry only update-only wording. |
 | `test/multi-repo-provisioning.test.ts` | The manifest no longer tells the agent to open PRs. |
 | `test/plan-prompt.test.ts`, `test/shape-prompt.test.ts`, `test/plan-publication.test.ts`, `test/plan-completion-guard.test.ts` | Unbound plan and shape defer, with a deferral completion contract. |
+| `test/prompted-wrapup-worker-e2e.test.ts` (new case) | Through the worker: an unbound `ship` task session (the testing-setup and retro follow-up shape: `workflowId: null`) settles after a committed turn and reaches a publish instruction. That is the Ship it? card under the default `ask` wrap-up, and `WRAPUP_PR` typed into the session under Straight to PR. The same holds for an unbound `plan` session (acceptance criterion 4). |
+| `test/chat-task-kind.test.ts` (new cases) | An unbound chat task's turn-one prompt carries the chat paragraph, so a dispatch message asking for a PR is the grant. A chat task with a workflow bound gets only the plain task authorization. |
 | `test/skills-catalog.test.ts` | Skill text changes keep the catalog valid. |
 
 Then run `npm run typecheck` and `npm run lint`. There is no UI change, so no Playwright spec
@@ -250,11 +291,17 @@ Then run `npm run typecheck` and `npm run lint`. There is no UI change, so no Pl
 **Acceptance criteria.**
 
 1. A completed bound run is never followed by another automatic run until a human-typed prompt.
+   This holds whether a prompted or a queue-drain claim started the run. The one stated
+   exception is a run claimed when the session had no recorded goal (Part A, accepted residual).
 2. In-run repair rounds and Inspector feedback rounds behave as before.
 3. No initial task prompt, intent template, or skill instructs or authorizes opening a PR.
    Only the four grant holders do.
 4. Unbound plan and shape tasks reach Foreman's Ship it?/Straight to PR path without a verifier
    hold.
+5. Every path told to defer has the publisher named in Part B's table. Unbound ship-kind tasks
+   (testing-setup, retro follow-up, deflake with workflow None, the ensemble winner) reach a
+   Foreman publish instruction. An unbound chat task publishes on the human's request, including
+   its dispatch message.
 
 ## Out of scope and follow-ups
 
