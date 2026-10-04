@@ -223,7 +223,8 @@ through to the Ship it? card or Straight to PR (falling through would publish a 
 <p>Any accepted human prompt bumps <code>promptRevision</code> and with it the episode key, so the next
 completion after it claims normally. Daemon-injected turns (workflow session actions, Inspector
 packets, Foreman wrap-ups) and Claude <code>&lt;task-notification&gt;</code> wake-ups never advance the episode,
-so they stay latched.</p>
+so they stay latched. The one exception is on the terminal runtime: a daemon restart between a
+packet&#39;s delivery and its echo (see the accepted residuals under Changes 2).</p>
 <div class="wide"><svg viewBox="0 0 1000 330" role="img" aria-label="Foreman completion claim with the new latched branch">
 <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
 <rect x="20" y="135" width="200" height="60" rx="8"/><text x="120" y="160" text-anchor="middle">Foreman: prompted</text><text x="120" y="182" text-anchor="middle" class="small">completion verified</text>
@@ -256,24 +257,47 @@ changed. If the PR is merged in that turn, the task closes on merge and nothing 
 <li><strong>Schema</strong> (<code>src/server/db.ts</code>, migration beside its upgrade path):
 <code>addColumn(d, &quot;workflow_runs&quot;, &quot;claim_episode_key&quot;, &quot;TEXT&quot;)</code>.</li>
 <li><strong>Claim transaction</strong> (<code>WorkflowStore.claimForemanCompletion</code>, <code>src/server/workflows/store.ts</code>):<ul>
-<li>Write <code>claim_episode_key</code> whenever <strong>any</strong> claim, prompted or queue-drain, starts a run or
+<li><p>Write <code>claim_episode_key</code> whenever <strong>any</strong> claim, prompted or queue-drain, starts a run or
 resubmits one, so the stamp is the episode of the last claim that fed the run. The value is
 <code>intent:&lt;objective_version&gt;:&lt;prompt_revision&gt;</code> from the session&#39;s <code>session_goals</code> row for
 the claim&#39;s note key, read in the same transaction. The transaction already reads that row
 for prompted claims; it now reads it for drain claims too, without changing what a drain
 claim checks or accepts. A resolved prompted episode key uses the same formula, so a
 drain-started run and the prompted claim of its own PR turn compare equal unless a human
-prompt came in between.</li>
-<li><strong>Accepted residual:</strong> when no <code>session_goals</code> row exists at claim time (a drain on a session
+prompt came in between.</p>
+</li>
+<li><p><strong>Accepted residual:</strong> when no <code>session_goals</code> row exists at claim time (a drain on a session
 whose goal was never recorded), the stamp stays null and never latches. If that session&#39;s
 goal is recorded later, without a human prompt, one extra run can still occur. A pinned test
-states it.</li>
-<li>In the <code>if (!run)</code> branch, before creating a run, look up a <code>completed</code> run on the binding
+states it.</p>
+</li>
+<li><p><strong>Accepted residual, restart between delivery and echo (terminal runtime only).</strong> Whether a
+prompt bumps <code>promptRevision</code> depends on whether it was authored by a human, and there are
+two paths:</p>
+<ul>
+<li>SDK sessions record the sender explicitly. Only <code>origin: &quot;human&quot;</code> sends are captured as
+goal prompts (<code>src/server/sdk/deliver.ts</code>), with no ledger involved.</li>
+<li>Terminal sessions learn the sender from the echo on the prompt hook.
+<code>Registry.captureHookGoalPrompt</code> skips a prompt that <code>isDaemonAuthoredPrompt</code> matches
+against the in-memory injection ledger (<code>src/server/injections.ts</code>, <code>claimInjectionEcho</code>).</li>
+</ul>
+<p>The ledger is deliberately unpersisted, so a daemon restart that lands <em>between</em> a daemon
+packet&#39;s delivery and its echo forgets that packet. Its echo then reads as human, bumps
+<code>promptRevision</code>, and re-arms the latch: one extra run, the same window <code>injections.ts</code>
+already accepts for the Goal (&quot;a restart landing between a delivery and its echo lets one
+packet through&quot;). Every packet delivered <em>after</em> the restart is recorded in the fresh
+ledger, so this is not &quot;the first daemon turn after a restart&quot;. It is the single in-flight
+packet. All sessions in the forensic sample ran on Claude SDK, where the window does not
+exist. Persisting the ledger stays out of scope. A pinned test states the residual.</p>
+</li>
+<li><p>In the <code>if (!run)</code> branch, before creating a run, look up a <code>completed</code> run on the binding
 with <code>claim_episode_key = expectedIntent.episodeKey</code>. If one exists, consume the guard with
 the new outcome, append a <code>claim_latched</code> workflow event naming that run, and return
-<code>{ claimed: true, runId: &lt;completed run&gt;, submissionId: null, state: &quot;latched&quot; }</code>.</li>
-<li>Runs created before the upgrade have a null stamp and never latch. At most one more run can
-occur per pre-upgrade binding, and that run stamps itself.</li>
+<code>{ claimed: true, runId: &lt;completed run&gt;, submissionId: null, state: &quot;latched&quot; }</code>.</p>
+</li>
+<li><p>Runs created before the upgrade have a null stamp and never latch. At most one more run can
+occur per pre-upgrade binding, and that run stamps itself.</p>
+</li>
 </ul>
 </li>
 <li><strong>Wire types:</strong><ul>
@@ -467,6 +491,10 @@ It also re-renders <code>docs/fork/ledger.html</code>.</p>
 <td>After a completed run, a prompted claim at the same episode returns <code>latched</code>, creates no run, consumes the generation with <code>workflow_latched</code>, and appends <code>claim_latched</code>. A claim under a new episode starts a run. A cancelled run does not latch. A pre-upgrade null stamp does not latch. A resubmission restamps the episode. <strong>A run started by a queue-drain claim is stamped from <code>session_goals</code>, and after it completes, a prompted claim at that episode is latched.</strong> A drain claim on a session with no <code>session_goals</code> row leaves the stamp null, which is the accepted residual.</td>
 </tr>
 <tr>
+<td><code>test/workflow-goal-provenance.test.ts</code> or the registry hook-prompt tests (new pinned case)</td>
+<td>Terminal runtime, latch residual. A daemon packet whose injection-ledger entry is gone (a simulated restart between delivery and echo) is captured as a human prompt and bumps <code>promptRevision</code>, so the next prompted claim is not latched. The same packet echoed while its ledger entry exists does not bump it, and the claim stays latched. On the SDK runtime a non-human-origin send never bumps it.</td>
+</tr>
+<tr>
 <td><code>test/workflow-repair-cycle.test.ts</code></td>
 <td>Repair rounds (Persona and Inspector <code>waiting_for_session</code>) still resubmit the same run.</td>
 </tr>
@@ -508,8 +536,10 @@ It also re-renders <code>docs/fork/ledger.html</code>.</p>
 <p><strong>Acceptance criteria.</strong></p>
 <ol>
 <li>A completed bound run is never followed by another automatic run until a human-typed prompt.
-This holds whether a prompted or a queue-drain claim started the run. The one stated
-exception is a run claimed when the session had no recorded goal (Part A, accepted residual).</li>
+This holds whether a prompted or a queue-drain claim started the run. There are two stated
+exceptions, both listed in Part A as accepted residuals: a run claimed when the session had no
+recorded goal, and, on the terminal runtime only, a daemon restart between a packet&#39;s delivery
+and its echo.</li>
 <li>In-run repair rounds and Inspector feedback rounds behave as before.</li>
 <li>No initial task prompt, intent template, or skill instructs or authorizes opening a PR.
 Only the four grant holders do. The one stated exception is an unbound chat task&#39;s

@@ -104,7 +104,8 @@ claim:
 Any accepted human prompt bumps `promptRevision` and with it the episode key, so the next
 completion after it claims normally. Daemon-injected turns (workflow session actions, Inspector
 packets, Foreman wrap-ups) and Claude `<task-notification>` wake-ups never advance the episode,
-so they stay latched.
+so they stay latched. The one exception is on the terminal runtime: a daemon restart between a
+packet's delivery and its echo (see the accepted residuals under Changes 2).
 
 ```mermaid
 flowchart LR
@@ -148,6 +149,23 @@ flowchart LR
      whose goal was never recorded), the stamp stays null and never latches. If that session's
      goal is recorded later, without a human prompt, one extra run can still occur. A pinned test
      states it.
+   - **Accepted residual, restart between delivery and echo (terminal runtime only).** Whether a
+     prompt bumps `promptRevision` depends on whether it was authored by a human, and there are
+     two paths:
+     - SDK sessions record the sender explicitly. Only `origin: "human"` sends are captured as
+       goal prompts (`src/server/sdk/deliver.ts`), with no ledger involved.
+     - Terminal sessions learn the sender from the echo on the prompt hook.
+       `Registry.captureHookGoalPrompt` skips a prompt that `isDaemonAuthoredPrompt` matches
+       against the in-memory injection ledger (`src/server/injections.ts`, `claimInjectionEcho`).
+
+     The ledger is deliberately unpersisted, so a daemon restart that lands *between* a daemon
+     packet's delivery and its echo forgets that packet. Its echo then reads as human, bumps
+     `promptRevision`, and re-arms the latch: one extra run, the same window `injections.ts`
+     already accepts for the Goal ("a restart landing between a delivery and its echo lets one
+     packet through"). Every packet delivered *after* the restart is recorded in the fresh
+     ledger, so this is not "the first daemon turn after a restart". It is the single in-flight
+     packet. All sessions in the forensic sample ran on Claude SDK, where the window does not
+     exist. Persisting the ledger stays out of scope. A pinned test states the residual.
    - In the `if (!run)` branch, before creating a run, look up a `completed` run on the binding
      with `claim_episode_key = expectedIntent.episodeKey`. If one exists, consume the guard with
      the new outcome, append a `claim_latched` workflow event naming that run, and return
@@ -288,6 +306,7 @@ Focused tests, by file, with the repo loader
 | Test | Proves |
 |---|---|
 | `test/workflow-foreman-claim.test.ts` (new cases) | After a completed run, a prompted claim at the same episode returns `latched`, creates no run, consumes the generation with `workflow_latched`, and appends `claim_latched`. A claim under a new episode starts a run. A cancelled run does not latch. A pre-upgrade null stamp does not latch. A resubmission restamps the episode. **A run started by a queue-drain claim is stamped from `session_goals`, and after it completes, a prompted claim at that episode is latched.** A drain claim on a session with no `session_goals` row leaves the stamp null, which is the accepted residual. |
+| `test/workflow-goal-provenance.test.ts` or the registry hook-prompt tests (new pinned case) | Terminal runtime, latch residual. A daemon packet whose injection-ledger entry is gone (a simulated restart between delivery and echo) is captured as a human prompt and bumps `promptRevision`, so the next prompted claim is not latched. The same packet echoed while its ledger entry exists does not bump it, and the claim stays latched. On the SDK runtime a non-human-origin send never bumps it. |
 | `test/workflow-repair-cycle.test.ts` | Repair rounds (Persona and Inspector `waiting_for_session`) still resubmit the same run. |
 | `test/prompted-wrapup-worker-e2e.test.ts` or `test/dispatched-launch-reaches-workflow.test.ts` | Through the worker: a run completes, the PR action's own turn settles, and no second run and no wrap-up instruction appear. A human-typed prompt then produces exactly one new run. A human-requested PR before the claim still gets one run (dungeon-game#8 shape). |
 | `test/task-completion.test.ts`, `test/chat-task-kind.test.ts`, `test/task-assign.test.ts`, `test/standing-instructions-delivery.test.ts` | Initial task prompts carry the task authorization without the creation grant. |
@@ -304,8 +323,10 @@ Then run `npm run typecheck` and `npm run lint`. There is no UI change, so no Pl
 **Acceptance criteria.**
 
 1. A completed bound run is never followed by another automatic run until a human-typed prompt.
-   This holds whether a prompted or a queue-drain claim started the run. The one stated
-   exception is a run claimed when the session had no recorded goal (Part A, accepted residual).
+   This holds whether a prompted or a queue-drain claim started the run. There are two stated
+   exceptions, both listed in Part A as accepted residuals: a run claimed when the session had no
+   recorded goal, and, on the terminal runtime only, a daemon restart between a packet's delivery
+   and its echo.
 2. In-run repair rounds and Inspector feedback rounds behave as before.
 3. No initial task prompt, intent template, or skill instructs or authorizes opening a PR.
    Only the four grant holders do. The one stated exception is an unbound chat task's
