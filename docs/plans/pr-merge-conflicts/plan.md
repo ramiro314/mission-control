@@ -19,7 +19,7 @@ Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.
 
-GitHub Inspector review on PR #103 (rounds 1 to 7) made these changes:
+GitHub Inspector review on PR #103 (rounds 1 to 8) made these changes:
 
 - A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
   surfaced as `workflow-not-gating`. Round 2 narrowed this from "not at one right now".
@@ -33,6 +33,8 @@ GitHub Inspector review on PR #103 (rounds 1 to 7) made these changes:
 - A by-URL result is written back to the matching exited session's snapshot, so its chip clears
   when the fix lands. A daemon restart can re-alert an escalated PR once, which is accepted
   under decision 13 (round 7).
+- The E2E spec asserts the blocked row and its single `pr-conflict` notification at first entry,
+  and asserts that no second notification follows the reason change (round 8).
 
 Each is marked "Inspector review" where it appears.
 
@@ -337,16 +339,24 @@ E2E, in `e2e/specs/pr-merge-conflicts.spec.ts`:
 **Fixture precondition** (repair round 1).
 - The session is **task-backed**. A dispatched task records the PR URL on its work episode, so `taskPrPollTargets` keeps polling it after the session exits; `prPollTargets` skips exited sessions.
 - A fake `gh` on `PATH` answers both `gh pr list --head <branch>` and `gh pr view <url>` with `mergeable`, `baseRefName` and `headRefOid` alongside the fields each call already requests. Specs such as `workflow-pull-request-mismatch.spec.ts` already fake `gh` this way.
+- The session is **not** invited to Foreman, which is the default. Its conflict is therefore `foreman-cannot-nudge` from the first poll, and step 2 is the PR's entry into the blocked set (Inspector review, round 8).
+- Before the dashboard loads, an `addInitScript` shim replaces `window.Notification` with a recorder that reports permission `granted` and logs each notification's title, body and tag. The browser is the only place `pr-conflict` is raised, so recording there observes the real `detectAlerts` → notifier path.
 
 **Steps.**
 1. The fake reports the task's PR as `CONFLICTING` against `main`.
-2. Assert the "Conflicts with main" mark on the PR chip on the session's **card**.
-3. Open the session and assert the same mark in the **session header**.
-4. Open Foreman settings and assert:
+2. **Entry** (round 8). Assert:
+   - The **Blocked pull requests** inbox row appears with the reason "Foreman can't drive this session".
+   - Exactly one `pr-conflict` notification has been recorded, naming the PR.
+3. Assert the "Conflicts with main" mark on the PR chip on the session's **card**.
+4. Open the session and assert the same mark in the **session header**.
+5. Open Foreman settings and assert:
    - The **Keep sessions on track with merge conflicts** checkbox is present beside the CI and review-comment toggles, and checked by default.
-   - Unchecking it persists across a reload.
-5. Exit the session and assert the **Blocked pull requests** inbox row now reads "session ended". The PR was already blocked because the toggle was off in step 4, so this step asserts that the reason text changed. It does not assert a new alert, because a reason change never re-alerts (§5). The row is fed by the by-URL poller.
-6. Flip the fake to `MERGEABLE` and assert that the row and the chip mark disappear.
+   - Unchecking it persists across a reload. The row keeps its reason, and the recorder still holds one notification.
+6. Exit the session. Assert:
+   - The same row's reason text changes to "session ended", which tells "reason changed" apart from "row appeared", because step 2 already saw the row.
+   - The recorder still holds exactly one notification: a reason change never re-alerts (§5).
+   - The row is now fed by the by-URL poller.
+7. Flip the fake to `MERGEABLE` and assert that the row and the chip mark disappear.
 
 All selection is by role and label.
 

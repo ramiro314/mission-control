@@ -291,7 +291,7 @@ conflict.</li>
 <p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
-<p>GitHub Inspector review on PR #103 (rounds 1 to 7) made these changes:</p>
+<p>GitHub Inspector review on PR #103 (rounds 1 to 8) made these changes:</p>
 <ul>
 <li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
 surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
@@ -305,6 +305,8 @@ updates the row (round 5).</li>
 <li>A by-URL result is written back to the matching exited session&#39;s snapshot, so its chip clears
 when the fix lands. A daemon restart can re-alert an escalated PR once, which is accepted
 under decision 13 (round 7).</li>
+<li>The E2E spec asserts the blocked row and its single <code>pr-conflict</code> notification at first entry,
+and asserts that no second notification follows the reason change (round 8).</li>
 </ul>
 <p>Each is marked &quot;Inspector review&quot; where it appears.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
@@ -773,18 +775,30 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <ul>
 <li>The session is <strong>task-backed</strong>. A dispatched task records the PR URL on its work episode, so <code>taskPrPollTargets</code> keeps polling it after the session exits; <code>prPollTargets</code> skips exited sessions.</li>
 <li>A fake <code>gh</code> on <code>PATH</code> answers both <code>gh pr list --head &lt;branch&gt;</code> and <code>gh pr view &lt;url&gt;</code> with <code>mergeable</code>, <code>baseRefName</code> and <code>headRefOid</code> alongside the fields each call already requests. Specs such as <code>workflow-pull-request-mismatch.spec.ts</code> already fake <code>gh</code> this way.</li>
+<li>The session is <strong>not</strong> invited to Foreman, which is the default. Its conflict is therefore <code>foreman-cannot-nudge</code> from the first poll, and step 2 is the PR&#39;s entry into the blocked set (Inspector review, round 8).</li>
+<li>Before the dashboard loads, an <code>addInitScript</code> shim replaces <code>window.Notification</code> with a recorder that reports permission <code>granted</code> and logs each notification&#39;s title, body and tag. The browser is the only place <code>pr-conflict</code> is raised, so recording there observes the real <code>detectAlerts</code> → notifier path.</li>
 </ul>
 <p><strong>Steps.</strong></p>
 <ol>
 <li>The fake reports the task&#39;s PR as <code>CONFLICTING</code> against <code>main</code>.</li>
+<li><strong>Entry</strong> (round 8). Assert:<ul>
+<li>The <strong>Blocked pull requests</strong> inbox row appears with the reason &quot;Foreman can&#39;t drive this session&quot;.</li>
+<li>Exactly one <code>pr-conflict</code> notification has been recorded, naming the PR.</li>
+</ul>
+</li>
 <li>Assert the &quot;Conflicts with main&quot; mark on the PR chip on the session&#39;s <strong>card</strong>.</li>
 <li>Open the session and assert the same mark in the <strong>session header</strong>.</li>
 <li>Open Foreman settings and assert:<ul>
 <li>The <strong>Keep sessions on track with merge conflicts</strong> checkbox is present beside the CI and review-comment toggles, and checked by default.</li>
-<li>Unchecking it persists across a reload.</li>
+<li>Unchecking it persists across a reload. The row keeps its reason, and the recorder still holds one notification.</li>
 </ul>
 </li>
-<li>Exit the session and assert the <strong>Blocked pull requests</strong> inbox row now reads &quot;session ended&quot;. The PR was already blocked because the toggle was off in step 4, so this step asserts that the reason text changed. It does not assert a new alert, because a reason change never re-alerts (§5). The row is fed by the by-URL poller.</li>
+<li>Exit the session. Assert:<ul>
+<li>The same row&#39;s reason text changes to &quot;session ended&quot;, which tells &quot;reason changed&quot; apart from &quot;row appeared&quot;, because step 2 already saw the row.</li>
+<li>The recorder still holds exactly one notification: a reason change never re-alerts (§5).</li>
+<li>The row is now fed by the by-URL poller.</li>
+</ul>
+</li>
 <li>Flip the fake to <code>MERGEABLE</code> and assert that the row and the chip mark disappear.</li>
 </ol>
 <p>All selection is by role and label.</p>
