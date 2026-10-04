@@ -1,0 +1,835 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>React to pull requests blocked by merge conflicts</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f7f8fa;
+    --page-fg: #1b2028;
+    --page-muted: #59616e;
+    --page-dim: #7b838f;
+    --page-line: #dde1e7;
+    --page-card: #ffffff;
+    --page-accent: #1f6f4f;
+    --page-code-bg: #f0f2f5;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1013;
+      --page-fg: #e7ebf1;
+      --page-muted: #99a3b1;
+      --page-dim: #7c8798;
+      --page-line: #242b34;
+      --page-card: #14181e;
+      --page-accent: #35c08a;
+      --page-code-bg: #11151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 15px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 56px 28px 120px; }
+  header.doc { border-bottom: 1px solid var(--page-line); padding-bottom: 28px; margin-bottom: 36px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 14px; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 52px 0 14px; letter-spacing: -0.01em; padding-top: 14px; border-top: 1px solid var(--page-line); }
+  h2:first-of-type { border-top: 0; }
+  h3 { font-size: 17px; margin: 34px 0 10px; }
+  h4 { font-size: 14px; margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  p { margin: 0 0 14px; }
+  ul { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  a { color: var(--page-accent); }
+  code {
+    font: 12.5px/1.5 var(--mono);
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .meta { list-style: none; padding: 0; margin: 0; color: var(--page-muted); font-size: 14px; }
+  .meta li { margin-bottom: 4px; }
+  .scroll { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--page-line); border-radius: 10px; background: var(--page-card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  th { background: var(--page-code-bg); font-weight: 620; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  pre {
+    margin: 0 0 18px;
+    padding: 16px 18px;
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    overflow-x: auto;
+    font: 12px/1.55 var(--mono);
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  blockquote { margin: 0 0 18px; padding: 12px 16px; border-left: 3px solid var(--page-accent); background: var(--page-code-bg); border-radius: 0 8px 8px 0; }
+  .thesis { font-size: 16px; color: var(--page-fg); border-left: 3px solid var(--page-accent); padding-left: 14px; margin: 0 0 20px; }
+  .cg { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 20px; }
+  .cg > div { border: 1px solid var(--page-line); border-radius: 10px; padding: 13px 16px; background: var(--page-card); font-size: 13.5px; }
+  .cg h5 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  .cg p { margin: 0; color: var(--page-muted); }
+
+  /* ------------------------------------------------------------------
+     Mockup frames. These reproduce Mission Control's real dark theme
+     tokens verbatim (src/web/styles.css :root), because the product is
+     dark-only - a light rendering of the mockups would show a surface
+     that does not exist. The page around them still follows the
+     reader's own colour scheme.
+     ------------------------------------------------------------------ */
+  .mock {
+    --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149;
+    --neutral: #8b94a3; --select: #35c08a; --purple: #a371f7;
+    --radius: 13px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--page-line);
+    border-radius: 12px;
+    padding: 22px 26px 34px;
+    margin: 0 0 10px;
+    font: 13px/1.5 var(--sans);
+    overflow-x: auto;
+  }
+  .mock-cap { font-size: 12.5px; color: var(--page-dim); margin: 0 0 26px; }
+  .mock-inner { max-width: 900px; }
+  .mock-inner.wide { max-width: none; }
+
+  /* page head */
+  .m-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .m-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg); }
+  .m-scope {
+    font-size: 9.5px; font-weight: 640; text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 5px;
+    border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+    background: color-mix(in oklab, var(--idle) 9%, transparent);
+    color: color-mix(in oklab, var(--idle) 55%, var(--fg));
+  }
+  .m-lead { font-size: 11.5px; line-height: 1.5; color: var(--muted); margin: 0 0 18px; max-width: 76ch; }
+  .m-lead strong { color: var(--fg); font-weight: 600; }
+  .m-group { margin-top: 20px; }
+  .m-group-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .m-group-head h4 { margin: 0; font-size: 12px; font-weight: 600; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .m-hint { font-size: 11.5px; line-height: 1.5; color: var(--dim); margin: 14px 0 0; }
+  .m-btn {
+    font: 11.5px var(--sans); color: var(--muted); background: none;
+    border: 1px solid transparent; border-radius: 7px; padding: 4px 9px; cursor: default;
+  }
+  .m-btn:hover { background: var(--panel-2); }
+  .m-btn-solid { border-color: var(--border); background: var(--bg-2); color: var(--fg); }
+  .m-btn-danger { border-color: color-mix(in oklab, var(--danger) 34%, var(--border)); color: var(--danger); background: color-mix(in oklab, var(--danger) 8%, transparent); }
+
+  /* rows */
+  .m-row { display: flex; align-items: center; gap: 14px; padding: 9px 10px; border-radius: 9px; border: 1px solid transparent; }
+  .m-row + .m-row { margin-top: 2px; }
+  .m-row:hover { background: var(--panel-2); }
+  .m-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .m-row-label { font-size: 12.5px; font-weight: 540; color: var(--fg); display: flex; align-items: center; gap: 7px; }
+  .m-row-desc { font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+  .m-row-ctl { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .m-check { width: 15px; height: 15px; border-radius: 4px; background: var(--working); border: 1px solid var(--working); position: relative; }
+  .m-check::after { content: "✓"; position: absolute; inset: 0; color: #fff; font-size: 11px; line-height: 13px; text-align: center; }
+  .m-num { width: 62px; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-2); color: var(--fg); font: 12px var(--mono); text-align: right; }
+  .m-qual { font-size: 9.5px; font-weight: 640; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+
+  /* badges */
+  .m-badge {
+    font: 640 9.5px/1.5 var(--sans); text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border);
+    color: var(--muted); background: var(--bg-2); white-space: nowrap;
+  }
+  .m-badge.ok { color: color-mix(in oklab, var(--idle) 55%, var(--fg)); border-color: color-mix(in oklab, var(--idle) 34%, var(--border)); background: color-mix(in oklab, var(--idle) 9%, transparent); }
+  .m-badge.busy { color: color-mix(in oklab, var(--working) 62%, var(--fg)); border-color: color-mix(in oklab, var(--working) 34%, var(--border)); background: color-mix(in oklab, var(--working) 9%, transparent); }
+  .m-badge.warn { color: color-mix(in oklab, var(--attention) 62%, var(--fg)); border-color: color-mix(in oklab, var(--attention) 34%, var(--border)); background: color-mix(in oklab, var(--attention) 9%, transparent); }
+  .m-badge.bad { color: color-mix(in oklab, var(--danger) 62%, var(--fg)); border-color: color-mix(in oklab, var(--danger) 34%, var(--border)); background: color-mix(in oklab, var(--danger) 9%, transparent); }
+
+  .m-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--neutral); }
+  .m-dot.ok { background: var(--idle); }
+  .m-dot.busy { background: var(--working); }
+  .m-dot.warn { background: var(--attention); }
+  .m-dot.bad { background: var(--danger); }
+
+  /* cards (direction A) */
+  .m-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 4px; }
+  .m-card { border: 1px solid var(--border); border-left: 3px solid var(--neutral); border-radius: 10px; background: var(--bg-2); padding: 13px 16px 14px; }
+  .m-card.ok { border-left-color: var(--idle); }
+  .m-card.warn { border-left-color: var(--attention); }
+  .m-card.bad { border-left-color: var(--danger); }
+  .m-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
+  .m-card-name { font-size: 13px; font-weight: 600; }
+  .m-card-spacer { flex: 1; }
+  .m-card-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: baseline; }
+  .m-card-k { font-size: 11px; color: var(--dim); }
+  .m-card-v { font-size: 12px; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .m-card-path { font: 10.5px var(--mono); color: var(--dim); margin: 9px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-disclose { margin-top: 11px; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border-soft); padding-top: 10px; }
+  .m-chev { color: var(--dim); }
+
+  /* capacity bar (direction B) */
+  .m-pool { padding: 12px 12px 13px; border-radius: 10px; border: 1px solid transparent; }
+  .m-pool:hover { background: var(--panel-2); }
+  .m-pool + .m-pool { margin-top: 4px; }
+  .m-pool-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 9px; }
+  .m-pool-name { font-size: 12.5px; font-weight: 560; color: var(--fg); }
+  .m-pool-sub { font: 10.5px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-pool-counts { margin-left: auto; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .m-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--border); position: relative; }
+  .m-seg { height: 100%; }
+  .m-seg.leased { background: color-mix(in oklab, var(--working) 78%, var(--bg)); }
+  .m-seg.free { background: color-mix(in oklab, var(--idle) 70%, var(--bg)); }
+  .m-seg.quar { background: color-mix(in oklab, var(--danger) 72%, var(--bg)); }
+  /* Over capacity is a POSITION, not a fourth segment: the overlay is absolutely positioned
+     from the maximum marker to the right edge, so it re-tints the composition segments beneath
+     it without contributing width. Segments always sum to exactly 100%. */
+  .m-over { position: absolute; top: 0; bottom: 0; right: 0; background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--attention) 88%, transparent) 0 3px, transparent 3px 7px); }
+  .m-seg.grow { background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in oklab, var(--border) 85%, transparent) 5px 10px); }
+  .m-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 7px; font-size: 10.5px; color: var(--dim); }
+  .m-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .m-key { width: 9px; height: 9px; border-radius: 2px; }
+  .m-key.leased { background: color-mix(in oklab, var(--working) 78%, var(--bg)); }
+  .m-key.free { background: color-mix(in oklab, var(--idle) 70%, var(--bg)); }
+  .m-key.grow { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--border) 3px 6px); border: 1px solid var(--border); }
+  .m-key.quar { background: color-mix(in oklab, var(--danger) 72%, var(--bg)); }
+  .m-key.over { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--attention) 80%, var(--bg)) 0 3px, color-mix(in oklab, var(--attention) 45%, var(--bg)) 3px 6px); }
+  .m-max { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  .m-max b { color: var(--fg); font-weight: 600; }
+
+  /* master-detail (direction C) */
+  .m-md { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; }
+  .m-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .m-filter { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-2); color: var(--muted); }
+  .m-filter.on { border-color: color-mix(in oklab, var(--working) 45%, var(--border)); background: color-mix(in oklab, var(--working) 12%, transparent); color: color-mix(in oklab, var(--working) 62%, var(--fg)); }
+  .m-search { width: 100%; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-2); color: var(--dim); font-size: 11.5px; margin-bottom: 12px; }
+  .m-poolhead { display: flex; align-items: baseline; gap: 10px; padding: 10px 4px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); border-bottom: 1px solid var(--border-soft); }
+  .m-poolhead b { color: var(--muted); font-weight: 620; letter-spacing: .06em; }
+  .m-poolhead span { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .m-slot { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; border: 1px solid transparent; }
+  .m-slot:hover { background: var(--panel-2); }
+  .m-slot.sel { background: color-mix(in oklab, var(--working) 11%, transparent); border-color: color-mix(in oklab, var(--working) 36%, var(--border)); }
+  .m-slot-id { font-size: 11.5px; color: var(--fg); width: 52px; flex-shrink: 0; }
+  .m-slot-path { font: 10.5px var(--mono); color: var(--dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-slot-age { font: 10.5px var(--mono); color: var(--dim); width: 42px; text-align: right; flex-shrink: 0; }
+  .m-detail { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); padding: 14px 16px 15px; position: sticky; top: 0; }
+  .m-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .m-detail-title { font-size: 12.5px; font-weight: 600; }
+  .m-dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: baseline; margin: 0 0 13px; }
+  .m-dl dt { font-size: 11px; color: var(--dim); }
+  .m-dl dd { margin: 0; font-size: 11.5px; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-dl dd.mono { font-family: var(--mono); font-size: 10.5px; }
+  .m-safety { font-size: 11px; line-height: 1.5; color: var(--dim); border-top: 1px solid var(--border-soft); padding-top: 11px; margin: 0 0 12px; }
+  .m-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  /* current-state callout */
+  .m-current { background: var(--bg); }
+  .m-old-intro { border: 1px solid var(--border); border-left: 3px solid var(--select); background: linear-gradient(110deg, color-mix(in srgb, var(--select) 9%, transparent), transparent 65%); padding: 18px 20px; margin-bottom: 24px; }
+  .m-old-kicker { color: var(--select); font: 700 10px var(--mono); letter-spacing: .13em; text-transform: uppercase; margin: 0; }
+  .m-old-intro p:not(.m-old-kicker) { max-width: 76ch; margin: 5px 0 15px; color: var(--muted); line-height: 1.55; font-size: 13px; }
+  .m-old-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .m-old-stats span { border: 1px solid var(--border); background: color-mix(in srgb, var(--panel-2) 82%, transparent); color: var(--muted); font: 11px var(--mono); padding: 7px 9px; }
+  .m-old-stats b { color: var(--fg); margin-right: 5px; font-size: 15px; }
+  .m-old-section { border-top: 1px solid var(--border); padding: 22px 0 28px; }
+  .m-old-section:last-child { padding-bottom: 4px; }
+  .m-old-h { margin: 2px 0 0; font-size: 16px; font-weight: 700; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .m-old-policy { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, .6fr); gap: 10px; margin-top: 12px; }
+  .m-old-policy > label { background: var(--panel-2); border: 1px solid var(--border); display: flex; gap: 16px; justify-content: space-between; align-items: center; padding: 13px 14px; }
+  .m-old-policy strong { display: block; font-size: 14px; }
+  .m-old-policy small { display: block; color: var(--dim); font-size: 11px; line-height: 1.4; margin-top: 3px; }
+
+  .flags { list-style: none; padding: 0; margin: 0 0 18px; }
+  .flags li { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; font-size: 13.5px; }
+  .flags b { flex-shrink: 0; width: 20px; color: var(--page-dim); font-variant-numeric: tabular-nums; }
+  footer.doc { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--page-line); color: var(--page-dim); font-size: 13px; }
+  @media (max-width: 760px) {
+    .wrap { padding: 32px 16px 80px; }
+    .m-md { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  /* Decision record and states */
+  .decided { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 0 0 22px; }
+  .decided > div { border: 1px solid var(--page-line); border-left: 3px solid var(--page-accent); border-radius: 0 10px 10px 0; padding: 11px 14px; background: var(--page-card); }
+  .decided h5 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  .decided p { margin: 0; font-size: 14px; font-weight: 600; }
+  .notaken { opacity: .96; }
+  .notaken .mock { filter: saturate(.82); }
+  .tag-no { display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--page-line); color: var(--page-dim); vertical-align: middle; margin-left: 10px; }
+  .m-skel { height: 9px; border-radius: 5px; background: linear-gradient(90deg, var(--panel-2), var(--panel), var(--panel-2)); }
+  .m-empty { border: 1px dashed var(--border); border-radius: 10px; padding: 18px 20px; text-align: center; }
+  .m-empty p { margin: 0; font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+  .m-empty b { display: block; color: var(--muted); font-size: 12.5px; font-weight: 560; margin-bottom: 3px; }
+</style>
+<style>.scroll{overflow-x:auto;margin:0 0 16px}table{border-collapse:collapse;font-size:14px;width:100%}th,td{border:1px solid var(--page-line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--page-code-bg)}pre{overflow-x:auto}figure.flow{margin:18px 0 22px;overflow-x:auto}figure.flow svg{min-width:860px;width:100%;height:auto}figcaption{color:var(--page-dim);font-size:13px}.b rect{fill:var(--page-card);stroke:var(--page-line);stroke-width:1.5}.b.new rect{stroke:var(--page-accent);stroke-width:2}.b text{fill:var(--page-fg);font:13px var(--sans)}.b text.s{fill:var(--page-muted);font:11px var(--mono)}.e{stroke:var(--page-muted);stroke-width:1.5;fill:none;marker-end:url(#ah)}.e.new{stroke:var(--page-accent)}.l{fill:var(--page-muted);font:11px var(--sans)}</style>
+</head>
+<body>
+<div class="wrap">
+<h1 id="react-to-pull-requests-blocked-by-merge-conflicts">React to pull requests blocked by merge conflicts</h1>
+<p>When a session&#39;s pull request conflicts with its base branch, Mission Control does nothing
+about it. GitHub reports the PR as <code>CONFLICTING</code>, CI often stops running, and the PR sits
+there. The agent is not told, the card shows nothing, and the operator finds out only by
+opening GitHub.</p>
+<p>This plan adds one conflict signal to the PR poller Mission Control already runs. Three
+reactions consume it:</p>
+<ul>
+<li>Foreman nudges a live session to merge the base branch in.</li>
+<li>A workflow that owns the session treats the conflict as a repair round.</li>
+<li>The operator is alerted, and an inbox row is added, only when nothing else is handling the
+conflict.</li>
+</ul>
+<p>The PR chip on cards and the session header shows the conflict in every case.</p>
+<p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
+recorded below. On 2026-10-04 you also signed off two changes during the PR #103 review: decision 8
+was amended, and decision 16 was added. Approved in the plan review on 2026-10-04 with Create tickets as the
+follow-up. Single phase.</p>
+<p>GitHub Inspector review on PR #103 (rounds 1 to 10) made these changes:</p>
+<ul>
+<li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
+surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
+<li>Episodes and escalations are matched by PR URL alone.</li>
+<li>Foreman re-sends an escalation, so it survives a daemon restart. In round 3, the daemon&#39;s
+escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.</li>
+<li>An open conflict episode keeps its PR on the by-URL poller, so an exited session with no task
+still reaches <code>session-gone</code> and clears once the conflict is fixed (round 4).</li>
+<li>The <code>pr-conflict</code> alert fires once when a PR enters the blocked set. A change of reason only
+updates the row (round 5).</li>
+<li>A by-URL result is written back to the matching exited session&#39;s snapshot, so its chip clears
+when the fix lands (round 7).</li>
+<li>The E2E spec asserts the blocked row and its single <code>pr-conflict</code> notification at first entry,
+and asserts that no second notification follows the reason change (round 8).</li>
+<li>Round 9 asked for two human sign-offs, recorded as amended decision 8 (<code>workflow-not-gating</code>)
+and new decision 16 (no re-alert after a restart or reconnect). These are the only changes to
+recorded human answers, and both were approved by you, not inferred.</li>
+</ul>
+<p>Each is marked &quot;Inspector review&quot; where it appears.</p>
+<p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
+observation to the head it was observed on (§1, §3, §4, Edge cases). It also extended the E2E
+spec to the session header and the settings toggle, on a task-backed session (Testing). These
+changes are marked &quot;repair round 1&quot; where they appear. That repair round changed no recorded human answer.</p>
+<h2 id="goals">Goals</h2>
+<ul>
+<li>Every open PR a live session or a task owns is checked for conflicts, with no Inspector, YOLO
+mode or workflow required. A PR with an open conflict stays checked until the conflict closes,
+even after its session exits.</li>
+<li>A live session that Foreman may drive is told to resolve the conflict, and the number of
+nudges is capped.</li>
+<li>A workflow-owned session gets the conflict as an ordinary repair round instead of waiting
+45 minutes for <code>ci_missing</code>.</li>
+<li>The operator is interrupted only when a human is actually needed: the session has gone,
+Foreman cannot drive it, the nudges ran out, or a workflow owns the session but its run can no
+longer reach a Wait for CI node (<code>workflow-not-gating</code>, decision 8 as amended).</li>
+<li>A conflicting PR is visible on its chip whatever else is going on.</li>
+</ul>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li><strong>A PR that is behind its base without conflicting.</strong> That remains
+<a href="../pr-behind-base/plan.md"><code>pr-behind-base</code></a>, unchanged.</li>
+<li><strong>Rebasing, force-pushing, or the daemon resolving conflicts itself.</strong></li>
+<li><strong>Automatically resuming an exited session, or filing a follow-up task for it.</strong> The operator
+decides.</li>
+<li><strong>Changing YOLO auto-merge.</strong> Its <code>conflicting</code> gate (<code>src/shared/shipping.ts:242</code>) keeps
+reading the Inspector&#39;s own <code>mergeable</code>.</li>
+<li><strong>A conflict label in the Shipping panel when YOLO is off.</strong></li>
+<li><strong>Persisting conflict state across daemon restarts.</strong> See <a href="#edge-cases">Edge cases</a>.</li>
+</ul>
+<h2 id="recorded-decisions">Recorded decisions</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Scope</td>
+<td>Conflicts only: GitHub <code>mergeable == CONFLICTING</code>. <code>pr-behind-base</code> stays its own plan.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Signal source</td>
+<td>Add <code>mergeable</code> to the existing 20s <code>gh pr list</code> poller and store it as <code>Session.prMergeable</code>. <code>UNKNOWN</code> means no change.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Live session</td>
+<td>A third Foreman PR follow-through dimension, beside failing CI and review comments, with a new <code>trackMergeConflicts</code> setting that defaults to on.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Exited session or freed worktree</td>
+<td>Attention only. The operator resumes the session or dispatches new work.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Visibility</td>
+<td>A mark on the PR chip (cards and session header), <strong>and</strong> an attention reason (desktop alert plus inbox row). Not the Shipping label.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Workflow-owned session</td>
+<td>The workflow reacts. Wait for CI and the Pull Request action&#39;s CI contract treat <code>CONFLICTING</code> as a repair round.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Resolution method</td>
+<td>Merge the base branch into the PR branch, resolve the conflicts, run focused tests, push. Never rebase or force-push.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>When attention fires</td>
+<td>Only when nothing is handling the conflict: the session exited, Foreman cannot nudge it, the nudges ran out, <strong>or</strong> (amended 2026-10-04, PR review) a workflow owns the session but its run can no longer reach a Wait for CI node (<code>workflow-not-gating</code>).</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Inbox placement</td>
+<td>A new <strong>Blocked pull requests</strong> section after Pipeline halts. Each row shows the PR, repository, base, and owning task or session, with links to the PR and the session. The row clears itself when the conflict goes away.</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Re-nudge policy</td>
+<td>Once per PR head SHA while the PR stays <code>CONFLICTING</code>, at most 3 nudges per conflict episode, then escalate to attention. The episode re-arms when the PR becomes mergeable.</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Workflow repair budget</td>
+<td>A conflict repair is an ordinary repair round with a conflict-specific packet, and it counts against the run&#39;s budget.</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Workflow signal</td>
+<td>The workflow gates read <code>Session.prMergeable</code> from the 20s poller, not the Inspector.</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Episode persistence (plan review)</td>
+<td>In memory. No migration. A restart can allow up to 3 more nudges, which is still bounded.</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Give-up threshold (plan review)</td>
+<td>2 minutes settled-idle on the nudged head while the PR is still <code>CONFLICTING</code>.</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Follow-up (plan review)</td>
+<td>Create tickets after the plan merges.</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Re-alert after restart or reconnect (PR review, 2026-10-04)</td>
+<td>No. The browser remembers which PR URLs it alerted for, for the page&#39;s lifetime, and re-alerts only after a PR has been absent from the blocked set for 5+ minutes.</td>
+</tr>
+</tbody></table>
+</div><h2 id="how-it-works-today-verified">How it works today (verified)</h2>
+<ul>
+<li><strong>PR poller</strong> (<code>src/server/pr.ts</code>, every 20s, always on).<ul>
+<li>For live sessions it calls <code>gh pr list --head &lt;branch&gt; --json url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid</code> (<code>pr.ts:99</code>).</li>
+<li>For task PRs whose session has gone, it calls <code>gh pr view &lt;url&gt; --json state,mergedAt</code> (<code>pr.ts:173</code>). This covers every task in an active, <code>failed</code> or <code>cancelled</code> status (<code>completableByMerge</code>, <code>registry.ts:9459</code>).</li>
+<li>It reads no mergeability.</li>
+</ul>
+</li>
+<li><strong>Inspector</strong> (<code>src/server/inspector/github.ts:279</code>) is the only reader of <code>mergeable</code>.<ul>
+<li>It is off by default and sees only adopted PRs.</li>
+<li>Its only consumer is the YOLO gate, which writes <code>merge_block</code> and re-checks forever without telling anyone.</li>
+</ul>
+</li>
+<li><strong>Foreman PR follow-through</strong> (<code>src/server/foreman/review-followup.ts</code>) types a nudge into a settled-idle, invited session for two things: posted Inspector findings and failing CI.<ul>
+<li>The de-duplication mark (<code>FollowupMark</code>) is in memory and kept per PR.</li>
+<li>An active workflow suppresses it (<code>review-followup.ts:276</code>).</li>
+</ul>
+</li>
+<li><strong>Wait for CI</strong> (<code>src/shared/wait-for-ci.ts:218</code>) decides from the Inspector&#39;s check observation.<ul>
+<li>GitHub Actions <code>pull_request</code> workflows do not run on a conflicting PR. The node therefore waits until it blocks with <code>ci_missing</code> (45 minutes by default).</li>
+</ul>
+</li>
+<li><strong>Workflow PR CI contract.</strong> <code>workflowPullRequestCiContract</code> (<code>src/server/workflows/agent-contract.ts:5</code>) is added to Pull Request actions that have no Wait for CI node after them. It says nothing about conflicts.</li>
+<li><strong>Attention inbox and alerts</strong> (<code>src/web/lib/attention.ts</code>, <code>src/shared/alerts.ts</code>) are derived in the browser from state the daemon publishes. No reason covers a PR.</li>
+</ul>
+<h2 id="design">Design</h2>
+<figure class="flow"><svg viewBox="0 0 1000 330" role="img" aria-label="Conflict signal flow: GitHub to PR poller to registry and conflict episodes, consumed by Foreman, workflow engine and dashboard">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor" style="fill:var(--page-muted)"/></marker></defs>
+<g class="b"><rect x="10" y="130" width="110" height="56" rx="8"/><text x="65" y="163" text-anchor="middle">GitHub</text></g>
+<g class="b"><rect x="170" y="130" width="160" height="56" rx="8"/><text x="250" y="152" text-anchor="middle">PR poller</text><text class="s" x="250" y="170" text-anchor="middle">src/server/pr.ts</text></g>
+<g class="b new"><rect x="390" y="50" width="190" height="56" rx="8"/><text x="485" y="72" text-anchor="middle">Registry / snapshot</text><text class="s" x="485" y="90" text-anchor="middle">prMergeable, prBaseRef</text></g>
+<g class="b new"><rect x="390" y="230" width="190" height="56" rx="8"/><text x="485" y="252" text-anchor="middle">Conflict episodes</text><text class="s" x="485" y="270" text-anchor="middle">pr-conflicts.ts (new)</text></g>
+<g class="b new"><rect x="650" y="10" width="170" height="56" rx="8"/><text x="735" y="32" text-anchor="middle">Workflow engine</text><text class="s" x="735" y="50" text-anchor="middle">Wait for CI</text></g>
+<g class="b new"><rect x="650" y="110" width="170" height="56" rx="8"/><text x="735" y="132" text-anchor="middle">Foreman follow-through</text><text class="s" x="735" y="150" text-anchor="middle">conflict dimension</text></g>
+<g class="b"><rect x="880" y="60" width="110" height="56" rx="8"/><text x="935" y="93" text-anchor="middle">Agent session</text></g>
+<g class="b new"><rect x="820" y="230" width="170" height="56" rx="8"/><text x="905" y="252" text-anchor="middle">Dashboard</text><text class="s" x="905" y="270" text-anchor="middle">chip, inbox, alert</text></g>
+<path class="e new" d="M120,158 H168"/><text class="l" x="124" y="150">+ mergeable</text>
+<path class="e new" d="M330,150 L388,88"/>
+<path class="e new" d="M330,166 L388,250"/>
+<path class="e new" d="M580,70 L648,42"/>
+<path class="e new" d="M580,90 L648,132"/>
+<path class="e new" d="M820,38 L878,78"/><text class="l" x="826" y="36">repair round</text>
+<path class="e new" d="M820,138 L878,100"/><text class="l" x="826" y="150">nudge (max 3)</text>
+<path class="e new" d="M735,166 V212 H560 V228"/><text class="l" x="600" y="206">escalate</text>
+<path class="e new" d="M580,258 H818"/><text class="l" x="640" y="252">blocked_prs</text>
+<path class="e" d="M520,106 V188 H950 V228"/><text class="l" x="830" y="182">session_upsert</text>
+</svg><figcaption>Green: new or changed. One signal from the existing 20s poller feeds three reactions and the dashboard.</figcaption></figure><h3 id="1-the-signal-srcserverprts">1. The signal (<code>src/server/pr.ts</code>)</h3>
+<ul>
+<li><p>Add <code>mergeable,baseRefName</code> to the <code>--json</code> list in <code>queryPr</code>. Add <code>mergeable,baseRefName,headRefOid</code> to <code>queryPrUrl</code>.</p>
+</li>
+<li><p>Normalise GitHub&#39;s value to a shared <code>PrMergeable = &quot;mergeable&quot; | &quot;conflicting&quot;</code>, defined in <code>src/shared/</code>.</p>
+<ul>
+<li><code>UNKNOWN</code> maps to &quot;no observation&quot;. The reconciler keeps the previous observation, the same way the <code>&quot;error&quot;</code> lookup is handled today.</li>
+<li>GitHub computes mergeability lazily, so the first read after a push is often <code>UNKNOWN</code>.</li>
+</ul>
+</li>
+<li><p>New session snapshot fields (<code>src/shared/types.ts</code>):</p>
+<ul>
+<li><code>prMergeable: { state: PrMergeable; headSha: string } | null</code>. This is <strong>an observation bound to the head it was made on</strong> (repair round 1). <code>headSha</code> is the <code>headRefOid</code> GitHub returned in the same response that carried the definitive <code>MERGEABLE</code> / <code>CONFLICTING</code>.</li>
+<li><code>prBaseRef: string | null</code></li>
+<li><code>prHeadSha: string | null</code>, the PR&#39;s current head, which advances on every read.</li>
+</ul>
+<p>They are set and cleared exactly when <code>prState</code> / <code>prChecks</code> are, with one exception. On <code>UNKNOWN</code>, <code>prHeadSha</code> advances to the new head, but <code>prMergeable</code> is kept <strong>whole, including its old <code>headSha</code></strong>. A kept observation therefore never claims to describe a head GitHub did not report it for. A multi-repo task carries the same three fields on each <code>repoPrs[].feedback</code> entry.</p>
+</li>
+<li><p><strong>One reading rule</strong> for every consumer. <code>currentMergeability(pr)</code> in <code>src/shared/</code> returns <code>prMergeable.state</code> only when <code>prMergeable.headSha === prHeadSha</code>, and <code>null</code> otherwise. <code>null</code> means &quot;not yet known for this head&quot;.</p>
+<ul>
+<li>The chip, conflict episodes and Foreman read through it.</li>
+<li>Wait for CI compares the observation&#39;s own <code>headSha</code> with its <code>expectedHeadOid</code> (§4).</li>
+<li>So the sequence &quot;conflicting on head A, push head B, <code>UNKNOWN</code>&quot; reads as unknown on B, never as conflicting on B.</li>
+</ul>
+</li>
+<li><p><strong>Where a by-URL result is written</strong> (Inspector review, round 7). A <code>queryPrUrl</code> result writes <code>prMergeable</code>, <code>prHeadSha</code> and <code>prBaseRef</code> back onto every session snapshot whose <code>prUrl</code> matches, exited sessions included, and onto every matching <code>repoPrs[].feedback</code> entry. It follows the same <code>UNKNOWN</code> rule as the branch poller. It also feeds the conflict episode for that URL.</p>
+<ul>
+<li>An exited session&#39;s chip therefore clears when its fix lands, exactly as its inbox row does, instead of keeping its last <code>conflicting</code> observation forever.</li>
+<li>Only these three fields are written. <code>prState</code> and the task-completion paths are untouched.</li>
+</ul>
+</li>
+<li><p>No schema change. These are live observations, like <code>prChecks</code>.</p>
+</li>
+</ul>
+<h3 id="2-conflict-episodes-srcserverpr-conflictsts-new">2. Conflict episodes (<code>src/server/pr-conflicts.ts</code>, new)</h3>
+<p>This is the one daemon-side owner of &quot;is this conflict handled?&quot;. It is in-memory and keyed by PR URL.</p>
+<ul>
+<li><strong>Episode lifecycle.</strong><ul>
+<li>An episode opens on the first <code>conflicting</code> observation for the current head (<code>currentMergeability</code>), from either poll path.</li>
+<li>It closes when the PR is observed <code>mergeable</code>, merged, or closed, or when no session and no task reference it any longer.<ul>
+<li>&quot;No session&quot; means the session was removed (<code>session_remove</code>). An exited session still references its PR (Inspector review, round 4).</li>
+</ul>
+</li>
+<li><strong>An open episode keeps its PR polled</strong> (Inspector review, round 4).<ul>
+<li><code>pr-conflicts.ts</code> contributes the URL of every open episode to the by-URL poller&#39;s harvest. It is deduplicated into <code>linkedUrls</code> but never into <code>operationalUrls</code>, so it gains no merge-completion authority.</li>
+<li>That covers an exited session <strong>with no task</strong>, which <code>prPollTargets</code> (live sessions only) and <code>taskPrPollTargets</code> (task PRs only) both miss.</li>
+<li>Its episode stays open as <code>session-gone</code>, raises attention per decision 4, and still closes when the conflict is fixed, merged or closed.</li>
+<li>The extra polling is bounded by the number of open conflict episodes and ends when each one closes.</li>
+</ul>
+</li>
+<li>While the current head&#39;s mergeability is unknown, for example straight after a fix push, an open episode stays as it is. It is neither closed nor re-opened until GitHub answers for that head.</li>
+<li>It records <code>since</code>, <code>baseRef</code>, <code>headSha</code>, <code>taskId</code>, <code>sessionId</code> and <code>escalated</code>.</li>
+<li><strong>Identity is the PR URL alone.</strong> <code>headSha</code> is the <em>latest</em> head observed <code>conflicting</code>, and it advances on every new conflicting head. It is a display and log field, never part of the episode&#39;s identity (Inspector review).</li>
+</ul>
+</li>
+<li><strong>Unhandled reason.</strong> An episode is <em>unhandled</em>, and becomes a blocked PR, when one of these holds:<ul>
+<li><p><code>session-gone</code>: no live session owns the PR. The session exited or was removed, and the task&#39;s PR is seen only through the by-URL poller.</p>
+</li>
+<li><p><code>foreman-cannot-nudge</code>: the owning session is live but Foreman will not type into it. The cases are:</p>
+<ul>
+<li><code>trackMergeConflicts</code> is off.</li>
+<li>The session has no <code>foremanInvite</code>.</li>
+<li>Foreman is dry-run or off.</li>
+<li>The repository is not allowlisted.</li>
+<li>The harness lacks <code>workQueue</code>, or the session lacks hooks.</li>
+</ul>
+<p>These are the same predicates <code>decideReviewFollowup</code> uses, imported rather than copied. The daemon already reads Foreman&#39;s config for <code>trackCiFailures</code> (<code>workflows/manager.ts:5340</code>).</p>
+</li>
+<li><p><code>nudges-exhausted</code>: Foreman reported an escalation for this episode (see §3).</p>
+</li>
+<li><p><code>workflow-not-gating</code>: an active workflow owns the session (<code>activeWorkflowOwnsSession</code>), so Foreman stays out, but <strong>no Wait for CI node is reachable</strong> from the run&#39;s active node(s) for this PR (Inspector review, round 2). There are two such cases:</p>
+<ul>
+<li>The workflow has no Wait for CI node for this binding.</li>
+<li>Every Wait for CI node is behind the active node. For example, the base moved after the last Wait for CI passed and the run is in a later node with no edge back to one.</li>
+</ul>
+<p>The Pull Request action&#39;s conflict line is read once at dispatch and cannot react later, so the conflict is surfaced to the operator.</p>
+</li>
+<li><p><strong>Handled by the workflow:</strong> a Wait for CI node for this run&#39;s binding (the same repository, so the same PR) is the active node, or is reachable from it along the version graph&#39;s edges. That includes a run on the Pull Request action upstream of Wait for CI, and a repair round whose edges loop back to Wait for CI. Such an episode is not unhandled. That node fails on the conflict when the run reaches it and starts a repair round (§4), and the run&#39;s existing budget and <code>workflow-repeat</code> alerts take over from there.</p>
+<ul>
+<li>Reachability is a pure graph walk over <code>version.graph</code> from the active node ids, in <code>src/shared/workflow.ts</code>. Membership is recomputed whenever the run changes, so an alert cannot flap as the run moves between nodes that can all still reach Wait for CI.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>Publication.</strong> The set of unhandled episodes goes out as a new <code>blocked_prs</code> snapshot <code>ServerEvent</code>. It is emitted when the set changes, and on connect. <code>src/web/useEventStream.ts</code> handles it exhaustively, per the change contracts.</li>
+<li><strong>Escalation on the snapshot</strong> (Inspector review, round 3). The session snapshot carries <code>prConflictEscalated: boolean</code>, and the same flag sits on each <code>repoPrs[].feedback</code> entry. It is true while the PR&#39;s open episode is marked <code>escalated</code>. Foreman reads it through <code>followupPrs</code>, as it does every other PR fact.</li>
+<li><strong>Foreman&#39;s escalation route.</strong> <code>POST /api/pr-conflicts/escalate</code> takes <code>{ prUrl, headSha }</code>. Its body is parsed with a Zod schema.<ul>
+<li>It finds the open episode <strong>by <code>prUrl</code> alone</strong> and marks it <code>escalated</code>. <code>headSha</code> is recorded as the head Foreman escalated on.</li>
+<li>It does nothing only when no episode is open for that URL.</li>
+<li>A cap escalation on the 4th conflicting head therefore always lands, even though that head is not the one the episode opened on (Inspector review).</li>
+</ul>
+</li>
+</ul>
+<h3 id="3-foreman-the-conflict-dimension-srcserverforemanreview-followupts-workerts">3. Foreman: the conflict dimension (<code>src/server/foreman/review-followup.ts</code>, <code>worker.ts</code>)</h3>
+<ul>
+<li><p><strong>Setting.</strong> Add <code>trackMergeConflicts: z.boolean().default(true)</code> beside <code>trackCiFailures</code> (<code>src/shared/protocol.ts:2002</code>). Add its toggle, <strong>Keep sessions on track with merge conflicts</strong>, in Foreman settings beside the other two follow-through toggles (<code>src/web/components/ForemanBar.tsx:672</code>, <code>:682</code>). Gate 1 skips only when all three are off.</p>
+</li>
+<li><p><strong>Feedback.</strong> <code>feedbackState</code> gains <code>conflicting = cfg.trackMergeConflicts &amp;&amp; currentMergeability(pr) === &quot;conflicting&quot;</code>. <code>FollowupPr</code> carries <code>mergeable</code> (the head-bound observation), <code>baseRef</code> and <code>headSha</code> from <code>followupPrs</code>.</p>
+<ul>
+<li>A kept observation from an earlier head is not <code>conflicting</code>. A session that just pushed its fix is therefore neither nudged nor counted toward the cap while GitHub is still computing (repair round 1).</li>
+</ul>
+</li>
+<li><p><strong>Mark.</strong> <code>FollowupMark</code> gains:</p>
+<ul>
+<li><code>conflictHead: string | null</code>, the head SHA last nudged. It is the observation&#39;s own <code>headSha</code>.</li>
+<li><code>conflictNudges: number</code>.</li>
+</ul>
+<p><code>advanceFollowupMark</code> resets both only when the current head is observed <code>mergeable</code>, which re-arms the episode. An unknown current head leaves the mark untouched.</p>
+</li>
+<li><p><strong>When to nudge.</strong> The current head is observed <code>conflicting</code>, that head is not <code>conflictHead</code>, <code>conflictNudges &lt; 3</code>, <strong>and the PR&#39;s <code>prConflictEscalated</code> is false</strong>.</p>
+<ul>
+<li>An escalated episode belongs to the operator. Foreman seeds <code>conflictEscalated = true</code> from the snapshot and stays silent until the episode re-arms (Inspector review, round 3).</li>
+<li>So after a Foreman restart, the inbox row &quot;Foreman&#39;s 3 nudges didn&#39;t resolve it&quot; never coexists with a fresh nudge to the agent, and the human and the agent are never both fixing the same conflict. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.</li>
+</ul>
+</li>
+<li><p><strong>When to escalate.</strong> The worker calls the escalation route once per episode in either of these cases:</p>
+<ul>
+<li>A new head is observed <code>conflicting</code> after 3 nudges.</li>
+<li>The session has been settled-idle for 2 minutes (<code>CONFLICT_GIVE_UP_MS</code>) while the current head is still the one it was nudged about and is observed <code>conflicting</code>. In other words, the agent parked without pushing a fix. A new head, even one whose mergeability is still unknown, means the agent did push, and it does not count as giving up.</li>
+</ul>
+<p>The escalation is also logged and recorded as an episode, like the ship shepherd&#39;s escalations.</p>
+</li>
+<li><p><strong>Escalation survives a daemon restart</strong> (Inspector review, round 2).</p>
+<ul>
+<li>The mark gains <code>conflictEscalated: boolean</code>.</li>
+<li>While Foreman holds an escalated mark for a PR that is still observed <code>conflicting</code>, it re-sends the escalation at most once a minute (<code>CONFLICT_ESCALATE_RESEND_MS</code>).</li>
+<li>The route is idempotent, so the re-send is a no-op on a daemon that already holds the flag. A restarted daemon re-learns <code>nudges-exhausted</code> within a minute. Until then, the PR is out of the inbox if it has no other unhandled reason.</li>
+<li>The mark resets, and re-sending stops, when the episode re-arms.</li>
+</ul>
+</li>
+<li><p><strong>Payload.</strong> <code>buildPayload</code> gains a conflict problem line: &quot;it has merge conflicts with <code>&lt;base&gt;</code>&quot;. It also gains these steps:</p>
+<ol>
+<li><code>git fetch origin &lt;base&gt;</code> and <code>git merge origin/&lt;base&gt;</code>.</li>
+<li>Resolve every conflict, keeping both sides&#39; intent.</li>
+<li>Run the tests that cover the files you touched.</li>
+<li>Commit the merge and push to the same branch.</li>
+<li>Do not rebase or force-push.</li>
+</ol>
+<p>The existing &quot;Do NOT open a new pull request&quot; and multi-repo qualifiers still apply. When CI or findings are also open, they share one payload, as they do today.</p>
+</li>
+</ul>
+<h3 id="4-workflows-srcsharedwait-for-cits-srcserverworkflowsenginets-agent-contractts">4. Workflows (<code>src/shared/wait-for-ci.ts</code>, <code>src/server/workflows/engine.ts</code>, <code>agent-contract.ts</code>)</h3>
+<ul>
+<li><strong>Wait for CI.</strong> <code>decideWaitForCi</code> takes an extra <code>mergeability: { mergeable: PrMergeable; headSha: string; baseRef: string | null } | null</code> input.<ul>
+<li>The engine reads it from the bound session&#39;s <code>prMergeable</code> observation and <code>prBaseRef</code>, or from its <code>repoPrs</code> entry for a per-repository binding. It comes through the same seam as <code>observe</code>.</li>
+<li><code>headSha</code> is the <strong>observation&#39;s own</strong> head (<code>prMergeable.headSha</code>), never the session&#39;s current <code>prHeadSha</code>. A conflict observed on the pre-repair head therefore cannot match the post-repair <code>expectedHeadOid</code>. The node waits until GitHub answers for the new head (repair round 1).</li>
+<li>When it is <code>conflicting</code> and <code>headSha</code> matches <code>expectedHeadOid</code>, the node returns <code>fail</code> with a conflict cause. It does this before the pending, missing-check and timeout branches, because a conflicting PR may never get checks.</li>
+<li><code>waitForCiVerdict</code> turns that into one requested change: &quot;Resolve merge conflicts with <code>&lt;base&gt;</code>&quot;. Its rationale repeats the resolution method from decision 7.</li>
+<li>The <code>fail</code> edge then runs the run&#39;s ordinary repair round, which counts against the repair budget (decision 11).</li>
+</ul>
+</li>
+<li><strong>Pull Request action contract.</strong> When <code>trackMergeConflicts</code> is on, the packet carries a conflict line: &quot;If the PR reports merge conflicts with its base, merge the base branch in, resolve the conflicts, run focused tests, and push. Never rebase or force-push.&quot;<ul>
+<li>This applies to PR actions with no Wait for CI node after them, the same condition as <code>pullRequestCi</code>.</li>
+<li>It is a separate line from the CI contract, so it does not depend on <code>trackCiFailures</code>. It is frozen with the packet like the CI policy.</li>
+</ul>
+</li>
+</ul>
+<h3 id="5-dashboard">5. Dashboard</h3>
+<ul>
+<li><strong>PR chip</strong> (<code>src/web/components/session-bits.tsx:1635</code>).<ul>
+<li>When <code>currentMergeability</code> is <code>&quot;conflicting&quot;</code> (or is for any <code>repoPrs</code> entry), the chip shows a conflict icon. Its accessible name is &quot;Conflicts with <code>&lt;base&gt;</code>&quot;.</li>
+<li>It appears on cards and in the session header, next to the failing-CI icon.</li>
+</ul>
+</li>
+<li><strong>Inbox</strong> (<code>src/web/lib/attention.ts</code>, <code>AttentionInbox.tsx</code>).<ul>
+<li>A new <strong>Blocked pull requests</strong> section goes after Pipeline halts, fed by <code>blocked_prs</code>.</li>
+<li>Each row shows:<ul>
+<li>PR number and title link.</li>
+<li>Repository and base branch.</li>
+<li>Owning task or session.</li>
+<li>Why it needs you: &quot;session ended&quot;, &quot;Foreman can&#39;t drive this session&quot;, &quot;Foreman&#39;s 3 nudges didn&#39;t resolve it&quot;, or &quot;the workflow isn&#39;t waiting on CI for this PR&quot;.</li>
+<li>&quot;Conflicting for Nm&quot;.</li>
+<li>Links to open the PR and the session.</li>
+</ul>
+</li>
+<li>Each row counts as one answer owed. It disappears when the episode closes. The section is read-only, like Pipeline halts.</li>
+</ul>
+</li>
+<li><strong>Alert</strong> (<code>src/shared/alerts.ts</code>).<ul>
+<li>A new <code>AlertKind</code> <code>&quot;pr-conflict&quot;</code> with <code>attention</code> severity.</li>
+<li><code>detectAlerts</code> fires it once when a PR enters the blocked set. The id is stable per PR URL, so a repeat replaces its toast.</li>
+<li><strong>A change of reason never re-alerts</strong> (Inspector review, round 5). For example, <code>foreman-cannot-nudge</code> turning into <code>session-gone</code> only updates the inbox row&#39;s reason text, because the operator was already told the PR needs them.</li>
+<li><strong>Re-alerting</strong> (decision 16). The browser keeps an <code>alertedPrConflicts</code> map from PR URL to the time it was last seen blocked, for the lifetime of the page. It survives SSE reconnects and daemon restarts, and is cleared only by a page reload.<ul>
+<li>A PR in <code>blocked_prs</code> alerts only if it is not in that map, or if it has been absent from <code>blocked_prs</code> for at least 5 minutes (<code>PR_CONFLICT_REALERT_MS</code>).</li>
+<li>A daemon restart or reconnect therefore never re-alerts. It empties the set for at most about a minute, until the first poll and Foreman&#39;s escalation re-send.</li>
+<li>A PR that is fixed and conflicts again within 5 minutes reappears in the inbox without a new alert.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h3 id="6-documentation">6. Documentation</h3>
+<ul>
+<li><code>docs/work-queues.md</code> (follow-through section): the conflict dimension, its cap, and its escalation.</li>
+<li><code>docs/foreman.md</code> (settings): <code>trackMergeConflicts</code>.</li>
+<li><code>docs/attention-and-alerts.md</code>: the Blocked pull requests section and the <code>pr-conflict</code> alert.</li>
+<li><code>docs/workflows.md</code> (Wait for CI, Pull Request action): the conflict <code>fail</code> and the contract line.</li>
+<li><code>docs/fork/ledger.md</code>: a new feature entry, and re-render <code>docs/fork/ledger.html</code>. This happens in the implementing PR.</li>
+</ul>
+<h2 id="edge-cases">Edge cases</h2>
+<ul>
+<li><p><strong><code>UNKNOWN</code> forever.</strong> GitHub sometimes never settles. The last definitive observation stands with the head it was made on, and the PR is never flagged on <code>UNKNOWN</code> alone.</p>
+</li>
+<li><p><strong>Push, then <code>UNKNOWN</code>, then resolved</strong> (repair round 1). The kept <code>conflicting</code> observation stays on the old head, so the new head reads as unknown:</p>
+<ul>
+<li>Wait for CI keeps waiting.</li>
+<li>Foreman neither nudges nor counts the push toward the cap.</li>
+<li>The chip mark is hidden.</li>
+<li>An open episode is left as it is.</li>
+</ul>
+<p>The next definitive read settles it: <code>MERGEABLE</code> closes the episode and re-arms the mark, and <code>CONFLICTING</code> on the new head is a genuinely new conflict.</p>
+</li>
+<li><p><strong>Daemon or Foreman restart.</strong></p>
+<ul>
+<li>Episodes and Foreman marks are in memory, so a restart can buy up to 3 more nudges. That is still bounded.</li>
+<li>Escalation is recomputed:<ul>
+<li><p><code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code> are re-derived from live state on the first poll.</p>
+</li>
+<li><p><code>nudges-exhausted</code> is restored by Foreman&#39;s escalation re-send (§3) within a minute.</p>
+</li>
+<li><p><strong>Restart and the inbox</strong> (Inspector review, rounds 7 and 9). A blocked PR can drop out of the Blocked pull requests inbox briefly after a daemon restart:</p>
+<ul>
+<li>About 20s until the first poll re-derives <code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code>.</li>
+<li>Up to a minute for <code>nudges-exhausted</code>, until Foreman&#39;s re-send arrives.</li>
+</ul>
+<p>When it returns, no new alert fires, because the browser&#39;s <code>alertedPrConflicts</code> map still holds it (decision 16).</p>
+</li>
+<li><p>If Foreman restarts instead, the daemon keeps its escalated episode in the inbox. Foreman&#39;s fresh mark is seeded escalated from the snapshot&#39;s <code>prConflictEscalated</code>, so it sends no further nudges (Inspector review, round 3).</p>
+</li>
+<li><p>If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.</p>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Multi-repo task.</strong> There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.</p>
+</li>
+<li><p><strong>CI dimension silent on a conflict.</strong> GitHub runs no <code>pull_request</code> checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.</p>
+</li>
+<li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>. If the PR was not already blocked, it enters the set and the alert fires then. If it was already blocked for another reason, only the row&#39;s reason text changes and no new alert fires (§5). This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).</p>
+</li>
+<li><p><strong>Exited task-less session whose PR was never conflicting.</strong> Nothing polls it after exit, so a conflict that first appears after the session exited is not detected. That is accepted: there is no task or live session left to act for, and the session can be resumed to restore polling.</p>
+</li>
+<li><p><strong>Workflow without a reachable Wait for CI</strong> (Inspector review). The run has no Wait for CI node, or the base moved after the last reachable Wait for CI. The episode is <code>workflow-not-gating</code> and goes to the inbox. Foreman still does not type into the session, because the workflow owns it. A run upstream of Wait for CI, or in a repair loop back to it, is handled and raises nothing.</p>
+</li>
+<li><p><strong>Conflict spanning several heads.</strong> The episode stays one episode keyed by PR URL, and <code>headSha</code> tracks the latest conflicting head.</p>
+</li>
+<li><p><strong>PR closed or merged while blocked.</strong> The episode closes, and the inbox row and chip mark clear.</p>
+</li>
+<li><p><strong>Draft PRs.</strong> They are treated the same way. A draft can still conflict, and the fix is the same.</p>
+</li>
+</ul>
+<h2 id="testing">Testing</h2>
+<p>Focused unit tests in <code>test/</code>, using <code>node:test</code>:</p>
+<ul>
+<li><code>pr.ts</code> reconciliation:<ul>
+<li><code>CONFLICTING</code> → <code>prMergeable: &quot;conflicting&quot;</code>.</li>
+<li><code>UNKNOWN</code> keeps the previous observation with its old <code>headSha</code>, while <code>prHeadSha</code> advances.</li>
+<li>Push, then <code>UNKNOWN</code>, then resolved: <code>currentMergeability</code> is <code>conflicting</code> on head A, <code>null</code> on head B under <code>UNKNOWN</code>, then <code>mergeable</code> on B.</li>
+<li>Merged or closed clears it.</li>
+<li>The by-URL path covers an exited session&#39;s task.</li>
+<li>A by-URL result writes <code>prMergeable</code> / <code>prHeadSha</code> / <code>prBaseRef</code> onto the matching exited session&#39;s snapshot: a <code>conflicting</code> → <code>mergeable</code> read clears that session&#39;s <code>currentMergeability</code>. A <code>repoPrs</code> entry with the same URL is updated too.</li>
+<li>An open episode for an exited, task-less session keeps its URL in the by-URL harvest, reaches <code>session-gone</code>, and closes when the PR is observed <code>mergeable</code>. Its URL never enters <code>operationalUrls</code>.</li>
+</ul>
+</li>
+<li><code>pr-conflicts.ts</code>:<ul>
+<li>Episode open and close.</li>
+<li>Each unhandled reason.</li>
+<li>Workflow-owned sessions:<ul>
+<li>The run is at a Wait for CI attempt for this PR: handled.</li>
+<li>The run is on the Pull Request action upstream of Wait for CI: handled.</li>
+<li>The run is in a repair round whose edges loop back to Wait for CI: handled.</li>
+<li>There is no Wait for CI node, or the run is past the last reachable one: <code>workflow-not-gating</code>.</li>
+</ul>
+</li>
+<li><code>headSha</code> advances on each new conflicting head without opening a new episode.</li>
+<li>Escalating on head 4, after nudges on heads 1 to 3, marks the open episode <code>escalated</code>.</li>
+<li>Escalation with no open episode for the URL is ignored.</li>
+<li><code>blocked_prs</code> is emitted only on change.</li>
+</ul>
+</li>
+<li><code>review-followup.ts</code>:<ul>
+<li>The first nudge.</li>
+<li>No repeat on the same head.</li>
+<li>A new head re-nudges.</li>
+<li>The cap of 3, then escalation.</li>
+<li>Idle on the nudged head for 2 minutes escalates.</li>
+<li>An escalated mark re-sends the escalation at most once a minute while the PR is still conflicting, and stops after re-arming.</li>
+<li>A restarted daemon (no episode flag) is re-marked <code>nudges-exhausted</code> by the re-send.</li>
+<li>A restarted Foreman (fresh mark) on a PR whose snapshot says <code>prConflictEscalated: true</code> does not nudge, and seeds <code>conflictEscalated</code>.</li>
+<li>Recovery re-arms the episode.</li>
+<li>Push, then <code>UNKNOWN</code>, then resolved: no nudge, no cap increment and no give-up escalation while B is unknown, then a re-armed mark once B is <code>mergeable</code>.</li>
+<li><code>trackMergeConflicts</code> off skips.</li>
+<li>The payload contains the merge steps and the no-rebase line.</li>
+</ul>
+</li>
+<li><code>wait-for-ci.ts</code>:<ul>
+<li>Conflicting on the expected head → <code>fail</code> with the conflict change, even with zero checks.</li>
+<li>Conflicting on another head → wait.</li>
+<li>Push, then <code>UNKNOWN</code>, then resolved: a kept <code>conflicting</code> observation on the pre-repair head with <code>expectedHeadOid</code> set to the new head → wait, not <code>fail</code>. Then <code>mergeable</code> on the new head lets the checks decide.</li>
+</ul>
+</li>
+<li><code>agent-contract.ts</code>: the conflict line is present only when <code>trackMergeConflicts</code> is on.</li>
+<li><code>alerts.ts</code> / <code>attention.ts</code>:<ul>
+<li><code>pr-conflict</code> fires once on entry.</li>
+<li>A reason change while blocked (<code>foreman-cannot-nudge</code> → <code>session-gone</code>) does not re-fire.</li>
+<li>Leaving the set and re-entering it within 5 minutes does not fire, which covers a reconnect or daemon-restart gap.</li>
+<li>Re-entering after 5 or more minutes absent fires again.</li>
+<li>The map survives an SSE reconnect snapshot that omits the PR.</li>
+<li>The section order and the answer count.</li>
+</ul>
+</li>
+</ul>
+<p>E2E, in <code>e2e/specs/pr-merge-conflicts.spec.ts</code>:</p>
+<p><strong>Fixture precondition</strong> (repair round 1).</p>
+<ul>
+<li>The session is <strong>task-backed</strong>. A dispatched task records the PR URL on its work episode, so <code>taskPrPollTargets</code> keeps polling it after the session exits; <code>prPollTargets</code> skips exited sessions.</li>
+<li>A fake <code>gh</code> on <code>PATH</code> answers both <code>gh pr list --head &lt;branch&gt;</code> and <code>gh pr view &lt;url&gt;</code> with <code>mergeable</code>, <code>baseRefName</code> and <code>headRefOid</code> alongside the fields each call already requests. Specs such as <code>workflow-pull-request-mismatch.spec.ts</code> already fake <code>gh</code> this way.</li>
+<li>The session is <strong>not</strong> invited to Foreman, which is the default. Its conflict is therefore <code>foreman-cannot-nudge</code> from the first poll, and step 2 is the PR&#39;s entry into the blocked set (Inspector review, round 8).</li>
+<li>Before the dashboard loads, an <code>addInitScript</code> shim replaces <code>window.Notification</code> with a recorder that reports permission <code>granted</code> and logs each notification&#39;s title, body and tag. The browser is the only place <code>pr-conflict</code> is raised, so recording there observes the real <code>detectAlerts</code> → notifier path.</li>
+</ul>
+<p><strong>Steps.</strong></p>
+<ol>
+<li>The fake reports the task&#39;s PR as <code>CONFLICTING</code> against <code>main</code>.</li>
+<li><strong>Entry</strong> (round 8). Assert:<ul>
+<li>The <strong>Blocked pull requests</strong> inbox row appears with the reason &quot;Foreman can&#39;t drive this session&quot;.</li>
+<li>Exactly one <code>pr-conflict</code> notification has been recorded, naming the PR.</li>
+</ul>
+</li>
+<li>Assert the &quot;Conflicts with main&quot; mark on the PR chip on the session&#39;s <strong>card</strong>.</li>
+<li>Open the session and assert the same mark in the <strong>session header</strong>.</li>
+<li>Open Foreman settings and assert:<ul>
+<li>The <strong>Keep sessions on track with merge conflicts</strong> checkbox is present beside the CI and review-comment toggles, and checked by default.</li>
+<li>Unchecking it persists across a reload. The row keeps its reason, and the recorder still holds one notification.</li>
+</ul>
+</li>
+<li>Exit the session. Assert:<ul>
+<li>The same row&#39;s reason text changes to &quot;session ended&quot;, which tells &quot;reason changed&quot; apart from &quot;row appeared&quot;, because step 2 already saw the row.</li>
+<li>The recorder still holds exactly one notification: a reason change never re-alerts (§5).</li>
+<li>The row is now fed by the by-URL poller.</li>
+</ul>
+</li>
+<li>Flip the fake to <code>MERGEABLE</code> and assert that the row and the chip mark disappear.</li>
+</ol>
+<p>All selection is by role and label.</p>
+<h2 id="definition-of-done">Definition of done</h2>
+<ul>
+<li>The focused tests above pass. <code>npm run typecheck</code> and <code>npm run lint</code> pass.</li>
+<li><code>npm run build</code>, <code>npm run smoke</code> and <code>npm run test:e2e</code> pass with the new spec.</li>
+<li>The docs in §6 match the implementation, and the fork ledger entry is added.</li>
+</ul>
+
+</div>
+</body>
+</html>
