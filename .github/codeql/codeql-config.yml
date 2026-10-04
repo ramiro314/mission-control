@@ -1,7 +1,0 @@
-name: "Mission Control CodeQL config"
-
-# Test code is not shipped, and upstream's test code is reported as new to the fork at every
-# sync. `paths-ignore` applies to interpreted languages and to build-mode `none`.
-paths-ignore:
-  - e2e
-  - test

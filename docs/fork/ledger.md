@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **9** (plus 2 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **8** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -50,10 +50,10 @@ or issues.
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
-| CodeQL advanced setup | Active | #65 |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
+| CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
 | Standalone fixes | Not a feature | #4, #13, #15, #18, #19, #21, #22, #23, #24, #33 |
 
 
@@ -588,35 +588,6 @@ conceptual conflicts.
 **Fork-only files.** `docs/upstream-sync.md`, `docs/fork/`, `.agents/memory/upstream-sync.md`,
 `docs/plans/upstream-sync/`.
 
-### CodeQL advanced setup
-
-| Field | Value |
-| --- | --- |
-| Status | **Active** |
-| PRs | #65 |
-| Plan docs | None; the runbook's fork-only surface list records it |
-| Upstream candidate | No. The exclusion exists because upstream's test code looks new to the fork at every sync. |
-
-**Intent.** Code scanning through a committed workflow instead of GitHub's default setup, so
-`e2e/` and `test/` can be excluded. Otherwise every sync reports upstream's test code as new
-alerts on the fork.
-
-**Behavior contracts.**
-
-- CodeQL runs on pushes and PRs to `main` and weekly, over the same four languages default setup
-  scanned, with `paths-ignore: [e2e, test]`.
-- The repository's CodeQL default setup stays disabled in GitHub settings.
-
-**Upstream behavior it assumes.**
-
-- Upstream has no `.github/workflows/codeql.yml` of its own. If it adds one, the conflict policy
-  applies.
-- Test code stays under `e2e/` and `test/`.
-
-**Upstream surfaces touched.** None; both files are fork-only.
-
-**Fork-only files.** `.github/workflows/codeql.yml`, `.github/codeql/codeql-config.yml`.
-
 ### Persona reasoning effort
 
 | Field | Value |
@@ -708,6 +679,22 @@ changes in task worktrees, which is upstream's intended behavior.
 lockfile. The sync deleted `.github/dependabot.yml`, rolled every dependency back to upstream's
 version, and closed the open Dependabot PRs. The fork now takes new versions only through the
 sync.
+
+### CodeQL advanced setup
+
+| Field | Value |
+| --- | --- |
+| Status | **Removed** 2026-10-04, PR pending |
+| PRs | #65 |
+| Plan docs | None |
+| Upstream candidate | No. |
+
+**Intent (as built).** Code scanning through a committed workflow instead of GitHub's default
+setup, so `e2e/` and `test/` could be excluded from alerts.
+
+**Why it was removed.** The fork no longer runs CodeQL. The removal deleted
+`.github/workflows/codeql.yml` and `.github/codeql/codeql-config.yml`. The repository's CodeQL
+default setup stays disabled, so nothing scans the fork.
 
 ## Standalone fixes
 
