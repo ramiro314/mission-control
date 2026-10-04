@@ -10520,6 +10520,30 @@ mark.find-hit.is-current {
   border-color: color-mix(in oklab, var(--danger) 60%, transparent);
 }
 
+/* "Conflicts with its base" alert - beside the PR chip like the failing-checks alert, in the
+   attention tone: a conflict needs a merge, not a fix to broken code. */
+.pr-conflict-alert {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border-radius: 999px;
+  color: color-mix(in oklab, var(--attention) 84%, var(--fg));
+  background: color-mix(in oklab, var(--attention) 15%, var(--panel-2));
+  border: 1px solid color-mix(in oklab, var(--attention) 36%, transparent);
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease;
+}
+.pr-conflict-alert:hover {
+  background: color-mix(in oklab, var(--attention) 24%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--attention) 60%, transparent);
+}
+.pr-conflict-mark {
+  color: color-mix(in oklab, var(--attention) 84%, var(--fg));
+}
+
 /* ---- Inspector chip (automated review of a PR we opened) ---- */
 /* Sits immediately right of the PR chip, because it is a statement ABOUT that PR. Same
    pill recipe, one tone per state: findings are the attention colour, clean recedes,

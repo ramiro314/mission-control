@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **8** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **9** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -51,6 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
+| PR merge-conflict reactions | Active (signal and chip only) | #108 |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
@@ -641,6 +642,59 @@ editor, version history and run views.
 
 **Fork-only files.** `src/web/workflows/EffortSelect.tsx`, `test/persona-effort.test.ts`,
 `e2e/specs/workflow-persona-effort.spec.ts`.
+
+### PR merge-conflict reactions
+
+| Field | Value |
+| --- | --- |
+| Status | **Active**, first ticket: the mergeability signal and the PR chip mark |
+| PRs | #108 |
+| Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
+| Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
+
+**Intent.** A session's pull request that conflicts with its base was invisible: GitHub reports
+it `CONFLICTING`, CI often stops running, and nothing in Mission Control said so. This ticket
+adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
+rounds, the Blocked pull requests inbox) reads, and shows it as a "Conflicts with `<base>`" mark
+on the PR chip on cards, in the session header and on the rail.
+
+**Behavior contracts.**
+
+- The branch poller requests `mergeable` and `baseRefName`; the by-URL poller requests
+  `mergeable`, `baseRefName` and `headRefOid`. GitHub's value normalises to `PrMergeable`
+  (`"mergeable" | "conflicting"`), and `UNKNOWN` is no observation.
+- `Session` and every `RepoPrFeedback` carry `prMergeable: { state, headSha } | null`,
+  `prBaseRef` and `prHeadSha`, set and cleared with `prState`/`prChecks`. On `UNKNOWN`,
+  `prHeadSha` advances and the observation is kept whole, old head included. A merged or
+  closed pull request has no observation.
+- `currentMergeability(pr)` (`src/shared/pr-mergeable.ts`) answers only when the observation's
+  head is `prHeadSha`. The chip reads through it.
+- A by-URL result writes only those three fields onto every session whose `prUrl` matches,
+  exited sessions included, and onto matching live per-repo observations. It has no authority
+  over `prState` or completion.
+- `reconcilePrs` leaves an exited session's PR fields alone when the branch poller did not
+  report it (exited sessions are never polled), so the link survives the exit linger.
+- No schema migration: these are live, in-memory observations like `prChecks`.
+
+**Upstream behavior it assumes.**
+
+- `gh pr list --json` and `gh pr view --json` accept `mergeable`, `baseRefName` and
+  `headRefOid`.
+- `pollAndReconcilePrs` runs the branch passes (`reconcilePrs`, `reconcileRepoPrs`) after the
+  by-URL lookups in one tick, and `prPollTargets` excludes exited sessions.
+- Exited sessions are removed `EXIT_LINGER_MS` after exit through `beginEviction`.
+- `prChipView` is the one decision behind `PrChip`, `PrTileFlag` and `PrRailMark`.
+
+**Upstream surfaces touched.** `src/server/pr.ts` (both `gh` queries, by-URL result
+collection), `src/server/registry.ts` (`PrMatch`, `LivePrObservation`, `reconcilePrs`,
+`reconcileRepoPrs`, `repoPrFeedbackFor`, new `reconcilePrUrlMergeability`, session comparator,
+session construction sites), `src/shared/types.ts` (`Session`, `RepoPrFeedback`, new
+`PrMergeable` types), `src/web/components/session-bits.tsx` (`prChipView`, `PrChip`,
+`PrTileFlag`, `PrRailMark`), `src/web/styles.css`, `src/web/lib/board-card-preview.ts`, the e2e
+fake `gh` (`pr view` output), and every test `Session` literal.
+
+**Fork-only files.** `src/shared/pr-mergeable.ts`, `test/pr-mergeable.test.ts`,
+`e2e/specs/pr-merge-conflicts.spec.ts`.
 
 ## Superseded and removed
 

@@ -108,6 +108,9 @@ function mkSession(over: Partial<Session> = {}): Session {
     prNumber: 7,
     prState: "open",
     prChecks: null,
+    prMergeable: null,
+    prBaseRef: null,
+    prHeadSha: null,
     meta: null,
     effortBaselineReady: false,
     pendingEffort: null,
@@ -512,6 +515,9 @@ const ALPHA_PR = repoPr({
   feedback: {
     prNumber: 7,
     prChecks: null,
+    prMergeable: null,
+    prBaseRef: null,
+    prHeadSha: null,
     inspector: inspector({
       prKey: "owner/alpha#7",
       url: "https://github.com/owner/alpha/pull/7",
@@ -526,6 +532,9 @@ const BETA_PR = repoPr({
   feedback: {
     prNumber: 9,
     prChecks: null,
+    prMergeable: null,
+    prBaseRef: null,
+    prHeadSha: null,
     inspector: inspector({
       prKey: "owner/beta#9",
       url: "https://github.com/owner/beta/pull/9",
@@ -577,6 +586,9 @@ test("each pull request carries its OWN feedback, not the session's", () => {
     feedback: {
       prNumber: 9,
       prChecks: "failing",
+      prMergeable: null,
+      prBaseRef: null,
+      prHeadSha: null,
       inspector: inspector({
         prKey: "owner/beta#9",
         url: "https://github.com/owner/beta/pull/9",
@@ -622,6 +634,9 @@ test("two pull requests on one session hold independent marks", () => {
       feedback: {
         prNumber: 7,
         prChecks: null,
+        prMergeable: null,
+        prBaseRef: null,
+        prHeadSha: null,
         inspector: inspector({
           prKey: "owner/alpha#7",
           url: "https://github.com/owner/alpha/pull/7",
@@ -635,6 +650,9 @@ test("two pull requests on one session hold independent marks", () => {
       feedback: {
         prNumber: 9,
         prChecks: null,
+        prMergeable: null,
+        prBaseRef: null,
+        prHeadSha: null,
         inspector: inspector({
           prKey: "owner/beta#9",
           url: "https://github.com/owner/beta/pull/9",
@@ -694,7 +712,7 @@ test("two repositories holding the same pull request NUMBER do not share a mark"
     repoPr({
       repoRoot,
       prUrl: url,
-      feedback: { prNumber: 7, prChecks: "failing", inspector: null },
+      feedback: { prNumber: 7, prChecks: "failing", prMergeable: null, prBaseRef: null, prHeadSha: null, inspector: null },
     });
   const prs = followupPrs(
     mkMultiRepoSession([

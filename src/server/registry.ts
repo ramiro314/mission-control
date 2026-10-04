@@ -23,6 +23,8 @@ import type {
   RateLimitWindow,
   RateLimitSource,
   PrChecks,
+  PrMergeable,
+  PrMergeability,
   PrState,
   FileCommentReview,
   FileCommentThread,
@@ -55,6 +57,11 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import {
+  mergeabilityEqual,
+  nextMergeability,
+  type MergeabilityRead,
+} from "@shared/pr-mergeable.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -444,6 +451,10 @@ export type PrMatch = {
   mergedAt: number | null;
   headSha: string | null;
   worktreeHeadSha: string | null;
+  /** GitHub's `mergeable` for `headSha`; null or absent when it answered `UNKNOWN`. */
+  mergeable?: PrMergeable | null;
+  /** The PR's base branch, or null or absent when `gh` did not report one. */
+  baseRef?: string | null;
 };
 
 export type PrObservation = {
@@ -481,11 +492,23 @@ export function repoPrTargetKey(sessionId: string, repoRoot: string): string {
 }
 
 /** One repository's open pull request as the last poll saw it. See `Registry.livePrs`. */
-interface LivePrObservation {
+interface LivePrObservation extends PrMergeability {
   url: string;
   number: number;
   checks: PrChecks | null;
 }
+
+/** A branch-poller match as a mergeability read. */
+function mergeabilityReadOf(match: PrMatch): MergeabilityRead {
+  return {
+    open: match.state === "open",
+    mergeable: match.mergeable ?? null,
+    baseRef: match.baseRef ?? null,
+    headSha: match.headSha,
+  };
+}
+
+const NO_MERGEABILITY: PrMergeability = { prMergeable: null, prBaseRef: null, prHeadSha: null };
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
@@ -2525,6 +2548,9 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
+      prMergeable: prev?.prMergeable ?? null,
+      prBaseRef: prev?.prBaseRef ?? null,
+      prHeadSha: prev?.prHeadSha ?? null,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
       pendingEffort: prev?.pendingEffort ?? null,
@@ -2720,6 +2746,7 @@ export class Registry extends EventEmitter {
       prNumber: null,
       prState: null,
       prChecks: null,
+      ...NO_MERGEABILITY,
       meta: null,
       effortBaselineReady: false,
       pendingEffort: null,
@@ -3070,6 +3097,7 @@ export class Registry extends EventEmitter {
       prState: "open",
       // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
       prChecks: null,
+      ...NO_MERGEABILITY,
     };
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
@@ -3191,6 +3219,7 @@ export class Registry extends EventEmitter {
             // Checks are unknown at creation; the poller fills them in. Reset so a
             // reused session can't carry the previous PR's status onto a new one.
             prChecks: null,
+            ...NO_MERGEABILITY,
           }
         : {};
       const agentSessionId = evt.sessionId ?? target.agentSessionId;
@@ -4849,7 +4878,7 @@ export class Registry extends EventEmitter {
       const moved = this.recordLivePr(
         target.key,
         match && match.state === "open" && match.number !== null
-          ? { url: match.url, number: match.number, checks: match.checks }
+          ? this.liveObservationOf(target.key, match, match.number)
           : null,
       );
       // A live observation moving changes this session's card and nothing in the DATABASE, so
@@ -4991,7 +5020,8 @@ export class Registry extends EventEmitter {
     if (
       prev?.url === observed?.url &&
       prev?.number === observed?.number &&
-      prev?.checks === observed?.checks
+      prev?.checks === observed?.checks &&
+      (prev === null || observed === null || mergeabilityEqual(prev, observed))
     ) {
       return false;
     }
@@ -5019,8 +5049,60 @@ export class Registry extends EventEmitter {
     return {
       prNumber: live.number,
       prChecks: live.checks,
+      prMergeable: live.prMergeable,
+      prBaseRef: live.prBaseRef,
+      prHeadSha: live.prHeadSha,
       inspector: this.inspectorSummaryForUrl(prUrl),
     };
+  }
+
+  /**
+   * One repository's open pull request as a live observation, its mergeability reconciled
+   * onto what this key last held for the same pull request - so an `UNKNOWN` read keeps the
+   * previous observation, exactly as it does on the session scalars.
+   */
+  private liveObservationOf(key: string, match: PrMatch, number: number): LivePrObservation {
+    const prev = this.livePrs.get(key);
+    return {
+      url: match.url,
+      number,
+      checks: match.checks,
+      ...nextMergeability(prev?.url === match.url ? prev : null, mergeabilityReadOf(match)),
+    };
+  }
+
+  /**
+   * Write what the by-URL poller learned about each pull request's mergeability onto every
+   * snapshot that names it: each session whose `prUrl` matches, exited sessions included, and
+   * each multi-repo task's live per-repo observation for that URL.
+   *
+   * Only the three mergeability fields move. A by-URL read has no authority over `prState`,
+   * the chip's existence or task completion - those stay with `reconcilePrs` and
+   * `reconcilePrMerges` - so this cannot retract or adopt a pull request, only say whether
+   * the one already named conflicts. The `UNKNOWN` rule is `nextMergeability`'s, the same
+   * one the branch poller follows.
+   */
+  reconcilePrUrlMergeability(reads: Map<string, MergeabilityRead>): void {
+    if (reads.size === 0) return;
+    for (const [id, s] of this.sessions) {
+      const read = s.prUrl ? reads.get(s.prUrl) : undefined;
+      if (!read) continue;
+      const fields = nextMergeability(s, read);
+      if (mergeabilityEqual(s, fields)) continue;
+      const next: Session = { ...s, ...fields };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+    const moved = new Set<string>();
+    for (const [key, live] of this.livePrs) {
+      const read = reads.get(live.url);
+      if (!read) continue;
+      const fields = nextMergeability(live, read);
+      if (mergeabilityEqual(live, fields)) continue;
+      this.livePrs.set(key, { ...live, ...fields });
+      moved.add(key.slice(0, key.indexOf("\0")));
+    }
+    for (const sessionId of moved) this.resyncSessionTask(sessionId);
   }
 
   /**
@@ -5142,6 +5224,10 @@ export class Registry extends EventEmitter {
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
       if (skip.has(id)) continue;
+      // An exited session is never polled (`prPollTargets`), so its absence from `found` says
+      // nothing about its PR - the same reason `skip` is honoured. It keeps its link for the
+      // linger before `remove`, which is what lets a by-URL read still reach its chip.
+      if (s.state === "exited" && !found.has(id)) continue;
       let match = found.get(id) ?? null;
       const currentEpisode = sessionWorkEpisodeFor(id);
       if (
@@ -5194,6 +5280,11 @@ export class Registry extends EventEmitter {
       const number = match?.number ?? null;
       const state = match?.state ?? null;
       const checks = match?.checks ?? null;
+      // Set and cleared with `prState`, and reconciled onto the previous read only when that
+      // read was about this same pull request - see `nextMergeability` for the `UNKNOWN` rule.
+      const mergeability = match
+        ? nextMergeability(live.prUrl === match.url ? live : null, mergeabilityReadOf(match))
+        : NO_MERGEABILITY;
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
           url: match.url,
@@ -5215,7 +5306,7 @@ export class Registry extends EventEmitter {
         this.recordLivePr(
           repoPrTargetKey(id, primaryRoot),
           match && state === "open" && number !== null
-            ? { url: match.url, number, checks }
+            ? this.liveObservationOf(repoPrTargetKey(id, primaryRoot), match, number)
             : null,
         );
       }
@@ -5232,7 +5323,8 @@ export class Registry extends EventEmitter {
         live.prUrl === url &&
         live.prNumber === number &&
         live.prState === state &&
-        live.prChecks === checks
+        live.prChecks === checks &&
+        mergeabilityEqual(live, mergeability)
       )
         continue;
       const next: Session = {
@@ -5241,6 +5333,7 @@ export class Registry extends EventEmitter {
         prNumber: number,
         prState: state,
         prChecks: checks,
+        ...mergeability,
         task,
       };
       // `prUrl` is the key the Inspector summary hangs off, so changing it here without
@@ -9763,6 +9856,9 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   steerReceipts: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
+  prMergeable: byJson,
+  prBaseRef: byValue,
+  prHeadSha: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.
   inspector: byJson,

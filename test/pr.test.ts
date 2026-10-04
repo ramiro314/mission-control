@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -9,6 +10,8 @@ import type { PrMatch } from "../src/server/registry.ts";
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
 const { Registry, prNumberFromUrl } = await import("../src/server/registry.ts");
+const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { currentMergeability } = await import("../src/shared/pr-mergeable.ts");
 
 function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
   return {
@@ -167,4 +170,177 @@ test("prPollTargets drops sessions without a cwd and exited sessions", () => {
 test("prNumberFromUrl parses the PR number, else null", () => {
   assert.equal(prNumberFromUrl("https://github.com/o/r/pull/123"), 123);
   assert.equal(prNumberFromUrl("https://github.com/o/r/tree/main"), null);
+});
+
+// ---- mergeability -------------------------------------------------------------------------
+//
+// Bound to the head GitHub reported it for, so a kept observation never describes a head it
+// was not made on, and set and cleared with `prState`.
+
+test("a CONFLICTING read lands bound to its head, with the base", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  reg.reconcilePrs(
+    new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+    new Set(),
+  );
+  const s = reg.getSession("feat")!;
+  assert.deepEqual(s.prMergeable, { state: "conflicting", headSha: "A" });
+  assert.equal(s.prBaseRef, "main");
+  assert.equal(s.prHeadSha, "A");
+  assert.equal(currentMergeability(s), "conflicting");
+});
+
+test("UNKNOWN keeps the observation with its old head while prHeadSha advances", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  reg.reconcilePrs(
+    new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+    new Set(),
+  );
+  reg.reconcilePrs(
+    new Map([["feat", match({ headSha: "A", mergeable: null, baseRef: "main" })]]),
+    new Set(),
+  );
+  assert.equal(currentMergeability(reg.getSession("feat")!), "conflicting", "same head: still known");
+
+  reg.reconcilePrs(
+    new Map([["feat", match({ headSha: "B", mergeable: null, baseRef: "main" })]]),
+    new Set(),
+  );
+  const s = reg.getSession("feat")!;
+  assert.deepEqual(s.prMergeable, { state: "conflicting", headSha: "A" });
+  assert.equal(s.prHeadSha, "B");
+});
+
+test("push, then UNKNOWN, then resolved: conflicting on A, unknown on B, then mergeable on B", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  const read = (over: Partial<PrMatch>) =>
+    reg.reconcilePrs(new Map([["feat", match({ baseRef: "main", ...over })]]), new Set());
+
+  read({ headSha: "A", mergeable: "conflicting" });
+  assert.equal(currentMergeability(reg.getSession("feat")!), "conflicting");
+  read({ headSha: "B", mergeable: null });
+  assert.equal(currentMergeability(reg.getSession("feat")!), null);
+  read({ headSha: "B", mergeable: "mergeable" });
+  assert.equal(currentMergeability(reg.getSession("feat")!), "mergeable");
+});
+
+test("a merged PR clears the observation, and a closed one clears all three fields", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  reg.reconcilePrs(
+    new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+    new Set(),
+  );
+  reg.reconcilePrs(new Map([["feat", match({ state: "merged", headSha: "A" })]]), new Set());
+  assert.equal(reg.getSession("feat")!.prMergeable, null);
+
+  reg.applyDiscovery([disco({ syntheticId: "other", gitBranch: "feat/x" })]);
+  reg.reconcilePrs(
+    new Map([["other", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+    new Set(),
+  );
+  // Closed unmerged: the branch lookup drops it, so `found` no longer holds it.
+  reg.reconcilePrs(new Map(), new Set());
+  const s = reg.getSession("other")!;
+  assert.equal(s.prState, null);
+  assert.equal(s.prMergeable, null);
+  assert.equal(s.prBaseRef, null);
+  assert.equal(s.prHeadSha, null);
+});
+
+test("an exited session keeps its link until removal, and a by-URL read reaches it", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "gone", gitBranch: "feat/x" })]);
+  reg.reconcilePrs(
+    new Map([["gone", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+    new Set(),
+  );
+  reg.applyDiscovery([]);
+  assert.equal(reg.getSession("gone")!.state, "exited");
+  // Exited sessions are never polled, so the next branch pass must not read that as "no PR".
+  reg.reconcilePrs(new Map(), new Set());
+  assert.equal(reg.getSession("gone")!.prUrl, PR);
+
+  // The fix lands: first GitHub is still computing on the new head, then it answers.
+  reg.reconcilePrUrlMergeability(
+    new Map([[PR, { open: true, mergeable: null, baseRef: "main", headSha: "B" }]]),
+  );
+  let s = reg.getSession("gone")!;
+  assert.deepEqual(s.prMergeable, { state: "conflicting", headSha: "A" }, "UNKNOWN keeps it whole");
+  assert.equal(currentMergeability(s), null);
+
+  reg.reconcilePrUrlMergeability(
+    new Map([[PR, { open: true, mergeable: "mergeable", baseRef: "main", headSha: "B" }]]),
+  );
+  s = reg.getSession("gone")!;
+  assert.equal(currentMergeability(s), "mergeable");
+  assert.equal(s.prState, "open", "a by-URL read writes only the mergeability fields");
+});
+
+test("the poller asks gh for mergeable, baseRefName and headRefOid on both paths", async () => {
+  const home = process.env.HARNESS_HOME!;
+  const bin = join(home, "fake-gh-bin");
+  mkdirSync(bin, { recursive: true });
+  const listOut = join(home, "gh-list.json");
+  const viewOut = join(home, "gh-view.json");
+  const argsLog = join(home, "gh-args.log");
+  writeFileSync(
+    join(bin, "gh"),
+    `#!/bin/sh\necho "$*" >> "${argsLog}"\nif [ "$2" = list ]; then cat "${listOut}"; else cat "${viewOut}"; fi\n`,
+  );
+  chmodSync(join(bin, "gh"), 0o755);
+  const repo = mkdtempSync(join(tmpdir(), "harness-pr-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  process.env.HARNESS_GH_BIN = join(bin, "gh");
+  try {
+    // Branch path: a live session on a feature branch whose PR conflicts.
+    writeFileSync(
+      listOut,
+      JSON.stringify([
+        {
+          url: PR,
+          number: 42,
+          state: "OPEN",
+          statusCheckRollup: [],
+          createdAt: "2026-01-01T00:00:00Z",
+          mergedAt: null,
+          headRefOid: "A",
+          mergeable: "CONFLICTING",
+          baseRefName: "main",
+        },
+      ]),
+    );
+    const reg = new Registry();
+    reg.applyDiscovery([disco({ syntheticId: "live", cwd: repo, gitBranch: "feat/x" })]);
+    await pollAndReconcilePrs(reg, undefined, undefined, undefined, Date.now(), undefined, () => []);
+    let s = reg.getSession("live")!;
+    assert.equal(currentMergeability(s), "conflicting");
+    assert.equal(s.prBaseRef, "main");
+
+    // By-URL path: the session exits, and the URL is now seen only through the by-URL poller.
+    reg.applyDiscovery([]);
+    writeFileSync(
+      viewOut,
+      JSON.stringify({ state: "OPEN", mergedAt: null, mergeable: "MERGEABLE", baseRefName: "main", headRefOid: "B" }),
+    );
+    await pollAndReconcilePrs(reg, undefined, undefined, undefined, Date.now(), undefined, () => [PR]);
+    s = reg.getSession("live")!;
+    assert.equal(s.state, "exited");
+    assert.equal(s.prHeadSha, "B");
+    assert.equal(currentMergeability(s), "mergeable");
+  } finally {
+    delete process.env.HARNESS_GH_BIN;
+  }
+  const { readFileSync } = await import("node:fs");
+  const calls = readFileSync(argsLog, "utf8");
+  assert.match(calls, /pr list .*--json \S*mergeable\S*/);
+  assert.match(calls, /pr list .*--json \S*baseRefName/);
+  assert.match(calls, /pr view \S+ --json \S*mergeable/);
+  assert.match(calls, /pr view \S+ --json \S*baseRefName/);
+  assert.match(calls, /pr view \S+ --json \S*headRefOid/);
 });
