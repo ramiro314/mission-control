@@ -5,6 +5,12 @@
 // plan.md is the source of truth. Its one mermaid block is the text definition of the claim
 // flow; claim-flow.svg is that flow's drawing, inlined here in the block's place so the page
 // stays self-contained and opens offline. Edit both together when the flow changes.
+//
+// `marked` is not a direct dependency of this repository; it resolves from node_modules only
+// because another package installs it. A lockfile update can remove it, which breaks this
+// script, or move it to a version that renders differently. `--check` therefore holds only for
+// the `marked` version that last wrote plan.html. If it reports a stale page while plan.md is
+// unchanged, re-render and commit the result; that diff is the renderer's, not the plan's.
 import { readFileSync, writeFileSync } from "node:fs";
 import { marked } from "marked";
 
