@@ -19,7 +19,7 @@ Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.
 
-GitHub Inspector review on PR #103 (rounds 1 to 5) made these changes:
+GitHub Inspector review on PR #103 (rounds 1 to 7) made these changes:
 
 - A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
   surfaced as `workflow-not-gating`. Round 2 narrowed this from "not at one right now".
@@ -30,6 +30,9 @@ GitHub Inspector review on PR #103 (rounds 1 to 5) made these changes:
   still reaches `session-gone` and clears once the conflict is fixed (round 4).
 - The `pr-conflict` alert fires once when a PR enters the blocked set. A change of reason only
   updates the row (round 5).
+- A by-URL result is written back to the matching exited session's snapshot, so its chip clears
+  when the fix lands. A daemon restart can re-alert an escalated PR once, which is accepted
+  under decision 13 (round 7).
 
 Each is marked "Inspector review" where it appears.
 
@@ -132,6 +135,9 @@ flowchart LR
   - The chip, conflict episodes and Foreman read through it.
   - Wait for CI compares the observation's own `headSha` with its `expectedHeadOid` (§4).
   - So the sequence "conflicting on head A, push head B, `UNKNOWN`" reads as unknown on B, never as conflicting on B.
+- **Where a by-URL result is written** (Inspector review, round 7). A `queryPrUrl` result writes `prMergeable`, `prHeadSha` and `prBaseRef` back onto every session snapshot whose `prUrl` matches, exited sessions included, and onto every matching `repoPrs[].feedback` entry. It follows the same `UNKNOWN` rule as the branch poller. It also feeds the conflict episode for that URL.
+  - An exited session's chip therefore clears when its fix lands, exactly as its inbox row does, instead of keeping its last `conflicting` observation forever.
+  - Only these three fields are written. `prState` and the task-completion paths are untouched.
 - No schema change. These are live observations, like `prChecks`.
 
 ### 2. Conflict episodes (`src/server/pr-conflicts.ts`, new)
@@ -196,7 +202,7 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
 - **Escalation survives a daemon restart** (Inspector review, round 2).
   - The mark gains `conflictEscalated: boolean`.
   - While Foreman holds an escalated mark for a PR that is still observed `conflicting`, it re-sends the escalation at most once a minute (`CONFLICT_ESCALATE_RESEND_MS`).
-  - The route is idempotent, so the re-send is a no-op on a daemon that already holds the flag. A restarted daemon re-learns `nudges-exhausted` within a minute instead of dropping the PR out of the inbox.
+  - The route is idempotent, so the re-send is a no-op on a daemon that already holds the flag. A restarted daemon re-learns `nudges-exhausted` within a minute. Until then, the PR is out of the inbox if it has no other unhandled reason.
   - The mark resets, and re-sending stops, when the episode re-arms.
 - **Payload.** `buildPayload` gains a conflict problem line: "it has merge conflicts with `<base>`". It also gains these steps:
   1. `git fetch origin <base>` and `git merge origin/<base>`.
@@ -263,6 +269,10 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
   - Escalation is recomputed:
     - `session-gone`, `foreman-cannot-nudge` and `workflow-not-gating` are re-derived from live state on the first poll.
     - `nudges-exhausted` is restored by Foreman's escalation re-send (§3) within a minute.
+    - **Accepted restart cost** (Inspector review, round 7, under decision 13). A PR blocked only by `nudges-exhausted` can drop out of the Blocked pull requests inbox for up to a minute after a daemon restart. When the re-send restores it, it re-enters the blocked set and `pr-conflict` fires once more. The client does not try to remember alerts across a daemon restart.
+      - "Fires once" therefore holds per daemon lifetime.
+      - It is bounded: one extra alert per escalated PR per daemon restart.
+      - PRs blocked by `session-gone`, `foreman-cannot-nudge` or `workflow-not-gating` are re-derived on the first poll after the restart. They may still re-alert once on reconnect, because the episode is new to the daemon.
     - If Foreman restarts instead, the daemon keeps its escalated episode in the inbox. Foreman's fresh mark is seeded escalated from the snapshot's `prConflictEscalated`, so it sends no further nudges (Inspector review, round 3).
     - If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.
 - **Multi-repo task.** There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.
@@ -284,6 +294,7 @@ Focused unit tests in `test/`, using `node:test`:
   - Push, then `UNKNOWN`, then resolved: `currentMergeability` is `conflicting` on head A, `null` on head B under `UNKNOWN`, then `mergeable` on B.
   - Merged or closed clears it.
   - The by-URL path covers an exited session's task.
+  - A by-URL result writes `prMergeable` / `prHeadSha` / `prBaseRef` onto the matching exited session's snapshot: a `conflicting` → `mergeable` read clears that session's `currentMergeability`. A `repoPrs` entry with the same URL is updated too.
   - An open episode for an exited, task-less session keeps its URL in the by-URL harvest, reaches `session-gone`, and closes when the PR is observed `mergeable`. Its URL never enters `operationalUrls`.
 - `pr-conflicts.ts`:
   - Episode open and close.
