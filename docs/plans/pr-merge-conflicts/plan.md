@@ -28,6 +28,8 @@ GitHub Inspector review on PR #103 (rounds 1 to 4) made these changes:
   escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.
 - An open conflict episode keeps its PR on the by-URL poller, so an exited session with no task
   still reaches `session-gone` and clears once the conflict is fixed (round 4).
+- The `pr-conflict` alert fires once when a PR enters the blocked set. A change of reason only
+  updates the row (round 5).
 
 Each is marked "Inspector review" where it appears.
 
@@ -235,6 +237,8 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
 - **Alert** (`src/shared/alerts.ts`).
   - A new `AlertKind` `"pr-conflict"` with `attention` severity.
   - `detectAlerts` fires it once when a PR enters the blocked set. The id is stable per PR URL, so a repeat replaces its toast.
+  - **A change of reason never re-alerts** (Inspector review, round 5). For example, `foreman-cannot-nudge` turning into `session-gone` only updates the inbox row's reason text, because the operator was already told the PR needs them.
+  - A PR alerts again only after it leaves the blocked set and later re-enters it: fixed then conflicting again, or handled again by Foreman or a workflow and then unhandled.
 
 ### 6. Documentation
 
@@ -263,7 +267,7 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
     - If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.
 - **Multi-repo task.** There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.
 - **CI dimension silent on a conflict.** GitHub runs no `pull_request` checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.
-- **Session exits mid-episode.** The next poll moves the episode to `session-gone`, and the alert fires then. This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).
+- **Session exits mid-episode.** The next poll moves the episode to `session-gone`. If the PR was not already blocked, it enters the set and the alert fires then. If it was already blocked for another reason, only the row's reason text changes and no new alert fires (§5). This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).
 - **Exited task-less session whose PR was never conflicting.** Nothing polls it after exit, so a conflict that first appears after the session exited is not detected. That is accepted: there is no task or live session left to act for, and the session can be resumed to restore polling.
 - **Workflow without a reachable Wait for CI** (Inspector review). The run has no Wait for CI node, or the base moved after the last reachable Wait for CI. The episode is `workflow-not-gating` and goes to the inbox. Foreman still does not type into the session, because the workflow owns it. A run upstream of Wait for CI, or in a repair loop back to it, is handled and raises nothing.
 - **Conflict spanning several heads.** The episode stays one episode keyed by PR URL, and `headSha` tracks the latest conflicting head.
@@ -313,6 +317,8 @@ Focused unit tests in `test/`, using `node:test`:
 - `agent-contract.ts`: the conflict line is present only when `trackMergeConflicts` is on.
 - `alerts.ts` / `attention.ts`:
   - `pr-conflict` fires once on entry.
+  - A reason change while blocked (`foreman-cannot-nudge` → `session-gone`) does not re-fire.
+  - Leaving and re-entering the set fires again.
   - The section order and the answer count.
 
 E2E, in `e2e/specs/pr-merge-conflicts.spec.ts`:
@@ -328,7 +334,7 @@ E2E, in `e2e/specs/pr-merge-conflicts.spec.ts`:
 4. Open Foreman settings and assert:
    - The **Keep sessions on track with merge conflicts** checkbox is present beside the CI and review-comment toggles, and checked by default.
    - Unchecking it persists across a reload.
-5. Exit the session and assert the **Blocked pull requests** inbox row with "session ended". The row is fed by the by-URL poller.
+5. Exit the session and assert the **Blocked pull requests** inbox row now reads "session ended". The PR was already blocked because the toggle was off in step 4, so this step asserts that the reason text changed. It does not assert a new alert, because a reason change never re-alerts (§5). The row is fed by the by-URL poller.
 6. Flip the fake to `MERGEABLE` and assert that the row and the chip mark disappear.
 
 All selection is by role and label.

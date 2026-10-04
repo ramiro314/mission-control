@@ -300,6 +300,8 @@ surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;n
 escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.</li>
 <li>An open conflict episode keeps its PR on the by-URL poller, so an exited session with no task
 still reaches <code>session-gone</code> and clears once the conflict is fixed (round 4).</li>
+<li>The <code>pr-conflict</code> alert fires once when a PR enters the blocked set. A change of reason only
+updates the row (round 5).</li>
 </ul>
 <p>Each is marked &quot;Inspector review&quot; where it appears.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
@@ -637,6 +639,8 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><strong>Alert</strong> (<code>src/shared/alerts.ts</code>).<ul>
 <li>A new <code>AlertKind</code> <code>&quot;pr-conflict&quot;</code> with <code>attention</code> severity.</li>
 <li><code>detectAlerts</code> fires it once when a PR enters the blocked set. The id is stable per PR URL, so a repeat replaces its toast.</li>
+<li><strong>A change of reason never re-alerts</strong> (Inspector review, round 5). For example, <code>foreman-cannot-nudge</code> turning into <code>session-gone</code> only updates the inbox row&#39;s reason text, because the operator was already told the PR needs them.</li>
+<li>A PR alerts again only after it leaves the blocked set and later re-enters it: fixed then conflicting again, or handled again by Foreman or a workflow and then unhandled.</li>
 </ul>
 </li>
 </ul>
@@ -677,7 +681,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p><strong>CI dimension silent on a conflict.</strong> GitHub runs no <code>pull_request</code> checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.</p>
 </li>
-<li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then. This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).</p>
+<li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>. If the PR was not already blocked, it enters the set and the alert fires then. If it was already blocked for another reason, only the row&#39;s reason text changes and no new alert fires (§5). This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).</p>
 </li>
 <li><p><strong>Exited task-less session whose PR was never conflicting.</strong> Nothing polls it after exit, so a conflict that first appears after the session exited is not detected. That is accepted: there is no task or live session left to act for, and the session can be resumed to restore polling.</p>
 </li>
@@ -742,6 +746,8 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><code>agent-contract.ts</code>: the conflict line is present only when <code>trackMergeConflicts</code> is on.</li>
 <li><code>alerts.ts</code> / <code>attention.ts</code>:<ul>
 <li><code>pr-conflict</code> fires once on entry.</li>
+<li>A reason change while blocked (<code>foreman-cannot-nudge</code> → <code>session-gone</code>) does not re-fire.</li>
+<li>Leaving and re-entering the set fires again.</li>
 <li>The section order and the answer count.</li>
 </ul>
 </li>
@@ -762,7 +768,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>Unchecking it persists across a reload.</li>
 </ul>
 </li>
-<li>Exit the session and assert the <strong>Blocked pull requests</strong> inbox row with &quot;session ended&quot;. The row is fed by the by-URL poller.</li>
+<li>Exit the session and assert the <strong>Blocked pull requests</strong> inbox row now reads &quot;session ended&quot;. The PR was already blocked because the toggle was off in step 4, so this step asserts that the reason text changed. It does not assert a new alert, because a reason change never re-alerts (§5). The row is fed by the by-URL poller.</li>
 <li>Flip the fake to <code>MERGEABLE</code> and assert that the row and the chip mark disappear.</li>
 </ol>
 <p>All selection is by role and label.</p>
