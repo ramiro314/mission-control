@@ -1654,6 +1654,39 @@ export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenc
   };
 }
 
+/**
+ * A row filter that drops every checkout-path registration a later one has made unreadable.
+ *
+ * An agent that reruns a suite into the same gitignored log and registers it again under a
+ * fresh client id leaves the first row behind. Capture re-reads each row's path and demands
+ * its registered digest, so that older row can never pass: the bytes it names are gone. It
+ * refused 12 of the first 13 `image_evidence_capture` blocks before any Persona ran.
+ *
+ * The latest registration of a path is the one most recently asserted - `updated_at` moves
+ * on registration, on re-registration of unchanged bytes, and on reservation of the winner,
+ * never on a row that lost. Older rows with the SAME digest are kept: they still capture, and
+ * a coverage claim may link either id. Read across the whole conversation, not just the
+ * candidates, because the winner may already be reserved while the loser is still staged.
+ */
+function latestRegistrationOfItsPath(
+  db: DatabaseSync,
+  noteKey: string,
+): (row: WorkflowEvidenceStagingRow) => boolean {
+  const latest = new Map<string, WorkflowEvidenceStagingRow>();
+  const pathKey = (row: WorkflowEvidenceStagingRow) =>
+    JSON.stringify([row.evidence_kind, row.source_root, row.source_locator]);
+  const rows = (db.prepare(
+    `SELECT * FROM workflow_evidence_staging
+      WHERE note_key = ? AND source_kind = 'agent'
+      ORDER BY updated_at DESC, generation DESC, created_at DESC, id DESC`,
+  ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+  for (const row of rows) {
+    if (!latest.has(pathKey(row))) latest.set(pathKey(row), row);
+  }
+  return (row) => row.source_kind !== "agent"
+    || latest.get(pathKey(row))?.sha256 === row.sha256;
+}
+
 const WorkflowEvidenceCoverageStagingRowSchema = z.object({
   id: nonempty.max(200),
   note_key: nonempty,
@@ -10908,7 +10941,8 @@ export class WorkflowStore {
           AND (repository_scope = 'all' OR source_root = ?)
         ORDER BY created_at ASC, id ASC`,
     ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
-      .map(parseWorkflowEvidenceStagingRow);
+      .map(parseWorkflowEvidenceStagingRow)
+      .filter(latestRegistrationOfItsPath(this.db, owner.note_key));
     const imageRows = rows.filter((row) => row.evidence_kind === "image");
     const textRows = rows.filter((row) => row.evidence_kind === "text");
     if (imageRows.length > WORKFLOW_IMAGE_LIMITS.maxCount) {

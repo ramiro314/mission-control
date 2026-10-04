@@ -1206,7 +1206,11 @@ by the previous submission and offers no fresh-image composer; the confirmation 
 exact count. Choose the fresh resubmission path when the next review needs new or replacement
 screenshots, even when the repository HEAD has not changed.
 
-Submission creation reserves the applicable staged generation. A multi-repository completion
+Submission creation reserves the applicable staged generation. A checkout path is a live
+source, so only its most recent registration is reserved: when an agent reruns a command into
+the same gitignored log and registers it again under a new client id, the older row whose digest
+the file no longer has is skipped rather than refused at capture. An older row with the same
+digest is kept, since it still captures and a coverage claim may cite either id. A multi-repository completion
 copies `all` evidence into every sibling submission and keeps slot-scoped evidence in that
 repository's run. Inside the existing conversation capture lock, each reserved source is
 opened without following symlinks and re-hashed before context compaction or Persona spend.
