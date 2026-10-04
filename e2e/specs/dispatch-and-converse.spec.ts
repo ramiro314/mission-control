@@ -627,6 +627,9 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   await expect(popover).toContainText(
     "Does not create a PR. Once one exists, sends failing CI back to its session.",
   );
+  await expect(popover).toContainText(
+    "Invited managed Ship tasks, plus the gaps of a held Plan or Shape completion, in Live trusted repos.",
+  );
 
   await captureForemanEvidence(popover);
 

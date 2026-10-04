@@ -1033,6 +1033,20 @@ at <code>104a5407</code> (checked by each fix&#39;s key symbol).</p>
 <td><code>src/server/workflows/store.ts</code></td>
 <td>Yes: generic workflow evidence reliability.</td>
 </tr>
+<tr>
+<td>pending</td>
+<td>pending</td>
+<td>A subagent hand-back (Claude Code&#39;s <code>&lt;agent-message&gt;</code> turn) was captured as a human prompt: it bumped the prompt revision, often drew an <code>unclear</code> intent verdict, and so stamped the agent&#39;s workflow evidence with no intent episode. Foreman&#39;s verifier then saw no registered evidence and held the completion. Hand-backs are now scaffolding to the goal path.</td>
+<td><code>src/server/harness/claude/scaffolding.ts</code></td>
+<td>Yes: upstream captures the same turns.</td>
+</tr>
+<tr>
+<td>pending</td>
+<td>pending</td>
+<td>A held <code>plan</code> or <code>shape</code> completion was consumed in silence, so the agent never heard its gaps and the bound workflow never started. Pre-PR recovery now relays held gaps to planning kinds, and only held gaps, with a planning-turn packet. Related to Shape tasks, grill and tickets.</td>
+<td><code>src/server/foreman/ship-shepherd.ts</code>, <code>src/server/foreman/worker.ts</code>, <code>src/server/routes.ts</code>, <code>src/web/components/ForemanBar.tsx</code></td>
+<td>Maybe: the <code>plan</code> half applies upstream; <code>shape</code> does not exist there.</td>
+</tr>
 </tbody></table>
 <h2>Keeping this ledger current</h2>
 <ul>

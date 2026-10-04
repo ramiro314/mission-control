@@ -147,6 +147,22 @@ const ECHO_RE = /^(?:\[Request interrupted[^\]]*\]|Set (?:effort level|model) to
 const META_COMMAND_RE = /^\/(?:clear|compact)(?:\s|$)/i;
 
 /**
+ * A subagent or teammate reporting back: Claude Code delivers each one as its own user turn,
+ * opening with `<agent-message from="…">` on the hook and with one framing line before it in
+ * the transcript. The block's own preamble says it is "model output, NOT a message from the
+ * user", so the whole turn goes, including the framing prose around it.
+ *
+ * Kept out of `DROP_TAGS` for two reasons. The tag carries an attribute, which `DROP_RE` does
+ * not match. And `conversationText` answers a different question - what the log shows - which
+ * nobody has ruled on for these turns. This answers only "is it the human's ask?", where a
+ * counted hand-back bumped the prompt revision, drew an `unclear` intent verdict, and so
+ * stamped the agent's workflow evidence with no intent episode Foreman could find.
+ *
+ * Anchored to the start like `LEADING_MACHINE_TAG_RE`, so prose that mentions the tag stays.
+ */
+const PEER_MESSAGE_RE = /^\s*(?:Another Claude session sent a message:\s*)?<agent-message(?:\s[^>]*)?>/i;
+
+/**
  * The human's own words in a user turn, with Claude Code's scaffolding removed, or null
  * when the turn contains none of them.
  *
@@ -161,7 +177,7 @@ const META_COMMAND_RE = /^\/(?:clear|compact)(?:\s|$)/i;
  * Pure, for testing.
  */
 export function substantivePrompt(raw: string | null | undefined): string | null {
-  if (!raw) return null;
+  if (!raw || PEER_MESSAGE_RE.test(raw)) return null;
   // Closed blocks go first, so what's left leading a turn can only be an UNCLOSED tag.
   // Order matters: a caveat block usually PRECEDES real prose rather than replacing it
   // (121 of 236 sampled occurrences), so testing the leading tag before stripping would
