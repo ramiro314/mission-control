@@ -1621,23 +1621,34 @@ export interface PrChipView {
   /**
    * "Conflicts with `<base>`" while the PR, or any repository's PR of a multi-repo task,
    * conflicts with its base on its current head; null otherwise. Doubles as the mark's
-   * accessible name.
+   * accessible name. When the conflicting PR is not the session's own it is named, as in
+   * "Conflicts with develop (other #7)", because the operator has to know where to merge.
    */
   conflictTitle: string | null;
+  /** The conflicting PR, which the conflict alert links to. Null exactly when the title is. */
+  conflictUrl: string | null;
 }
 
 /**
- * The conflict wording for a session, or null. Reads through `currentMergeability`, so an
- * observation kept from an earlier head never draws the mark.
+ * The PR that conflicts with its base, and how to say so, or null. Reads through
+ * `currentMergeability`, so an observation kept from an earlier head never draws the mark.
+ * The session's own PR is asked first; a multi-repo task's other repositories after it.
  */
-function conflictTitleFor(session: Session): string | null {
-  const candidates = [
-    session,
-    ...(session.task?.repoPrs ?? []).flatMap((entry) => (entry.feedback ? [entry.feedback] : [])),
-  ];
-  const conflicting = candidates.find((pr) => currentMergeability(pr) === "conflicting");
-  if (!conflicting) return null;
-  return `Conflicts with ${conflicting.prBaseRef ?? "its base branch"}`;
+function conflictFor(session: Session): { title: string; url: string } | null {
+  const sessionUrl = session.prUrl;
+  if (sessionUrl && currentMergeability(session) === "conflicting") {
+    return { title: `Conflicts with ${session.prBaseRef ?? "its base branch"}`, url: sessionUrl };
+  }
+  for (const entry of session.task?.repoPrs ?? []) {
+    const feedback = entry.feedback;
+    if (!entry.prUrl || !feedback || currentMergeability(feedback) !== "conflicting") continue;
+    const base = `Conflicts with ${feedback.prBaseRef ?? "its base branch"}`;
+    const named = entry.prUrl === sessionUrl
+      ? base
+      : `${base} (${repoLeaf(entry.repoRoot)} #${feedback.prNumber})`;
+    return { title: named, url: entry.prUrl };
+  }
+  return null;
 }
 
 /**
@@ -1657,6 +1668,7 @@ export function prChipView(session: Session): PrChipView | null {
   if (!session.prUrl) return null;
   const state = session.prState ?? "open";
   const label = session.prNumber ? `#${session.prNumber}` : "PR";
+  const conflict = conflictFor(session);
   return {
     url: session.prUrl,
     label,
@@ -1668,7 +1680,8 @@ export function prChipView(session: Session): PrChipView | null {
         ? `Pull request ${label} merged - open on GitHub`
         : `Open pull request ${label} - open on GitHub`,
     failingTitle: "A CI check failed on this pull request - open on GitHub",
-    conflictTitle: conflictTitleFor(session),
+    conflictTitle: conflict?.title ?? null,
+    conflictUrl: conflict?.url ?? null,
   };
 }
 
@@ -1723,7 +1736,7 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
         <Tooltip label={view.conflictTitle}>
           <a
             className="pr-conflict-alert"
-            href={view.url}
+            href={view.conflictUrl ?? view.url}
             target="_blank"
             rel="noreferrer"
             aria-label={view.conflictTitle}

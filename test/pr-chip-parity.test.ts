@@ -132,8 +132,8 @@ test("no mark for a mergeable PR, or a conflict kept from an earlier head", () =
   }
 });
 
-test("a conflicting repository of a multi-repo task marks the session's chip", () => {
-  const view = prChipView(mkSession({
+test("a conflicting repository of a multi-repo task marks the chip, names it and links to it", () => {
+  const session = mkSession({
     prUrl: "https://github.com/o/r/pull/264",
     prNumber: 264,
     task: mkTaskSummary({
@@ -155,6 +155,25 @@ test("a conflicting repository of a multi-repo task marks the session's chip", (
         },
       ],
     }),
+  });
+  const view = prChipView(session);
+  // Not the session's own PR, so it is named: the operator has to know where to merge.
+  assert.equal(view?.conflictTitle, "Conflicts with develop (other #7)");
+  assert.equal(view?.conflictUrl, "https://github.com/o/other/pull/7");
+  // The header alert follows it there, not to the session's own, non-conflicting #264.
+  const html = renderToStaticMarkup(createElement(PrChip, { session }));
+  const alert = html.match(/<a class="pr-conflict-alert" href="([^"]+)"/);
+  assert.equal(alert?.[1], "https://github.com/o/other/pull/7");
+});
+
+test("the session's own conflicting PR is named only by its base, and linked to itself", () => {
+  const view = prChipView(mkSession({
+    prUrl: "https://github.com/o/r/pull/264",
+    prNumber: 264,
+    prMergeable: { state: "conflicting", headSha: "A" },
+    prBaseRef: "main",
+    prHeadSha: "A",
   }));
-  assert.equal(view?.conflictTitle, "Conflicts with develop");
+  assert.equal(view?.conflictTitle, "Conflicts with main");
+  assert.equal(view?.conflictUrl, "https://github.com/o/r/pull/264");
 });

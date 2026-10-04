@@ -165,3 +165,87 @@ test("a conflicting pull request is marked on the card and in the session header
   await expect(card.getByRole("img", { name: CONFLICT })).toHaveCount(0);
   await shoot(dashboard, "04-card-mergeable", card);
 });
+
+interface TaskRow {
+  id: string;
+  worktreePath: string | null;
+  extraRepos: Array<{ repoRoot: string; worktreePath: string | null }>;
+}
+
+test("a conflict in a multi-repo task's attached repo names that PR and links to it", async ({
+  dashboard,
+  daemon,
+}) => {
+  const primaryUrl = "https://github.com/acme/demo-repo/pull/10";
+  const secondUrl = "https://github.com/acme/second-repo/pull/20";
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await dialog.getByPlaceholder("What should this agent do?").fill("rename a field across two repos");
+  await dialog.getByLabel("Kind").selectOption("ship");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  let session: SessionRow | undefined;
+  await expect
+    .poll(async () => {
+      session = (await api<SessionRow[]>(daemon, "/api/sessions")).find((s) => s.state !== "exited");
+      return session?.state ?? "";
+    }, { timeout: 60_000, message: "the dispatched session should settle" })
+    .toBe("idle");
+  let task: TaskRow | undefined;
+  await expect
+    .poll(async () => {
+      task = (await api<TaskRow[]>(daemon, "/api/tasks")).find((t) => t.extraRepos.length === 1);
+      return Boolean(task?.worktreePath && task.extraRepos.every((e) => e.worktreePath));
+    }, { message: "one worktree per attached repo, recorded on the task" })
+    .toBe(true);
+  const primaryTree = task!.worktreePath!;
+  const secondTree = task!.extraRepos[0]!.worktreePath!;
+  for (const tree of [primaryTree, secondTree]) {
+    execFileSync("git", ["-C", tree, "switch", "-q", "-c", "e2e/pr-conflict-multi"]);
+  }
+
+  // Only the ATTACHED repo's pull request conflicts; the session's own one is mergeable.
+  const createdAt = new Date().toISOString();
+  const row = (cwd: string, url: string, number: number, mergeable: "MERGEABLE" | "CONFLICTING", base: string): FakePullRequest => ({
+    cwd, url, number, state: "OPEN", createdAt, mergedAt: null, headRefOid: "0".repeat(40), mergeable, baseRefName: base,
+  });
+  writeGhPullRequests(daemon.home, [
+    row(primaryTree, primaryUrl, 10, "MERGEABLE", "main"),
+    row(secondTree, secondUrl, 20, "CONFLICTING", "develop"),
+  ]);
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  for (const [event, body] of [
+    ["PostToolUse", { toolName: "Bash", prCreated: true, prUrl: primaryUrl, prUrls: [primaryUrl, secondUrl] }],
+    ["Stop", {}],
+  ] as const) {
+    const response = await fetch(`${daemon.baseURL}/hooks/${event}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({
+        agent: session!.agent,
+        sessionId: session!.agentSessionId ?? session!.id,
+        cwd: session!.cwd,
+        ...body,
+      }),
+    });
+    expect(response.ok, `${event} hook`).toBe(true);
+  }
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  const alert = detail.getByRole("link", { name: "Conflicts with develop (second-repo #20)" });
+  await expect(alert).toBeVisible({ timeout: 30_000 });
+  // It leads to the PR that needs the merge, not the session's own mergeable one.
+  await expect(alert).toHaveAttribute("href", secondUrl);
+  await shoot(dashboard, "05-header-attached-repo-conflict", detail);
+});
