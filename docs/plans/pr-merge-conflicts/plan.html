@@ -289,9 +289,10 @@ conflict.</li>
 </ul>
 <p>The PR chip on cards and the session header shows the conflict in every case.</p>
 <p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
-recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
+recorded below. On 2026-10-04 you also signed off two changes during the PR #103 review: decision 8
+was amended, and decision 16 was added. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
-<p>GitHub Inspector review on PR #103 (rounds 1 to 8) made these changes:</p>
+<p>GitHub Inspector review on PR #103 (rounds 1 to 9) made these changes:</p>
 <ul>
 <li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
 surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
@@ -303,16 +304,18 @@ still reaches <code>session-gone</code> and clears once the conflict is fixed (r
 <li>The <code>pr-conflict</code> alert fires once when a PR enters the blocked set. A change of reason only
 updates the row (round 5).</li>
 <li>A by-URL result is written back to the matching exited session&#39;s snapshot, so its chip clears
-when the fix lands. A daemon restart can re-alert an escalated PR once, which is accepted
-under decision 13 (round 7).</li>
+when the fix lands (round 7).</li>
 <li>The E2E spec asserts the blocked row and its single <code>pr-conflict</code> notification at first entry,
 and asserts that no second notification follows the reason change (round 8).</li>
+<li>Round 9 asked for two human sign-offs, recorded as amended decision 8 (<code>workflow-not-gating</code>)
+and new decision 16 (no re-alert after a restart or reconnect). These are the only changes to
+recorded human answers, and both were approved by you, not inferred.</li>
 </ul>
 <p>Each is marked &quot;Inspector review&quot; where it appears.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
 observation to the head it was observed on (§1, §3, §4, Edge cases). It also extended the E2E
 spec to the session header and the settings toggle, on a task-backed session (Testing). These
-changes are marked &quot;repair round 1&quot; where they appear. No recorded human answer changed.</p>
+changes are marked &quot;repair round 1&quot; where they appear. That repair round changed no recorded human answer.</p>
 <h2 id="goals">Goals</h2>
 <ul>
 <li>Every open PR a live session or a task owns is checked for conflicts, with no Inspector, YOLO
@@ -385,7 +388,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <tr>
 <td>8</td>
 <td>When attention fires</td>
-<td>Only when nothing is handling the conflict: the session exited, Foreman cannot nudge it, or the nudges ran out.</td>
+<td>Only when nothing is handling the conflict: the session exited, Foreman cannot nudge it, the nudges ran out, <strong>or</strong> (amended 2026-10-04, PR review) a workflow owns the session but its run can no longer reach a Wait for CI node (<code>workflow-not-gating</code>).</td>
 </tr>
 <tr>
 <td>9</td>
@@ -421,6 +424,11 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <td>15</td>
 <td>Follow-up (plan review)</td>
 <td>Create tickets after the plan merges.</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Re-alert after restart or reconnect (PR review, 2026-10-04)</td>
+<td>No. The browser remembers which PR URLs it alerted for, for the page&#39;s lifetime, and re-alerts only after a PR has been absent from the blocked set for 5+ minutes.</td>
 </tr>
 </tbody></table>
 </div><h2 id="how-it-works-today-verified">How it works today (verified)</h2>
@@ -651,7 +659,12 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>A new <code>AlertKind</code> <code>&quot;pr-conflict&quot;</code> with <code>attention</code> severity.</li>
 <li><code>detectAlerts</code> fires it once when a PR enters the blocked set. The id is stable per PR URL, so a repeat replaces its toast.</li>
 <li><strong>A change of reason never re-alerts</strong> (Inspector review, round 5). For example, <code>foreman-cannot-nudge</code> turning into <code>session-gone</code> only updates the inbox row&#39;s reason text, because the operator was already told the PR needs them.</li>
-<li>A PR alerts again only after it leaves the blocked set and later re-enters it: fixed then conflicting again, or handled again by Foreman or a workflow and then unhandled.</li>
+<li><strong>Re-alerting</strong> (decision 16). The browser keeps an <code>alertedPrConflicts</code> map from PR URL to the time it was last seen blocked, for the lifetime of the page. It survives SSE reconnects and daemon restarts, and is cleared only by a page reload.<ul>
+<li>A PR in <code>blocked_prs</code> alerts only if it is not in that map, or if it has been absent from <code>blocked_prs</code> for at least 5 minutes (<code>PR_CONFLICT_REALERT_MS</code>).</li>
+<li>A daemon restart or reconnect therefore never re-alerts. It empties the set for at most about a minute, until the first poll and Foreman&#39;s escalation re-send.</li>
+<li>A PR that is fixed and conflicts again within 5 minutes reappears in the inbox without a new alert.</li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>
@@ -680,16 +693,21 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <ul>
 <li>Episodes and Foreman marks are in memory, so a restart can buy up to 3 more nudges. That is still bounded.</li>
 <li>Escalation is recomputed:<ul>
-<li><code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code> are re-derived from live state on the first poll.</li>
-<li><code>nudges-exhausted</code> is restored by Foreman&#39;s escalation re-send (§3) within a minute.</li>
-<li><strong>Accepted restart cost</strong> (Inspector review, round 7, under decision 13). A PR blocked only by <code>nudges-exhausted</code> can drop out of the Blocked pull requests inbox for up to a minute after a daemon restart. When the re-send restores it, it re-enters the blocked set and <code>pr-conflict</code> fires once more. The client does not try to remember alerts across a daemon restart.<ul>
-<li>&quot;Fires once&quot; therefore holds per daemon lifetime.</li>
-<li>It is bounded: one extra alert per escalated PR per daemon restart.</li>
-<li>PRs blocked by <code>session-gone</code>, <code>foreman-cannot-nudge</code> or <code>workflow-not-gating</code> are re-derived on the first poll after the restart. They may still re-alert once on reconnect, because the episode is new to the daemon.</li>
-</ul>
+<li><p><code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code> are re-derived from live state on the first poll.</p>
 </li>
-<li>If Foreman restarts instead, the daemon keeps its escalated episode in the inbox. Foreman&#39;s fresh mark is seeded escalated from the snapshot&#39;s <code>prConflictEscalated</code>, so it sends no further nudges (Inspector review, round 3).</li>
-<li>If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.</li>
+<li><p><code>nudges-exhausted</code> is restored by Foreman&#39;s escalation re-send (§3) within a minute.</p>
+</li>
+<li><p><strong>Restart and the inbox</strong> (Inspector review, rounds 7 and 9). A blocked PR can drop out of the Blocked pull requests inbox briefly after a daemon restart:</p>
+<ul>
+<li>About 20s until the first poll re-derives <code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code>.</li>
+<li>Up to a minute for <code>nudges-exhausted</code>, until Foreman&#39;s re-send arrives.</li>
+</ul>
+<p>When it returns, no new alert fires, because the browser&#39;s <code>alertedPrConflicts</code> map still holds it (decision 16).</p>
+</li>
+<li><p>If Foreman restarts instead, the daemon keeps its escalated episode in the inbox. Foreman&#39;s fresh mark is seeded escalated from the snapshot&#39;s <code>prConflictEscalated</code>, so it sends no further nudges (Inspector review, round 3).</p>
+</li>
+<li><p>If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.</p>
+</li>
 </ul>
 </li>
 </ul>
@@ -765,7 +783,9 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><code>alerts.ts</code> / <code>attention.ts</code>:<ul>
 <li><code>pr-conflict</code> fires once on entry.</li>
 <li>A reason change while blocked (<code>foreman-cannot-nudge</code> → <code>session-gone</code>) does not re-fire.</li>
-<li>Leaving and re-entering the set fires again.</li>
+<li>Leaving the set and re-entering it within 5 minutes does not fire, which covers a reconnect or daemon-restart gap.</li>
+<li>Re-entering after 5 or more minutes absent fires again.</li>
+<li>The map survives an SSE reconnect snapshot that omits the PR.</li>
 <li>The section order and the answer count.</li>
 </ul>
 </li>
