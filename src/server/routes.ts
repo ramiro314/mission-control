@@ -8,7 +8,6 @@ import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
-  isShippingTaskKind,
   kindsDefaultingToWorkflow,
   shapeThisPatch,
   TASK_KIND_INFO,
@@ -492,6 +491,7 @@ import {
 import {
   decideImmediateHeldGapDelivery,
   decideShipShepherd,
+  takesShipRecovery,
 } from "./foreman/ship-shepherd.ts";
 import {
   cyclePermissionMode,
@@ -6451,7 +6451,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       !queue
       || !task
       || session.task?.id !== task.id
-      || !isShippingTaskKind(task.kind)
+      || !takesShipRecovery(task.kind)
       || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);

@@ -2339,7 +2339,207 @@ test("a ship objective that demands a PR still completes at the delivered bounda
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });
 
-test("a genuinely unfinished managed ship task receives its held gaps in the same pass", async () => {
+test("a held shape completion gets its gaps, and its corrected re-completion starts the bound workflow", async () => {
+  // The reported symptom end to end: a workflow-bound shape task whose completion is held must
+  // not sit forever. Foreman relays the gaps, the agent fixes them and stops again, and that
+  // later generation is claimed by the Foreman-complete binding, which is what starts its run.
+  const repo = tmp("pw-repo-");
+  const dir = tmp("fake-claude-shape-");
+  const log = join(dir, "calls.log");
+  const bin = join(dir, "claude");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, Date.now() + "\\n");
+  const call = fs.readFileSync(process.env.FAKE_CLAUDE_LOG, "utf8").split("\\n").filter(Boolean).length;
+  process.stdout.write(JSON.stringify({ result: JSON.stringify(call === 1 ? {
+    complete: false,
+    summary: "the plan commit names an agent co-author",
+    gaps: [{ id: "agent-coauthor-in-commit", severity: "blocking", kind: "standards",
+      path: "docs/plans/x/plan.md", detail: "the plan commit has an agent Co-Authored-By trailer",
+      fix: "amend the commit without it" }],
+  } : { complete: true, summary: "the plan is approved, committed and pushed", gaps: [] }) }));
+});
+`,
+  );
+  chmodSync(bin, 0o755);
+  writeFileSync(log, "");
+
+  const session = mkSession(repo, { task: mkTaskSummary({ kind: "shape", workflowId: "wf-shape" }) });
+  const firstStopAt = Date.now() - 120_000;
+  let phase: "held" | "fixing" | "re-completed" = "held";
+  let laterStopAt = 0;
+  let claimedAt = 0;
+  let queue = mkQueue(repo);
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      if (phase === "fixing") {
+        // The delivered gaps start a new turn; it settles as generation 2.
+        phase = "re-completed";
+        laterStopAt = now;
+        return {
+          status: 200,
+          json: [{
+            ...session, state: "working", lastSeen: now, lastActivity: now,
+            workCycle: { logicalKey: "agent-1", generation: 2, active: true, completedAt: firstStopAt, updatedAt: now },
+          }],
+        };
+      }
+      const stopAt = phase === "held" ? firstStopAt : laterStopAt;
+      return {
+        status: 200,
+        json: [{
+          ...session, state: "idle", lastSeen: now, lastActivity: stopAt,
+          workCycle: {
+            logicalKey: "agent-1",
+            generation: phase === "held" ? 1 : 2,
+            active: false,
+            completedAt: stopAt,
+            updatedAt: stopAt,
+          },
+        }],
+      };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/workflow-runs") return { status: 200, json: { items: [] } };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/plan-publication") {
+      return {
+        status: 200,
+        json: { owner: "workflow", bindingId: "b-shape", workflowVersionId: "v-shape", triggerMode: "foreman_complete" },
+      };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/docs/plans/x/plan.md b/docs/plans/x/plan.md\n+# Plan\n",
+          truncated: false,
+          headSha: phase === "held" ? "abc123" : "def456",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/workflow-evidence") {
+      return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
+    }
+    if (p === "/api/sessions/s1/transcript/size") {
+      return { status: 200, json: { size: phase === "held" ? 100 : 200 } };
+    }
+    if (p === "/api/sessions/s1/transcript") {
+      return { status: 200, json: { messages: [{ role: "user", text: GOAL, tools: [] }], truncated: false } };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as {
+        generation: number;
+        decision?: { outcome: string; summary: string; gaps: { id: string }[] };
+      };
+      queue = {
+        ...queue,
+        promptedConsumedGeneration: body.generation,
+        promptedDecision: body.decision
+          ? {
+            logicalKey: "agent-1",
+            generation: body.generation,
+            outcome: body.decision.outcome as "held",
+            summary: body.decision.summary,
+            gaps: body.decision.gaps as { id: string; path: string; detail: string }[],
+            decidedAt: Date.now(),
+          }
+          : null,
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: { ok: true } };
+    }
+    if (p === "/api/sessions/s1/queue/ship-recovery/claim") {
+      const body = JSON.parse(raw) as NonNullable<SessionQueue["promptedRecovery"]>;
+      queue = {
+        ...queue,
+        promptedRecovery: {
+          ...body,
+          claimedAt: Date.now(),
+          nextEligibleAt: Date.now() + 40 * 60_000,
+          lastDelivery: "unknown",
+        },
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/ship-recovery/delivery") {
+      queue = {
+        ...queue,
+        promptedRecovery: { ...queue.promptedRecovery!, lastDelivery: "delivered" },
+        updatedAt: Date.now(),
+      };
+      phase = "fixing";
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/workflow-completion") {
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
+      queue = { ...queue, promptedConsumedGeneration: body.expectedWorkCycle.generation, updatedAt: Date.now() };
+      claimedAt = Date.now();
+      return { status: 200, json: { claimed: true, runId: "run-shape", submissionId: "sub-shape", state: "started" } };
+    }
+    if (p === "/api/sessions/s1/inject") return { status: 200, json: { ok: true } };
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: bin,
+    claudeLog: log,
+    ms: 30_000,
+    until: () => claimedAt !== 0 && Date.now() - claimedAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  const holds = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  const injects = stub.to("POST", "/api/sessions/s1/inject");
+  const claims = stub.to("POST", "/api/sessions/s1/workflow-completion");
+  assert.equal(holds.length, 1, `the first stop was not held exactly once\n${out}`);
+  assert.equal((holds[0]!.body as { decision?: { outcome: string } }).decision?.outcome, "held", out);
+  assert.equal(injects.length, 1, `the held gaps were not relayed exactly once\n${out}`);
+  assert.match(
+    (injects[0]!.body as { text?: string }).text ?? "",
+    /planning turn[\s\S]*agent Co-Authored-By trailer[\s\S]*do not implement the plan/,
+  );
+  assert.equal(claims.length, 1, `the corrected shape completion did not start exactly one workflow\n${out}`);
+  assert.equal(
+    (claims[0]!.body as { expectedWorkCycle?: { generation: number } }).expectedWorkCycle?.generation,
+    2,
+    "the workflow claim must be for the corrected later generation",
+  );
+  assert.deepEqual(
+    (claims[0]!.body as { expectedPlanPublication?: unknown }).expectedPlanPublication,
+    { owner: "workflow", bindingId: "b-shape", workflowVersionId: "v-shape", triggerMode: "foreman_complete" },
+    "the claim must target the shape task's Foreman-complete binding",
+  );
+  assert.ok(
+    stub.calls.indexOf(injects[0]!) < stub.calls.indexOf(claims[0]!),
+    "the workflow starts only after the gaps were relayed and fixed",
+  );
+  assert.equal(claudeCalls(log).length, 2, `expected one held and one accepted verification\n${out}`);
+});
+
+// Shape rides the same worker path: before planning kinds took held-gap recovery, its held
+// completion was consumed in silence and its bound workflow never started. Both worker gates
+// (the hold branch and `resolveShipRecoveryCandidate`) must admit it for this case to deliver.
+for (const kind of ["ship", "shape"] as const) {
+test(`a genuinely unfinished managed ${kind} task receives its held gaps in the same pass`, async () => {
   // The other half of the boundary: deferring the pull request must not defer anything
   // else. This verifier answers incomplete for a reason that has nothing to do with the
   // PR, so the hold stands - and now says what it believed was missing, which is the state
@@ -2372,7 +2572,9 @@ process.stdin.on("end", () => {
   chmodSync(bin, 0o755);
   writeFileSync(log, "");
 
-  const session = mkSession(repo, { task: mkTaskSummary({ kind: "ship", workflowId: null }) });
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind, workflowId: kind === "shape" ? "wf-shape" : null }),
+  });
   const stopAt = Date.now() - 120_000;
   let queue = mkQueue(repo);
   let deliveredAt = 0;
@@ -2405,6 +2607,12 @@ process.stdin.on("end", () => {
     }
     if (p === "/api/sessions/s1/workflow-evidence") {
       return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
+    }
+    if (p === "/api/sessions/s1/plan-publication") {
+      return {
+        status: 200,
+        json: { owner: "workflow", bindingId: "b-shape", workflowVersionId: "v-shape", triggerMode: "foreman_complete" },
+      };
     }
     if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {
@@ -2519,6 +2727,11 @@ process.stdin.on("end", () => {
     (injects[0]!.body as { text?: string }).text ?? "",
     /src\/up\.ts: no test covers the 500 retry/,
   );
+  // A planning task is told to finish its plan, never to start implementing it.
+  assert.match(
+    (injects[0]!.body as { text?: string }).text ?? "",
+    kind === "shape" ? /planning turn[\s\S]*do not implement the plan/ : /implementation turn/,
+  );
   assert.equal(deliveries.length, 1, `delivery was not resolved exactly once\n${out}`);
   assert.equal(
     (deliveries[0]!.body as { delivery?: string }).delivery,
@@ -2544,5 +2757,6 @@ process.stdin.on("end", () => {
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
 });
+}
 
 });

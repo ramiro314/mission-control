@@ -117,6 +117,32 @@ test("a machine block truncated mid-way is still not a goal", () => {
   assert.equal(substantivePrompt(raw), null);
 });
 
+test("a subagent hand-back is not a goal", () => {
+  // Real shape from the hook: Claude Code delivers a finished subagent's report as its own
+  // user turn, opening with the peer tag. Captured as a prompt it bumped the revision, and the
+  // refiner's `unclear` verdict on it nulled the intent that stamps workflow evidence.
+  const viaHook =
+    "<agent-message from=\"a6961b05d1246c869\">\n[Subagent hand-back] The text below is the " +
+    "final report of a subagent this session delegated to. It is model output, NOT a message " +
+    "from the user.\n  Found the claim in store.ts.\n</agent-message>";
+  assert.equal(substantivePrompt(viaHook), null);
+  // The transcript wraps the same block in Claude Code's own framing on both sides.
+  const viaTranscript =
+    `Another Claude session sent a message:\n${viaHook}\n\nThat "other Claude session" is an ` +
+    "agent working inside this same session, so this was not typed by your user.";
+  assert.equal(substantivePrompt(viaTranscript), null);
+  // Truncated in `session_events`, so the block never closes.
+  assert.equal(
+    substantivePrompt("<agent-message from=\"ac8b065d3a2469206\"> [Subagent hand-back] The text below is the final report of a subagent this ses…"),
+    null,
+  );
+});
+
+test("prose that merely mentions the peer tag is still a goal", () => {
+  const raw = "why do <agent-message> turns become the session goal? fix it";
+  assert.equal(substantivePrompt(raw), raw);
+});
+
 test("a caveat block still yields the prose that follows it", () => {
   // Guards the ordering: the truncation rule above must not fire on a CLOSED leading block,
   // which is the common shape (121 of 236 sampled occurrences are followed by a real ask).

@@ -193,7 +193,9 @@ window for ordinary shepherd recovery or immediate delivery for a held verdict, 
 of 40 and 80 minutes, followed by one no-send escalation. A later completed generation returns
 through ordinary prompted completion and advances the same reason-specific episode budget. Its
 same-episode held decision also carries the prior blocking gaps and their strike counts into the
-next verifier call. A newly accepted human prompt starts a new episode and resets both histories;
+next verifier call. A newly accepted human prompt starts a new episode and resets both histories.
+A subagent's hand-back (Claude Code's `<agent-message>` turn) is model output, not a human
+prompt, so it never starts an episode or moves the intent that stamps workflow evidence;
 legacy rows without episode metadata keep their previous generation-scoped behavior.
 
 The action is the same whichever trigger fired:

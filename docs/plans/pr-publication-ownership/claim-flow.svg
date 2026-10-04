@@ -1,0 +1,11 @@
+<svg viewBox="0 0 1000 330" role="img" aria-label="Foreman completion claim with the new latched branch">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+<rect x="20" y="135" width="200" height="60" rx="8"/><text x="120" y="160" text-anchor="middle">Foreman: prompted</text><text x="120" y="182" text-anchor="middle" class="small">completion verified</text>
+<rect x="290" y="135" width="210" height="60" rx="8"/><text x="395" y="170" text-anchor="middle">claimForemanCompletion</text>
+<path d="M220 165 H285" marker-end="url(#a)"/>
+<rect x="590" y="15" width="390" height="56" rx="8"/><text x="785" y="38" text-anchor="middle" class="small">active run waiting_for_session</text><text x="785" y="58" text-anchor="middle">resubmit same run (repair round)</text>
+<rect x="590" y="95" width="390" height="56" rx="8"/><text x="785" y="118" text-anchor="middle" class="small">active run, other status</text><text x="785" y="138" text-anchor="middle">blocked: guard consumed</text>
+<rect x="590" y="175" width="390" height="62" rx="8" class="new"/><text x="785" y="198" text-anchor="middle" class="small">NEW: no active run, completed run with same episode</text><text x="785" y="222" text-anchor="middle">latched: consumed, no run, no wrap-up</text>
+<rect x="590" y="260" width="390" height="56" rx="8"/><text x="785" y="283" text-anchor="middle" class="small">no active run, no completed run this episode</text><text x="785" y="303" text-anchor="middle">start new run</text>
+<path d="M500 150 C540 150 550 43 585 43" marker-end="url(#a)"/><path d="M500 160 C540 160 550 123 585 123" marker-end="url(#a)"/><path d="M500 170 C540 170 550 206 585 206" marker-end="url(#a)"/><path d="M500 180 C540 180 550 288 585 288" marker-end="url(#a)"/>
+</svg>

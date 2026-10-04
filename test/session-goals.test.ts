@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { SessionGoal } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { GOAL_MAX_CHARS } from "../src/shared/goal.ts";
+import { GOAL_MAX_CHARS, resolvedSessionIntent } from "../src/shared/goal.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
@@ -120,6 +120,42 @@ test("a background task reporting in never overwrites the captured ask", () => {
     }),
   );
   assert.equal(r.getGoal(s.id)?.prompt, "fix the reset bug");
+});
+
+test("a subagent hand-back never becomes a prompt revision", () => {
+  // The revision is half of the intent episode key that stamps workflow evidence, so a
+  // hand-back counted here hid the agent's registered evidence from Foreman's verifier.
+  const { r, s, env } = withSession("g2b", "%12b");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "fix the reset bug" }));
+  // Resolve the opening ask the way the intent refiner does, so evidence has an episode to
+  // be stamped with. Workflow evidence staging and Foreman's verifier filter both read this
+  // same `resolvedSessionIntent(...).episodeKey`, so it is the whole visibility contract.
+  r.upsertGoal(s.id, {
+    objective: "fix the reset bug",
+    relationship: "initial",
+    rationale: "Initial task objective",
+    objectiveVersion: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+  });
+  const stampedAtRegistration = resolvedSessionIntent(r.getGoal(s.id))?.episodeKey;
+  assert.equal(stampedAtRegistration, "intent:1:1");
+  r.applyHook(
+    evt({
+      event: "UserPromptSubmit",
+      env,
+      prompt: "<agent-message from=\"a6961b05d1246c869\">\n[Subagent hand-back] Found it in store.ts.\n</agent-message>",
+    }),
+  );
+  assert.equal(r.getGoal(s.id)?.prompt, "fix the reset bug");
+  assert.equal(r.getGoal(s.id)?.promptRevision, 1);
+  // Counted, the hand-back left revision 2 pending (or resolved `unclear`), the intent went
+  // null, and evidence registered then or before stopped matching the verifier's episode.
+  assert.equal(
+    resolvedSessionIntent(r.getGoal(s.id))?.episodeKey,
+    stampedAtRegistration,
+    "evidence registered before the hand-back must stay visible to the verifier after it",
+  );
 });
 
 test("a goal survives a restart and re-attaches by agent session id", () => {

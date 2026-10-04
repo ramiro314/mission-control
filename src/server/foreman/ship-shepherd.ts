@@ -1,11 +1,12 @@
 import { isActiveTask } from "@shared/task-status.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
+import { isPlanningTaskKind, isShippingTaskKind } from "@shared/task.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { settledIdle } from "@shared/session.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
 import { workflowEvidenceRequirement } from "@shared/task-completion.ts";
 import type {
   PromptedCompletionDecision,
+  TaskKind,
   PromptedRecoveryReason,
   PromptedRecoveryState,
   Session,
@@ -66,6 +67,19 @@ interface RecoveryCause {
 }
 
 type ShipRecoveryTiming = "quiet-window" | "immediate-held";
+
+/**
+ * Task kinds the pre-PR shepherd acts for at all. The worker, the daemon's claim route and the
+ * policy below all ask this one question, so none of them can widen recovery alone.
+ *
+ * Planning kinds are here for one cause only, which `decideShipRecovery` enforces: a held
+ * completion's blocking gaps. Without it a held plan or shape completion was consumed in
+ * silence - the agent never heard the gaps, nothing re-armed the claim, and the bound
+ * Workflow never started. Every other cause's instruction is an implementation instruction.
+ */
+export function takesShipRecovery(kind: TaskKind | null | undefined): boolean {
+  return isShippingTaskKind(kind) || isPlanningTaskKind(kind);
+}
 
 /** Server-time wait after a successfully claimed delivery attempt. */
 export function nextShipRecoveryAt(attempt: number, now: number): number | null {
@@ -128,7 +142,7 @@ function decideShipRecovery(
   const { session: s, queue, now } = input;
   const task = s.task;
   if (!input.featureEnabled) return skip("pre-PR ship recovery is off");
-  if (!task || !isShippingTaskKind(task.kind) || !isActiveTask(task.status)) {
+  if (!task || !takesShipRecovery(task.kind) || !isActiveTask(task.status)) {
     return skip("no running managed task is bound");
   }
   if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
@@ -161,6 +175,9 @@ function decideShipRecovery(
 
   const cause = recoveryCause(queue, cycle.generation, input.diffHasChanges, input.episodeKey);
   if (!cause) return skip("prompted completion or another owner still owns this state");
+  if (isPlanningTaskKind(task.kind) && cause.reason !== "held_gaps") {
+    return skip("a planning task takes only held-gap recovery");
+  }
   const terminalMarker = shipRecoveryMarker({
     taskId: task.id,
     logicalKey: queue.noteKey,
@@ -242,7 +259,7 @@ function decideShipRecovery(
     episodeKey: input.episodeKey,
     attempt,
     marker,
-    payload: structuralPayload(cause, input.workflowEvidenceEligible),
+    payload: structuralPayload(cause, input.workflowEvidenceEligible, isPlanningTaskKind(task.kind)),
     needsReview: cause.reason === "idle_ambiguous",
     decision: cause.decision,
   };
@@ -275,7 +292,11 @@ function recoveryCause(
   return { reason: diffHasChanges ? "idle_ambiguous" : "idle_empty", decision: null };
 }
 
-function structuralPayload(cause: RecoveryCause, workflowEvidenceEligible: boolean): string | null {
+function structuralPayload(
+  cause: RecoveryCause,
+  workflowEvidenceEligible: boolean,
+  planning: boolean,
+): string | null {
   switch (cause.reason) {
     case "held_gaps": {
       const storedGaps = cause.decision?.gaps ?? [];
@@ -285,15 +306,21 @@ function structuralPayload(cause: RecoveryCause, workflowEvidenceEligible: boole
       const summary = cause.decision?.summary ?? "";
       const obsoleteHold = !workflowEvidenceEligible && gaps.length === 0
         && (storedGaps.length > 0 || workflowRegistrationOnly(summary));
+      // Planning keeps push inside its own turn (see PLAN_CONTRACT), and its work is the plan:
+      // telling it to finish an "implementation" is how a shaping agent starts building.
+      const work = planning ? "plan" : "implementation";
       const detail = gaps.length > 0
         ? gaps.map((gap, i) => `${i + 1}. ${gap.path ? `${gap.path}: ` : ""}${gap.detail}`).join("\n")
         : obsoleteHold
-          ? "Recheck the requested implementation, documentation, and focused verification against the task objective."
-          : summary || "The completion review found unfinished implementation work.";
+          ? `Recheck the requested ${work}, documentation, and focused verification against the task objective.`
+          : summary || `The completion review found unfinished ${work} work.`;
       const heading = obsoleteHold
         ? "Foreman's previous evidence-registration hold no longer applies:"
-        : "Foreman's completion review found blocking work that still belongs in this implementation turn:";
-      return `${heading}\n\n${detail}\n\n${workflowEvidenceRequirement(workflowEvidenceEligible)}\n\nAddress only these applicable implementation, documentation, test, or evidence gaps. Commit the scoped work locally on the task branch, but do not push, create a pull request, merge, or expand repository scope. When the requested work is verified and committed locally, report completion and end the turn so Mission Control can re-run the normal handoff.`;
+        : `Foreman's completion review found blocking work that still belongs in this ${planning ? "planning" : "implementation"} turn:`;
+      const boundary = planning
+        ? "Address only these applicable plan, documentation, verification, or evidence gaps, and do not implement the plan. Commit and push the scoped plan changes on the task branch, but do not create a pull request, merge, or expand repository scope. When the gaps are resolved, report completion and end the turn so Mission Control can re-run the normal handoff."
+        : "Address only these applicable implementation, documentation, test, or evidence gaps. Commit the scoped work locally on the task branch, but do not push, create a pull request, merge, or expand repository scope. When the requested work is verified and committed locally, report completion and end the turn so Mission Control can re-run the normal handoff.";
+      return `${heading}\n\n${detail}\n\n${workflowEvidenceRequirement(workflowEvidenceEligible)}\n\n${boundary}`;
     }
     case "idle_empty":
       return `This invited task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation and focused verification, commit the scoped work locally on the task branch, then report completion and end the turn. ${workflowEvidenceRequirement(workflowEvidenceEligible)} Do not push, create a pull request, merge, delete work, or expand repository scope.`;

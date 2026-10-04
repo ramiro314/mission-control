@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **10** (plus 2 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **9** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -50,11 +50,11 @@ or issues.
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
-| CodeQL advanced setup | Active | #65 |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
-| PR merge-conflict reactions | Active (signal and chip only) | Pending (branch `feat/pr-merge-conflict-signal`) |
+| PR merge-conflict reactions | Active (signal and chip only) | #108 |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
+| CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
 | Standalone fixes | Not a feature | #4, #13, #15, #18, #19, #21, #22, #23, #24, #33 |
 
 
@@ -589,35 +589,6 @@ conceptual conflicts.
 **Fork-only files.** `docs/upstream-sync.md`, `docs/fork/`, `.agents/memory/upstream-sync.md`,
 `docs/plans/upstream-sync/`.
 
-### CodeQL advanced setup
-
-| Field | Value |
-| --- | --- |
-| Status | **Active** |
-| PRs | #65 |
-| Plan docs | None; the runbook's fork-only surface list records it |
-| Upstream candidate | No. The exclusion exists because upstream's test code looks new to the fork at every sync. |
-
-**Intent.** Code scanning through a committed workflow instead of GitHub's default setup, so
-`e2e/` and `test/` can be excluded. Otherwise every sync reports upstream's test code as new
-alerts on the fork.
-
-**Behavior contracts.**
-
-- CodeQL runs on pushes and PRs to `main` and weekly, over the same four languages default setup
-  scanned, with `paths-ignore: [e2e, test]`.
-- The repository's CodeQL default setup stays disabled in GitHub settings.
-
-**Upstream behavior it assumes.**
-
-- Upstream has no `.github/workflows/codeql.yml` of its own. If it adds one, the conflict policy
-  applies.
-- Test code stays under `e2e/` and `test/`.
-
-**Upstream surfaces touched.** None; both files are fork-only.
-
-**Fork-only files.** `.github/workflows/codeql.yml`, `.github/codeql/codeql-config.yml`.
-
 ### Persona reasoning effort
 
 | Field | Value |
@@ -677,7 +648,7 @@ editor, version history and run views.
 | Field | Value |
 | --- | --- |
 | Status | **Active**, first ticket: the mergeability signal and the PR chip mark |
-| PRs | Pending (branch `feat/pr-merge-conflict-signal`) |
+| PRs | #108 |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
 
@@ -763,6 +734,22 @@ lockfile. The sync deleted `.github/dependabot.yml`, rolled every dependency bac
 version, and closed the open Dependabot PRs. The fork now takes new versions only through the
 sync.
 
+### CodeQL advanced setup
+
+| Field | Value |
+| --- | --- |
+| Status | **Removed** 2026-10-04, PR pending |
+| PRs | #65 |
+| Plan docs | None |
+| Upstream candidate | No. |
+
+**Intent (as built).** Code scanning through a committed workflow instead of GitHub's default
+setup, so `e2e/` and `test/` could be excluded from alerts.
+
+**Why it was removed.** The fork no longer runs CodeQL. The removal deleted
+`.github/workflows/codeql.yml` and `.github/codeql/codeql-config.yml`. The repository's CodeQL
+default setup stays disabled, so nothing scans the fork.
+
 ## Standalone fixes
 
 Fixes that are not part of a fork feature. None had an upstream equivalent on `upstream/main`
@@ -782,6 +769,8 @@ at `104a5407` (checked by each fix's key symbol).
 | #33 | 2026-09-29 | The e2e fake `node` shim orphaned fake processes on timeout (it now `exec`s); also repairs the review-answer spec after #30. | `e2e/fixtures/conductor.ts`, `e2e/specs/review-answers-in-conversation.spec.ts` | Maybe: the shim fix is generic; the spec fix follows fork #30. |
 | pending | pending | Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with `ps` and `lsof`, at ~28 concurrent `ps` and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and `test:run` sets a 180 s per-test timeout. | `src/server/tasks.ts`, `package.json`, `test/helpers/task-manager.ts` | Yes for the backoff: upstream has the same flat 30 s retry. The `test:run` flags belong to the fork's flake-aware testing. |
 | pending | pending | 12 of the first 13 `image_evidence_capture` blocks were a session re-registering a rerun log or screenshot under a new client id: the older row for the same path stayed reserved and could never match the rewritten file. Reservation now takes only the latest registration of each checkout path. | `src/server/workflows/store.ts` | Yes: generic workflow evidence reliability. |
+| pending | pending | A subagent hand-back (Claude Code's `<agent-message>` turn) was captured as a human prompt: it bumped the prompt revision, often drew an `unclear` intent verdict, and so stamped the agent's workflow evidence with no intent episode. Foreman's verifier then saw no registered evidence and held the completion. Hand-backs are now scaffolding to the goal path. | `src/server/harness/claude/scaffolding.ts` | Yes: upstream captures the same turns. |
+| pending | pending | A held `plan` or `shape` completion was consumed in silence, so the agent never heard its gaps and the bound workflow never started. Pre-PR recovery now relays held gaps to planning kinds, and only held gaps, with a planning-turn packet. Related to Shape tasks, grill and tickets. | `src/server/foreman/ship-shepherd.ts`, `src/server/foreman/worker.ts`, `src/server/routes.ts`, `src/web/components/ForemanBar.tsx` | Maybe: the `plan` half applies upstream; `shape` does not exist there. |
 
 ## Keeping this ledger current
 
