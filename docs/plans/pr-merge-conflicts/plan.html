@@ -291,10 +291,14 @@ conflict.</li>
 <p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
-<p>GitHub Inspector review on PR #103 made two more changes. Conflicts in a workflow-owned
-session whose run is not at a Wait for CI attempt are surfaced as <code>workflow-not-gating</code>.
-Episodes and escalations are matched by PR URL alone. Both are marked &quot;Inspector review&quot;
-where they appear.</p>
+<p>GitHub Inspector review on PR #103 made three more changes:</p>
+<ul>
+<li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
+surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
+<li>Episodes and escalations are matched by PR URL alone.</li>
+<li>Foreman re-sends an escalation, so it survives a daemon restart.</li>
+</ul>
+<p>Each is marked &quot;Inspector review&quot; where it appears.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
 observation to the head it was observed on (§1, §3, §4, Edge cases). It also extended the E2E
 spec to the session header and the settings toggle, on a task-backed session (Testing). These
@@ -508,14 +512,17 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p><code>nudges-exhausted</code>: Foreman reported an escalation for this episode (see §3).</p>
 </li>
-<li><p><code>workflow-not-gating</code>: an active workflow owns the session (<code>activeWorkflowOwnsSession</code>), so Foreman stays out, but the run is <strong>not</strong> currently at a Wait for CI attempt watching this PR. This covers two cases (Inspector review):</p>
+<li><p><code>workflow-not-gating</code>: an active workflow owns the session (<code>activeWorkflowOwnsSession</code>), so Foreman stays out, but <strong>no Wait for CI node is reachable</strong> from the run&#39;s active node(s) for this PR (Inspector review, round 2). There are two such cases:</p>
 <ul>
-<li>The workflow has no Wait for CI node.</li>
-<li>The base moved after Wait for CI had already passed, and the run is now in a later node.</li>
+<li>The workflow has no Wait for CI node for this binding.</li>
+<li>Every Wait for CI node is behind the active node. For example, the base moved after the last Wait for CI passed and the run is in a later node with no edge back to one.</li>
 </ul>
 <p>The Pull Request action&#39;s conflict line is read once at dispatch and cannot react later, so the conflict is surfaced to the operator.</p>
 </li>
-<li><p><strong>Handled by the workflow:</strong> the owning run&#39;s active node is a Wait for CI attempt whose <code>pullRequestKey</code> is this PR. That node fails on the conflict and starts a repair round (§4), and the run&#39;s existing budget and <code>workflow-repeat</code> alerts take over from there. Such an episode is not unhandled.</p>
+<li><p><strong>Handled by the workflow:</strong> a Wait for CI node for this run&#39;s binding (the same repository, so the same PR) is the active node, or is reachable from it along the version graph&#39;s edges. That includes a run on the Pull Request action upstream of Wait for CI, and a repair round whose edges loop back to Wait for CI. Such an episode is not unhandled. That node fails on the conflict when the run reaches it and starts a repair round (§4), and the run&#39;s existing budget and <code>workflow-repeat</code> alerts take over from there.</p>
+<ul>
+<li>Reachability is a pure graph walk over <code>version.graph</code> from the active node ids, in <code>src/shared/workflow.ts</code>. Membership is recomputed whenever the run changes, so an alert cannot flap as the run moves between nodes that can all still reach Wait for CI.</li>
+</ul>
 </li>
 </ul>
 </li>
@@ -551,6 +558,14 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>The session has been settled-idle for 2 minutes (<code>CONFLICT_GIVE_UP_MS</code>) while the current head is still the one it was nudged about and is observed <code>conflicting</code>. In other words, the agent parked without pushing a fix. A new head, even one whose mergeability is still unknown, means the agent did push, and it does not count as giving up.</li>
 </ul>
 <p>The escalation is also logged and recorded as an episode, like the ship shepherd&#39;s escalations.</p>
+</li>
+<li><p><strong>Escalation survives a daemon restart</strong> (Inspector review, round 2).</p>
+<ul>
+<li>The mark gains <code>conflictEscalated: boolean</code>.</li>
+<li>While Foreman holds an escalated mark for a PR that is still observed <code>conflicting</code>, it re-sends the escalation at most once a minute (<code>CONFLICT_ESCALATE_RESEND_MS</code>).</li>
+<li>The route is idempotent, so the re-send is a no-op on a daemon that already holds the flag. A restarted daemon re-learns <code>nudges-exhausted</code> within a minute instead of dropping the PR out of the inbox.</li>
+<li>The mark resets, and re-sending stops, when the episode re-arms.</li>
+</ul>
 </li>
 <li><p><strong>Payload.</strong> <code>buildPayload</code> gains a conflict problem line: &quot;it has merge conflicts with <code>&lt;base&gt;</code>&quot;. It also gains these steps:</p>
 <ol>
@@ -630,7 +645,12 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><p><strong>Daemon or Foreman restart.</strong></p>
 <ul>
 <li>Episodes and Foreman marks are in memory, so a restart can buy up to 3 more nudges. That is still bounded.</li>
-<li>Escalation is recomputed. <code>session-gone</code> and <code>foreman-cannot-nudge</code> are re-derived from live state on the first poll.</li>
+<li>Escalation is recomputed:<ul>
+<li><code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code> are re-derived from live state on the first poll.</li>
+<li><code>nudges-exhausted</code> is restored by Foreman&#39;s escalation re-send (§3) within a minute.</li>
+<li>If Foreman restarts instead, the daemon keeps its escalated episode in the inbox while Foreman&#39;s fresh mark may nudge up to 3 more times.</li>
+</ul>
+</li>
 </ul>
 </li>
 <li><p><strong>Multi-repo task.</strong> There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.</p>
@@ -639,7 +659,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then.</p>
 </li>
-<li><p><strong>Workflow without a live Wait for CI</strong> (Inspector review). The run has no Wait for CI node, or the base moved after Wait for CI passed. The episode is <code>workflow-not-gating</code> and goes to the inbox. Foreman still does not type into the session, because the workflow owns it.</p>
+<li><p><strong>Workflow without a reachable Wait for CI</strong> (Inspector review). The run has no Wait for CI node, or the base moved after the last reachable Wait for CI. The episode is <code>workflow-not-gating</code> and goes to the inbox. Foreman still does not type into the session, because the workflow owns it. A run upstream of Wait for CI, or in a repair loop back to it, is handled and raises nothing.</p>
 </li>
 <li><p><strong>Conflict spanning several heads.</strong> The episode stays one episode keyed by PR URL, and <code>headSha</code> tracks the latest conflicting head.</p>
 </li>
@@ -662,8 +682,13 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><code>pr-conflicts.ts</code>:<ul>
 <li>Episode open and close.</li>
 <li>Each unhandled reason.</li>
-<li>A workflow-owned session whose run is at a Wait for CI attempt for this PR is handled.</li>
-<li>The same session with no Wait for CI node, or with the run past it, is <code>workflow-not-gating</code>.</li>
+<li>Workflow-owned sessions:<ul>
+<li>The run is at a Wait for CI attempt for this PR: handled.</li>
+<li>The run is on the Pull Request action upstream of Wait for CI: handled.</li>
+<li>The run is in a repair round whose edges loop back to Wait for CI: handled.</li>
+<li>There is no Wait for CI node, or the run is past the last reachable one: <code>workflow-not-gating</code>.</li>
+</ul>
+</li>
 <li><code>headSha</code> advances on each new conflicting head without opening a new episode.</li>
 <li>Escalating on head 4, after nudges on heads 1 to 3, marks the open episode <code>escalated</code>.</li>
 <li>Escalation with no open episode for the URL is ignored.</li>
@@ -676,6 +701,8 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>A new head re-nudges.</li>
 <li>The cap of 3, then escalation.</li>
 <li>Idle on the nudged head for 2 minutes escalates.</li>
+<li>An escalated mark re-sends the escalation at most once a minute while the PR is still conflicting, and stops after re-arming.</li>
+<li>A restarted daemon (no episode flag) is re-marked <code>nudges-exhausted</code> by the re-send.</li>
 <li>Recovery re-arms the episode.</li>
 <li>Push, then <code>UNKNOWN</code>, then resolved: no nudge, no cap increment and no give-up escalation while B is unknown, then a re-armed mark once B is <code>mergeable</code>.</li>
 <li><code>trackMergeConflicts</code> off skips.</li>
