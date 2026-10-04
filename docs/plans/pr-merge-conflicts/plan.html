@@ -291,6 +291,10 @@ conflict.</li>
 <p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
+<p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
+observation to the head it was observed on (§1, §3, §4, Edge cases). It also extended the E2E
+spec to the session header and the settings toggle, on a task-backed session (Testing). These
+changes are marked &quot;repair round 1&quot; where they appear. No recorded human answer changed.</p>
 <h2 id="goals">Goals</h2>
 <ul>
 <li>Every open PR a session or task owns is checked for conflicts, with no Inspector, YOLO mode
@@ -452,17 +456,24 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p>Normalise GitHub&#39;s value to a shared <code>PrMergeable = &quot;mergeable&quot; | &quot;conflicting&quot;</code>, defined in <code>src/shared/</code>.</p>
 <ul>
-<li><code>UNKNOWN</code> maps to &quot;no observation&quot;. The reconciler keeps the previous value, the same way the <code>&quot;error&quot;</code> lookup is handled today.</li>
+<li><code>UNKNOWN</code> maps to &quot;no observation&quot;. The reconciler keeps the previous observation, the same way the <code>&quot;error&quot;</code> lookup is handled today.</li>
 <li>GitHub computes mergeability lazily, so the first read after a push is often <code>UNKNOWN</code>.</li>
 </ul>
 </li>
 <li><p>New session snapshot fields (<code>src/shared/types.ts</code>):</p>
 <ul>
-<li><code>prMergeable: PrMergeable | null</code></li>
+<li><code>prMergeable: { state: PrMergeable; headSha: string } | null</code>. This is <strong>an observation bound to the head it was made on</strong> (repair round 1). <code>headSha</code> is the <code>headRefOid</code> GitHub returned in the same response that carried the definitive <code>MERGEABLE</code> / <code>CONFLICTING</code>.</li>
 <li><code>prBaseRef: string | null</code></li>
-<li><code>prHeadSha: string | null</code></li>
+<li><code>prHeadSha: string | null</code>, the PR&#39;s current head, which advances on every read.</li>
 </ul>
-<p>They are set and cleared exactly when <code>prState</code> / <code>prChecks</code> are. A multi-repo task carries the same three fields on each <code>repoPrs[].feedback</code> entry.</p>
+<p>They are set and cleared exactly when <code>prState</code> / <code>prChecks</code> are, with one exception. On <code>UNKNOWN</code>, <code>prHeadSha</code> advances to the new head, but <code>prMergeable</code> is kept <strong>whole, including its old <code>headSha</code></strong>. A kept observation therefore never claims to describe a head GitHub did not report it for. A multi-repo task carries the same three fields on each <code>repoPrs[].feedback</code> entry.</p>
+</li>
+<li><p><strong>One reading rule</strong> for every consumer. <code>currentMergeability(pr)</code> in <code>src/shared/</code> returns <code>prMergeable.state</code> only when <code>prMergeable.headSha === prHeadSha</code>, and <code>null</code> otherwise. <code>null</code> means &quot;not yet known for this head&quot;.</p>
+<ul>
+<li>The chip, conflict episodes and Foreman read through it.</li>
+<li>Wait for CI compares the observation&#39;s own <code>headSha</code> with its <code>expectedHeadOid</code> (§4).</li>
+<li>So the sequence &quot;conflicting on head A, push head B, <code>UNKNOWN</code>&quot; reads as unknown on B, never as conflicting on B.</li>
+</ul>
 </li>
 <li><p>No schema change. These are live observations, like <code>prChecks</code>.</p>
 </li>
@@ -471,8 +482,9 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <p>This is the one daemon-side owner of &quot;is this conflict handled?&quot;. It is in-memory and keyed by PR URL.</p>
 <ul>
 <li><strong>Episode lifecycle.</strong><ul>
-<li>An episode opens on the first <code>conflicting</code> observation, from either poll path.</li>
+<li>An episode opens on the first <code>conflicting</code> observation for the current head (<code>currentMergeability</code>), from either poll path.</li>
 <li>It closes when the PR is observed <code>mergeable</code>, merged, or closed, or when no session and no task reference it any longer.</li>
+<li>While the current head&#39;s mergeability is unknown, for example straight after a fix push, an open episode stays as it is. It is neither closed nor re-opened until GitHub answers for that head.</li>
 <li>It records <code>since</code>, <code>baseRef</code>, <code>headSha</code>, <code>taskId</code>, <code>sessionId</code> and <code>escalated</code>.</li>
 </ul>
 </li>
@@ -500,23 +512,26 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </ul>
 <h3 id="3-foreman-the-conflict-dimension-srcserverforemanreview-followupts-workerts">3. Foreman: the conflict dimension (<code>src/server/foreman/review-followup.ts</code>, <code>worker.ts</code>)</h3>
 <ul>
-<li><p><strong>Setting.</strong> Add <code>trackMergeConflicts: z.boolean().default(true)</code> beside <code>trackCiFailures</code> (<code>src/shared/protocol.ts:2002</code>). Add its toggle in Foreman settings beside the other two follow-through toggles. Gate 1 skips only when all three are off.</p>
+<li><p><strong>Setting.</strong> Add <code>trackMergeConflicts: z.boolean().default(true)</code> beside <code>trackCiFailures</code> (<code>src/shared/protocol.ts:2002</code>). Add its toggle, <strong>Keep sessions on track with merge conflicts</strong>, in Foreman settings beside the other two follow-through toggles (<code>src/web/components/ForemanBar.tsx:672</code>, <code>:682</code>). Gate 1 skips only when all three are off.</p>
 </li>
-<li><p><strong>Feedback.</strong> <code>feedbackState</code> gains <code>conflicting = cfg.trackMergeConflicts &amp;&amp; pr.mergeable === &quot;conflicting&quot;</code>. <code>FollowupPr</code> carries <code>mergeable</code>, <code>baseRef</code> and <code>headSha</code> from <code>followupPrs</code>.</p>
+<li><p><strong>Feedback.</strong> <code>feedbackState</code> gains <code>conflicting = cfg.trackMergeConflicts &amp;&amp; currentMergeability(pr) === &quot;conflicting&quot;</code>. <code>FollowupPr</code> carries <code>mergeable</code> (the head-bound observation), <code>baseRef</code> and <code>headSha</code> from <code>followupPrs</code>.</p>
+<ul>
+<li>A kept observation from an earlier head is not <code>conflicting</code>. A session that just pushed its fix is therefore neither nudged nor counted toward the cap while GitHub is still computing (repair round 1).</li>
+</ul>
 </li>
 <li><p><strong>Mark.</strong> <code>FollowupMark</code> gains:</p>
 <ul>
-<li><code>conflictHead: string | null</code>, the head SHA last nudged.</li>
+<li><code>conflictHead: string | null</code>, the head SHA last nudged. It is the observation&#39;s own <code>headSha</code>.</li>
 <li><code>conflictNudges: number</code>.</li>
 </ul>
-<p><code>advanceFollowupMark</code> resets both when the PR is no longer <code>conflicting</code>, which re-arms the episode.</p>
+<p><code>advanceFollowupMark</code> resets both only when the current head is observed <code>mergeable</code>, which re-arms the episode. An unknown current head leaves the mark untouched.</p>
 </li>
-<li><p><strong>When to nudge.</strong> The PR is <code>conflicting</code>, its head is not <code>conflictHead</code>, and <code>conflictNudges &lt; 3</code>. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.</p>
+<li><p><strong>When to nudge.</strong> The current head is observed <code>conflicting</code>, that head is not <code>conflictHead</code>, and <code>conflictNudges &lt; 3</code>. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.</p>
 </li>
 <li><p><strong>When to escalate.</strong> The worker calls the escalation route once per episode in either of these cases:</p>
 <ul>
-<li>The PR is still <code>conflicting</code> on a new head after 3 nudges.</li>
-<li>The session has been settled-idle for 2 minutes (<code>CONFLICT_GIVE_UP_MS</code>) while the PR is still <code>conflicting</code> on the head it was nudged about. In other words, the agent parked without pushing a fix.</li>
+<li>A new head is observed <code>conflicting</code> after 3 nudges.</li>
+<li>The session has been settled-idle for 2 minutes (<code>CONFLICT_GIVE_UP_MS</code>) while the current head is still the one it was nudged about and is observed <code>conflicting</code>. In other words, the agent parked without pushing a fix. A new head, even one whose mergeability is still unknown, means the agent did push, and it does not count as giving up.</li>
 </ul>
 <p>The escalation is also logged and recorded as an episode, like the ship shepherd&#39;s escalations.</p>
 </li>
@@ -534,7 +549,8 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <h3 id="4-workflows-srcsharedwait-for-cits-srcserverworkflowsenginets-agent-contractts">4. Workflows (<code>src/shared/wait-for-ci.ts</code>, <code>src/server/workflows/engine.ts</code>, <code>agent-contract.ts</code>)</h3>
 <ul>
 <li><strong>Wait for CI.</strong> <code>decideWaitForCi</code> takes an extra <code>mergeability: { mergeable: PrMergeable; headSha: string; baseRef: string | null } | null</code> input.<ul>
-<li>The engine reads it from the bound session&#39;s <code>prMergeable</code> / <code>prHeadSha</code> / <code>prBaseRef</code>, or from its <code>repoPrs</code> entry for a per-repository binding. It comes through the same seam as <code>observe</code>.</li>
+<li>The engine reads it from the bound session&#39;s <code>prMergeable</code> observation and <code>prBaseRef</code>, or from its <code>repoPrs</code> entry for a per-repository binding. It comes through the same seam as <code>observe</code>.</li>
+<li><code>headSha</code> is the <strong>observation&#39;s own</strong> head (<code>prMergeable.headSha</code>), never the session&#39;s current <code>prHeadSha</code>. A conflict observed on the pre-repair head therefore cannot match the post-repair <code>expectedHeadOid</code>. The node waits until GitHub answers for the new head (repair round 1).</li>
 <li>When it is <code>conflicting</code> and <code>headSha</code> matches <code>expectedHeadOid</code>, the node returns <code>fail</code> with a conflict cause. It does this before the pending, missing-check and timeout branches, because a conflicting PR may never get checks.</li>
 <li><code>waitForCiVerdict</code> turns that into one requested change: &quot;Resolve merge conflicts with <code>&lt;base&gt;</code>&quot;. Its rationale repeats the resolution method from decision 7.</li>
 <li>The <code>fail</code> edge then runs the run&#39;s ordinary repair round, which counts against the repair budget (decision 11).</li>
@@ -549,7 +565,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <h3 id="5-dashboard">5. Dashboard</h3>
 <ul>
 <li><strong>PR chip</strong> (<code>src/web/components/session-bits.tsx:1635</code>).<ul>
-<li>When <code>prMergeable === &quot;conflicting&quot;</code> (or any <code>repoPrs</code> entry is conflicting), the chip shows a conflict icon. Its accessible name is &quot;Conflicts with <code>&lt;base&gt;</code>&quot;.</li>
+<li>When <code>currentMergeability</code> is <code>&quot;conflicting&quot;</code> (or is for any <code>repoPrs</code> entry), the chip shows a conflict icon. Its accessible name is &quot;Conflicts with <code>&lt;base&gt;</code>&quot;.</li>
 <li>It appears on cards and in the session header, next to the failing-CI icon.</li>
 </ul>
 </li>
@@ -583,24 +599,41 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </ul>
 <h2 id="edge-cases">Edge cases</h2>
 <ul>
-<li><strong><code>UNKNOWN</code> forever.</strong> GitHub sometimes never settles. The last known value stands, and the PR is never flagged on <code>UNKNOWN</code> alone.</li>
-<li><strong>Daemon or Foreman restart.</strong><ul>
+<li><p><strong><code>UNKNOWN</code> forever.</strong> GitHub sometimes never settles. The last definitive observation stands with the head it was made on, and the PR is never flagged on <code>UNKNOWN</code> alone.</p>
+</li>
+<li><p><strong>Push, then <code>UNKNOWN</code>, then resolved</strong> (repair round 1). The kept <code>conflicting</code> observation stays on the old head, so the new head reads as unknown:</p>
+<ul>
+<li>Wait for CI keeps waiting.</li>
+<li>Foreman neither nudges nor counts the push toward the cap.</li>
+<li>The chip mark is hidden.</li>
+<li>An open episode is left as it is.</li>
+</ul>
+<p>The next definitive read settles it: <code>MERGEABLE</code> closes the episode and re-arms the mark, and <code>CONFLICTING</code> on the new head is a genuinely new conflict.</p>
+</li>
+<li><p><strong>Daemon or Foreman restart.</strong></p>
+<ul>
 <li>Episodes and Foreman marks are in memory, so a restart can buy up to 3 more nudges. That is still bounded.</li>
 <li>Escalation is recomputed. <code>session-gone</code> and <code>foreman-cannot-nudge</code> are re-derived from live state on the first poll.</li>
 </ul>
 </li>
-<li><strong>Multi-repo task.</strong> There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.</li>
-<li><strong>CI dimension silent on a conflict.</strong> GitHub runs no <code>pull_request</code> checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.</li>
-<li><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then.</li>
-<li><strong>PR closed or merged while blocked.</strong> The episode closes, and the inbox row and chip mark clear.</li>
-<li><strong>Draft PRs.</strong> They are treated the same way. A draft can still conflict, and the fix is the same.</li>
+<li><p><strong>Multi-repo task.</strong> There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.</p>
+</li>
+<li><p><strong>CI dimension silent on a conflict.</strong> GitHub runs no <code>pull_request</code> checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.</p>
+</li>
+<li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then.</p>
+</li>
+<li><p><strong>PR closed or merged while blocked.</strong> The episode closes, and the inbox row and chip mark clear.</p>
+</li>
+<li><p><strong>Draft PRs.</strong> They are treated the same way. A draft can still conflict, and the fix is the same.</p>
+</li>
 </ul>
 <h2 id="testing">Testing</h2>
 <p>Focused unit tests in <code>test/</code>, using <code>node:test</code>:</p>
 <ul>
 <li><code>pr.ts</code> reconciliation:<ul>
 <li><code>CONFLICTING</code> → <code>prMergeable: &quot;conflicting&quot;</code>.</li>
-<li><code>UNKNOWN</code> keeps the previous value.</li>
+<li><code>UNKNOWN</code> keeps the previous observation with its old <code>headSha</code>, while <code>prHeadSha</code> advances.</li>
+<li>Push, then <code>UNKNOWN</code>, then resolved: <code>currentMergeability</code> is <code>conflicting</code> on head A, <code>null</code> on head B under <code>UNKNOWN</code>, then <code>mergeable</code> on B.</li>
 <li>Merged or closed clears it.</li>
 <li>The by-URL path covers an exited session&#39;s task.</li>
 </ul>
@@ -620,6 +653,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>The cap of 3, then escalation.</li>
 <li>Idle on the nudged head for 2 minutes escalates.</li>
 <li>Recovery re-arms the episode.</li>
+<li>Push, then <code>UNKNOWN</code>, then resolved: no nudge, no cap increment and no give-up escalation while B is unknown, then a re-armed mark once B is <code>mergeable</code>.</li>
 <li><code>trackMergeConflicts</code> off skips.</li>
 <li>The payload contains the merge steps and the no-rebase line.</li>
 </ul>
@@ -627,6 +661,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li><code>wait-for-ci.ts</code>:<ul>
 <li>Conflicting on the expected head → <code>fail</code> with the conflict change, even with zero checks.</li>
 <li>Conflicting on another head → wait.</li>
+<li>Push, then <code>UNKNOWN</code>, then resolved: a kept <code>conflicting</code> observation on the pre-repair head with <code>expectedHeadOid</code> set to the new head → wait, not <code>fail</code>. Then <code>mergeable</code> on the new head lets the checks decide.</li>
 </ul>
 </li>
 <li><code>agent-contract.ts</code>: the conflict line is present only when <code>trackMergeConflicts</code> is on.</li>
@@ -637,11 +672,23 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 </ul>
 <p>E2E, in <code>e2e/specs/pr-merge-conflicts.spec.ts</code>:</p>
+<p><strong>Fixture precondition</strong> (repair round 1).</p>
+<ul>
+<li>The session is <strong>task-backed</strong>. A dispatched task records the PR URL on its work episode, so <code>taskPrPollTargets</code> keeps polling it after the session exits; <code>prPollTargets</code> skips exited sessions.</li>
+<li>A fake <code>gh</code> on <code>PATH</code> answers both <code>gh pr list --head &lt;branch&gt;</code> and <code>gh pr view &lt;url&gt;</code> with <code>mergeable</code>, <code>baseRefName</code> and <code>headRefOid</code> alongside the fields each call already requests. Specs such as <code>workflow-pull-request-mismatch.spec.ts</code> already fake <code>gh</code> this way.</li>
+</ul>
+<p><strong>Steps.</strong></p>
 <ol>
-<li>A fake <code>gh</code> on <code>PATH</code> reports a session&#39;s PR as <code>CONFLICTING</code>. Specs such as <code>workflow-pull-request-mismatch.spec.ts</code> already fake <code>gh</code> this way.</li>
-<li>Assert the chip&#39;s &quot;Conflicts with main&quot; mark on the card.</li>
-<li>Exit the session and assert the <strong>Blocked pull requests</strong> inbox row with &quot;session ended&quot;.</li>
-<li>Flip the fake to <code>MERGEABLE</code> and assert that the row and the mark disappear.</li>
+<li>The fake reports the task&#39;s PR as <code>CONFLICTING</code> against <code>main</code>.</li>
+<li>Assert the &quot;Conflicts with main&quot; mark on the PR chip on the session&#39;s <strong>card</strong>.</li>
+<li>Open the session and assert the same mark in the <strong>session header</strong>.</li>
+<li>Open Foreman settings and assert:<ul>
+<li>The <strong>Keep sessions on track with merge conflicts</strong> checkbox is present beside the CI and review-comment toggles, and checked by default.</li>
+<li>Unchecking it persists across a reload.</li>
+</ul>
+</li>
+<li>Exit the session and assert the <strong>Blocked pull requests</strong> inbox row with &quot;session ended&quot;. The row is fed by the by-URL poller.</li>
+<li>Flip the fake to <code>MERGEABLE</code> and assert that the row and the chip mark disappear.</li>
 </ol>
 <p>All selection is by role and label.</p>
 <h2 id="definition-of-done">Definition of done</h2>
