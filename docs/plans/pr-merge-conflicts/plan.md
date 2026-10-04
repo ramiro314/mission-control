@@ -19,7 +19,7 @@ Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.
 
-GitHub Inspector review on PR #103 (rounds 1 to 4) made these changes:
+GitHub Inspector review on PR #103 (rounds 1 to 5) made these changes:
 
 - A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
   surfaced as `workflow-not-gating`. Round 2 narrowed this from "not at one right now".
