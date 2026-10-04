@@ -24,7 +24,8 @@ GitHub Inspector review on PR #103 made three more changes:
 - A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
   surfaced as `workflow-not-gating`. Round 2 narrowed this from "not at one right now".
 - Episodes and escalations are matched by PR URL alone.
-- Foreman re-sends an escalation, so it survives a daemon restart.
+- Foreman re-sends an escalation, so it survives a daemon restart. In round 3, the daemon's
+  escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.
 
 Each is marked "Inspector review" where it appears.
 
@@ -157,6 +158,7 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
   - **Handled by the workflow:** a Wait for CI node for this run's binding (the same repository, so the same PR) is the active node, or is reachable from it along the version graph's edges. That includes a run on the Pull Request action upstream of Wait for CI, and a repair round whose edges loop back to Wait for CI. Such an episode is not unhandled. That node fails on the conflict when the run reaches it and starts a repair round (§4), and the run's existing budget and `workflow-repeat` alerts take over from there.
     - Reachability is a pure graph walk over `version.graph` from the active node ids, in `src/shared/workflow.ts`. Membership is recomputed whenever the run changes, so an alert cannot flap as the run moves between nodes that can all still reach Wait for CI.
 - **Publication.** The set of unhandled episodes goes out as a new `blocked_prs` snapshot `ServerEvent`. It is emitted when the set changes, and on connect. `src/web/useEventStream.ts` handles it exhaustively, per the change contracts.
+- **Escalation on the snapshot** (Inspector review, round 3). The session snapshot carries `prConflictEscalated: boolean`, and the same flag sits on each `repoPrs[].feedback` entry. It is true while the PR's open episode is marked `escalated`. Foreman reads it through `followupPrs`, as it does every other PR fact.
 - **Foreman's escalation route.** `POST /api/pr-conflicts/escalate` takes `{ prUrl, headSha }`. Its body is parsed with a Zod schema.
   - It finds the open episode **by `prUrl` alone** and marks it `escalated`. `headSha` is recorded as the head Foreman escalated on.
   - It does nothing only when no episode is open for that URL.
@@ -172,7 +174,9 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
   - `conflictNudges: number`.
 
   `advanceFollowupMark` resets both only when the current head is observed `mergeable`, which re-arms the episode. An unknown current head leaves the mark untouched.
-- **When to nudge.** The current head is observed `conflicting`, that head is not `conflictHead`, and `conflictNudges < 3`. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.
+- **When to nudge.** The current head is observed `conflicting`, that head is not `conflictHead`, `conflictNudges < 3`, **and the PR's `prConflictEscalated` is false**.
+  - An escalated episode belongs to the operator. Foreman seeds `conflictEscalated = true` from the snapshot and stays silent until the episode re-arms (Inspector review, round 3).
+  - So after a Foreman restart, the inbox row "Foreman's 3 nudges didn't resolve it" never coexists with a fresh nudge to the agent, and the human and the agent are never both fixing the same conflict. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.
 - **When to escalate.** The worker calls the escalation route once per episode in either of these cases:
   - A new head is observed `conflicting` after 3 nudges.
   - The session has been settled-idle for 2 minutes (`CONFLICT_GIVE_UP_MS`) while the current head is still the one it was nudged about and is observed `conflicting`. In other words, the agent parked without pushing a fix. A new head, even one whose mergeability is still unknown, means the agent did push, and it does not count as giving up.
@@ -246,7 +250,8 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
   - Escalation is recomputed:
     - `session-gone`, `foreman-cannot-nudge` and `workflow-not-gating` are re-derived from live state on the first poll.
     - `nudges-exhausted` is restored by Foreman's escalation re-send (§3) within a minute.
-    - If Foreman restarts instead, the daemon keeps its escalated episode in the inbox while Foreman's fresh mark may nudge up to 3 more times.
+    - If Foreman restarts instead, the daemon keeps its escalated episode in the inbox. Foreman's fresh mark is seeded escalated from the snapshot's `prConflictEscalated`, so it sends no further nudges (Inspector review, round 3).
+    - If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.
 - **Multi-repo task.** There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.
 - **CI dimension silent on a conflict.** GitHub runs no `pull_request` checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.
 - **Session exits mid-episode.** The next poll moves the episode to `session-gone`, and the alert fires then.
@@ -285,6 +290,7 @@ Focused unit tests in `test/`, using `node:test`:
   - Idle on the nudged head for 2 minutes escalates.
   - An escalated mark re-sends the escalation at most once a minute while the PR is still conflicting, and stops after re-arming.
   - A restarted daemon (no episode flag) is re-marked `nudges-exhausted` by the re-send.
+  - A restarted Foreman (fresh mark) on a PR whose snapshot says `prConflictEscalated: true` does not nudge, and seeds `conflictEscalated`.
   - Recovery re-arms the episode.
   - Push, then `UNKNOWN`, then resolved: no nudge, no cap increment and no give-up escalation while B is unknown, then a re-armed mark once B is `mergeable`.
   - `trackMergeConflicts` off skips.

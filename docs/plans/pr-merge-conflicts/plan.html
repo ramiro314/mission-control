@@ -296,7 +296,8 @@ follow-up. Single phase.</p>
 <li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
 surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
 <li>Episodes and escalations are matched by PR URL alone.</li>
-<li>Foreman re-sends an escalation, so it survives a daemon restart.</li>
+<li>Foreman re-sends an escalation, so it survives a daemon restart. In round 3, the daemon&#39;s
+escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.</li>
 </ul>
 <p>Each is marked &quot;Inspector review&quot; where it appears.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
@@ -527,6 +528,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </ul>
 </li>
 <li><strong>Publication.</strong> The set of unhandled episodes goes out as a new <code>blocked_prs</code> snapshot <code>ServerEvent</code>. It is emitted when the set changes, and on connect. <code>src/web/useEventStream.ts</code> handles it exhaustively, per the change contracts.</li>
+<li><strong>Escalation on the snapshot</strong> (Inspector review, round 3). The session snapshot carries <code>prConflictEscalated: boolean</code>, and the same flag sits on each <code>repoPrs[].feedback</code> entry. It is true while the PR&#39;s open episode is marked <code>escalated</code>. Foreman reads it through <code>followupPrs</code>, as it does every other PR fact.</li>
 <li><strong>Foreman&#39;s escalation route.</strong> <code>POST /api/pr-conflicts/escalate</code> takes <code>{ prUrl, headSha }</code>. Its body is parsed with a Zod schema.<ul>
 <li>It finds the open episode <strong>by <code>prUrl</code> alone</strong> and marks it <code>escalated</code>. <code>headSha</code> is recorded as the head Foreman escalated on.</li>
 <li>It does nothing only when no episode is open for that URL.</li>
@@ -550,7 +552,11 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </ul>
 <p><code>advanceFollowupMark</code> resets both only when the current head is observed <code>mergeable</code>, which re-arms the episode. An unknown current head leaves the mark untouched.</p>
 </li>
-<li><p><strong>When to nudge.</strong> The current head is observed <code>conflicting</code>, that head is not <code>conflictHead</code>, and <code>conflictNudges &lt; 3</code>. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.</p>
+<li><p><strong>When to nudge.</strong> The current head is observed <code>conflicting</code>, that head is not <code>conflictHead</code>, <code>conflictNudges &lt; 3</code>, <strong>and the PR&#39;s <code>prConflictEscalated</code> is false</strong>.</p>
+<ul>
+<li>An escalated episode belongs to the operator. Foreman seeds <code>conflictEscalated = true</code> from the snapshot and stays silent until the episode re-arms (Inspector review, round 3).</li>
+<li>So after a Foreman restart, the inbox row &quot;Foreman&#39;s 3 nudges didn&#39;t resolve it&quot; never coexists with a fresh nudge to the agent, and the human and the agent are never both fixing the same conflict. All other gates are unchanged: invite, live, idle, pane, no queue, no workflow, and live mode on an allowlisted repo. Delivery reuses the existing stamp-then-inject path, with rollback when delivery is confirmed undelivered.</li>
+</ul>
 </li>
 <li><p><strong>When to escalate.</strong> The worker calls the escalation route once per episode in either of these cases:</p>
 <ul>
@@ -648,7 +654,8 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>Escalation is recomputed:<ul>
 <li><code>session-gone</code>, <code>foreman-cannot-nudge</code> and <code>workflow-not-gating</code> are re-derived from live state on the first poll.</li>
 <li><code>nudges-exhausted</code> is restored by Foreman&#39;s escalation re-send (§3) within a minute.</li>
-<li>If Foreman restarts instead, the daemon keeps its escalated episode in the inbox while Foreman&#39;s fresh mark may nudge up to 3 more times.</li>
+<li>If Foreman restarts instead, the daemon keeps its escalated episode in the inbox. Foreman&#39;s fresh mark is seeded escalated from the snapshot&#39;s <code>prConflictEscalated</code>, so it sends no further nudges (Inspector review, round 3).</li>
+<li>If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.</li>
 </ul>
 </li>
 </ul>
@@ -703,6 +710,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>Idle on the nudged head for 2 minutes escalates.</li>
 <li>An escalated mark re-sends the escalation at most once a minute while the PR is still conflicting, and stops after re-arming.</li>
 <li>A restarted daemon (no episode flag) is re-marked <code>nudges-exhausted</code> by the re-send.</li>
+<li>A restarted Foreman (fresh mark) on a PR whose snapshot says <code>prConflictEscalated: true</code> does not nudge, and seeds <code>conflictEscalated</code>.</li>
 <li>Recovery re-arms the episode.</li>
 <li>Push, then <code>UNKNOWN</code>, then resolved: no nudge, no cap increment and no give-up escalation while B is unknown, then a re-armed mark once B is <code>mergeable</code>.</li>
 <li><code>trackMergeConflicts</code> off skips.</li>
