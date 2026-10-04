@@ -242,9 +242,11 @@ Where it goes from there depends on how the retro reached you:
   each memory rides the one for the repository it was committed in.
 - **Dispatched as its own task**, because the source session was gone or its work pull request
   had already merged. The approved memory commit is this task's deliverable and has no open
-  review to ride. Invoke the pull-request skill and open or update this task's own pull request
-  in every repository where approved memory files changed. A post-merge task must not push to
-  or reopen the source branch or pull request.
+  review to ride. Commit it in every repository where approved memory files changed, then
+  report complete. Do not push or open a pull request yourself: the bound workflow's Pull
+  Request action, or Foreman's wrap-up (its Ship it? card, or Straight to PR) when no workflow
+  is bound, opens this task's own pull request, and the pull-request skill runs then. A
+  post-merge task must not push to or reopen the source branch or pull request.
 
 Then say, in one short message, what was committed and what was skipped. The retro is over;
 do not start on a memory the human declined.

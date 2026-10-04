@@ -428,6 +428,12 @@ test("the shipped deflake skill reproduces first, limits timeouts, and proves th
   assert.match(text, /before: .*\n.*after: /);
   // Merging the fix closes the issue.
   assert.match(text, /`Fixes #<issue>`/);
+  // The agent commits and reports; the workflow or Foreman opens the pull request, and the
+  // closing keyword reaches its description through the commit message and the report.
+  assert.match(text, /## 5\. Commit the fix and report/);
+  assert.match(text, /Do not push or open a pull request yourself/);
+  assert.match(text, /`Fixes #<issue>`, in both the commit message and the completion report/);
+  assert.doesNotMatch(text, /Open the fix pull request/);
 });
 
 test("the shipped testing-setup skill audits, asks once, applies only what was approved, and verifies twice", () => {
@@ -466,11 +472,21 @@ test("the shipped testing-setup skill audits, asks once, applies only what was a
   assert.match(text, /\*\*One local `affected-tests` run\.\*\*/);
   assert.match(text, /\*\*The "Flaky tests" check on the setup pull request's own CI\.\*\*/);
   assert.match(text, /`ci_flake_report_missing`/);
+  // The agent commits; the workflow or Foreman opens the setup pull request.
+  assert.match(text, /\*\*Commit all of it\*\* on the task branch\. Do not push or open a pull request yourself/);
+  assert.doesNotMatch(text, /Open one pull request/);
+  assert.doesNotMatch(skill.description, /apply only what the human approved \(a pull request/);
   // A later run offers only the action update.
   assert.match(text, /propose the update as the \*\*only\*\* change/);
   // The laptop settings, by name.
   assert.match(text, /`checkTestLease`/);
   assert.match(text, /`checkTestConcurrency`/);
+});
+
+test("the shipped retro skill's own-task path commits and leaves publishing to Mission Control", () => {
+  const text = readFileSync(new URL("../skills/retro/SKILL.md", import.meta.url), "utf8");
+  assert.match(text, /\*\*Dispatched as its own task\*\*[\s\S]*Do not push or open a pull request yourself/);
+  assert.doesNotMatch(text, /open or update this task's own pull request/);
 });
 
 test("the testing-setup skill ships the generated report action it copies", () => {

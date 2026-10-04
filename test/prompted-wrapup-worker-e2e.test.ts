@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
-import { isWrapupPayload } from "../src/shared/queue.ts";
+import { isWrapupPayload, WRAPUP_PR } from "../src/shared/queue.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
 import type { WorkflowStagedEvidenceList } from "../src/shared/workflow.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
@@ -1931,6 +1931,104 @@ test("ship completion without an eligible Persona workflow never creates an evid
     assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/ship-recovery/claim").length, 0);
   }
 });
+
+// The testing-setup and retro follow-up shape: a `ship` task with no workflow bound. Their
+// skills now commit and report complete instead of opening their own pull request, so the only
+// publisher left is Foreman's prompted wrap-up. Both wrap-up settings must reach it.
+for (const wrapup of ["ask", "pr"] as const) {
+  test(`an unbound ship task's committed turn reaches Foreman's publish instruction (wrapup: ${wrapup})`, async () => {
+    const repo = tmp("pw-unbound-ship-");
+    const fake = mkFakeClaude({ fail: false });
+    const session = mkSession(repo, { task: mkTaskSummary({ kind: "ship", workflowId: null }) });
+    const stopAt = Date.now() - 120_000;
+    let queue = mkQueue(repo);
+    let handedOffAt = 0;
+
+    const stub = await startStub((req, url, raw) => {
+      const p = url.pathname;
+      if (p === "/api/foreman/config") {
+        return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup }) };
+      }
+      if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+      if (p === "/api/sessions") {
+        return { status: 200, json: [{ ...session, lastSeen: Date.now(), lastActivity: stopAt }] };
+      }
+      if (p === "/api/reviews") return { status: 200, json: [] };
+      if (p === "/api/queues") return { status: 200, json: [] };
+      if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+      if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+      if (p === "/api/sessions/s1/diff") {
+        return {
+          status: 200,
+          json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc123" },
+        };
+      }
+      if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+      if (p === "/api/sessions/s1/transcript") {
+        return {
+          status: 200,
+          json: {
+            messages: [
+              { role: "user", text: GOAL, tools: [] },
+              { role: "assistant", text: "Committed the retry as abc123 and reported the task complete.", tools: [] },
+            ],
+            truncated: false,
+          },
+        };
+      }
+      if (p === "/api/sessions/s1/workflow-evidence") {
+        return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
+      }
+      if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+      if (p === "/api/sessions/s1/workflow-completion") {
+        return { status: 200, json: { claimed: false, reason: "no_binding" } };
+      }
+      if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+        const body = JSON.parse(raw) as { generation: number; ask?: boolean };
+        queue = {
+          ...queue,
+          promptedConsumedGeneration: body.generation,
+          promptedDirectHandoff: null,
+          promptedDecision: null,
+          updatedAt: Date.now(),
+          ...(body.ask ? { wrapupAskedAt: Date.now(), wrapupAnswer: null } : {}),
+        };
+        if (body.ask) handedOffAt = Date.now();
+        return { status: 200, json: queue };
+      }
+      if (p === "/api/sessions/s1/inject") {
+        handedOffAt = Date.now();
+        return { status: 200, json: { ok: true } };
+      }
+      if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: queue };
+      return { status: 200, json: null };
+    });
+
+    const out = await runWorker({
+      port: stub.port,
+      claudeBin: fake.bin,
+      claudeLog: fake.log,
+      ms: 20_000,
+      until: () => handedOffAt !== 0 && Date.now() - handedOffAt >= IDLE_SETTLE_MS,
+    });
+    await stub.close();
+
+    const consume = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+    const inject = stub.to("POST", "/api/sessions/s1/inject");
+    assert.equal(consume.length, 1, `the committed turn was not settled exactly once\n${out}`);
+    assert.equal(queue.promptedConsumedGeneration, 1, out);
+    if (wrapup === "ask") {
+      assert.equal((consume[0]!.body as { ask?: boolean }).ask, true, `no Ship it? card\n${out}`);
+      assert.ok(queue.wrapupAskedAt, `the Ship it? card was not raised\n${out}`);
+      assert.equal(inject.length, 0, `the default ask wrap-up typed into the session\n${out}`);
+    } else {
+      assert.equal(inject.length, 1, `Straight to PR did not type its instruction\n${out}`);
+      assert.equal((inject[0]!.body as { text: string }).text, WRAPUP_PR, out);
+      assert.ok(stub.calls.indexOf(consume[0]!) < stub.calls.indexOf(inject[0]!), "injected before consume");
+    }
+    assert.equal(claudeCalls(fake.log).length, 1, out);
+  });
+}
 
 test("a manually attached Persona workflow still holds completion for missing evidence", async () => {
   const result = await runShipEvidenceScenario({

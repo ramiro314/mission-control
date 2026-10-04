@@ -280,6 +280,13 @@ test("a multi-repo task's intent is prefixed with where each repo lives and what
   // The two standing instructions the agent cannot infer from inside its cwd.
   assert.match(manifest, /AGENTS\.md \/ CLAUDE\.md/);
   assert.match(manifest, /ONE pull request per repository/);
+  // Publication belongs to the workflow or Foreman: the manifest asks for commits only, and
+  // still tells the agent that an untouched repository needs neither a commit nor a PR.
+  assert.match(manifest, /Commit in each repository you change\./);
+  assert.match(manifest, /Mission\s+Control's workflow or Foreman opens ONE pull request/);
+  assert.match(manifest, /Do not push or open a pull request yourself/);
+  assert.doesNotMatch(manifest, /Commit and push/);
+  assert.match(manifest, /did not change needs no commit and no pull request/);
   // The operator's own words still arrive, and arrive last.
   assert.ok(manifest.endsWith("Rename the field everywhere."));
 });

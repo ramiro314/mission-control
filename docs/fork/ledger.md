@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **8** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **9** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -51,6 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
+| PR publication ownership | Active (partial) | #110 (plan), pending (branch `feat/defer-pr-publication`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
@@ -641,6 +642,57 @@ editor, version history and run views.
 
 **Fork-only files.** `src/web/workflows/EffortSelect.tsx`, `test/persona-effort.test.ts`,
 `e2e/specs/workflow-persona-effort.spec.ts`.
+
+### PR publication ownership
+
+| Field | Value |
+| --- | --- |
+| Status | **Active (partial)**. Landed so far: deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the post-merge retro task intent, and the no-workflow ensemble winner (plan Part B items 2 and 5, without the pull-request skill precondition). Not yet landed: the completion latch (Part A), the execution-authorization split, unbound plan, shape and chat, and the phased-plan intent template. |
+| PRs | #110 (plan), pending (branch `feat/defer-pr-publication`) |
+| Plan docs | [docs/plans/pr-publication-ownership/plan.md](../plans/pr-publication-ownership/plan.md) |
+| Upstream candidate | Partly. The manifest, retro and ensemble changes remove self-publishing text that contradicts upstream's own ship handoff. The deflake and testing-setup changes ride the fork-only Flake-aware testing skills. |
+
+**Intent.** A pull request is opened only by Mission Control's publisher (a bound workflow's
+Pull Request action, or Foreman's wrap-up) or by a direct human command, never on an agent's own
+initiative from a task prompt or skill. The operator saw PRs appear before the workflow had run.
+
+**Behavior contracts.**
+
+- The multi-repo manifest tells the agent to commit in each repository it changes, not to push
+  or open a pull request, and that the workflow or Foreman opens one pull request per changed
+  repository. An unchanged repository still needs no commit and no pull request.
+- The retro (dispatched as its own task), deflake and testing-setup skills commit and report
+  complete, and name the publisher: the bound workflow's Pull Request action, or Foreman's
+  wrap-up when no workflow is bound. A retro riding a session's own open review still pushes to
+  it, because updating an existing pull request is allowed.
+- Deflake carries `Fixes #<issue>` in its commit message and completion report, so the
+  pull-request skill writes it into the description.
+- Testing-setup verifies the "Flaky tests" check only after the publish instruction opened the
+  pull request.
+- The no-workflow ensemble winner commits and reports complete, and Foreman's Ship it? card
+  publishes it.
+- An unbound ship-kind session (testing-setup and the retro follow-up: `workflowId: null`)
+  reaches a Foreman publish instruction after a committed turn: the Ship it? card under the
+  default `ask` wrap-up, `WRAPUP_PR` under Straight to PR. Pinned in
+  `test/prompted-wrapup-worker-e2e.test.ts`.
+
+**Upstream behavior it assumes.**
+
+- Foreman's prompted wrap-up publishes an unbound ship task: the Ship it? card, or `WRAPUP_PR`
+  typed into the session under Straight to PR, after the verifier finds the turn finished.
+- The ship handoff in `src/server/task-contract.ts` already forbids pushing and opening a pull
+  request in the initial turn.
+- The built-in Pull Request session action invokes the pull-request skill, which writes the
+  description from the session's report.
+
+**Upstream surfaces touched.** `src/server/dispatcher.ts` (`intentWithRepoManifest`),
+`src/server/ensembles/engine.ts` (`buildContinuation`), `src/server/retro.ts`
+(`postMergeRetroIntent`, `retroTaskIntent`), `skills/retro/SKILL.md`,
+`skills/deflake/SKILL.md`, `skills/testing-setup/SKILL.md`, `docs/dispatch-and-backlog.md`,
+`docs/skills-and-settings.md`, `docs/flaky-tests.md`, `docs/ensembles.md`.
+
+**Fork-only files.** `docs/plans/pr-publication-ownership/`. The deflake and testing-setup
+skills are already fork-only through Flake-aware testing.
 
 ## Superseded and removed
 
