@@ -291,13 +291,15 @@ conflict.</li>
 <p>Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 to 15), all
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
-<p>GitHub Inspector review on PR #103 made three more changes:</p>
+<p>GitHub Inspector review on PR #103 (rounds 1 to 4) made these changes:</p>
 <ul>
 <li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
 surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
 <li>Episodes and escalations are matched by PR URL alone.</li>
 <li>Foreman re-sends an escalation, so it survives a daemon restart. In round 3, the daemon&#39;s
 escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.</li>
+<li>An open conflict episode keeps its PR on the by-URL poller, so an exited session with no task
+still reaches <code>session-gone</code> and clears once the conflict is fixed (round 4).</li>
 </ul>
 <p>Each is marked &quot;Inspector review&quot; where it appears.</p>
 <p>Workflow repair round 1 (Plan Validation) made two changes. It bound the kept mergeability
@@ -306,8 +308,9 @@ spec to the session header and the settings toggle, on a task-backed session (Te
 changes are marked &quot;repair round 1&quot; where they appear. No recorded human answer changed.</p>
 <h2 id="goals">Goals</h2>
 <ul>
-<li>Every open PR a session or task owns is checked for conflicts, with no Inspector, YOLO mode
-or workflow required.</li>
+<li>Every open PR a live session or a task owns is checked for conflicts, with no Inspector, YOLO
+mode or workflow required. A PR with an open conflict stays checked until the conflict closes,
+even after its session exits.</li>
 <li>A live session that Foreman may drive is told to resolve the conflict, and the number of
 nudges is capped.</li>
 <li>A workflow-owned session gets the conflict as an ordinary repair round instead of waiting
@@ -492,7 +495,17 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <ul>
 <li><strong>Episode lifecycle.</strong><ul>
 <li>An episode opens on the first <code>conflicting</code> observation for the current head (<code>currentMergeability</code>), from either poll path.</li>
-<li>It closes when the PR is observed <code>mergeable</code>, merged, or closed, or when no session and no task reference it any longer.</li>
+<li>It closes when the PR is observed <code>mergeable</code>, merged, or closed, or when no session and no task reference it any longer.<ul>
+<li>&quot;No session&quot; means the session was removed (<code>session_remove</code>). An exited session still references its PR (Inspector review, round 4).</li>
+</ul>
+</li>
+<li><strong>An open episode keeps its PR polled</strong> (Inspector review, round 4).<ul>
+<li><code>pr-conflicts.ts</code> contributes the URL of every open episode to the by-URL poller&#39;s harvest. It is deduplicated into <code>linkedUrls</code> but never into <code>operationalUrls</code>, so it gains no merge-completion authority.</li>
+<li>That covers an exited session <strong>with no task</strong>, which <code>prPollTargets</code> (live sessions only) and <code>taskPrPollTargets</code> (task PRs only) both miss.</li>
+<li>Its episode stays open as <code>session-gone</code>, raises attention per decision 4, and still closes when the conflict is fixed, merged or closed.</li>
+<li>The extra polling is bounded by the number of open conflict episodes and ends when each one closes.</li>
+</ul>
+</li>
 <li>While the current head&#39;s mergeability is unknown, for example straight after a fix push, an open episode stays as it is. It is neither closed nor re-opened until GitHub answers for that head.</li>
 <li>It records <code>since</code>, <code>baseRef</code>, <code>headSha</code>, <code>taskId</code>, <code>sessionId</code> and <code>escalated</code>.</li>
 <li><strong>Identity is the PR URL alone.</strong> <code>headSha</code> is the <em>latest</em> head observed <code>conflicting</code>, and it advances on every new conflicting head. It is a display and log field, never part of the episode&#39;s identity (Inspector review).</li>
@@ -664,7 +677,9 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 </li>
 <li><p><strong>CI dimension silent on a conflict.</strong> GitHub runs no <code>pull_request</code> checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.</p>
 </li>
-<li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then.</p>
+<li><p><strong>Session exits mid-episode.</strong> The next poll moves the episode to <code>session-gone</code>, and the alert fires then. This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).</p>
+</li>
+<li><p><strong>Exited task-less session whose PR was never conflicting.</strong> Nothing polls it after exit, so a conflict that first appears after the session exited is not detected. That is accepted: there is no task or live session left to act for, and the session can be resumed to restore polling.</p>
 </li>
 <li><p><strong>Workflow without a reachable Wait for CI</strong> (Inspector review). The run has no Wait for CI node, or the base moved after the last reachable Wait for CI. The episode is <code>workflow-not-gating</code> and goes to the inbox. Foreman still does not type into the session, because the workflow owns it. A run upstream of Wait for CI, or in a repair loop back to it, is handled and raises nothing.</p>
 </li>
@@ -684,6 +699,7 @@ reading the Inspector&#39;s own <code>mergeable</code>.</li>
 <li>Push, then <code>UNKNOWN</code>, then resolved: <code>currentMergeability</code> is <code>conflicting</code> on head A, <code>null</code> on head B under <code>UNKNOWN</code>, then <code>mergeable</code> on B.</li>
 <li>Merged or closed clears it.</li>
 <li>The by-URL path covers an exited session&#39;s task.</li>
+<li>An open episode for an exited, task-less session keeps its URL in the by-URL harvest, reaches <code>session-gone</code>, and closes when the PR is observed <code>mergeable</code>. Its URL never enters <code>operationalUrls</code>.</li>
 </ul>
 </li>
 <li><code>pr-conflicts.ts</code>:<ul>

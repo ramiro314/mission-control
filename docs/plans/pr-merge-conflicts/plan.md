@@ -19,13 +19,15 @@ Settled in two grilling rounds (12 decisions) and the plan review (decisions 13 
 recorded below. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.
 
-GitHub Inspector review on PR #103 made three more changes:
+GitHub Inspector review on PR #103 (rounds 1 to 4) made these changes:
 
 - A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
   surfaced as `workflow-not-gating`. Round 2 narrowed this from "not at one right now".
 - Episodes and escalations are matched by PR URL alone.
 - Foreman re-sends an escalation, so it survives a daemon restart. In round 3, the daemon's
   escalated flag reaches Foreman on the session snapshot, so it survives a Foreman restart too.
+- An open conflict episode keeps its PR on the by-URL poller, so an exited session with no task
+  still reaches `session-gone` and clears once the conflict is fixed (round 4).
 
 Each is marked "Inspector review" where it appears.
 
@@ -36,8 +38,9 @@ changes are marked "repair round 1" where they appear. No recorded human answer 
 
 ## Goals
 
-- Every open PR a session or task owns is checked for conflicts, with no Inspector, YOLO mode
-  or workflow required.
+- Every open PR a live session or a task owns is checked for conflicts, with no Inspector, YOLO
+  mode or workflow required. A PR with an open conflict stays checked until the conflict closes,
+  even after its session exits.
 - A live session that Foreman may drive is told to resolve the conflict, and the number of
   nudges is capped.
 - A workflow-owned session gets the conflict as an ordinary repair round instead of waiting
@@ -136,6 +139,12 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
 - **Episode lifecycle.**
   - An episode opens on the first `conflicting` observation for the current head (`currentMergeability`), from either poll path.
   - It closes when the PR is observed `mergeable`, merged, or closed, or when no session and no task reference it any longer.
+    - "No session" means the session was removed (`session_remove`). An exited session still references its PR (Inspector review, round 4).
+  - **An open episode keeps its PR polled** (Inspector review, round 4).
+    - `pr-conflicts.ts` contributes the URL of every open episode to the by-URL poller's harvest. It is deduplicated into `linkedUrls` but never into `operationalUrls`, so it gains no merge-completion authority.
+    - That covers an exited session **with no task**, which `prPollTargets` (live sessions only) and `taskPrPollTargets` (task PRs only) both miss.
+    - Its episode stays open as `session-gone`, raises attention per decision 4, and still closes when the conflict is fixed, merged or closed.
+    - The extra polling is bounded by the number of open conflict episodes and ends when each one closes.
   - While the current head's mergeability is unknown, for example straight after a fix push, an open episode stays as it is. It is neither closed nor re-opened until GitHub answers for that head.
   - It records `since`, `baseRef`, `headSha`, `taskId`, `sessionId` and `escalated`.
   - **Identity is the PR URL alone.** `headSha` is the *latest* head observed `conflicting`, and it advances on every new conflicting head. It is a display and log field, never part of the episode's identity (Inspector review).
@@ -254,7 +263,8 @@ This is the one daemon-side owner of "is this conflict handled?". It is in-memor
     - If both restart, nothing is escalated anywhere. Foreman may nudge up to 3 more times and then escalate again, which is still bounded.
 - **Multi-repo task.** There is one episode per PR, and each PR gets its own mark (the existing per-PR keying). Nudges name the repository.
 - **CI dimension silent on a conflict.** GitHub runs no `pull_request` checks while the PR conflicts, so the failing-CI nudge does not fire. The conflict dimension is what speaks.
-- **Session exits mid-episode.** The next poll moves the episode to `session-gone`, and the alert fires then.
+- **Session exits mid-episode.** The next poll moves the episode to `session-gone`, and the alert fires then. This holds for a task-less session too, because its open episode keeps the PR on the by-URL poller (round 4).
+- **Exited task-less session whose PR was never conflicting.** Nothing polls it after exit, so a conflict that first appears after the session exited is not detected. That is accepted: there is no task or live session left to act for, and the session can be resumed to restore polling.
 - **Workflow without a reachable Wait for CI** (Inspector review). The run has no Wait for CI node, or the base moved after the last reachable Wait for CI. The episode is `workflow-not-gating` and goes to the inbox. Foreman still does not type into the session, because the workflow owns it. A run upstream of Wait for CI, or in a repair loop back to it, is handled and raises nothing.
 - **Conflict spanning several heads.** The episode stays one episode keyed by PR URL, and `headSha` tracks the latest conflicting head.
 - **PR closed or merged while blocked.** The episode closes, and the inbox row and chip mark clear.
@@ -270,6 +280,7 @@ Focused unit tests in `test/`, using `node:test`:
   - Push, then `UNKNOWN`, then resolved: `currentMergeability` is `conflicting` on head A, `null` on head B under `UNKNOWN`, then `mergeable` on B.
   - Merged or closed clears it.
   - The by-URL path covers an exited session's task.
+  - An open episode for an exited, task-less session keeps its URL in the by-URL harvest, reaches `session-gone`, and closes when the PR is observed `mergeable`. Its URL never enters `operationalUrls`.
 - `pr-conflicts.ts`:
   - Episode open and close.
   - Each unhandled reason.
