@@ -292,7 +292,7 @@ conflict.</li>
 recorded below. On 2026-10-04 you also signed off two changes during the PR #103 review: decision 8
 was amended, and decision 16 was added. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.</p>
-<p>GitHub Inspector review on PR #103 (rounds 1 to 9) made these changes:</p>
+<p>GitHub Inspector review on PR #103 (rounds 1 to 10) made these changes:</p>
 <ul>
 <li>A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
 surfaced as <code>workflow-not-gating</code>. Round 2 narrowed this from &quot;not at one right now&quot;.</li>
@@ -326,7 +326,8 @@ nudges is capped.</li>
 <li>A workflow-owned session gets the conflict as an ordinary repair round instead of waiting
 45 minutes for <code>ci_missing</code>.</li>
 <li>The operator is interrupted only when a human is actually needed: the session has gone,
-Foreman cannot drive it, or the nudges ran out.</li>
+Foreman cannot drive it, the nudges ran out, or a workflow owns the session but its run can no
+longer reach a Wait for CI node (<code>workflow-not-gating</code>, decision 8 as amended).</li>
 <li>A conflicting PR is visible on its chip whatever else is going on.</li>
 </ul>
 <h2 id="non-goals">Non-goals</h2>

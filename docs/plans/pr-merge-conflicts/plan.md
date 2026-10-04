@@ -20,7 +20,7 @@ recorded below. On 2026-10-04 you also signed off two changes during the PR #103
 was amended, and decision 16 was added. Approved in the plan review on 2026-10-04 with Create tickets as the
 follow-up. Single phase.
 
-GitHub Inspector review on PR #103 (rounds 1 to 9) made these changes:
+GitHub Inspector review on PR #103 (rounds 1 to 10) made these changes:
 
 - A conflict in a workflow-owned session whose run can no longer reach a Wait for CI node is
   surfaced as `workflow-not-gating`. Round 2 narrowed this from "not at one right now".
@@ -56,7 +56,8 @@ changes are marked "repair round 1" where they appear. That repair round changed
 - A workflow-owned session gets the conflict as an ordinary repair round instead of waiting
   45 minutes for `ci_missing`.
 - The operator is interrupted only when a human is actually needed: the session has gone,
-  Foreman cannot drive it, or the nudges ran out.
+  Foreman cannot drive it, the nudges ran out, or a workflow owns the session but its run can no
+  longer reach a Wait for CI node (`workflow-not-gating`, decision 8 as amended).
 - A conflicting PR is visible on its chip whatever else is going on.
 
 ## Non-goals
