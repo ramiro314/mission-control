@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BlockedPr, ServerEvent } from "../src/shared/types.ts";
+import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-conflicts-"));
@@ -13,9 +14,10 @@ const { PrConflictEpisodes, PrConflictTracker, unhandledReason } = await import(
   "../src/server/pr-conflicts.ts"
 );
 const { ForemanConfigSchema } = await import("../src/shared/protocol.ts");
-const { mkSession } = await import("./helpers/session-fixture.ts");
+const { mkSession, mkTask } = await import("./helpers/session-fixture.ts");
 
 const PR = "https://github.com/o/r/pull/42";
+const TASK_ID = "task-conflict";
 
 const conflicting = (headSha: string, baseRef = "main") =>
   ({ state: "open", mergeable: "conflicting", baseRef, headSha }) as const;
@@ -103,8 +105,11 @@ test("a session an active workflow owns is not reported here", () => {
   assert.equal(unhandledReason(live, policy({}, true)), null);
 });
 
-/** A PR poll against a real registry, with `gh` stood in for. */
-function harness() {
+/**
+ * A PR poll against a real registry, with `gh` stood in for. With `task`, the session is a
+ * task's agent and the PR binds to that task's work episode, as a dispatch leaves it.
+ */
+function harness({ task = false }: { task?: boolean } = {}) {
   const reg = new Registry();
   reg.applyDiscovery([
     {
@@ -122,6 +127,12 @@ function harness() {
       startedAt: 0,
     },
   ]);
+  if (task) {
+    // The agent's own session id is what a work episode is keyed on.
+    reg.applyHook({ agent: "claude", event: "Stop", sessionId: "live-episode", cwd: "/wt/app", transcriptPath: null, env: {} });
+    reg.upsertTask(mkTask({ id: TASK_ID, title: "Ship the thing", status: "running", sessionId: "live", worktreePath: "/wt/app" }));
+    reg.bindTaskToWorkEpisode(TASK_ID, "live");
+  }
   const frames: BlockedPr[][] = [];
   reg.subscribe((e: ServerEvent) => {
     if (e.type === "blocked_prs") frames.push(e.prs);
@@ -147,7 +158,8 @@ function harness() {
         number: 42,
         state: "open" as const,
         checks: null,
-        createdAt: 1,
+        // Now, so a task's work episode accepts it as opened during the episode.
+        createdAt: Date.now(),
         mergedAt: null,
         headSha: "A",
         worktreeHeadSha: "A",
@@ -235,4 +247,67 @@ test("an exited session's conflict reads session-gone and clears when the PR is 
   const asked = h.askedByUrl.length;
   await h.poll();
   assert.equal(h.askedByUrl.length, asked, "nothing asks about it any more");
+});
+
+test("session_remove closes the episode of a PR no task references", async (t) => {
+  const h = harness();
+  await h.poll();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  h.reg.applyDiscovery([]);
+  await h.poll();
+  assert.equal(h.frames.at(-1)![0]!.reason, "session-gone", "exited, but still held");
+
+  // The exit linger runs out and the registry removes the session: `session_remove`.
+  t.mock.timers.tick(10_000);
+  assert.equal(h.reg.getSession("live"), undefined);
+  await h.poll();
+  assert.deepEqual(h.tracker.episodes.urls(), []);
+  assert.deepEqual(h.frames.at(-1), []);
+  const asked = h.askedByUrl.length;
+  await h.poll();
+  assert.equal(h.askedByUrl.length, asked, "the PR is no longer asked about by URL");
+});
+
+test("a task's reference keeps the episode open after session_remove, as session-gone", async (t) => {
+  const h = harness({ task: true });
+  await h.poll();
+  assert.equal(h.reg.getSession("live")!.prUrl, PR, "the task's episode adopted the PR");
+  assert.ok(h.reg.taskPrPollTargets().includes(PR), "and the task binding carries it");
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  h.reg.applyDiscovery([]);
+  t.mock.timers.tick(10_000);
+  assert.equal(h.reg.getSession("live"), undefined, "the session was removed");
+  await h.poll();
+  assert.deepEqual(h.tracker.episodes.urls(), [PR]);
+  const row = h.frames.at(-1)![0]!;
+  assert.equal(row.reason, "session-gone");
+  assert.equal(row.taskId, TASK_ID);
+  assert.equal(row.taskTitle, "Ship the thing");
+  assert.equal(row.sessionId, null, "no session left to link");
+});
+
+test("workflowOwnsSession matches a non-terminal run by session id or note key", () => {
+  const { reg } = harness();
+  const s = reg.getSession("live")!;
+  const run = (id: string, over: Partial<WorkflowRunSummary>) =>
+    ({ id, status: "running", sessionId: null, noteKey: "someone-else", ...over }) as WorkflowRunSummary;
+  assert.equal(reg.workflowOwnsSession(s), false, "no runs");
+  reg.upsertWorkflowRun(run("other", { sessionId: "another-session" }));
+  assert.equal(reg.workflowOwnsSession(s), false, "another session's run");
+  reg.upsertWorkflowRun(run("done", { sessionId: s.id, status: "completed" }));
+  assert.equal(reg.workflowOwnsSession(s), false, "a terminal run has released it");
+  reg.upsertWorkflowRun(run("by-id", { sessionId: s.id }));
+  assert.equal(reg.workflowOwnsSession(s), true, "matched by session id");
+  reg.removeWorkflowRun("by-id");
+  reg.upsertWorkflowRun(run("by-key", { noteKey: s.agentSessionId ?? s.id }));
+  assert.equal(reg.workflowOwnsSession(s), true, "matched by note key");
+});
+
+test("a conflict in a session an active workflow owns raises no blocked row", async () => {
+  const h = harness();
+  h.reg.upsertWorkflowRun({ id: "owner", status: "running", sessionId: "live", noteKey: "live" } as WorkflowRunSummary);
+  await h.poll();
+  assert.deepEqual(h.tracker.episodes.urls(), [PR], "the episode is open");
+  assert.equal(h.frames.length, 0, "but nothing is blocked");
 });
