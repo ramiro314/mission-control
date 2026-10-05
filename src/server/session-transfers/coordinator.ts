@@ -14,6 +14,7 @@ import { belongsToLaunch } from "../terminal/launch-process.ts";
 import { listProcesses, listProcessesSnapshot } from "../discovery/processes.ts";
 import { homeRecord, type SpawnedHome } from "../terminal/home.ts";
 import { TerminalLaunchError } from "../terminal/launch-error.ts";
+import { runtimeUnavailableWhy } from "../platform/session-runtimes.ts";
 import { sessionLabel } from "../dispatcher.ts";
 import { noteSessionHandoff } from "../telemetry/sessions.ts";
 import { WorkflowStore } from "../workflows/store.ts";
@@ -157,6 +158,10 @@ export class SessionTransferCoordinator {
   async run(source: Session, supervisor: SdkSupervisor | null, deps: HandoffDeps): Promise<HandoffResult> {
     const prior = transferForNote(noteKeyFor(source));
     if (prior) return this.result(prior);
+    // Ahead of every write and of stopping a live driver: a transfer that could never open a
+    // terminal would leave the conversation with nothing running it.
+    const noTerminal = runtimeUnavailableWhy("terminal", deps.platform);
+    if (noTerminal) return { ok: false, error: noTerminal };
     if (!source.cwd || !source.agentSessionId) return { ok: false, error: "This conversation has no checkout or native identity to resume" };
     if (this.registry.sessionResetInProgress(source.id)) return { ok: false, error: "This session is being reset" };
     const task = this.registry.listTasks().find((t) => t.sessionId === source.id && isActiveTask(t.status)) ?? null;

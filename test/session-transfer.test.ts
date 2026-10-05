@@ -54,6 +54,26 @@ for (const stopStarted of [false, true]) for (const leaseState of ["revoked", "c
   });
 }
 
+test("on win32 a handoff to the terminal is refused before the driver is stopped", async (t) => {
+  // D9: no terminal runtime on win32. A handoff that went ahead would stop the embedded driver
+  // and then find nothing to open, leaving the conversation with nothing running it.
+  const f = transferFixture(t);
+  const deps = { ...f.deps, platform: "win32" as const };
+  const live = await handOffToTerminal(f.registry, f.supervisor, f.source, deps);
+  assert.equal(live.ok, false);
+  assert.match(live.ok ? "" : live.error, /terminal runtime is not available on Windows/);
+  // The same refusal guards resuming an exited conversation into a terminal.
+  const exited = await f.transfers.run(f.source, null, deps);
+  assert.equal(exited.ok, false);
+  assert.match(exited.ok ? "" : exited.error, /terminal runtime is not available on Windows/);
+  assert.equal(transferForSource(f.source.id), null, "no transfer row is written");
+  assert.deepEqual(f.counts(), { launches: 0, stops: 0, injections: 0 });
+  assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+  // The source is still live and its SDK row with it; end it so a later test's restore pass
+  // does not count it.
+  await f.supervisor.stop(f.source.id);
+});
+
 test("resolution revalidates the transfer vocabulary after asynchronous observation", async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);

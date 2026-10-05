@@ -1,4 +1,5 @@
 import { pollIntervalMs } from "../config.ts";
+import { runtimeUnavailableWhy } from "../platform/session-runtimes.ts";
 import type { Registry } from "../registry.ts";
 import { unref } from "../util/timers.ts";
 import { gitInfo } from "../util/git.ts";
@@ -50,12 +51,27 @@ export async function pollOnce(
   }
 }
 
+/** An empty completed sweep: what terminal discovery reports where it does not run. */
+async function noTerminalSessions(): ReturnType<typeof discover> {
+  return { sessions: [], terminals: [] };
+}
+
+/**
+ * What each tick sweeps on `platform`. Where the terminal runtime is unavailable, nothing:
+ * no process walk and no terminal enumeration, only the empty completed sweep that opens the
+ * `sessionsObserved()` gate and keeps the sweep's other duties running, among them the driver
+ * Git refresh SDK sessions depend on.
+ */
+export function discoveryFor(platform: NodeJS.Platform = process.platform): typeof discover {
+  return runtimeUnavailableWhy("terminal", platform) === null ? discover : noTerminalSessions;
+}
+
 /**
  * Drive passive discovery on a fixed interval. Each tick sweeps the OS, then
  * reconciles the registry (which emits SSE events for anything that changed).
  * Ticks never overlap: a slow sweep just delays the next one.
  */
-export function startPoller(registry: Registry): () => void {
+export function startPoller(registry: Registry, platform: NodeJS.Platform = process.platform): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -79,11 +95,12 @@ export function startPoller(registry: Registry): () => void {
     return () => {};
   }
 
+  const find = discoveryFor(platform);
   const tick = async (): Promise<void> => {
     if (stopped) return;
     // Refresh after the sweep attempt, so a rediscovered pane-backed session and one the
     // daemon runs itself are both current before the PR poller reads either.
-    await pollOnce(registry);
+    await pollOnce(registry, find);
     if (stopped) return;
     timer = unref(setTimeout(tick, interval));
   };
