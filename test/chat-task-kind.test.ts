@@ -97,14 +97,43 @@ test("an immediate chat persists and dispatches with its opener as the exact pro
   assert.equal(task.status, "dispatching");
   assert.equal(registry.getTask(task.id)?.kind, "chat");
   assert.deepEqual(launched, [task.id]);
-  assert.equal(
-    withTaskKindContract(task, task.intent),
-    `${chatInput.intent}\n\n${executionAuthorizationContract({
+  assert.ok(
+    withTaskKindContract(task, task.intent).startsWith(`${chatInput.intent}\n\n${executionAuthorizationContract({
       workflowEvidence: false,
       workflowContinuation: false,
-    })}`,
+      pullRequestGrant: false,
+    })}\n\n## Chat task publication\n`),
   );
   assert.equal(kindMissionMcpRequirement(task, null), null);
+});
+
+// An unbound chat has no automatic publisher, so its dispatch message is the human's own
+// first message in the session: a PR request there, or later in the session, is the grant.
+test("an unbound chat task's prompt carries the chat publication paragraph", () => {
+  const task = mkTask({ kind: "chat", workflowId: null, intent: "Tidy the README and open a PR." });
+  const delivered = withTaskKindContract(task, task.intent);
+  assert.match(delivered, /## Chat task publication/);
+  assert.match(delivered, /No workflow is bound to this chat task/);
+  assert.match(delivered, /if it, or a later human message in this session, asks for a pull request, that request is the grant/);
+  assert.match(delivered, /the work is committed and not published, and that asking in this session publishes it/);
+  // The paragraph is the only grant: the task authorization above it stays the plain one.
+  assert.match(delivered, /Do not push or open a pull request on your own initiative/);
+  assert.doesNotMatch(delivered, /already authorized you to commit the scoped work, push/);
+  assert.ok(
+    delivered.indexOf("## Mission Control execution authorization") < delivered.indexOf("## Chat task publication"),
+  );
+});
+
+test("a chat task with a workflow bound gets only the plain task authorization", () => {
+  const task = mkTask({ kind: "chat", workflowId: "wf-review", intent: "Tidy the README and open a PR." });
+  assert.equal(
+    withTaskKindContract(task, task.intent),
+    `${task.intent}\n\n${executionAuthorizationContract({
+      workflowEvidence: false,
+      workflowContinuation: false,
+      pullRequestGrant: false,
+    })}`,
+  );
 });
 
 test("only manual Dispatch can create an immediate chat", () => {

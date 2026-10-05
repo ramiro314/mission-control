@@ -247,6 +247,29 @@ skill's direct path. Foreman rechecks identity, immutable version, and trigger m
 verification. Plan commit/push remains required before scheduling path-only tasks; dependency
 release still follows observed merge. No second workflow trigger or SQLite writer is added.
 
+### Pull-request authorization
+
+`src/server/execution-authorization.ts` renders the execution authorization in two variants,
+chosen by its explicit `pullRequestGrant` flag. The **task authorization** is the default and
+goes on every initial task prompt (`task-contract.ts`) and every repair, Inspector and
+readiness packet: do not push or open a pull request on your own initiative, even when the task
+text or repository instructions mention one; once the task's pull request exists, push to update
+it; before then, push only where the task's completion contract requires it (plan and shape). The
+**grant authorization** lets the session commit, push, and create or update the pull request
+directly. Only two prompts set the flag, both in `src/server/workflows/feedback.ts`: the session
+action packet of an action whose completion kind is `pull_request` (the workflow manager decides
+this at preparation), and `renderPrHandoff`, the Runs "Ask the session to open a PR" handoff.
+Foreman's PR instructions and a human-typed message in the session are the other two grant
+holders and grant in their own words. Both variants keep the limits: no merge, no other
+repository, no other external write, and no change to sandbox approval.
+
+An unbound chat task is the one initial prompt with a creation path. `KIND_CONTRACT.chat`
+renders a publication paragraph when no workflow is bound: the dispatch message is the human's
+own first message in the session, so a pull-request request there or later in the session is
+the grant; otherwise the agent commits and says the work is committed and not published. A chat
+task with a workflow bound renders nothing extra and defers to the workflow's Pull Request
+action.
+
 ### Prompted completion disposition
 
 `foreman_queues.prompted_decision` holds one validated JSON record - logical key, generation,

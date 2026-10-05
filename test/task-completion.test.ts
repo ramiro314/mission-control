@@ -354,6 +354,32 @@ test("unbound plan and shape defer their PR exactly like bound ones", () => {
   assert.doesNotMatch(delivered, /phased-plan skill owns.*pull request|create the plan's ordinary pull request|direct PR path/);
 });
 
+test("every kind's initial prompt carries the task authorization and never the creation grant", () => {
+  // The task text or repository instructions mentioning a pull request no longer switch PR
+  // authority on. Only the grant holders (the workflow Pull Request action, a Foreman PR
+  // instruction, the human asking in the session) carry it; no initial task prompt does.
+  const planSkills = {
+    htmlPlans: "/html-plans",
+    phasedPlan: "/phased-plan",
+    grill: "/grill",
+    tickets: "/tickets",
+  };
+  for (const kind of TASK_KINDS) {
+    for (const workflowId of [null, "wf-1"]) {
+      const task = mkTask({ kind, workflowId, intent: "Fix it and open a pull request" });
+      const delivered = withTaskKindContract(task, task.intent, { planSkills, fallbackRoot: "/repo" });
+      const label = `${kind} (${workflowId ?? "unbound"})`;
+      assert.match(delivered, /Do not push or open a pull request on your own initiative, even when the task text or repository instructions mention one/, label);
+      assert.match(delivered, /workflow Pull Request action, a Foreman pull-request instruction, or the human asking in this session grants that/, label);
+      assert.match(delivered, /Once this task's pull request exists, you may push to update it/, label);
+      assert.match(delivered, /push only where your task's completion contract requires pushing its branch/, label);
+      assert.match(delivered, /does not authorize merge, another repository, or another external write/, label);
+      assert.doesNotMatch(delivered, /already authorized you to commit the scoped work, push/, label);
+      assert.doesNotMatch(delivered, /Act directly without asking/, label);
+    }
+  }
+});
+
 test("the ship handoff commits locally before completion and defers only publication", () => {
   // Workflow Checks run against the session's captured HEAD, never the working tree, so an
   // uncommitted change hands them the base commit (metalmind #283). The local commit is

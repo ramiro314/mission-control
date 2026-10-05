@@ -52,7 +52,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox) | #108 |
-| PR publication ownership | Active (partial) | #110 (plan), #119 (deferred publication), #120 (completion latch), pending (branch `feat/unbound-plan-shape-deferral`) |
+| PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
 | CodeQL advanced setup | Removed (2026-10-04, pending) | #65 |
@@ -731,8 +731,8 @@ literal.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active (partial)**. Landed: Part A (completion latch, #120); from Part B the deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the retro task intents, and the no-workflow ensemble winner (items 2 and 5, without the pull-request skill precondition, #119); and unbound plan and shape with the phased-plan intent template (items 3 and 4, branch `feat/unbound-plan-shape-deferral`). Not yet landed: the execution-authorization split, unbound chat, and the pull-request skill precondition. |
-| PRs | #110 (plan), #119 (deferred publication), #120 (completion latch), pending (branch `feat/unbound-plan-shape-deferral`) |
+| Status | **Active**. Part A (completion latch, #120) and all of Part B: the deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the retro task intents, and the no-workflow ensemble winner (items 2 and 5, #119); unbound plan and shape with the phased-plan intent template (items 3 and 4, #122); and the execution-authorization split, unbound chat, and the pull-request skill precondition (items 1, 6 and the rest of 5, branch `feat/pr-grant-authorization`). The `gh pr create` block stays a recorded follow-up. |
+| PRs | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Plan docs | [pr-publication-ownership/plan.md](../plans/pr-publication-ownership/plan.md) |
 | Upstream candidate | Mostly. Upstream has the same post-completion re-run: its Foreman claim and store are unchanged here apart from the latch. The manifest, retro and ensemble changes remove self-publishing text that contradicts upstream's own ship handoff. The deflake and testing-setup changes ride the fork-only Flake-aware testing skills. |
 
@@ -742,10 +742,10 @@ prompt or skill. Forensics found the visible symptom was not an early PR but a *
 run starting after the PR existed**: the Pull Request action's own turn, Inspector fixes and
 background wake-ups each settled under unchanged intent and claimed a fresh run on the binding.
 The completion latch stops that. Separately, prompts and skills that told the agent to push and
-open its own pull request now commit and report, and name the publisher. The grant holders (the
+open its own pull request now commit and report, and name the publisher. PR authority itself is
+a grant, not a standing permission: no initial task prompt carries it, and only its holders (the
 workflow Pull Request action, the Runs UI "Ask the session to open a PR", Foreman's Ship it?
-card, Straight to PR and ship-shepherd handoff, and a human-typed request in the session) are the
-rest of Part B and not yet implemented as an authorization split.
+card, Straight to PR and ship-shepherd handoff, and a human-typed request in the session) do.
 
 **Behavior contracts.**
 
@@ -798,6 +798,25 @@ rest of Part B and not yet implemented as an authorization split.
   Control publishes it as a reviewable PR whose merge releases dependent phases.
 - An unbound plan session reaches a Foreman publish instruction after a committed, pushed turn
   without a verifier hold. Pinned in `test/prompted-wrapup-worker-e2e.test.ts`.
+- `executionAuthorizationContract` takes an explicit `pullRequestGrant` flag. Off, it renders the
+  **task authorization**: do not push or open a pull request on your own initiative, even when
+  the task text or repository instructions mention one; the workflow Pull Request action, a
+  Foreman PR instruction, or the human asking in the session grants that; once the task's PR
+  exists, push to update it; before then push only where the task's completion contract requires
+  it. On, it renders the **grant authorization**: commit, push, and create or update the PR
+  directly. Both keep "does not authorize merge, another repository, or another external write".
+- Every initial task prompt, of every kind, gets the task authorization. Pinned for all kinds,
+  bound and unbound, in `test/task-completion.test.ts`.
+- Only two prompts set the flag: the session-action packet of an action whose completion kind is
+  `pull_request` (set by the workflow manager at preparation; an authored action of any other
+  kind and the on-demand retro packet do not), and `renderPrHandoff`. Repair, Inspector,
+  readiness and unchanged-evidence packets carry the task authorization's update-only wording.
+- An unbound chat task's prompt adds a "Chat task publication" paragraph (`KIND_CONTRACT.chat`):
+  a PR request in its dispatch message or a later human message in the session is the grant;
+  otherwise it commits and says the work is committed and not published, and that asking in the
+  session publishes it. A chat task with a workflow bound gets only the task authorization.
+- The pull-request skill states its precondition: it opens a PR only under one of the four grant
+  holders.
 
 **Upstream behavior it assumes.**
 
@@ -817,6 +836,10 @@ rest of Part B and not yet implemented as an authorization split.
 - Foreman's prompted wrap-up falls through to the Ship it? card or Straight to PR when a planning
   task's completion claim returns `no_binding` and publication ownership is `skill`.
 - The verify prompt renders a non-null completion contract as trusted policy above the evidence.
+- Every Mission Control-authored execution prompt renders its authorization through
+  `executionAuthorizationContract`: initial task prompts through `withTaskKindContract`, and
+  workflow packets through `finalizePacket` and `renderSessionAction`.
+- Foreman retires an unbound chat task without a wrap-up, so nothing else publishes it.
 
 **Upstream surfaces touched.** `src/server/workflows/store.ts` (`claimForemanCompletion`,
 `consumePromptedGuard`), `src/server/db.ts` (`workflow_runs.claim_episode_key`),
@@ -827,7 +850,10 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 `src/server/retro.ts` (`postMergeRetroIntent`, `retroTaskIntent`), `skills/retro/SKILL.md`,
 `src/shared/task-completion.ts`, `src/server/plans/{prompt,shape,tools}.ts`, the
 `get_plan_publication_context` description in `src/mcp/server.ts`, `skills/phased-plan/SKILL.md`,
-`docs/{work-queues,workflows,foreman,recurring-missions,dispatch-and-backlog,skills-and-settings,flaky-tests,ensembles}.md`,
+`src/server/execution-authorization.ts`, `src/server/task-contract.ts` (`KIND_CONTRACT.chat`),
+`src/server/workflows/feedback.ts` (`finalizePacket`, `renderSessionAction`, `renderPrHandoff`),
+`src/server/workflows/manager.ts` (session-action packet preparation), `skills/pull-request/SKILL.md`,
+`docs/{work-queues,workflows,foreman,recurring-missions,dispatch-and-backlog,skills-and-settings,flaky-tests,ensembles,sessions}.md`,
 `docs/agent-guides/{change-contracts,architecture}.md`.
 
 **Fork-only files.** `test/workflow-completion-latch.test.ts`,

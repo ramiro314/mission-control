@@ -69,7 +69,9 @@ test("Inspector feedback is severity ordered, fingerprint deduplicated, and stab
   assert.equal(first.payload.match(/Fingerprint: major/g)?.length, 1);
   assert.match(first.payload, /Original user goal:\nShip the safe change/);
   assert.match(first.payload, /Pinned head: a{40}/);
-  assert.match(first.payload, /already authorized you to commit the scoped work/);
+  assert.match(first.payload, /Do not push or open a pull request on your own initiative/);
+  assert.match(first.payload, /Once this task's pull request exists, you may push to update it/);
+  assert.doesNotMatch(first.payload, /already authorized you to commit the scoped work/);
   assert.match(first.payload, /already authorized `submit_workflow_evidence`/);
   assert.match(first.payload, /do not ask the human to resubmit the workflow/);
 });

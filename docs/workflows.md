@@ -2308,7 +2308,9 @@ When a Persona failure returns to Session, the daemon renders one bounded determ
 packet in published graph order. The packet preserves the original raw goal, identifies the
 immutable workflow version and evidence fingerprint, and includes only failed Persona findings.
 Its non-truncatable suffix carries Mission Control's scoped execution authorization, including
-the no-resubmission instruction. The same runtime policy wraps SessionAction prompts before the
+the no-resubmission instruction. A repair packet carries the task authorization, which lets the
+session update the task's pull request once one exists but never open one; only an action whose
+completion is **Pull request** and the PR handoff carry the creation grant. The same runtime policy wraps SessionAction prompts before the
 immutable authored Markdown, which remains byte-identical and last. Prepared delivery rows keep
 their stored payload; only newly rendered packets receive the policy.
 Preview stores the exact packet and hash without touching the terminal. Live records

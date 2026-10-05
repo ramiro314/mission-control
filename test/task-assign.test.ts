@@ -1248,7 +1248,8 @@ test("assigned scout and ship prompts keep intent first and receive the shared a
     assert.ok(typed !== null, "the task was typed");
     assert.match(typed!, /^look into the resume path/, "the operator's own words stay first");
     assert.match(typed!, /Mission Control execution authorization/);
-    assert.match(typed!, /already authorized you to commit the scoped work/);
+    assert.match(typed!, /Do not push or open a pull request on your own initiative/);
+    assert.doesNotMatch(typed!, /already authorized you to commit the scoped work/);
     if (kind === "scout") {
       assert.deepEqual(credentialScope, { taskId: "t1", cwd: clone });
       assert.match(typed!, /docs\/reports\/<slug>\/report\.html/);
