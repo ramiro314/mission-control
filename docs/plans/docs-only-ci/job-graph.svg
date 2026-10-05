@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 530" role="img" aria-label="CI job graph before and after the docs-only gate">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <text x="20" y="30">Before: every pull request runs everything</text>
+  <rect x="20" y="80" width="170" height="44" rx="8"/><text x="38" y="108">dependencies x2</text>
+  <rect x="250" y="50" width="150" height="40" rx="8"/><text x="292" y="76">gates</text>
+  <rect x="250" y="106" width="150" height="40" rx="8"/><text x="284" y="132">unit x12</text>
+  <rect x="250" y="162" width="150" height="40" rx="8"/><text x="285" y="188">e2e x15</text>
+  <rect x="460" y="134" width="160" height="40" rx="8"/><text x="487" y="160">flake report</text>
+  <path d="M190 96 L250 70" marker-end="url(#a)"/><path d="M190 104 L250 126" marker-end="url(#a)"/><path d="M190 112 L250 180" marker-end="url(#a)"/>
+  <path d="M400 126 L460 150" marker-end="url(#a)"/><path d="M400 182 L460 160" marker-end="url(#a)"/>
+  <text x="660" y="130" class="small">31 jobs on a PR that only edits docs/</text>
+
+  <text x="20" y="232">After: a changes job gates the heavy jobs; CI result always reports</text>
+  <rect class="new" x="20" y="262" width="170" height="44" rx="8"/><text x="70" y="290">changes</text>
+  <rect x="20" y="380" width="170" height="44" rx="8"/><text x="38" y="408">dependencies x2</text>
+  <rect x="250" y="250" width="150" height="40" rx="8"/><text x="292" y="276">gates</text>
+  <rect x="250" y="300" width="150" height="40" rx="8"/><text x="284" y="326">unit x12</text>
+  <rect x="250" y="350" width="150" height="40" rx="8"/><text x="285" y="376">e2e x15</text>
+  <rect class="new" x="250" y="440" width="150" height="40" rx="8"/><text x="270" y="466">docs checks</text>
+  <rect x="460" y="325" width="160" height="40" rx="8"/><text x="487" y="351">flake report</text>
+  <rect class="new" x="700" y="330" width="160" height="44" rx="8"/><text x="735" y="358">CI result</text>
+  <path d="M190 280 L250 270" marker-end="url(#a)"/><path d="M190 286 L250 318" marker-end="url(#a)"/><path d="M190 292 L250 366" marker-end="url(#a)"/>
+  <path d="M190 300 C210 460 430 460 520 365" marker-end="url(#a)"/>
+  <path d="M190 412 L250 458" marker-end="url(#a)"/>
+  <text x="20" y="444" class="small">also feeds gates, unit, e2e</text>
+  <path d="M400 320 L460 340" marker-end="url(#a)"/><path d="M400 370 L460 352" marker-end="url(#a)"/>
+  <path d="M620 345 L700 350" marker-end="url(#a)"/>
+  <path d="M400 270 C600 270 650 320 700 340" marker-end="url(#a)"/>
+  <path d="M400 460 C600 460 650 380 700 366" marker-end="url(#a)"/>
+  <text x="250" y="510" class="small">docs-only PR: gates, unit, e2e and flake report skip; changes, dependencies, docs checks and CI result run</text>
+  <text x="700" y="400" class="small">reads docs_only from changes;</text>
+  <text x="700" y="418" class="small">a skip passes only when it is true</text>
+</svg>
