@@ -25,7 +25,7 @@ test("a fresh dispatch leads with the task and folds the backlog details", () =>
   assert.ok(taskAt >= 0 && crewAt > taskAt, "the task composer leads and the crew row follows");
   // Collapsed, with the summary naming every field it hides - set or not.
   assert.match(html, /aria-expanded="false"/);
-  assert.match(html, /no priority · no labels · title summarized · autopilot on · no dependencies/);
+  assert.match(html, /no priority · no labels · title summarized · default base · autopilot on · no dependencies/);
   // Collapsed means the fields are not rendered, not merely styled away.
   assert.doesNotMatch(html, /placeholder="e\.g\. bug, infra"/);
 });

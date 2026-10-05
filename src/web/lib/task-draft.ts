@@ -32,6 +32,11 @@ export type DispatchDraft = {
    * a harness that can be granted write access outside its cwd.
    */
   extraRepoRoots: string[];
+  /**
+   * The origin branch the task starts from and opens its PR against, as typed. "" is the
+   * repository's default branch, which posts as omitted on create and as null on an edit.
+   */
+  baseBranch: string;
   intent: string;
   title: string;
   kind: TaskKind;
@@ -78,6 +83,7 @@ export type DispatchDraft = {
 export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   repoRoot: "",
   extraRepoRoots: [],
+  baseBranch: "",
   intent: "",
   title: "",
   kind: "ship",
@@ -125,6 +131,7 @@ export function draftFromTask(t: Task): DispatchDraft {
   return {
     repoRoot: t.repoRoot,
     extraRepoRoots: t.extraRepos.map((entry) => entry.repoRoot),
+    baseBranch: t.baseBranch ?? "",
     intent: t.intent,
     title: t.title,
     kind: t.kind,
@@ -168,6 +175,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     // provisioning slot, so reordering the list is a real edit rather than a re-spelling.
     a.extraRepoRoots.length === b.extraRepoRoots.length &&
     a.extraRepoRoots.every((root, i) => root === b.extraRepoRoots[i]) &&
+    a.baseBranch === b.baseBranch &&
     a.intent === b.intent &&
     a.title === b.title &&
     a.kind === b.kind &&
@@ -222,6 +230,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   ) {
     patch.extraRepoRoots = extraRepoRoots;
   }
+  // Also a provisioning key, so it too is named only when it changed. Empty clears it.
+  const baseBranch = draft.baseBranch.trim() || null;
+  if (baseBranch !== (task.baseBranch ?? null)) patch.baseBranch = baseBranch;
   if (intent !== task.intent) patch.intent = intent;
   // Empty is meaningful here and only here: it asks for a title to be derived again from
   // the intent as it now reads. A title equal to the stored one is simply not sent.

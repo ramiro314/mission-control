@@ -48,7 +48,7 @@ function failure(
   step: string,
   result: Awaited<ReturnType<Run>>,
   timeoutMs: number,
-): RemoteProbe<never> {
+): Extract<RemoteProbe<never>, { ok: false }> {
   const said = result.stderr.trim();
   const reason = result.outcomeUnknown
     ? `${step} was stopped before it finished (it is allowed ${timeoutMs / 1000}s)` +
@@ -356,24 +356,40 @@ export async function remoteBranchSha(
 }
 
 /**
- * Why a task may not take `branch` as its base in `root`, or null when it may.
+ * The base branch a task should store for `branch` in `root`, or why it may not take it.
  *
  * Asked when a task is created or edited with a base branch: the branch has to exist on
  * this repository's `origin` right now. It does not fetch - creating a task provisions
  * nothing, and `freshRemoteBranchSha` asks again, with a fetch, when the task dispatches.
+ *
+ * A branch that IS origin's default comes back as null, the stored spelling of "the default
+ * branch", so a non-null `Task.baseBranch` always means a base other than the default and
+ * the board can label it without knowing each repository's default itself. One `ls-remote`
+ * answers both questions. An origin that advertises no HEAD branch keeps the name as given.
  */
-export async function baseBranchRefusal(
+export async function resolveBaseBranch(
   root: string,
   branch: string,
   execute: Run = run,
-): Promise<string | null> {
+): Promise<{ ok: true; baseBranch: string | null } | { ok: false; error: string }> {
   const origin = await originConfigured(root, execute);
-  if (!origin.ok) return `could not check base branch ${branch}: ${origin.reason}`;
-  if (!origin.value) return `base branch ${branch} needs an origin remote, and ${root} has none`;
-  const tip = await remoteBranchSha(root, branch, execute);
-  if (!tip.ok) return `could not check base branch ${branch} on origin: ${tip.reason}`;
-  if (tip.value === null) return `base branch ${branch} does not exist on ${root}'s origin`;
-  return null;
+  if (!origin.ok) return { ok: false, error: `could not check base branch ${branch}: ${origin.reason}` };
+  if (!origin.value) {
+    return { ok: false, error: `base branch ${branch} needs an origin remote, and ${root} has none` };
+  }
+  const listed = await execute(
+    "git",
+    ["-C", root, "ls-remote", "--symref", "origin", "HEAD", `refs/heads/${branch}`],
+    { timeoutMs: NETWORK_TIMEOUT_MS },
+  );
+  if (failed(listed)) {
+    const why = failure(`git ls-remote origin ${branch}`, listed, NETWORK_TIMEOUT_MS);
+    return { ok: false, error: `could not check base branch ${branch} on origin: ${why.reason}` };
+  }
+  if (parseLsRemoteBranchSha(listed.stdout, branch) === null) {
+    return { ok: false, error: `base branch ${branch} does not exist on ${root}'s origin` };
+  }
+  return { ok: true, baseBranch: parseSymrefHeadBranch(listed.stdout) === branch ? null : branch };
 }
 
 /**

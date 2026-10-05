@@ -123,8 +123,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>Per-task base branch</td>
-<td>Active (storage, API, MCP, dispatch, reset and PR base)</td>
-<td>#151 (plan M0.1)</td>
+<td>Active (storage, API, MCP, dispatch, reset, PR base, task form field and card label)</td>
+<td>#151 (plan M0.1), PR pending</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1180,11 +1180,11 @@ refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1; the check, diff and merge-watcher followers, the task form field and card label, and the recurring-mission template are separate tickets.</td>
+<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, plus the task form field and card label; the check, diff and merge-watcher followers and the recurring-mission template are separate tickets.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#151</td>
+<td>#151, task form field and card label (PR pending)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1206,8 +1206,14 @@ is what every existing row reads as. <code>Task.baseBranch</code> carries it on 
 name, never an option or a <code>refs/</code> path). MCP <code>create_task</code> sends it only through the strict v3
 route, and <code>push_task</code>&#39;s strict body takes it, so an older daemon refuses rather than drops it.</li>
 <li>Create, update, MCP create and <code>push_task</code> refuse a base branch <code>origin</code> does not advertise
-(<code>baseBranchRefusal</code>, <code>ls-remote</code>, 400). Dispatch refuses it again with a fresh fetch
-(<code>resolveDispatchBranchBase</code>), before any worktree is provisioned.</li>
+(<code>resolveBaseBranch</code>, one <code>ls-remote --symref origin HEAD refs/heads/&lt;base&gt;</code>, 400). Dispatch
+refuses it again with a fresh fetch (<code>resolveDispatchBranchBase</code>), before any worktree is
+provisioned.</li>
+<li>A base branch equal to origin&#39;s advertised default is stored as NULL, so a non-null
+<code>Task.baseBranch</code> always means a non-default base.</li>
+<li>The dispatch form&#39;s backlog details carry a &quot;Base branch&quot; field on create and edit (empty is
+the default; an edit sends <code>null</code>), and the daemon&#39;s refusal prints on the form. The backlog
+card shows <code>base &lt;branch&gt;</code> (<code>.bl-base</code>) only when the task has one.</li>
 <li>Dispatch freezes the primary&#39;s base at <code>origin/&lt;base&gt;</code>&#39;s advertised tip, checked against the
 fetched remote-tracking ref. A pinned <code>baseSha</code> still outranks it. Attached repositories keep
 their own default.</li>
@@ -1231,9 +1237,13 @@ resets a reused slot to the frozen commit, so Return resetting to the default is
 <code>/mcp/push-task</code>, session reset and its preview), <code>src/server/git/remote-default.ts</code>,
 <code>src/server/dispatcher.ts</code> (<code>resolveTaskBases</code>), <code>src/server/actions.ts</code> (<code>resetToOrigin</code>,
 <code>resetPreview</code>), <code>src/server/reset.ts</code>, <code>src/server/task-contract.ts</code>,
-<code>src/server/workflows/{feedback,manager}.ts</code>, and the MCP <code>create_task</code> and <code>push_task</code> tools in
-<code>src/mcp/server.ts</code>.</p>
-<p><strong>Fork-only files.</strong> <code>test/task-base-branch.test.ts</code>, <code>test/task-base-branch-migration.test.ts</code>.</p>
+<code>src/server/workflows/{feedback,manager}.ts</code>, the MCP <code>create_task</code> and <code>push_task</code> tools in
+<code>src/mcp/server.ts</code>, and the dashboard: <code>src/web/components/DispatchModal.tsx</code> (the field, the
+details summary), <code>src/web/lib/task-draft.ts</code> (<code>DispatchDraft.baseBranch</code>, <code>taskUpdatePatch</code>),
+<code>src/web/lib/api.ts</code> (<code>DispatchInput</code>), <code>src/web/components/layouts/BacklogColumn.tsx</code> (the
+card label) and <code>src/web/styles.css</code> (<code>.bl-base</code>).</p>
+<p><strong>Fork-only files.</strong> <code>test/task-base-branch.test.ts</code>, <code>test/task-base-branch-migration.test.ts</code>,
+<code>test/backlog-base-branch-render.test.ts</code>, <code>e2e/specs/task-base-branch.spec.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

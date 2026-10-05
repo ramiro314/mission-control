@@ -28848,11 +28848,21 @@ span.line-run-prov {
 }
 /* "N repos" on a multi-repo backlog card. Same pill as the kind/agent chips beside it -
    it is one more fact about what this task IS, not a warning - and it sits before
-   `.bl-added`, whose `margin-left: auto` keeps the timestamp on the right. */
-.bl-repos {
+   `.bl-added`, whose `margin-left: auto` keeps the timestamp on the right. `.bl-base`
+   names a non-default base branch the same way, truncated only past the card's width so a
+   long name cannot overflow it; its tooltip carries the full name. */
+.bl-repos,
+.bl-base {
   padding: 0 5px;
   border: 1px solid var(--border-soft);
   border-radius: 999px;
+}
+.bl-base {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .bl-added {
   margin-left: auto;

@@ -147,13 +147,20 @@ A task can carry a **base branch**: a branch on the primary repository's `origin
 `release/windows`, that the task starts from and opens its pull request against. A task without
 one starts from origin's default branch and targets it, exactly as before.
 
-- **Where it is set.** `POST /api/tasks` and `POST /api/tasks/:id/update` take `baseBranch`;
-  `null` on an edit returns the task to the default branch. The MCP
+- **Where it is set.** In the dashboard, the **Base branch** field under the dispatch form's
+  backlog details, on a new task and when editing a backlog task; leaving it empty means the
+  default branch, and a refusal is printed on the form. Over the API, `POST /api/tasks` and
+  `POST /api/tasks/:id/update` take `baseBranch`; `null` on an edit returns the task to the
+  default branch. The MCP
   [`create_task` and `push_task`](sessions.md#review-channel-mcp) tools take it too. Like the
   other provisioning fields, it can change only while the task is in the backlog.
 - **It must exist on origin.** Creating or editing a task with a base branch asks
   `git ls-remote origin` for it and refuses the request with 400, naming the branch, when origin
   does not have it or cannot answer. A repository with no `origin` cannot take a base branch.
+  Naming origin's own default branch stores no base branch at all, so a task that has one
+  always targets something other than the default.
+- **The card** names a base branch ("base release/windows") on the backlog card. A task on the
+  default branch shows nothing extra.
 - **Dispatch** starts the worktree from the branch's tip, freshly fetched, the same way a task
   without one starts from origin's default. A branch deleted since the task was filed fails the
   dispatch before anything is provisioned, and the task goes back to the backlog with the

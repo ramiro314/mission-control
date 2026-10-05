@@ -52,7 +52,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
-| Per-task base branch | Active (storage, API, MCP, dispatch, reset and PR base) | #151 (plan M0.1) |
+| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, task form field and card label) | #151 (plan M0.1), PR pending |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -949,8 +949,8 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1; the check, diff and merge-watcher followers, the task form field and card label, and the recurring-mission template are separate tickets. |
-| PRs | #151 |
+| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, plus the task form field and card label; the check, diff and merge-watcher followers and the recurring-mission template are separate tickets. |
+| PRs | #151, task form field and card label (PR pending) |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Per-task base branch" and M0 item 1; [docs/dispatch-and-backlog.md](../dispatch-and-backlog.md) "Start a task from another branch" |
 | Upstream candidate | Yes. It is a general task field with no Windows-specific behavior. |
 
@@ -966,8 +966,14 @@ dispatched like any other task. Without one, nothing changes.
   name, never an option or a `refs/` path). MCP `create_task` sends it only through the strict v3
   route, and `push_task`'s strict body takes it, so an older daemon refuses rather than drops it.
 - Create, update, MCP create and `push_task` refuse a base branch `origin` does not advertise
-  (`baseBranchRefusal`, `ls-remote`, 400). Dispatch refuses it again with a fresh fetch
-  (`resolveDispatchBranchBase`), before any worktree is provisioned.
+  (`resolveBaseBranch`, one `ls-remote --symref origin HEAD refs/heads/<base>`, 400). Dispatch
+  refuses it again with a fresh fetch (`resolveDispatchBranchBase`), before any worktree is
+  provisioned.
+- A base branch equal to origin's advertised default is stored as NULL, so a non-null
+  `Task.baseBranch` always means a non-default base.
+- The dispatch form's backlog details carry a "Base branch" field on create and edit (empty is
+  the default; an edit sends `null`), and the daemon's refusal prints on the form. The backlog
+  card shows `base <branch>` (`.bl-base`) only when the task has one.
 - Dispatch freezes the primary's base at `origin/<base>`'s advertised tip, checked against the
   fetched remote-tracking ref. A pinned `baseSha` still outranks it. Attached repositories keep
   their own default.
@@ -991,10 +997,14 @@ dispatched like any other task. Without one, nothing changes.
 `/mcp/push-task`, session reset and its preview), `src/server/git/remote-default.ts`,
 `src/server/dispatcher.ts` (`resolveTaskBases`), `src/server/actions.ts` (`resetToOrigin`,
 `resetPreview`), `src/server/reset.ts`, `src/server/task-contract.ts`,
-`src/server/workflows/{feedback,manager}.ts`, and the MCP `create_task` and `push_task` tools in
-`src/mcp/server.ts`.
+`src/server/workflows/{feedback,manager}.ts`, the MCP `create_task` and `push_task` tools in
+`src/mcp/server.ts`, and the dashboard: `src/web/components/DispatchModal.tsx` (the field, the
+details summary), `src/web/lib/task-draft.ts` (`DispatchDraft.baseBranch`, `taskUpdatePatch`),
+`src/web/lib/api.ts` (`DispatchInput`), `src/web/components/layouts/BacklogColumn.tsx` (the
+card label) and `src/web/styles.css` (`.bl-base`).
 
-**Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`.
+**Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`,
+`test/backlog-base-branch-render.test.ts`, `e2e/specs/task-base-branch.spec.ts`.
 
 ## Superseded and removed
 
