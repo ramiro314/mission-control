@@ -49,7 +49,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>11</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>12</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -125,6 +125,11 @@ or issues.</p>
 <td>Per-task base branch</td>
 <td>Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label)</td>
 <td>#151 (plan M0.1), #161, #162, #163</td>
+</tr>
+<tr>
+<td>Docs-only CI</td>
+<td>Active (the <code>docs checks</code> job; the skip, <code>CI result</code> and the skill are pending)</td>
+<td>pending (branch <code>feat/docs-checks-ci-job</code>)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1275,6 +1280,56 @@ mission template adds <code>src/shared/schedules.ts</code> (<code>ScheduleTempla
 <code>test/backlog-base-branch-render.test.ts</code>, <code>test/base-branch-backfill.test.ts</code>,
 <code>src/server/base-branch-backfill.ts</code>, <code>e2e/specs/mission-base-branch.spec.ts</code>,
 <code>e2e/specs/task-base-branch.spec.ts</code>.</p>
+<h3>Docs-only CI</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong>, in progress. The <code>docs checks</code> job and <code>npm run docs:links</code> exist; the <code>changes</code> detection job, the docs-only skip, the <code>CI result</code> summary job and the <code>docs-only-ci</code> skill are later tickets of the same plan.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>pending (branch <code>feat/docs-checks-ci-job</code>, the <code>docs checks</code> job)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/docs-only-ci/plan.md">docs-only-ci/plan.md</a>, &quot;Design&quot;, &quot;<code>docs checks</code> job&quot;, and decision 15</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. The <code>docs checks</code> job and the <code>docs:links</code> script are generic; the skip is shaped around the fork&#39;s Wait for CI and &quot;Flaky tests&quot; check.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A pull request that only edits <code>docs/</code> should not pay for the whole of CI. Before
+anything skips, CI needs a job that still runs what a docs change can break: the doc-link check
+and the unit tests that read the repository&#39;s real docs.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>docs checks</code> (job id <code>docs-checks</code>) runs on every CI run, pull request or push, docs-only
+or not. It needs <code>dependencies-node-24</code> and restores <code>node_modules</code> exactly as <code>gates</code> does.</li>
+<li>It runs <code>npm run docs:links</code> (<code>scripts/check-doc-links.mjs</code>), then discovers test files with
+<code>grep -l &#39;\.\./docs/&#39; test/*.test.ts</code> and runs them with the suite loader
+(<code>node --test --import ./test/setup-state.mjs --import tsx &lt;files&gt;</code>).</li>
+<li>Discovery that finds no files fails the step instead of passing. The pattern is named in a
+comment above the step, so a new doc-drift test can be checked against it.</li>
+<li>On full runs the discovered tests also run inside the unit shards; that duplication is
+deliberate.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>The <code>.github/workflows/ci.yml</code> layout: a <code>dependencies-node-24</code> job producing a
+lockfile-keyed <code>node_modules</code> cache that <code>gates</code> restores with <code>fail-on-cache-miss</code>.</li>
+<li><code>scripts/check-doc-links.mjs</code> exists and walks the Markdown under <code>docs/</code>.</li>
+<li>Doc-drift tests reach the real docs through a <code>../docs/</code> path relative to <code>test/</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the <code>docs-checks</code> job),
+<code>package.json</code> (<code>docs:links</code>), <code>AGENTS.md</code> (the CI paragraph&#39;s job count).</p>
+<p><strong>Fork-only files.</strong> None yet.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

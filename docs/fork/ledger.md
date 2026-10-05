@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **11** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **12** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -53,6 +53,7 @@ or issues.
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
+| Docs-only CI | Active (the `docs checks` job; the skip, `CI result` and the skill are pending) | pending (branch `feat/docs-checks-ci-job`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1036,6 +1037,43 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 `test/backlog-base-branch-render.test.ts`, `test/base-branch-backfill.test.ts`,
 `src/server/base-branch-backfill.ts`, `e2e/specs/mission-base-branch.spec.ts`,
 `e2e/specs/task-base-branch.spec.ts`.
+
+### Docs-only CI
+
+| Field | Value |
+| --- | --- |
+| Status | **Active**, in progress. The `docs checks` job and `npm run docs:links` exist; the `changes` detection job, the docs-only skip, the `CI result` summary job and the `docs-only-ci` skill are later tickets of the same plan. |
+| PRs | pending (branch `feat/docs-checks-ci-job`, the `docs checks` job) |
+| Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design", "`docs checks` job", and decision 15 |
+| Upstream candidate | Maybe. The `docs checks` job and the `docs:links` script are generic; the skip is shaped around the fork's Wait for CI and "Flaky tests" check. |
+
+**Intent.** A pull request that only edits `docs/` should not pay for the whole of CI. Before
+anything skips, CI needs a job that still runs what a docs change can break: the doc-link check
+and the unit tests that read the repository's real docs.
+
+**Behavior contracts.**
+
+- `docs checks` (job id `docs-checks`) runs on every CI run, pull request or push, docs-only
+  or not. It needs `dependencies-node-24` and restores `node_modules` exactly as `gates` does.
+- It runs `npm run docs:links` (`scripts/check-doc-links.mjs`), then discovers test files with
+  `grep -l '\.\./docs/' test/*.test.ts` and runs them with the suite loader
+  (`node --test --import ./test/setup-state.mjs --import tsx <files>`).
+- Discovery that finds no files fails the step instead of passing. The pattern is named in a
+  comment above the step, so a new doc-drift test can be checked against it.
+- On full runs the discovered tests also run inside the unit shards; that duplication is
+  deliberate.
+
+**Upstream behavior it assumes.**
+
+- The `.github/workflows/ci.yml` layout: a `dependencies-node-24` job producing a
+  lockfile-keyed `node_modules` cache that `gates` restores with `fail-on-cache-miss`.
+- `scripts/check-doc-links.mjs` exists and walks the Markdown under `docs/`.
+- Doc-drift tests reach the real docs through a `../docs/` path relative to `test/`.
+
+**Upstream surfaces touched.** `.github/workflows/ci.yml` (the `docs-checks` job),
+`package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count).
+
+**Fork-only files.** None yet.
 
 ## Superseded and removed
 
