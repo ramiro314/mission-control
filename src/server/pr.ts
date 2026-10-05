@@ -3,7 +3,11 @@ import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrMergeable, PrState } from "@shared/types.ts";
 import { currentMergeability, nextMergeability, prMergeableFromGitHub } from "@shared/pr-mergeable.ts";
-import { PrConflictTracker, type ConflictObservation } from "./pr-conflicts.ts";
+import {
+  PrConflictTracker,
+  type ConflictObservation,
+  type WorkflowGatesCi,
+} from "./pr-conflicts.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
@@ -489,11 +493,21 @@ function conflictReads(
  * delays the next. A no-op (no subprocesses) whenever no session sits on a
  * feature branch and no dependency or task binding contributes a URL.
  */
-export function startPrPoller(registry: Registry, foremanConfig: () => ForemanConfig): () => void {
+export function startPrPoller(
+  registry: Registry,
+  foremanConfig: () => ForemanConfig,
+  gatesCi: WorkflowGatesCi,
+): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const urlState = new PrUrlPollState();
-  const conflicts = new PrConflictTracker(registry, foremanConfig);
+  const conflicts = new PrConflictTracker(registry, foremanConfig, gatesCi);
+  // A run moving on changes whether its workflow still handles a conflict, between polls.
+  const unsubscribe = registry.subscribe((event) => {
+    if (event.type === "workflow_run_upsert" || event.type === "workflow_run_remove") {
+      conflicts.reclassify();
+    }
+  });
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -518,6 +532,7 @@ export function startPrPoller(registry: Registry, foremanConfig: () => ForemanCo
   void tick();
   return () => {
     stopped = true;
+    unsubscribe();
     if (timer) clearTimeout(timer);
   };
 }

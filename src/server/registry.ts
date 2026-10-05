@@ -5423,8 +5423,8 @@ export class Registry extends EventEmitter {
    * `taskPrPollTargets`, with the task each URL belongs to. The one walk both read, so the
    * by-URL harvest and the conflict episodes' "a task still references it" cannot disagree.
    */
-  private taskPrUrlOwners(): Map<string, Task> {
-    const urls = new Map<string, Task>();
+  private taskPrUrlOwners(): Map<string, { task: Task; repoRoot: string }> {
+    const urls = new Map<string, { task: Task; repoRoot: string }>();
     const historical = new Map<string, TaskWorkEpisodeBinding[]>();
     for (const binding of historicalTaskWorkEpisodeBindings()) {
       const list = historical.get(binding.taskId) ?? [];
@@ -5438,14 +5438,16 @@ export class Registry extends EventEmitter {
         ...(historical.get(task.id) ?? []),
       ];
       for (const candidate of candidates) {
-        if (candidate?.prUrl && candidate.mergedAt === null) urls.set(candidate.prUrl, task);
+        if (candidate?.prUrl && candidate.mergedAt === null) {
+          urls.set(candidate.prUrl, { task, repoRoot: task.repoRoot });
+        }
       }
       // And the SECONDARY repositories' pull requests, on the same rule. Without them a
       // multi-repo task's quorum could never be met once its agent was gone: the branch
       // poller only asks about LIVE sessions, so nothing would ever observe repo B's merge
       // and the task would sit `running` for ever with repo A's already landed.
       for (const repoPr of workEpisodeRepoPrsForTask(task.id)) {
-        if (repoPr.mergedAt === null) urls.set(repoPr.prUrl, task);
+        if (repoPr.mergedAt === null) urls.set(repoPr.prUrl, { task, repoRoot: repoPr.repoRoot });
       }
     }
     return urls;
@@ -5454,40 +5456,69 @@ export class Registry extends EventEmitter {
   /**
    * Who still references each pull request, for the conflict episodes
    * (`src/server/pr-conflicts.ts`): every session naming it, as its own PR or one of its
-   * task's per-repository PRs, and the task whose work carries it.
+   * task's per-repository PRs, the task whose work carries it, and the active workflow runs
+   * reviewing its repository.
    *
    * Exited sessions are included. A session stops referencing its PR only when it leaves
    * the map through `session_remove`, which is what lets an exited session's conflict read
    * as "session ended" rather than vanish.
    */
   prReferences(): Map<string, PrReference> {
-    const refs = new Map<string, { sessions: Session[]; task: PrReference["task"]; workflowOwned: boolean }>();
+    const refs = new Map<string, {
+      sessions: Session[];
+      task: PrReference["task"];
+      workflowOwned: boolean;
+      workflowRunIds: string[];
+    }>();
     const entry = (url: string) => {
       let ref = refs.get(url);
-      if (!ref) refs.set(url, (ref = { sessions: [], task: null, workflowOwned: false }));
+      if (!ref) refs.set(url, (ref = { sessions: [], task: null, workflowOwned: false, workflowRunIds: [] }));
       return ref;
     };
+    const addRuns = (ref: { workflowRunIds: string[] }, runIds: string[]): void => {
+      for (const id of runIds) if (!ref.workflowRunIds.includes(id)) ref.workflowRunIds.push(id);
+    };
     for (const s of this.sessions.values()) {
-      const urls = new Set([s.prUrl, ...(s.task?.repoPrs ?? []).map((pr) => pr.prUrl)]);
-      for (const url of urls) {
-        if (!url) continue;
+      // Each URL with the repository it belongs to, so only the run reviewing THAT repository
+      // is asked whether it gates the pull request's CI.
+      const urls = new Map<string, string | null>();
+      for (const pr of s.task?.repoPrs ?? []) if (pr.prUrl) urls.set(pr.prUrl, pr.repoRoot);
+      if (s.prUrl) urls.set(s.prUrl, s.repoRoot);
+      for (const [url, repoRoot] of urls) {
         const ref = entry(url);
         ref.sessions.push(s);
         if (s.task && !ref.task) ref.task = { id: s.task.id, title: s.task.fullTitle };
         if (!ref.workflowOwned) ref.workflowOwned = this.workflowOwnsSession(s);
+        addRuns(ref, this.activeWorkflowRunIds(s.id, noteKeyFor(s), repoRoot));
       }
     }
-    for (const [url, task] of this.taskPrUrlOwners()) {
+    for (const [url, { task, repoRoot }] of this.taskPrUrlOwners()) {
       const ref = entry(url);
       ref.task ??= { id: task.id, title: fullTaskTitle(task.title, task.intent) };
       // The binding outlives the session it names, so a run still active for an agent that
       // has already been removed still owns the work.
       const binding = taskWorkEpisodeForTask(task.id);
-      if (!ref.workflowOwned && binding) {
-        ref.workflowOwned = this.workflowOwnsKey(binding.sessionId, binding.agentSessionId);
+      if (binding) {
+        if (!ref.workflowOwned) {
+          ref.workflowOwned = this.workflowOwnsKey(binding.sessionId, binding.agentSessionId);
+        }
+        addRuns(ref, this.activeWorkflowRunIds(binding.sessionId, binding.agentSessionId, repoRoot));
       }
     }
     return refs;
+  }
+
+  /**
+   * The non-terminal runs owning a session (by id or note key, as `workflowOwnsKey` matches)
+   * that review this repository. A run whose repository is unknown reviews the session's own.
+   */
+  private activeWorkflowRunIds(sessionId: string, noteKey: string, repoRoot: string | null): string[] {
+    return [...this.workflowRuns.values()]
+      .filter((run) =>
+        (run.sessionId === sessionId || run.noteKey === noteKey)
+        && activeWorkflowOwnsSession([run])
+        && (!run.repoRoot || !repoRoot || run.repoRoot === repoRoot))
+      .map((run) => run.id);
   }
 
   /** Whether a non-terminal workflow run owns this session, as Foreman's follow-through reads it. */

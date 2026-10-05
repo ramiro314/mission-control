@@ -14,6 +14,19 @@ export function workflowPullRequestCiContract(): string {
   ].join("\n");
 }
 
+/**
+ * The merge-conflict half of the PR action's follow-through, from Foreman's Keep sessions on
+ * track with merge conflicts option. Its own block rather than a line of the CI policy, so it
+ * reaches the packet whatever the CI setting is. Frozen with the packet like the CI policy.
+ */
+export function workflowPullRequestConflictContract(): string {
+  return [
+    "## Workflow pull request merge conflicts",
+    "Foreman's Keep sessions on track with merge conflicts option was selected when this packet was prepared.",
+    "If the PR reports merge conflicts with its base, merge the base branch in, resolve the conflicts, run focused tests, and push. Never rebase or force-push.",
+  ].join("\n");
+}
+
 export function workflowEvidenceContractAppendix(): string {
   return [
     "## Workflow evidence readiness",

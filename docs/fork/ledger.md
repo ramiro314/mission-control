@@ -51,7 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
-| PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox) | #108 |
+| PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox, workflow repair rounds) | #108, #125, pending (branch `feat/workflow-merge-conflicts`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -648,8 +648,8 @@ editor, version history and run views.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, tickets 1 and 2: the mergeability signal, the PR chip mark, conflict episodes and the Blocked pull requests inbox |
-| PRs | #108 |
+| Status | **Active**, tickets 1, 2 and the workflow ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Wait for CI's conflict repair round |
+| PRs | #108, #125, pending (branch `feat/workflow-merge-conflicts`) |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
 
@@ -658,7 +658,10 @@ it `CONFLICTING`, CI often stops running, and nothing in Mission Control said so
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a "Conflicts with `<base>`" mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon's single
-owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles.
+owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles. The
+workflow ticket gives a workflow-owned session its conflict as an ordinary repair round from
+Wait for CI, instead of a 45-minute wait for `ci_missing`, and sends the conflict to the inbox as
+`workflow-not-gating` when the run can no longer reach a Wait for CI node.
 
 **Behavior contracts.**
 
@@ -687,10 +690,31 @@ owner of "is this conflict handled?" and the inbox section for the conflicts not
 - An open episode is blocked as `session-gone` when no live session owns the PR, or
   `foreman-cannot-nudge` when `trackMergeConflicts` is off or `foremanCannotDrive` /
   `foremanMayActLive` refuse the live session (the same predicates `decideReviewFollowup`
-  reads). Work an active workflow run owns is not reported, matched through every session
-  naming the PR (exited ones included) and the task's work-episode binding, which outlives the
-  session. The set is published as the
-  `blocked_prs` event, only on change, and on the snapshot as `blockedPrs`.
+  reads). Work an active workflow run owns is matched through every session naming the PR
+  (exited ones included) and the task's work-episode binding, which outlives the session. It is
+  handled when one of its non-terminal runs for the PR's own repository can still reach a Wait
+  for CI node (`WorkflowManager.waitForCiReachable`), and `workflow-not-gating` otherwise. The
+  set is published as the `blocked_prs` event, only on change, and on the snapshot as
+  `blockedPrs`. A `workflow_run_upsert` or `workflow_run_remove` re-derives it between polls
+  (`PrConflictTracker.reclassify`) while any episode is open.
+- Reachability is two pure functions in `src/shared/workflow.ts`. `workflowRunActiveNodeIds`
+  is the latest submission's queued, running, retrying or waiting attempts; with none, Session
+  for `waiting_for_session`, the continued action (or Session) while capturing, and nothing for
+  a blocked or terminal run or one at the Inspector's completion gate. `waitForCiReachable`
+  walks every edge, any port, from those nodes, and a Wait for CI the operator disabled for the
+  run is walked through but never counts.
+- `decideWaitForCi` takes `mergeability: { mergeable, headSha, baseRef } | null`, read by the
+  manager through the same seam as the CI observation (`WaitForCiReaders`), from the bound
+  session's `prMergeable` / `prBaseRef` or its `repoPrs` entry (`sessionPrMergeability`).
+  `headSha` is the observation's own head. Conflicting on `expectedHeadOid` returns `fail` with
+  `conflict: { baseRef }` before every other branch; on any other head it waits.
+  `waitForCiVerdict` turns it into one requested change, "Resolve merge conflicts with
+  `<base>`", whose rationale is `mergeConflictResolutionSteps` (`src/shared/pr-mergeable.ts`):
+  merge the base in, never rebase or force-push. The `fail` edge is an ordinary repair round.
+- With `trackMergeConflicts` on, a workflow Pull Request action packet with no Wait for CI after
+  it (`waitForCiFollows`) carries `workflowPullRequestConflictContract`, independent of
+  `trackCiFailures` and frozen with the packet. It counts toward the session action envelope
+  allowance.
 - `ForemanConfig.trackMergeConflicts` (default true) sits beside `trackCiFailures`; its
   checkbox is **Keep sessions on track with merge conflicts**, and follow-through gate 1 skips
   only when all three toggles are off.
@@ -708,6 +732,9 @@ owner of "is this conflict handled?" and the inbox section for the conflicts not
 - `taskPrPollTargets` covers every task in a `completableByMerge` status, so a dispatched task's
   PR stays referenced after its session is removed.
 - `foldAttention` sections never interleave, and the inbox draws one arm per item kind.
+- Wait for CI is decided only by `WorkflowEngine.observeWaitForCi`, called from the manager's
+  sweep, and its `fail` edge returns to Session as a repair round like any verdict node.
+- A removed session's binding is orphaned and its run blocked (`orphanBinding`).
 
 **Upstream surfaces touched.** `src/server/pr.ts` (both `gh` queries, by-URL result
 collection), `src/server/registry.ts` (`PrMatch`, `LivePrObservation`, `reconcilePrs`,
@@ -723,11 +750,20 @@ fake `gh` (`pr view` output), and every test `Session` literal. Ticket 2: `src/s
 `src/shared/types.ts` (`BlockedPr`, `blocked_prs`, snapshot), `src/web/useEventStream.ts`,
 `src/web/App.tsx`, `src/web/lib/attention.ts`, `src/web/components/AttentionInbox.tsx`,
 `src/web/components/ForemanBar.tsx`, `src/web/styles.css`, and every test `ForemanConfig`
-literal.
+literal. Workflow ticket: `src/shared/wait-for-ci.ts` (`decideWaitForCi`,
+`WaitForCiDecision`), `src/shared/workflow.ts` (new `waitForCiReachable`,
+`workflowRunActiveNodeIds`), `src/shared/types.ts` (`BlockedPrReason`),
+`src/server/workflows/engine.ts` (`waitForCiVerdict`, `observeWaitForCi`),
+`src/server/workflows/manager.ts` (options, packet preparation, `observeWaitForCiAttempt`, new
+`waitForCiReachable`, `sessionPrMergeability`), `src/server/workflows/feedback.ts`
+(`renderSessionAction`), `src/server/workflows/agent-contract.ts`, `src/server/registry.ts`
+(`taskPrUrlOwners`, `prReferences`), `src/server/pr.ts` (`startPrPoller`) and
+`src/server/index.ts`.
 
 **Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
 `test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
-`e2e/specs/pr-merge-conflicts.spec.ts`.
+`test/workflow-ci-reachability.test.ts`, `e2e/specs/pr-merge-conflicts.spec.ts`,
+`e2e/specs/workflow-merge-conflicts.spec.ts`.
 
 ### PR publication ownership
 

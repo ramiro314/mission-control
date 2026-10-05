@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FLAKY_TESTS_CHECK_NAME, FlakeReportSchema, type FlakeReport } from "./flake-report.ts";
 import { classifyCheckEntry } from "./ci-checks.ts";
+import type { PrMergeable } from "./types.ts";
 
 // The Wait for CI node: what it reads, what it records, and how it decides.
 //
@@ -194,10 +195,31 @@ export function readWaitForCiState(output: unknown): WaitForCiState | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Whether the pull request conflicts with its base, as the PR poller last observed it.
+ *
+ * `headSha` is the head that observation was MADE on (`Session.prMergeable.headSha`), never
+ * the pull request's current head: GitHub answers `UNKNOWN` after a push, and the poller then
+ * keeps the previous observation whole, old head included. Reading the current head here
+ * would make a conflict observed before the repair push look like a conflict on the repair.
+ */
+export interface WaitForCiMergeability {
+  mergeable: PrMergeable;
+  headSha: string;
+  /** The pull request's base branch, or null while the poller has not reported it. */
+  baseRef: string | null;
+}
+
 export type WaitForCiDecision =
   | { kind: "wait"; state: WaitForCiState }
   | { kind: "pass"; state: WaitForCiState }
-  | { kind: "fail"; state: WaitForCiState; failing: CiCheckRun[] }
+  | {
+      kind: "fail";
+      state: WaitForCiState;
+      failing: CiCheckRun[];
+      /** Set when the pull request conflicts with its base; `failing` is then empty. */
+      conflict?: { baseRef: string | null };
+    }
   | { kind: "block"; state: WaitForCiState; code: WaitForCiBlockCode; detail: string };
 
 function sameHead(expected: string, observed: string): boolean {
@@ -208,6 +230,10 @@ function sameHead(expected: string, observed: string): boolean {
  * One observation of a waiting node, decided. Pure: the caller supplies the stored
  * observation and the time.
  *
+ * - The pull request conflicts with its base on the expected head: fail, before anything else.
+ *   GitHub runs no `pull_request` checks on a conflicting pull request, so waiting for them
+ *   would only end in `ci_missing`. A conflict observed on another head waits like any other
+ *   observation of another head.
  * - Another head, or no observation yet: wait. The node never judges a head it was not given.
  * - Any check still pending: wait.
  * - A failing check other than "Flaky tests": fail, naming every failing check.
@@ -219,6 +245,7 @@ export function decideWaitForCi(
   state: WaitForCiState,
   observation: CiObservation | null,
   now: number,
+  mergeability: WaitForCiMergeability | null = null,
 ): WaitForCiDecision {
   if (!state.expectedHeadOid) {
     const blocked = {
@@ -229,6 +256,17 @@ export function decideWaitForCi(
         : "The step before this node recorded no pull request to watch.",
     };
     return { kind: "block", ...blocked, state: { ...state, outcome: "blocked", blocked } };
+  }
+  if (
+    mergeability?.mergeable === "conflicting"
+    && sameHead(state.expectedHeadOid, mergeability.headSha)
+  ) {
+    return {
+      kind: "fail",
+      failing: [],
+      conflict: { baseRef: mergeability.baseRef },
+      state: { ...state, outcome: "fail", greenWithoutReportSince: null },
+    };
   }
   let next = state;
   if (observation && sameHead(state.expectedHeadOid, observation.headSha)) {

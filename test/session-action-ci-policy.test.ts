@@ -70,9 +70,37 @@ test("a maximum authored prompt still fits with authorization and CI instruction
     skillCommand: `/${"s".repeat(WORKFLOW_LIMITS.sessionActionSkillId)}`,
     promptMarkdown,
     pullRequestCi: true,
+    pullRequestConflicts: true,
   });
-  assert.equal(result.ok, true, "CI policy must not make existing maximum-size actions undeliverable");
+  assert.equal(result.ok, true, "CI and conflict policy must not make existing maximum-size actions undeliverable");
   if (!result.ok) return;
   assert.ok(result.payload.endsWith(promptMarkdown));
   assert.ok(Buffer.byteLength(result.payload) <= WORKFLOW_LIMITS.sessionActionPacketBytes);
+});
+
+test("the merge-conflict line rides the packet only when its own setting is on", () => {
+  const CONFLICTS = "## Workflow pull request merge conflicts";
+  for (const pullRequestCi of [false, true]) {
+    const result = renderSessionAction({ ...packet, pullRequestCi, pullRequestConflicts: true });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // Independent of the CI setting, before the frozen prompt, and after the CI block.
+    assert.ok(result.payload.includes(CONFLICTS), `with CI ${pullRequestCi}`);
+    assert.ok(result.payload.indexOf(CONFLICTS) < result.payload.indexOf(legacyPrompt));
+    assert.match(result.payload, /merge the base branch in, resolve the conflicts, run focused tests, and push\. Never rebase or force-push\./);
+    assert.equal(result.payload.includes("## Workflow pull request CI follow-through"), pullRequestCi);
+    if (pullRequestCi) {
+      assert.ok(result.payload.indexOf("CI follow-through") < result.payload.indexOf(CONFLICTS));
+    }
+    assert.ok(result.payload.endsWith(legacyPrompt));
+  }
+  for (const input of [
+    packet,
+    { ...packet, pullRequestCi: true, pullRequestConflicts: false },
+    { ...packet, pullRequestConflicts: true, origin: { kind: "session" as const, sessionId: "session-1" } },
+  ]) {
+    const result = renderSessionAction(input);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.ok(!result.payload.includes(CONFLICTS));
+  }
 });

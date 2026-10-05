@@ -26,11 +26,20 @@ obligation:
    handling. Each row names the PR (repository and number), its base branch, and the owning
    task or session, says why it needs you - **session ended** when no live session owns it,
    **Foreman can't drive this session** when the owning session is live but Foreman will not
-   type into it - and how long it has been **Conflicting for**. It links to the PR and, while
-   the daemon still holds it, the session. Read-only, like Pipeline halts: the row clears itself
-   when GitHub reports the PR mergeable, merged or closed, or when no session or task references
-   it any more. A PR whose work an active workflow owns is not listed here, even after the
-   workflow's agent has exited.
+   type into it, **the workflow isn't waiting on CI for this PR** when an active workflow owns
+   the work but its run for this PR's repository can no longer reach a
+   [Wait for CI](workflows.md#wait-for-ci) node - and how long it has been **Conflicting for**.
+   It links to the PR and, while the daemon still holds it, the session. Read-only, like
+   Pipeline halts: the row clears itself when GitHub reports the PR mergeable, merged or closed,
+   or when no session or task references it any more.
+
+   A PR whose workflow run is at a Wait for CI node, or can still reach one (a run upstream of
+   it, or in a repair round whose edges loop back to it), is not listed: that node fails on the
+   conflict and starts a repair round. This holds after the workflow's agent has exited, too.
+   A run past every Wait for CI, with none, blocked, or past End at the Inspector's gate is not
+   handling the conflict, and Foreman stays out of a workflow's session, so the PR is listed.
+   Membership follows reachability, recomputed whenever the run changes, so a run moving between
+   nodes that can all still reach Wait for CI never adds or removes the row.
 
    The daemon decides membership, in memory, from the PR poller's reads
    (`src/server/pr-conflicts.ts`), and sends the whole set as `blocked_prs` when it changes and

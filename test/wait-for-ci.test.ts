@@ -278,6 +278,79 @@ test("the verdicts cite the attempt and carry each failing check's own words", (
   assert.match(waitForCiVerdict(passing, "attempt-2")?.summary ?? "", /1 flaky test that passed on rerun/);
 });
 
+// ---- merge conflicts -------------------------------------------------------------------------
+
+const conflict = (headSha = HEAD, baseRef: string | null = "main") =>
+  ({ mergeable: "conflicting", headSha, baseRef }) as const;
+
+test("a conflict on the expected head fails the node before any check, even with none", () => {
+  for (const observation of [
+    null,
+    seen([]),
+    seen([run("unit", "pending")]),
+    seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], HEAD, REPORT),
+  ]) {
+    const decision = decideWaitForCi(state(), observation, T0 + 1, conflict());
+    assert.equal(decision.kind, "fail");
+    if (decision.kind !== "fail") return;
+    assert.deepEqual(decision.conflict, { baseRef: "main" });
+    assert.deepEqual(decision.failing, []);
+    assert.equal(decision.state.outcome, "fail");
+  }
+  // Before the timeout, too: a conflicting PR may never get checks, so it never reaches
+  // `ci_missing`.
+  const late = decideWaitForCi(state(), null, T0 + 46 * 60_000, conflict(HEAD.toUpperCase()));
+  assert.equal(late.kind === "fail" && late.conflict?.baseRef, "main");
+});
+
+test("a conflict observed on another head waits, and a mergeable one lets the checks decide", () => {
+  const other = decideWaitForCi(state(), null, T0 + 1, conflict("b".repeat(40)));
+  assert.equal(other.kind, "wait");
+  const mergeable = { mergeable: "mergeable", headSha: HEAD, baseRef: "main" } as const;
+  assert.equal(decideWaitForCi(state(), seen([run("unit", "pending")]), T0 + 1, mergeable).kind, "wait");
+  assert.equal(decideWaitForCi(state(), seen([run("unit", "failing")]), T0 + 1, mergeable).kind, "fail");
+});
+
+test("push, then UNKNOWN, then resolved: the kept pre-repair conflict never fails the repair head", () => {
+  const before = "b".repeat(40);
+  // The node watches the repair push. GitHub has answered UNKNOWN for it, so the poller kept
+  // the conflict observed on the head before the push, with that head.
+  const repair = state({ expectedHeadOid: HEAD });
+  const kept = decideWaitForCi(repair, null, T0 + 1, conflict(before));
+  assert.equal(kept.kind, "wait");
+  assert.equal(kept.state.outcome, null);
+  // GitHub answers for the repair head: mergeable, so the checks decide.
+  const resolved = { mergeable: "mergeable", headSha: HEAD, baseRef: "main" } as const;
+  const passed = decideWaitForCi(
+    kept.state,
+    seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], HEAD, REPORT),
+    T0 + 2,
+    resolved,
+  );
+  assert.equal(passed.kind, "pass");
+});
+
+test("a conflict verdict asks for one merge-in repair and forbids rebasing", () => {
+  const decision = decideWaitForCi(state(), null, T0 + 1, conflict());
+  if (decision.kind !== "fail") return assert.fail("expected a fail");
+  const verdict = waitForCiVerdict(decision, "attempt-9");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict !== "fail") return;
+  assert.equal(verdict.requestedChanges.length, 1);
+  const change = verdict.requestedChanges[0]!;
+  assert.equal(change.title, "Resolve merge conflicts with `main`");
+  assert.match(change.rationale, /git fetch origin main/);
+  assert.match(change.rationale, /git merge origin\/main/);
+  assert.match(change.rationale, /Do not rebase or force-push\./);
+  assert.equal(change.evidence[0]!.path, "attempt-9");
+  assert.match(verdict.summary, /conflicts with `main`/);
+
+  const unknownBase = decideWaitForCi(state(), null, T0 + 1, conflict(HEAD, null));
+  if (unknownBase.kind !== "fail") return assert.fail("expected a fail");
+  const named = waitForCiVerdict(unknownBase, "attempt-10");
+  assert.equal(named?.verdict === "fail" && named.requestedChanges[0]!.title, "Resolve merge conflicts with its base branch");
+});
+
 // ---- placing -------------------------------------------------------------------------------
 
 const action = (completion: "pull_request" | "session_turn", id = `action-${completion}`) => ({

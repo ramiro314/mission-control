@@ -75,3 +75,18 @@ export function mergeabilityEqual(a: PrMergeability, b: PrMergeability): boolean
     a.prMergeable?.headSha === b.prMergeable?.headSha
   );
 }
+
+/**
+ * How an agent resolves its pull request's conflict with `baseRef`: merge the base in, never
+ * rebase. One wording, so every reaction that asks for a conflict fix asks for the same one.
+ */
+export function mergeConflictResolutionSteps(baseRef: string | null): string {
+  const base = baseRef ?? "<base>";
+  return [
+    `Merge the base branch into the pull request's branch: \`git fetch origin ${base}\`, then \`git merge origin/${base}\`.`,
+    "Resolve every conflict, keeping both sides' intent.",
+    "Run the tests that cover the files you touched.",
+    "Commit the merge and push it to the same branch.",
+    "Do not rebase or force-push.",
+  ].join("\n");
+}

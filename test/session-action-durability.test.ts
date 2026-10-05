@@ -37,7 +37,9 @@ const { SESSION_ACTION_ADAPTERS, sessionActionAdapter, sessionActionCapabilities
   await import("../src/server/workflows/session-action-adapters.ts");
 const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
 const { executionAuthorizationContract } = await import("../src/server/execution-authorization.ts");
-const { workflowPullRequestCiContract } = await import("../src/server/workflows/agent-contract.ts");
+const { workflowPullRequestCiContract, workflowPullRequestConflictContract } = await import(
+  "../src/server/workflows/agent-contract.ts"
+);
 
 const db = openDb();
 const store = new WorkflowStore(db, [], [], []);
@@ -653,6 +655,7 @@ test("what may be authored is derived from what can be delivered, not chosen bes
       "utf8",
     )))
     + Buffer.byteLength(workflowPullRequestCiContract(), "utf8")
+    + Buffer.byteLength(workflowPullRequestConflictContract(), "utf8")
     + 200; // run id, version, labels and newlines
   assert.ok(
     envelope < WORKFLOW_LIMITS.sessionActionEnvelopeBytes,

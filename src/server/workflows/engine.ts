@@ -75,8 +75,10 @@ import {
   readWaitForCiState,
   type CiObservation,
   type WaitForCiDecision,
+  type WaitForCiMergeability,
   type WaitForCiState,
 } from "@shared/wait-for-ci.ts";
+import { mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
@@ -425,6 +427,24 @@ export function waitForCiVerdict(
   attemptId: string,
 ): PersonaVerdict | null {
   const head = decision.state.expectedHeadOid?.slice(0, 12) ?? "the head commit";
+  if (decision.kind === "fail" && decision.conflict) {
+    const base = decision.conflict.baseRef;
+    const named = base ? `\`${base}\`` : "its base branch";
+    const quote = `GitHub reports the pull request as conflicting with ${named} on ${head}.`;
+    return normalizePersonaVerdict({
+      verdict: "fail",
+      summary: `The pull request conflicts with ${named} on ${head}.`,
+      requestedChanges: [{
+        title: `Resolve merge conflicts with ${named}`,
+        rationale: [
+          `${quote} GitHub runs no pull request checks while it conflicts, so CI cannot pass until the conflict is resolved.`,
+          mergeConflictResolutionSteps(base),
+        ].join("\n\n"),
+        evidence: [{ kind: "check" as const, path: attemptId, quote }],
+      }],
+      confidence: 1,
+    }, new Set(), new Set(), new Set([attemptId]));
+  }
   if (decision.kind === "pass") {
     const flakes = decision.state.flakeReport?.flakes.length ?? 0;
     const summary = flakes === 0
@@ -456,6 +476,17 @@ export function waitForCiVerdict(
     }),
     confidence: 1,
   }, new Set(), new Set(), new Set([attemptId]));
+}
+
+/** What a Wait for CI attempt reads, supplied by the manager. Neither reaches GitHub. */
+export interface WaitForCiReaders {
+  /** The Inspector's stored CI snapshot for one pull request. */
+  ci: (pullRequestKey: string) => CiObservation | null;
+  /**
+   * The PR poller's conflict observation for one pull request, as the binding's session
+   * carries it, bound to the head it was observed on. Null while none is known.
+   */
+  mergeability: (pullRequestKey: string, bindingId: string) => WaitForCiMergeability | null;
 }
 
 /** The operator-disabled set, tolerant of rows written before the column existed. */
@@ -1817,13 +1848,15 @@ export class WorkflowEngine {
   /**
    * Observe one waiting Wait for CI attempt and act on what it decides.
    *
-   * `observe` reads the Inspector's stored CI snapshot for a pull request; this method never
-   * reaches GitHub. Returns true when anything durable changed. A disabled node passes without
-   * reading CI at all, on the terms every other disabled verdict node does.
+   * `observe.ci` reads the Inspector's stored CI snapshot for a pull request and
+   * `observe.mergeability` the PR poller's conflict observation for it, as the run's bound
+   * session carries it; this method never reaches GitHub. Returns true when anything durable
+   * changed. A disabled node passes without reading CI at all, on the terms every other
+   * disabled verdict node does.
    */
   observeWaitForCi(
     attemptId: string,
-    observe: (pullRequestKey: string) => CiObservation | null,
+    observe: WaitForCiReaders,
     now = this.now(),
   ): boolean {
     const attempt = this.store.getAttempt(attemptId);
@@ -1835,7 +1868,12 @@ export class WorkflowEngine {
     if (run.status !== "running" || submission.status !== "running") return false;
     const decision: WaitForCiDecision = disabledNodes(run).includes(node.id)
       ? { kind: "pass", state: { ...state, outcome: "pass", disabled: true } }
-      : decideWaitForCi(state, state.pullRequestKey ? observe(state.pullRequestKey) : null, now);
+      : decideWaitForCi(
+          state,
+          state.pullRequestKey ? observe.ci(state.pullRequestKey) : null,
+          now,
+          state.pullRequestKey ? observe.mergeability(state.pullRequestKey, run.bindingId) : null,
+        );
     if (decision.kind === "wait") {
       if (JSON.stringify(decision.state) === JSON.stringify(state)) return false;
       const updated = this.store.updateWaitForCiState(attempt.id, decision.state, now);
@@ -1878,6 +1916,7 @@ export class WorkflowEngine {
       submissionId: submission.id,
       outcome: verdict.verdict,
       ...(decision.kind === "fail" ? { failing: decision.failing.map((check) => check.name) } : {}),
+      ...(decision.kind === "fail" && decision.conflict ? { conflict: true } : {}),
       flakes: decision.state.flakeReport?.flakes.length ?? 0,
     }, now);
     this.advanceStructure(submission, version);
