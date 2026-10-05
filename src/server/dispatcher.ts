@@ -61,7 +61,7 @@ import {
 } from "./agent-subprocess-env.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
-import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { freshRemoteBranchSha, freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
 import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
@@ -508,7 +508,11 @@ export class Dispatcher {
       // its harness capability does not pay for a network round trip first.
       backlogRecoveryEligible = true;
       const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
-        { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
+        {
+          primary: task.repoRoot,
+          primaryBranch: task.baseBranch ?? null,
+          extras: task.extraRepos.map((entry) => entry.repoRoot),
+        },
         baseSha,
       );
       const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases);
@@ -2264,6 +2268,33 @@ export async function resolveDispatchBase(repoRoot: string): Promise<string> {
   return fresh.value;
 }
 
+/**
+ * The commit a task with a base branch starts from: that branch's tip on `origin`, freshly
+ * fetched. Refused, never defaulted, when the branch is gone or origin cannot answer - a
+ * task that names a base and starts from the default branch instead would open its pull
+ * request against a branch it was never cut from.
+ */
+export async function resolveDispatchBranchBase(repoRoot: string, branch: string): Promise<string> {
+  const origin = await originConfigured(repoRoot);
+  if (!origin.ok) {
+    throw new Error(
+      `could not determine whether ${repoRoot} has an origin remote: ${origin.reason} - ` +
+        "nothing was provisioned, so this can be retried",
+    );
+  }
+  if (!origin.value) {
+    throw new Error(`base branch ${branch} needs an origin remote, and ${repoRoot} has none`);
+  }
+  const fresh = await freshRemoteBranchSha(repoRoot, branch);
+  if (!fresh.ok) {
+    throw new Error(
+      `could not start from base branch ${branch} in ${repoRoot}: ${fresh.reason} - ` +
+        "nothing was provisioned",
+    );
+  }
+  return fresh.value;
+}
+
 /** The exact commit each of a task's repositories will be provisioned at, by slot. */
 export interface TaskDispatchBases {
   /** Slot 0, the task's own repository. */
@@ -2287,10 +2318,16 @@ export interface TaskDispatchBases {
  * cost and the failure order predictable.
  */
 export async function resolveTaskBases(
-  repoRoots: { primary: string; extras: readonly string[] },
+  repoRoots: {
+    primary: string;
+    /** The task's base branch, which like a pin applies to the PRIMARY repository only. */
+    primaryBranch?: string | null;
+    extras: readonly string[];
+  },
   /** The verified `options.baseSha`, which pins the PRIMARY repository only. */
   pinned: string | null,
   resolve: (repoRoot: string) => Promise<string> = resolveDispatchBase,
+  resolveBranch: (repoRoot: string, branch: string) => Promise<string> = resolveDispatchBranchBase,
 ): Promise<TaskDispatchBases> {
   const frozen = new Map<string, string>();
   const forRepo = async (repoRoot: string): Promise<string> => {
@@ -2303,7 +2340,13 @@ export async function resolveTaskBases(
   // A pin names one commit in one repository. It cannot mean anything in another, so an
   // attached repository resolves its own remote default even on a pinned dispatch - the
   // same rule the old code stated by passing `null` for every secondary.
-  const primary = pinned ?? (await forRepo(repoRoots.primary));
+  // A pin is an exact commit and outranks the branch it may have been read from. Without
+  // either, the primary takes origin's default like every other repository.
+  const primary =
+    pinned ??
+    (repoRoots.primaryBranch
+      ? await resolveBranch(repoRoots.primary, repoRoots.primaryBranch)
+      : await forRepo(repoRoots.primary));
   const extras: string[] = [];
   for (const repoRoot of repoRoots.extras) extras.push(await forRepo(repoRoot));
   return { primary, extras };

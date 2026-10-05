@@ -2337,6 +2337,25 @@ export async function remoteDefaultRef(cwd: string): Promise<string | null> {
 }
 
 /**
+ * The ref a reset lands on: `origin/<baseBranch>` for a task that names a base branch, else
+ * origin's default branch. Asked after the fetch, so a base branch origin has since deleted
+ * reads as missing rather than as its last fetched tip.
+ */
+async function resetTarget(
+  root: string,
+  baseBranch: string | null,
+): Promise<{ ok: true; ref: string } | { ok: false; error: string }> {
+  if (!baseBranch) {
+    const ref = await remoteDefaultRef(root);
+    return ref ? { ok: true, ref } : { ok: false, error: "no origin/main (or origin/master) to reset to" };
+  }
+  const found = await git(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${baseBranch}^{commit}`]);
+  return found.code === 0 && found.stdout.trim()
+    ? { ok: true, ref: `origin/${baseBranch}` }
+    : { ok: false, error: `base branch ${baseBranch} does not exist on origin` };
+}
+
+/**
  * The local branch name behind a remote default ref - "origin/main" -> "main".
  *
  * `remoteDefaultRef` only ever answers with an `origin/`-qualified ref, so this is
@@ -2471,7 +2490,11 @@ export async function branchReleasedByReset(session: Session): Promise<string | 
  * fetch is what makes "commits ahead" honest against the *current* remote; a
  * fetch failure is a hard error so the confirm dialog never understates the loss.
  */
-export async function resetPreview(session: Session): Promise<ResetPreview> {
+export async function resetPreview(
+  session: Session,
+  /** The base branch of the task this session runs; null resets onto origin's default. */
+  baseBranch: string | null = null,
+): Promise<ResetPreview> {
   const base: ResetPreview = {
     ok: false, error: null, target: null, branch: session.gitBranch,
     dirtyFiles: 0, untrackedFiles: 0, aheadCommits: 0, aheadSubjects: [],
@@ -2496,8 +2519,9 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
   if (fetched.code !== 0) {
     return { ...base, error: `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}` };
   }
-  const target = await remoteDefaultRef(root);
-  if (!target) return { ...base, error: "no origin/main (or origin/master) to reset to" };
+  const resolved = await resetTarget(root, baseBranch);
+  if (!resolved.ok) return { ...base, error: resolved.error };
+  const target = resolved.ref;
 
   // Split the porcelain status into untracked ("??") vs dirty tracked lines.
   let dirtyFiles = 0;
@@ -2552,6 +2576,12 @@ export async function resetToOrigin(
   deps: InjectDeps = defaultInjectDeps,
   lockOwner?: PaneLockToken,
   driverClear?: DriverClear,
+  /**
+   * The base branch of the task this checkout is for. A task that names one starts from
+   * `origin/<baseBranch>` at dispatch, so a reset onto origin's default would hand it a
+   * tree cut from a branch its pull request does not target. Null keeps today's target.
+   */
+  baseBranch: string | null = null,
 ): Promise<ResetResult> {
   if (!session.cwd) {
     return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
@@ -2578,10 +2608,11 @@ export async function resetToOrigin(
     const error = `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}`;
     return { ok: false, error, root, cleared: false, detached: false };
   }
-  const target = await remoteDefaultRef(root);
-  if (!target) {
-    return { ok: false, error: "no origin/main (or origin/master) to reset to", root, cleared: false, detached: false };
+  const resolved = await resetTarget(root, baseBranch);
+  if (!resolved.ok) {
+    return { ok: false, error: resolved.error, root, cleared: false, detached: false };
   }
+  const target = resolved.ref;
 
   const reset = await git(root, ["reset", "--hard", target]);
   if (reset.code !== 0) {

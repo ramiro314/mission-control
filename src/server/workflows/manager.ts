@@ -3210,6 +3210,7 @@ export class WorkflowManager {
       originalGoal: this.originalGoal(run.id),
       skillCommand: skill.command,
       repoRoot: binding.repoRoot || null,
+      baseBranch: this.bindingBaseBranch(session, binding.repoRoot),
       workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const prepared = this.store.prepareDelivery({
@@ -4784,6 +4785,17 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  /**
+   * The base branch a pull request from this binding opens against: the session's task's, when
+   * the run reviews that task's PRIMARY repository (an empty binding root is the session's own
+   * checkout). Null for an attached repository, which keeps its default branch.
+   */
+  private bindingBaseBranch(session: Session, bindingRepoRoot: string): string | null {
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task?.baseBranch) return null;
+    return !bindingRepoRoot || bindingRepoRoot === task.repoRoot ? task.baseBranch : null;
+  }
+
   private originalGoal(runId: string): string {
     for (const submission of this.store.listSubmissions(runId)) {
       if (submission.mode !== "full_workflow") continue;
@@ -5341,6 +5353,7 @@ export class WorkflowManager {
       // Only an action that completes on a pull request grants creating one; an authored
       // action of any other completion kind may only update the PR the task already has.
       pullRequestGrant: snapshot.completion.kind === "pull_request",
+      baseBranch: this.bindingBaseBranch(session, binding.repoRoot),
       pullRequestCi: snapshot.completion.kind === "pull_request"
         && this.options.trackCiFailures?.() === true
         && !waitForCiFollows(version.graph, attempt.nodeId),

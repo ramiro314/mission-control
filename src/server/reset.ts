@@ -72,6 +72,8 @@ export async function resetSession(
    */
   driverClear?: DriverClear,
   pendingTurns?: PendingTurnResetBoundary,
+  /** The task's base branch to land on instead of origin's default - see `resetToOrigin`. */
+  baseBranch: string | null = null,
 ): Promise<ResetResult> {
   const pendingTurnKey = noteKeyFor(session);
   registry.beginSessionReset(session.id);
@@ -85,7 +87,7 @@ export async function resetSession(
     return await withPaneLockWait(session, async (lockOwner) => {
       const r = reset
         ? await reset(session, clear, lockOwner, driverClear)
-        : await resetToOrigin(session, clear, undefined, lockOwner, driverClear);
+        : await resetToOrigin(session, clear, undefined, lockOwner, driverClear, baseBranch);
 
       // The reset discarded the task these queued items were authored for, so discard every
       // safely queued row. A claimed row whose handoff may have crossed stays `uncertain`:

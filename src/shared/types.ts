@@ -2321,6 +2321,15 @@ export interface Task {
   pipelineWorkspacePath?: string | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
+  /**
+   * The branch on `origin` this task starts from and opens its pull request against, or
+   * null for origin's default branch. Applies to the PRIMARY repository only: an attached
+   * repository keeps its own default.
+   *
+   * Optional on the type only so the many hand-built Task fixtures need not name it; every
+   * row the daemon reads carries it, and an absent value means null.
+   */
+  baseBranch?: string | null;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */

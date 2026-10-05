@@ -172,6 +172,28 @@ function requirePlanningSkills<K extends PlanningTaskKind>(
 }
 
 /**
+ * Where a task with a base branch publishes, or null for one on origin's default branch.
+ *
+ * Told to the agent rather than enforced by the daemon because the agent is what opens the
+ * pull request: every publication path (the workflow's Pull Request action, Foreman's
+ * wrap-up, a direct request) ends in the session running `gh pr create`, and their shared
+ * wording says "the default branch". Delivered once, with the task, so it governs each of
+ * them for the rest of the session without changing their fixed texts.
+ */
+export function baseBranchContract(task: Pick<Task, "baseBranch" | "extraRepos">): string | null {
+  const base = task.baseBranch;
+  if (!base) return null;
+  return [
+    "## Base branch",
+    `This task's base branch is \`${base}\`, not the repository's default branch. Your worktree started from \`origin/${base}\`.`,
+    `Open this task's pull request against it (\`gh pr create --base ${base}\`). Wherever an instruction says the default branch - merging it into yours, diffing against it, resolving conflicts with it - use \`origin/${base}\` instead.`,
+    ...(task.extraRepos.length > 0
+      ? ["This applies to the primary repository only. The other repositories attached to this task keep their own default branch."]
+      : []),
+  ].join("\n");
+}
+
+/**
  * The intent a task is actually delivered: the composed intent, shared authorization, then
  * its kind's contract and eligible evidence instructions.
  *
@@ -192,6 +214,7 @@ export function withTaskKindContract(
       workflowContinuation: false,
       pullRequestGrant: false,
     }),
+    baseBranchContract(task),
     KIND_CONTRACT[task.kind](task, inputs),
     // Whether a Persona will read evidence is the workflow's property, resolved once by the
     // eligibility reader this flag arrives from - so it is not re-decided per kind here. A
