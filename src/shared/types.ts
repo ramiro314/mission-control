@@ -1927,13 +1927,17 @@ export interface PrMergeability {
  * - `session-gone`: no live session owns the PR. The session exited or was removed, and the
  *   PR is seen only through the by-URL poller.
  * - `foreman-cannot-nudge`: the owning session is live, but Foreman will not type into it.
+ * - `workflow-not-gating`: an active workflow owns the work, so Foreman stays out, but no Wait
+ *   for CI node for this PR is active or reachable in its run, so nothing will fail on the
+ *   conflict and start a repair round.
  */
-export type BlockedPrReason = "session-gone" | "foreman-cannot-nudge";
+export type BlockedPrReason = "session-gone" | "foreman-cannot-nudge" | "workflow-not-gating";
 
 /** The inbox's words for each `BlockedPrReason`: why the row needs you. */
 export const BLOCKED_PR_REASON_TEXT: Record<BlockedPrReason, string> = {
   "session-gone": "session ended",
   "foreman-cannot-nudge": "Foreman can't drive this session",
+  "workflow-not-gating": "the workflow isn't waiting on CI for this PR",
 };
 
 /**

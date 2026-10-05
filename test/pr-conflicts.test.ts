@@ -4,12 +4,20 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BlockedPr, ServerEvent } from "../src/shared/types.ts";
-import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import {
+  waitForCiReachable,
+  workflowRunActiveNodeIds,
+  type PublishedWorkflowGraph,
+  type WorkflowRunStatus,
+  type WorkflowRunSummary,
+} from "../src/shared/workflow.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-conflicts-"));
 const { Registry } = await import("../src/server/registry.ts");
-const { pollAndReconcilePrs, PrUrlPollState } = await import("../src/server/pr.ts");
+const { pollAndReconcilePrs, PrUrlPollState, reclassifyOnWorkflowRunChange } = await import(
+  "../src/server/pr.ts"
+);
 const { PrConflictEpisodes, PrConflictTracker, unhandledReason } = await import(
   "../src/server/pr-conflicts.ts"
 );
@@ -32,11 +40,19 @@ const LIVE = ForemanConfigSchema.parse({
 const policy = (over: Partial<typeof LIVE> = {}) => ({ ...LIVE, ...over });
 
 /** A reference to one PR, as `Registry.prReferences` builds it. */
-const ref = (sessions: ReturnType<typeof mkSession>[], workflowOwned = false) => ({
+const ref = (
+  sessions: ReturnType<typeof mkSession>[],
+  workflowOwned = false,
+  workflowRunIds: string[] = workflowOwned ? ["run-1"] : [],
+) => ({
   sessions,
   task: null,
   workflowOwned,
+  workflowRunIds,
 });
+
+/** No workflow run gates CI. */
+const noGate = () => false;
 
 test("an episode opens on the first conflicting read and closes on mergeable, merged or closed", () => {
   for (const end of [
@@ -85,14 +101,14 @@ test("an episode closes once no session and no task reference its PR", () => {
 });
 
 test("session-gone: no live session owns the PR", () => {
-  assert.equal(unhandledReason(ref([]), policy()), "session-gone");
+  assert.equal(unhandledReason(ref([]), policy(), noGate), "session-gone");
   const exited = mkSession({ cwd: "/wt/app", state: "exited" });
-  assert.equal(unhandledReason(ref([exited]), policy()), "session-gone", "an exited owner is not live");
+  assert.equal(unhandledReason(ref([exited]), policy(), noGate), "session-gone", "an exited owner is not live");
 });
 
 test("foreman-cannot-nudge covers every case Foreman's follow-through refuses to type", () => {
   const live = mkSession({ cwd: "/wt/app", state: "idle" });
-  assert.equal(unhandledReason(ref([live]), policy()), null, "Foreman drives this one");
+  assert.equal(unhandledReason(ref([live]), policy(), noGate), null, "Foreman drives this one");
   const cases: Array<[string, ReturnType<typeof mkSession>, ReturnType<typeof policy>]> = [
     ["trackMergeConflicts off", live, policy({ trackMergeConflicts: false })],
     ["not invited", { ...live, foremanInvite: null }, policy()],
@@ -102,23 +118,82 @@ test("foreman-cannot-nudge covers every case Foreman's follow-through refuses to
     ["no hooks", { ...live, hooksSeen: false }, policy()],
   ];
   for (const [why, session, p] of cases) {
-    assert.equal(unhandledReason(ref([session]), p), "foreman-cannot-nudge", why);
+    assert.equal(unhandledReason(ref([session]), p, noGate), "foreman-cannot-nudge", why);
   }
 });
 
-test("work an active workflow owns is not reported here, live or not", () => {
+test("work an active workflow owns is handled exactly when one of its runs reaches Wait for CI", () => {
+  const gating = (id: string) => id === "gating";
   const live = mkSession({ cwd: "/wt/app", state: "idle", foremanInvite: null });
-  assert.equal(unhandledReason(ref([live], true), policy()), null);
   const exited = mkSession({ cwd: "/wt/app", state: "exited" });
-  assert.equal(unhandledReason(ref([exited], true), policy()), null, "not session-gone");
-  assert.equal(unhandledReason(ref([], true), policy()), null, "nor once the session is removed");
+  for (const [why, sessions] of [["live", [live]], ["exited", [exited]], ["removed", []]] as const) {
+    assert.equal(unhandledReason(ref([...sessions], true, ["gating"]), policy(), gating), null, `${why}: handled`);
+    assert.equal(
+      unhandledReason(ref([...sessions], true, ["past-it"]), policy(), gating),
+      "workflow-not-gating",
+      `${why}: not session-gone or foreman-cannot-nudge`,
+    );
+  }
+  assert.equal(unhandledReason(ref([live], true, ["past-it", "gating"]), policy(), gating), null, "any run");
+  // A multi-repo session's run for ANOTHER repository owns the session, so Foreman stays out,
+  // but there is no run for this pull request's repository to gate it.
+  assert.equal(unhandledReason(ref([live], true, []), policy(), gating), "workflow-not-gating");
+});
+
+/**
+ * The plan's four workflow-owned cases, through the real reachability walk: Session -> Pull
+ * Request action -> Wait for CI -> End, with Wait for CI's fail returning to Session, and a
+ * second shape that has no Wait for CI at all.
+ */
+test("the four workflow-owned cases classify through the reachability walk", () => {
+  const node = (id: string, kind: string) => ({ id, kind, position: { x: 0, y: 0 } });
+  const edge = (source: string, sourcePort: string, target: string) =>
+    ({ id: `${source}-${sourcePort}`, source, sourcePort, target, targetPort: "activate" });
+  const gated = {
+    nodes: [node("session", "session"), node("pr", "session_action"), node("ci", "wait_for_ci"), node("judge", "persona"), node("end", "end")],
+    edges: [
+      edge("session", "submitted", "pr"),
+      edge("pr", "complete", "ci"),
+      edge("ci", "pass", "end"),
+      edge("ci", "fail", "session"),
+    ],
+  } as unknown as PublishedWorkflowGraph;
+  const ungated = {
+    nodes: [node("session", "session"), node("pr", "session_action"), node("judge", "persona"), node("end", "end")],
+    edges: [edge("session", "submitted", "pr"), edge("pr", "complete", "judge"), edge("judge", "pass", "end")],
+  } as unknown as PublishedWorkflowGraph;
+  const at = (
+    graph: PublishedWorkflowGraph,
+    status: WorkflowRunStatus,
+    attempts: Array<{ nodeId: string; state: "waiting" | "running" | "completed" }>,
+  ) => () => waitForCiReachable(graph, workflowRunActiveNodeIds({ status, graph, attempts, continuationNodeId: null }));
+  const live = mkSession({ cwd: "/wt/app", state: "idle", foremanInvite: null });
+  const classify = (gatesCi: () => boolean) => unhandledReason(ref([live], true), policy(), gatesCi);
+
+  assert.equal(classify(at(gated, "running", [{ nodeId: "ci", state: "waiting" }])), null, "at Wait for CI");
+  assert.equal(
+    classify(at(gated, "waiting_for_action", [{ nodeId: "pr", state: "waiting" }])),
+    null,
+    "on the Pull Request action upstream of it",
+  );
+  assert.equal(classify(at(gated, "waiting_for_session", [])), null, "in a repair round that loops back");
+  assert.equal(
+    classify(at(ungated, "running", [{ nodeId: "judge", state: "running" }])),
+    "workflow-not-gating",
+    "no Wait for CI",
+  );
+  assert.equal(
+    classify(at(gated, "running", [{ nodeId: "end", state: "running" }, { nodeId: "ci", state: "completed" }])),
+    "workflow-not-gating",
+    "past the last one",
+  );
 });
 
 /**
  * A PR poll against a real registry, with `gh` stood in for. With `task`, the session is a
  * task's agent and the PR binds to that task's work episode, as a dispatch leaves it.
  */
-function harness({ task = false }: { task?: boolean } = {}) {
+function harness({ task = false, repoRoot = null }: { task?: boolean; repoRoot?: string | null } = {}) {
   const reg = new Registry();
   reg.applyDiscovery([
     {
@@ -128,8 +203,8 @@ function harness({ task = false }: { task?: boolean } = {}) {
       nameSource: "process",
       cwd: "/wt/app",
       gitBranch: "feat/x",
-      gitRoot: null,
-      repoRoot: null,
+      gitRoot: repoRoot,
+      repoRoot,
       pid: 1,
       tty: null,
       terminals: [],
@@ -146,7 +221,11 @@ function harness({ task = false }: { task?: boolean } = {}) {
   reg.subscribe((e: ServerEvent) => {
     if (e.type === "blocked_prs") frames.push(e.prs);
   });
-  const tracker = new PrConflictTracker(reg, () => LIVE);
+  // The runs that can still reach a Wait for CI node, as the daemon's manager would answer.
+  const gating = new Set<string>();
+  const tracker = new PrConflictTracker(reg, () => LIVE, (runId) => gating.has(runId));
+  // The daemon's own wiring: a run event re-derives the blocked set between polls.
+  reclassifyOnWorkflowRunChange(reg, tracker);
   const urlState = new PrUrlPollState();
   let branchRead: "conflicting" | "mergeable" = "conflicting";
   type UrlRead = { state: "open" | "merged"; mergeable: "conflicting" | "mergeable" };
@@ -195,6 +274,7 @@ function harness({ task = false }: { task?: boolean } = {}) {
     reg,
     frames,
     tracker,
+    gating,
     askedByUrl,
     operational,
     poll,
@@ -313,17 +393,58 @@ test("workflowOwnsSession matches a non-terminal run by session id or note key",
   assert.equal(reg.workflowOwnsSession(s), true, "matched by note key");
 });
 
-test("a conflict in a session an active workflow owns raises no blocked row", async () => {
+test("a workflow that can reach Wait for CI handles the conflict, and one past it does not", async () => {
   const h = harness();
+  h.gating.add("owner");
   h.reg.upsertWorkflowRun({ id: "owner", status: "running", sessionId: "live", noteKey: "live" } as WorkflowRunSummary);
   await h.poll();
   assert.deepEqual(h.tracker.episodes.urls(), [PR], "the episode is open");
   assert.equal(h.frames.length, 0, "but nothing is blocked");
+
+  // From here on there is no poll and no manual reclassify: only the run's own events.
+  // The run moves between nodes that can all still reach Wait for CI: nothing is published.
+  h.reg.upsertWorkflowRun({ id: "owner", status: "waiting_for_session", sessionId: "live", noteKey: "live" } as WorkflowRunSummary);
+  assert.equal(h.frames.length, 0, "no flap");
+
+  // The run moves past its last Wait for CI: its upsert re-derives the blocked set.
+  h.gating.delete("owner");
+  h.reg.upsertWorkflowRun({ id: "owner", status: "running", sessionId: "live", noteKey: "live" } as WorkflowRunSummary);
+  assert.equal(h.frames.length, 1, "the run event published the change");
+  assert.equal(h.frames[0]![0]!.reason, "workflow-not-gating");
+
+  // The last owning run is removed: nothing owns the work, so the row says why now.
+  h.reg.removeWorkflowRun("owner");
+  assert.equal(h.frames.length, 2, "the removal published the change");
+  assert.equal(h.frames[1]![0]!.reason, "foreman-cannot-nudge", "discovered sessions are uninvited");
+
+  await h.poll();
+  assert.equal(h.frames.length, 2, "and the next poll agrees");
 });
 
-test("a workflow run still active after its agent exits keeps the conflict out of the inbox", async (t) => {
+test("only a run reviewing the pull request's own repository can gate it", async () => {
+  const h = harness({ repoRoot: "/wt" });
+  const run = (id: string, repoRoot: string) =>
+    ({ id, status: "running", sessionId: "live", noteKey: "live", repoRoot }) as WorkflowRunSummary;
+  // A multi-repo session's run for its secondary repository owns the session, so Foreman
+  // stays out, but it has no Wait for CI for the primary's pull request.
+  h.gating.add("secondary");
+  h.reg.upsertWorkflowRun(run("secondary", "/other-repo"));
+  await h.poll();
+  const reference = h.reg.prReferences().get(PR)!;
+  assert.equal(reference.workflowOwned, true);
+  assert.deepEqual(reference.workflowRunIds, []);
+  assert.equal(h.frames.at(-1)![0]!.reason, "workflow-not-gating");
+
+  h.gating.add("primary");
+  h.reg.upsertWorkflowRun(run("primary", "/wt"));
+  assert.deepEqual(h.reg.prReferences().get(PR)!.workflowRunIds, ["primary"]);
+  assert.deepEqual(h.frames.at(-1), [], "the primary's run handles it, from its upsert alone");
+});
+
+test("a workflow run still active after its agent exits keeps classifying the conflict", async (t) => {
   const h = harness({ task: true });
   // Bound by note key, as a workflow binding is: the run outlives the session it drove.
+  h.gating.add("step");
   h.reg.upsertWorkflowRun({ id: "step", status: "running", sessionId: "live", noteKey: "live-episode" } as WorkflowRunSummary);
   await h.poll();
   assert.equal(h.frames.length, 0, "owned while live");
@@ -336,10 +457,12 @@ test("a workflow run still active after its agent exits keeps the conflict out o
 
   t.mock.timers.tick(10_000);
   assert.equal(h.reg.getSession("live"), undefined, "the session was removed");
-  // `orphanBinding` nulls the run's session id; the note key and the task's binding remain.
+  assert.deepEqual(h.reg.prReferences().get(PR)?.workflowRunIds, ["step"], "through the task's work-episode binding");
+  // `orphanBinding` nulls the run's session id and blocks it: a blocked run reaches nothing.
+  h.gating.delete("step");
   h.reg.upsertWorkflowRun({ id: "step", status: "blocked", sessionId: null, noteKey: "live-episode" } as WorkflowRunSummary);
   await h.poll();
-  assert.equal(h.frames.length, 0, "and after removal, through the task's work-episode binding");
+  assert.equal(h.frames.at(-1)![0]!.reason, "workflow-not-gating");
   assert.deepEqual(h.tracker.episodes.urls(), [PR], "the episode itself stays open");
 
   // Once the run is over, nothing owns the work, and the conflict is the operator's.

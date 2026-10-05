@@ -631,6 +631,16 @@ When a [Wait for CI](#wait-for-ci) node follows the action, the CI instructions 
 whatever the preference says: the node owns CI for that pull request, and an agent chasing the
 same checks would push while the node judges the head it was given.
 
+**Conditional merge-conflict instructions.** Foreman's **Keep sessions on track with merge
+conflicts** preference adds its own block to the same packets, on the same terms: a workflow
+action whose completion is **Pull request**, with no Wait for CI node after it. It tells the
+session that if the PR reports merge conflicts with its base, it resolves them with the same
+method a Wait for CI conflict repair asks for (below): merge the base branch in, resolve the
+conflicts, run focused tests, push, and never rebase or force-push. It is
+independent of the CI preference, so either can be on without the other. It is read once per
+newly prepared packet and frozen with it, like the CI policy. Where a Wait for CI node follows
+the action, the node handles a conflict itself, as described below.
+
 **Mission Control never polls GitHub for this.** The creation hook durably adopts the pull request.
 The GitHub Inspector's existing poller is the only thing that later asks the provider for
 comparison metadata, and the PR action never waits for that optional diagnostic enrichment.
@@ -673,12 +683,28 @@ detail comes from each check's own title and summary; CI logs are not read.
 
 | CI on the head | Outcome |
 | --- | --- |
+| The pull request conflicts with its base on this head | **Fail**, before anything else: a repair packet asks for one change, "Resolve merge conflicts with `<base>`". |
 | Any check still running, or nothing reported yet | Keeps waiting. |
 | Every check finished, one or more failing (other than "Flaky tests") | **Fail**: a repair packet asks for one change per failing check, with its conclusion, title, summary excerpt, and link. |
 | Every check passed, with a "Flaky tests" check | **Pass**, including green with flakes. The flake list is recorded on the attempt. |
 | Every check passed, no "Flaky tests" check for five minutes | **Blocks** the run: `ci_flake_report_missing`. |
 | Nothing appeared on the head by the timeout | **Blocks**: `ci_missing`. |
 | Still running at the timeout | **Blocks**: `ci_timeout`. |
+
+**Merge conflicts.** GitHub runs no `pull_request` workflows on a pull request that conflicts with
+its base, so without this the node would wait out its timeout and block as `ci_missing`. It also
+reads the PR poller's mergeability observation for the pull request, from the bound session's
+`prMergeable` and `prBaseRef` or, for a per-repository run, its task's `repoPrs` entry. That
+observation is bound to the head GitHub reported it on, and the node fails only when that head is
+the one it watches. A conflict observed on another head waits, which includes the conflict kept
+from before a repair push while GitHub still answers `UNKNOWN` for the new head. The repair
+packet's rationale gives the method: fetch and merge `origin/<base>` into the branch, resolve every
+conflict keeping both sides' intent, run the tests covering the touched files, commit the merge
+and push to the same branch, and never rebase or force-push. The run view lists that requested
+change under the attempt, beside the "CI failed" status. Like any fail, it is an ordinary repair
+round and counts against the run's repair budget. A conflict in a run that can no longer reach a
+Wait for CI node goes to the operator instead; see
+[Blocked pull requests](attention-and-alerts.md).
 
 The "Flaky tests" check never fails the node: its jobs already fail on real failures. A block
 spends no repair round. When CI can be fixed without a new commit - rerun a stuck job, turn on

@@ -1,3 +1,4 @@
+import { mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
 import { workflowEvidenceAuthorizationContract } from "../execution-authorization.ts";
 
@@ -11,6 +12,21 @@ export function workflowPullRequestCiContract(): string {
     "After every repair push, verify checks for the newly pushed head. Do not rely on an earlier green result. Continue until CI passes or a concrete external blocker prevents authorized progress; distinguish absent or unavailable checks from passing CI and report the blocker rather than retrying indefinitely.",
     "Report the PR, checked head, final CI outcome, and any blocker. Register useful new verification evidence when this workflow supports it, then end the turn so Mission Control can continue the workflow.",
     "This policy does not authorize merge, CI infrastructure changes, bypassing checks, or broader repository scope. Inspector review comments remain with the existing review workflow and Foreman review-comment policy. The workflow still validates published content against its reviewed snapshot.",
+  ].join("\n");
+}
+
+/**
+ * The merge-conflict half of the PR action's follow-through, from Foreman's Keep sessions on
+ * track with merge conflicts option. Its own block rather than a line of the CI policy, so it
+ * reaches the packet whatever the CI setting is. Frozen with the packet like the CI policy. The
+ * method itself is `mergeConflictResolutionSteps`, the same one a Wait for CI repair asks for.
+ */
+export function workflowPullRequestConflictContract(): string {
+  return [
+    "## Workflow pull request merge conflicts",
+    "Foreman's Keep sessions on track with merge conflicts option was selected when this packet was prepared.",
+    "If the PR reports merge conflicts with its base branch, resolve them this way:",
+    mergeConflictResolutionSteps(null),
   ].join("\n");
 }
 

@@ -327,6 +327,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  trackMergeConflicts: () => getForemanConfig().trackMergeConflicts,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -488,7 +489,7 @@ const retentionObserver = new TaskWorktreeRetentionObserver({
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
-const stopPrPoller = startPrPoller(registry, getForemanConfig);
+const stopPrPoller = startPrPoller(registry, getForemanConfig, (runId) => workflows.waitForCiReachable(runId));
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
 });
