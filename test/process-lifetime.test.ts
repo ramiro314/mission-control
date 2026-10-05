@@ -121,12 +121,16 @@ test("the seam imports only Node builtins, so the Electron and daemon bundles ca
  * comment never counts and no spelling of the option slips past a line pattern.
  *
  *  - `process.kill(-pid, …)`: a negated first argument, however it is wrapped or spaced.
- *  - A `detached` key, in any form (`detached: true`, `detached: !win`, shorthand `detached`),
- *    in an object literal handed straight to a `spawn*`, `fork*` or `exec*` call, or anywhere
- *    in a file that imports `node:child_process`, which is where options get built up first.
- *    A `detached` key anywhere else is a git checkout's detached-HEAD state, not a spawn option.
+ *  - A `detached` key in any object literal, in any form (`detached: true`, `detached: !win`,
+ *    shorthand `detached`), so options built in a variable and handed to an injected spawn
+ *    count too.
+ *
+ * `spawnOnly` narrows the second rule for a file whose `detached` keys mean something else,
+ * such as a git checkout's detached-HEAD state. There a key counts only in an object handed
+ * straight to a `spawn*`, `fork*` or `exec*` call, or anywhere in a file that imports
+ * `node:child_process`, which is where spawn options get built up first.
  */
-export function processTreeSites(file: string, source: string): string[] {
+export function processTreeSites(file: string, source: string, spawnOnly = false): string[] {
   const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const importsChildProcess = tree.statements.some(
     (statement) =>
@@ -168,7 +172,7 @@ export function processTreeSites(file: string, source: string): string[] {
       && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
       && node.name.text === "detached"
       && ts.isObjectLiteralExpression(node.parent)
-      && (importsChildProcess || passedToSpawn(node.parent))
+      && (!spawnOnly || importsChildProcess || passedToSpawn(node.parent))
     ) {
       sites.push(`${file}:${line(node)} detached`);
     }
@@ -209,9 +213,22 @@ test("the process-tree scanner sees every spelling, and nothing that is not a sp
         'cp["fork"]; return { ok: false, root: null, detached: false };',
         "interface Checkout { detached: boolean }",
       ].join("\n"),
+      true,
     ),
     ["elsewhere.ts:1 detached"],
-    "outside a child_process file, only an object handed straight to a spawn counts",
+    "narrowed to spawns, only an object handed straight to a spawn counts outside a child_process file",
+  );
+  assert.deepEqual(
+    processTreeSites(
+      "injected.ts",
+      [
+        "const options = { detached: true, stdio: \"ignore\" };",
+        'deps.start(bin, ["server"], options);',
+        "interface Checkout { detached: boolean }",
+      ].join("\n"),
+    ),
+    ["injected.ts:1 detached"],
+    "by default, a detached key counts wherever it is built, and a type's field does not",
   );
 });
 
@@ -219,6 +236,13 @@ test("no process-group spawn or signal is written outside the seam", () => {
   // Herdr's server is launched to outlive the daemon and is never signalled, so it is not a
   // supervised tree; its injected spawn's `detached` option is pinned by its own tests.
   const daemonised = "src/server/terminal/herdr-client.ts";
+  // Here `detached` is a git checkout's detached-HEAD state (or a review's detached flag in a
+  // JSON reply), so these files are held only to the spawn-reachable rule.
+  const detachedHead = new Set([
+    "src/server/actions.ts",
+    "src/server/routes.ts",
+    "src/server/worktrees/git.ts",
+  ]);
   const offenders: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -227,7 +251,7 @@ test("no process-group spawn or signal is written outside the seam", () => {
       else if (/\.(ts|tsx|mts)$/.test(entry.name)) {
         const file = relative(".", path);
         if (file === SEAM) continue;
-        for (const site of processTreeSites(file, readFileSync(path, "utf8"))) {
+        for (const site of processTreeSites(file, readFileSync(path, "utf8"), detachedHead.has(file))) {
           if (file === daemonised && site.endsWith(" detached")) continue;
           offenders.push(site);
         }
