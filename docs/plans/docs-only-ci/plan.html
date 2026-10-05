@@ -232,7 +232,7 @@ already lets it run when the jobs it needs were skipped, so a docs-only run stil
 same in target repositories.</p>
 <h2>Design</h2>
 <h3>The job graph</h3>
-<div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 530" role="img" aria-label="CI job graph before and after the docs-only gate">
+<div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 615" role="img" aria-label="CI job graph before and after the docs-only gate">
   <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
   <text x="20" y="30">Before: every pull request runs everything</text>
   <rect x="20" y="80" width="170" height="44" rx="8"/><text x="38" y="108">dependencies x2</text>
@@ -245,24 +245,27 @@ same in target repositories.</p>
   <text x="660" y="130" class="small">31 jobs on a PR that only edits docs/</text>
 
   <text x="20" y="232">After: a changes job gates the heavy jobs; CI result always reports</text>
-  <rect class="new" x="20" y="262" width="170" height="44" rx="8"/><text x="70" y="290">changes</text>
-  <rect x="20" y="380" width="170" height="44" rx="8"/><text x="38" y="408">dependencies x2</text>
-  <rect x="250" y="250" width="150" height="40" rx="8"/><text x="292" y="276">gates</text>
-  <rect x="250" y="300" width="150" height="40" rx="8"/><text x="284" y="326">unit x12</text>
-  <rect x="250" y="350" width="150" height="40" rx="8"/><text x="285" y="376">e2e x15</text>
-  <rect class="new" x="250" y="440" width="150" height="40" rx="8"/><text x="270" y="466">docs checks</text>
-  <rect x="460" y="325" width="160" height="40" rx="8"/><text x="487" y="351">flake report</text>
-  <rect class="new" x="700" y="330" width="160" height="44" rx="8"/><text x="735" y="358">CI result</text>
-  <path d="M190 280 L250 270" marker-end="url(#a)"/><path d="M190 286 L250 318" marker-end="url(#a)"/><path d="M190 292 L250 366" marker-end="url(#a)"/>
-  <path d="M190 412 L250 458" marker-end="url(#a)"/>
-  <text x="20" y="444" class="small">also feeds gates, unit, e2e</text>
-  <path d="M400 320 L460 340" marker-end="url(#a)"/><path d="M400 370 L460 352" marker-end="url(#a)"/>
-  <path d="M620 345 L700 350" marker-end="url(#a)"/>
-  <path d="M400 270 C600 270 650 320 700 340" marker-end="url(#a)"/>
-  <path d="M400 460 C600 460 650 380 700 366" marker-end="url(#a)"/>
-  <text x="250" y="510" class="small">docs-only PR: gates, unit and e2e skip; flake report still publishes &quot;Flaky tests&quot; for Wait for CI</text>
-  <text x="700" y="400" class="small">reads docs_only from changes;</text>
-  <text x="700" y="418" class="small">a skip passes only when it is true</text>
+  <rect class="new" x="20" y="292" width="170" height="44" rx="8"/><text x="70" y="320">changes</text>
+  <rect x="20" y="410" width="170" height="44" rx="8"/><text x="38" y="438">dependencies x2</text>
+  <rect x="250" y="280" width="150" height="40" rx="8"/><text x="292" y="306">gates</text>
+  <rect x="250" y="330" width="150" height="40" rx="8"/><text x="284" y="356">unit x12</text>
+  <rect x="250" y="380" width="150" height="40" rx="8"/><text x="285" y="406">e2e x15</text>
+  <rect class="new" x="250" y="470" width="150" height="40" rx="8"/><text x="270" y="496">docs checks</text>
+  <rect x="460" y="355" width="160" height="40" rx="8"/><text x="487" y="381">flake report</text>
+  <rect class="new" x="760" y="360" width="160" height="44" rx="8"/><text x="795" y="388">CI result</text>
+  <path d="M190 310 L250 300" marker-end="url(#a)"/><path d="M190 316 L250 348" marker-end="url(#a)"/><path d="M190 322 L250 396" marker-end="url(#a)"/>
+  <path d="M190 442 L250 488" marker-end="url(#a)"/>
+  <path d="M400 350 L460 370" marker-end="url(#a)"/><path d="M400 400 L460 382" marker-end="url(#a)"/>
+  <path d="M105 292 C105 252 820 252 830 360" marker-end="url(#a)"/>
+  <path d="M400 300 C620 300 700 340 760 368" marker-end="url(#a)"/>
+  <path d="M400 340 C560 312 660 330 760 374" marker-end="url(#a)"/>
+  <path d="M620 375 L760 380" marker-end="url(#a)"/>
+  <path d="M400 410 C560 444 660 424 760 388" marker-end="url(#a)"/>
+  <path d="M400 490 C620 490 700 420 760 396" marker-end="url(#a)"/>
+  <path d="M190 448 C200 600 830 600 840 404" marker-end="url(#a)"/>
+  <text x="20" y="474" class="small">also feeds gates, unit, e2e</text>
+  <text x="250" y="590" class="small">CI result needs every job except package; a skip passes only when changes reported docs_only = true</text>
+  <text x="250" y="608" class="small">docs-only PR: gates, unit and e2e skip; flake report still publishes &quot;Flaky tests&quot; for Wait for CI</text>
 </svg></div>
 <p><code>package</code> is unchanged: release-only, outside the gate, and not a need of <code>CI result</code>.</p>
 <h3><code>changes</code> job</h3>
@@ -280,7 +283,13 @@ Markdown anywhere. The skill documents this.</li>
 </li>
 <li>Behavior, emitting one output <code>docs_only=true|false</code> to <code>$GITHUB_OUTPUT</code>:<ol>
 <li>Not a <code>pull_request</code> event: <code>false</code>.</li>
-<li><code>git diff --name-only &quot;$BASE_SHA...$HEAD_SHA&quot;</code> fails, or lists zero files: <code>false</code>.</li>
+<li><code>git diff --no-renames --name-only &quot;$BASE_SHA...$HEAD_SHA&quot;</code> fails, or lists zero files:
+<code>false</code>. <code>--no-renames</code> is required, not a style choice: with git&#39;s default rename
+detection, a file moved from <code>src/</code> into <code>docs/</code> is listed only by its new <code>docs/</code> path,
+so a PR that removes a source file would look docs-only and skip the tests. Without rename
+detection the move lists both the deleted source path and the added docs path, and the
+source path fails the match. It also disables copy detection, which matters for the same
+reason.</li>
 <li>Every listed path matches at least one pattern: <code>true</code>. Otherwise <code>false</code>.</li>
 <li>It prints the decision and the first non-matching path, so a full run says why.</li>
 </ol>
@@ -404,8 +413,10 @@ discovered test files with the suite loader.</li>
 with <code>bash -eo pipefail</code>, which is how GitHub Actions runs a <code>run:</code> step, and passes inputs only
 through <code>env</code>. Each case asserts the exit code and the output line:<ul>
 <li><code>detect-docs-only.sh</code>, with a stub <code>git</code> first on <code>PATH</code>, must print <code>docs_only=false</code> and
-exit 0 for a non-PR event, a failing diff, zero changed files, and one non-docs path among
-docs paths. It must print <code>docs_only=true</code> for all docs paths, and for a nested <code>.md</code> path
+exit 0 for a non-PR event, a failing diff, zero changed files, one non-docs path among
+docs paths, and a file renamed from <code>src/</code> into <code>docs/</code>. For the rename case the stub
+asserts it was called with <code>--no-renames</code> and then lists both paths, so dropping the flag
+fails the test. It must print <code>docs_only=true</code> for all docs paths, and for a nested <code>.md</code> path
 matched by a <code>*.md</code> pattern.</li>
 <li><code>ci-result.sh</code> must <strong>pass</strong> when every need succeeded, and when only <code>SKIPPABLE</code> jobs were
 skipped with <code>DOCS_ONLY=true</code>.</li>

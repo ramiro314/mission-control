@@ -121,7 +121,7 @@ flowchart LR
     D2 --> U2
     D2 --> E2
     D2 --> K[docs checks]
-    U2 --> F2
+    U2 --> F2[flake report]
     E2 --> F2
     C --> R[CI result]
     K --> R
@@ -129,6 +129,7 @@ flowchart LR
     U2 --> R
     E2 --> R
     F2 --> R
+    D2 --> R
   end
 ```
 
@@ -147,7 +148,13 @@ flowchart LR
   - `EVENT_NAME`, `BASE_SHA`, `HEAD_SHA` from the `github` context.
 - Behavior, emitting one output `docs_only=true|false` to `$GITHUB_OUTPUT`:
   1. Not a `pull_request` event: `false`.
-  2. `git diff --name-only "$BASE_SHA...$HEAD_SHA"` fails, or lists zero files: `false`.
+  2. `git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA"` fails, or lists zero files:
+     `false`. `--no-renames` is required, not a style choice: with git's default rename
+     detection, a file moved from `src/` into `docs/` is listed only by its new `docs/` path,
+     so a PR that removes a source file would look docs-only and skip the tests. Without rename
+     detection the move lists both the deleted source path and the added docs path, and the
+     source path fails the match. It also disables copy detection, which matters for the same
+     reason.
   3. Every listed path matches at least one pattern: `true`. Otherwise `false`.
   4. It prints the decision and the first non-matching path, so a full run says why.
 - The script never exits non-zero on a detection problem; every doubt resolves to `false` (full
@@ -278,8 +285,10 @@ job carries the `docs_only != 'true'` condition. Editing one copy without the ot
   with `bash -eo pipefail`, which is how GitHub Actions runs a `run:` step, and passes inputs only
   through `env`. Each case asserts the exit code and the output line:
   - `detect-docs-only.sh`, with a stub `git` first on `PATH`, must print `docs_only=false` and
-    exit 0 for a non-PR event, a failing diff, zero changed files, and one non-docs path among
-    docs paths. It must print `docs_only=true` for all docs paths, and for a nested `.md` path
+    exit 0 for a non-PR event, a failing diff, zero changed files, one non-docs path among
+    docs paths, and a file renamed from `src/` into `docs/`. For the rename case the stub
+    asserts it was called with `--no-renames` and then lists both paths, so dropping the flag
+    fails the test. It must print `docs_only=true` for all docs paths, and for a nested `.md` path
     matched by a `*.md` pattern.
   - `ci-result.sh` must **pass** when every need succeeded, and when only `SKIPPABLE` jobs were
     skipped with `DOCS_ONLY=true`.
