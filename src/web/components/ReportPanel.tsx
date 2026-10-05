@@ -1,3 +1,5 @@
+import { SessionTransfers } from "./SessionTransfers.tsx";
+import type { SessionTransferPage } from "@shared/session-transfer.ts";
 import { featureAction } from "../lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
@@ -224,6 +226,7 @@ function BacklogReportRow({
  * keybindings, so renaming it would orphan anyone's saved override.
  */
 export function ReportPanel({
+  sessionTransfers = { transfers: [], overflow: 0 },
   sessions,
   tasks,
   backlogPlan,
@@ -237,6 +240,7 @@ export function ReportPanel({
   backlogTrust = null,
   onManageTrust,
 }: {
+  sessionTransfers?: SessionTransferPage;
   sessions: Session[];
   tasks: Task[];
   /**
@@ -451,6 +455,7 @@ export function ReportPanel({
       {copy.error && <p className="report-copy-error" role="alert">{copy.error}</p>}
 
       <div className="report-body">
+        <SessionTransfers page={sessionTransfers} />
         <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
           {needsYou.map((s) => (
             <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>

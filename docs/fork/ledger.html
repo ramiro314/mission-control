@@ -33,15 +33,15 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </thead>
 <tbody><tr>
 <td>Last synced upstream</td>
-<td><strong>1.26.0</strong>, <code>upstream/main</code> at <code>104a5407</code> (upstream #1152)</td>
+<td><strong>1.26.0</strong>, <code>upstream/main</code> at <code>2012e91b</code> (upstream #1164)</td>
 </tr>
 <tr>
 <td>Sync date</td>
-<td>2026-09-29, fork PR #62 (merge commit <code>64a5dcd8</code>)</td>
+<td>2026-10-05, fork PR #175 (merge commit <code>fdf3e845</code>)</td>
 </tr>
 <tr>
 <td>Fork commits ahead of upstream</td>
-<td><strong>155</strong> (112 excluding merge commits)</td>
+<td><strong>341</strong> (247 excluding merge commits)</td>
 </tr>
 <tr>
 <td>Upstream commits behind</td>
@@ -49,11 +49,11 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>13</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>13</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
-<td><code>origin/main</code> <code>118ca860</code>, 2026-09-29</td>
+<td><code>sync/upstream-2026-10-05</code> <code>3cc1b233</code>, 2026-10-05</td>
 </tr>
 </tbody></table>
 <p>How the numbers are measured, from the fork checkout with both remotes fetched:</p>
@@ -109,7 +109,7 @@ or issues.</p>
 <tr>
 <td>Upstream sync process and fork ledger</td>
 <td>Active</td>
-<td>#59, #62, #66, weekly mission PR</td>
+<td>#59, #62, #66, weekly mission PR, #175 (2026-10-05 sync)</td>
 </tr>
 <tr>
 <td>Persona reasoning effort</td>
@@ -159,7 +159,7 @@ or issues.</p>
 <tr>
 <td>Standalone fixes</td>
 <td>Not a feature</td>
-<td>#4, #13, #15, #18, #19, #21, #22, #23, #24, #33</td>
+<td>#4, #13, #15, #18, #19, #21, #22, #23, #24, #33, #77, #91</td>
 </tr>
 </tbody></table>
 <h2>Reading an entry</h2>
@@ -551,6 +551,9 @@ defaults, or a change to how the <code>workflows</code> <code>app_config</code> 
 workflow archive and delete routes.</li>
 <li>The dispatch form&#39;s Ship-default stash rules (<code>afterWorkForKind</code>) and the Recurring Mission
 editor&#39;s workflow preset.</li>
+<li>Upstream&#39;s own specs and tests still write <code>defaultWorkflowId</code>, which the fork refuses. A sync
+repoints each new one at <code>kindWorkflowDefaults</code> (2026-10-05: upstream #1155&#39;s
+<code>e2e/specs/workflow-elapsed-clock.spec.ts</code>).</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong></p>
 <ul>
@@ -746,7 +749,7 @@ the workflow editor and ladder components, <code>TaskSourcesPanel.tsx</code>, <c
 </tr>
 <tr>
 <td>PRs</td>
-<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), and the PR that recorded the weekly sync mission in the runbook (all after the original backfill range)</td>
+<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), and #175 (the 2026-10-05 sync)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -995,7 +998,9 @@ PR stays referenced after its session is removed.</li>
 <li><code>foldAttention</code> sections never interleave, and the inbox draws one arm per item kind.</li>
 <li>Wait for CI is decided only by <code>WorkflowEngine.observeWaitForCi</code>, called from the manager&#39;s
 sweep, and its <code>fail</code> edge returns to Session as a repair round like any verdict node.</li>
-<li>A removed session&#39;s binding is orphaned and its run blocked (<code>orphanBinding</code>).</li>
+<li>A removed session&#39;s binding is orphaned and its run blocked (<code>orphanBinding</code>). Since upstream
+#1161 a binding a runtime transfer protects is not orphaned; it moves to the terminal
+successor session instead.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>src/server/pr.ts</code> (both <code>gh</code> queries, by-URL result
 collection), <code>src/server/registry.ts</code> (<code>PrMatch</code>, <code>LivePrObservation</code>, <code>reconcilePrs</code>,
@@ -1587,7 +1592,8 @@ setup, so <code>e2e/</code> and <code>test/</code> could be excluded from alerts
 default setup stays disabled, so nothing scans the fork.</p>
 <h2>Standalone fixes</h2>
 <p>Fixes that are not part of a fork feature. None had an upstream equivalent on <code>upstream/main</code>
-at <code>104a5407</code> (checked by each fix&#39;s key symbol).</p>
+at <code>2012e91b</code> (checked by each fix&#39;s key symbol), except the test-side half of #91 that
+upstream #1154 now covers, as its row says.</p>
 <table>
 <thead>
 <tr>
@@ -1669,11 +1675,18 @@ at <code>104a5407</code> (checked by each fix&#39;s key symbol).</p>
 <td>Maybe: the shim fix is generic; the spec fix follows fork #30.</td>
 </tr>
 <tr>
-<td>pending</td>
-<td>pending</td>
+<td>#77</td>
+<td>2026-09-30</td>
+<td>A config refresh landing between a keystroke and its effect wiped a typed telemetry destination, the flake in <code>telemetry-settings.spec.ts</code>. The destination forms now derive each field at render (typed draft, else the daemon&#39;s copy) instead of adopting it from an effect. The sync of 2026-10-05 (#175) extended this to upstream #1162 and #1164&#39;s metric temporality and export shape fields.</td>
+<td><code>src/web/components/TelemetrySettingsPanel.tsx</code></td>
+<td>Yes: upstream still adopts through the effect.</td>
+</tr>
+<tr>
+<td>#91</td>
+<td>2026-10-01</td>
 <td>Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with <code>ps</code> and <code>lsof</code>, at ~28 concurrent <code>ps</code> and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and <code>test:run</code> sets a 180 s per-test timeout.</td>
 <td><code>src/server/tasks.ts</code>, <code>package.json</code>, <code>test/helpers/task-manager.ts</code></td>
-<td>Yes for the backoff: upstream has the same flat 30 s retry. The <code>test:run</code> flags belong to the fork&#39;s flake-aware testing.</td>
+<td>Yes for the backoff: upstream has the same flat 30 s retry. The <code>test:run</code> flags belong to the fork&#39;s flake-aware testing. Upstream #1154 (sync of 2026-10-05, #175) added <code>TaskManager.stop()</code> and <code>test/helpers/task-manager-fixture.ts</code>, which now cover the test-side half in <code>multi-pr-quorum</code> and <code>task-completion-reconciler</code>; <code>task-dependencies</code> builds the fixture class through this helper.</td>
 </tr>
 <tr>
 <td>pending</td>

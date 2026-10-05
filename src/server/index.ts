@@ -4,6 +4,8 @@
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
 import { clearStoredDefaultBaseBranches } from "./base-branch-backfill.ts";
+import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
+import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
@@ -30,6 +32,7 @@ import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
+import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
@@ -98,7 +101,7 @@ import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentManager } from "./file-comments.ts";
-import { createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
+import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
   PRODUCT_ISSUE_ATTACHMENTS_ENABLED,
   ProductIssueService,
@@ -173,6 +176,13 @@ try {
 warnIfSessionAttributionDisabled();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
+const reconcileManagedResumeResources = () => {
+  try { recheckManagedResumes(); } catch (error) {
+    console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");
+  }
+};
+reconcileManagedResumeResources();
+setInterval(reconcileManagedResumeResources, 30_000).unref();
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
@@ -199,6 +209,7 @@ const reviews = new ReviewManager(registry);
 // dispatcher branches on it and the startup reconciliation below asks it whether an
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
+maintainScoutSessionCredentials(registry);
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
@@ -226,6 +237,9 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
+registry.subscribe((event) => {
+  if (event.type === "session_remove") archives.sessionRemoved(event.id);
+});
 const tasks = new TaskManager(
   registry,
   undefined,
@@ -450,6 +464,11 @@ registry.onSessionsObserved(() => {
   void ensembles.recoverNonTerminalRuns();
   void ensembles.recoverDeletions();
 });
+const sessionTransfers = new SessionTransferCoordinator(registry, {
+  workflows, reviews, settleTask: (id) => tasks.settleAfterFailedHandoff(id),
+  taskBlocked: (id) => tasks.taskCleanupIsReserved(id),
+});
+sessionTransfers.start(true);
 // Restore provider commissions first. A retained Engineer may rotate its native conversation
 // identity while resuming; that rotation must resolve against the exact handoff commission
 // before generic work-episode ownership decides whether the task was abandoned.
@@ -646,6 +665,8 @@ fileComments.start();
 // comment, hands it to `pendingTurns.submit`, and waits for the confirmed-delivery signal that
 // outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
+// Sending a comment is the request to deliver it: there is no separate Start step.
+fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -656,6 +677,7 @@ const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTur
 // this comment goes stale the next time a dependency is added, which is exactly how
 // `focusTerminals` came to be missing from it.
 const app = buildApp({
+  sessionTransfers,
   registry,
   reviews,
   tasks,
@@ -723,6 +745,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // the walkthrough's existing pause-and-confirm path. Ordered after `pendingTurns.start()` for
   // exactly that reason.
   fileCommentWalkthrough.resume(registry.listFileCommentReviews().map((r) => r.sessionId));
+  // Comments left queued in an idle review - written before sending started delivery on its
+  // own - are sent too, once the first completed sweep has put every live session back in the
+  // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
+  adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
   reviews.startContinuationRecovery((review, text) =>
     pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
   );
@@ -739,7 +765,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
   // any scout still waiting on a live agent - that one settles through the ordinary paths.
-  void archives.recoverJobs().catch((error: unknown) => {
+  void archives.recoverJobs().then(() => {
+    registry.onSessionsObserved(() => archives.reconcilePromptContexts(new Set(registry.liveSessions().map((session) => session.id))));
+  }).catch((error: unknown) => {
     console.warn("[mission-control] could not resume archive captures:", error);
   });
   // A backlog task whose stored base branch is now origin's default goes back to the default,
@@ -859,6 +887,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
   await sdkSessions.stopAll();
@@ -874,8 +903,7 @@ async function shutdown(): Promise<void> {
   await retentionObserver.stop();
   // Owed closures are durable, so stopping the sweep loses nothing: the next daemon picks up
   // any recurring mission run whose agent it has not yet observed leave.
-  tasks.stopMissionSessionClosures();
-  await tasks.settleWorktreeReturns();
+  await tasks.stop();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

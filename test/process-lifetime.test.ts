@@ -240,6 +240,7 @@ test("no process-group spawn or signal is written outside the seam", () => {
   // JSON reply), so these files are held only to the spawn-reachable rule.
   const detachedHead = new Set([
     "src/server/actions.ts",
+    "src/server/reset.ts",
     "src/server/routes.ts",
     "src/server/worktrees/git.ts",
   ]);

@@ -1,3 +1,4 @@
+import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -51,7 +52,25 @@ import {
  */
 const warnedUnknownEventTypes = new Set<string>();
 
+function hydrateSettingsStatus(status: SettingsStatus): SettingsStatus {
+  if (!status.telemetry) return status;
+  return {
+    ...status,
+    telemetry: {
+      ...status.telemetry,
+      profiles: status.telemetry.profiles.map((profile) => ({
+        ...profile,
+        waitingForNetwork: profile.waitingForNetwork ?? false,
+        waitingSince: profile.waitingSince ?? null,
+        latePointsSent: profile.latePointsSent ?? 0,
+      })),
+    },
+  };
+}
+
 export interface MissionState {
+  sessionTransfers: SessionTransferPage;
+  latestSessionTransfer: SessionTransferSummary | null;
   sessions: Session[];
   /** Inert startup rows only; real sessions with the same stable id always suppress them. */
   restoringSessions: RestoringSession[];
@@ -122,7 +141,7 @@ export interface MissionState {
    * two comments the outstanding set is briefly empty, so a derived "running" would flicker.
    *
    * Bounded by the same thing the threads are, and more tightly: at most one row per session,
-   * removed when that session goes away. EMPTY until somebody presses Start review.
+   * removed when that session goes away. EMPTY until somebody sends a comment.
    */
   fileCommentReviews: FileCommentReview[];
   /**
@@ -203,6 +222,8 @@ export interface MissionState {
  * auto-refresh mechanism - no polling from the client.
  */
 export function useEventStream(): MissionState {
+  const [sessionTransfers, setSessionTransfers] = useState<SessionTransferPage>({ transfers: [], overflow: 0 });
+  const [latestSessionTransfer, setLatestSessionTransfer] = useState<SessionTransferSummary | null>(null);
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
   const [restoringSessions, setRestoringSessions] = useState<Map<string, RestoringSession>>(
     new Map(),
@@ -300,7 +321,13 @@ export function useEventStream(): MissionState {
         return;
       }
       switch (msg.type) {
+        case "session_transfers":
+          setSessionTransfers(msg.page);
+          if (msg.changed) setLatestSessionTransfer(msg.changed);
+          break;
         case "snapshot":
+          setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
+          setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
           setRestoringSessions(
             new Map((msg.restoringSessions ?? []).map((session) => [session.id, session])),
@@ -354,7 +381,7 @@ export function useEventStream(): MissionState {
           setLineSummary(msg.lineSummary);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
-          setSettingsStatus(msg.settingsStatus);
+          setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
           // Seeded from the snapshot so the live indicator is truthful from the first
           // frame. The `?? null` is a runtime guard the type system cannot see: during
           // development this build can connect to an older daemon whose snapshot has no
@@ -576,7 +603,7 @@ export function useEventStream(): MissionState {
           setBlockedPrs(msg.prs);
           break;
         case "settings_status":
-          setSettingsStatus(msg.status);
+          setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
         // Replaced whole: the status is one observation of one OS child, and every open
         // window must converge on the same one - this event is how a second dashboard
@@ -677,6 +704,8 @@ export function useEventStream(): MissionState {
   );
 
   return {
+    sessionTransfers,
+    latestSessionTransfer,
     sessions: sessionsList,
     restoringSessions: restoringSessionsList,
     reviews: reviewsList,
