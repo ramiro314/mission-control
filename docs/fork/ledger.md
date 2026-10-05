@@ -53,7 +53,7 @@ or issues.
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
-| Docs-only CI | Active (the `docs checks` job; the skip, `CI result` and the skill are pending) | pending (branch `feat/docs-checks-ci-job`) |
+| Docs-only CI | Active (the `docs checks` job; the skip, `CI result` and the skill are pending) | #164 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1043,7 +1043,7 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 | Field | Value |
 | --- | --- |
 | Status | **Active**, in progress. The `docs checks` job and `npm run docs:links` exist; the `changes` detection job, the docs-only skip, the `CI result` summary job and the `docs-only-ci` skill are later tickets of the same plan. |
-| PRs | pending (branch `feat/docs-checks-ci-job`, the `docs checks` job) |
+| PRs | #164 (the `docs checks` job) |
 | Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design", "`docs checks` job", and decision 15 |
 | Upstream candidate | Maybe. The `docs checks` job and the `docs:links` script are generic; the skip is shaped around the fork's Wait for CI and "Flaky tests" check. |
 
