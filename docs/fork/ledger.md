@@ -53,7 +53,7 @@ or issues.
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
-| Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, pending (branch `feat/docs-only-ci-gate`) |
+| Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1043,7 +1043,7 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 | Field | Value |
 | --- | --- |
 | Status | **Active**. The `docs checks` job, `npm run docs:links`, the `docs-only-ci` skill, and in this repository's own `ci.yml` the `changes` detection job, the docs-only skip and the `CI result` summary job. |
-| PRs | #164 (the `docs checks` job), #168 (the `docs-only-ci` skill), pending (branch `feat/docs-only-ci-gate`: the gate in `ci.yml`) |
+| PRs | #164 (the `docs checks` job), #168 (the `docs-only-ci` skill), #171 (the gate in `ci.yml`) |
 | Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design" (all of it) and decisions 1 to 20 |
 | Upstream candidate | Maybe. The `docs checks` job and the `docs:links` script are generic; the skip is shaped around the fork's Wait for CI and "Flaky tests" check. |
 
