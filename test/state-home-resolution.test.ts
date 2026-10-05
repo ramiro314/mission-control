@@ -82,6 +82,8 @@ process.stdout.write(DB_PATH);`;
   }).trim();
 
   const home = process.platform === "win32" ? userProfile : posixHome;
+  // Printed so a run's output says which platform's case it proved, and from which variable.
+  t.diagnostic(`platform=${process.platform} home=${process.platform === "win32" ? "USERPROFILE" : "HOME"} db=${dbPath}`);
   assert.equal(dbPath, join(home, ".mission-control", "harness.db"));
   assert.ok(existsSync(dbPath), "the database was created there");
 });
