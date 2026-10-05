@@ -489,6 +489,22 @@ function conflictReads(
 }
 
 /**
+ * Re-derive the blocked pull requests whenever a workflow run changes. A run moving past its
+ * last Wait for CI, or finishing, changes whether its workflow still handles a conflict, and
+ * that must not wait for the next poll. Returns the unsubscribe.
+ */
+export function reclassifyOnWorkflowRunChange(
+  registry: Pick<Registry, "subscribe">,
+  conflicts: Pick<PrConflictTracker, "reclassify">,
+): () => void {
+  return registry.subscribe((event) => {
+    if (event.type === "workflow_run_upsert" || event.type === "workflow_run_remove") {
+      conflicts.reclassify();
+    }
+  });
+}
+
+/**
  * Drive PR reconciliation on an interval. Ticks never overlap; a slow sweep just
  * delays the next. A no-op (no subprocesses) whenever no session sits on a
  * feature branch and no dependency or task binding contributes a URL.
@@ -502,12 +518,7 @@ export function startPrPoller(
   let timer: ReturnType<typeof setTimeout> | null = null;
   const urlState = new PrUrlPollState();
   const conflicts = new PrConflictTracker(registry, foremanConfig, gatesCi);
-  // A run moving on changes whether its workflow still handles a conflict, between polls.
-  const unsubscribe = registry.subscribe((event) => {
-    if (event.type === "workflow_run_upsert" || event.type === "workflow_run_remove") {
-      conflicts.reclassify();
-    }
-  });
+  const unsubscribe = reclassifyOnWorkflowRunChange(registry, conflicts);
 
   const tick = async (): Promise<void> => {
     if (stopped) return;

@@ -15,7 +15,9 @@ import {
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-conflicts-"));
 const { Registry } = await import("../src/server/registry.ts");
-const { pollAndReconcilePrs, PrUrlPollState } = await import("../src/server/pr.ts");
+const { pollAndReconcilePrs, PrUrlPollState, reclassifyOnWorkflowRunChange } = await import(
+  "../src/server/pr.ts"
+);
 const { PrConflictEpisodes, PrConflictTracker, unhandledReason } = await import(
   "../src/server/pr-conflicts.ts"
 );
@@ -222,6 +224,8 @@ function harness({ task = false, repoRoot = null }: { task?: boolean; repoRoot?:
   // The runs that can still reach a Wait for CI node, as the daemon's manager would answer.
   const gating = new Set<string>();
   const tracker = new PrConflictTracker(reg, () => LIVE, (runId) => gating.has(runId));
+  // The daemon's own wiring: a run event re-derives the blocked set between polls.
+  reclassifyOnWorkflowRunChange(reg, tracker);
   const urlState = new PrUrlPollState();
   let branchRead: "conflicting" | "mergeable" = "conflicting";
   type UrlRead = { state: "open" | "merged"; mergeable: "conflicting" | "mergeable" };
@@ -397,18 +401,24 @@ test("a workflow that can reach Wait for CI handles the conflict, and one past i
   assert.deepEqual(h.tracker.episodes.urls(), [PR], "the episode is open");
   assert.equal(h.frames.length, 0, "but nothing is blocked");
 
+  // From here on there is no poll and no manual reclassify: only the run's own events.
   // The run moves between nodes that can all still reach Wait for CI: nothing is published.
   h.reg.upsertWorkflowRun({ id: "owner", status: "waiting_for_session", sessionId: "live", noteKey: "live" } as WorkflowRunSummary);
-  h.tracker.reclassify();
   assert.equal(h.frames.length, 0, "no flap");
 
-  // The run moves past its last Wait for CI. Between polls, the run change re-derives it.
+  // The run moves past its last Wait for CI: its upsert re-derives the blocked set.
   h.gating.delete("owner");
-  h.tracker.reclassify();
-  assert.equal(h.frames.length, 1);
+  h.reg.upsertWorkflowRun({ id: "owner", status: "running", sessionId: "live", noteKey: "live" } as WorkflowRunSummary);
+  assert.equal(h.frames.length, 1, "the run event published the change");
   assert.equal(h.frames[0]![0]!.reason, "workflow-not-gating");
+
+  // The last owning run is removed: nothing owns the work, so the row says why now.
+  h.reg.removeWorkflowRun("owner");
+  assert.equal(h.frames.length, 2, "the removal published the change");
+  assert.equal(h.frames[1]![0]!.reason, "foreman-cannot-nudge", "discovered sessions are uninvited");
+
   await h.poll();
-  assert.equal(h.frames.length, 1, "and the next poll agrees");
+  assert.equal(h.frames.length, 2, "and the next poll agrees");
 });
 
 test("only a run reviewing the pull request's own repository can gate it", async () => {
@@ -428,8 +438,7 @@ test("only a run reviewing the pull request's own repository can gate it", async
   h.gating.add("primary");
   h.reg.upsertWorkflowRun(run("primary", "/wt"));
   assert.deepEqual(h.reg.prReferences().get(PR)!.workflowRunIds, ["primary"]);
-  h.tracker.reclassify();
-  assert.deepEqual(h.frames.at(-1), [], "the primary's run handles it");
+  assert.deepEqual(h.frames.at(-1), [], "the primary's run handles it, from its upsert alone");
 });
 
 test("a workflow run still active after its agent exits keeps classifying the conflict", async (t) => {
