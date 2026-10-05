@@ -522,3 +522,35 @@ test("the testing-setup skill ships the generated report action it copies", () =
   assert.match(readFileSync(new URL("index.mjs", asset), "utf8"), /^\/\/ mission-flake-report \d+\.\d+\.\d+\n/);
   assert.match(readFileSync(new URL("action.yml", asset), "utf8"), /^# mission-flake-report \d+\.\d+\.\d+\n/);
 });
+
+test("the shipped docs-only-ci skill audits, asks once, applies only what was approved, and never edits protection", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "docs-only-ci");
+  assert.ok(skill, "docs-only-ci should be in the catalog");
+  assert.equal(skill.name, "docs-only-ci");
+  assert.equal(skill.category, "testing");
+  assert.equal(skill.enforcement, "triggered");
+  assert.match(skill.description, /docs-only/);
+
+  const text = readFileSync(new URL("../skills/docs-only-ci/SKILL.md", import.meta.url), "utf8");
+  // Read-only audit, with the two early stops.
+  assert.match(text, /## 1\. Audit\n\nRead the repository; change nothing yet\./);
+  assert.match(text, /\*\*CI system\.\*\* Only GitHub Actions is supported\.[\s\S]*"not\s+supported": no form, no commit/);
+  assert.match(text, /\*\*Already installed\.\*\*[\s\S]*report that the gate is\s+installed and stop: no form, no commit/);
+  // flake-report keeps running, and the form proposes the status function it needs.
+  assert.match(text, /\*\*The testing-setup `flake-report` job\.\*\*[\s\S]*\*\*never gated\*\*/);
+  assert.match(text, /`!cancelled\(\)` or `always\(\)`[\s\S]*propose\s+`if: \$\{\{ !cancelled\(\) \}\}`/);
+  assert.match(text, /Never offer\s+`flake-report`/);
+  // One approval form, then only what was approved, in one commit.
+  assert.match(text, /\*\*`request_plan_decisions`\*\* once, with every proposed change/);
+  assert.match(text, /never split the proposal across several forms/);
+  assert.match(text, /\*\*apply only what was approved\.\*\*/);
+  assert.match(text, /\*\*Commit all of it\*\* on the task branch, in one commit\. Do not push or open a pull request\s+yourself/);
+  // The assets, pasted verbatim.
+  assert.match(text, /`assets\/detect-docs-only\.sh`/);
+  assert.match(text, /`assets\/ci-result\.sh`/);
+  // Required checks are reported, never edited.
+  assert.match(text, /## 4\. Report required checks\n\nYou never edit branch protection or rulesets\./);
+  assert.match(text, /could not read branch protection", never "no required checks"/);
+  // Verified on the setup pull request's own CI.
+  assert.match(text, /## 5\. Verify[\s\S]*`CI result` passed/);
+});

@@ -53,7 +53,7 @@ or issues.
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
-| Docs-only CI | Active (the `docs checks` job; the skip, `CI result` and the skill are pending) | #164 |
+| Docs-only CI | Active (the `docs checks` job and the `docs-only-ci` skill; the skip and `CI result` in this repository are pending) | #164, pending (branch `feat/docs-only-ci-skill`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1042,14 +1042,15 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, in progress. The `docs checks` job and `npm run docs:links` exist; the `changes` detection job, the docs-only skip, the `CI result` summary job and the `docs-only-ci` skill are later tickets of the same plan. |
-| PRs | #164 (the `docs checks` job) |
-| Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design", "`docs checks` job", and decision 15 |
+| Status | **Active**, in progress. The `docs checks` job, `npm run docs:links` and the `docs-only-ci` skill exist; the `changes` detection job, the docs-only skip and the `CI result` summary job in this repository's own `ci.yml` are a later ticket of the same plan. |
+| PRs | #164 (the `docs checks` job), pending on branch `feat/docs-only-ci-skill` (the skill) |
+| Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design", "`docs checks` job", "The `docs-only-ci` skill", and decisions 5, 6, 7, 11 to 15 and 20 |
 | Upstream candidate | Maybe. The `docs checks` job and the `docs:links` script are generic; the skip is shaped around the fork's Wait for CI and "Flaky tests" check. |
 
 **Intent.** A pull request that only edits `docs/` should not pay for the whole of CI. Before
 anything skips, CI needs a job that still runs what a docs change can break: the doc-link check
-and the unit tests that read the repository's real docs.
+and the unit tests that read the repository's real docs. Other repositories get the same gate
+through a bundled skill.
 
 **Behavior contracts.**
 
@@ -1062,6 +1063,23 @@ and the unit tests that read the repository's real docs.
   comment above the step, so a new doc-drift test can be checked against it.
 - On full runs the discovered tests also run inside the unit shards; that duplication is
   deliberate.
+- The `docs-only-ci` skill (id `docs-only-ci`, installed as `mission-docs-only-ci`,
+  `category: testing`, `enforcement: triggered`) is reached only from the Skills catalog and
+  `/docs-only-ci`: no route, task type or button. It follows the testing-setup shape: read-only
+  audit, one `request_plan_decisions` form, only the approved edits in one commit, a report of
+  the required checks to swap for `CI result` (never an edit to branch protection), and
+  verification on the setup pull request's own CI. Non-GitHub-Actions CI stops with "not
+  supported"; an installed gate matching the assets stops with no form.
+- The skill never gates a testing-setup `flake-report` job, and proposes `!cancelled()` on it when
+  its `if:` would not run after skipped test jobs (decision 20).
+- `assets/detect-docs-only.sh` prints `docs_only=true|false` (and appends it to
+  `$GITHUB_OUTPUT`), exits 0 on every detection problem, resolves every doubt to `false`, diffs
+  with `--no-renames` and prints the first non-matching path.
+- `assets/ci-result.sh` passes only when every need succeeded, allowing `skipped` for a job in
+  `SKIPPABLE` only when `DOCS_ONLY` is `true`, and otherwise names each offending job and result.
+- Both scripts take every input through `env` and run under bash 3.2 and `bash -eo pipefail`.
+  `test/docs-only-ci-scripts.test.ts` holds those lines, and feeds `decideWaitForCi` a
+  docs-only run's checks to hold that it passes.
 
 **Upstream behavior it assumes.**
 
@@ -1069,11 +1087,19 @@ and the unit tests that read the repository's real docs.
   lockfile-keyed `node_modules` cache that `gates` restores with `fail-on-cache-miss`.
 - `scripts/check-doc-links.mjs` exists and walks the Markdown under `docs/`.
 - Doc-drift tests reach the real docs through a `../docs/` path relative to `test/`.
+- The bundled-skill catalog: every `skills/<id>/SKILL.md` with `metadata.mission` frontmatter is
+  a catalog row and links as `mission-<id>`.
+- `decideWaitForCi` passes a settled run with a "Flaky tests" check and counts `SKIPPED` as
+  passing, which is what lets a docs-only run through Wait for CI.
 
 **Upstream surfaces touched.** `.github/workflows/ci.yml` (the `docs-checks` job),
-`package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count).
+`package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count),
+`docs/skills-and-settings.md` (the skill's row), `test/skills-catalog.test.ts` (the skill's
+cases).
 
-**Fork-only files.** None yet.
+**Fork-only files.** `skills/docs-only-ci/SKILL.md`,
+`skills/docs-only-ci/assets/detect-docs-only.sh`, `skills/docs-only-ci/assets/ci-result.sh`,
+`test/docs-only-ci-scripts.test.ts`.
 
 ## Superseded and removed
 
