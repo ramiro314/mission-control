@@ -2,7 +2,7 @@
   "targets": [
     {
       "target_name": "state_lock",
-      "sources": ["state_lock.cc"],
+      "sources": ["<@(addon_sources)"],
       "defines": ["NAPI_VERSION=10"],
       "cflags_cc": ["-std=c++17"],
       "xcode_settings": {
