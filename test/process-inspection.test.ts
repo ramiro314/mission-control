@@ -22,6 +22,8 @@ import {
   win32ProcessScript,
 } from "../src/server/process-inspection/win32.ts";
 import { windowsPowerShellPath } from "../src/server/platform/executable-environment.ts";
+import { readProcCwdsSnapshot } from "../src/server/discovery/proc-cwd.ts";
+import { inspectWorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
@@ -288,6 +290,34 @@ test("win32 cwd and open-file reads answer as failed reads, never as an empty su
   assert.equal(open.result.code, 1);
   assert.equal(open.result.stderr, WIN32_OPEN_FILES_UNAVAILABLE);
   assert.deepEqual(calls, []);
+});
+
+test("the win32 cwd failure is readProcCwdsSnapshot's unknown reason, and worktree occupancy refuses on it", async () => {
+  const inspector = createWin32ProcessInspector(powerShellRunner().runner);
+  const reason = `cwd listing failed: ${WIN32_CWD_UNAVAILABLE}`;
+
+  assert.deepEqual(await readProcCwdsSnapshot([7, 8, 7], inspector), { cwds: new Map(), unknownReason: reason });
+  assert.deepEqual(
+    await readProcCwdsSnapshot([], inspector),
+    { cwds: new Map(), unknownReason: null },
+    "with no pid to read there is nothing to be unsure about",
+  );
+
+  // One live process in scope, listed identically both times occupancy asks: it cannot be
+  // proven gone, so its unread cwd leaves the slot's occupancy unknown rather than empty.
+  const listed = {
+    processes: [{ pid: 7, ppid: 1, tty: null, startRaw: "Fri Jul 3 15:15:37 2026", startMs: 0, command: "node.exe", agent: null, agentNative: false }],
+    unknownReason: null,
+    cwdScopePids: [7],
+    completedCollectorPids: [],
+  };
+  const slot = "/fixture/pool/1/repo";
+  const occupancy = await inspectWorktreeOccupancy([slot], {
+    listProcesses: async () => listed,
+    readCwds: (pids) => readProcCwdsSnapshot(pids, inspector),
+    ownProcesses: () => new Set(),
+  });
+  assert.deepEqual(occupancy.get(slot), { status: "unknown", reason });
 });
 
 test("a win32 single-pid read flattens the command and refuses half an identity", () => {
