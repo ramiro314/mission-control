@@ -27,7 +27,7 @@ import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import type { CiCheckRun, CiObservation } from "../src/shared/wait-for-ci.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
@@ -2061,5 +2061,33 @@ test("Wait for CI watches the pushed head, not a stale head the Inspector last r
     assert.equal(h.store.getRun(runId)?.status, "running");
   } finally {
     await h.stop();
+  }
+});
+
+test("a Pull Request action names the base branch of the task its session runs", async () => {
+  // The manager chooses the base from the session's task and passes it to the packet. A task
+  // with no base branch gets exactly the packet it always did.
+  for (const baseBranch of ["release/windows", null]) {
+    const h = await harness(`pr-base-${baseBranch ? "based" : "default"}`, {
+      pullRequest: true,
+      deliveryMode: "preview",
+    });
+    try {
+      h.registry.upsertTask(mkTask({
+        id: `pr-base-task-${baseBranch ? "based" : "default"}`,
+        status: "running",
+        sessionId: h.sessionId,
+        repoRoot: "/repo",
+        worktreePath: "/repo",
+        baseBranch,
+      }));
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+      const { payload } = h.store.listDeliveries(runId)[0]!;
+      assert.equal(/gh pr create --base release\/windows/.test(payload), baseBranch !== null);
+      assert.equal(/Base branch:/.test(payload), baseBranch !== null);
+    } finally {
+      await h.stop();
+    }
   }
 });

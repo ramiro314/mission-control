@@ -43,6 +43,7 @@ const { baseBranchRefusal, freshRemoteBranchSha, parseLsRemoteBranchSha } =
 const { resetPreview, resetToOrigin } = await import("../src/server/actions.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { renderPrHandoff, renderSessionAction } = await import("../src/server/workflows/feedback.ts");
+const { prBaseBranchFor } = await import("../src/server/workflows/manager.ts");
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 
 const bin = mkdtempSync(join(tmpdir(), "mission-base-branch-bin-"));
@@ -68,8 +69,9 @@ interface Fixture {
 /**
  * A checkout with a bare origin carrying `main` and `release/windows`, the checkout itself
  * on `main`. Lives under the workspace dir so the task routes accept it as a repository.
+ * `release: false` leaves `release/windows` off origin, for a repository that lacks the base.
  */
-function mkRepo(name: string): Fixture {
+function mkRepo(name: string, { release = true }: { release?: boolean } = {}): Fixture {
   const repo = join(repos, name);
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
@@ -83,15 +85,17 @@ function mkRepo(name: string): Fixture {
   git(repo, "remote", "add", "origin", origin);
   git(repo, "push", "-qu", "origin", "main");
   git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
-  git(repo, "checkout", "-qb", "release/windows");
-  writeFileSync(join(repo, "file.txt"), "windows\n");
-  git(repo, "commit", "-qam", "windows");
-  git(repo, "push", "-q", "origin", "release/windows");
-  git(repo, "checkout", "-q", "main");
+  if (release) {
+    git(repo, "checkout", "-qb", "release/windows");
+    writeFileSync(join(repo, "file.txt"), "windows\n");
+    git(repo, "commit", "-qam", "windows");
+    git(repo, "push", "-q", "origin", "release/windows");
+    git(repo, "checkout", "-q", "main");
+  }
   return {
     repo: realpathSync(repo),
     mainTip: git(repo, "rev-parse", "main"),
-    releaseTip: git(repo, "rev-parse", "release/windows"),
+    releaseTip: release ? git(repo, "rev-parse", "release/windows") : "",
   };
 }
 
@@ -159,6 +163,24 @@ test("resolveTaskBases starts the primary from its base branch and leaves attach
   // No base branch: exactly the default, as before.
   const plain = await resolveTaskBases({ primary: "/a", extras: [] }, null, async (root) => `default:${root}`);
   assert.deepEqual(plain, { primary: "default:/a", extras: [] });
+});
+
+test("a pinned base commit outranks the task's base branch, which is then never resolved", async () => {
+  const resolved: string[] = [];
+  const bases = await resolveTaskBases(
+    { primary: "/a", primaryBranch: "release/windows", extras: [] },
+    "f".repeat(40),
+    async (root) => {
+      resolved.push(`default:${root}`);
+      return `default:${root}`;
+    },
+    async (root, branch) => {
+      resolved.push(`branch:${root}:${branch}`);
+      return `branch:${root}:${branch}`;
+    },
+  );
+  assert.deepEqual(bases, { primary: "f".repeat(40), extras: [] });
+  assert.deepEqual(resolved, [], "neither the branch nor the default is consulted for a pinned primary");
 });
 
 // --- dispatch ---
@@ -312,6 +334,28 @@ test("editing a task sets, refuses, and clears its base branch", async () => {
   assert.equal(getTask(task.id)?.baseBranch, null);
 });
 
+test("moving a task that keeps a base branch to a repository whose origin lacks it is refused", async () => {
+  const { repo } = mkRepo("route-move-from");
+  const { repo: bare } = mkRepo("route-move-to", { release: false });
+  const { repo: also } = mkRepo("route-move-ok");
+  const { api } = appFor();
+  const task = (await (await api("/api/tasks", {
+    repoRoot: repo, title: "Move me", intent: "Move me", backlog: true, workflowId: null,
+    baseBranch: "release/windows",
+  })).json()) as Task;
+
+  // The patch names only the repository; the base it keeps is what has to exist there.
+  const refused = await api(`/api/tasks/${task.id}/update`, { repoRoot: bare });
+  assert.equal(refused.status, 400);
+  assert.match(((await refused.json()) as { error: string }).error, /base branch release\/windows does not exist/);
+  assert.equal(getTask(task.id)?.repoRoot, repo, "a refused move changes nothing");
+  assert.equal(getTask(task.id)?.baseBranch, "release/windows");
+
+  const moved = await api(`/api/tasks/${task.id}/update`, { repoRoot: also });
+  assert.equal(moved.status, 200, await moved.clone().text());
+  assert.equal(getTask(task.id)?.repoRoot, also);
+});
+
 test("MCP create_task files a task with a base branch through the v3 route, and refuses one origin lacks", async () => {
   const { repo } = mkRepo("route-mcp");
   const { mcp } = appFor();
@@ -384,8 +428,8 @@ test("MCP push_task sets the task's base branch before mirroring it, and refuses
   }
 });
 
-test("the reset preview route targets the base branch of the task the session runs", async () => {
-  const { repo, mainTip } = mkRepo("route-reset");
+test("the reset route and its preview land on the base branch of the task the session runs", async () => {
+  const { repo, mainTip, releaseTip } = mkRepo("route-reset");
   const wt = join(repos, "route-reset-wt");
   git(repo, "worktree", "add", "-q", "--detach", wt, mainTip);
   const registry = new Registry();
@@ -405,6 +449,44 @@ test("the reset preview route targets the base branch of the task the session ru
   const preview = (await res.json()) as { ok: boolean; target: string | null; error: string | null };
   assert.equal(preview.ok, true, preview.error ?? "");
   assert.equal(preview.target, "origin/release/windows");
+
+  assert.equal(git(wt, "rev-parse", "HEAD"), mainTip);
+  const reset = await app.request(`/api/sessions/${session.id}/reset`, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(reset.status, 200, await reset.clone().text());
+  assert.equal(git(wt, "rev-parse", "HEAD"), releaseTip);
+});
+
+test("handing a shelved task with a base branch to a running agent resets its checkout onto origin/<base>", async () => {
+  const { repo, mainTip, releaseTip } = mkRepo("assign-reset");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "idle-agent", agent: "claude", name: "idle-agent", nameSource: "process", cwd: repo,
+    gitBranch: "main", gitRoot: repo, repoRoot: repo, pid: 303, tty: "ttys3", terminals: [], startedAt: 0,
+  }]);
+  registry.applyHook({
+    agent: "claude", event: "Stop", sessionId: "idle-agent-session", cwd: repo, transcriptPath: null, env: {},
+  });
+  const session = registry.snapshot().sessions.find((s) => s.name === "idle-agent")!;
+  assert.equal(session.state, "idle");
+  registry.upsertTask(mkTask({
+    id: "assign-based", status: "backlog", repoRoot: repo, baseBranch: "release/windows",
+  }));
+  assert.equal(git(repo, "rev-parse", "HEAD"), mainTip);
+
+  // The REAL reset runs: no `reset` seam. The fixture has no pane, so the context clear cannot
+  // be confirmed and the handover then stops - after the checkout has moved, which is what this
+  // pins (`task-assign.test.ts` pins the same shape for a task with no base).
+  const res = await new TaskManager(registry).assign("assign-based", session.id, {
+    paneReady: async () => ({ ok: true }),
+    confirmReset: true,
+  });
+  assert.equal(git(repo, "rev-parse", "HEAD"), releaseTip);
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /clear/);
 });
 
 // --- what the agent is told ---
@@ -416,6 +498,15 @@ test("the delivered contract names the base branch only when the task has one", 
   assert.doesNotMatch(based, /primary repository only/);
   const plain = withTaskKindContract(mkTask({ kind: "ship" }), "Build it");
   assert.doesNotMatch(plain, /Base branch/);
+});
+
+test("a workflow binding's PR base is the task's for its primary repository, and the default for an attached one", () => {
+  const task = { baseBranch: "release/windows", repoRoot: "/repo" };
+  assert.equal(prBaseBranchFor(task, ""), "release/windows", "an empty root is the session's own checkout");
+  assert.equal(prBaseBranchFor(task, "/repo"), "release/windows");
+  assert.equal(prBaseBranchFor(task, "/attached"), null);
+  assert.equal(prBaseBranchFor({ baseBranch: null, repoRoot: "/repo" }, ""), null);
+  assert.equal(prBaseBranchFor(undefined, ""), null);
 });
 
 test("the workflow pull-request packets name the base branch the PR opens against", () => {

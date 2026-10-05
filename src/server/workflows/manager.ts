@@ -4785,15 +4785,9 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
-  /**
-   * The base branch a pull request from this binding opens against: the session's task's, when
-   * the run reviews that task's PRIMARY repository (an empty binding root is the session's own
-   * checkout). Null for an attached repository, which keeps its default branch.
-   */
+  /** The base branch a pull request from this binding opens against - see `prBaseBranchFor`. */
   private bindingBaseBranch(session: Session, bindingRepoRoot: string): string | null {
-    const task = this.registry.taskForSession(session.id, session.cwd);
-    if (!task?.baseBranch) return null;
-    return !bindingRepoRoot || bindingRepoRoot === task.repoRoot ? task.baseBranch : null;
+    return prBaseBranchFor(this.registry.taskForSession(session.id, session.cwd), bindingRepoRoot);
   }
 
   private originalGoal(runId: string): string {
@@ -8052,4 +8046,17 @@ export class WorkflowManager {
     this.registry.upsertWorkflow(summary);
     return { ok: true, workflow: result.workflow, summary };
   }
+}
+
+/**
+ * The base branch a pull request from a workflow binding opens against: the task's, when the run
+ * reviews that task's PRIMARY repository (an empty binding root is the session's own checkout).
+ * Null for an attached repository, which keeps its own default branch, and for a task with none.
+ */
+export function prBaseBranchFor(
+  task: Pick<Task, "baseBranch" | "repoRoot"> | undefined,
+  bindingRepoRoot: string,
+): string | null {
+  if (!task?.baseBranch) return null;
+  return !bindingRepoRoot || bindingRepoRoot === task.repoRoot ? task.baseBranch : null;
 }
