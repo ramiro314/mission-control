@@ -391,7 +391,7 @@ test.describe("a session an external engine is driving", () => {
     // The subtitle enumerates the sections below it, so it had to grow when one did: a panel
     // headed "answers, decisions and stuck finalizations" over a halt reads as a panel showing
     // you less than it has.
-    await expect(inbox.getByText("· answers, decisions, halts and stuck finalizations"))
+    await expect(inbox.getByText("· answers, decisions, halts, blocked PRs and stuck finalizations"))
       .toBeVisible();
     const row = inbox.locator("section.inbox-halt");
     await expect(row).toHaveCount(1);
