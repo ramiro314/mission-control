@@ -1935,14 +1935,22 @@ export interface PrMergeability {
  * - `foreman-cannot-nudge`: the owning session is live, but Foreman will not type into it.
  * - `nudges-exhausted`: Foreman nudged the session and escalated the conflict when its nudges
  *   ran out or the agent sat idle on the nudged head.
+ * - `workflow-not-gating`: an active workflow owns the work, so Foreman stays out, but no Wait
+ *   for CI node for this PR is active or reachable in its run, so nothing will fail on the
+ *   conflict and start a repair round.
  */
-export type BlockedPrReason = "session-gone" | "foreman-cannot-nudge" | "nudges-exhausted";
+export type BlockedPrReason =
+  | "session-gone"
+  | "foreman-cannot-nudge"
+  | "nudges-exhausted"
+  | "workflow-not-gating";
 
 /** The inbox's words for each `BlockedPrReason`: why the row needs you. */
 export const BLOCKED_PR_REASON_TEXT: Record<BlockedPrReason, string> = {
   "session-gone": "session ended",
   "foreman-cannot-nudge": "Foreman can't drive this session",
   "nudges-exhausted": "Foreman's 3 nudges didn't resolve it",
+  "workflow-not-gating": "the workflow isn't waiting on CI for this PR",
 };
 
 /**

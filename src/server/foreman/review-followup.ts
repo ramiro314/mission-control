@@ -10,7 +10,7 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
-import { currentMergeability } from "@shared/pr-mergeable.ts";
+import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 
 // The review follow-through trigger's decision core: a session's work has become an
 // OPEN pull request, it has parked, and the PR now carries feedback nobody is acting on
@@ -576,11 +576,10 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
     problems.push(`GitHub Inspector left ${n} unresolved review comment${n === 1 ? "" : "s"} on it`);
   }
   if (fb.ciFailing) problems.push("its CI checks are failing");
-  // `baseRefName` rides every poll, so a missing base is a rare race; name a placeholder
-  // rather than guess `main`.
-  const base = pr.baseRef ?? "<base branch>";
+  // `baseRefName` rides every poll, so a missing base is a rare race; say so rather than
+  // guess `main`.
   if (fb.conflicting) {
-    problems.push(`it has merge conflicts with ${pr.baseRef ? `\`${base}\`` : "its base branch"}`);
+    problems.push(`it has merge conflicts with ${pr.baseRef ? `\`${pr.baseRef}\`` : "its base branch"}`);
   }
 
   const steps: string[] = [];
@@ -606,14 +605,8 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
       `Look at the failing CI (\`gh pr checks${num}${scope}\`), reproduce it locally, and fix it.`,
     );
   }
-  if (fb.conflicting) {
-    steps.push(
-      `Merge the base branch in: \`git fetch origin ${base}\`, then \`git merge origin/${base}\`.`,
-    );
-    steps.push("Resolve every conflict, keeping the intent of both sides.");
-    steps.push("Run the tests that cover the files you touched.");
-    steps.push("Do not rebase or force-push: commit the merge and push it.");
-  }
+  // The merge-in method has one owner, shared with the workflow's conflict repair round.
+  if (fb.conflicting) steps.push(...mergeConflictResolutionSteps(pr.baseRef).split("\n"));
   steps.push("Commit and push.");
   steps.push(
     "Then keep watching the PR until CI is green and the review threads are resolved - " +

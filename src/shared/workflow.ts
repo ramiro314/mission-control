@@ -2367,6 +2367,69 @@ export function waitForCiFollows(graph: PublishedWorkflowGraph, nodeId: string):
     && graph.nodes.some((node) => node.id === edge.target && node.kind === "wait_for_ci"));
 }
 
+/**
+ * Whether a Wait for CI node is one of the run's active nodes or is reachable from one along
+ * the graph's edges, on any port.
+ *
+ * This is what decides whether a workflow is handling its pull request's merge conflict: a
+ * reachable Wait for CI fails on the conflict when the run gets there and starts an ordinary
+ * repair round, so a run upstream of one, or in a repair round whose edges loop back to one,
+ * is handling it. A run past every Wait for CI, or with none, is not. A node the operator
+ * disabled for this run passes without reading anything, so it is walked through but never
+ * counts. See docs/plans/pr-merge-conflicts/plan.md, section 2.
+ */
+export function waitForCiReachable(
+  graph: PublishedWorkflowGraph,
+  activeNodeIds: readonly string[],
+  disabledNodeIds: readonly string[] = [],
+): boolean {
+  const kinds = new Map(graph.nodes.map((node) => [node.id, node.kind]));
+  const pending = [...activeNodeIds];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const nodeId = pending.pop()!;
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    if (kinds.get(nodeId) === "wait_for_ci" && !disabledNodeIds.includes(nodeId)) return true;
+    for (const edge of graph.edges) {
+      if (edge.source === nodeId) pending.push(edge.target);
+    }
+  }
+  return false;
+}
+
+/**
+ * The nodes a run is at right now, as `waitForCiReachable` walks from them.
+ *
+ * - A terminal or blocked run is at none: nothing moves until the operator acts.
+ * - Otherwise, the latest submission's attempts that are still going (queued, running,
+ *   retrying or waiting).
+ * - With none going, a run waiting for the session's repair round is at Session, where that
+ *   round starts. One between nodes (capturing, readying evidence) is at the action its
+ *   segment continues, whose outgoing edges it is about to take, or at Session for a round.
+ * - A run past End, at the Inspector's completion gate, is at none of the graph's nodes.
+ */
+export function workflowRunActiveNodeIds(input: {
+  status: WorkflowRunStatus;
+  graph: PublishedWorkflowGraph;
+  attempts: readonly Pick<WorkflowNodeAttempt, "nodeId" | "state">[];
+  /** The action node this submission continues, or null for a round's own submission. */
+  continuationNodeId: string | null;
+}): string[] {
+  const { status, graph } = input;
+  if (status === "blocked" || (WORKFLOW_RUN_TERMINAL_STATUSES as readonly string[]).includes(status)) {
+    return [];
+  }
+  const going = input.attempts
+    .filter((attempt) => ["queued", "running", "retry_wait", "waiting"].includes(attempt.state))
+    .map((attempt) => attempt.nodeId);
+  if (going.length > 0) return [...new Set(going)];
+  if (["waiting_for_pr", "waiting_for_inspector", "waiting_for_new_head"].includes(status)) return [];
+  const sessionNodes = graph.nodes.filter((node) => node.kind === "session").map((node) => node.id);
+  if (status === "waiting_for_session") return sessionNodes;
+  return input.continuationNodeId ? [input.continuationNodeId] : sessionNodes;
+}
+
 export const WORKFLOW_DIAGNOSTIC_CODES = [
   "missing_session",
   "multiple_sessions",

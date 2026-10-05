@@ -27,8 +27,8 @@ import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
-import type { CiCheckRun, CiObservation } from "../src/shared/wait-for-ci.ts";
+import { mkMuxHandle, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+import type { CiCheckRun, CiObservation, WaitForCiMergeability } from "../src/shared/wait-for-ci.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
 process.env.MISSION_HOME = home;
@@ -37,7 +37,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { Registry } = await import("../src/server/registry.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
-const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { WorkflowManager, sessionPrMergeability } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
@@ -160,6 +160,7 @@ interface HarnessOptions {
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
   /** Put a Wait for CI node, with this timeout, between the last action and End. */
   waitForCiMinutes?: number;
+  trackMergeConflicts?: () => boolean;
 }
 
 async function harness(sessionId: string, options: HarnessOptions = {}) {
@@ -202,9 +203,14 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   /** What the Inspector last stored about CI, as a test states it. */
   const ci: { observation: CiObservation | null } = { observation: null };
+  /** What the PR poller last observed about the pull request's mergeability. */
+  const mergeability: { value: WaitForCiMergeability | null } = { value: null };
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
+    trackMergeConflicts: options.trackMergeConflicts,
     ciObservation: (key) => key === "owner/repo#7" ? ci.observation : null,
+    prMergeability: (key, session) =>
+      key === "owner/repo#7" && session?.id === sessionId ? mergeability.value : null,
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -518,6 +524,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     adopted,
     adoptPr,
     ci,
+    mergeability,
     sessionId,
     versionId,
     reportIdle,
@@ -2007,6 +2014,129 @@ test("Wait for CI blocks with a plain reason, and retrying waits on the same hea
   } finally {
     await h.stop();
   }
+});
+
+test("a conflicting pull request fails Wait for CI into one merge-in repair round", async () => {
+  const h = await harness("ci-conflict", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    assert.equal(h.manager.waitForCiReachable(runId), true, "the run is at Wait for CI");
+
+    // A conflict observed on another head - the one before the push - says nothing about this one.
+    h.mergeability.value = { mergeable: "conflicting", headSha: h.full("head-1"), baseRef: "main" };
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+
+    // No check ever appears on a conflicting PR. The conflict on the watched head decides.
+    h.mergeability.value = { mergeable: "conflicting", headSha: h.full("head-2"), baseRef: "main" };
+    await h.manager.sweepWaitForCi();
+    await waitFor(() => h.store.getRun(runId)?.status === "waiting_for_session", "the conflict did not return to Session");
+
+    const failed = ciAttempts(h, runId)[0]!;
+    const verdict = failed.verdict as { verdict: string; requestedChanges: { title: string }[] };
+    assert.equal(verdict.verdict, "fail");
+    assert.deepEqual(verdict.requestedChanges.map((change) => change.title), ["Resolve merge conflicts with `main`"]);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.kind === "persona_feedback"),
+      "no repair packet was prepared",
+    );
+    const repair = h.store.listDeliveries(runId).find((delivery) => delivery.kind === "persona_feedback")!;
+    assert.match(repair.payload, /Resolve merge conflicts with `main`/);
+    assert.match(repair.payload, /git merge origin\/main/);
+    assert.match(repair.payload, /Do not rebase or force-push\./);
+    // An ordinary repair round: Session is where it starts, and Session reaches Wait for CI.
+    assert.equal(h.manager.waitForCiReachable(runId), true, "a repair round loops back to Wait for CI");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a run with no Wait for CI after its Pull Request action is not gating its conflicts", async () => {
+  const h = await harness("ci-not-gating", { pullRequest: true, deliveryMode: "preview" });
+  try {
+    const runId = await runToAction(h);
+    assert.equal(h.manager.waitForCiReachable(runId), false, "the action leads only to End");
+    assert.equal(h.manager.cancel(runId, "cancel-not-gating").ok, true);
+    assert.equal(h.manager.waitForCiReachable(runId), false, "nor once the run is over");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("only a PR action with no Wait for CI after it carries the conflict line, frozen with it", async () => {
+  for (const [waitForCiMinutes, tracking] of [[undefined, true], [undefined, false], [45, true]] as const) {
+    let on: boolean = tracking;
+    let reads = 0;
+    const h = await harness(`conflict-policy-${waitForCiMinutes ?? 0}-${tracking}`, {
+      pullRequest: true,
+      waitForCiMinutes,
+      trackCiFailures: () => false,
+      trackMergeConflicts: () => { reads++; return on; },
+      deliveryMode: "preview",
+    });
+    try {
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+      const original = h.store.listDeliveries(runId)[0]!;
+      assert.equal(
+        original.payload.includes("## Workflow pull request merge conflicts"),
+        tracking && waitForCiMinutes === undefined,
+        `Wait for CI ${waitForCiMinutes ?? "absent"}, tracking ${tracking}`,
+      );
+      // Independent of the CI setting, which is off here.
+      assert.doesNotMatch(original.payload, /Workflow pull request CI follow-through/);
+      on = !on;
+      await h.manager.stop();
+      h.manager.start();
+      await h.manager.sweepSessionActions(SETTLED());
+      assert.equal(h.store.listDeliveries(runId)[0]!.payload, original.payload, "frozen with the packet");
+      assert.equal(reads, 1, "read once, at preparation");
+    } finally {
+      await h.stop();
+    }
+  }
+});
+
+test("Wait for CI reads the conflict off the session's own PR or its task's per-repository entry", () => {
+  const observed = (state: "conflicting" | "mergeable", headSha: string) => ({ state, headSha });
+  const session = mkSession({
+    prUrl: "https://github.com/owner/repo/pull/7",
+    prMergeable: observed("conflicting", "aaa"),
+    prBaseRef: "main",
+    // The current head moved on (an UNKNOWN read after a push); the observation keeps its own.
+    prHeadSha: "bbb",
+    task: mkTaskSummary({
+      repoPrs: [{
+        repoRoot: "/other",
+        primary: false,
+        prUrl: "https://github.com/owner/other/pull/3",
+        prState: "open",
+        mergedAt: null,
+        feedback: {
+          prNumber: 3,
+          prChecks: null,
+          inspector: null,
+          prMergeable: observed("mergeable", "ccc"),
+          prBaseRef: "develop",
+          prHeadSha: "ccc",
+          prConflictEscalated: false,
+        },
+      }],
+    }),
+  });
+  assert.deepEqual(sessionPrMergeability("owner/repo#7", session), {
+    mergeable: "conflicting",
+    headSha: "aaa",
+    baseRef: "main",
+  });
+  assert.deepEqual(sessionPrMergeability("Owner/Other#3", session), {
+    mergeable: "mergeable",
+    headSha: "ccc",
+    baseRef: "develop",
+  });
+  assert.equal(sessionPrMergeability("owner/repo#8", session), null, "another pull request");
+  assert.equal(sessionPrMergeability("owner/repo#7", { ...session, prMergeable: null }), null, "nothing definitive yet");
+  assert.equal(sessionPrMergeability("owner/repo#7", null), null, "no session");
 });
 
 test("disabling Wait for CI passes it without reading CI", async () => {

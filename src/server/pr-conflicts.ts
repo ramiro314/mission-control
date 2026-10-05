@@ -123,14 +123,29 @@ export interface PrReference {
    * workflow step's agent often exits while its run is still active.
    */
   workflowOwned: boolean;
+  /**
+   * The non-terminal runs that own this PR's work AND review its repository. A multi-repo
+   * session's run for another repository owns the session, so Foreman stays out, but has no
+   * Wait for CI for this pull request.
+   */
+  workflowRunIds: readonly string[];
 }
+
+/**
+ * Whether a run will see its pull request's conflict itself: a Wait for CI node it is at or can
+ * still reach fails on the conflict and starts a repair round. `WorkflowManager.waitForCiReachable`
+ * in the daemon.
+ */
+export type WorkflowGatesCi = (runId: string) => boolean;
 
 /**
  * Why nothing is handling this conflict, or null when something is.
  *
- * Work an active workflow owns is the workflow's to classify (not reported here), whether or
- * not its session is still live. Otherwise no live session means `session-gone`. A live one
- * is `nudges-exhausted` once Foreman escalated the episode, and otherwise
+ * Work an active workflow owns is the workflow's, whether or not its session is still live:
+ * handled when one of its runs for this PR's repository can still reach a Wait for CI node,
+ * and `workflow-not-gating` otherwise, because Foreman stays out of a workflow's session and
+ * nothing else would react. Otherwise no live session means `session-gone`. A live one is
+ * `nudges-exhausted` once Foreman escalated the episode, and otherwise
  * `foreman-cannot-nudge` exactly when Foreman's follow-through would refuse to type into it,
  * read through the same predicates `decideReviewFollowup` uses, plus `trackMergeConflicts`
  * being off.
@@ -138,9 +153,10 @@ export interface PrReference {
 export function unhandledReason(
   ref: PrReference,
   foreman: ForemanConfig,
+  gatesCi: WorkflowGatesCi,
   escalated = false,
 ): BlockedPrReason | null {
-  if (ref.workflowOwned) return null;
+  if (ref.workflowOwned) return ref.workflowRunIds.some(gatesCi) ? null : "workflow-not-gating";
   const live = liveOwner(ref);
   if (!live) return "session-gone";
   if (escalated) return "nudges-exhausted";
@@ -164,12 +180,13 @@ export function blockedPrs(
   episodes: readonly ConflictEpisode[],
   references: ReadonlyMap<string, PrReference>,
   foreman: ForemanConfig,
+  gatesCi: WorkflowGatesCi,
 ): BlockedPr[] {
   const out: BlockedPr[] = [];
   for (const episode of episodes) {
     const ref = references.get(episode.url);
     if (!ref) continue;
-    const reason = unhandledReason(ref, foreman, episode.escalated);
+    const reason = unhandledReason(ref, foreman, gatesCi, episode.escalated);
     if (reason === null) continue;
     // The session the row names: the live owner, else the exited one the daemon still holds.
     const shown = liveOwner(ref) ?? ref.sessions[0] ?? null;
@@ -210,6 +227,7 @@ export class PrConflictTracker {
   constructor(
     private readonly host: PrConflictHost,
     private readonly foremanConfig: () => ForemanConfig,
+    private readonly gatesCi: WorkflowGatesCi,
   ) {}
 
   reconcile(reads: ReadonlyMap<string, ConflictObservation>, now: number): void {
@@ -227,10 +245,22 @@ export class PrConflictTracker {
     return true;
   }
 
+
+  /**
+   * Re-derive who is handling each open episode without a new read, for when a workflow run
+   * changes: a run that moves past its last Wait for CI, or finishes, changes the answer
+   * between two polls. Membership follows reachability rather than the node the run is at, so
+   * a run moving between nodes that can all still reach Wait for CI publishes nothing new.
+   */
+  reclassify(): void {
+    if (this.episodes.list().length === 0) return;
+    this.publish(this.host.prReferences());
+  }
+
   private publish(references: ReadonlyMap<string, PrReference>): void {
     this.host.setEscalatedPrUrls(this.episodes.escalatedUrls());
     this.host.setBlockedPrs(
-      blockedPrs(this.episodes.list(), references, this.foremanConfig()),
+      blockedPrs(this.episodes.list(), references, this.foremanConfig(), this.gatesCi),
     );
   }
 }
