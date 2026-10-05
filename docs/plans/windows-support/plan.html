@@ -417,7 +417,7 @@ its path:</p>
 <tr>
 <td>M3.1 (merge PR and gates)</td>
 <td>M3.2</td>
-<td>Its own merge PR (session branch <code>merge/windows-into-main</code>, base <code>main</code>) merging into <code>main</code>, which the human does only when every gate passed</td>
+<td>Its own merge PR (opened from the branch M3.1&#39;s own session works on, base <code>main</code>) merging into <code>main</code>, which the human does only when every gate passed. Fallback: if the merge is not attributed to M3.1 (for example, the PR was continued from another session or branch), the human completes M3.1 with &quot;Unblock&quot; ticked after confirming the merge landed</td>
 </tr>
 </tbody></table>
 <p>The tickets that file others (M0.3, M2.12, M3.2) file them at the end of their own work, so
@@ -519,13 +519,15 @@ lists into the merge PR. It <strong>ends by filing the M3 tickets</strong> (D34)
 <li><p><strong>Merge PR and gates.</strong> M3.1 is an ordinary task on <code>main</code> (no base branch set), so the
 merge watcher tracks its PR like any other session PR. Its session:</p>
 <ul>
-<li>Cuts its session branch <code>merge/windows-into-main</code> from <code>origin/main</code>.</li>
+<li>Works on the feature branch its own session creates from <code>origin/main</code> through the
+ordinary shipping flow. The plan prescribes no branch name, so the merge watcher&#39;s binding
+follows the branch this session actually stands on.</li>
 <li>Merges <code>origin/release/windows</code> into that branch, resolving any conflicts by the D27 rule.</li>
 <li>Makes sure the Windows CI jobs run on this PR and on <code>main</code> afterwards (D15), removing any
 <code>release/windows</code>-only condition M2.1 may have added.</li>
 <li>Opens the PR against <code>main</code>, titled <code>feat: Windows support</code>. The description carries
 M2.12&#39;s skip list and D38 list, plus the manual smoke checklist.</li>
-<li>Starts a <code>workflow_dispatch</code> run of the macOS <code>package</code> job on <code>merge/windows-into-main</code>.</li>
+<li>Starts a <code>workflow_dispatch</code> run of the macOS <code>package</code> job on that branch.</li>
 </ul>
 <p>All four D8 gates are judged on this PR, which is the merge candidate:</p>
 <ul>
@@ -538,8 +540,12 @@ Claude Code task, watch the SDK session on the board, message it, and complete i
 green.</li>
 </ul>
 <p><strong>The human merges the PR, with a merge commit (D16), only when every gate has passed.</strong> That
-merge completes M3.1 through the merge watcher and releases M3.2. No <code>satisfyDependents</code> step
-is involved. If a gate fails, the fix lands on <code>release/windows</code> through an ordinary M2-style
+merge completes M3.1 through the merge watcher and releases M3.2, with no <code>satisfyDependents</code>
+step in the normal case. The PR must stay on M3.1&#39;s own session branch. If it is ever
+continued from another session or branch, the merge watcher cannot attribute the merge.
+Then the human confirms the merge landed on <code>main</code> and completes M3.1 with &quot;Unblock the tasks
+waiting on this&quot; ticked (<code>satisfyDependents</code>), the repair named in
+<code>.agents/memory/merge-watcher-reads-the-session-branch.md</code>. If a gate fails, the fix lands on <code>release/windows</code> through an ordinary M2-style
 ticket. M3.1&#39;s session then merges <code>origin/release/windows</code> into its branch again, and the
 gates are re-run on the updated PR.</p>
 </li>

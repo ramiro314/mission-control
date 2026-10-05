@@ -218,7 +218,7 @@ its path:
 | M0.3 | M0.4 | Its fork-ledger PR merging into `main` (creating the branch alone is not a merge) |
 | M2.0 (SDK spike, no PR) | M2.1 to M2.11 | **The human** completes it with "Unblock" ticked, only when the spike passed |
 | M2.1 to M2.11 | M2.12 | Their PRs merging into `release/windows` (base-branch merge watcher, A8) |
-| M3.1 (merge PR and gates) | M3.2 | Its own merge PR (session branch `merge/windows-into-main`, base `main`) merging into `main`, which the human does only when every gate passed |
+| M3.1 (merge PR and gates) | M3.2 | Its own merge PR (opened from the branch M3.1's own session works on, base `main`) merging into `main`, which the human does only when every gate passed. Fallback: if the merge is not attributed to M3.1 (for example, the PR was continued from another session or branch), the human completes M3.1 with "Unblock" ticked after confirming the merge landed |
 
 The tickets that file others (M0.3, M2.12, M3.2) file them at the end of their own work, so
 nothing waits on those filing steps through a dependency edge.
@@ -321,13 +321,15 @@ POSIX implementation issues the same commands it did before.
 
 1. **Merge PR and gates.** M3.1 is an ordinary task on `main` (no base branch set), so the
    merge watcher tracks its PR like any other session PR. Its session:
-   - Cuts its session branch `merge/windows-into-main` from `origin/main`.
+   - Works on the feature branch its own session creates from `origin/main` through the
+     ordinary shipping flow. The plan prescribes no branch name, so the merge watcher's binding
+     follows the branch this session actually stands on.
    - Merges `origin/release/windows` into that branch, resolving any conflicts by the D27 rule.
    - Makes sure the Windows CI jobs run on this PR and on `main` afterwards (D15), removing any
      `release/windows`-only condition M2.1 may have added.
    - Opens the PR against `main`, titled `feat: Windows support`. The description carries
      M2.12's skip list and D38 list, plus the manual smoke checklist.
-   - Starts a `workflow_dispatch` run of the macOS `package` job on `merge/windows-into-main`.
+   - Starts a `workflow_dispatch` run of the macOS `package` job on that branch.
 
    All four D8 gates are judged on this PR, which is the merge candidate:
    - The unit suite is green on Windows CI under D37.
@@ -339,8 +341,12 @@ POSIX implementation issues the same commands it did before.
      green.
 
    **The human merges the PR, with a merge commit (D16), only when every gate has passed.** That
-   merge completes M3.1 through the merge watcher and releases M3.2. No `satisfyDependents` step
-   is involved. If a gate fails, the fix lands on `release/windows` through an ordinary M2-style
+   merge completes M3.1 through the merge watcher and releases M3.2, with no `satisfyDependents`
+   step in the normal case. The PR must stay on M3.1's own session branch. If it is ever
+   continued from another session or branch, the merge watcher cannot attribute the merge.
+   Then the human confirms the merge landed on `main` and completes M3.1 with "Unblock the tasks
+   waiting on this" ticked (`satisfyDependents`), the repair named in
+   `.agents/memory/merge-watcher-reads-the-session-branch.md`. If a gate fails, the fix lands on `release/windows` through an ordinary M2-style
    ticket. M3.1's session then merges `origin/release/windows` into its branch again, and the
    gates are re-run on the updated PR.
 2. **Retire** (D29), after M3.1's PR has merged: delete `release/windows`, retire the sync
