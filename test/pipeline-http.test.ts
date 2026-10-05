@@ -37,6 +37,7 @@ import {
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
 const originalPath = process.env.PATH;
+const originalExecutablePaths = process.env.MISSION_EXECUTABLE_PATHS;
 const nodeBinDir = join(home, "bin");
 process.env.HARNESS_HOME = join(home, "state");
 // The fake `node` must outrank every real one. The executable locator ranks per-user version
@@ -51,6 +52,11 @@ process.env.MISSION_EXECUTABLE_PATHS = nodeBinDir;
 process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");
 process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
 process.env.MISSION_WORKSPACE_DIRS = home;
+// The installer resolves `node` through the executable locator, which ranks version-manager
+// shims (mise, asdf, volta) ahead of PATH. On a machine that has one, prepending the fake
+// runtime to PATH alone loses to the operator's real Node, so name its directory as an
+// operator directory - the one group ranked ahead of every shim.
+process.env.MISSION_EXECUTABLE_PATHS = nodeBinDir;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -73,6 +79,7 @@ const {
 } = await import("../e2e/fixtures/conductor.ts");
 writeConductorNodeRuntime(home, "26.7.0");
 process.env.PATH = `${nodeBinDir}${delimiter}${originalPath ?? ""}`;
+process.env.MISSION_EXECUTABLE_PATHS = nodeBinDir;
 type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
@@ -81,6 +88,8 @@ const db = openDb();
 // so give the standard recursive remover a short bounded retry window.
 after(() => {
   process.env.PATH = originalPath;
+  if (originalExecutablePaths === undefined) delete process.env.MISSION_EXECUTABLE_PATHS;
+  else process.env.MISSION_EXECUTABLE_PATHS = originalExecutablePaths;
   rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
