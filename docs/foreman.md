@@ -226,11 +226,13 @@ The Ship/Bugfix contract comes from the task's durable `Kind`, never from transc
 Personal sessions retain their ordinary completion boundary. See
 [work queues](work-queues.md) for the whole prompted path.
 
-**A workflow-bound `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
+**A `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
 phase files and scheduling, verification, and applicable plan evidence must be ready. Its PR,
 review follow-through, CI waiting, and merge belong to the workflow. Commit and push remain
-part of planning when needed to make scheduled task paths durable. An unbound plan retains the
-skill's direct PR path. Foreman reads live publication ownership independently of Persona
+part of planning when needed to make scheduled task paths durable. An unbound `plan` or `shape`
+task has the same boundary: it commits and pushes the plan and ends its turn, and the verifier
+treats the unopened PR as expected. Foreman's Ship it? card or Straight to PR instruction then
+opens the plan's PR. Foreman reads live publication ownership independently of Persona
 evidence eligibility and discards the verdict if binding identity, version, or trigger mode
 changes during verification or before the completion check. The completion claim carries that
 verified ownership as a comparison guard. The daemon checks it again inside the transaction

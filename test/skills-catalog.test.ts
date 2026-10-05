@@ -325,10 +325,29 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(text, /get_plan_publication_context/);
   assert.match(text, /owner: "workflow"/);
   assert.match(text, /report that planning is complete and end the turn/);
-  assert.match(text, /Direct publication when no workflow is bound/);
   assert.match(text, /Do not treat an unknown binding as absent/);
 
+  // No owner lets the planning session open its own pull request: an unbound plan defers to
+  // Foreman's wrap-up exactly as a bound one defers to its workflow, and a phase task commits
+  // and lets Mission Control publish it.
+  assert.match(text, /never opens the planning pull request on its own initiative/);
+  assert.match(text, /Foreman's Ship it\? card or Straight to PR path opens the planning pull request/);
+  assert.doesNotMatch(text, /Direct publication when no workflow is bound/);
+  assert.doesNotMatch(text, /open a\s+reviewable pull request/);
+  assert.doesNotMatch(text, /open the reviewable docs-site pull request/);
+  assert.match(text, /commit the phase; Mission\s+Control publishes it as a reviewable pull request/);
+
   const mcp = readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
+  // The ownership read the skill calls offers no direct PR path: either owner yields to a
+  // Mission Control publisher. The owner values themselves are unchanged on the wire.
+  const publicationStart = mcp.indexOf('"get_plan_publication_context"');
+  const publicationEnd = mcp.indexOf("inputSchema", publicationStart);
+  assert.ok(publicationStart >= 0 && publicationEnd > publicationStart, "get_plan_publication_context should be registered");
+  const publication = mcp.slice(publicationStart, publicationEnd);
+  assert.doesNotMatch(publication, /direct PR path/);
+  assert.match(publication, /Foreman's Ship it\? or Straight to PR path opens it/);
+  assert.match(publication, /never authorizes opening a pull request/);
+
   const start = mcp.indexOf('"create_task"');
   const end = mcp.indexOf("// This is the replacement", start);
   assert.ok(start >= 0 && end > start, "create_task should be registered before request_input");

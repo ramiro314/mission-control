@@ -276,10 +276,20 @@ test("a shape task takes its own completion handoff when a workflow is bound, ex
   assert.doesNotMatch(bound, /phase files|every phase task depends on the planning session/);
   assert.match(bound, /do not create or update a pull request, act on pull-request review feedback, wait for pull-request CI, or merge the pull request/);
   assert.match(bound, new RegExp(PLAN_PUBLICATION_TOOL));
+  // A removed binding falls back to Foreman's wrap-up, never to the agent opening the PR itself.
+  assert.match(bound, /If the binding is removed, Foreman's Ship it\? or Straight to PR path opens the plan's pull request/);
+  assert.doesNotMatch(bound, /direct PR path|open the plan's pull request yourself/);
 
+});
+
+test("an unbound shape task commits and pushes the plan and leaves its pull request to Foreman", () => {
   const unbound = withTaskKindContract(mkTask(), "shape it", { planSkills: CLAUDE_SKILLS });
-  assert.doesNotMatch(unbound, /## Shape task completion handoff/);
-  assert.match(unbound, /No workflow was selected/);
+  assert.match(unbound, /## Shape task completion handoff/);
+  assert.match(unbound, /Mission Control owns the pull request/);
+  assert.match(unbound, /Commit and push the plan before ending the turn/);
+  assert.match(unbound, /No workflow was selected\. Foreman's Ship it\? or Straight to PR path opens the plan's pull request/);
+  assert.match(unbound, /do not create or update a pull request, act on pull-request review feedback, wait for pull-request CI, or merge the pull request/);
+  assert.doesNotMatch(unbound, /open the plan's pull request yourself|commit and push it and open/);
 });
 
 test("a shape task delivered without resolved invocations fails loudly", () => {
