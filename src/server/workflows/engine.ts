@@ -13,6 +13,7 @@ import type {
   PersonaVerdict,
   PublishedWorkflowGraph,
   PublishedWorkflowNode,
+  WorkflowBinding,
   WorkflowEdge,
   WorkflowEdgeReceipt,
   WorkflowJson,
@@ -181,6 +182,11 @@ export interface WorkflowEngineOptions {
    * check then reports `unavailable` and passes with a note saying so.
    */
   checkDeps?: (attempt: CheckAttemptRef) => CheckRunDeps;
+  /**
+   * The branch on `origin` a check measures this binding's change from: its task's base
+   * branch, or null for origin's default. Asked when the check runs. Absent answers null.
+   */
+  checkBaseBranch?: (binding: WorkflowBinding) => string | null;
   /**
    * Contract R: does this check node still own a lease that has not resolved?
    *
@@ -516,6 +522,7 @@ export class WorkflowEngine {
    */
   private readonly testCheckLimit: CheckScheduler = createCheckScheduler(1);
   private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
+  private readonly checkBaseBranch: NonNullable<WorkflowEngineOptions["checkBaseBranch"]>;
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
@@ -543,6 +550,7 @@ export class WorkflowEngine {
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
     this.checkDeps = options.checkDeps ?? (() => ({}));
+    this.checkBaseBranch = options.checkBaseBranch ?? (() => null);
     this.unresolvedCheckLease = options.unresolvedCheckLease ?? (() => false);
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
     this.workflowCommand = options.workflowCommand
@@ -1569,6 +1577,7 @@ export class WorkflowEngine {
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+        baseBranch: this.checkBaseBranch(binding),
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
       }, deps);

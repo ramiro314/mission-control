@@ -88,6 +88,11 @@ export interface CheckExecutionRequest {
   workingSubpath: string;
   /** The commit the submission captured, or null when the capture recorded none. */
   headSha: string | null;
+  /**
+   * The branch on `origin` the change is measured from: the task's base branch, or null or
+   * absent for origin's default. Read by the slot that selects by what changed, `affected-tests`.
+   */
+  baseBranch?: string | null;
 }
 
 export type CheckExecutionResult =
@@ -309,6 +314,8 @@ export async function runCheck(
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
+    /** The task's base branch for this repository, or null - see `CheckExecutionRequest`. */
+    baseBranch?: string | null;
   },
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
@@ -399,6 +406,7 @@ export async function runCheck(
     // global default, which names no repository, runs at the checkout root.
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
+    baseBranch: input.baseBranch ?? null,
   });
   if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };
   if (result.kind === "unavailable") {
