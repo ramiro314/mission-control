@@ -27,6 +27,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/foreman/health", "Worker diagnostics refresh; no adoption count."],
   ["POST", "/api/foreman/heartbeat", "Worker liveness lease; no adoption count."],
   ["POST", "/api/foreman/heartbeat/release", "Worker liveness lease release; no adoption count."],
+  ["POST", "/api/pr-conflicts/escalate", "Foreman worker's idempotent conflict hand-off, re-sent each minute; its first send is counted by the foreman.episode it records."],
   ["POST", "/api/usage/automation", "Phase 3 owns deduplicated automation spend, not another automation action."],
   ["PUT", "/api/telemetry/config", "Phase 2 telemetry controls/typed ingress; excluded from recursive primary-action and error capture."],
   ["POST", "/api/telemetry/operation", "Phase 2 telemetry controls/typed ingress; excluded from recursive primary-action and error capture."],
