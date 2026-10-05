@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, normalize, resolve as resolvePath } from "node:path";
 import type {
@@ -12,6 +11,7 @@ import {
   executableSpecForCommand,
   type ExecutableSpec,
 } from "./catalog.ts";
+import { processLifetime } from "../platform/process-lifetime.ts";
 
 export const EXECUTABLE_REFRESH_COOLDOWN_MS = 30_000;
 export const LOGIN_SHELL_TIMEOUT_MS = 5_000;
@@ -135,11 +135,10 @@ export async function probeLoginShellPath(
     try {
       // `execFile` deliberately omits process-group ownership from its public options.
       // Spawn directly so startup-file grandchildren cannot outlive the discovery bound.
-      const child = spawn(
+      const child = processLifetime.spawn(
         shell,
         ["-ilc", `printf '${PATH_MARKER}%s${PATH_MARKER}' "$PATH"`],
         {
-          detached: process.platform !== "win32",
           env,
           // Login startup files may emit substantial diagnostics. The probe does not
           // consume them, so discard stderr instead of allowing pipe backpressure to
@@ -148,18 +147,7 @@ export async function probeLoginShellPath(
         },
       );
       let stdout = "";
-      const terminate = (): void => {
-        try {
-          if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
-          else child.kill("SIGKILL");
-        } catch {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // The group already exited between observation and signalling.
-          }
-        }
-      };
+      const terminate = (): void => processLifetime.killTree(child);
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;

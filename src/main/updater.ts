@@ -3,7 +3,7 @@ import { prepareMigration, keepSystemInstallation, readMigrationJournal, atomicM
 import { processIdentity } from "../../scripts/update-lock.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { closeSync, copyFileSync, openSync, rmSync, statSync, mkdirSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,6 +25,7 @@ import {
 // The updater asks the same locator as the daemon before it invokes `gh`, so detection and
 // execution retain one absolute identity even when Electron started with a minimal PATH.
 import { locateExecutable } from "../server/executables/locator.ts";
+import { processLifetime } from "../server/platform/process-lifetime.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
@@ -433,7 +434,8 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
     const logFd = openSync(args.logPath, "a", 0o600);
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(
+        // Its own process group, so the helper outlives this app quitting to install the update.
+        const child = processLifetime.spawn(
           args.node,
           [
             helper,
@@ -456,7 +458,6 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
               : []),
           ],
           {
-            detached: true,
             stdio: ["ignore", logFd, logFd],
             env: args.env ?? updateChildEnvironment(),
           },

@@ -6,7 +6,7 @@
 // the quit - is what puts a progress bar in front of the person instead of a closed window
 // and a two-minute silence. The swap still belongs to the helper, and still takes seconds.
 
-import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import {
   isUpdatePrepareStage,
@@ -14,6 +14,7 @@ import {
   type UpdatePrepareStage,
 } from "../shared/update-stages.mjs";
 import { executableChildEnv } from "../server/executables/locator.ts";
+import { processLifetime } from "../server/platform/process-lifetime.ts";
 import { sanitizeLogLine } from "./update-log.ts";
 
 /**
@@ -238,7 +239,7 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
     // an argument-parsing complaint survives redaction untouched, so nothing this reads is
     // lost by holding the safe form.
     const tail: string[] = [];
-    let child: ReturnType<typeof spawn> | null = null;
+    let child: ChildProcess | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let exitTimer: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
@@ -267,17 +268,7 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
      * attempt is about to check out - the collision the detached helper documents at length.
      */
     const killGroup = (): void => {
-      const pid = child?.pid;
-      if (!pid) return;
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        try {
-          child?.kill("SIGKILL");
-        } catch {
-          // The child is already gone, which is the state this wanted.
-        }
-      }
+      if (child?.pid) processLifetime.killTree(child);
     };
 
     /**
@@ -388,14 +379,13 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
     };
 
     try {
-      child = spawn(request.node, stageInstallArgs(script, request.targetTag), {
+      // Its own process group, so cancelling can take the npm and electron-builder children
+      // with it - killing this script alone would leave them holding the clone. The cost of
+      // a group of its own is that the group survives an abnormal end of this app, so the
+      // controller aborts on quit; a build orphaned by a crash writes only inside the clone
+      // and installs nothing.
+      child = processLifetime.spawn(request.node, stageInstallArgs(script, request.targetTag), {
         cwd: request.sourceClone,
-        // Its own process group, so cancelling can take the npm and electron-builder children
-        // with it - killing this script alone would leave them holding the clone. The cost of
-        // a group of its own is that the group survives an abnormal end of this app, so the
-        // controller aborts on quit; a build orphaned by a crash writes only inside the clone
-        // and installs nothing.
-        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
         env: request.env ?? updateChildEnvironment(),
       });
