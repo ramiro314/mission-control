@@ -1,6 +1,6 @@
 # Windows support on a parallel `release/windows` branch
 
-Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
+Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
 
 ## Goal
 
@@ -71,7 +71,7 @@ brackets.
 | D3 | Architecture | **x64 only.** [R1] |
 | D4 | Branch name | **`release/windows`.** Windows feature PRs target it. [R1] |
 | D5 | Keeping up with `main` | A **weekly recurring mission merges `main` into `release/windows`**: merge, never rebase, no force-push. [R1] |
-| D6 | Platform-neutral refactors | **Land on `main` directly** (macOS behavior unchanged). Only Windows-specific behavior goes on `release/windows`. [R1] |
+| D6 | Platform-neutral refactors | **Land on `main` directly** (macOS behavior unchanged). Only Windows-specific behavior goes on `release/windows`. [R1] D38 makes one narrow exception for seams discovered during M2. |
 | D7 | Manual validation | The human has a Windows machine or VM and runs the manual gates. [R1] |
 | D8 | Merge gate criteria | Full unit suite green on a `windows-latest` CI job; Playwright e2e green on Windows CI; a manual smoke on real Windows (dispatch a task, run a session, see it on the board, complete it); macOS CI and the macOS package job still green with no macOS behavior change. [R1] D37 defines what "green" means for tests that cannot apply on win32. |
 | D9 | Session runtimes | **SDK runtime first**; a WezTerm terminal backend is a later milestone. [R2] |
@@ -101,7 +101,8 @@ brackets.
 | D33 | Native addon toolchain | **Prerequisite: Visual Studio Build Tools (the C++ workload) and Python 3**, checked in Setup. This extends D11. The NSIS installer later ships built addons, so end users never need the toolchain. [Repair 1] |
 | D34 | How M2 tickets get their base branch | **Two stages.** The ticket follow-up files only the M0 and M1 tickets. The M0.3 ticket ends by filing the M2 tickets with `base_branch = release/windows`, once both the field and the branch exist. [Repair 1] |
 | D35 | How the sync mission's tasks target the branch | **`base_branch` is part of the recurring-mission task template** (a D21 surface, built in M0.1). The sync mission sets it to `release/windows`. [Repair 1] |
-| D36 | How M1 seams reach `release/windows` | **Create `release/windows` only after M0.1, M0.2 and all of M1 have merged into `main`**, so the branch starts with every seam and no M2 ticket waits on a sync for M1. A seam found later, during M2, lands on `main` through its own ticket. That ticket ends by triggering Run now on the sync mission and adding the waiting M2 ticket's dependency on the sync task this files (`create_task` with `adoptTaskId` and `dependsOnTaskIds`). [Repair 2] |
+| D36 | How M1 seams reach `release/windows` | **Create `release/windows` only after M0.1, M0.2 and all of M1 have merged into `main`**, so the branch starts with every seam and no M2 ticket waits on a sync for M1. A seam found later, during M2, follows D38. [Repair 2; the late-seam hand-off was replaced by D38 in repair 3] |
+| D38 | Seams discovered during M2 | **The M2 ticket builds the seam itself on `release/windows`**, kept platform-neutral with macOS behavior unchanged, and it reaches `main` with the final merge. This is a narrow exception to D6 for seams discovered after M1. The ticket notes each such seam in its PR, and M2.12 lists them all in the merge PR so they are reviewed as neutral changes. No cross-branch hand-off, sync trigger or dependency edge is involved. [Repair 3] |
 | D37 | What "green" means for the Windows gate | **One explicit win32 skip guard with a stated reason**, used only for tests of surfaces unavailable on win32 (Codex, Pi, the terminal runtime and its backends, terminal discovery, the macOS updater and install migration) and for tests that pin POSIX-only implementations. The skip list is enumerated in the merge PR and reviewed there. Every other test must pass. The same rule applies to the e2e specs. This narrows D8's "full unit suite" to every test that applies to win32. [Repair 2] |
 
 ## Branch model
@@ -119,9 +120,10 @@ flowchart LR
   merged (D36), so it starts with the base-branch feature, `.gitattributes` and every seam.
 - **Neutral work goes to `main`** (D6). That means seams that leave macOS byte-for-byte
   identical, the base-branch feature, and `.gitattributes`. Neutral work from before M0.3 is in
-  the branch from the start. Later `main` changes reach it through the weekly merge. A seam an
-  M2 ticket turns out to need lands on `main` by its own ticket, which ends by triggering Run now
-  on the sync mission and making the waiting M2 ticket depend on the resulting sync task (D36).
+  the branch from the start. Later `main` changes reach it through the weekly merge.
+- **Exception (D38):** a seam that an M2 ticket turns out to need is built inside that M2 ticket
+  on `release/windows`, kept platform-neutral with macOS unchanged, and reaches `main` with the
+  final merge. No M2 ticket ever waits on a sync.
 - **Windows-specific work goes to `release/windows`** (D4): win32 implementations behind those
   seams, Windows CI, the Makefile port, Setup checks, and Windows docs.
 - Every PR into `release/windows` gets the existing Linux CI through `pull_request`, plus the
@@ -287,15 +289,16 @@ POSIX implementation issues the same commands it did before.
     toolchain, `script-shell`, Developer Mode, long paths), the Windows rows in `docs/harnesses-and-terminals.md`, and the fork-ledger
     entry.
 12. **Gate readiness**: blocked on M2.1 to M2.11. It confirms the Windows jobs are required and
-    green under D37, and writes the skip list (every use of the win32 skip guard, with its
-    reason) into the draft merge PR description. It **ends by filing the M3 tickets** (D34).
+    green under D37, and writes two lists into the draft merge PR description: the skip list
+    (every use of the win32 skip guard, with its reason) and the D38 list (every neutral seam
+    built on the branch during M2, with its PR). It **ends by filing the M3 tickets** (D34).
 
 ### M3: Validation and merge to `main`
 
 1. All four D8 gates pass:
    - The unit suite is green on Windows CI under D37.
    - Playwright e2e is green on Windows CI under D37.
-   - The human has reviewed the skip list in the merge PR.
+   - The human has reviewed the skip list and the D38 seam list in the merge PR.
    - The human's manual smoke on Windows 11 x64 passes: dispatch a Claude Code task, watch the SDK
      session on the board, message it, and complete it. The steps are written as a checklist in
      the merge PR.
@@ -356,8 +359,9 @@ Filed by M3.3 once the merge has landed:
   tuned in the Windows CI ticket.
 - **Claude Code on native Windows** depends on Git Bash. Whether the Agent SDK can spawn
   `claude` on win32 is settled first, by the M2.0 spike, with a stop-and-replan exit.
-- **Drift.** The weekly merge keeps conflicts small. M1 is in the branch from the start (D36).
-  A seam discovered during M2 uses the Run now plus dependency hand-off in D36.
+- **Drift.** The weekly merge keeps conflicts small. M1 is in the branch from the start (D36),
+  and seams discovered during M2 stay on the branch (D38). The cost is a larger final merge,
+  which the D38 list in the merge PR makes reviewable.
 
 ## Out of scope
 
