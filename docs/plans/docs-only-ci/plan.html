@@ -8,7 +8,9 @@
 shouldn&#39;t run a full CI build. Mission Control should also have a skill that adds the same
 functionality for other repos.&quot; Decisions recorded from three interview rounds. Approved as
 written by the operator the same day, with &quot;Create tickets after the plan merges&quot; chosen as the
-follow-up. Not implemented.</p>
+follow-up. Revised in Plan Validation repair round 1: Wait for CI requires a &quot;Flaky tests&quot; check,
+so the operator chose to keep <code>flake report</code> running on docs-only PRs (decision 20), and the
+verification gained committed table-driven tests of both step scripts. Not implemented.</p>
 <h2>Problem</h2>
 <p>Every pull request runs the whole of <code>.github/workflows/ci.yml</code>: two dependency caches, <code>gates</code>
 (typecheck and lint), six Node 24 and six Node 26 unit shards (each also builds and runs the
@@ -117,7 +119,7 @@ required check would sit in Pending forever. That is why the pattern below alway
 <tr>
 <td>4</td>
 <td>Mechanism for Mission Control</td>
-<td>The same pattern the skill installs: a <code>changes</code> detection job the heavy jobs depend on, plus one summary job that always runs and reports, so a required check never sits in Pending. Dogfooded here first</td>
+<td>The same pattern the skill installs: a <code>changes</code> detection job the heavy jobs depend on, plus one summary job that always runs and reports, so a required check never sits in Pending. Dogfooded here first. The answer listed <code>flake report</code> among the gated jobs; decision 20 supersedes that part</td>
 </tr>
 <tr>
 <td>5</td>
@@ -194,7 +196,40 @@ required check would sit in Pending forever. That is why the pattern below alway
 <td>Delivery</td>
 <td>One phase, one pull request</td>
 </tr>
+<tr>
+<td>20</td>
+<td>How a docs-only PR gets past Wait for CI (repair round 1)</td>
+<td><code>flake report</code> is <strong>not</strong> gated: it runs on docs-only PRs, reads zero reports and publishes &quot;Flaky tests: No flaky tests&quot;. Gates, unit and E2E still skip. Chosen over a &quot;Docs-only change&quot; marker check that Wait for CI would accept, and over documenting the block</td>
+</tr>
 </tbody></table></div>
+<h2>Wait for CI and the &quot;Flaky tests&quot; check (investigated in repair round 1)</h2>
+<p>Plan Validation asked how Mission Control&#39;s Wait for CI node treats a run with no &quot;Flaky tests&quot;
+check. Read on 2026-10-04:</p>
+<ul>
+<li><code>decideWaitForCi</code> (<code>src/shared/wait-for-ci.ts</code>) passes only when every check on the head
+commit has settled green <strong>and</strong> a check named &quot;Flaky tests&quot; exists. A green run without one
+waits <code>WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS</code> (five minutes) and then blocks with
+<code>ci_flake_report_missing</code>. There is no exception, so it holds for every repository.</li>
+<li>The node reads only check names, conclusions, titles and summaries from the Inspector&#39;s
+<code>statusCheckRollup</code> query. <code>SKIPPED</code> counts as passing (<code>src/shared/ci-checks.ts</code>), and
+<code>package (macOS arm64)</code> already reports <code>skipped</code> on every pull request, so &quot;a job was
+skipped&quot; is not a docs-only signal.</li>
+<li>A job&#39;s step summary never reaches its check run: on <code>main</code>&#39;s head, <code>flake report</code> writes
+<code>$GITHUB_STEP_SUMMARY</code> and its check run&#39;s <code>summary</code> is null. A docs-only marker would need a
+check created through the Checks API with <code>checks: write</code>.</li>
+<li>The flake-report action is safe with zero reports. <code>publish</code> in
+<code>src/flake-report-action/publish.ts</code> merges what it read, so zero reports give zero flakes.
+It then does exactly what a clean full run does: it opens and updates no flake issues, strips
+the actionable label from closed ones, and publishes &quot;Flaky tests&quot; with conclusion <code>success</code>
+and title &quot;No flaky tests&quot;. Where the token is read-only (<code>ctx.readOnlyReason</code>, for example a
+fork PR), it publishes no check, on any run, which is the same as today. The engine reads a
+missing report as zero flakes (<code>flakeReport?.flakes.length ?? 0</code> in
+<code>src/server/workflows/engine.ts</code>).</li>
+</ul>
+<p><strong>Resolution (decision 20):</strong> <code>flake report</code> stays ungated. Its existing <code>if: ${{ !cancelled() }}</code>
+already lets it run when the jobs it needs were skipped, so a docs-only run still publishes
+&quot;Flaky tests&quot;, and Wait for CI passes with no change to Mission Control&#39;s code. The skill does the
+same in target repositories.</p>
 <h2>Design</h2>
 <h3>The job graph</h3>
 <div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 530" role="img" aria-label="CI job graph before and after the docs-only gate">
@@ -219,14 +254,13 @@ required check would sit in Pending forever. That is why the pattern below alway
   <rect x="460" y="325" width="160" height="40" rx="8"/><text x="487" y="351">flake report</text>
   <rect class="new" x="700" y="330" width="160" height="44" rx="8"/><text x="735" y="358">CI result</text>
   <path d="M190 280 L250 270" marker-end="url(#a)"/><path d="M190 286 L250 318" marker-end="url(#a)"/><path d="M190 292 L250 366" marker-end="url(#a)"/>
-  <path d="M190 300 C210 460 430 460 520 365" marker-end="url(#a)"/>
   <path d="M190 412 L250 458" marker-end="url(#a)"/>
   <text x="20" y="444" class="small">also feeds gates, unit, e2e</text>
   <path d="M400 320 L460 340" marker-end="url(#a)"/><path d="M400 370 L460 352" marker-end="url(#a)"/>
   <path d="M620 345 L700 350" marker-end="url(#a)"/>
   <path d="M400 270 C600 270 650 320 700 340" marker-end="url(#a)"/>
   <path d="M400 460 C600 460 650 380 700 366" marker-end="url(#a)"/>
-  <text x="250" y="510" class="small">docs-only PR: gates, unit, e2e and flake report skip; changes, dependencies, docs checks and CI result run</text>
+  <text x="250" y="510" class="small">docs-only PR: gates, unit and e2e skip; flake report still publishes &quot;Flaky tests&quot; for Wait for CI</text>
   <text x="700" y="400" class="small">reads docs_only from changes;</text>
   <text x="700" y="418" class="small">a skip passes only when it is true</text>
 </svg></div>
@@ -257,11 +291,12 @@ suite, decision 10). If the job itself fails (runner trouble), its dependents sk
 </ul>
 <h3>Gated jobs</h3>
 <p><code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code> and <code>e2e</code> add <code>changes</code> to <code>needs</code> and
-<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. <code>flake-report</code> adds <code>changes</code> to <code>needs</code> and
-becomes <code>if: ${{ !cancelled() &amp;&amp; needs.changes.outputs.docs_only != &#39;true&#39; }}</code>, so a docs-only PR
-never runs the publish step against zero reports. Both <code>dependencies</code> jobs keep running: a warm
-cache hit takes seconds, <code>docs checks</code> needs Node 24&#39;s tree, and gating them adds wiring for no
-saving.</p>
+<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>.</p>
+<p><code>flake-report</code> is unchanged (decision 20). It keeps <code>needs: [unit-node-24, unit-node-26, e2e]</code>
+and <code>if: ${{ !cancelled() }}</code>, which runs it when those jobs were skipped. On a docs-only run it
+downloads no reports and publishes &quot;Flaky tests: No flaky tests&quot;, which is what Wait for CI
+requires. Both <code>dependencies</code> jobs keep running too: a warm cache hit takes seconds,
+<code>docs checks</code> needs Node 24&#39;s tree, and gating them adds wiring for no saving.</p>
 <h3><code>docs checks</code> job</h3>
 <p>Runs on every run (decision 15), needs <code>dependencies-node-24</code>, restores <code>node_modules</code> the same
 way <code>gates</code> does, then:</p>
@@ -279,7 +314,11 @@ minute and keeps <code>CI result</code>&#39;s logic free of a &quot;docs checks 
 <li><code>needs</code> every job above except <code>package</code>, <code>if: always()</code>, <code>ubuntu-latest</code>.</li>
 <li>One step whose <code>run:</code> body is the skill asset <code>skills/docs-only-ci/assets/ci-result.sh</code>,
 verbatim. Inputs through <code>env</code>: <code>NEEDS_JSON: ${{ toJSON(needs) }}</code>, <code>DOCS_ONLY</code> from
-<code>changes</code>, and <code>SKIPPABLE</code>, the newline-separated job ids allowed to skip on a docs-only run.</li>
+<code>changes</code>, and <code>SKIPPABLE</code>, the newline-separated job ids allowed to skip on a docs-only run
+(<code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code>, <code>e2e</code> here; <code>flake-report</code> is not among them).</li>
+<li><code>NEEDS_JSON</code> is parsed with <code>jq</code>, which GitHub-hosted Ubuntu runners and macOS 15 and later
+ship. Both scripts stay compatible with bash 3.2, macOS&#39;s <code>/bin/bash</code>, so the committed test
+below runs on a developer&#39;s machine as well as in CI.</li>
 <li>Rule: every need must be <code>success</code>, except that a job listed in <code>SKIPPABLE</code> may be <code>skipped</code>
 <strong>only when</strong> <code>DOCS_ONLY</code> is <code>true</code>. Any <code>failure</code>, <code>cancelled</code>, or other <code>skipped</code> fails the
 job, naming each offending job and its result.</li>
@@ -311,7 +350,9 @@ job.</li>
 <code>gh api repos/{owner}/{repo}/branches/{default}/protection/required_status_checks</code>. A
 403 or 404 is reported as &quot;could not read branch protection&quot;, never as &quot;no required
 checks&quot;.</li>
-<li>Note a testing-setup <code>flake-report</code> job, which gets the same gating as Mission Control&#39;s.</li>
+<li>Note a testing-setup <code>flake-report</code> job. It is never gated (decision 20), because Wait for
+CI needs its &quot;Flaky tests&quot; check on every run. If its <code>if:</code> does not already let it run when
+its test jobs were skipped (<code>!cancelled()</code> or <code>always()</code>), the form proposes adding that.</li>
 <li>If the gate is already installed and matches the assets, say so and stop: no form, no
 commit.</li>
 </ul>
@@ -345,7 +386,8 @@ job carries the <code>docs_only != &#39;true&#39;</code> condition. Editing one 
 names <code>changes</code>, <code>docs checks</code> and <code>CI result</code> and the docs-only skip.</li>
 <li><code>ci.yml</code> header comment: the gate, what skips, why <code>main</code> never skips, and why <code>CI result</code>
 exists.</li>
-<li><code>docs/flaky-tests.md</code>: a docs-only PR publishes no &quot;Flaky tests&quot; check.</li>
+<li><code>docs/flaky-tests.md</code>: on a docs-only PR, <code>flake report</code> still runs, reads zero reports and
+publishes &quot;Flaky tests: No flaky tests&quot;, which keeps Wait for CI passing.</li>
 <li><code>docs/skills-and-settings.md</code>: the new bundled skill.</li>
 <li><code>docs/upstream-sync.md</code>: <code>skills/docs-only-ci/</code> and the gate&#39;s <code>ci.yml</code> jobs are fork-only
 surfaces.</li>
@@ -358,18 +400,43 @@ surfaces.</li>
 passes, and fails when one byte of either asset or either <code>ci.yml</code> step body changes.</li>
 <li>Running the docs checks job&#39;s commands locally passes: <code>npm run docs:links</code>, then the
 discovered test files with the suite loader.</li>
-<li><code>bash -n</code> on both assets, and a local table-driven run of <code>detect-docs-only.sh</code> with stubbed
-<code>git</code> covering: non-PR event, diff failure, zero files, all docs, one non-docs path, and a
-<code>*.md</code> pattern against a nested path.</li>
+<li>A committed <code>test/docs-only-ci-scripts.test.ts</code> (AGENTS.md working rule 3) runs both assets
+with <code>bash -eo pipefail</code>, which is how GitHub Actions runs a <code>run:</code> step, and passes inputs only
+through <code>env</code>. Each case asserts the exit code and the output line:<ul>
+<li><code>detect-docs-only.sh</code>, with a stub <code>git</code> first on <code>PATH</code>, must print <code>docs_only=false</code> and
+exit 0 for a non-PR event, a failing diff, zero changed files, and one non-docs path among
+docs paths. It must print <code>docs_only=true</code> for all docs paths, and for a nested <code>.md</code> path
+matched by a <code>*.md</code> pattern.</li>
+<li><code>ci-result.sh</code> must <strong>pass</strong> when every need succeeded, and when only <code>SKIPPABLE</code> jobs were
+skipped with <code>DOCS_ONLY=true</code>.</li>
+<li>It must <strong>fail</strong>, naming the offending job, when:<ul>
+<li>a <code>SKIPPABLE</code> job was skipped and <code>DOCS_ONLY</code> is <code>false</code>;</li>
+<li><code>DOCS_ONLY</code> is empty because <code>changes</code> failed;</li>
+<li>any need is <code>failure</code> or <code>cancelled</code>;</li>
+<li>a job outside <code>SKIPPABLE</code> (for example <code>docs-checks</code> or <code>flake-report</code>) was skipped on a
+docs-only run;</li>
+<li><code>changes</code> itself did not succeed.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>A Wait for CI case in the same file feeds <code>decideWaitForCi</code> the check list a docs-only run
+produces: <code>changes</code>, <code>docs checks</code>, <code>CI result</code>, <code>flake report</code> and &quot;Flaky tests&quot; passing, and
+gates, unit, E2E and package <code>skipped</code>. It asserts the decision is <code>pass</code>, not a wait that ends
+in <code>ci_flake_report_missing</code>.</li>
 <li><code>npm run typecheck</code> and <code>npm run lint</code> pass.</li>
 <li><strong>On GitHub, before merge:</strong><ul>
 <li>The implementation PR&#39;s own run shows <code>changes</code> reporting <code>docs_only=false</code>, every heavy job
 running, and <code>CI result</code> green.</li>
 <li>A throwaway PR, based on the feature branch, that touches only one file under <code>docs/</code>, shows
-<code>changes</code> reporting <code>docs_only=true</code>; <code>gates</code>, unit, E2E and <code>flake report</code> skipped;
-<code>docs checks</code> and <code>CI result</code> green. Its run is captured with <code>gh pr checks</code> and registered as
-evidence, then the PR is closed unmerged. A <code>pull_request</code> run uses the merge ref&#39;s
-<code>ci.yml</code>, so the new workflow runs on that stacked PR.</li>
+<code>changes</code> reporting <code>docs_only=true</code>; <code>gates</code>, unit and E2E skipped;
+<code>flake report</code> and <code>docs checks</code> ran, and &quot;Flaky tests&quot; and <code>CI result</code> are green. Its run is
+captured with <code>gh pr checks</code> and registered as evidence, then the PR is closed unmerged. A
+<code>pull_request</code> run uses the merge ref&#39;s <code>ci.yml</code>, so the new workflow runs on that stacked PR.</li>
+<li>That PR&#39;s head-commit check runs, read with
+<code>gh api repos/{owner}/{repo}/commits/{sha}/check-runs</code> and mapped through
+<code>classifyCheckEntry</code>, are passed to <code>decideWaitForCi</code>, and the decision is <code>pass</code>. This proves
+a docs-only PR passes Wait for CI on the real check list, not only on the fixture.</li>
 <li>Optionally, a second throwaway commit on that PR that breaks one doc-drift guard (for
 example, removing a table row from <code>docs/sqlite-database.html</code>) shows <code>docs checks</code> and
 <code>CI result</code> failing.</li>
