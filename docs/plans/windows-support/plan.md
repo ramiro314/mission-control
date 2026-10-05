@@ -1,6 +1,6 @@
 # Windows support on a parallel `release/windows` branch
 
-Status: approved 2026-10-04 after a five-round interview and plan review. Follow-up: Mission Control slices this plan into tickets after its pull request merges. Not implemented.
+Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
 
 ## Goal
 
@@ -19,7 +19,9 @@ installer) continue on `main`.
 - **CI.** Every job runs on `ubuntu-latest` except the release-only `package` job, which is
   pinned to `macos-14` and runs only on `v*` tags or `workflow_dispatch`. `ci.yml` runs on
   `push: branches: [main]` and on every `pull_request`, so pushes to another branch do not run
-  CI. `release.yml` (Release Please) runs only on pushes to `main`.
+  CI. `release.yml` (Release Please) is **disabled in the fork** (`gh workflow list` reports
+  `disabled_manually`; see "The fork's Release workflow is disabled" in
+  [the upstream-sync runbook](../../upstream-sync.md)), and fork PRs land as merge commits.
 - **Terminal backends** (`src/server/terminal/`): tmux, Herdr, cmux, WezTerm, iTerm, Ghostty
   and AppleScript. Only WezTerm runs natively on Windows. SDK-runtime sessions need no terminal.
 - **Native addons** (`native/`):
@@ -27,6 +29,9 @@ installer) continue on `main`.
     state ownership through `dist/native/state-lock.node` before it serves anything.
   - `keep-awake/keep_awake.mm` is Objective-C++ (IOKit). `src/server/keep-awake.ts` ships a
     provider only for `darwin`.
+  - Both build with `node-gyp` (`scripts/build-state-lock-native.mjs`,
+    `scripts/build-native.mjs`), which on Windows needs Visual Studio Build Tools with the C++
+    workload and Python 3. GitHub's `windows-latest` image has both preinstalled.
 - **POSIX process and shell coupling** in `src/`:
   - `ps`/`lsof`/`pgrep` in `server/discovery/processes.ts`, `server/discovery/proc-cwd.ts`,
     `server/discovery/codex-rollouts.ts`, `server/workflows/check-identity.ts`,
@@ -45,6 +50,8 @@ installer) continue on `main`.
 - **npm scripts use bash syntax:** `test` (`${MISSION_TEST_CONCURRENCY:-6}`), `test:run`
   (`${MISSION_TEST_JUNIT:+...}`) and `dev:electron` (`MISSION_DEV_SERVER_URL=... electronmon .`).
   npm on Windows runs scripts through `cmd.exe` by default.
+- **Recurring missions file tasks from a stored task template** (`src/server/schedules/`,
+  `template` in `manager.ts`), so a base branch can be part of that template.
 - **Dispatch always bases on the default branch.** Task worktrees start from origin's default
   branch (`defaultBranchOf` in `src/server/actions.ts`). No task has a base branch of its own,
   so today Mission Control cannot dispatch a ticket that builds on `release/windows`.
@@ -74,7 +81,7 @@ brackets.
 | D13 | Keep Awake | **Port it**: a Windows build of the addon using `SetThreadExecutionState`. [R2] |
 | D14 | How tickets target the branch | **The first ticket (on `main`) adds a per-task base branch** to Mission Control. Windows tickets set it to `release/windows`. [R2] |
 | D15 | Where Windows CI runs | **Only on pushes to `release/windows` and PRs that target it.** The final merge brings it to `main`. [R2] |
-| D16 | Final merge | **One PR merged with a merge commit** titled `feat: Windows support`. [R2] |
+| D16 | Final merge | **One PR merged with a merge commit** titled `feat: Windows support`. [R2] The title keeps history readable and passes the pull-request-title check. It does not cut a release: the fork's Release workflow is disabled. (Corrected in repair round 1; the draft wrongly said Release Please would record a `feat` entry.) |
 | D17 | Desktop packaging (later) | **Unsigned per-user NSIS installer, no auto-update** (manual reinstall). The macOS updater and install migration are out of scope on Windows. [R2] |
 | D18 | Upstream | **Fork-only**, tracked in the fork ledger. [R2] |
 | D19 | Milestones gating the merge | **Only the SDK daemon/dev mode milestone.** WezTerm and the NSIS installer continue on `main` after the merge. [R3] |
@@ -91,6 +98,9 @@ brackets.
 | D30 | npm scripts on Windows | **Prerequisite: `npm config set script-shell` pointing at Git Bash.** Windows CI sets the same. No script rewrites. [R5] |
 | D31 | Makefile | **Make the Makefile work under Git Bash plus a separately installed `make`.** This is Windows-specific, so it goes on `release/windows`. [R5] |
 | D32 | Windows CI Node versions | **Node 24 only.** Node 26 stays covered on Linux. [R5] |
+| D33 | Native addon toolchain | **Prerequisite: Visual Studio Build Tools (the C++ workload) and Python 3**, checked in Setup. This extends D11. The NSIS installer later ships built addons, so end users never need the toolchain. [Repair 1] |
+| D34 | How M2 tickets get their base branch | **Two stages.** The ticket follow-up files only the M0 and M1 tickets. The M0.3 ticket ends by filing the M2 tickets with `base_branch = release/windows`, once both the field and the branch exist. [Repair 1] |
+| D35 | How the sync mission's tasks target the branch | **`base_branch` is part of the recurring-mission task template** (a D21 surface, built in M0.1). The sync mission sets it to `release/windows`. [Repair 1] |
 
 ## Branch model
 
@@ -113,8 +123,8 @@ flowchart LR
   seams, Windows CI, the Makefile port, Setup checks, and Windows docs.
 - Every PR into `release/windows` gets the existing Linux CI through `pull_request`, plus the
   Windows jobs from the branch's own `ci.yml` (D15).
-- Release Please runs only on `main`, so nothing on `release/windows` cuts a release. The final
-  merge commit's conventional title gives Release Please one `feat` entry (D16).
+- Nothing on either branch cuts a release, because the fork's Release workflow is disabled
+  (D16).
 
 ### Weekly sync (D5, D26, D27, D28)
 
@@ -125,13 +135,16 @@ The runbook `docs/windows-branch-sync.md` follows the shape of the
 2. Merge `origin/main` into it. Exit with no branch and no PR when `main` has nothing new.
 3. On conflict, take `main` for shared code and re-apply the Windows change on top. Stop and ask
    the human before any Windows change would be dropped.
-4. Run the focused tests for the conflicted areas. Open a PR into `release/windows`
-   (base branch `release/windows`). Hand off to CI.
+4. Run the focused tests for the conflicted areas. Open a PR into `release/windows`. The task
+   already carries `base_branch = release/windows` from the mission template (D35), so the
+   worktree, the PR base, the checks and the merge watcher all follow the branch. Hand off to
+   CI.
 
 The recurring mission **Sync main into release/windows** is created through the daemon API with
-these settings: cron `0 9 * * 2` (America/Los_Angeles); missed runs coalesce to the latest;
-overlap skips if a sync is still active; agent inherits; completion completes the task
-automatically, the same as the upstream sync.
+these settings: task template `base_branch = release/windows` (D35); cron `0 9 * * 2`
+(America/Los_Angeles); missed runs coalesce to the latest; overlap skips if a sync is still
+active; agent inherits; completion completes the task automatically, the same as the upstream
+sync.
 
 ## Per-task base branch (on `main`, the first ticket)
 
@@ -149,32 +162,51 @@ flowchart LR
 
 - **Storage:** a nullable `base_branch` column on `tasks`, added in `migrate()` next to its
   upgrade path. Null means today's behavior: origin's default branch.
-- **Surfaces (D21):** the create and update task API (validated by the existing Zod schemas),
-  MCP `create_task` and `push_task`, and a "Base branch" field in the task create/edit form.
-  The card shows the base when it is not the default branch.
+- **Surfaces (D21, D35):** the create and update task API (validated by the existing Zod
+  schemas), MCP `create_task` and `push_task`, a "Base branch" field in the task create/edit
+  form, and the **recurring-mission task template** (its API and the mission editor), so every
+  task a mission files inherits the base. The card shows the base when it is not the default
+  branch.
 - **Followers:** the worktree start point at dispatch and at reset, the PR base used by the
   shipping and publication paths, the affected-tests and check diff base, PR merge-conflict
   reactions, and the merge watcher. A PR merged into a non-default base counts as done and
   unblocks dependents.
 - **Validation:** the branch must exist on `origin` when the task is created and when it is
-  dispatched. Otherwise the task is refused with a clear error.
-- **Tests:** unit and route tests for each follower, plus a Playwright spec for the form field
-  and the card label, per AGENTS.md.
+  dispatched, and when a mission template is saved. Otherwise the request is refused with a
+  clear error. D34 makes this safe for the Windows tickets: none is filed before
+  `release/windows` exists.
+- **Tests:** unit and route tests for each follower and for a mission-filed task inheriting
+  the template's base, plus a Playwright spec for the form field, the mission editor field, and
+  the card label, per AGENTS.md.
 
 ## Milestones
 
-Milestone order is strict where noted. The ticket follow-up slices each milestone into
-tickets and records the blocking edges.
+Milestone order is strict where noted.
+
+### Ticket slicing (D34)
+
+Tickets are filed in two stages, so every ticket is valid on the day it is created:
+
+1. **When this plan's PR merges**, the Mission Control ticket follow-up slices **only M0 and
+   M1** into tickets on `main`, with their blocking edges. It files no M2 ticket, because
+   neither `tasks.base_branch` nor `release/windows` exists yet.
+2. **The M0.3 ticket ends by filing the M2 tickets**, each with
+   `base_branch = release/windows`, sliced from M2 below with their blocking edges. M3 and the
+   after-the-merge work are filed by the last M2 ticket, by the same rule.
 
 ### M0: Groundwork (on `main`, then branch creation)
 
-1. **Per-task base branch** (above). Blocks every ticket that targets `release/windows`.
+1. **Per-task base branch** (above), including the recurring-mission template surface (D35).
+   Blocks M0.3, M0.4 and every ticket that targets `release/windows`.
 2. **`.gitattributes`** with `* text=auto eol=lf` (D25), plus the renormalization commit it
    needs, with a check that byte-exact tests still pass.
 3. **Create `release/windows`** from `main` once item 1 has merged, and add the fork-ledger
-   entry "Windows support (in progress on `release/windows`)".
-4. **Sync runbook and mission** (D28): write `docs/windows-branch-sync.md`, create the recurring
-   mission through the daemon API, and add the runbook to `docs/README.md`.
+   entry "Windows support (in progress on `release/windows`)". This ticket **ends by filing the
+   M2 tickets** with `base_branch = release/windows` (D34).
+4. **Sync runbook and mission** (D28, D35). This waits for item 3, because the template's base
+   branch must exist on origin. Write `docs/windows-branch-sync.md`, create the recurring
+   mission through the daemon API with template `base_branch = release/windows`, and add the
+   runbook to `docs/README.md`.
 
 ### M1: Platform-neutral seams (on `main`, macOS behavior unchanged)
 
@@ -196,14 +228,22 @@ POSIX implementation issues the same commands it did before.
 
 ### M2: Windows implementation (on `release/windows`), the merge-gating milestone
 
+0. **SDK spike, first.** On the human's Windows 11 machine, with the D11, D30 and D33
+   prerequisites, start a throwaway Agent SDK session that spawns `claude` from a small Node
+   script (outside Mission Control), send it one message, and record the result in the ticket.
+   If it fails, stop and re-plan with the human before any other M2 ticket starts, because D9
+   (SDK first) rests on it. Every other M2 ticket is blocked on this one.
 1. **Windows CI** (D15, D30, D32): add `release/windows` to `ci.yml`'s `push` branches, and add
    `windows-latest` jobs on Node 24 for typecheck, the sharded unit suite, build plus smoke, and
    Playwright e2e. These jobs set npm's `script-shell` to Git Bash. They start allowed to fail
-   and become required on this branch once M2 is green.
+   and become required on this branch once M2 is green. They also run two native probes on
+   win32: the state-lock tests (`test/native-state-lock-provisioning.test.ts` and
+   `test/daemon-state-ownership.test.ts`) and `npm run verify:keep-awake-native`.
 2. **State lock on win32**: a `LockFileEx` implementation in `native/state-lock`, with the
    same handle contract and the same tests.
-3. **Keep Awake on win32** (D13): `SetThreadExecutionState` in `native/keep-awake`, and a win32
-   provider in `src/server/keep-awake.ts`.
+3. **Keep Awake on win32** (D13): `SetThreadExecutionState` in `native/keep-awake`, a win32
+   provider in `src/server/keep-awake.ts`, and `scripts/probe-keep-awake-native.mjs` extended
+   to accept win32 (today it throws on anything but darwin), so the M2.1 probe can run.
 4. **win32 seam implementations**: process inspection through PowerShell/CIM, tree kill
    through `taskkill /T /F`, the executable ladder (`%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`,
    `%USERPROFILE%\.local\bin`, mise/Volta Windows locations, `Program Files\Git\bin`), and PATH
@@ -215,8 +255,9 @@ POSIX implementation issues the same commands it did before.
    acquiring a worktree.
 7. **Runtime availability** (D9): on win32 the terminal runtime is unavailable for now, and
    terminal discovery does not start. SDK sessions dispatch, restore, and complete.
-8. **Setup checks** (D11, D23, D24, D30): Git for Windows present, Developer Mode on, the
-   `LongPathsEnabled` registry value, and npm's `script-shell` pointing at bash. Each check shows
+8. **Setup checks** (D11, D23, D24, D30, D33): Git for Windows present, Developer Mode on, the
+   `LongPathsEnabled` registry value, npm's `script-shell` pointing at bash, and Visual Studio
+   Build Tools (C++ workload) plus Python 3. Each check shows
    its fix in Settings > Setup, with an e2e spec. Managed worktrees get git `core.longpaths=true`.
 9. **Electron dev shell on win32**: `npm run dev:desktop` starts the daemon, Foreman and
    window. The tray uses a Windows icon instead of the macOS template image, and the menu is
@@ -224,8 +265,8 @@ POSIX implementation issues the same commands it did before.
 10. **Makefile under Git Bash** (D31): the developer targets (`make start` and the build
     targets) work with Git Bash plus a separately installed `make`. Targets that only make sense
     on macOS (`make app`, `make install`) say so and exit.
-11. **Docs**: a Windows section in `docs/setup.md` (prerequisites, `script-shell`, Developer
-    Mode, long paths), the Windows rows in `docs/harnesses-and-terminals.md`, and the fork-ledger
+11. **Docs**: a Windows section in `docs/setup.md` (prerequisites including the D33
+    toolchain, `script-shell`, Developer Mode, long paths), the Windows rows in `docs/harnesses-and-terminals.md`, and the fork-ledger
     entry.
 
 ### M3: Validation and merge to `main`
@@ -254,21 +295,29 @@ POSIX implementation issues the same commands it did before.
 
 ## Acceptance criteria (for the merge to `main`)
 
-- A1. On Windows 11 x64 with the D11 and D30 prerequisites, `npm install`, `npm run build`,
+- A1. On Windows 11 x64 with the D11, D30 and D33 prerequisites, `npm install`, `npm run build`,
   `npm run dev` and `npm run dev:desktop` work from a checkout.
 - A2. A Claude Code task dispatched on Windows runs as an SDK session, appears on the board,
   accepts a message, and completes.
 - A3. Codex, Pi, and the terminal runtime are refused on win32 with a stated reason, never a
   crash.
-- A4. Settings > Setup reports Git for Windows, Developer Mode, `LongPathsEnabled`, and npm's
-  `script-shell`, each with its fix.
-- A5. The state lock and Keep Awake work on win32.
+- A4. Settings > Setup reports Git for Windows, Developer Mode, `LongPathsEnabled`, npm's
+  `script-shell`, and the D33 toolchain, each with its fix.
+- A5. The state lock and Keep Awake work on win32. Proved by the M2.1 native probes on
+  `windows-latest` (the state-lock tests and `npm run verify:keep-awake-native`) and by the
+  manual smoke.
 - A6. The unit suite and Playwright e2e are green on `windows-latest` (Node 24).
 - A7. macOS behavior is unchanged. Linux CI and a manual macOS `package` run are green.
 - A8. A Windows ticket dispatched with base branch `release/windows` gets a worktree from
   `release/windows`, opens its PR against it, and unblocks its dependents when it merges.
-- A9. The weekly sync mission exists, and a run produces a merge PR into `release/windows` or
-  exits cleanly.
+- A9. The weekly sync mission exists, and its template carries `base_branch = release/windows`.
+  A run (scheduled or Run now) files a task whose worktree starts from `origin/release/windows`
+  and that produces a merge PR into `release/windows`, or exits cleanly when `main` has nothing
+  new.
+- A10. The Makefile's developer targets (`make start` and the build targets) work on Windows
+  under Git Bash plus a separately installed `make`. The macOS-only targets exit with a clear
+  message. This is checked in the manual smoke (D31).
+- A11. The M2.0 SDK spike result is recorded, and it passed before any other M2 ticket started.
 
 ## Risks and open questions for implementation
 
@@ -278,8 +327,8 @@ POSIX implementation issues the same commands it did before.
   incrementally.
 - **Windows runner time.** `windows-latest` runs are slower than Linux. The shard count is
   tuned in the Windows CI ticket.
-- **Claude Code on native Windows** depends on Git Bash. The Agent SDK spawning `claude` on
-  win32 is assumed to work and is verified early, in the first M2 smoke.
+- **Claude Code on native Windows** depends on Git Bash. Whether the Agent SDK can spawn
+  `claude` on win32 is settled first, by the M2.0 spike, with a stop-and-replan exit.
 - **Drift.** The weekly merge keeps conflicts small, but M1 seams landing on `main` while M2
   builds on them needs the on-demand sync run described in the branch model.
 
