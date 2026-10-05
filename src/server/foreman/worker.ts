@@ -2330,7 +2330,11 @@ export async function processPromptedWrapup(
       return false;
     }
     if (claim.kind === "claimed") {
-      log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
+      // Latched is still claimed: falling through to the Ship it? card or Straight to PR
+      // would publish a second time what the completed run already shipped.
+      log(claim.result.state === "latched"
+        ? `${session.name}: workflow latched: run ${claim.result.runId} already completed for this instruction`
+        : `${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
     }
     if (planPublication?.owner === "workflow" && claim.result.reason === "no_binding") {

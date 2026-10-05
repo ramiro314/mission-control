@@ -580,6 +580,47 @@ test("Foreman's prompted plan handoff supplies the PR deferral and claims its wo
   assert.equal(writes.length, 1, "no direct PR injection or duplicate claim");
 });
 
+test("after its run completes, the PR action's own turn is latched with no wrap-up, and a human prompt starts one more run", async (t) => {
+  const { d, tick, writes, prompts, client } = planWrapupFixture(t, "latch-after-complete");
+  const injections: string[] = [];
+  t.mock.method(client, "inject", async (_id: string, payload: string) => { injections.push(payload); });
+  const runs = () => openDb().prepare("SELECT id, status FROM workflow_runs WHERE binding_id = ?")
+    .all(d.bindingId) as Array<{ id: string; status: string }>;
+  const completion = `/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`;
+
+  assert.equal(await tick(), true);
+  assert.equal(runs().length, 1, "the first completion starts the bound run");
+  // The run finishes its review and its Pull Request action.
+  openDb().prepare("UPDATE workflow_runs SET status = 'completed', current_phase = 'completed', completed_at = ? WHERE binding_id = ?")
+    .run(Date.now(), d.bindingId);
+
+  // The Pull Request action's own turn settles under the unchanged intent episode: a daemon
+  // turn, so no human prompt moved the Goal.
+  workAndPark(d.registry, d.noteKey, Date.now() - 20_000);
+  assert.equal(await tick(), true, "a latched claim is still claimed, so nothing falls through");
+  assert.equal(prompts.length, 2);
+  assert.deepEqual(writes, [completion, completion], "no prompted consume and no wrap-up write");
+  assert.deepEqual(injections, [], "no Straight to PR instruction after the PR turn");
+  assert.equal(runs().length, 1, "no second run on the same binding");
+  assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "workflow_latched");
+
+  // A human types a new instruction. The reconciler accepts it as revision two.
+  const steer = "Also cover the retry path in the plan.";
+  d.registry.captureAcceptedPrompt(d.sessionId, steer, d.noteKey, Date.now() - 15_000);
+  d.registry.upsertGoal(d.sessionId, {
+    relationship: "steer",
+    focus: steer,
+    promptRevision: 2,
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  }, Date.now() - 15_000);
+  workAndPark(d.registry, d.noteKey, Date.now() - 10_000);
+  assert.equal(await tick(), true);
+  assert.equal(runs().length, 2, "the new instruction re-arms the binding for exactly one run");
+  assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "workflow_claimed");
+  assert.deepEqual(injections, []);
+});
+
 for (const change of ["binding", "version", "trigger", "state"] as const) {
   test(`a Manual plan does not consume its ask after a ${change} change at the SQL write`, async (t) => {
     const { d, tick, writes } = planWrapupFixture(t, `manual-consume-${change}`);

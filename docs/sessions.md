@@ -36,6 +36,17 @@ one call per checkout. Those do not crowd the chip, which keeps naming the sessi
 checkout; they appear as the session detail's per-repository lines, and it is those the completion
 quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
 
+When GitHub reports that pull request, or any of a multi-repo task's, as conflicting with its
+base, the chip carries a conflict mark whose accessible name is "Conflicts with `<base>`": a
+separate alert beside the chip in the session header, folded into the label as `⇄` on the Board
+card and the rail. When the conflicting pull request is another repository's, the name says
+which one ("Conflicts with develop (second-repo #20)") and the header alert links to it. The
+poller reads `mergeable` and `baseRefName` with every lookup, and
+GitHub's `UNKNOWN` (common right after a push) counts as no answer. The mark reads through
+`currentMergeability` (`src/shared/pr-mergeable.ts`), so it shows only when the conflict was
+observed on the pull request's current head, and it clears when GitHub reports the pull request
+mergeable, merged or closed.
+
 ### The title bar stays compact at half-screen
 
 The **fleet pulse** is one readout, not a row of pills: the connection state leads it

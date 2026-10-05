@@ -83,8 +83,8 @@ and the retro **fails closed while it is switched off** - `POST /api/sessions/:i
 409 with the sentence that names this toggle, whether it would have typed the instruction into a
 live session, filed a retro task for a dead one, or launched a separate follow-up after the work
 pull request merged. Neither happens, because this skill carries the human-approval step rather
-than merely describing it. A post-merge follow-up also requires the **Pull Request** skill so
-approved changes can open their own review. Switch both on for that path. The procedure lives in
+than merely describing it. A post-merge follow-up also requires the **Pull Request** skill, which
+runs when Foreman's wrap-up publishes the approved commit as its own review. Switch both on for that path. The procedure lives in
 [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
 
 The **Deflake** row fixes a flaky test at its cause. It fires on a task swept from a
@@ -92,8 +92,9 @@ The **Deflake** row fixes a flaky test at its cause. It fires on a task swept fr
 the issue and its occurrence comments through the v1 markers the CI action writes, reproduces the
 flake under load (repeated runs, raised concurrency, a CPU-heavy process alongside) before
 changing anything, fixes the timing or ordering dependency, loosens a timeout only when the limit
-itself is wrong, proves the fix with a before and after repeated run at the same load, and opens
-the fix pull request with `Fixes #<n>`. The [flaky tests guide](flaky-tests.md#fixing-flakes-from-the-backlog)
+itself is wrong, proves the fix with a before and after repeated run at the same load, and commits
+it with `Fixes #<n>` in the commit message and completion report. The bound workflow's Pull
+Request action, or Foreman's wrap-up when none is bound, opens the fix pull request. The [flaky tests guide](flaky-tests.md#fixing-flakes-from-the-backlog)
 has the task source recipe that feeds it. The procedure lives in
 [`skills/deflake/SKILL.md`](../skills/deflake/SKILL.md).
 
@@ -101,11 +102,12 @@ The **Testing setup** row brings a repository into the flake-aware testing contr
 the **Set up testing** action on a Trust row starts, and that action **fails closed while it is
 switched off** - `POST /api/repositories/testing-setup` answers 409 with the sentence that names
 this toggle and creates no task. The agent audits the repository, proposes every change in one
-`request_plan_decisions` form, applies only what was approved (a pull request with the CI and
+`request_plan_decisions` form, applies only what was approved (one commit with the CI and
 test-script changes, the copied report action, `.mission/testing.json` and the `.gitignore`
 entry, plus the repository's `affected-tests` Command through `set_affected_tests_command`), and
-verifies with one local `affected-tests` run and the "Flaky tests" check on the pull request's own
-CI. The [flaky tests guide](flaky-tests.md#setting-up-a-repository) has the details. The
+verifies with one local `affected-tests` run. The agent does not open the pull request: Foreman's
+wrap-up publishes the commit, and the "Flaky tests" check is then verified on that pull request's
+own CI. The [flaky tests guide](flaky-tests.md#setting-up-a-repository) has the details. The
 procedure lives in [`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md).
 
 The **Phased Plan** row investigates an approved plan against the repository, writes

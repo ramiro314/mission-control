@@ -100,11 +100,16 @@ after:  0/100 failed  (8 x `yes`, --workers=6)
 If the before rate was low, run more times after, enough that zero failures means something.
 Then run the test's whole file or suite normally to make sure nothing else broke.
 
-## 5. Open the fix pull request
+## 5. Commit the fix and report
 
-- Put `Fixes #<issue>` in the pull request description so merging it closes the flake issue.
-  Mission Control's CI action then drops the actionable label, and reopens the issue if the
-  test flakes again.
-- State the cause in one or two sentences, the fix, and the before and after runs with their
-  exact commands and load.
-- If you raised a timeout, say why the limit itself was wrong.
+Commit the fix and report the task complete. Do not push or open a pull request yourself: the
+task's bound workflow opens it with its Pull Request action, or Foreman's wrap-up does when no
+workflow is bound. The pull-request skill writes the description from your report, so the
+report and the commit message carry what the pull request needs:
+
+- `Fixes #<issue>`, in both the commit message and the completion report, so the pull request
+  description carries it and merging closes the flake issue. Mission Control's CI action then
+  drops the actionable label, and reopens the issue if the test flakes again.
+- The cause in one or two sentences, the fix, and the before and after runs with their exact
+  commands and load.
+- If you raised a timeout, why the limit itself was wrong.

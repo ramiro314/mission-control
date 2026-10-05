@@ -104,6 +104,9 @@ function mkSession(over: Partial<Session> = {}): Session {
     prNumber: null,
     prState: null,
     prChecks: null,
+    prMergeable: null,
+    prBaseRef: null,
+    prHeadSha: null,
     meta: null,
     effortBaselineReady: false,
     pendingEffort: null,
@@ -693,6 +696,11 @@ test("the prompted consume wire contract records a reason it cannot disagree wit
   // here would let an ordinary consume forge a claim that no run exists for.
   assert.equal(
     PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "workflow_claimed" } }).success,
+    false,
+  );
+  // `workflow_latched` is the same transaction's other answer and is reserved the same way.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "workflow_latched" } }).success,
     false,
   );
   // `direct_handoff_undelivered` is a correction to a handoff this route already recorded,

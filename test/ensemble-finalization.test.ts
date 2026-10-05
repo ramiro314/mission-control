@@ -216,6 +216,11 @@ test("the live winner is restored to its exact snapshot, losers reaped through T
     assert.equal(gateway.cancelled.includes(loserTask), true, "each loser Task was cancelled through TaskManager");
   }
   assert.equal(finalize.continuations.length, 1, "exactly one continuation was delivered");
+  // The no-workflow winner commits and reports complete; Foreman's Ship it? card publishes it.
+  const continuation = finalize.continuations[0]!.text;
+  assert.match(continuation, /commit, and report the task complete/);
+  assert.match(continuation, /Do not push or open a pull request yourself: Foreman's Ship it\? card publishes it/);
+  assert.doesNotMatch(continuation, /push, and open a pull request yourself/);
 });
 
 test("a failed restore receipt is retried before finalization continues", async () => {

@@ -1,6 +1,6 @@
 ---
 name: testing-setup
-description: Bring a repository into Mission Control's flake-aware testing contract - audit its test runner, JUnit output, CI flake reporting, permissions and testing settings, propose every change in one approval form, apply only what the human approved (a pull request with the CI and test-script changes, the copied report action and .mission/testing.json, plus the repository's affected-tests Command), then prove it with a local affected-tests run and the "Flaky tests" check on the setup pull request's own CI. Use when a "Set up flake-aware testing" task arrives, or when asked to set up, audit or update flake-aware testing or the mission-flake-report action in a repository.
+description: Bring a repository into Mission Control's flake-aware testing contract - audit its test runner, JUnit output, CI flake reporting, permissions and testing settings, propose every change in one approval form, apply only what the human approved (one commit with the CI and test-script changes, the copied report action and .mission/testing.json, which Mission Control publishes as a pull request, plus the repository's affected-tests Command), then prove it with a local affected-tests run and the "Flaky tests" check on the setup pull request's own CI. Use when a "Set up flake-aware testing" task arrives, or when asked to set up, audit or update flake-aware testing or the mission-flake-report action in a repository.
 metadata:
   mission:
     category: testing
@@ -190,8 +190,10 @@ Change exactly what was selected, in this repository only:
    reporter) instead of `junit`, `exit-code` and `rerun-command`.
 3. **Write `.mission/testing.json`** with the approved patterns and only the smoke tests the
    human kept, and **add `.mission/testing.local.json` to `.gitignore`**.
-4. **Open one pull request** with all of it, on a new branch, following the pull-request skill
-   when it is available. Say in it what the audit found and what the human approved.
+4. **Commit all of it** on the task branch. Do not push or open a pull request yourself: the
+   task's bound workflow opens it with its Pull Request action, or Foreman's wrap-up (its Ship
+   it? card, or Straight to PR) does when no workflow is bound. Say in your report what the
+   audit found and what the human approved, so the pull request description can carry it.
 5. **Set the Command**: call **`set_affected_tests_command`** with the exact approved argv, and
    only when `affected-tests-command` was approved. The tool writes this task's repository's
    `affected-tests` Command and nothing else. It is the only way you change Mission Control's
@@ -199,16 +201,18 @@ Change exactly what was selected, in this repository only:
 
 ## 4. Verify
 
-Two proofs, both reported:
+Two proofs. Report the first when you report the task complete; the second needs the pull
+request, so it comes once Mission Control's publish instruction has opened it:
 
 1. **One local `affected-tests` run.** Run the approved template once in your worktree against a
    small sample of the selection: two or three test files matched by the patterns, preferably
    including one smoke test, with `{files}` replaced by those files and `{junit}` by a temporary
    path. Confirm the command exits and the JUnit file exists and names each test with its file.
    Report the exact command, the exit code, and the test count.
-2. **The "Flaky tests" check on the setup pull request's own CI.** The pull request runs the new
-   CI, so wait for its run (`gh pr checks <pr> --watch`, or `gh run watch`) and confirm a check
-   named **Flaky tests** appears on the pull request's head commit, with conclusion `success` or
+2. **The "Flaky tests" check on the setup pull request's own CI.** After the publish
+   instruction opens the pull request, it runs the new CI, so wait for its run
+   (`gh pr checks <pr> --watch`, or `gh run watch`) and confirm a check named
+   **Flaky tests** appears on the pull request's head commit, with conclusion `success` or
    `neutral`. Report its link. If it does not appear, read the publish job's log: a missing
    `checks: write` or `issues: write` (GitHub answers 403), a publish job skipped because a test
    job was cancelled, or a fork pull request with a read-only token are the usual causes. A
@@ -220,7 +224,8 @@ Two proofs, both reported:
 
 When `.github/actions/mission-flake-report/` exists and its version is older than this skill's
 asset, propose the update as the **only** change: one form with one decision, the version it
-moves from and to, then copy both files, open one pull request, and verify the check again. When
+moves from and to, then copy both files, commit them for Mission Control to publish as one pull
+request, and verify the check again once it is open. When
 the versions match and the audit finds nothing else, report that the repository is already set
 up and stop.
 
@@ -233,6 +238,6 @@ holds `checkTestLease` (one test Check at a time on this machine, on by default)
 
 ## The report
 
-End with a short report: what the audit found, what was approved and applied, the pull request,
-the Command set, both verification results, whether you recommend the Affected tests workflow,
+End with a short report: what the audit found, what was approved and committed, the Command
+set, the local verification result, whether you recommend the Affected tests workflow,
 and anything left for the human (for example a runner that cannot write JUnit XML yet).

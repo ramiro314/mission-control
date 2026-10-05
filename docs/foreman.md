@@ -278,8 +278,8 @@ legacy prose is retained for normal verification. If registration was the only g
 the session to recheck the task and report completion.
 
 **Each consumed completion records why it stopped.** The queue row carries the current
-generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
-`empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.
+generation's outcome - `held`, `workflow_claimed`, `workflow_latched`, `asked`, `direct_handoff`,
+`retired`, `empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.
 New decisions also carry the intent episode and consecutive held round. Each persisted gap keeps
 its verifier kind, severity, and strike count, so the next completed generation in that same
 episode can show the verifier which demands have already survived a recovery turn. A legacy

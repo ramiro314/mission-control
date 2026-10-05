@@ -48,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>9</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>10</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -116,9 +116,14 @@ or issues.</p>
 <td>Pending (branch <code>feat/persona-effort</code>)</td>
 </tr>
 <tr>
+<td>PR merge-conflict reactions</td>
+<td>Active (signal and chip only)</td>
+<td>#108</td>
+</tr>
+<tr>
 <td>PR publication ownership</td>
-<td>Active</td>
-<td>#110 (plan), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
+<td>Active (partial)</td>
+<td>#110 (plan), #119 (deferred publication), #120 (completion latch), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
 </tr>
 <tr>
 <td>Complete frees the worktree</td>
@@ -834,6 +839,72 @@ override schemas), <code>src/shared/workflow-graph.ts</code>, <code>src/shared/l
 editor, version history and run views.</p>
 <p><strong>Fork-only files.</strong> <code>src/web/workflows/EffortSelect.tsx</code>, <code>test/persona-effort.test.ts</code>,
 <code>e2e/specs/workflow-persona-effort.spec.ts</code>.</p>
+<h3>PR merge-conflict reactions</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong>, first ticket: the mergeability signal and the PR chip mark</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#108</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/pr-merge-conflicts/plan.md">docs/plans/pr-merge-conflicts/plan.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. It extends upstream&#39;s own PR poller and chip and adds no fork-only concept.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A session&#39;s pull request that conflicts with its base was invisible: GitHub reports
+it <code>CONFLICTING</code>, CI often stops running, and nothing in Mission Control said so. This ticket
+adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
+rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
+on the PR chip on cards, in the session header and on the rail.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>The branch poller requests <code>mergeable</code> and <code>baseRefName</code>; the by-URL poller requests
+<code>mergeable</code>, <code>baseRefName</code> and <code>headRefOid</code>. GitHub&#39;s value normalises to <code>PrMergeable</code>
+(<code>&quot;mergeable&quot; | &quot;conflicting&quot;</code>), and <code>UNKNOWN</code> is no observation.</li>
+<li><code>Session</code> and every <code>RepoPrFeedback</code> carry <code>prMergeable: { state, headSha } | null</code>,
+<code>prBaseRef</code> and <code>prHeadSha</code>, set and cleared with <code>prState</code>/<code>prChecks</code>. On <code>UNKNOWN</code>,
+<code>prHeadSha</code> advances and the observation is kept whole, old head included. A merged or
+closed pull request has no observation.</li>
+<li><code>currentMergeability(pr)</code> (<code>src/shared/pr-mergeable.ts</code>) answers only when the observation&#39;s
+head is <code>prHeadSha</code>. The chip reads through it.</li>
+<li>A by-URL result writes only those three fields onto every session whose <code>prUrl</code> matches,
+exited sessions included, and onto matching live per-repo observations. It has no authority
+over <code>prState</code> or completion.</li>
+<li><code>reconcilePrs</code> leaves an exited session&#39;s PR fields alone when the branch poller did not
+report it (exited sessions are never polled), so the link survives the exit linger.</li>
+<li>No schema migration: these are live, in-memory observations like <code>prChecks</code>.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>gh pr list --json</code> and <code>gh pr view --json</code> accept <code>mergeable</code>, <code>baseRefName</code> and
+<code>headRefOid</code>.</li>
+<li><code>pollAndReconcilePrs</code> runs the branch passes (<code>reconcilePrs</code>, <code>reconcileRepoPrs</code>) after the
+by-URL lookups in one tick, and <code>prPollTargets</code> excludes exited sessions.</li>
+<li>Exited sessions are removed <code>EXIT_LINGER_MS</code> after exit through <code>beginEviction</code>.</li>
+<li><code>prChipView</code> is the one decision behind <code>PrChip</code>, <code>PrTileFlag</code> and <code>PrRailMark</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/pr.ts</code> (both <code>gh</code> queries, by-URL result
+collection), <code>src/server/registry.ts</code> (<code>PrMatch</code>, <code>LivePrObservation</code>, <code>reconcilePrs</code>,
+<code>reconcileRepoPrs</code>, <code>repoPrFeedbackFor</code>, new <code>reconcilePrUrlMergeability</code>, session comparator,
+session construction sites), <code>src/shared/types.ts</code> (<code>Session</code>, <code>RepoPrFeedback</code>, new
+<code>PrMergeable</code> types), <code>src/web/components/session-bits.tsx</code> (<code>prChipView</code>, <code>PrChip</code>,
+<code>PrTileFlag</code>, <code>PrRailMark</code>), <code>src/web/styles.css</code>, <code>src/web/lib/board-card-preview.ts</code>, the e2e
+fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session</code> literal.</p>
+<p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>test/pr-mergeable.test.ts</code>,
+<code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>
 <thead>
@@ -844,53 +915,116 @@ editor, version history and run views.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>, in progress: the unbound plan and shape deferral has landed; the completion latch and the grant split are later PRs from the same plan</td>
+<td><strong>Active (partial)</strong>. Landed: Part A (completion latch, #120); from Part B the deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the retro task intents, and the no-workflow ensemble winner (items 2 and 5, without the pull-request skill precondition, #119); and unbound plan and shape with the phased-plan intent template (items 3 and 4, branch <code>feat/unbound-plan-shape-deferral</code>). Not yet landed: the execution-authorization split, unbound chat, and the pull-request skill precondition.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#110 (plan), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
+<td>#110 (plan), #119 (deferred publication), #120 (completion latch), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
-<td><a href="../plans/pr-publication-ownership/plan.md">docs/plans/pr-publication-ownership/plan.md</a></td>
+<td><a href="../plans/pr-publication-ownership/plan.md">pr-publication-ownership/plan.md</a></td>
 </tr>
 <tr>
 <td>Upstream candidate</td>
-<td>Yes. It removes a planning-only exception to upstream&#39;s own Foreman wrap-up path and adds no fork-only concept.</td>
+<td>Mostly. Upstream has the same post-completion re-run: its Foreman claim and store are unchanged here apart from the latch. The manifest, retro and ensemble changes remove self-publishing text that contradicts upstream&#39;s own ship handoff. The deflake and testing-setup changes ride the fork-only Flake-aware testing skills.</td>
 </tr>
 </tbody></table>
-<p><strong>Intent.</strong> A dispatched task session does not open its own pull request on its initial turn.
-Mission Control&#39;s publishers do: the bound workflow&#39;s Pull Request action, or Foreman&#39;s Ship it?
-card and Straight to PR instruction. Upstream already worked this way for ship tasks and for
-workflow-bound plan and shape tasks, but an unbound plan or shape task was told to open its PR
-itself, and the phased-plan skill wrote phase tasks that did the same. That gave those sessions a
-second, self-directed publication path beside Foreman&#39;s.</p>
+<p><strong>Intent.</strong> A pull request is opened only by the workflow&#39;s Pull Request action, by Foreman&#39;s
+wrap-up, or by a direct command of the human, never on an agent&#39;s own initiative from a task
+prompt or skill. Forensics found the visible symptom was not an early PR but a <strong>new workflow
+run starting after the PR existed</strong>: the Pull Request action&#39;s own turn, Inspector fixes and
+background wake-ups each settled under unchanged intent and claimed a fresh run on the binding.
+The completion latch stops that. Separately, prompts and skills that told the agent to push and
+open its own pull request now commit and report, and name the publisher. The grant holders (the
+workflow Pull Request action, the Runs UI &quot;Ask the session to open a PR&quot;, Foreman&#39;s Ship it?
+card, Straight to PR and ship-shepherd handoff, and a human-typed request in the session) are the
+rest of Part B and not yet implemented as an authorization split.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
+<li>Every Foreman claim that starts or resubmits a run, prompted or queue-drain, stamps
+<code>workflow_runs.claim_episode_key</code> with <code>intent:&lt;objective_version&gt;:&lt;prompt_revision&gt;</code> read
+from <code>session_goals</code> in the claim transaction.</li>
+<li>A prompted claim with no active run, on a binding with a <code>completed</code> run stamped with the
+claim&#39;s episode, is <strong>latched</strong>: it consumes the generation with the <code>workflow_latched</code>
+outcome, appends <code>claim_latched</code> on the completed run, starts and resubmits nothing, and
+answers <code>claimed: true</code> with state <code>latched</code>, so Foreman does not fall through to the Ship it?
+card or Straight to PR.</li>
+<li>Only an accepted human prompt advances the episode and re-arms the binding, for exactly one
+run. Cancelled runs and unstamped (pre-upgrade) runs never latch; queue-drain claims are never
+refused; in-run repair rounds still resubmit the same run.</li>
+<li><code>workflow_latched</code> is appended to <code>PROMPTED_COMPLETION_OUTCOMES</code> and, like <code>workflow_claimed</code>,
+is refused on the ordinary consume route.</li>
+<li>Accepted residuals: a drain claim on a session with no recorded goal leaves the stamp null,
+and on the terminal runtime a daemon restart between a packet&#39;s delivery and its echo makes
+that packet read as human and re-arms the latch.</li>
+<li>The multi-repo manifest tells the agent to commit in each repository it changes, not to push
+or open a pull request, and that the workflow or Foreman opens one pull request per changed
+repository. An unchanged repository still needs no commit and no pull request.</li>
+<li>The retro (dispatched as its own task), deflake and testing-setup skills, and both retro task
+intents in <code>src/server/retro.ts</code>, commit and report complete, and name the publisher: the
+bound workflow&#39;s Pull Request action, or Foreman&#39;s wrap-up when no workflow is bound. A retro
+riding a session&#39;s own open review still pushes to it, because updating an existing pull
+request is allowed.</li>
+<li>Deflake carries <code>Fixes #&lt;issue&gt;</code> in its commit message and completion report, so the
+pull-request skill writes it into the description.</li>
+<li>Testing-setup verifies the &quot;Flaky tests&quot; check only after the publish instruction opened the
+pull request.</li>
+<li>The no-workflow ensemble winner commits and reports complete, and Foreman&#39;s Ship it? card
+publishes it.</li>
+<li>An unbound ship-kind session (testing-setup and the retro follow-up: <code>workflowId: null</code>)
+reaches a Foreman publish instruction after a committed turn: the Ship it? card under the
+default <code>ask</code> wrap-up, <code>WRAPUP_PR</code> under Straight to PR. Pinned in
+<code>test/prompted-wrapup-worker-e2e.test.ts</code>.</li>
 <li><code>taskCompletionContract</code> is kind-only. <code>plan</code> and <code>shape</code> return their planning contract whether
 or not a workflow is bound, so the Foreman verifier judges an unopened PR as deferred, not as a
 gap, for unbound planning tasks too.</li>
-<li>The plan and shape prompts render the completion handoff for both cases. The unbound branch says
-commit and push the plan, report complete, end the turn, and that Foreman&#39;s Ship it? or Straight
-to PR path opens the PR. Pushing stays part of the planning turn; opening the PR never is.</li>
+<li>The plan and shape prompts render the completion handoff whether or not a workflow is bound.
+The unbound branch says commit and push the plan, report complete, end the turn, and that
+Foreman&#39;s Ship it? or Straight to PR path opens the PR; a bound task whose binding is removed
+falls back to the same path. Pushing stays part of the planning turn (the kind-contract push
+exception); opening the PR never is.</li>
 <li>No planning prompt, skill text, or <code>get_plan_publication_context</code> description tells an
 owner-<code>skill</code> session to open the PR itself. The tool&#39;s <code>owner</code> wire values
 (<code>workflow</code>, <code>skill</code>, <code>unavailable</code>) are unchanged.</li>
 <li>Phase task intents written by the phased-plan skill ask the agent to commit the phase; Mission
 Control publishes it as a reviewable PR whose merge releases dependent phases.</li>
+<li>An unbound plan session reaches a Foreman publish instruction after a committed, pushed turn
+without a verifier hold. Pinned in <code>test/prompted-wrapup-worker-e2e.test.ts</code>.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
+<li><code>WorkflowStore.claimForemanCompletion</code> is the one transaction that creates or resubmits a run
+for a Foreman completion, and it consumes the prompted generation through
+<code>consumePromptedGeneration</code>.</li>
+<li>The intent episode key is <code>intent:&lt;objective_version&gt;:&lt;prompt_revision&gt;</code>, advanced only by
+accepted human prompts; daemon-injected turns are kept out of the Goal by the SDK <code>origin</code>
+and the terminal injection ledger.</li>
+<li>The Straight to PR direct-handoff latch keyed by intent episode, which this mirrors.</li>
+<li>Foreman&#39;s prompted wrap-up publishes an unbound ship task: the Ship it? card, or <code>WRAPUP_PR</code>
+typed into the session under Straight to PR, after the verifier finds the turn finished.</li>
+<li>The ship handoff in <code>src/server/task-contract.ts</code> already forbids pushing and opening a pull
+request in the initial turn.</li>
+<li>The built-in Pull Request session action invokes the pull-request skill, which writes the
+description from the session&#39;s report.</li>
 <li>Foreman&#39;s prompted wrap-up falls through to the Ship it? card or Straight to PR when a planning
 task&#39;s completion claim returns <code>no_binding</code> and publication ownership is <code>skill</code>.</li>
 <li>The verify prompt renders a non-null completion contract as trusted policy above the evidence.</li>
-<li>The phased-plan skill reads <code>get_plan_publication_context</code> after scheduling.</li>
 </ul>
-<p><strong>Upstream surfaces touched.</strong> <code>src/shared/task-completion.ts</code>, <code>src/server/plans/prompt.ts</code>,
-<code>src/server/plans/shape.ts</code>, <code>src/server/plans/tools.ts</code>, <code>src/server/foreman/worker.ts</code> (the
-contract lookup), the <code>get_plan_publication_context</code> description in <code>src/mcp/server.ts</code>, and
-<code>skills/phased-plan/SKILL.md</code>.</p>
-<p><strong>Fork-only files.</strong> None yet.</p>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/workflows/store.ts</code> (<code>claimForemanCompletion</code>,
+<code>consumePromptedGuard</code>), <code>src/server/db.ts</code> (<code>workflow_runs.claim_episode_key</code>),
+<code>src/shared/types.ts</code> (<code>PROMPTED_COMPLETION_OUTCOMES</code>), <code>src/shared/workflow.ts</code> and
+<code>src/shared/protocol.ts</code> (<code>WorkflowCompletionClaimResult</code> state <code>latched</code>, the consume-route
+refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code>src/server/dispatcher.ts</code>
+(<code>intentWithRepoManifest</code>), <code>src/server/ensembles/engine.ts</code> (<code>buildContinuation</code>),
+<code>src/server/retro.ts</code> (<code>postMergeRetroIntent</code>, <code>retroTaskIntent</code>), <code>skills/retro/SKILL.md</code>,
+<code>src/shared/task-completion.ts</code>, <code>src/server/plans/{prompt,shape,tools}.ts</code>, the
+<code>get_plan_publication_context</code> description in <code>src/mcp/server.ts</code>, <code>skills/phased-plan/SKILL.md</code>,
+<code>docs/{work-queues,workflows,foreman,recurring-missions,dispatch-and-backlog,skills-and-settings,flaky-tests,ensembles}.md</code>,
+<code>docs/agent-guides/{change-contracts,architecture}.md</code>.</p>
+<p><strong>Fork-only files.</strong> <code>test/workflow-completion-latch.test.ts</code>,
+<code>docs/plans/pr-publication-ownership/</code>. The deflake and testing-setup skill changes land in
+<code>skills/deflake/</code> and <code>skills/testing-setup/</code>, already fork-only through Flake-aware testing.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

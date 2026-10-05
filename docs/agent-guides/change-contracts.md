@@ -730,6 +730,14 @@ wrong answer that fails, it is a sibling that is never mentioned again.
   closed, because that field is durable by design.
 - **A `gh` that errored is not an answer.** A poll target in the reconciler's `skip` set leaves
   its observation exactly as it was; only a poll that positively reported nothing retracts one.
+- **Mergeability is bound to the head it was observed on.** `prMergeable` on a session and on
+  each `RepoPrFeedback` is `{ state, headSha }`, beside `prBaseRef` and `prHeadSha`. GitHub's
+  `UNKNOWN` advances `prHeadSha` and keeps the previous observation whole, old head included
+  (`nextMergeability`). Every consumer reads it through `currentMergeability`, which answers
+  only when the observation's head is the current one; reading `prMergeable.state` directly
+  would report a conflict the agent has already pushed a fix for. A by-URL read
+  (`reconcilePrUrlMergeability`) writes only these three fields, so it gains no authority over
+  `prState` or completion.
 - **Foreman's follow-up marks are keyed `(session, pr_key)`**
   (`src/server/foreman/review-followup.ts`, `worker.ts`). A flat session key makes each pull
   request's mark evict its sibling's, which is both a repeated nudge and a permanently reset
@@ -1012,7 +1020,10 @@ place the engine's control verbs go; filling it must not restructure the header 
 A completed prompted work-cycle generation is consumed by exactly one compare-and-set, and that
 same statement records WHY it stopped. There are two such boundaries and both must keep the pair
 atomic: `consumePromptedGeneration` on the ordinary route, and the Workflow completion claim
-transaction, which writes `workflow_claimed` beside the run it created. Never write the reason
+transaction, which writes `workflow_claimed` beside the run it created or resubmitted, or
+`workflow_latched` when a completed run already holds the claim's intent episode and nothing
+was started (the completion latch: the run's `claim_episode_key` stamp, written by every claim
+that starts or resubmits a run). Never write the reason
 afterwards - the failure that loses it is exactly the failure that makes it matter - and never
 synthesize one for a caller that supplied none. `held` means a model judged the work unfinished;
 `verification_failed` means verification infrastructure gave up and nobody judged it, so the two
@@ -1022,7 +1033,7 @@ An action and its reason are ONE consumption, checked in both directions on the 
 with the `asked` outcome, a direct-handoff latch with the `direct_handoff` outcome - either
 without the other is refused. The reverse direction is the one that matters most: an outcome
 with no matching action persists a decision describing an event that never happened, and
-that is precisely what a later reader would act on. `workflow_claimed` and
+that is precisely what a later reader would act on. `workflow_claimed`, `workflow_latched` and
 `direct_handoff_undelivered` are refused on this route outright, because each is written
 somewhere else - the Workflow claim transaction, and the undelivered-handoff correction.
 

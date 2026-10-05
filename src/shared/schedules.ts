@@ -84,7 +84,8 @@ export type ScheduleCompletionPolicy = (typeof SCHEDULE_COMPLETION_POLICIES)[num
  * Everything else is deliberately excluded. `held` is a verdict that the work is UNFINISHED.
  * `verification_failed` means no model judged it at all. `workflow_claimed`, `asked`,
  * `direct_handoff` and `direct_handoff_undelivered` all say shipping is still in progress or
- * that a human was asked - and those tasks settle the way they always have, on the merge.
+ * that a human was asked, and `workflow_latched` says a completed Workflow run already owns
+ * it - and those tasks settle the way they always have, on the merge.
  */
 export function foremanConcludedMission(outcome: PromptedCompletionOutcome): boolean {
   return outcome === "empty" || outcome === "retired";
