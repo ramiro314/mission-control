@@ -25,6 +25,7 @@ import {
 // The updater asks the same locator as the daemon before it invokes `gh`, so detection and
 // execution retain one absolute identity even when Electron started with a minimal PATH.
 import { locateExecutable } from "../server/executables/locator.ts";
+import { processLifetime } from "../server/platform/process-lifetime.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
@@ -433,6 +434,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
     const logFd = openSync(args.logPath, "a", 0o600);
     try {
       await new Promise<void>((resolve, reject) => {
+        // Its own process group, so the helper outlives this app quitting to install the update.
         const child = spawn(
           args.node,
           [
@@ -456,7 +458,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
               : []),
           ],
           {
-            detached: true,
+            ...processLifetime.treeRootOptions,
             stdio: ["ignore", logFd, logFd],
             env: args.env ?? updateChildEnvironment(),
           },

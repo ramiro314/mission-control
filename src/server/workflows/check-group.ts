@@ -1,10 +1,11 @@
+import { processLifetime } from "../platform/process-lifetime.ts";
 import { processStartIdentity } from "./check-identity.ts";
 
 // Taking a check's process group down, and PROVING afterwards that it is gone.
 //
-// This is deliberately not a generalisation of the two `killTree` helpers that already exist
-// (`claude-cli.ts`, `llm/codex.ts`). Both send `SIGKILL` immediately, with no grace period and
-// no identity check, and both are correct for what they do: a model subprocess we own end to
+// This is deliberately not a generalisation of `processLifetime.killTree`, which `claude-cli.ts`
+// and `llm/codex.ts` use. It sends `SIGKILL` immediately, with no grace period and no identity
+// check, and that is correct for what they do: a model subprocess we own end to
 // end, whose death costs at worst a wasted call. A check is a build that may have spawned a
 // test runner that spawned a browser, in a pooled worktree somebody else is about to be handed.
 // Two things follow, and neither belongs on the model-subprocess path:
@@ -21,9 +22,10 @@ import { processStartIdentity } from "./check-identity.ts";
 // leased tree while one of them is still writing into it corrupts the next lessee. So every
 // path here ends in a positive probe of the GROUP rather than of the leader.
 //
-// POSIX only. `process.kill(-pid, …)` has no Windows equivalent, and `checkRuntimeSupport()`
-// refuses to run checks anywhere this file could not work - so this module may assume it, and
-// does.
+// POSIX only. Signals reach the group through `processLifetime.signalTree`, whose POSIX
+// implementation is `process.kill(-pid, …)`, and this module reads its errnos as POSIX ones.
+// `checkRuntimeSupport()` refuses to run checks anywhere this file could not work - so this
+// module may assume it, and does.
 
 /**
  * What we were able to PROVE about a check's process group.
@@ -104,7 +106,7 @@ export function signallableGroup(pid: number): boolean {
 export function checkGroupAnswers(pid: number): boolean {
   if (!signallableGroup(pid)) return false;
   try {
-    process.kill(-pid, 0);
+    processLifetime.signalTree(pid, 0);
     return true;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code !== "ESRCH";
@@ -113,7 +115,7 @@ export function checkGroupAnswers(pid: number): boolean {
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
   try {
-    process.kill(-pid, signal);
+    processLifetime.signalTree(pid, signal);
   } catch {
     // ESRCH here means the group went away between the probe and the signal, which is the
     // outcome we were aiming for. Anything else is re-answered by the probe below rather
