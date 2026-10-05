@@ -1540,6 +1540,8 @@ export interface DispatchInput {
   repoRoot: string;
   /** Secondary repos to attach; the daemon resolves, dedupes and refuses each one. */
   extraRepoRoots?: string[];
+  /** Origin branch to start from and open the PR against; omitted means the default branch. */
+  baseBranch?: string;
   intent: string;
   title?: string;
   kind: TaskKind;

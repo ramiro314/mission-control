@@ -146,6 +146,11 @@ test("saving a mission checks its base branch against origin and refuses one ori
   const cleared = await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: null }));
   assert.equal(cleared.status, 200);
   assert.equal(manager.get(saved.id)?.template?.baseBranch, null);
+  // Naming origin's default is the same as leaving it empty, so its runs file default tasks.
+  await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: "release/windows" }));
+  const toDefault = await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: "main" }));
+  assert.equal(toDefault.status, 200, await toDefault.clone().text());
+  assert.equal(manager.get(saved.id)?.template?.baseBranch, null, "origin's default is stored as null");
 });
 
 test("preview leaves the origin question to save", async () => {

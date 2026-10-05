@@ -24,7 +24,7 @@ import type {
 } from "@shared/schedules.ts";
 import type { TaskRepoRoot } from "../repos.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
-import { baseBranchRefusal } from "../git/remote-default.ts";
+import { resolveBaseBranch } from "../git/remote-default.ts";
 import type { CreateTaskInput, InternalCreateOptions } from "../tasks.ts";
 import { TaskIdCollisionError } from "../tasks.ts";
 import { getTask as getDurableTask } from "../db.ts";
@@ -112,8 +112,8 @@ export interface ScheduleManagerDeps {
   uuid?: () => string;
   recurrence?: RecurrenceEvaluator;
   resolveRepoRoot?: (path: string) => Promise<TaskRepoRoot>;
-  /** Why `repoRoot`'s origin cannot serve `branch` as a base, or null when it can. */
-  baseBranchRefusal?: (repoRoot: string, branch: string) => Promise<string | null>;
+  /** The base to store for `branch` on `repoRoot`'s origin (null for its default), or why not. */
+  resolveBaseBranch?: typeof resolveBaseBranch;
   notifier?: ScheduleNotifier;
   log?: ScheduleLog;
 }
@@ -267,7 +267,7 @@ export class ScheduleManager implements ScheduleService {
   private readonly uuid: () => string;
   private readonly recurrence: RecurrenceEvaluator;
   private readonly resolveRepoRoot: (path: string) => Promise<TaskRepoRoot>;
-  private readonly baseBranchRefusal: (repoRoot: string, branch: string) => Promise<string | null>;
+  private readonly resolveBaseBranch: typeof resolveBaseBranch;
   private notifier: ScheduleNotifier;
   private readonly log: ScheduleLog;
   private readonly operationTails = new Map<string, Promise<void>>();
@@ -278,7 +278,7 @@ export class ScheduleManager implements ScheduleService {
     this.uuid = deps.uuid ?? randomUUID;
     this.recurrence = deps.recurrence ?? defaultRecurrence;
     this.resolveRepoRoot = deps.resolveRepoRoot ?? resolveTaskRepoRoot;
-    this.baseBranchRefusal = deps.baseBranchRefusal ?? baseBranchRefusal;
+    this.resolveBaseBranch = deps.resolveBaseBranch ?? resolveBaseBranch;
     this.notifier = deps.notifier ?? NOOP_NOTIFIER;
     this.log = deps.log ?? defaultLog;
   }
@@ -570,10 +570,13 @@ export class ScheduleManager implements ScheduleService {
     const repo = await this.resolveRepoRoot(input.template.repoRoot);
     if (!repo.ok) return refuse("repoRoot", repo.error);
 
-    const baseBranch = input.template.baseBranch ?? null;
+    // A save stores origin's default as null, as a task write does, so the tasks a run files
+    // carry a base only when it is not the default.
+    let baseBranch = input.template.baseBranch ?? null;
     if (baseBranch !== null && checkOrigin) {
-      const refused = await this.baseBranchRefusal(repo.repoRoot, baseBranch);
-      if (refused) return refuse("baseBranch", refused);
+      const resolved = await this.resolveBaseBranch(repo.repoRoot, baseBranch);
+      if (!resolved.ok) return refuse("baseBranch", resolved.error);
+      baseBranch = resolved.baseBranch;
     }
 
     return {

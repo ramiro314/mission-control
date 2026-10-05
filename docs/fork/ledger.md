@@ -52,7 +52,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
-| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher and recurring-mission template) | #151, #161, #163 (plan M0.1) |
+| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -949,8 +949,8 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, and the recurring-mission template (D35); the task form field and card label and the session Diff view are separate tickets. |
-| PRs | #151, #161, #163 |
+| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, the recurring-mission template (D35), and the task form field and card label; the session Diff view is a separate ticket. |
+| PRs | #151, #161, #162 (task form field and card label), #163 |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Per-task base branch" and M0 item 1; [docs/dispatch-and-backlog.md](../dispatch-and-backlog.md) "Start a task from another branch" |
 | Upstream candidate | Yes. It is a general task field with no Windows-specific behavior. |
 
@@ -966,8 +966,18 @@ dispatched like any other task. Without one, nothing changes.
   name, never an option or a `refs/` path). MCP `create_task` sends it only through the strict v3
   route, and `push_task`'s strict body takes it, so an older daemon refuses rather than drops it.
 - Create, update, MCP create and `push_task` refuse a base branch `origin` does not advertise
-  (`baseBranchRefusal`, `ls-remote`, 400). Dispatch refuses it again with a fresh fetch
-  (`resolveDispatchBranchBase`), before any worktree is provisioned.
+  (`resolveBaseBranch`, one `ls-remote --symref origin HEAD refs/heads/<base>`, 400). Dispatch
+  refuses it again with a fresh fetch (`resolveDispatchBranchBase`), before any worktree is
+  provisioned.
+- A base branch equal to origin's advertised default is stored as NULL at write time, so a
+  non-null `Task.baseBranch` was not origin's default when it was written. Rows that predate
+  this, or whose origin later moved its default, are cleared by a startup pass
+  (`clearStoredDefaultBaseBranches` in `src/server/base-branch-backfill.ts`, after the port):
+  backlog tasks only, one `resolveBaseBranch` per distinct repository and branch, and any
+  refusal or unreachable origin leaves the row alone.
+- The dispatch form's backlog details carry a "Base branch" field on create and edit (empty is
+  the default; an edit sends `null`), and the daemon's refusal prints on the form. The backlog
+  card shows `base <branch>` (`.bl-base`) only when the task has one.
 - Dispatch freezes the primary's base at `origin/<base>`'s advertised tip, checked against the
   fetched remote-tracking ref. A pinned `baseSha` still outranks it. Attached repositories keep
   their own default.
@@ -987,7 +997,8 @@ dispatched like any other task. Without one, nothing changes.
   with no base branch counts a merge wherever it lands, as before.
 - A recurring mission's task template carries an optional `baseBranch` (in the revision's
   `template_json`, so no migration; an absent key reads as null). Create and update refuse one
-  `origin` lacks on the `baseBranch` field (`ScheduleManager.prepareDefinition`, 400); preview
+  `origin` lacks on the `baseBranch` field (`ScheduleManager.prepareDefinition`, through
+  `resolveBaseBranch`, 400), and store origin's default as null as a task write does; preview
   checks only its shape. Every task a run files, scheduled or Run now, carries it, and dispatch
   checks it against origin again. The mission editor has a "Base branch" field and the detail
   shows it.
@@ -1007,9 +1018,12 @@ dispatched like any other task. Without one, nothing changes.
 `/mcp/push-task`, session reset and its preview), `src/server/git/remote-default.ts`,
 `src/server/dispatcher.ts` (`resolveTaskBases`), `src/server/actions.ts` (`resetToOrigin`,
 `resetPreview`), `src/server/reset.ts`, `src/server/task-contract.ts`,
-`src/server/workflows/{feedback,manager}.ts`, and the MCP `create_task` and `push_task` tools in
-`src/mcp/server.ts`. The followers add `src/server/diff.ts` (`changedPathsSince`,
-`deletedPathsSince`, `computeSessionDiff`), `src/server/test-selection.ts`,
+`src/server/workflows/{feedback,manager}.ts`, the MCP `create_task` and `push_task` tools in
+`src/mcp/server.ts`, and the dashboard: `src/web/components/DispatchModal.tsx` (the field, the
+details summary), `src/web/lib/task-draft.ts` (`DispatchDraft.baseBranch`, `taskUpdatePatch`),
+`src/web/lib/api.ts` (`DispatchInput`), `src/web/components/layouts/BacklogColumn.tsx` (the
+card label), `src/web/styles.css` (`.bl-base`) and `src/server/index.ts` (the startup pass). The followers add `src/server/diff.ts`
+(`changedPathsSince`, `deletedPathsSince`, `computeSessionDiff`), `src/server/test-selection.ts`,
 `src/server/workflows/{affected-tests,check-runtime,checks,context,engine,agent-contract}.ts`,
 `src/server/registry.ts` (`reconcilePrs`, `reconcilePrMerges`) and `src/server/pr.ts`. The
 mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
@@ -1019,7 +1033,9 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 
 **Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`,
 `test/task-base-branch-followers.test.ts`, `test/schedule-base-branch.test.ts`,
-`e2e/specs/mission-base-branch.spec.ts`.
+`test/backlog-base-branch-render.test.ts`, `test/base-branch-backfill.test.ts`,
+`src/server/base-branch-backfill.ts`, `e2e/specs/mission-base-branch.spec.ts`,
+`e2e/specs/task-base-branch.spec.ts`.
 
 ## Superseded and removed
 

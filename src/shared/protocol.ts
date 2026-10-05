@@ -773,7 +773,7 @@ export const MAX_TASK_EXTRA_REPOS = 8;
  *
  * Only the SHAPE is checked here, because this module is browser-safe and cannot ask git.
  * Whether the branch exists on the repository's origin is the daemon's question, asked when
- * a task is created, edited and dispatched (`baseBranchRefusal`). The shape rules are git's
+ * a task is created, edited and dispatched (`resolveBaseBranch`). The shape rules are git's
  * own `check-ref-format` rules for a branch, narrowed so a value can never read as an option
  * (a leading `-`) or as a ref path the daemon would then prefix a second time (`refs/`).
  */

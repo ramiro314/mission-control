@@ -513,7 +513,7 @@ import {
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
 import { driverClearFor, resetSession } from "./reset.ts";
-import { baseBranchRefusal } from "./git/remote-default.ts";
+import { resolveBaseBranch } from "./git/remote-default.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
@@ -4640,16 +4640,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       shortNameSelectors,
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    let baseBranch: string | null = null;
     if (data.baseBranch) {
-      const refused = await baseBranchRefusal(prepared.repoRoot, data.baseBranch);
-      if (refused) return c.json({ error: refused }, 400);
+      const resolved = await resolveBaseBranch(prepared.repoRoot, data.baseBranch);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      baseBranch = resolved.baseBranch;
     }
 
     try {
       const task = tasks.create({
         repoRoot: prepared.repoRoot,
         extraRepoRoots: prepared.extraRepoRoots,
-        baseBranch: data.baseBranch ?? null,
+        baseBranch,
         title: data.title,
         intent: data.intent,
         kind: data.kind,
@@ -4855,11 +4857,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // The base branch lands on the task through the same edit a person makes, so it is
     // checked against origin and refused outside the backlog exactly as that edit is.
     if (baseBranch !== undefined && baseBranch !== task.baseBranch) {
-      const refused = await baseBranchRefusal(task.repoRoot, baseBranch);
-      if (refused) return c.json({ error: refused }, 400);
-      const updated = await tasks.update(task.id, { baseBranch });
-      if (!updated.ok || !updated.task) return c.json({ error: updated.error }, 409);
-      task = updated.task;
+      let stored: string | null = null;
+      if (baseBranch) {
+        const resolved = await resolveBaseBranch(task.repoRoot, baseBranch);
+        if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+        stored = resolved.baseBranch;
+      }
+      if (stored !== (task.baseBranch ?? null)) {
+        const updated = await tasks.update(task.id, { baseBranch: stored });
+        if (!updated.ok || !updated.task) return c.json({ error: updated.error }, 409);
+        task = updated.task;
+      }
     }
     if (task.source?.sourceId === inst.id) {
       return c.json({ task, source: task.source, alreadyPushed: true });
@@ -7852,9 +7860,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
     const { repoRoot, extraRepoRoots, agent } = prepared;
+    let baseBranch: string | null = null;
     if (parsed.data.baseBranch) {
-      const refused = await baseBranchRefusal(repoRoot, parsed.data.baseBranch);
-      if (refused) return c.json({ error: refused }, 400);
+      const resolved = await resolveBaseBranch(repoRoot, parsed.data.baseBranch);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      baseBranch = resolved.baseBranch;
     }
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
@@ -7882,7 +7892,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     let task;
     try {
       task = tasks.create(
-        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
+        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId, baseBranch },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
       );
@@ -8090,8 +8100,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const baseBranch = patch.baseBranch === undefined ? existing?.baseBranch : patch.baseBranch;
     const repoMoved = patch.repoRoot !== undefined && patch.repoRoot !== existing?.repoRoot;
     if (existing && baseBranch && (patch.baseBranch !== undefined || repoMoved)) {
-      const refused = await baseBranchRefusal(patch.repoRoot ?? existing.repoRoot, baseBranch);
-      if (refused) return c.json({ error: refused }, 400);
+      const resolved = await resolveBaseBranch(patch.repoRoot ?? existing.repoRoot, baseBranch);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      patch.baseBranch = resolved.baseBranch;
     }
     if (existing) {
       const workflowId =

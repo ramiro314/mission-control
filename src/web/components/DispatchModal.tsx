@@ -269,6 +269,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   return (
     d.repoRoot.trim() === readLastDispatchRepo() &&
     d.extraRepoRoots.length === 0 &&
+    !d.baseBranch.trim() &&
     !d.intent.trim() &&
     !d.title.trim() &&
     !d.labels.trim() &&
@@ -1144,6 +1145,7 @@ function DispatchModal({
     draft.priority ||
       draft.labels.trim() ||
       draft.title.trim() ||
+      draft.baseBranch.trim() ||
       draft.dependencies.length > 0,
   );
   // The backlog details fold (priority, labels, title, dependencies). Open from the start
@@ -2293,6 +2295,7 @@ function DispatchModal({
         : await api.dispatch({
           repoRoot: submitted.repoRoot.trim(),
           extraRepoRoots: attachedRepoRoots(submitted),
+          baseBranch: submitted.baseBranch.trim() || undefined,
           intent,
           kind: submitted.kind,
           agent: submitted.agent,
@@ -2578,6 +2581,7 @@ function DispatchModal({
     draft.priority ? PRIORITY_LABELS[draft.priority] : "no priority",
     labels.length > 0 ? labels.join(", ") : "no labels",
     draft.title.trim() ? "titled" : "title summarized",
+    draft.baseBranch.trim() ? `base ${draft.baseBranch.trim()}` : "default base",
     ...(backlogCompatible
       ? [
           draft.enabled ? "autopilot on" : "autopilot off",
@@ -3060,8 +3064,8 @@ function DispatchModal({
                 detailsOpen
                   ? `Collapse the ${backlogCompatible ? "backlog" : "task"} details`
                   : backlogCompatible
-                    ? "Priority, labels, title, backlog autopilot and dependencies"
-                    : "Priority, labels and title"
+                    ? "Priority, labels, title, base branch, backlog autopilot and dependencies"
+                    : "Priority, labels, title and base branch"
               }
             >
               <button
@@ -3130,6 +3134,22 @@ function DispatchModal({
                 </div>
 
                 {titleField}
+
+                <label className="field">
+                  <span className="field-label">
+                    Base branch{" "}
+                    <span className="field-hint">optional - empty uses the repo's default branch</span>
+                  </span>
+                  <Tooltip label="The branch on origin this task starts from and opens its pull request against">
+                    <input
+                      className="field-input"
+                      placeholder="e.g. release/windows"
+                      spellCheck={false}
+                      value={draft.baseBranch}
+                      onChange={(e) => update({ baseBranch: e.target.value })}
+                    />
+                  </Tooltip>
+                </label>
 
                 {backlogCompatible && (
                   <div className={`dispatch-autopilot${draft.enabled ? "" : " is-off"}`}>

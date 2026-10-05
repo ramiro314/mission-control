@@ -1051,6 +1051,14 @@ function BacklogCard({
             <span className="bl-repos">{task.extraRepos.length + 1} repos</span>
           </Tooltip>
         )}
+        {/* Any stored base. The daemon writes origin's default as null, and clears an older or
+            since-moved one at startup (`clearStoredDefaultBaseBranches`), so a set value is a
+            non-default base. */}
+        {task.baseBranch && (
+          <Tooltip label={`Starts from ${task.baseBranch} and opens its pull request against it`}>
+            <span className="bl-base">base {task.baseBranch}</span>
+          </Tooltip>
+        )}
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
       {/* One notification slot beneath metadata. A persisted launch error is the strongest

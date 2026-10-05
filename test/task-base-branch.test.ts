@@ -38,9 +38,10 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Dispatcher, resolveTaskBases } = await import("../src/server/dispatcher.ts");
-const { baseBranchRefusal, freshRemoteBranchSha, parseLsRemoteBranchSha } =
+const { resolveBaseBranch, freshRemoteBranchSha, parseLsRemoteBranchSha } =
   await import("../src/server/git/remote-default.ts");
 const { resetPreview, resetToOrigin } = await import("../src/server/actions.ts");
+const { clearStoredDefaultBaseBranches } = await import("../src/server/base-branch-backfill.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { renderPrHandoff, renderSessionAction } = await import("../src/server/workflows/feedback.ts");
 const { prBaseBranchFor } = await import("../src/server/workflows/context.ts");
@@ -124,19 +125,20 @@ test("the task API and MCP schemas accept a base branch and refuse a malformed o
 
 test("a base branch is accepted only when it exists on the repository's origin", async () => {
   const { repo, releaseTip } = mkRepo("probe");
-  assert.equal(await baseBranchRefusal(repo, "release/windows"), null);
-  assert.match(
-    (await baseBranchRefusal(repo, "release/gone")) ?? "",
-    /base branch release\/gone does not exist on .*'s origin/,
-  );
+  assert.deepEqual(await resolveBaseBranch(repo, "release/windows"), { ok: true, baseBranch: "release/windows" });
+  // Origin's own default is stored as null, so a set base always means a non-default one.
+  assert.deepEqual(await resolveBaseBranch(repo, "main"), { ok: true, baseBranch: null });
+  const gone = await resolveBaseBranch(repo, "release/gone");
+  assert.match(gone.ok ? "" : gone.error, /base branch release\/gone does not exist on .*'s origin/);
   const local = join(repos, "local-only");
   execFileSync("git", ["init", "-q", local]);
-  assert.match((await baseBranchRefusal(local, "main")) ?? "", /needs an origin remote/);
+  const originless = await resolveBaseBranch(local, "main");
+  assert.match(originless.ok ? "" : originless.error, /needs an origin remote/);
 
   const fresh = await freshRemoteBranchSha(repo, "release/windows");
   assert.deepEqual(fresh, { ok: true, value: releaseTip });
-  const gone = await freshRemoteBranchSha(repo, "release/gone");
-  assert.equal(gone.ok, false);
+  const freshGone = await freshRemoteBranchSha(repo, "release/gone");
+  assert.equal(freshGone.ok, false);
 });
 
 test("ls-remote parsing takes the exact branch, not one that merely ends with its name", () => {
@@ -299,6 +301,8 @@ test("creating a task stores its base branch, and one origin lacks is refused wi
 
   const plain = (await (await api("/api/tasks", { repoRoot: repo, title: "Plain", intent: "Plain", backlog: true, workflowId: null })).json()) as Task;
   assert.equal(plain.baseBranch, null, "no base branch means origin's default");
+  const named = (await (await api("/api/tasks", { repoRoot: repo, title: "Named", intent: "Named", backlog: true, workflowId: null, baseBranch: "main" })).json()) as Task;
+  assert.equal(named.baseBranch, null, "naming origin's default stores the default");
 
   const before = openDb().prepare("SELECT COUNT(*) AS n FROM tasks").get() as { n: number };
   const refused = await api("/api/tasks", { repoRoot: repo, title: "Port it", intent: "Port it", backlog: true, workflowId: null, baseBranch: "release/gone" });
@@ -325,6 +329,27 @@ test("editing a task sets, refuses, and clears its base branch", async () => {
   const cleared = await api(`/api/tasks/${task.id}/update`, { baseBranch: null });
   assert.equal(cleared.status, 200);
   assert.equal(getTask(task.id)?.baseBranch, null);
+
+  await api(`/api/tasks/${task.id}/update`, { baseBranch: "release/windows" });
+  const toDefault = await api(`/api/tasks/${task.id}/update`, { baseBranch: "main" });
+  assert.equal(toDefault.status, 200, await toDefault.clone().text());
+  assert.equal(getTask(task.id)?.baseBranch, null, "editing it to origin's default clears it");
+});
+
+test("the startup pass returns a legacy row stored with origin's default to the default", async () => {
+  const { repo } = mkRepo("route-backfill");
+  const { api, tasks } = appFor();
+  const filed = async (title: string, baseBranch: string) =>
+    (await (await api("/api/tasks", { repoRoot: repo, title, intent: title, backlog: true, workflowId: null, baseBranch })).json()) as Task;
+  const legacy = await filed("Legacy", "release/windows");
+  const kept = await filed("Kept", "release/windows");
+  // Written past the route, the way a row from before the normalization reads.
+  assert.equal((await tasks.update(legacy.id, { baseBranch: "main" })).ok, true);
+  assert.equal(getTask(legacy.id)?.baseBranch, "main");
+
+  assert.deepEqual(await clearStoredDefaultBaseBranches(tasks), [legacy.id]);
+  assert.equal(getTask(legacy.id)?.baseBranch, null);
+  assert.equal(getTask(kept.id)?.baseBranch, "release/windows");
 });
 
 test("moving a task that keeps a base branch to a repository whose origin lacks it is refused", async () => {
@@ -361,6 +386,12 @@ test("MCP create_task files a task with a base branch through the v3 route, and 
 
   const refused = await mcp("/mcp/v3/tasks", { ...body, baseBranch: "release/gone" });
   assert.equal(refused.status, 400);
+
+  const named = await mcp("/mcp/v3/tasks", { ...body, title: "Default ticket", baseBranch: "main" });
+  assert.equal(named.status, 200, await named.clone().text());
+  const onDefault = (await named.json()) as Task;
+  assert.equal(onDefault.baseBranch, null, "naming origin's default stores the default");
+  assert.equal(getTask(onDefault.id)?.baseBranch, null);
 });
 
 test("the MCP client sends a base branch only to the routes that refuse what they do not know", () => {
@@ -415,6 +446,17 @@ test("MCP push_task sets the task's base branch before mirroring it, and refuses
     const pushed = getTask(ticket.id)!;
     assert.equal(pushed.baseBranch, "release/windows");
     assert.equal(pushed.source?.sourceId, "src-gh");
+
+    // Naming origin's default returns the task to it: stored as null, not as "main".
+    const toDefault = await push("main");
+    assert.equal(toDefault.status, 200, await toDefault.clone().text());
+    const onDefault = getTask(ticket.id)!;
+    assert.equal(onDefault.baseBranch, null, "naming origin's default stores the default");
+    // Already on the default, so naming it again writes nothing.
+    const again = await push("main");
+    assert.equal(again.status, 200, await again.clone().text());
+    assert.equal(getTask(ticket.id)?.baseBranch, null);
+    assert.equal(getTask(ticket.id)?.updatedAt, onDefault.updatedAt, "an unchanged base is not rewritten");
   } finally {
     delete process.env.MISSION_GH_BIN;
     setTaskSourcesConfig(TaskSourcesConfigSchema.parse({ sources: [] }));

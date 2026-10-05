@@ -140,6 +140,21 @@ test("repo and kind and agent each travel alone", () => {
   assert.deepEqual(taskUpdatePatch(t, edited(t, { agent: "codex" }), t.intent), { agent: "codex" });
 });
 
+test("a base branch is set, cleared with an explicit null, and blank means unchanged default", () => {
+  const plain = mkTask();
+  assert.deepEqual(taskUpdatePatch(plain, edited(plain, { baseBranch: " release/windows " }), plain.intent), {
+    baseBranch: "release/windows",
+  });
+  assert.equal(taskUpdatePatch(plain, edited(plain, { baseBranch: "  " }), plain.intent), null);
+  const based = mkTask({ baseBranch: "release/windows" });
+  assert.equal(draftFromTask(based).baseBranch, "release/windows");
+  assert.equal(taskUpdatePatch(based, draftFromTask(based), based.intent), null);
+  assert.deepEqual(taskUpdatePatch(based, edited(based, { baseBranch: "" }), based.intent), {
+    baseBranch: null,
+  });
+  assert.ok(!draftsEqual(draftFromTask(plain), draftFromTask(based)), "a moved base makes a kept draft stale");
+});
+
 test("everything at once still goes as one patch", () => {
   const t = mkTask({ priority: "low", labels: ["bug"], model: "claude-opus-4-8" });
   const patch = taskUpdatePatch(
@@ -170,6 +185,7 @@ test("every field on the form reaches the patch", () => {
   } = {
     repoRoot: "/Users/dev/work/elsewhere",
     extraRepoRoots: ["/Users/dev/work/sibling"],
+    baseBranch: "release/windows",
     intent: "something else entirely",
     title: "Another name",
     kind: "scout",

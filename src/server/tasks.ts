@@ -220,7 +220,7 @@ export interface CreateTaskInput {
   extraRepoRoots?: string[];
   /**
    * The origin branch to start from and open the pull request against, already checked to
-   * exist on `repoRoot`'s origin by the caller (`baseBranchRefusal`). Omitted or null means
+   * exist on `repoRoot`'s origin by the caller (`resolveBaseBranch`). Omitted or null means
    * origin's default branch.
    */
   baseBranch?: string | null;
