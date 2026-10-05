@@ -248,6 +248,10 @@ function automationPayloads(): Array<{ label: string; text: string }> {
           repoRoot: null,
           inspector: null,
           checks: null,
+          mergeable: null,
+          baseRef: null,
+          headSha: null,
+          conflictEscalated: false,
         },
         // `Feedback` is module-private, and the payload it selects is the same shape either
         // way: this asks for the CI half, which every follow-up nudge can carry.
@@ -337,8 +341,8 @@ test("a human sentence that merely contains the daemon's words is not automation
   // Both refs the composer can produce still match, so narrowing the signature did not cost it
   // the payload it is for. `buildPayload` has exactly these two spellings and no others.
   for (const pr of [
-    { prKey: "owner/repo#7", url: "u", number: 7, repoRoot: null, inspector: null, checks: null },
-    { prKey: "owner/repo", url: "u", number: null, repoRoot: null, inspector: null, checks: null },
+    { prKey: "owner/repo#7", url: "u", number: 7, repoRoot: null, inspector: null, checks: null, mergeable: null, baseRef: null, headSha: null, conflictEscalated: false },
+    { prKey: "owner/repo", url: "u", number: null, repoRoot: null, inspector: null, checks: null, mergeable: null, baseRef: null, headSha: null, conflictEscalated: false },
   ]) {
     const payload = buildPayload(pr, { findings: false, ciFailing: true } as Parameters<typeof buildPayload>[1]);
     assert.equal(classify(payload).verdict, "automation", `${payload.slice(0, 40)} must match`);

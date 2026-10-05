@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CONFLICT_ESCALATE_RESEND_MS,
+  CONFLICT_GIVE_UP_MS,
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   buildPayload,
@@ -111,6 +113,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     meta: null,
     effortBaselineReady: false,
     pendingEffort: null,
@@ -267,7 +270,7 @@ test("no open PR is nothing to follow through on", () => {
 
 test("a clean open PR - no findings, CI not red - is left alone", () => {
   const d = decide({ session: mkSession({ inspector: inspector({ open: 0 }), prChecks: "passing" }) });
-  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments or failing CI" });
+  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
 });
 
 test("dry-run Inspector findings are previews, not comments on the PR, so they do not fire", () => {
@@ -276,14 +279,14 @@ test("dry-run Inspector findings are previews, not comments on the PR, so they d
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "dry-run" }) }),
   });
-  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments or failing CI" });
+  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
 });
 
 test("unposted findings do not fire even when the current Inspector mode is live", () => {
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "live" }) }),
   });
-  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments or failing CI" });
+  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
 });
 
 test("a session that needs a human is not free to be handed its PR", () => {
@@ -456,7 +459,7 @@ test("CI that recovers and fails again re-arms, even on the same Inspector round
 // ---- the payload ----
 
 test("the payload names the PR and forbids opening a second one", () => {
-  const p = buildPayload(onlyPr(mkSession()), { findings: true, ciFailing: true });
+  const p = buildPayload(onlyPr(mkSession()), { findings: true, ciFailing: true, conflicting: false });
   assert.match(p, /PR #7/);
   assert.match(p, /Do NOT open a new pull request/);
   assert.match(p, /gh pr view 7 --comments/);
@@ -466,13 +469,13 @@ test("the payload names the PR and forbids opening a second one", () => {
 });
 
 test("the payload only mentions the feedback that is actually open", () => {
-  const ciOnly = buildPayload(onlyPr(mkSession()), { findings: false, ciFailing: true });
+  const ciOnly = buildPayload(onlyPr(mkSession()), { findings: false, ciFailing: true, conflicting: false });
   assert.doesNotMatch(ciOnly, /review comment/);
   assert.match(ciOnly, /CI/);
 
   const findingsOnly = buildPayload(
     onlyPr(mkSession({ inspector: inspector({ open: 1 }) })),
-    { findings: true, ciFailing: false },
+    { findings: true, ciFailing: false, conflicting: false },
   );
   assert.match(findingsOnly, /review comment/);
   assert.doesNotMatch(findingsOnly, /failing CI/);
@@ -527,6 +530,7 @@ const ALPHA_PR = repoPr({
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     inspector: inspector({
       prKey: "owner/alpha#7",
       url: "https://github.com/owner/alpha/pull/7",
@@ -544,6 +548,7 @@ const BETA_PR = repoPr({
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     inspector: inspector({
       prKey: "owner/beta#9",
       url: "https://github.com/owner/beta/pull/9",
@@ -598,6 +603,7 @@ test("each pull request carries its OWN feedback, not the session's", () => {
       prMergeable: null,
       prBaseRef: null,
       prHeadSha: null,
+      prConflictEscalated: false,
       inspector: inspector({
         prKey: "owner/beta#9",
         url: "https://github.com/owner/beta/pull/9",
@@ -609,7 +615,7 @@ test("each pull request carries its OWN feedback, not the session's", () => {
   const prs = followupPrs(session);
 
   const quiet = decide({ session, pr: prs[0] });
-  assert.deepEqual(quiet, { kind: "skip", why: "no enabled review comments or failing CI" });
+  assert.deepEqual(quiet, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
 
   const loud = decide({ session, pr: prs[1] });
   assert.equal(loud.kind, "nudge");
@@ -622,7 +628,7 @@ test("each pull request carries its OWN feedback, not the session's", () => {
 test("a nudge about one repository's pull request names it, and only forbids a second OF IT", () => {
   const pr = followupPrs(mkMultiRepoSession([ALPHA_PR, BETA_PR]))[1];
   assert.ok(pr);
-  const payload = buildPayload(pr, { findings: true, ciFailing: true });
+  const payload = buildPayload(pr, { findings: true, ciFailing: true, conflicting: false });
   assert.match(payload, /PR #9/);
   assert.match(payload, /\/work\/beta/);
   assert.match(payload, /one of several repositories/);
@@ -646,6 +652,7 @@ test("two pull requests on one session hold independent marks", () => {
         prMergeable: null,
         prBaseRef: null,
         prHeadSha: null,
+        prConflictEscalated: false,
         inspector: inspector({
           prKey: "owner/alpha#7",
           url: "https://github.com/owner/alpha/pull/7",
@@ -662,6 +669,7 @@ test("two pull requests on one session hold independent marks", () => {
         prMergeable: null,
         prBaseRef: null,
         prHeadSha: null,
+        prConflictEscalated: false,
         inspector: inspector({
           prKey: "owner/beta#9",
           url: "https://github.com/owner/beta/pull/9",
@@ -706,8 +714,15 @@ test("a mark advances on its own pull request's CI, not a sibling's", () => {
     repoRoot: "/work/beta",
     inspector: null,
     checks: "failing",
+    mergeable: null,
+    baseRef: null,
+    headSha: null,
+    conflictEscalated: false,
   };
-  const nudged = advanceFollowupMark({ prKey: failing.prKey, findingsRound: null, ciNudged: true }, failing);
+  const nudged = advanceFollowupMark(
+    { ...advanceFollowupMark(null, failing), ciNudged: true },
+    failing,
+  );
   assert.equal(nudged.ciNudged, true, "still the same failing episode");
   const recovered = advanceFollowupMark(nudged, { ...failing, checks: "passing" });
   assert.equal(recovered.ciNudged, false, "this pull request's own checks recovered");
@@ -721,7 +736,7 @@ test("two repositories holding the same pull request NUMBER do not share a mark"
     repoPr({
       repoRoot,
       prUrl: url,
-      feedback: { prNumber: 7, prChecks: "failing", prMergeable: null, prBaseRef: null, prHeadSha: null, inspector: null },
+      feedback: { prNumber: 7, prChecks: "failing", prMergeable: null, prBaseRef: null, prHeadSha: null, inspector: null, prConflictEscalated: false },
     });
   const prs = followupPrs(
     mkMultiRepoSession([
@@ -730,4 +745,220 @@ test("two repositories holding the same pull request NUMBER do not share a mark"
     ]),
   );
   assert.equal(new Set(prs.map((pr) => pr.prKey)).size, 2, "one key per pull request");
+});
+
+// ---- merge conflicts, the third dimension ----
+
+/** A session parked on a PR whose head `head` is observed conflicting with `main`. */
+function conflictingOn(head: string, over: Partial<Session> = {}): Session {
+  return mkSession({
+    prMergeable: { state: "conflicting", headSha: head },
+    prHeadSha: head,
+    prBaseRef: "main",
+    ...over,
+  });
+}
+
+/** One worker pass: fold the observation in, decide, and stamp what the decision carries. */
+function pass(
+  session: Session,
+  prev: FollowupMark | null,
+  now = NOW,
+  over: Partial<ReviewFollowupInput> = {},
+) {
+  const observed = observe(session, prev);
+  const d = decide({ session, mark: observed, now, ...over });
+  return { d, mark: d.kind === "skip" ? observed : d.mark };
+}
+
+const MIN = 60_000;
+
+test("a conflicting head earns a nudge with the merge steps and the no-rebase line", () => {
+  const { d, mark } = pass(conflictingOn("A"), null);
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.match(d.reason, /merge conflicts with main/);
+  assert.match(d.payload, /PR #7 needs follow-through: it has merge conflicts with `main`\./);
+  assert.match(d.payload, /git fetch origin main/);
+  assert.match(d.payload, /git merge origin\/main/);
+  assert.match(d.payload, /Resolve every conflict/);
+  assert.match(d.payload, /Run the tests that cover the files you touched/);
+  assert.match(d.payload, /Do not rebase or force-push/);
+  assert.match(d.payload, /Do NOT open a new pull request/);
+  assert.equal(mark.conflictHead, "A");
+  assert.equal(mark.conflictNudges, 1);
+  assert.equal(mark.conflictNudgedAt, NOW);
+});
+
+test("the same conflicting head is not nudged twice; a new one is", () => {
+  const first = pass(conflictingOn("A"), null);
+  const again = pass(conflictingOn("A"), first.mark, NOW + 30_000);
+  assert.deepEqual(again.d, { kind: "skip", why: "already nudged this round of feedback" });
+
+  const next = pass(conflictingOn("B"), again.mark, NOW + 60_000);
+  assert.equal(next.d.kind, "nudge");
+  assert.equal(next.mark.conflictHead, "B");
+  assert.equal(next.mark.conflictNudges, 2);
+});
+
+test("after 3 nudges a new conflicting head escalates instead of nudging", () => {
+  let mark: FollowupMark | null = null;
+  for (const [i, head] of ["A", "B", "C"].entries()) {
+    const r = pass(conflictingOn(head), mark, NOW + i * MIN);
+    assert.equal(r.d.kind, "nudge", `nudge ${i + 1} on ${head}`);
+    mark = r.mark;
+  }
+  assert.equal(mark?.conflictNudges, 3);
+
+  // Escalation types nothing, so even a session that is busy again is handed over.
+  const { d, mark: escalated } = pass(conflictingOn("D", { state: "working" }), mark, NOW + 3 * MIN);
+  assert.equal(d.kind, "escalate");
+  if (d.kind !== "escalate") return;
+  assert.equal(d.url, "https://github.com/owner/repo/pull/7");
+  assert.equal(d.headSha, "D");
+  assert.equal(d.resend, false);
+  assert.match(d.reason, /3 conflict nudges/);
+  assert.equal(escalated.conflictEscalated, true);
+  assert.equal(escalated.conflictNudges, 3, "an escalation is not a nudge");
+});
+
+test("settled-idle for 2 minutes on the nudged, still-conflicting head escalates", () => {
+  const nudged = pass(conflictingOn("A"), null).mark;
+  // Idle since NOW - 20s: at +1 minute that is not yet two minutes of settled idle.
+  const early = pass(conflictingOn("A"), nudged, NOW + MIN);
+  assert.equal(early.d.kind, "skip");
+
+  const late = pass(conflictingOn("A"), early.mark, NOW + 2 * MIN);
+  assert.equal(late.d.kind, "escalate");
+  if (late.d.kind !== "escalate") return;
+  assert.equal(late.d.resend, false);
+  assert.match(late.d.reason, /parked on the nudged head/);
+});
+
+test("the give-up clock starts at the nudge, not at a long idle before it", () => {
+  const longIdle = { lastActivity: NOW - 30 * MIN };
+  const nudged = pass(conflictingOn("A", longIdle), null).mark;
+  const next = pass(conflictingOn("A", longIdle), nudged, NOW + 10_000);
+  assert.equal(next.d.kind, "skip", "the pass right after the nudge does not give up");
+  const later = pass(conflictingOn("A", longIdle), nudged, NOW + CONFLICT_GIVE_UP_MS);
+  assert.equal(later.d.kind, "escalate");
+});
+
+test("a still-working agent on the nudged head is not given up on", () => {
+  const nudged = pass(conflictingOn("A"), null).mark;
+  const r = pass(conflictingOn("A", { state: "working", lastActivity: NOW + 5 * MIN }), nudged, NOW + 5 * MIN);
+  assert.equal(r.d.kind, "skip");
+});
+
+test("an escalated mark re-sends at most once a minute while conflicting, and stops after re-arming", () => {
+  let mark: FollowupMark | null = null;
+  for (const [i, head] of ["A", "B", "C"].entries()) mark = pass(conflictingOn(head), mark, NOW + i * MIN).mark;
+  const t0 = NOW + 3 * MIN;
+  mark = pass(conflictingOn("D"), mark, t0).mark;
+  assert.equal(mark.conflictEscalated, true);
+
+  // The daemon publishes the flag; the conflict is the operator's and is never nudged again.
+  const owned = { prConflictEscalated: true };
+  const quiet = pass(conflictingOn("D", owned), mark, t0 + 30_000);
+  assert.equal(quiet.d.kind, "skip");
+  const newHead = pass(conflictingOn("E", owned), quiet.mark, t0 + 45_000);
+  assert.equal(newHead.d.kind, "skip", "not even on a new head");
+
+  const resent = pass(conflictingOn("E", owned), newHead.mark, t0 + CONFLICT_ESCALATE_RESEND_MS);
+  assert.equal(resent.d.kind, "escalate");
+  if (resent.d.kind !== "escalate") return;
+  assert.equal(resent.d.resend, true);
+  assert.equal(resent.d.headSha, "E");
+  const tooSoon = pass(conflictingOn("E", owned), resent.mark, t0 + CONFLICT_ESCALATE_RESEND_MS + 30_000);
+  assert.equal(tooSoon.d.kind, "skip");
+
+  // Fixed: observed mergeable on the current head. Everything re-arms and nothing re-sends.
+  const fixed = mkSession({ prMergeable: { state: "mergeable", headSha: "F" }, prHeadSha: "F", prBaseRef: "main" });
+  const rearmed = pass(fixed, tooSoon.mark, t0 + 5 * MIN);
+  assert.equal(rearmed.d.kind, "skip");
+  assert.equal(rearmed.mark.conflictEscalated, false);
+  assert.equal(rearmed.mark.conflictNudges, 0);
+  assert.equal(rearmed.mark.conflictHead, null);
+
+  // A new conflict after that is a new episode: nudged again from one.
+  const reopened = pass(conflictingOn("G"), rearmed.mark, t0 + 6 * MIN);
+  assert.equal(reopened.d.kind, "nudge");
+  assert.equal(reopened.mark.conflictNudges, 1);
+});
+
+test("a restarted daemon (no episode flag) still gets the re-send", () => {
+  let mark: FollowupMark | null = null;
+  for (const [i, head] of ["A", "B", "C", "D"].entries()) mark = pass(conflictingOn(head), mark, NOW + i * MIN).mark;
+  assert.equal(mark?.conflictEscalated, true);
+  // The snapshot says nothing is escalated: the daemon forgot. Foreman's mark still holds it.
+  const r = pass(conflictingOn("D", { prConflictEscalated: false }), mark, NOW + 5 * MIN);
+  assert.equal(r.d.kind, "escalate");
+  if (r.d.kind === "escalate") assert.equal(r.d.resend, true);
+});
+
+test("a restarted Foreman seeds its mark from prConflictEscalated and never nudges", () => {
+  const session = conflictingOn("A", { prConflictEscalated: true });
+  const seeded = observe(session, null);
+  assert.equal(seeded.conflictEscalated, true);
+  assert.equal(seeded.conflictEscalatedAt, null);
+
+  const first = decide({ session, mark: seeded });
+  assert.equal(first.kind, "escalate", "an unsent seeded mark sends once, which the daemon already holds");
+  if (first.kind !== "escalate") return;
+  assert.equal(first.resend, true);
+  const after = pass(session, first.mark, NOW + 10_000);
+  assert.equal(after.d.kind, "skip");
+});
+
+test("push, then UNKNOWN, then resolved: no nudge, no cap increment, no give-up while the new head is unknown", () => {
+  const nudged = pass(conflictingOn("A"), null).mark;
+  // Head B pushed; GitHub has not answered for it. The kept observation stays on A.
+  const unknownB = mkSession({
+    prMergeable: { state: "conflicting", headSha: "A" },
+    prHeadSha: "B",
+    prBaseRef: "main",
+    lastActivity: NOW,
+  });
+  for (const at of [NOW + MIN, NOW + 5 * MIN, NOW + 30 * MIN]) {
+    const r = pass(unknownB, nudged, at);
+    assert.equal(r.d.kind, "skip", `still unknown at +${(at - NOW) / MIN}m`);
+    assert.deepEqual(r.mark, nudged, "the mark is untouched");
+  }
+
+  const mergeableB = mkSession({ prMergeable: { state: "mergeable", headSha: "B" }, prHeadSha: "B", prBaseRef: "main" });
+  const resolved = pass(mergeableB, nudged, NOW + 31 * MIN);
+  assert.equal(resolved.d.kind, "skip");
+  assert.equal(resolved.mark.conflictHead, null, "re-armed once B is mergeable");
+  assert.equal(resolved.mark.conflictNudges, 0);
+});
+
+test("trackMergeConflicts off neither nudges nor escalates a conflict", () => {
+  const cfg = { trackReviewComments: true, trackCiFailures: true, trackMergeConflicts: false, settleMs: SETTLE };
+  assert.equal(pass(conflictingOn("A"), null, NOW, { cfg }).d.kind, "skip");
+  const escalated: FollowupMark = { ...observe(conflictingOn("A")), conflictEscalated: true };
+  assert.equal(pass(conflictingOn("A"), escalated, NOW, { cfg }).d.kind, "skip");
+});
+
+test("an active workflow owns its session's conflict: no nudge and no escalation", () => {
+  const escalated: FollowupMark = { ...observe(conflictingOn("A")), conflictEscalated: true };
+  assert.deepEqual(pass(conflictingOn("A"), escalated, NOW, { workflowOwnsSession: true }).d, {
+    kind: "skip",
+    why: "an active workflow owns this session",
+  });
+});
+
+test("a conflict shares one payload with CI and findings; an escalated one is left out", () => {
+  const all = pass(conflictingOn("A", { prChecks: "failing", inspector: inspector({ open: 2 }) }), null);
+  assert.equal(all.d.kind, "nudge");
+  if (all.d.kind !== "nudge") return;
+  assert.match(all.d.payload, /2 unresolved review comments on it, and its CI checks are failing, and it has merge conflicts with `main`/);
+
+  const owned = conflictingOn("A", { prChecks: "failing", prConflictEscalated: true });
+  const ciOnly = pass(owned, null);
+  assert.equal(ciOnly.d.kind, "escalate", "the seeded mark's one send comes first");
+  const next = pass(owned, ciOnly.mark, NOW + 1);
+  assert.equal(next.d.kind, "nudge");
+  if (next.d.kind !== "nudge") return;
+  assert.match(next.d.payload, /CI checks are failing/);
+  assert.doesNotMatch(next.d.payload, /merge conflicts/);
 });

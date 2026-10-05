@@ -49,6 +49,7 @@ import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
 import { getWorkflowPolicy } from "./workflows/config.ts";
 import { startPrPoller } from "./pr.ts";
+import { PrConflictTracker } from "./pr-conflicts.ts";
 import { startInspector } from "./inspector/worker.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
@@ -327,6 +328,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  trackMergeConflicts: () => getForemanConfig().trackMergeConflicts,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -488,7 +490,12 @@ const retentionObserver = new TaskWorktreeRetentionObserver({
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
-const stopPrPoller = startPrPoller(registry, getForemanConfig);
+// One set of conflict episodes, fed by the PR poller, reclassified as workflow runs move, and
+// escalated through Foreman's route.
+const prConflicts = new PrConflictTracker(registry, getForemanConfig, (runId) =>
+  workflows.waitForCiReachable(runId),
+);
+const stopPrPoller = startPrPoller(registry, prConflicts);
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
 });
@@ -670,6 +677,7 @@ const app = buildApp({
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
+  prConflicts,
 });
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

@@ -133,6 +133,7 @@ import {
   SessionFilePathSchema,
   SubmitOptionsSchema,
   RecordEpisodeSchema,
+  EscalatePrConflictSchema,
   ResolveEpisodeSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
@@ -218,6 +219,7 @@ import {
 } from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
+import type { PrConflictTracker } from "./pr-conflicts.ts";
 import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
@@ -1201,6 +1203,11 @@ export interface RouteDeps {
    * preference is read through the real composition.
    */
   focusTerminals?: TerminalDeps;
+  /**
+   * The daemon's conflict episodes, which the PR poller feeds. Foreman's escalation route
+   * answers 503 without them; the daemon passes the same instance the poller runs.
+   */
+  prConflicts?: PrConflictTracker;
 }
 
 /**
@@ -1241,6 +1248,7 @@ export const ROUTE_DEP_NAMES = [
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
+  "prConflicts",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1531,6 +1539,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupDeps,
     setupInstallDeps,
     focusTerminals,
+    prConflicts,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -6198,6 +6207,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const foremanInvite = registry.withdrawForemanInvite(session.id);
     if (foremanInvite === undefined) return c.json({ error: "no such session" }, 404);
     return c.json({ foremanInvite });
+  });
+
+  // --- Merge conflicts: Foreman hands a conflict its nudges did not resolve to the operator ---
+
+  // Found by URL alone, whichever head the episode is on now, so an escalation on a later
+  // conflicting head still lands. Idempotent: Foreman re-sends it so a restarted daemon
+  // re-learns it. With no episode open for the URL it does nothing.
+  app.post("/api/pr-conflicts/escalate", async (c) => {
+    if (!prConflicts) return c.json({ error: "this daemon tracks no merge conflicts" }, 503);
+    const parsed = await parseBody(c, EscalatePrConflictSchema);
+    if (!parsed.ok) return parsed.res;
+    const escalated = prConflicts.escalate(parsed.data.prUrl, parsed.data.headSha);
+    if (escalated) {
+      console.log(`[pr-conflicts] Foreman escalated ${parsed.data.prUrl} on ${parsed.data.headSha}`);
+    }
+    return c.json({ ok: true, escalated });
   });
 
   // --- Foreman episodes: the append-only record behind the note ---

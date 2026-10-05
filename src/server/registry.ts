@@ -864,6 +864,8 @@ export class Registry extends EventEmitter {
   private workflowRuns = new Map<string, WorkflowRunSummary>();
   /** The conflict episodes' last published blocked set (`setBlockedPrs`). */
   private blockedPrs: BlockedPr[] = [];
+  /** The PR URLs whose open conflict episode Foreman escalated (`setEscalatedPrUrls`). */
+  private escalatedPrUrls: ReadonlySet<string> = new Set();
   /**
    * What each conversation is ARMED with, as distinct from what is running on it.
    *
@@ -2564,6 +2566,7 @@ export class Registry extends EventEmitter {
       prMergeable: prev?.prMergeable ?? null,
       prBaseRef: prev?.prBaseRef ?? null,
       prHeadSha: prev?.prHeadSha ?? null,
+      prConflictEscalated: prev?.prConflictEscalated ?? false,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
       pendingEffort: prev?.pendingEffort ?? null,
@@ -2760,6 +2763,7 @@ export class Registry extends EventEmitter {
       prState: null,
       prChecks: null,
       ...NO_MERGEABILITY,
+      prConflictEscalated: false,
       meta: null,
       effortBaselineReady: false,
       pendingEffort: null,
@@ -3111,6 +3115,7 @@ export class Registry extends EventEmitter {
       // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
       prChecks: null,
       ...NO_MERGEABILITY,
+      prConflictEscalated: this.escalatedPrUrls.has(url),
     };
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
@@ -3233,6 +3238,7 @@ export class Registry extends EventEmitter {
             // reused session can't carry the previous PR's status onto a new one.
             prChecks: null,
             ...NO_MERGEABILITY,
+            prConflictEscalated: this.escalatedPrUrls.has(evt.prUrl),
           }
         : {};
       const agentSessionId = evt.sessionId ?? target.agentSessionId;
@@ -5066,6 +5072,7 @@ export class Registry extends EventEmitter {
       prBaseRef: live.prBaseRef,
       prHeadSha: live.prHeadSha,
       inspector: this.inspectorSummaryForUrl(prUrl),
+      prConflictEscalated: this.escalatedPrUrls.has(prUrl),
     };
   }
 
@@ -5298,6 +5305,7 @@ export class Registry extends EventEmitter {
       const mergeability = match
         ? nextMergeability(live.prUrl === match.url ? live : null, mergeabilityReadOf(match))
         : NO_MERGEABILITY;
+      const escalated = url !== null && this.escalatedPrUrls.has(url);
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
           url: match.url,
@@ -5337,7 +5345,8 @@ export class Registry extends EventEmitter {
         live.prNumber === number &&
         live.prState === state &&
         live.prChecks === checks &&
-        mergeabilityEqual(live, mergeability)
+        mergeabilityEqual(live, mergeability) &&
+        live.prConflictEscalated === escalated
       )
         continue;
       const next: Session = {
@@ -5347,6 +5356,7 @@ export class Registry extends EventEmitter {
         prState: state,
         prChecks: checks,
         ...mergeability,
+        prConflictEscalated: escalated,
         task,
       };
       // `prUrl` is the key the Inspector summary hangs off, so changing it here without
@@ -5423,8 +5433,8 @@ export class Registry extends EventEmitter {
    * `taskPrPollTargets`, with the task each URL belongs to. The one walk both read, so the
    * by-URL harvest and the conflict episodes' "a task still references it" cannot disagree.
    */
-  private taskPrUrlOwners(): Map<string, Task> {
-    const urls = new Map<string, Task>();
+  private taskPrUrlOwners(): Map<string, { task: Task; repoRoot: string }> {
+    const urls = new Map<string, { task: Task; repoRoot: string }>();
     const historical = new Map<string, TaskWorkEpisodeBinding[]>();
     for (const binding of historicalTaskWorkEpisodeBindings()) {
       const list = historical.get(binding.taskId) ?? [];
@@ -5438,14 +5448,16 @@ export class Registry extends EventEmitter {
         ...(historical.get(task.id) ?? []),
       ];
       for (const candidate of candidates) {
-        if (candidate?.prUrl && candidate.mergedAt === null) urls.set(candidate.prUrl, task);
+        if (candidate?.prUrl && candidate.mergedAt === null) {
+          urls.set(candidate.prUrl, { task, repoRoot: task.repoRoot });
+        }
       }
       // And the SECONDARY repositories' pull requests, on the same rule. Without them a
       // multi-repo task's quorum could never be met once its agent was gone: the branch
       // poller only asks about LIVE sessions, so nothing would ever observe repo B's merge
       // and the task would sit `running` for ever with repo A's already landed.
       for (const repoPr of workEpisodeRepoPrsForTask(task.id)) {
-        if (repoPr.mergedAt === null) urls.set(repoPr.prUrl, task);
+        if (repoPr.mergedAt === null) urls.set(repoPr.prUrl, { task, repoRoot: repoPr.repoRoot });
       }
     }
     return urls;
@@ -5454,40 +5466,66 @@ export class Registry extends EventEmitter {
   /**
    * Who still references each pull request, for the conflict episodes
    * (`src/server/pr-conflicts.ts`): every session naming it, as its own PR or one of its
-   * task's per-repository PRs, and the task whose work carries it.
+   * task's per-repository PRs, the task whose work carries it, and the active workflow runs
+   * reviewing its repository.
    *
    * Exited sessions are included. A session stops referencing its PR only when it leaves
    * the map through `session_remove`, which is what lets an exited session's conflict read
    * as "session ended" rather than vanish.
    */
   prReferences(): Map<string, PrReference> {
-    const refs = new Map<string, { sessions: Session[]; task: PrReference["task"]; workflowOwned: boolean }>();
+    const refs = new Map<string, {
+      sessions: Session[];
+      task: PrReference["task"];
+      workflowOwned: boolean;
+      workflowRunIds: string[];
+    }>();
     const entry = (url: string) => {
       let ref = refs.get(url);
-      if (!ref) refs.set(url, (ref = { sessions: [], task: null, workflowOwned: false }));
+      if (!ref) refs.set(url, (ref = { sessions: [], task: null, workflowOwned: false, workflowRunIds: [] }));
       return ref;
     };
+    const addRuns = (ref: { workflowRunIds: string[] }, runIds: string[]): void => {
+      for (const id of runIds) if (!ref.workflowRunIds.includes(id)) ref.workflowRunIds.push(id);
+    };
     for (const s of this.sessions.values()) {
-      const urls = new Set([s.prUrl, ...(s.task?.repoPrs ?? []).map((pr) => pr.prUrl)]);
-      for (const url of urls) {
-        if (!url) continue;
+      // Each URL with the repository it belongs to, so only the run reviewing THAT repository
+      // is asked whether it gates the pull request's CI.
+      const urls = new Map<string, string | null>();
+      for (const pr of s.task?.repoPrs ?? []) if (pr.prUrl) urls.set(pr.prUrl, pr.repoRoot);
+      if (s.prUrl) urls.set(s.prUrl, s.repoRoot);
+      for (const [url, repoRoot] of urls) {
         const ref = entry(url);
         ref.sessions.push(s);
         if (s.task && !ref.task) ref.task = { id: s.task.id, title: s.task.fullTitle };
         if (!ref.workflowOwned) ref.workflowOwned = this.workflowOwnsSession(s);
+        addRuns(ref, this.activeWorkflowRunIds(s.id, noteKeyFor(s), repoRoot));
       }
     }
-    for (const [url, task] of this.taskPrUrlOwners()) {
+    for (const [url, { task, repoRoot }] of this.taskPrUrlOwners()) {
       const ref = entry(url);
       ref.task ??= { id: task.id, title: fullTaskTitle(task.title, task.intent) };
       // The binding outlives the session it names, so a run still active for an agent that
       // has already been removed still owns the work.
       const binding = taskWorkEpisodeForTask(task.id);
-      if (!ref.workflowOwned && binding) {
-        ref.workflowOwned = this.workflowOwnsKey(binding.sessionId, binding.agentSessionId);
+      if (binding) {
+        if (!ref.workflowOwned) {
+          ref.workflowOwned = this.workflowOwnsKey(binding.sessionId, binding.agentSessionId);
+        }
+        addRuns(ref, this.activeWorkflowRunIds(binding.sessionId, binding.agentSessionId, repoRoot));
       }
     }
     return refs;
+  }
+
+  /**
+   * The runs owning a session that review this repository: `owningRuns`, narrowed. A run whose
+   * repository is unknown reviews the session's own.
+   */
+  private activeWorkflowRunIds(sessionId: string, noteKey: string, repoRoot: string | null): string[] {
+    return this.owningRuns(sessionId, noteKey)
+      .filter((run) => !run.repoRoot || !repoRoot || run.repoRoot === repoRoot)
+      .map((run) => run.id);
   }
 
   /** Whether a non-terminal workflow run owns this session, as Foreman's follow-through reads it. */
@@ -5497,11 +5535,39 @@ export class Registry extends EventEmitter {
 
   /** The run filter `/api/workflow-runs?session=` applies: by session id or by note key. */
   private workflowOwnsKey(sessionId: string, noteKey: string): boolean {
-    return activeWorkflowOwnsSession(
-      [...this.workflowRuns.values()].filter(
-        (run) => run.sessionId === sessionId || run.noteKey === noteKey,
-      ),
+    return this.owningRuns(sessionId, noteKey).length > 0;
+  }
+
+  /**
+   * The one rule for which runs own a session: non-terminal, matched by session id or note key.
+   * Both "is this session workflow-owned" and "which runs might gate its pull request" read it,
+   * so they cannot disagree about ownership.
+   */
+  private owningRuns(sessionId: string, noteKey: string): WorkflowRunSummary[] {
+    return [...this.workflowRuns.values()].filter(
+      (run) =>
+        (run.sessionId === sessionId || run.noteKey === noteKey) && activeWorkflowOwnsSession([run]),
     );
+  }
+
+  /**
+   * Record which PRs' open conflict episodes Foreman escalated, and carry the flag onto every
+   * snapshot naming one: `prConflictEscalated` on each session whose `prUrl` it is, and on each
+   * multi-repo task's per-repository feedback. Emits only for snapshots that moved.
+   */
+  setEscalatedPrUrls(urls: ReadonlySet<string>): void {
+    const prev = this.escalatedPrUrls;
+    if (prev.size === urls.size && [...urls].every((url) => prev.has(url))) return;
+    this.escalatedPrUrls = new Set(urls);
+    for (const [id, s] of this.sessions) {
+      const escalated = s.prUrl !== null && urls.has(s.prUrl);
+      if (s.prConflictEscalated !== escalated) {
+        const next: Session = { ...s, prConflictEscalated: escalated };
+        this.sessions.set(id, next);
+        this.emitSession(next);
+      }
+      if ((s.task?.repoPrs?.length ?? 0) > 0) this.resyncSessionTask(id);
+    }
   }
 
   /** Publish the blocked pull requests, emitting `blocked_prs` only when the set changed. */
@@ -9940,6 +10006,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   prMergeable: byJson,
   prBaseRef: byValue,
   prHeadSha: byValue,
+  prConflictEscalated: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.
   inspector: byJson,

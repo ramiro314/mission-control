@@ -16,7 +16,10 @@ import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 import { executionAuthorizationContract } from "../execution-authorization.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
-import { workflowPullRequestCiContract } from "./agent-contract.ts";
+import {
+  workflowPullRequestCiContract,
+  workflowPullRequestConflictContract,
+} from "./agent-contract.ts";
 import {
   isTestEvidenceAuditorPersona,
   testEvidenceRequestCategories,
@@ -157,6 +160,8 @@ export interface SessionActionPacketInput {
   workflowEvidence: boolean;
   /** Enabled only for workflow PR completion actions at packet preparation. */
   pullRequestCi?: boolean;
+  /** The merge-conflict line, on the same terms as `pullRequestCi` but its own setting. */
+  pullRequestConflicts?: boolean;
   /**
    * The action's contract completes on a pull request, so this packet carries the creation
    * grant. Off for every other action, authored or on-demand: the packet then carries the task
@@ -763,7 +768,10 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
   const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
     ? ["", workflowPullRequestCiContract(), ""]
     : [];
-  const payload = `${[...lines, authorization, ...ciPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  const conflictPolicy = input.origin.kind === "run" && input.pullRequestConflicts
+    ? [...(ciPolicy.length > 0 ? [] : [""]), workflowPullRequestConflictContract(), ""]
+    : [];
+  const payload = `${[...lines, authorization, ...ciPolicy, ...conflictPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
   // one is the operator's own instruction, frozen into an immutable version: a prefix of

@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { Session, Task } from "../src/shared/types.ts";
@@ -243,15 +243,8 @@ test("dispatch refuses a base branch origin no longer has, before anything is pr
 // --- reset ---
 
 function sessionAt(cwd: string, id = "s1"): Session {
-  return {
-    id, agent: "claude", name: "work", runtime: "terminal", foremanInvite: null, nameSource: "process", state: "idle",
-    cwd, gitBranch: null, gitRoot: null, repoRoot: null, pid: 1, tty: null,
-    permissionMode: null, terminals: [], agentSessionId: null, transcriptPath: null,
-    instrumented: false, stateConfirmed: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
-    lastActivity: null, pendingReviews: 0, task: null,
-    prUrl: null, prNumber: null, prState: null, prChecks: null, prMergeable: null, prBaseRef: null, prHeadSha: null, inspector: null,
-    meta: null, effortBaselineReady: false, pendingEffort: null, note: null, cost: null, goal: null, queue: null, pendingTurns: [], orphanedQueue: null, pipeline: null, paneDialog: null,
-  };
+  // No pane: these resets never clear context, so nothing here may be typed anywhere.
+  return mkSession({ id, cwd, gitBranch: null, terminals: [], tty: null });
 }
 
 test("a reset for a task with a base branch lands on origin/<base>; without one, on origin's default", async () => {

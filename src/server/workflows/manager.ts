@@ -99,6 +99,8 @@ import {
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
   waitForCiFollows,
+  waitForCiReachable,
+  workflowRunActiveNodeIds,
   type WorkflowLaunchBlock,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
@@ -220,7 +222,11 @@ import {
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
-import { readWaitForCiState, type CiObservation } from "@shared/wait-for-ci.ts";
+import {
+  readWaitForCiState,
+  type CiObservation,
+  type WaitForCiMergeability,
+} from "@shared/wait-for-ci.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
@@ -337,11 +343,19 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
 export interface WorkflowManagerOptions {
   /** Foreman's CI preference, read only when preparing a new PR action packet. */
   trackCiFailures?: () => boolean;
+  /** Foreman's merge-conflict preference, read only when preparing a new PR action packet. */
+  trackMergeConflicts?: () => boolean;
   /**
    * The Inspector's stored CI snapshot for one pull request, which is all Wait for CI reads.
    * Injected by tests; the daemon reads the adoption ledger's column.
    */
   ciObservation?: (pullRequestKey: string) => CiObservation | null;
+  /**
+   * Whether one pull request conflicts with its base, for Wait for CI. Injected by tests; the
+   * daemon reads the PR poller's observation off the binding's session
+   * (`sessionPrMergeability`).
+   */
+  prMergeability?: (pullRequestKey: string, session: Session | null) => WaitForCiMergeability | null;
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   /**
@@ -5351,6 +5365,11 @@ export class WorkflowManager {
       pullRequestCi: snapshot.completion.kind === "pull_request"
         && this.options.trackCiFailures?.() === true
         && !waitForCiFollows(version.graph, attempt.nodeId),
+      // Its own setting, under the same rule: a Wait for CI node after the action fails on a
+      // conflict itself and starts a repair round.
+      pullRequestConflicts: snapshot.completion.kind === "pull_request"
+        && this.options.trackMergeConflicts?.() === true
+        && !waitForCiFollows(version.graph, attempt.nodeId),
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot
@@ -5494,11 +5513,14 @@ export class WorkflowManager {
   private async observeWaitForCiAttempt(attemptId: string, now = Date.now()): Promise<void> {
     try {
       await this.resolveWaitForCiHead(attemptId, now);
-      this.engine.observeWaitForCi(
-        attemptId,
-        this.options.ciObservation ?? getInspectorCiObservation,
-        now,
-      );
+      this.engine.observeWaitForCi(attemptId, {
+        ci: this.options.ciObservation ?? getInspectorCiObservation,
+        mergeability: (pullRequestKey, bindingId) => {
+          const sessionId = this.store.getBinding(bindingId)?.sessionId ?? null;
+          const session = sessionId ? this.registry.getSession(sessionId) ?? null : null;
+          return (this.options.prMergeability ?? sessionPrMergeability)(pullRequestKey, session);
+        },
+      }, now);
     } catch (error) {
       workflowLog("error", {
         event: "wait_for_ci_observe_failed",
@@ -5506,6 +5528,29 @@ export class WorkflowManager {
         error: error instanceof Error ? error.name : "unknown",
       });
     }
+  }
+
+  /**
+   * Whether this run will see its pull request's merge conflict on its own: a Wait for CI node
+   * it is at, or can still reach from where it is, fails on the conflict and starts a repair
+   * round. False for a run past every Wait for CI, with none, or stopped, which is the conflict
+   * episodes' `workflow-not-gating`. Read whenever the run changes, never cached.
+   */
+  waitForCiReachable(runId: string): boolean {
+    const run = this.store.getRun(runId);
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    if (!run || !version) return false;
+    const submission = this.store.latestSubmission(runId);
+    const continuation = submission?.continuationNodeAttemptId
+      ? this.store.getAttempt(submission.continuationNodeAttemptId)
+      : null;
+    const active = workflowRunActiveNodeIds({
+      status: run.status,
+      graph: version.graph,
+      attempts: submission ? this.store.listAttempts(submission.id) : [],
+      continuationNodeId: continuation?.nodeId ?? null,
+    });
+    return waitForCiReachable(version.graph, active, run.disabledNodeIds ?? []);
   }
 
   /** Stop a waiting action and block its run, without ever producing repair feedback. */
@@ -8046,6 +8091,30 @@ export class WorkflowManager {
     this.registry.upsertWorkflow(summary);
     return { ok: true, workflow: result.workflow, summary };
   }
+}
+
+/**
+ * The PR poller's conflict observation for one pull request, read off the session that carries
+ * it: the session's own pull request, or one of its task's per-repository pull requests.
+ *
+ * The observation keeps the head it was made on, so Wait for CI can refuse to apply a conflict
+ * seen before a repair push to the head that push made. Null when the session carries no
+ * definitive observation for that pull request.
+ */
+export function sessionPrMergeability(
+  pullRequestKey: string,
+  session: Session | null,
+): WaitForCiMergeability | null {
+  if (!session) return null;
+  const key = pullRequestKey.toLowerCase();
+  const matches = (url: string | null): boolean =>
+    url !== null && parsePrUrl(url)?.key.toLowerCase() === key;
+  const fields = matches(session.prUrl)
+    ? session
+    : session.task?.repoPrs.find((pr) => matches(pr.prUrl))?.feedback ?? null;
+  const observed = fields?.prMergeable ?? null;
+  if (!fields || !observed) return null;
+  return { mergeable: observed.state, headSha: observed.headSha, baseRef: fields.prBaseRef };
 }
 
 /**

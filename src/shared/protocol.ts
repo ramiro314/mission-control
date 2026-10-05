@@ -1766,6 +1766,17 @@ export const RecordEpisodeSchema = z.object({
 });
 export type RecordEpisode = z.infer<typeof RecordEpisodeSchema>;
 
+/**
+ * `POST /api/pr-conflicts/escalate`: Foreman hands a conflicting pull request to the operator
+ * because its nudges did not resolve it. The open episode is found by `prUrl` alone; `headSha`
+ * is the head Foreman escalated on, recorded for display and the log.
+ */
+export const EscalatePrConflictSchema = z.object({
+  prUrl: z.string().min(1),
+  headSha: z.string().min(1),
+});
+export type EscalatePrConflict = z.infer<typeof EscalatePrConflictSchema>;
+
 /** A pipeline-owned episode, addressed without inventing a live agent session. */
 export const PipelineForemanEpisodeSchema = z.object({
   provider: z.enum(PIPELINE_PROVIDER_IDS),

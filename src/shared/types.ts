@@ -772,6 +772,12 @@ export interface Session {
   /** The PR's current head commit, advanced on every read, or null while unknown. */
   prHeadSha: string | null;
   /**
+   * Whether the conflict episode open on `prUrl` was escalated by Foreman, because its nudges
+   * did not resolve it. False when no episode is open. Foreman seeds its follow-through mark
+   * from it, so a restarted Foreman sends no further nudge about a conflict the operator owns.
+   */
+  prConflictEscalated: boolean;
+  /**
    * The Inspector's state for this session's pull request, or null when there is no PR
    * or the Inspector never adopted it.
    *
@@ -1927,13 +1933,24 @@ export interface PrMergeability {
  * - `session-gone`: no live session owns the PR. The session exited or was removed, and the
  *   PR is seen only through the by-URL poller.
  * - `foreman-cannot-nudge`: the owning session is live, but Foreman will not type into it.
+ * - `nudges-exhausted`: Foreman nudged the session and escalated the conflict when its nudges
+ *   ran out or the agent sat idle on the nudged head.
+ * - `workflow-not-gating`: an active workflow owns the work, so Foreman stays out, but no Wait
+ *   for CI node for this PR is active or reachable in its run, so nothing will fail on the
+ *   conflict and start a repair round.
  */
-export type BlockedPrReason = "session-gone" | "foreman-cannot-nudge";
+export type BlockedPrReason =
+  | "session-gone"
+  | "foreman-cannot-nudge"
+  | "nudges-exhausted"
+  | "workflow-not-gating";
 
 /** The inbox's words for each `BlockedPrReason`: why the row needs you. */
 export const BLOCKED_PR_REASON_TEXT: Record<BlockedPrReason, string> = {
   "session-gone": "session ended",
   "foreman-cannot-nudge": "Foreman can't drive this session",
+  "nudges-exhausted": "Foreman's 3 nudges didn't resolve it",
+  "workflow-not-gating": "the workflow isn't waiting on CI for this PR",
 };
 
 /**
@@ -2624,6 +2641,8 @@ export interface RepoPrFeedback extends PrMergeability {
   prChecks: PrChecks | null;
   /** The Inspector's state for it, or null when the Inspector never adopted it. */
   inspector: InspectorSummary | null;
+  /** `Session.prConflictEscalated`, for this pull request. */
+  prConflictEscalated: boolean;
 }
 
 export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
