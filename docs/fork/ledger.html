@@ -850,7 +850,7 @@ editor, version history and run views.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>, tickets 1 and 2: the mergeability signal, the PR chip mark, conflict episodes and the Blocked pull requests inbox</td>
+<td><strong>Active</strong>, tickets 1 to 3: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its <code>pr-conflict</code> alert</td>
 </tr>
 <tr>
 <td>PRs</td>
@@ -870,7 +870,8 @@ it <code>CONFLICTING</code>, CI often stops running, and nothing in Mission Cont
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon&#39;s single
-owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.</p>
+owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.
+Ticket 3 adds one desktop alert per PR entering that section.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li>The branch poller requests <code>mergeable</code> and <code>baseRefName</code>; the by-URL poller requests
@@ -907,6 +908,12 @@ checkbox is <strong>Keep sessions on track with merge conflicts</strong>, and fo
 only when all three toggles are off.</li>
 <li>The attention inbox&#39;s <strong>Blocked pull requests</strong> section follows Pipeline halts, each row one
 answer owed, read-only.</li>
+<li><code>AlertKind</code> <code>&quot;pr-conflict&quot;</code> (attention, id <code>pr-conflict:&lt;url&gt;</code>) fires from <code>detectAlerts</code> when
+a PR enters <code>AlertScope.blockedPrs</code>; a reason change while it stays blocked does not re-fire.
+<code>useNotifier</code> holds <code>alertedPrConflicts</code> (PR URL to when it was last seen blocked or seen
+leaving) for the page&#39;s lifetime and passes it as <code>AlertMemory</code>, so a PR re-alerts only after
+<code>PR_CONFLICT_REALERT_MS</code> (5 minutes) out of the set, never after a reconnect or daemon restart.
+Only the browser raises it: the away watcher&#39;s scope carries no <code>blockedPrs</code>.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -934,10 +941,11 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 <code>src/shared/types.ts</code> (<code>BlockedPr</code>, <code>blocked_prs</code>, snapshot), <code>src/web/useEventStream.ts</code>,
 <code>src/web/App.tsx</code>, <code>src/web/lib/attention.ts</code>, <code>src/web/components/AttentionInbox.tsx</code>,
 <code>src/web/components/ForemanBar.tsx</code>, <code>src/web/styles.css</code>, and every test <code>ForemanConfig</code>
-literal.</p>
+literal. Ticket 3: <code>src/shared/alerts.ts</code> (<code>AlertKind</code>, <code>AlertScope</code>, <code>detectAlerts</code>),
+<code>src/web/useNotifier.ts</code> and <code>src/web/App.tsx</code> (the alert scope).</p>
 <p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>src/server/pr-conflicts.ts</code>,
 <code>test/pr-mergeable.test.ts</code>, <code>test/pr-conflicts.test.ts</code>, <code>test/blocked-prs-attention.test.ts</code>,
-<code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
+<code>test/pr-conflict-alerts.test.ts</code>, <code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>
 <thead>

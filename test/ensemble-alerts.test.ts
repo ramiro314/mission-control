@@ -193,5 +193,5 @@ test("the notifier delivers the ensemble deep link through the one shared detect
   assert.match(source, /a\.ensembleId/);
   assert.match(source, /#\/ensembles\/\$\{encodeURIComponent\(deepLink\.ensembleId\)\}/);
   // No second detector: the ensemble path rides the same filter(deliverable) every kind does.
-  assert.match(source, /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliverable\)/);
+  assert.match(source, /detectAlerts\(withKnownStalls\(prev, scope\), scope, memory\(\)\)\.filter\(deliverable\)/);
 });

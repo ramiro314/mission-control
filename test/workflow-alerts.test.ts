@@ -136,7 +136,7 @@ test("notifier preserves workflow deep links and reconnect uses the shared detec
   assert.match(source, /#\/runs\/\$\{encodeURIComponent\(deepLink\.workflowRunId\)\}/);
   assert.match(
     source,
-    /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliverable\)/,
+    /detectAlerts\(withKnownStalls\(prev, scope\), scope, memory\(\)\)\.filter\(deliverable\)/,
   );
   assert.match(source, /"reconnect-catchup"/);
 });

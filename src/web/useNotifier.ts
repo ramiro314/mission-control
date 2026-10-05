@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AlertScope } from "@shared/alerts.ts";
+import type { AlertMemory, AlertScope } from "@shared/alerts.ts";
 import {
   batchSeverity,
   deliverable,
@@ -63,10 +63,17 @@ function notify(
  * each (re)connect snapshot. On INITIAL open we baseline silently; on RECONNECT we
  * neither storm (one alert per gap change) nor swallow (miss what happened while
  * away) - we coalesce the attention events missed during the gap into one catch-up.
+ *
+ * `alertedPrConflicts` outlives every snapshot, because it is held by this hook rather than
+ * rebuilt from one: a reconnect or a daemon restart leaves it intact, and only a page reload
+ * clears it. That is what stops a blocked pull request from alerting again when a restarted
+ * daemon publishes it a minute after an empty reconnect snapshot (see `AlertMemory`).
  */
 export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: boolean): void {
   const prevRef = useRef<AlertScope | null>(null);
   const wasReadyRef = useRef(false);
+  const alertedPrConflictsRef = useRef(new Map<string, number>());
+  const memory = (): AlertMemory => ({ alertedPrConflicts: alertedPrConflictsRef.current, now: Date.now() });
 
   // Sound defaults on, but a fresh page load starts a suspended AudioContext that
   // only a user gesture can resume. Unlock on the first interaction anywhere, so
@@ -101,7 +108,7 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
       if (!prev) return;
       // Reconnect: summarize the attention-level events that happened during the
       // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
-      const missed = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
+      const missed = detectAlerts(withKnownStalls(prev, scope), scope, memory()).filter(deliverable);
       if (missed.length === 0) return;
       if (settings.notifications && canNotify()) {
         notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup");
@@ -113,7 +120,7 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
     const prev = prevRef.current ?? scope;
     prevRef.current = scope;
 
-    const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
+    const alerts = detectAlerts(withKnownStalls(prev, scope), scope, memory()).filter(deliverable);
     if (alerts.length === 0) return;
     if (settings.notifications && canNotify()) {
       for (const a of alerts) {

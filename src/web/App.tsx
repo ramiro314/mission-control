@@ -382,8 +382,8 @@ export function App(): React.JSX.Element {
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
   const alertScope = useMemo(
-    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, blockedPrs }),
+    [sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, blockedPrs],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
