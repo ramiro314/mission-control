@@ -1,9 +1,10 @@
 import { basename, isAbsolute } from "node:path";
 import { kindMissionMcpRequirement } from "./mission-mcp.ts";
 import { missionToolsAvailability } from "./mission-tools.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, harnessUnsupportedWhy } from "@shared/harness-capabilities.ts";
 import type { AgentType, TaskKind } from "@shared/types.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
+import { hostPlatform } from "./platform/host.ts";
 import { listRepos, resolveTaskRepoRoot, resolveTaskRepoSet } from "./repos.ts";
 
 export type PreparedTaskRepositories =
@@ -16,6 +17,8 @@ export interface PrepareTaskRepositoriesInput {
   kind: TaskKind;
   agent?: AgentType | null;
   shortNameSelectors: "none" | "all" | "extras";
+  /** The host platform harness availability is read for; defaults to this daemon's. */
+  platform?: NodeJS.Platform;
 }
 
 async function resolveSelector(selector: string): Promise<
@@ -94,6 +97,8 @@ export async function prepareTaskRepositories(
   if (!resolved.ok) return { ok: false, status: 400, error: resolved.error };
 
   const agent = resolveTaskAgent(input.kind, input.agent);
+  const hostUnsupported = harnessUnsupportedWhy(agent, input.platform ?? hostPlatform());
+  if (hostUnsupported) return { ok: false, status: 400, error: hostUnsupported };
   if (resolved.extraRepoRoots.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
     return {
       ok: false,

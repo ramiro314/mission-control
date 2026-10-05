@@ -594,11 +594,14 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
 
   let log = "";
   let exited: { code: number | null; signal: string | null } | null = null;
+  const builtBundle = extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1" || extraEnv.MC_E2E_WIN32_HOST === "1";
   const daemonBundle = extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1"
     ? await (await import("./terminal-boundary-build.ts")).buildTerminalBoundaryDaemon(
         REPO_ROOT, `${process.pid}-${Date.now()}`, extraEnv.MC_E2E_WEZTERM_BOUNDARY === "1",
       )
-    : join(REPO_ROOT, "dist/server/index.mjs");
+    : extraEnv.MC_E2E_WIN32_HOST === "1"
+      ? await (await import("./win32-host-build.ts")).buildWin32HostDaemon(REPO_ROOT, `${process.pid}-${Date.now()}`)
+      : join(REPO_ROOT, "dist/server/index.mjs");
 
   // Herdr's host CLI must expose a real socket identity to the WezTerm adapter. The
   // fixture owns its lifetime; the fake CLI only connects and never starts a server.
@@ -689,7 +692,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       await new Promise((r) => setTimeout(r, 200));
       if (!exited) child.kill("SIGKILL");
     }
-    if (extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1") rmSync(daemonBundle, { force: true });
+    if (builtBundle) rmSync(daemonBundle, { force: true });
     if (weztermSocket?.listening) {
       await new Promise<void>((resolve) => weztermSocket.close(() => resolve()));
     }
