@@ -17,6 +17,7 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
 | Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
+| Process inspection | `src/server/process-inspection/` | The only place under `src/` that runs `ps` or `lsof`: process listing, cwd, open files, start identity, port listener; one implementation per platform. Standalone scripts (`scripts/update-lock.mjs`, `scripts/recover-database.mjs`) still call `/bin/ps` directly |
 | Hook bridges | `hooks/` | Small Node processes that post hook events to the daemon |
 
 The live browser channel is SSE only. Do not add browser polling.

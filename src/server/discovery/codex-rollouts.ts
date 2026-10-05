@@ -1,23 +1,14 @@
 import { realpathSync, statSync } from "node:fs";
 import type { DiscoveredSession } from "./correlate.ts";
-import { run } from "../util/exec.ts";
+import { processInspector } from "../process-inspection/index.ts";
 import { parseSessionMeta, readHeadLine } from "../harness/codex/rollout.ts";
 
-/** Parse lsof's machine-readable -F output into exact PID -> rollout bindings. */
-export function parseCodexOpenFiles(text: string): Map<number, string[]> {
+/** Keep only the Codex rollout transcripts among each process's open files. */
+export function rolloutFilesByPid(files: Map<number, string[]>): Map<number, string[]> {
   const found = new Map<number, string[]>();
-  let pid: number | null = null;
-  for (const line of text.split("\n")) {
-    if (line.startsWith("p")) {
-      const n = Number(line.slice(1));
-      pid = Number.isSafeInteger(n) && n > 0 ? n : null;
-    } else if (pid && line.startsWith("n")) {
-      const path = line.slice(1);
-      if (!/(?:^|\/)sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-.*\.jsonl$/.test(path)) continue;
-      const list = found.get(pid) ?? [];
-      list.push(path);
-      found.set(pid, list);
-    }
+  for (const [pid, paths] of files) {
+    const rollouts = paths.filter((path) => /(?:^|\/)sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-.*\.jsonl$/.test(path));
+    if (rollouts.length) found.set(pid, rollouts);
   }
   return found;
 }
@@ -63,12 +54,9 @@ export function selectRolloutIdentity(
 export async function annotateCodexRollouts(sessions: DiscoveredSession[]): Promise<void> {
   const codex = sessions.filter((s) => s.agent === "codex");
   if (!codex.length) return;
-  const result = await run("lsof", ["-a", "-p", codex.map((s) => s.pid).join(","), "-Fn"], {
-    timeoutMs: 3000,
-    maxBuffer: 2 * 1024 * 1024,
-  });
+  const { files, result } = await processInspector().readOpenFiles(codex.map((s) => s.pid));
   if (result.code !== 0 && !result.stdout) return;
-  const byPid = parseCodexOpenFiles(result.stdout);
+  const byPid = rolloutFilesByPid(files);
   for (const session of codex) {
     const identity = selectRolloutIdentity(byPid.get(session.pid) ?? [], session.cwd);
     if (!identity) continue;

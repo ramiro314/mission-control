@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { locateExecutableSync } from "../executables/locator.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { flattenProcessText, processInspector } from "../process-inspection/index.ts";
 
 // "This exact process, not a recycled pid" - the one question every signal a check sends has
 // to answer first.
@@ -22,22 +21,6 @@ import { readFileSync } from "node:fs";
  * which is what makes the join unambiguous: nothing inside a half can be mistaken for it.
  */
 const HALF = String.fromCharCode(0x1f);
-
-/**
- * Collapse every control character and whitespace run to single spaces.
- *
- * Applied to both halves before joining. Linux hands back a NUL-separated argv and macOS's
- * `ps` pads `lstart` to a fixed width; neither difference is information, and flattening both
- * is what lets an identity be compared as one opaque string.
- */
-function normalise(raw: string): string {
-  let out = "";
-  for (const ch of raw) {
-    const code = ch.codePointAt(0) ?? 0;
-    out += code < 0x20 || code === 0x7f ? " " : ch;
-  }
-  return out.replace(/\s+/g, " ").trim();
-}
 
 /**
  * The command-line half, condensed to a fixed-width digest.
@@ -122,9 +105,9 @@ function linuxIdentity(pid: number): string | null {
   if (!/^\d+$/.test(start)) return null;
   let cmdline: string;
   try {
-    // NUL-separated argv. `normalise` turns the separators into spaces, which is all this
-    // needs: the string is compared against itself and never parsed back into arguments.
-    cmdline = normalise(readFileSync(`/proc/${pid}/cmdline`, "utf8"));
+    // NUL-separated argv. `flattenProcessText` turns the separators into spaces, which is all
+    // this needs: the string is compared against itself and never parsed back into arguments.
+    cmdline = flattenProcessText(readFileSync(`/proc/${pid}/cmdline`, "utf8"));
   } catch {
     return null;
   }
@@ -132,42 +115,11 @@ function linuxIdentity(pid: number): string | null {
   return `${process.platform}${HALF}${start}${HALF}${condense(cmdline)}`;
 }
 
-/**
- * `ps -ww -o lstart=,command=` - ONE subprocess for both halves, so the composite costs no
- * more than a single field would have.
- *
- * `-ww` is not optional: without it macOS clips the line to the terminal width, which would
- * silently truncate the command line whose uniqueness the whole scheme rests on. `lstart` is
- * printed to a fixed width and `command` renders control characters as escape TEXT, both of
- * which are deterministic - an identity only ever has to equal itself.
- */
+/** One synchronous read of both halves through process inspection. */
 function darwinIdentity(pid: number): string | null {
-  let raw: string;
-  try {
-    const executable = locateExecutableSync("ps");
-    if (!executable) return null;
-    raw = execFileSync(executable.path, ["-ww", "-o", "lstart=,command=", "-p", String(pid)], {
-      encoding: "utf8",
-      env: executable.env,
-      timeout: 5_000,
-      maxBuffer: 1024 * 1024,
-      // stderr discarded: a dead pid is an ordinary answer here, not something to print.
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-  } catch {
-    // A non-zero exit means no such process, which is a null identity rather than an error.
-    return null;
-  }
-  const line = normalise(raw);
-  // `lstart` is five whitespace-separated tokens (`Fri Jul 31 15:15:37 2026`); a line with
-  // nothing after them is not a row we understand, and guessing at a half-read one is the
-  // exact thing this function must not do.
-  const tokens = line.split(" ");
-  if (tokens.length < 6) return null;
-  const start = tokens.slice(0, 5).join(" ");
-  const command = tokens.slice(5).join(" ");
-  if (!start || !command) return null;
-  return `${process.platform}${HALF}${start}${HALF}${condense(command)}`;
+  const read = processInspector().readStartAndCommandSync(pid);
+  if (!read) return null;
+  return `${process.platform}${HALF}${read.start}${HALF}${condense(read.command)}`;
 }
 
 export interface CheckRuntimeSupport {

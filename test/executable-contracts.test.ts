@@ -49,9 +49,6 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
-  "src/pi/generation-lease.ts": [
-    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
-  ],
   "src/pi/mcp-client.ts": [
     { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
   ],
@@ -103,6 +100,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
   ],
+  "src/server/process-inspection/posix.ts": [
+    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded synchronous process-status read for check start identity and Pi generation leases" },
+  ],
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },
   ],
@@ -117,9 +117,6 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/util/git.ts": [
     { operation: "spawnSync", command: "executable.path", contract: "locator-result", reason: "bounded Git config parser for synchronous repository identity, cached for configs without includes" },
-  ],
-  "src/server/workflows/check-identity.ts": [
-    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
   ],
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
