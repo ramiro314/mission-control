@@ -53,7 +53,7 @@ or issues.
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
-| Docs-only CI | Active (the `docs checks` job and the `docs-only-ci` skill; the skip and `CI result` in this repository are pending) | #164, #168 |
+| Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, pending (branch `feat/docs-only-ci-gate`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1042,9 +1042,9 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, in progress. The `docs checks` job, `npm run docs:links` and the `docs-only-ci` skill exist; the `changes` detection job, the docs-only skip and the `CI result` summary job in this repository's own `ci.yml` are a later ticket of the same plan. |
-| PRs | #164 (the `docs checks` job), #168 (the `docs-only-ci` skill) |
-| Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design", "`docs checks` job", "The `docs-only-ci` skill", and decisions 5, 6, 7, 11 to 15 and 20 |
+| Status | **Active**. The `docs checks` job, `npm run docs:links`, the `docs-only-ci` skill, and in this repository's own `ci.yml` the `changes` detection job, the docs-only skip and the `CI result` summary job. |
+| PRs | #164 (the `docs checks` job), #168 (the `docs-only-ci` skill), pending (branch `feat/docs-only-ci-gate`: the gate in `ci.yml`) |
+| Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design" (all of it) and decisions 1 to 20 |
 | Upstream candidate | Maybe. The `docs checks` job and the `docs:links` script are generic; the skip is shaped around the fork's Wait for CI and "Flaky tests" check. |
 
 **Intent.** A pull request that only edits `docs/` should not pay for the whole of CI. Before
@@ -1054,6 +1054,24 @@ through a bundled skill.
 
 **Behavior contracts.**
 
+- `changes` (job id `changes`, `ubuntu-latest`, no `if:`) runs on every event, checks out with
+  `fetch-depth: 0`, and outputs `docs_only` from its `Detect docs-only change` step, whose
+  `run:` body is `skills/docs-only-ci/assets/detect-docs-only.sh` verbatim with
+  `DOCS_ONLY_PATHS` set to `docs/*`. Only a `pull_request` event can be docs-only; every doubt
+  is `false`, which runs the full suite.
+- `gates`, `unit-node-24`, `unit-node-26` and `e2e` need `changes` and carry
+  `if: needs.changes.outputs.docs_only != 'true'`. Nothing else is gated: both `dependencies`
+  jobs, `docs checks` and `flake report` run on docs-only pull requests, and `package` is
+  unchanged (tags and manual runs only).
+- `flake report` keeps `if: ${{ !cancelled() }}`, so on a docs-only run it reads zero reports
+  and publishes "Flaky tests: No flaky tests", which Wait for CI requires (decision 20).
+- `CI result` (job id `ci-result`, `ubuntu-latest`, `if: always()`) needs every job except
+  `package`. Its step body is `skills/docs-only-ci/assets/ci-result.sh` verbatim, with
+  `SKIPPABLE` listing exactly the four gated job ids. It is the one check branch protection
+  should require; nothing is required on `main` today.
+- `test/docs-only-ci-template.test.ts` fails `npm test` when either `ci.yml` step body differs
+  from its asset by one byte, and holds the `changes` and `ci-result` jobs, the gated jobs'
+  condition, `CI result`'s `needs` and `SKIPPABLE`.
 - `docs checks` (job id `docs-checks`) runs on every CI run, pull request or push, docs-only
   or not. It needs `dependencies-node-24` and restores `node_modules` exactly as `gates` does.
 - It runs `npm run docs:links` (`scripts/check-doc-links.mjs`), then discovers test files with
@@ -1095,15 +1113,23 @@ through a bundled skill.
   a catalog row and links as `mission-<id>`.
 - `decideWaitForCi` passes a settled run with a "Flaky tests" check and counts `SKIPPED` as
   passing, which is what lets a docs-only run through Wait for CI.
+- Nothing outside `test/` reads `docs/`: typecheck, lint, build, smoke, E2E and packaging do
+  not. An upstream change that makes one of them read `docs/` breaks the gate's premise.
+- `ci.yml`'s job ids `gates`, `unit-node-24`, `unit-node-26`, `e2e` and `flake-report`. An
+  upstream job added to `ci.yml` must also be added to `CI result`'s `needs` (the template test
+  fails until it is), and to `SKIPPABLE` only if it is gated.
 
-**Upstream surfaces touched.** `.github/workflows/ci.yml` (the `docs-checks` job),
-`package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count),
+**Upstream surfaces touched.** `.github/workflows/ci.yml` (the `changes`, `docs-checks` and
+`ci-result` jobs, the header comment, and `needs` and `if:` on `gates`, both unit jobs and `e2e`),
+`package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count and the docs-only skip),
+`docs/flaky-tests.md` (`flake report` on a docs-only run), `test/init-script.test.ts` (the
+consumer jobs' `needs`),
 `docs/skills-and-settings.md` (the skill's row), `test/skills-catalog.test.ts` (the skill's
 cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`).
 
 **Fork-only files.** `skills/docs-only-ci/SKILL.md`,
 `skills/docs-only-ci/assets/detect-docs-only.sh`, `skills/docs-only-ci/assets/ci-result.sh`,
-`test/docs-only-ci-scripts.test.ts`.
+`test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`.
 
 ## Superseded and removed
 

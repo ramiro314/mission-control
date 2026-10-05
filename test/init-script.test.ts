@@ -179,10 +179,10 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         "npm ci --prefer-offline --no-audit --no-fund",
       ],
       consumerNeeds: [
-        "dependencies-node-24",
-        "dependencies-node-24",
-        "dependencies-node-26",
-        "dependencies-node-24",
+        "[changes, dependencies-node-24]",
+        "[changes, dependencies-node-24]",
+        "[changes, dependencies-node-26]",
+        "[changes, dependencies-node-24]",
       ],
       consumerRestores: [
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },

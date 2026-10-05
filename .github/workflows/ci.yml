@@ -19,6 +19,31 @@ name: CI
 #
 # The release-only package job stays pinned to `macos-14` because changing that image changes
 # the operating system used to build the shipped dmg.
+#
+# ## Docs-only pull requests
+#
+# A pull request whose every changed path is under `docs/` skips `gates`, both unit matrices
+# and E2E. `changes` decides that; each gated job needs it and carries
+# `if: needs.changes.outputs.docs_only != 'true'`. What a docs change can break still runs:
+# `docs checks` (the doc-link check and every test matched by its discovery pattern,
+# `grep -l '\.\./docs/' test/*.test.ts`), and `flake report`, which reads zero reports and
+# publishes "Flaky tests: No flaky tests", the check Mission Control's Wait for CI requires.
+#
+# This rests on nothing outside `test/` reading `docs/`: typecheck, lint, build, smoke, E2E and
+# packaging do not today. A change that makes one of them read `docs/` must remove the gate or
+# add that step to `docs checks`.
+#
+# Only pull requests skip. A push to `main`, a tag or a manual run always runs everything, so a
+# doc-drift test the discovery pattern misses is still caught on `main`. Any doubt in detection
+# (a failed diff, no changed files, no base commit) also runs everything.
+#
+# A plain `paths-ignore` filter is not used: a filtered workflow never reports, so a required
+# check would wait forever. `CI result` always runs and reports instead, passing only when
+# every job succeeded or was a gated job skipped on a docs-only run. It is the one check branch
+# protection should require.
+#
+# The two step bodies are the `docs-only-ci` skill's assets, `skills/docs-only-ci/assets/`,
+# verbatim; `test/docs-only-ci-template.test.ts` fails when either copy drifts by one byte.
 
 on:
   push:
@@ -36,6 +61,81 @@ permissions:
   contents: read
 
 jobs:
+  # Decides whether this run is a docs-only pull request; see "Docs-only pull requests" above.
+  # Full history so the merge base of the pull request's base and head is reachable. The step
+  # never fails on a detection problem: it answers `false` and the full suite runs. If the job
+  # itself fails, the gated jobs skip and `CI result` fails, which is loud rather than a pass.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only change
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DOCS_ONLY_PATHS: |
+            docs/*
+        run: |
+          # docs-only-ci: decide whether a pull request changed only docs paths.
+          # Inputs, all through env: EVENT_NAME, BASE_SHA, HEAD_SHA, and DOCS_ONLY_PATHS, one shell
+          # `case` pattern per line (`*` matches across `/`, so `docs/*` is every depth under docs/).
+          # Prints docs_only=true|false and appends it to $GITHUB_OUTPUT when set. Every doubt
+          # resolves to false, which runs the full suite; a detection problem never fails the step.
+
+          decide() {
+            echo "$2"
+            echo "docs_only=$1"
+            if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "docs_only=$1" >> "$GITHUB_OUTPUT"; fi
+            exit 0
+          }
+
+          if [ "${EVENT_NAME:-}" != "pull_request" ]; then
+            decide false "Not a pull request (${EVENT_NAME:-no event}): run everything."
+          fi
+          if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+            decide false "No base or head commit: run everything."
+          fi
+          if [ -z "$(printf '%s' "${DOCS_ONLY_PATHS:-}" | tr -d '[:space:]')" ]; then
+            decide false "No docs patterns configured: run everything."
+          fi
+
+          # --no-renames is required: with rename detection, a file moved from src/ into docs/ is
+          # listed only by its docs/ path, and the removed source file would look like a docs change.
+          if ! changed=$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA"); then
+            decide false "git diff $BASE_SHA...$HEAD_SHA failed: run everything."
+          fi
+          if [ -z "$changed" ]; then
+            decide false "No changed files found: run everything."
+          fi
+
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            matched=false
+            while read -r pattern; do
+              [ -n "$pattern" ] || continue
+              # Unquoted on purpose: the pattern is a glob, not a literal.
+              case "$path" in $pattern) matched=true; break ;; esac
+            done <<< "$DOCS_ONLY_PATHS"
+            if [ "$matched" != true ]; then
+              decide false "Not a docs path: $path"
+            fi
+          done <<< "$changed"
+
+          decide true "Every changed path matches the docs patterns."
+
   # `setup-node` caches npm's package tarballs, not the installed dependency tree. In a
   # measured 21-job run every job restored the same warm 385 MB npm cache, but `npm ci`
   # still varied from 12 seconds to 5 minutes. Prepare one exact `node_modules` tree per
@@ -106,7 +206,8 @@ jobs:
   # cache exists, test layers remain independent and expose unrelated failures in the same run.
   gates:
     name: gates (typecheck, lint)
-    needs: dependencies-node-24
+    needs: [changes, dependencies-node-24]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -191,7 +292,8 @@ jobs:
   # the target to absorb ordinary runner variance.
   unit-node-24:
     name: unit (node 24, shard ${{ matrix.shard }}/6)
-    needs: dependencies-node-24
+    needs: [changes, dependencies-node-24]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -217,7 +319,8 @@ jobs:
 
   unit-node-26:
     name: unit (node 26, shard ${{ matrix.shard }}/6)
-    needs: dependencies-node-26
+    needs: [changes, dependencies-node-26]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -264,7 +367,8 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: dependencies-node-24
+    needs: [changes, dependencies-node-24]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -386,6 +490,10 @@ jobs:
   #
   # `!cancelled()` rather than `always()`: a run superseded by a newer push is cancelled, and
   # its commit needs no check. A red test job still gets its report published.
+  #
+  # Never gated on `changes`. On a docs-only run the test jobs it needs were skipped, which
+  # `!cancelled()` still runs after; it reads zero reports and publishes "Flaky tests: No flaky
+  # tests", without which Mission Control's Wait for CI would block the pull request.
   flake-report:
     name: flake report
     needs: [unit-node-24, unit-node-26, e2e]
@@ -424,6 +532,79 @@ jobs:
           path: flake-report.json
           if-no-files-found: warn
           retention-days: 30
+
+  # The one check branch protection should require; see "Docs-only pull requests" above. It
+  # needs every job that runs on a pull request, so `package` (tags and manual runs only) is
+  # not among them. `always()` so it reports whatever its needs did: it passes only when each
+  # succeeded, or is listed in SKIPPABLE and was skipped on a docs-only run. SKIPPABLE is
+  # exactly the gated jobs; a skipped `docs-checks`, `flake-report` or `changes` fails it.
+  ci-result:
+    name: CI result
+    needs:
+      - changes
+      - dependencies-node-24
+      - dependencies-node-26
+      - gates
+      - docs-checks
+      - unit-node-24
+      - unit-node-26
+      - e2e
+      - flake-report
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: CI result
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          SKIPPABLE: |
+            gates
+            unit-node-24
+            unit-node-26
+            e2e
+        run: |
+          # docs-only-ci: the one check a protected branch requires.
+          # Inputs, all through env: NEEDS_JSON (`toJSON(needs)`), DOCS_ONLY (the changes job's
+          # output), and SKIPPABLE, one job id per line. Passes only when every needed job succeeded,
+          # except that a job in SKIPPABLE may have been skipped when DOCS_ONLY is exactly `true`.
+          # Otherwise fails, naming each offending job and its result.
+
+          skippable() {
+            while read -r id; do
+              if [ -n "$id" ] && [ "$id" = "$1" ]; then return 0; fi
+            done <<< "${SKIPPABLE:-}"
+            return 1
+          }
+
+          if ! results=$(printf '%s' "${NEEDS_JSON:-}" | jq -r 'to_entries[] | "\(.key) \(.value.result)"'); then
+            echo "::error::CI result: NEEDS_JSON could not be read."
+            exit 1
+          fi
+          if [ -z "$results" ]; then
+            echo "::error::CI result: NEEDS_JSON lists no jobs."
+            exit 1
+          fi
+
+          failed=0
+          while read -r job result; do
+            if [ "$result" = success ]; then
+              echo "$job: success"
+            elif [ "$result" = skipped ] && [ "${DOCS_ONLY:-}" = true ] && skippable "$job"; then
+              echo "$job: skipped (docs-only change)"
+            else
+              echo "::error::$job: $result"
+              failed=1
+            fi
+          done <<< "$results"
+
+          if [ "$failed" -ne 0 ]; then
+            echo "CI result: failed (docs_only=${DOCS_ONLY:-unset})."
+            exit 1
+          fi
+          echo "CI result: passed (docs_only=${DOCS_ONLY:-unset})."
 
   # Full macOS app packaging. It's slow (downloads the Electron runtime + builds a
   # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.

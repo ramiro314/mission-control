@@ -83,6 +83,13 @@ artifact, and exits non-zero only for real failures or unexplained ones.
 cancelled). It merges the per-job reports, updates the flake issues, publishes the check, writes
 the job summary, and uploads the merged report as the `flake-report` artifact.
 
+On a docs-only pull request (every changed path under `docs/`), the unit and E2E jobs are
+skipped and upload no reports. `flake report` is deliberately not skipped with them: its
+`!cancelled()` condition runs it after skipped needs, it reads zero reports, and it publishes
+"Flaky tests" with conclusion `success` and title "No flaky tests". That keeps Mission Control's
+Wait for CI passing, since it requires a "Flaky tests" check on every run. See the
+"Docs-only pull requests" comment at the top of `.github/workflows/ci.yml`.
+
 ## The "Flaky tests" check
 
 Published on the commit the tests ran against: the **PR's head commit** for a pull request
