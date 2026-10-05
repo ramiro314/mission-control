@@ -79,6 +79,7 @@ function sdkSess(cwd: string | null, over: Partial<Session> = {}): Session {
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     inspector: null,
     meta: null,
     effortBaselineReady: false,

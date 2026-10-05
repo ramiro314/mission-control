@@ -648,8 +648,8 @@ editor, version history and run views.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, tickets 1 to 3 and the workflow ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its `pr-conflict` alert, and Wait for CI's conflict repair round |
-| PRs | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
+| Status | **Active**, tickets 1 to 3, the workflow ticket and the Foreman nudge ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its `pr-conflict` alert, Wait for CI's conflict repair round, and Foreman's conflict nudges and escalation |
+| PRs | #108, #125, #145, #148, pending (the Foreman nudge ticket) |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
 
@@ -663,6 +663,8 @@ Ticket 3 adds one desktop alert per PR entering that section. The workflow ticke
 workflow-owned session its conflict as an ordinary repair round from Wait for CI, instead of a
 45-minute wait for `ci_missing`, and sends the conflict to the inbox as `workflow-not-gating`
 when the run can no longer reach a Wait for CI node.
+The Foreman nudge ticket makes Foreman nudge a live session it drives to merge its base in, at
+most 3 times per episode, and hand the conflict to the operator when the nudges do not resolve it.
 
 **Behavior contracts.**
 
@@ -729,6 +731,31 @@ when the run can no longer reach a Wait for CI node.
   leaving) for the page's lifetime and passes it as `AlertMemory`, so a PR re-alerts only after
   `PR_CONFLICT_REALERT_MS` (5 minutes) out of the set, never after a reconnect or daemon restart.
   Only the browser raises it: the away watcher's scope carries no `blockedPrs`.
+- Foreman's follow-through has a third dimension (the Foreman nudge ticket). `FollowupPr` carries the head-bound
+  `mergeable` observation, `baseRef`, `headSha` and the snapshot's `conflictEscalated`;
+  `feedbackState.conflicting` is `trackMergeConflicts && currentMergeability(pr) ===
+  "conflicting"`. `FollowupMark` gains `conflictHead`, `conflictNudges`, `conflictNudgedAt`,
+  `conflictEscalated` and `conflictEscalatedAt`; `advanceFollowupMark` re-arms them only on a
+  current head observed `mergeable`, leaves them on an unknown head, and seeds
+  `conflictEscalated` from the snapshot.
+- A conflict nudge needs a conflicting current head that is not `conflictHead`, fewer than 3
+  nudges (`CONFLICT_NUDGE_CAP`), and no escalation on either side, plus every existing gate and
+  the stamp-then-inject delivery with rollback. Its payload line is "it has merge conflicts with
+  `<base>`", with the fetch, merge, resolve, focused-tests and no-rebase steps, in one payload
+  with CI and findings.
+- `decideReviewFollowup` returns `escalate`, ahead of the pane gates and behind only workflow
+  ownership, on a new conflicting head after 3 nudges, or after `CONFLICT_GIVE_UP_MS` (2
+  minutes) settled-idle on the nudged, still-conflicting head, counted from the nudge too. An
+  escalated mark re-sends every `CONFLICT_ESCALATE_RESEND_MS` (1 minute) while the head is
+  conflicting. The worker posts `POST /api/pr-conflicts/escalate { prUrl, headSha }`
+  (`EscalatePrConflictSchema`) only while it holds the lease, restores the mark on failure, and
+  logs and records a `pr-conflict` episode on the first send only. A failed record is logged and
+  costs nothing else.
+- The route marks the open episode found by URL alone `escalated` (`503` with no tracker,
+  `{ escalated: false }` with no open episode). The flag lives with the episode, so a mergeable
+  read re-arms it. An escalated live owner is blocked as `nudges-exhausted`, after
+  `session-gone` and ahead of `foreman-cannot-nudge`. `Session.prConflictEscalated` and
+  `RepoPrFeedback.prConflictEscalated` carry it, set by `Registry.setEscalatedPrUrls`.
 
 **Upstream behavior it assumes.**
 
@@ -768,12 +795,21 @@ literal. Ticket 3: `src/shared/alerts.ts` (`AlertKind`, `AlertScope`, `detectAle
 `waitForCiReachable`, `sessionPrMergeability`), `src/server/workflows/feedback.ts`
 (`renderSessionAction`), `src/server/workflows/agent-contract.ts`, `src/server/registry.ts`
 (`taskPrUrlOwners`, `prReferences`, `owningRuns`), `src/server/pr.ts` (`startPrPoller`,
-`reclassifyOnWorkflowRunChange`) and `src/server/index.ts`.
+`reclassifyOnWorkflowRunChange`) and `src/server/index.ts`. The Foreman nudge ticket: `src/server/foreman/review-followup.ts` (`FollowupPr`, `FollowupMark`,
+`advanceFollowupMark`, `decideReviewFollowup`, `buildPayload`), `src/server/foreman/worker.ts`
+(`runReviewFollowup`, new `escalateConflict`), `src/server/foreman/client.ts`,
+`src/server/routes.ts` (`RouteDeps.prConflicts`, the escalate route), `src/server/pr.ts`
+(`startPrPoller` takes the tracker), `src/server/index.ts`, `src/server/registry.ts`
+(`setEscalatedPrUrls`, `repoPrFeedbackFor`, session comparator and construction sites),
+`src/shared/protocol.ts`, `src/shared/types.ts`, `src/shared/telemetry-sources/action-exclusions.ts`
+(the escalate route's exclusion), `test/fixtures/route-surface.json` (its oracle line), and every
+test `Session` literal.
 
 **Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
 `test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
 `test/pr-conflict-alerts.test.ts`, `test/workflow-ci-reachability.test.ts`,
-`e2e/specs/pr-merge-conflicts.spec.ts`, `e2e/specs/workflow-merge-conflicts.spec.ts`.
+`test/foreman-conflict-escalation.test.ts`, `e2e/specs/pr-merge-conflicts.spec.ts`,
+`e2e/specs/workflow-merge-conflicts.spec.ts`.
 
 ### PR publication ownership
 

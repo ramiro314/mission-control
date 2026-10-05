@@ -14,6 +14,9 @@ import { parsePrUrl } from "./inspector/github.ts";
 //    is still polled and its episode can still close when the fix lands;
 //  - which open episodes nothing is handling (`blockedPrs`), which the attention inbox draws.
 //
+// Foreman marks an episode escalated (`escalate`) when its nudges did not resolve the conflict.
+// That flag lives and dies with the episode: it re-arms when the PR is observed mergeable.
+//
 // See docs/plans/pr-merge-conflicts/plan.md, section 2.
 
 /** One poll read of a pull request, as the episode state machine needs it. */
@@ -36,6 +39,10 @@ export interface ConflictEpisode {
   baseRef: string | null;
   /** The latest head observed conflicting. A display field, never part of the identity. */
   headSha: string | null;
+  /** Foreman escalated this episode: its nudges did not resolve the conflict. */
+  escalated: boolean;
+  /** The head Foreman escalated on, for display and the log. Null until it escalates. */
+  escalatedHead: string | null;
 }
 
 /**
@@ -62,7 +69,21 @@ export class PrConflictEpisodes {
       since: current?.since ?? now,
       baseRef: read.baseRef ?? current?.baseRef ?? null,
       headSha: read.headSha ?? current?.headSha ?? null,
+      escalated: current?.escalated ?? false,
+      escalatedHead: current?.escalatedHead ?? null,
     });
+  }
+
+  /**
+   * Mark the open episode for `url` escalated, whichever head it is on now: identity is the
+   * URL alone, so an escalation on a later conflicting head still lands. Returns false, and
+   * does nothing, when no episode is open for it. Idempotent, so Foreman can re-send it.
+   */
+  escalate(url: string, headSha: string): boolean {
+    const current = this.open.get(url);
+    if (!current) return false;
+    this.open.set(url, { ...current, escalated: true, escalatedHead: headSha });
+    return true;
   }
 
   /** Close every episode whose PR no session and no task references any longer. */
@@ -79,6 +100,11 @@ export class PrConflictEpisodes {
 
   list(): ConflictEpisode[] {
     return [...this.open.values()];
+  }
+
+  /** The URLs of every open episode Foreman escalated, for `Session.prConflictEscalated`. */
+  escalatedUrls(): Set<string> {
+    return new Set([...this.open.values()].filter((e) => e.escalated).map((e) => e.url));
   }
 }
 
@@ -118,7 +144,8 @@ export type WorkflowGatesCi = (runId: string) => boolean;
  * Work an active workflow owns is the workflow's, whether or not its session is still live:
  * handled when one of its runs for this PR's repository can still reach a Wait for CI node,
  * and `workflow-not-gating` otherwise, because Foreman stays out of a workflow's session and
- * nothing else would react. Otherwise no live session means `session-gone`, and a live one is
+ * nothing else would react. Otherwise no live session means `session-gone`. A live one is
+ * `nudges-exhausted` once Foreman escalated the episode, and otherwise
  * `foreman-cannot-nudge` exactly when Foreman's follow-through would refuse to type into it,
  * read through the same predicates `decideReviewFollowup` uses, plus `trackMergeConflicts`
  * being off.
@@ -127,10 +154,12 @@ export function unhandledReason(
   ref: PrReference,
   foreman: ForemanConfig,
   gatesCi: WorkflowGatesCi,
+  escalated = false,
 ): BlockedPrReason | null {
   if (ref.workflowOwned) return ref.workflowRunIds.some(gatesCi) ? null : "workflow-not-gating";
   const live = liveOwner(ref);
   if (!live) return "session-gone";
+  if (escalated) return "nudges-exhausted";
   if (
     !foreman.trackMergeConflicts ||
     foremanCannotDrive(live) !== null ||
@@ -157,7 +186,7 @@ export function blockedPrs(
   for (const episode of episodes) {
     const ref = references.get(episode.url);
     if (!ref) continue;
-    const reason = unhandledReason(ref, foreman, gatesCi);
+    const reason = unhandledReason(ref, foreman, gatesCi, episode.escalated);
     if (reason === null) continue;
     // The session the row names: the live owner, else the exited one the daemon still holds.
     const shown = liveOwner(ref) ?? ref.sessions[0] ?? null;
@@ -183,11 +212,14 @@ export function blockedPrs(
 export interface PrConflictHost {
   prReferences(): Map<string, PrReference>;
   setBlockedPrs(prs: BlockedPr[]): void;
+  /** The PR URLs whose open episode is escalated, for `prConflictEscalated` on snapshots. */
+  setEscalatedPrUrls(urls: ReadonlySet<string>): void;
 }
 
 /**
  * The episodes plus the glue the PR poller calls once per tick: fold the tick's reads in,
- * drop episodes nothing references, and publish the blocked set.
+ * drop episodes nothing references, and publish the blocked set. Foreman's escalation route
+ * goes through it too, so an escalation is published at once rather than on the next tick.
  */
 export class PrConflictTracker {
   readonly episodes = new PrConflictEpisodes();
@@ -206,6 +238,14 @@ export class PrConflictTracker {
     this.publish(references);
   }
 
+  /** Mark `url`'s open episode escalated and publish it. False when no episode is open. */
+  escalate(url: string, headSha: string): boolean {
+    if (!this.episodes.escalate(url, headSha)) return false;
+    this.publish(this.host.prReferences());
+    return true;
+  }
+
+
   /**
    * Re-derive who is handling each open episode without a new read, for when a workflow run
    * changes: a run that moves past its last Wait for CI, or finishes, changes the answer
@@ -218,6 +258,7 @@ export class PrConflictTracker {
   }
 
   private publish(references: ReadonlyMap<string, PrReference>): void {
+    this.host.setEscalatedPrUrls(this.episodes.escalatedUrls());
     this.host.setBlockedPrs(
       blockedPrs(this.episodes.list(), references, this.foremanConfig(), this.gatesCi),
     );

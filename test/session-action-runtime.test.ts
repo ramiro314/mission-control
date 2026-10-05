@@ -2119,6 +2119,7 @@ test("Wait for CI reads the conflict off the session's own PR or its task's per-
           prMergeable: observed("mergeable", "ccc"),
           prBaseRef: "develop",
           prHeadSha: "ccc",
+          prConflictEscalated: false,
         },
       }],
     }),

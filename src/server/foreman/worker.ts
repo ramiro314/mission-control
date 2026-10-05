@@ -99,7 +99,7 @@ import {
   decideReviewFollowup,
   followupPrs,
 } from "./review-followup.ts";
-import type { FollowupMark, FollowupPr } from "./review-followup.ts";
+import type { FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -1035,6 +1035,13 @@ async function runReviewFollowup(
         now,
       });
       if (decision.kind === "skip") continue;
+      // Handing a conflict to the operator types nothing, so it claims no pane and needs no
+      // freshness recheck: a PR that turned mergeable in between has no open episode, and
+      // the daemon ignores the escalation. The next pull request is still considered.
+      if (decision.kind === "escalate") {
+        await escalateConflict(client, session, marks, decision, () => isLeader);
+        continue;
+      }
 
       const [freshCfg, freshSessions] = await Promise.all([
         client.getConfig().catch(() => null),
@@ -1080,7 +1087,8 @@ async function runReviewFollowup(
         },
         now: Date.now(),
       });
-      if (freshDecision.kind === "skip" || !isLeader) break;
+      // An escalation that appeared between the two reads is the next pass's to send.
+      if (freshDecision.kind !== "nudge" || !isLeader) break;
 
       // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
       // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
@@ -1114,6 +1122,76 @@ async function runReviewFollowup(
     }
   }
   return nudged;
+}
+
+/**
+ * Hand one conflicting pull request to the operator: stamp the mark, then ask the daemon to
+ * mark the open episode escalated. A failed request restores the previous mark, so the next
+ * pass tries again. The first escalation of an episode is logged and recorded as a Foreman
+ * episode; a re-send, which exists only so a restarted daemon re-learns it, is silent.
+ *
+ * Leadership is re-checked first, as the nudge path re-checks it before typing: the lease can
+ * be lost mid-pass, and a worker that no longer leads must not write the audit record a new
+ * leader may also write. The record itself fails soft. The escalation has already landed by
+ * then, so a failed write costs the record and nothing else - not the mark, and not the rest
+ * of this pass's sessions.
+ */
+export async function escalateConflict(
+  client: ForemanClient,
+  session: Session,
+  marks: Map<string, FollowupMark>,
+  decision: Extract<ReviewFollowupDecision, { kind: "escalate" }>,
+  holdsLease: () => boolean,
+): Promise<void> {
+  if (!holdsLease()) return;
+  const prior = marks.get(decision.prKey) ?? null;
+  marks.set(decision.prKey, decision.mark);
+  let landed: boolean;
+  try {
+    landed = await client.escalatePrConflict(decision.url, decision.headSha);
+  } catch (err) {
+    if (prior) marks.set(decision.prKey, prior);
+    else marks.delete(decision.prKey);
+    log(`${session.name}: could not escalate the merge conflict on ${decision.url} (${String(err)})`);
+    return;
+  }
+  if (decision.resend) return;
+  log(
+    `${session.name}: handed the merge conflict on ${decision.url} to the operator - ${decision.reason}` +
+      (landed ? "" : " (the daemon had no open conflict episode for it)"),
+  );
+  try {
+    await recordConflictEscalation(client, session, decision);
+  } catch (err) {
+    log(`${session.name}: could not record the merge-conflict escalation (${String(err)})`);
+  }
+}
+
+function recordConflictEscalation(
+  client: ForemanClient,
+  session: Session,
+  decision: Extract<ReviewFollowupDecision, { kind: "escalate" }>,
+): Promise<void> {
+  return client.recordEpisode(session.id, {
+    marker: `pr-conflict:${decision.url}:${decision.headSha}`,
+    situation: "pr-conflict",
+    surface: "terminal",
+    question: `Resolve the merge conflicts on ${decision.url}.`,
+    pane: null,
+    purpose: "PR follow-through: merge conflicts Foreman's nudges did not resolve.",
+    brief: `Escalated to the operator: ${decision.reason}.`,
+    recommendation: null,
+    classification: "pr-conflict; escalated",
+    confidence: 1,
+    tier: 0,
+    triageReason: null,
+    skipReason: null,
+    disposition: "escalated",
+    lastAction: "Handed the merge conflict to the operator",
+    sentText: null,
+    sentOption: null,
+    sentBy: null,
+  });
 }
 
 /**

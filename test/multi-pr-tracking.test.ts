@@ -689,3 +689,19 @@ test("a by-URL read writes mergeability back onto the matching repoPrs entry", (
   assert.equal(feedback?.prChecks, null, "only the mergeability fields move");
   assert.ok(emitted.includes("session_upsert"), "the card is re-sent");
 });
+
+test("an escalated conflict reaches the repoPrs entry for its URL, and only that one", () => {
+  const f = fixture("repo-escalated");
+  f.registry.reconcileRepoPrs(
+    new Map([repoMatch(f, "/other", { headSha: "A", mergeable: "conflicting", baseRef: "main" })]),
+    new Set(),
+  );
+  assert.equal(repoPrLines(f).get("/other")?.feedback?.prConflictEscalated, false);
+
+  f.registry.setEscalatedPrUrls(new Set([PR_B]));
+  assert.equal(repoPrLines(f).get("/other")?.feedback?.prConflictEscalated, true);
+  assert.equal(f.registry.getSession(f.id)?.prConflictEscalated, false, "the session's own PR is another");
+
+  f.registry.setEscalatedPrUrls(new Set());
+  assert.equal(repoPrLines(f).get("/other")?.feedback?.prConflictEscalated, false, "the episode re-armed");
+});

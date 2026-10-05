@@ -72,6 +72,7 @@ export function previewSession(now: number): Session {
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     meta: {
       model: "Sonnet 4.5",
       modelId: "claude-sonnet-4-5",

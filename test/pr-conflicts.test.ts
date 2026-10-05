@@ -65,7 +65,7 @@ test("an episode opens on the first conflicting read and closes on mergeable, me
     assert.deepEqual(episodes.list(), [], "a mergeable PR opens nothing");
 
     episodes.observe(PR, conflicting("A"), 5);
-    assert.deepEqual(episodes.list(), [{ url: PR, since: 5, baseRef: "main", headSha: "A" }]);
+    assert.deepEqual(episodes.list(), [{ url: PR, since: 5, baseRef: "main", headSha: "A", escalated: false, escalatedHead: null }]);
 
     episodes.observe(PR, end, 9);
     assert.deepEqual(episodes.list(), [], `${end.state} ${end.mergeable} closes it`);
@@ -76,7 +76,7 @@ test("an unknown current head leaves an open episode as it is", () => {
   const episodes = new PrConflictEpisodes();
   episodes.observe(PR, conflicting("A"), 5);
   episodes.observe(PR, { state: "open", mergeable: null, baseRef: "main", headSha: "B" }, 9);
-  assert.deepEqual(episodes.list(), [{ url: PR, since: 5, baseRef: "main", headSha: "A" }]);
+  assert.deepEqual(episodes.list(), [{ url: PR, since: 5, baseRef: "main", headSha: "A", escalated: false, escalatedHead: null }]);
 
   const none = new PrConflictEpisodes();
   none.observe(PR, { state: "open", mergeable: null, baseRef: "main", headSha: "B" }, 9);
@@ -88,7 +88,7 @@ test("headSha advances on each new conflicting head without opening a new episod
   episodes.observe(PR, conflicting("A"), 5);
   episodes.observe(PR, conflicting("B", "develop"), 9);
   episodes.observe(PR, conflicting("C", "develop"), 12);
-  assert.deepEqual(episodes.list(), [{ url: PR, since: 5, baseRef: "develop", headSha: "C" }]);
+  assert.deepEqual(episodes.list(), [{ url: PR, since: 5, baseRef: "develop", headSha: "C", escalated: false, escalatedHead: null }]);
 });
 
 test("an episode closes once no session and no task reference its PR", () => {
@@ -469,4 +469,140 @@ test("a workflow run still active after its agent exits keeps classifying the co
   h.reg.upsertWorkflowRun({ id: "step", status: "failed", sessionId: null, noteKey: "live-episode" } as WorkflowRunSummary);
   await h.poll();
   assert.equal(h.frames.at(-1)![0]!.reason, "session-gone");
+});
+
+// ---- Foreman's escalation ----
+
+const { buildApp } = await import("../src/server/routes.ts");
+type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
+type TaskManager = import("../src/server/tasks.ts").TaskManager;
+type QueueManager = import("../src/server/queue.ts").QueueManager;
+
+test("escalating on head 4, after nudges on heads 1 to 3, marks the open episode escalated", () => {
+  const episodes = new PrConflictEpisodes();
+  for (const [i, head] of ["A", "B", "C", "D"].entries()) episodes.observe(PR, conflicting(head), i);
+  assert.equal(episodes.escalate(PR, "D"), true, "found by URL alone, whichever head it opened on");
+  assert.deepEqual(episodes.list(), [
+    { url: PR, since: 0, baseRef: "main", headSha: "D", escalated: true, escalatedHead: "D" },
+  ]);
+  assert.deepEqual([...episodes.escalatedUrls()], [PR]);
+
+  episodes.observe(PR, conflicting("E"), 9);
+  assert.equal(episodes.list()[0]!.escalated, true, "a later conflicting head keeps it escalated");
+  assert.equal(episodes.escalate(PR, "E"), true, "and a re-send is idempotent");
+});
+
+test("an escalation with no open episode for the URL is ignored", () => {
+  const episodes = new PrConflictEpisodes();
+  assert.equal(episodes.escalate(PR, "A"), false);
+  assert.deepEqual(episodes.list(), [], "it opens nothing");
+
+  episodes.observe(PR, conflicting("A"), 1);
+  episodes.observe(PR, { state: "open", mergeable: "mergeable", baseRef: "main", headSha: "B" }, 2);
+  assert.equal(episodes.escalate(PR, "A"), false, "nor reaches a closed one");
+});
+
+test("the escalation lives and dies with its episode: a mergeable read re-arms it", () => {
+  const episodes = new PrConflictEpisodes();
+  episodes.observe(PR, conflicting("A"), 1);
+  episodes.escalate(PR, "A");
+  episodes.observe(PR, { state: "open", mergeable: "mergeable", baseRef: "main", headSha: "B" }, 2);
+  episodes.observe(PR, conflicting("C"), 3);
+  assert.equal(episodes.list()[0]!.escalated, false, "a new episode starts un-escalated");
+});
+
+test("nudges-exhausted: a live owner whose episode Foreman escalated", () => {
+  const live = mkSession({ id: "live", state: "idle", foremanInvite: "dispatch", cwd: "/wt/app" });
+  assert.equal(unhandledReason(ref([live]), LIVE, noGate, true), "nudges-exhausted");
+  assert.equal(unhandledReason(ref([live]), LIVE, noGate, false), null, "un-escalated, Foreman is handling it");
+  const exited = mkSession({ id: "gone", state: "exited", cwd: "/wt/app" });
+  assert.equal(unhandledReason(ref([exited]), LIVE, noGate, true), "session-gone", "an ended session outranks it");
+  // A workflow still classifies its own conflict, escalated or not.
+  const gating = (id: string) => id === "gating";
+  assert.equal(unhandledReason(ref([live], true, ["gating"]), LIVE, gating, true), null);
+  assert.equal(unhandledReason(ref([live], true, []), LIVE, gating, true), "workflow-not-gating");
+});
+
+test("an escalation is published at once: the row reads nudges-exhausted and the snapshot carries the flag", async () => {
+  const h = harness();
+  await h.poll();
+  assert.equal(h.reg.getSession("live")!.prConflictEscalated, false);
+  const before = h.frames.length;
+
+  assert.equal(h.tracker.escalate(PR, "A"), true);
+  assert.equal(h.frames.length, before + 1, "published without waiting for the next tick");
+  assert.equal(h.frames.at(-1)![0]!.reason, "nudges-exhausted");
+  assert.equal(h.reg.getSession("live")!.prConflictEscalated, true, "Foreman reads it off the snapshot");
+
+  await h.poll();
+  assert.equal(h.frames.at(-1)![0]!.reason, "nudges-exhausted", "and the next tick keeps it");
+
+  h.setBranch("mergeable");
+  await h.poll();
+  assert.deepEqual(h.frames.at(-1), [], "the fix clears the row");
+  assert.equal(h.reg.getSession("live")!.prConflictEscalated, false, "and re-arms the flag");
+});
+
+test("a restarted daemon is re-marked nudges-exhausted by Foreman's re-send", async () => {
+  const h = harness();
+  await h.poll();
+  // A fresh tracker: what the daemon holds after a restart, with the episode re-derived from
+  // the first poll and no memory of the escalation.
+  const restarted = new PrConflictTracker(h.reg, () => LIVE, noGate);
+  await pollAndReconcilePrs(
+    h.reg,
+    async () => ({
+      url: PR, number: 42, state: "open" as const, checks: null, createdAt: Date.now(),
+      mergedAt: null, headSha: "A", worktreeHeadSha: "A", mergeable: "conflicting", baseRef: "main",
+    }),
+    async () => null,
+    new PrUrlPollState(),
+    Date.now(),
+    async () => null,
+    () => [],
+    restarted,
+  );
+  assert.equal(h.frames.at(-1)![0]!.reason, "foreman-cannot-nudge");
+  assert.equal(restarted.escalate(PR, "A"), true, "the re-send lands on the re-derived episode");
+  assert.equal(h.frames.at(-1)![0]!.reason, "nudges-exhausted");
+});
+
+test("POST /api/pr-conflicts/escalate marks the open episode, ignores an unknown one, and validates its body", async () => {
+  const h = harness();
+  await h.poll();
+  const app = buildApp({
+    registry: h.reg,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    prConflicts: h.tracker,
+  });
+  const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
+  const post = (body: unknown) =>
+    app.request("/api/pr-conflicts/escalate", { method: "POST", headers, body: JSON.stringify(body) });
+
+  const unknown = await post({ prUrl: "https://github.com/o/r/pull/999", headSha: "A" });
+  assert.equal(unknown.status, 200);
+  assert.deepEqual(await unknown.json(), { ok: true, escalated: false });
+  assert.equal(h.frames.at(-1)![0]!.reason, "foreman-cannot-nudge", "nothing moved");
+
+  const marked = await post({ prUrl: PR, headSha: "D" });
+  assert.deepEqual(await marked.json(), { ok: true, escalated: true });
+  assert.equal(h.frames.at(-1)![0]!.reason, "nudges-exhausted");
+
+  assert.equal((await post({ prUrl: PR })).status, 400, "headSha is required");
+  assert.equal((await post({ prUrl: "", headSha: "A" })).status, 400, "and prUrl must be non-empty");
+
+  const untracked = buildApp({
+    registry: h.reg,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
+  const refused = await untracked.request("/api/pr-conflicts/escalate", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ prUrl: PR, headSha: "A" }),
+  });
+  assert.equal(refused.status, 503, "a daemon without the tracker says so");
 });

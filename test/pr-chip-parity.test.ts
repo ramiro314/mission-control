@@ -150,6 +150,7 @@ test("a conflicting repository of a multi-repo task marks the chip, names it and
             prMergeable: { state: "conflicting", headSha: "C" },
             prBaseRef: "develop",
             prHeadSha: "C",
+            prConflictEscalated: false,
             inspector: null,
           },
         },

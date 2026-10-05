@@ -1108,6 +1108,17 @@ export class ForemanClient implements ForemanActions {
 
   // ---- external pipeline triage ----
 
+  /**
+   * Hand a conflicting pull request to the operator. Resolves to whether the daemon had an
+   * open conflict episode to mark; throws when the request itself failed.
+   */
+  async escalatePrConflict(prUrl: string, headSha: string): Promise<boolean> {
+    const res = await send("POST", "/api/pr-conflicts/escalate", { prUrl, headSha });
+    if (!res.ok) throw new Error(`escalatePrConflict -> ${res.status}`);
+    const body = (await res.json()) as { escalated?: unknown };
+    return body.escalated === true;
+  }
+
   /** The daemon's current, opt-in halt view. This read never probes the provider. */
   pipelineForeman(): Promise<PipelineForemanView> {
     return get<PipelineForemanView>("/api/pipelines/foreman");

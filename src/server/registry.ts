@@ -864,6 +864,8 @@ export class Registry extends EventEmitter {
   private workflowRuns = new Map<string, WorkflowRunSummary>();
   /** The conflict episodes' last published blocked set (`setBlockedPrs`). */
   private blockedPrs: BlockedPr[] = [];
+  /** The PR URLs whose open conflict episode Foreman escalated (`setEscalatedPrUrls`). */
+  private escalatedPrUrls: ReadonlySet<string> = new Set();
   /**
    * What each conversation is ARMED with, as distinct from what is running on it.
    *
@@ -2564,6 +2566,7 @@ export class Registry extends EventEmitter {
       prMergeable: prev?.prMergeable ?? null,
       prBaseRef: prev?.prBaseRef ?? null,
       prHeadSha: prev?.prHeadSha ?? null,
+      prConflictEscalated: prev?.prConflictEscalated ?? false,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
       pendingEffort: prev?.pendingEffort ?? null,
@@ -2760,6 +2763,7 @@ export class Registry extends EventEmitter {
       prState: null,
       prChecks: null,
       ...NO_MERGEABILITY,
+      prConflictEscalated: false,
       meta: null,
       effortBaselineReady: false,
       pendingEffort: null,
@@ -3111,6 +3115,7 @@ export class Registry extends EventEmitter {
       // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
       prChecks: null,
       ...NO_MERGEABILITY,
+      prConflictEscalated: this.escalatedPrUrls.has(url),
     };
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
@@ -3233,6 +3238,7 @@ export class Registry extends EventEmitter {
             // reused session can't carry the previous PR's status onto a new one.
             prChecks: null,
             ...NO_MERGEABILITY,
+            prConflictEscalated: this.escalatedPrUrls.has(evt.prUrl),
           }
         : {};
       const agentSessionId = evt.sessionId ?? target.agentSessionId;
@@ -5066,6 +5072,7 @@ export class Registry extends EventEmitter {
       prBaseRef: live.prBaseRef,
       prHeadSha: live.prHeadSha,
       inspector: this.inspectorSummaryForUrl(prUrl),
+      prConflictEscalated: this.escalatedPrUrls.has(prUrl),
     };
   }
 
@@ -5298,6 +5305,7 @@ export class Registry extends EventEmitter {
       const mergeability = match
         ? nextMergeability(live.prUrl === match.url ? live : null, mergeabilityReadOf(match))
         : NO_MERGEABILITY;
+      const escalated = url !== null && this.escalatedPrUrls.has(url);
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
           url: match.url,
@@ -5337,7 +5345,8 @@ export class Registry extends EventEmitter {
         live.prNumber === number &&
         live.prState === state &&
         live.prChecks === checks &&
-        mergeabilityEqual(live, mergeability)
+        mergeabilityEqual(live, mergeability) &&
+        live.prConflictEscalated === escalated
       )
         continue;
       const next: Session = {
@@ -5347,6 +5356,7 @@ export class Registry extends EventEmitter {
         prState: state,
         prChecks: checks,
         ...mergeability,
+        prConflictEscalated: escalated,
         task,
       };
       // `prUrl` is the key the Inspector summary hangs off, so changing it here without
@@ -5538,6 +5548,26 @@ export class Registry extends EventEmitter {
       (run) =>
         (run.sessionId === sessionId || run.noteKey === noteKey) && activeWorkflowOwnsSession([run]),
     );
+  }
+
+  /**
+   * Record which PRs' open conflict episodes Foreman escalated, and carry the flag onto every
+   * snapshot naming one: `prConflictEscalated` on each session whose `prUrl` it is, and on each
+   * multi-repo task's per-repository feedback. Emits only for snapshots that moved.
+   */
+  setEscalatedPrUrls(urls: ReadonlySet<string>): void {
+    const prev = this.escalatedPrUrls;
+    if (prev.size === urls.size && [...urls].every((url) => prev.has(url))) return;
+    this.escalatedPrUrls = new Set(urls);
+    for (const [id, s] of this.sessions) {
+      const escalated = s.prUrl !== null && urls.has(s.prUrl);
+      if (s.prConflictEscalated !== escalated) {
+        const next: Session = { ...s, prConflictEscalated: escalated };
+        this.sessions.set(id, next);
+        this.emitSession(next);
+      }
+      if ((s.task?.repoPrs?.length ?? 0) > 0) this.resyncSessionTask(id);
+    }
   }
 
   /** Publish the blocked pull requests, emitting `blocked_prs` only when the set changed. */
@@ -9976,6 +10006,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   prMergeable: byJson,
   prBaseRef: byValue,
   prHeadSha: byValue,
+  prConflictEscalated: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.
   inspector: byJson,

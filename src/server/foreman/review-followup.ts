@@ -1,10 +1,16 @@
-import type { InspectorSummary, PrChecks, Session } from "@shared/types.ts";
+import type {
+  InspectorSummary,
+  PrChecks,
+  PrMergeableObservation,
+  Session,
+} from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
+import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 
 // The review follow-through trigger's decision core: a session's work has become an
 // OPEN pull request, it has parked, and the PR now carries feedback nobody is acting on
@@ -34,6 +40,22 @@ import { settledIdle } from "@shared/session.ts";
 // review loop the PR opened. `tickTargets` never selects a parked straight-to-PR session
 // (no queue, no armed prompted trigger), so this runs FLEET-LEVEL in the worker's loop,
 // over every session, the same shape as the backlog autopilot.
+//
+// MERGE CONFLICTS, THE THIRD DIMENSION
+//
+// A conflicting pull request is nudged once per conflicting head, at most
+// `CONFLICT_NUDGE_CAP` times per conflict episode. When the nudges run out, or the agent parks
+// on the head it was nudged about, Foreman ESCALATES instead: the daemon marks the episode
+// and the conflict lands in the operator's Blocked pull requests inbox. Everything reads the
+// current head's mergeability through `currentMergeability`, so a fix push GitHub has not
+// answered for yet is neither nudged, counted nor given up on.
+
+/** Nudges per conflict episode before Foreman hands the conflict to the operator. */
+export const CONFLICT_NUDGE_CAP = 3;
+/** Settled-idle on the nudged, still-conflicting head for this long means the agent gave up. */
+export const CONFLICT_GIVE_UP_MS = 2 * 60_000;
+/** How often an escalated mark re-sends its escalation, so a restarted daemon re-learns it. */
+export const CONFLICT_ESCALATE_RESEND_MS = 60_000;
 
 /** The knobs this trigger reads. A projection of ForemanConfig, like QueueConfig. */
 export interface ReviewFollowupConfig {
@@ -74,6 +96,17 @@ export interface FollowupPr {
   inspector: InspectorSummary | null;
   /** THIS pull request's CI rollup, or null when nothing has answered for it. */
   checks: PrChecks | null;
+  /**
+   * THIS pull request's mergeability observation, bound to the head it was made on. Read it
+   * through `currentMergeability` with `headSha`, never directly.
+   */
+  mergeable: PrMergeableObservation | null;
+  /** The base branch, or null while unknown. */
+  baseRef: string | null;
+  /** The current head commit, or null while unknown. */
+  headSha: string | null;
+  /** The daemon escalated this PR's open conflict episode: the operator owns it now. */
+  conflictEscalated: boolean;
 }
 
 export interface ReviewFollowupInput {
@@ -102,7 +135,21 @@ export type ReviewFollowupDecision =
   /** Not a candidate. `why` is for the tests/log - every skip is explicable. */
   | { kind: "skip"; why: string }
   /** Type the follow-up. Carries the mark to stamp on delivery and the exact payload. */
-  | { kind: "nudge"; prKey: string; mark: FollowupMark; reason: string; payload: string };
+  | { kind: "nudge"; prKey: string; mark: FollowupMark; reason: string; payload: string }
+  /**
+   * Hand the conflict to the operator through `POST /api/pr-conflicts/escalate`. `resend` is
+   * an escalated mark repeating itself, so a restarted daemon re-learns it; it is neither
+   * logged nor recorded again.
+   */
+  | {
+      kind: "escalate";
+      prKey: string;
+      url: string;
+      headSha: string;
+      mark: FollowupMark;
+      reason: string;
+      resend: boolean;
+    };
 
 /**
  * What we have already relayed to a session about ONE pull request, so we neither nag an
@@ -128,6 +175,35 @@ export interface FollowupMark {
   findingsRound: number | null;
   /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
   ciNudged: boolean;
+  /** The conflicting head SHA last nudged about, or null. */
+  conflictHead: string | null;
+  /** Conflict nudges sent this episode. */
+  conflictNudges: number;
+  /** When the last conflict nudge was stamped, so the give-up clock never starts before it. */
+  conflictNudgedAt: number | null;
+  /** This episode was escalated: Foreman stays silent about the conflict until it re-arms. */
+  conflictEscalated: boolean;
+  /** When the escalation was last sent, for the re-send cadence. Null until sent. */
+  conflictEscalatedAt: number | null;
+}
+
+/** The conflict half of a mark, re-armed: a new episode starts from here. */
+const CONFLICT_REARMED = {
+  conflictHead: null,
+  conflictNudges: 0,
+  conflictNudgedAt: null,
+  conflictEscalated: false,
+  conflictEscalatedAt: null,
+} as const satisfies Partial<FollowupMark>;
+
+/** A mark that has relayed nothing yet about `prKey`. */
+function freshMark(prKey: string): FollowupMark {
+  return {
+    prKey,
+    findingsRound: null,
+    ciNudged: false,
+    ...CONFLICT_REARMED,
+  };
 }
 
 /**
@@ -155,6 +231,10 @@ export function followupPrs(s: Session): FollowupPr[] {
         repoRoot: null,
         inspector: s.inspector,
         checks: s.prChecks,
+        mergeable: s.prMergeable,
+        baseRef: s.prBaseRef,
+        headSha: s.prHeadSha,
+        conflictEscalated: s.prConflictEscalated,
       },
     ];
   }
@@ -172,14 +252,28 @@ export function followupPrs(s: Session): FollowupPr[] {
       repoRoot: entry.repoRoot,
       inspector: entry.feedback.inspector,
       checks: entry.feedback.prChecks,
+      mergeable: entry.feedback.prMergeable,
+      baseRef: entry.feedback.prBaseRef,
+      headSha: entry.feedback.prHeadSha,
+      conflictEscalated: entry.feedback.prConflictEscalated,
     });
   }
   return out;
 }
 
+/** The PR's current head mergeability, the one reading rule applied to a `FollowupPr`. */
+function mergeabilityOf(pr: FollowupPr) {
+  return currentMergeability({ prMergeable: pr.mergeable, prHeadSha: pr.headSha });
+}
+
 /**
  * Fold this pass's observation into the mark: reset it on a new PR, and RE-ARM CI when the
  * checks are no longer failing, so a later failure counts as a fresh episode.
+ *
+ * The conflict half re-arms ONLY when the current head is observed `mergeable`: an unknown
+ * head, straight after a fix push, leaves it untouched. And a mark that has not escalated is
+ * seeded from the daemon's `prConflictEscalated`, so a restarted Foreman stays silent about a
+ * conflict the operator already owns.
  *
  * Pure, and called every pass for EVERY open pull request - not only the ones about to be
  * nudged - because that is the whole fix: a CI recovery seen while the session was working
@@ -188,13 +282,17 @@ export function followupPrs(s: Session): FollowupPr[] {
  * only thing that can tell a re-failure from the one we already relayed.
  */
 export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): FollowupMark {
-  const base: FollowupMark =
-    prev && prev.prKey === pr.prKey
-      ? prev
-      : { prKey: pr.prKey, findingsRound: null, ciNudged: false };
+  let mark: FollowupMark = prev && prev.prKey === pr.prKey ? prev : freshMark(pr.prKey);
   // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it.
-  if (base.ciNudged && pr.checks !== "failing") return { ...base, ciNudged: false };
-  return base;
+  if (mark.ciNudged && pr.checks !== "failing") mark = { ...mark, ciNudged: false };
+  const mergeable = mergeabilityOf(pr);
+  if (mergeable === "mergeable") {
+    const rearmed = mark.conflictHead === null && mark.conflictNudges === 0 && !mark.conflictEscalated;
+    if (!rearmed) mark = { ...mark, ...CONFLICT_REARMED };
+  } else if (pr.conflictEscalated && !mark.conflictEscalated) {
+    mark = { ...mark, conflictEscalated: true };
+  }
+  return mark;
 }
 
 /** What is actionable on one pull request right now. */
@@ -203,6 +301,8 @@ interface Feedback {
   findings: boolean;
   /** The PR's CI rollup is failing (as opposed to pending or passing). */
   ciFailing: boolean;
+  /** The PR's current head is observed conflicting with its base. */
+  conflicting: boolean;
 }
 
 /** Terminal runs have released their session; every other durable state still owns it. */
@@ -237,7 +337,64 @@ export function foremanCannotDrive(
 
 function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig): Feedback {
   const findings = cfg.trackReviewComments && !!pr.inspector && pr.inspector.postedOpen > 0;
-  return { findings, ciFailing: cfg.trackCiFailures && pr.checks === "failing" };
+  return {
+    findings,
+    ciFailing: cfg.trackCiFailures && pr.checks === "failing",
+    conflicting: cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting",
+  };
+}
+
+/**
+ * Should Foreman hand this conflict to the operator now? Null when not.
+ *
+ * Not a typing act, so none of the pane, idle or live-mode gates apply: it is a state write
+ * on the daemon. Three ways in, all on a head currently observed conflicting:
+ *
+ *  - RE-SEND: the mark is already escalated, and a minute has passed since it was last sent.
+ *    The route is idempotent; this is what a restarted daemon re-learns `nudges-exhausted`
+ *    from. A seeded mark has never sent, so it sends once straight away.
+ *  - CAP: a new conflicting head after `CONFLICT_NUDGE_CAP` nudges.
+ *  - GIVE-UP: the agent has sat settled-idle for `CONFLICT_GIVE_UP_MS` on the very head it was
+ *    nudged about, counted from the nudge as well, so a session idle long before the nudge
+ *    landed is not given up on the next pass. A new head, even one GitHub has not answered
+ *    for, means the agent pushed, and never reaches here.
+ */
+function decideConflictEscalation(
+  s: Session,
+  pr: FollowupPr,
+  fb: Feedback,
+  cur: FollowupMark,
+  now: number,
+): ReviewFollowupDecision | null {
+  if (!fb.conflicting || pr.headSha === null) return null;
+  const head = pr.headSha;
+  const escalate = (reason: string, resend: boolean): ReviewFollowupDecision => ({
+    kind: "escalate",
+    prKey: pr.prKey,
+    url: pr.url,
+    headSha: head,
+    mark: { ...cur, conflictEscalated: true, conflictEscalatedAt: now },
+    reason,
+    resend,
+  });
+  if (cur.conflictEscalated) {
+    const last = cur.conflictEscalatedAt;
+    return last === null || now - last >= CONFLICT_ESCALATE_RESEND_MS
+      ? escalate("re-sending the conflict escalation", true)
+      : null;
+  }
+  if (head !== cur.conflictHead && cur.conflictNudges >= CONFLICT_NUDGE_CAP) {
+    return escalate(`${cur.conflictNudges} conflict nudges did not resolve it`, false);
+  }
+  if (
+    head === cur.conflictHead &&
+    cur.conflictNudgedAt !== null &&
+    now - cur.conflictNudgedAt >= CONFLICT_GIVE_UP_MS &&
+    settledIdle(s, now, CONFLICT_GIVE_UP_MS)
+  ) {
+    return escalate("the agent parked on the nudged head without resolving the conflict", false);
+  }
+  return null;
 }
 
 /**
@@ -276,6 +433,18 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   //    session in the log: nothing here to follow through on.
   if (!pr) return skip("no open pull request");
 
+  // The mark with this pass's observation already folded in by `advanceFollowupMark`.
+  const cur: FollowupMark = mark && mark.prKey === pr.prKey ? mark : freshMark(pr.prKey);
+  const fb = feedbackState(pr, cfg);
+
+  // Handing a conflict to the operator types nothing, so it is decided before the gates that
+  // protect the pane. Only a workflow outranks it: a run that owns the session owns its
+  // conflict too, and classifies it itself.
+  if (!workflowOwnsSession) {
+    const escalation = decideConflictEscalation(s, pr, fb, cur, now);
+    if (escalation) return escalation;
+  }
+
   // 4. Something needs a human. An unanswered question or an input wait means the agent
   //    is stopped ON that, not free to be handed the PR - triage owns it until it doesn't.
   if (bucket === "needs-you") return skip("the session needs a human");
@@ -295,10 +464,15 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     return skip("an active workflow owns this session");
   }
 
-  // 7. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
-  //    the overwhelmingly common state of an open PR and it is not a fault - say nothing.
-  const fb = feedbackState(pr, cfg);
-  if (!fb.findings && !fb.ciFailing) return skip("no enabled review comments or failing CI");
+  // 7. Is there anything to act on? Open posted findings, a red CI, or a conflict nobody
+  //    escalated. Nothing here is the overwhelmingly common state of an open PR and it is not
+  //    a fault - say nothing. An escalated conflict belongs to the operator, so it is not
+  //    mentioned again, even alongside other feedback.
+  const conflictOpen = fb.conflicting && !cur.conflictEscalated && !pr.conflictEscalated;
+  const open: Feedback = { ...fb, conflicting: conflictOpen };
+  if (!open.findings && !open.ciFailing && !open.conflicting) {
+    return skip("no enabled review comments, failing CI or merge conflict");
+  }
 
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge
@@ -311,31 +485,35 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   //    simply holds.
   if (!mayActLive) return skip("dry-run or off-allowlist - won't type");
 
-  // Is anything here NEW since we last nudged? The two sources are judged on their own
-  // clocks (see `FollowupMark`): findings by the Inspector round, CI by whether the
-  // current failing episode has been relayed. `mark` has already had this pass's recovery
-  // folded in by `advanceFollowupMark`, so a re-failure after a recovery reads as new.
-  const cur: FollowupMark = mark && mark.prKey === pr.prKey
-    ? mark
-    : { prKey: pr.prKey, findingsRound: null, ciNudged: false };
+  // Is anything here NEW since we last nudged? The sources are judged on their own clocks
+  // (see `FollowupMark`): findings by the Inspector round, CI by whether the current failing
+  // episode has been relayed, a conflict by its head and the per-episode cap. `mark` has
+  // already had this pass's recovery folded in by `advanceFollowupMark`, so a re-failure
+  // after a recovery reads as new.
   const round = pr.inspector?.round ?? 0;
-  const findingsNew = fb.findings && cur.findingsRound !== round;
-  const ciNew = fb.ciFailing && !cur.ciNudged;
-  if (!findingsNew && !ciNew) return skip("already nudged this round of feedback");
+  const findingsNew = open.findings && cur.findingsRound !== round;
+  const ciNew = open.ciFailing && !cur.ciNudged;
+  const conflictNew =
+    open.conflicting && pr.headSha !== cur.conflictHead && cur.conflictNudges < CONFLICT_NUDGE_CAP;
+  if (!findingsNew && !ciNew && !conflictNew) return skip("already nudged this round of feedback");
 
-  // Stamp both currently-open dimensions as relayed. The payload covers everything open,
-  // so once it lands the agent has heard about both - not only whichever one was new.
+  // Stamp every currently-open dimension as relayed. The payload covers everything open, so
+  // once it lands the agent has heard about all of it - not only whichever one was new. A
+  // conflict counts toward the cap only on a head it had not been nudged about.
   const next: FollowupMark = {
-    prKey: pr.prKey,
-    findingsRound: fb.findings ? round : cur.findingsRound,
-    ciNudged: cur.ciNudged || fb.ciFailing,
+    ...cur,
+    findingsRound: open.findings ? round : cur.findingsRound,
+    ciNudged: cur.ciNudged || open.ciFailing,
+    ...(conflictNew
+      ? { conflictHead: pr.headSha, conflictNudges: cur.conflictNudges + 1, conflictNudgedAt: now }
+      : {}),
   };
   return {
     kind: "nudge",
     prKey: pr.prKey,
     mark: next,
-    reason: describe(pr, fb),
-    payload: buildPayload(pr, fb),
+    reason: describe(pr, open),
+    payload: buildPayload(pr, open),
   };
 }
 
@@ -347,9 +525,11 @@ function skip(why: string): ReviewFollowupDecision {
 function describe(pr: FollowupPr, fb: Feedback): string {
   const open = pr.inspector?.postedOpen ?? 0;
   const where = pr.repoRoot !== null ? ` in ${pr.repoRoot}` : "";
-  if (fb.findings && fb.ciFailing) return `${open} review comment(s) + CI failing${where}`;
-  if (fb.findings) return `${open} review comment(s)${where}`;
-  return `CI failing${where}`;
+  const parts: string[] = [];
+  if (fb.findings) parts.push(`${open} review comment(s)`);
+  if (fb.ciFailing) parts.push("CI failing");
+  if (fb.conflicting) parts.push(`merge conflicts with ${pr.baseRef ?? "its base"}`);
+  return `${parts.join(" + ")}${where}`;
 }
 
 /**
@@ -396,6 +576,11 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
     problems.push(`GitHub Inspector left ${n} unresolved review comment${n === 1 ? "" : "s"} on it`);
   }
   if (fb.ciFailing) problems.push("its CI checks are failing");
+  // `baseRefName` rides every poll, so a missing base is a rare race; say so rather than
+  // guess `main`.
+  if (fb.conflicting) {
+    problems.push(`it has merge conflicts with ${pr.baseRef ? `\`${pr.baseRef}\`` : "its base branch"}`);
+  }
 
   const steps: string[] = [];
   if (pr.repoRoot !== null) {
@@ -420,6 +605,8 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
       `Look at the failing CI (\`gh pr checks${num}${scope}\`), reproduce it locally, and fix it.`,
     );
   }
+  // The merge-in method has one owner, shared with the workflow's conflict repair round.
+  if (fb.conflicting) steps.push(...mergeConflictResolutionSteps(pr.baseRef).split("\n"));
   steps.push("Commit and push.");
   steps.push(
     "Then keep watching the PR until CI is green and the review threads are resolved - " +

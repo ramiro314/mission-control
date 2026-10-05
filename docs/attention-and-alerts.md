@@ -26,7 +26,9 @@ obligation:
    handling. Each row names the PR (repository and number), its base branch, and the owning
    task or session, says why it needs you - **session ended** when no live session owns it,
    **Foreman can't drive this session** when the owning session is live but Foreman will not
-   type into it, **the workflow isn't waiting on CI for this PR** when an active workflow owns
+   type into it, **Foreman's 3 nudges didn't resolve it** once Foreman
+   [escalated it](work-queues.md#keeping-a-pr-on-track), **the workflow isn't waiting on CI for
+   this PR** when an active workflow owns
    the work but its run for this PR's repository can no longer reach a
    [Wait for CI](workflows.md#wait-for-ci) node - and how long it has been **Conflicting for**.
    It links to the PR and, while the daemon still holds it, the session. Read-only, like
@@ -44,7 +46,8 @@ obligation:
    The daemon decides membership, in memory, from the PR poller's reads
    (`src/server/pr-conflicts.ts`), and sends the whole set as `blocked_prs` when it changes and
    on connect. An exited session's conflicting PR stays on the by-URL poller until its conflict
-   closes. After a daemon restart the section is empty until the first PR poll.
+   closes. After a daemon restart the section is empty until the first PR poll, and an
+   escalated row returns within a minute, when Foreman re-sends its escalation.
 
    A PR entering this section raises one `pr-conflict` desktop alert naming it (see
    [Blocked pull requests alert](#blocked-pull-requests-alert)).

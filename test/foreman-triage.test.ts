@@ -419,7 +419,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })], agentSessionId: null,
     transcriptPath: null, instrumented: true, stateConfirmed: true, hooksSeen: true, activity: "Approve?",
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0,
-    task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, prMergeable: null, prBaseRef: null, prHeadSha: null, inspector: null, meta: null, effortBaselineReady: false, pendingEffort: null, note: null, cost: null, goal: null,
+    task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, prMergeable: null, prBaseRef: null, prHeadSha: null, prConflictEscalated: false, inspector: null, meta: null, effortBaselineReady: false, pendingEffort: null, note: null, cost: null, goal: null,
     queue: null, pendingTurns: [], orphanedQueue: null, pipeline: null, paneDialog: null,
     ...over,
   };
