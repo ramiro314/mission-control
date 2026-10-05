@@ -134,8 +134,12 @@ MISSION_TEST_CONCURRENCY=4 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI reports thirty-two non-package jobs, plus the "Flaky tests" check run that the last of them
-publishes. Two independent `dependencies` checks use GitHub-hosted
+CI reports thirty-four non-package jobs, plus the "Flaky tests" check run that `flake report`
+publishes. `changes` decides whether a pull request touched only `docs/`; on such a pull request
+`gates`, both unit matrices and E2E skip, while `docs checks` and `flake report` still run, and
+`CI result` (job id `ci-result`, the one check branch protection should require) passes only
+when every other non-package job succeeded or was one of those four skipped. Pushes to `main`,
+tags and manual runs always run everything. Two independent `dependencies` checks use GitHub-hosted
 `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
 `gates` (typecheck and lint), `docs checks` (`npm run docs:links` plus every unit test that
 reads the repository's real docs, discovered by the pattern its workflow comment names), Node.js

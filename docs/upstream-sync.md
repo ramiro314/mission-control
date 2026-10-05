@@ -166,8 +166,9 @@ The full list, with each feature's contracts and surfaces, is the
   `skills/testing-setup/` (with its copy of the action), `skills/deflake/`, the
   `set_affected_tests_command` MCP tool and `src/server/testing-setup.ts`.
 - **Docs-only CI**: `skills/docs-only-ci/` (with its two step scripts in `assets/`),
-  `test/docs-only-ci-scripts.test.ts`, the `docs checks` job in `.github/workflows/ci.yml` and
-  the `docs:links` script in `package.json`.
+  `test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`, the `changes`,
+  `docs checks` and `CI result` jobs in `.github/workflows/ci.yml` with the docs-only condition
+  on `gates`, unit and E2E, and the `docs:links` script in `package.json`.
 - **Shape tasks**: the `shape` task kind, **Shape this**, `src/server/plans/shape.ts`, and
   `skills/grill/`.
 - **Tickets**: `skills/tickets/`, ticket creation and adoption through `create_task`, and
