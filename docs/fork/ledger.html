@@ -123,8 +123,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>Per-task base branch</td>
-<td>Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts and merge watcher)</td>
-<td>#151, #161 (plan M0.1)</td>
+<td>Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher and recurring-mission template)</td>
+<td>#151, #161, #163 (plan M0.1)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1180,11 +1180,11 @@ refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, and its check, diff, conflict and merge-watcher followers; the task form field and card label, the recurring-mission template, and the session Diff view are separate tickets.</td>
+<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, and the recurring-mission template (D35); the task form field and card label and the session Diff view are separate tickets.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#151, #161</td>
+<td>#151, #161, #163</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1225,6 +1225,12 @@ the Wait for CI repair read GitHub&#39;s <code>baseRefName</code>, unchanged.</l
 (<code>Registry.mergeCounts</code>, on both the branch-poll and by-URL paths, before anything is stamped),
 so neither completion nor dependency satisfaction follows a merge into another branch. A task
 with no base branch counts a merge wherever it lands, as before.</li>
+<li>A recurring mission&#39;s task template carries an optional <code>baseBranch</code> (in the revision&#39;s
+<code>template_json</code>, so no migration; an absent key reads as null). Create and update refuse one
+<code>origin</code> lacks on the <code>baseBranch</code> field (<code>ScheduleManager.prepareDefinition</code>, 400); preview
+checks only its shape. Every task a run files, scheduled or Run now, carries it, and dispatch
+checks it against origin again. The mission editor has a &quot;Base branch&quot; field and the detail
+shows it.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -1245,9 +1251,14 @@ resets a reused slot to the frozen commit, so Return resetting to the default is
 <code>src/mcp/server.ts</code>. The followers add <code>src/server/diff.ts</code> (<code>changedPathsSince</code>,
 <code>deletedPathsSince</code>, <code>computeSessionDiff</code>), <code>src/server/test-selection.ts</code>,
 <code>src/server/workflows/{affected-tests,check-runtime,checks,context,engine,agent-contract}.ts</code>,
-<code>src/server/registry.ts</code> (<code>reconcilePrs</code>, <code>reconcilePrMerges</code>) and <code>src/server/pr.ts</code>.</p>
+<code>src/server/registry.ts</code> (<code>reconcilePrs</code>, <code>reconcilePrMerges</code>) and <code>src/server/pr.ts</code>. The
+mission template adds <code>src/shared/schedules.ts</code> (<code>ScheduleTemplate.baseBranch</code>,
+<code>SCHEDULE_VALIDATION_FIELDS</code>), <code>ScheduleTemplateSchema</code>, <code>src/server/schedules/{manager,store}.ts</code>,
+<code>src/web/components/schedules/{ScheduleEditor,ScheduleDetail}.tsx</code> and
+<code>scheduleDefinitionFingerprint</code> in <code>src/web/lib/schedules.ts</code>.</p>
 <p><strong>Fork-only files.</strong> <code>test/task-base-branch.test.ts</code>, <code>test/task-base-branch-migration.test.ts</code>,
-<code>test/task-base-branch-followers.test.ts</code>.</p>
+<code>test/task-base-branch-followers.test.ts</code>, <code>test/schedule-base-branch.test.ts</code>,
+<code>e2e/specs/mission-base-branch.spec.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

@@ -150,7 +150,9 @@ one starts from origin's default branch and targets it, exactly as before.
 - **Where it is set.** `POST /api/tasks` and `POST /api/tasks/:id/update` take `baseBranch`;
   `null` on an edit returns the task to the default branch. The MCP
   [`create_task` and `push_task`](sessions.md#review-channel-mcp) tools take it too. Like the
-  other provisioning fields, it can change only while the task is in the backlog.
+  other provisioning fields, it can change only while the task is in the backlog. A
+  [recurring mission](recurring-missions.md)'s template can name one too, and every task the
+  mission files carries it.
 - **It must exist on origin.** Creating or editing a task with a base branch asks
   `git ls-remote origin` for it and refuses the request with 400, naming the branch, when origin
   does not have it or cannot answer. A repository with no `origin` cannot take a base branch.

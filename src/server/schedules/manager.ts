@@ -24,6 +24,7 @@ import type {
 } from "@shared/schedules.ts";
 import type { TaskRepoRoot } from "../repos.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
+import { baseBranchRefusal } from "../git/remote-default.ts";
 import type { CreateTaskInput, InternalCreateOptions } from "../tasks.ts";
 import { TaskIdCollisionError } from "../tasks.ts";
 import { getTask as getDurableTask } from "../db.ts";
@@ -111,6 +112,8 @@ export interface ScheduleManagerDeps {
   uuid?: () => string;
   recurrence?: RecurrenceEvaluator;
   resolveRepoRoot?: (path: string) => Promise<TaskRepoRoot>;
+  /** Why `repoRoot`'s origin cannot serve `branch` as a base, or null when it can. */
+  baseBranchRefusal?: (repoRoot: string, branch: string) => Promise<string | null>;
   notifier?: ScheduleNotifier;
   log?: ScheduleLog;
 }
@@ -143,7 +146,8 @@ export type UpdateScheduleInput = ScheduleDefinitionInput;
  * refuse the same things: a preview that validated only the expression would greenlight a
  * `repoRoot` that is not a repository, then save would reject it - the UI showing a schedule
  * as previewable that it cannot store. `previewDefinition` runs the same `prepareDefinition`
- * gate save does, so the two answers cannot diverge.
+ * gate save does, so the two answers cannot diverge. The one question it leaves to save is
+ * whether origin has the base branch, which needs the network (see `prepareDefinition`).
  */
 export interface SchedulePreviewDefinitionInput extends ScheduleDefinitionInput {
   /** Anchor; instants are strictly after it. Defaults to now. */
@@ -263,6 +267,7 @@ export class ScheduleManager implements ScheduleService {
   private readonly uuid: () => string;
   private readonly recurrence: RecurrenceEvaluator;
   private readonly resolveRepoRoot: (path: string) => Promise<TaskRepoRoot>;
+  private readonly baseBranchRefusal: (repoRoot: string, branch: string) => Promise<string | null>;
   private notifier: ScheduleNotifier;
   private readonly log: ScheduleLog;
   private readonly operationTails = new Map<string, Promise<void>>();
@@ -273,6 +278,7 @@ export class ScheduleManager implements ScheduleService {
     this.uuid = deps.uuid ?? randomUUID;
     this.recurrence = deps.recurrence ?? defaultRecurrence;
     this.resolveRepoRoot = deps.resolveRepoRoot ?? resolveTaskRepoRoot;
+    this.baseBranchRefusal = deps.baseBranchRefusal ?? baseBranchRefusal;
     this.notifier = deps.notifier ?? NOOP_NOTIFIER;
     this.log = deps.log ?? defaultLog;
   }
@@ -398,7 +404,7 @@ export class ScheduleManager implements ScheduleService {
   // ---- definition mutations ----
 
   async create(input: CreateScheduleInput): Promise<ScheduleSaveResult> {
-    const prepared = await this.prepareDefinition(input, this.now());
+    const prepared = await this.prepareDefinition(input, this.now(), { checkOrigin: true });
     if (!prepared.ok) return prepared;
 
     // Repository validation is asynchronous. Anchor the new cursor when the definition
@@ -444,7 +450,7 @@ export class ScheduleManager implements ScheduleService {
     if (current.archivedAt !== null)
       return refuse("name", "this schedule is archived");
 
-    const prepared = await this.prepareDefinition(input, at);
+    const prepared = await this.prepareDefinition(input, at, { checkOrigin: true });
     if (!prepared.ok) return prepared;
 
     const committedAt = this.now();
@@ -517,6 +523,12 @@ export class ScheduleManager implements ScheduleService {
   /**
    * Validate an edit and canonicalize both halves of it.
    *
+   * `checkOrigin` asks origin whether it has the template's base branch, and only a save
+   * sets it. A preview leaves it off on purpose: the detail view previews a SAVED mission
+   * every time it opens, and a network round trip there would put a branch deleted after
+   * the save in the way of reading the cadence. Dispatch asks origin again with a fetch, so
+   * a branch that disappears between save and run is still refused before any work starts.
+   *
    * `executionMode` and `runnerId` are not taken from the caller at all. V1 runs work on
    * THIS machine when it is running, and a form that offered `remote-runner` would be
    * offering a promise nothing in this build keeps - the schema carries the other two
@@ -526,6 +538,7 @@ export class ScheduleManager implements ScheduleService {
   private async prepareDefinition(
     input: ScheduleDefinitionInput,
     at: number,
+    { checkOrigin = false }: { checkOrigin?: boolean } = {},
   ): Promise<
     | { ok: true; definition: ScheduleDefinition }
     | { ok: false; error: ScheduleValidationError }
@@ -557,6 +570,12 @@ export class ScheduleManager implements ScheduleService {
     const repo = await this.resolveRepoRoot(input.template.repoRoot);
     if (!repo.ok) return refuse("repoRoot", repo.error);
 
+    const baseBranch = input.template.baseBranch ?? null;
+    if (baseBranch !== null && checkOrigin) {
+      const refused = await this.baseBranchRefusal(repo.repoRoot, baseBranch);
+      if (refused) return refuse("baseBranch", refused);
+    }
+
     return {
       ok: true,
       definition: {
@@ -568,7 +587,7 @@ export class ScheduleManager implements ScheduleService {
         completionPolicy: input.completionPolicy,
         executionMode: "local-catchup",
         runnerId: null,
-        template: { ...input.template, title, intent, repoRoot: repo.repoRoot },
+        template: { ...input.template, title, intent, repoRoot: repo.repoRoot, baseBranch },
       },
     };
   }
@@ -1092,6 +1111,9 @@ export class ScheduleManager implements ScheduleService {
           // reads an absent `workflowId` as the dispatch default, so `null` only means "no
           // Workflow" if it arrives. See `ScheduleTemplate.workflowId`.
           workflowId: revision.template.workflowId,
+          // Not asked of origin again here: filing provisions nothing, and dispatch fetches
+          // and refuses a base that has since disappeared, before a worktree is cut.
+          baseBranch: revision.template.baseBranch ?? null,
           // A schedule files work; it never launches it. See the class comment.
           backlog: true,
         },

@@ -7666,6 +7666,11 @@ const ScheduleTemplateSchema = z
      * runs of a mission that names it, and refusing the save would block unrelated edits.
      */
     workflowId: z.string().min(1).nullable().default(null),
+    /**
+     * The origin branch each run's task starts from and opens its pull request against.
+     * Shape only here; whether origin has it is the manager's question, asked on save.
+     */
+    baseBranch: BaseBranchSchema.nullable().default(null),
   })
   // The same split the kind rows keep, because it is the same fact about the two fields: a
   // model id is agent-namespaced, so an inheriting template cannot name one; an effort is

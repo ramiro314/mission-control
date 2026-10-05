@@ -25,7 +25,11 @@ The overlay has three screens:
   template, the cadence and time zone, laptop availability, the overlap, missed-run and
   completion guardrails, and preview-and-enable. The template's **After work** names the
   [Workflow](workflows.md) that runs when each generated task finishes, and rests on *None* -
-  see [the after-work handoff](#the-after-work-handoff) below. The template's **Agent** may be left on *Inherit*, which
+  see [the after-work handoff](#the-after-work-handoff) below. The template's optional **Base
+  branch** names a branch on the repository's `origin`; every task a run files starts from it
+  and opens its pull request against it (see [start a task from another branch](dispatch-and-backlog.md#start-a-task-from-another-branch) for an
+  ordinary task). Saving refuses a branch `origin` does not have, under that field; left empty,
+  runs use origin's default branch. The template's **Agent** may be left on *Inherit*, which
   takes the [task kind's agent](models.md#task-kinds) as each run fires rather than pinning a
   harness here - so repointing that kind moves a mission written months earlier. An inheriting
   mission cannot pin a Model (a model id belongs to one harness) and its Effort offers only the

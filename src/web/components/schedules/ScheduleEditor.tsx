@@ -81,6 +81,8 @@ interface EditorDraft {
   effort: ThinkingLevel | "";
   /** `""` is None - no Workflow runs after the task a run files. */
   workflowId: string;
+  /** `""` is origin's default branch. */
+  baseBranch: string;
   cadence: CadenceForm;
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy;
@@ -101,6 +103,7 @@ function emptyDraft(): EditorDraft {
     model: "",
     effort: "",
     workflowId: "",
+    baseBranch: "",
     cadence: { preset: "weekly", weekday: 1, monthday: 1, time: "08:00", expression: "0 8 * * 1" },
     timezone: browserTimezone(),
     overlapPolicy: "skip-active",
@@ -130,6 +133,7 @@ function draftFromSchedule(schedule: MissionSchedule): EditorDraft {
     model: template?.model ?? "",
     effort: template?.effort ?? "",
     workflowId: template?.workflowId ?? "",
+    baseBranch: template?.baseBranch ?? "",
     cadence: expressionToForm(schedule.expression),
     timezone: schedule.timezone,
     overlapPolicy: schedule.overlapPolicy ?? "skip-active",
@@ -172,6 +176,7 @@ function draftToDefinition(draft: EditorDraft): ScheduleDefinitionPayload {
       model: draft.model || null,
       effort: draft.effort || null,
       workflowId: hasReviewableDiff(draft.kind) ? draft.workflowId || null : null,
+      baseBranch: draft.baseBranch.trim() || null,
     },
   };
 }
@@ -476,6 +481,19 @@ export function ScheduleEditor({
               repos={repos}
               value={draft.repoRoot}
               onChange={(value) => update({ repoRoot: value })}
+            />
+          </Field>
+          <Field
+            label="Base branch"
+            hint="optional - each run starts from it and opens its PR against it"
+            error={fieldErrors.baseBranch}
+          >
+            <input
+              className="field-input rm-mono-input"
+              value={draft.baseBranch}
+              onChange={(event) => update({ baseBranch: event.target.value })}
+              placeholder="origin's default branch"
+              spellCheck={false}
             />
           </Field>
           <Field label="Task title" error={fieldErrors.title}>

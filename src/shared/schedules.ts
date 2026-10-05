@@ -297,6 +297,15 @@ export interface ScheduleTemplate {
    * `tasks.create` explicitly, and an absent key on a stored template reads as `null`.
    */
   workflowId: string | null;
+  /**
+   * The origin branch every run's task starts from and opens its pull request against, or
+   * null for origin's default branch - the same field as `Task.baseBranch`, handed to each
+   * task a run files. Checked to exist on origin when the mission is saved.
+   *
+   * Optional on the type only so hand-built templates need not name it; every stored
+   * template the daemon reads carries it, and an absent value means null.
+   */
+  baseBranch?: string | null;
 }
 
 /** The editable half of a schedule: cadence, guardrails, and what to file. */
@@ -506,11 +515,11 @@ export interface ScheduleHistoryPage {
  * Which input a refusal belongs to, so a form can put the message on the right field.
  *
  * Not persisted - a validation error is answered, rendered and thrown away - so unlike
- * the enums at the top of this file this list is free to grow. The last four arrived with
- * the scheduler: `recurrence.validate` only ever judges the cadence, but the manager also
- * refuses a nameless mission, an untitled or intentless template, and a `repoRoot` that is
- * not a repo's main checkout - and a refusal a form cannot attach to a field is one the
- * operator has to guess at.
+ * the enums at the top of this file this list is free to grow. Only the first two are the
+ * cadence's, which is all `recurrence.validate` judges; the manager also refuses a nameless
+ * mission, an untitled or intentless template, a `repoRoot` that is not a repo's main
+ * checkout, and a `baseBranch` its origin does not have - and a refusal a form cannot attach
+ * to a field is one the operator has to guess at.
  */
 export const SCHEDULE_VALIDATION_FIELDS = [
   "expression",
@@ -519,6 +528,7 @@ export const SCHEDULE_VALIDATION_FIELDS = [
   "repoRoot",
   "title",
   "intent",
+  "baseBranch",
 ] as const;
 export type ScheduleValidationField = (typeof SCHEDULE_VALIDATION_FIELDS)[number];
 
