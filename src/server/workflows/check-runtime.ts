@@ -297,6 +297,7 @@ export class CheckRuntime {
         treeRoot: leasePath,
         workingSubpath: request.workingSubpath,
         localRoot: request.repoRoot,
+        baseBranch: request.baseBranch ?? null,
         selection: this.testSelection,
       };
       let plan: AffectedTestsPlan;

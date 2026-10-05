@@ -12,11 +12,11 @@ import { run } from "./util/exec.ts";
 //     other files - found with a lexical JS/TS import scanner, not a bundler;
 //  3. the smoke set, `tests.smokeSet`, which always runs.
 //
-// "Changed" is measured from the merge base with the default branch, the same base the
-// session diff uses (`changedPathsSince`). The scanner is deliberately conservative: an import
-// it cannot resolve (a package, a computed specifier) is ignored, and a type-only import counts
-// as a dependency, because running one test too many costs seconds while missing one costs a
-// broken merge.
+// "Changed" is measured from the merge base with the default branch, or with `origin/<base>` for
+// a task that names a base branch - the same base the session diff uses (`changedPathsSince`).
+// The scanner is deliberately conservative: an import it cannot resolve (a package, a computed
+// specifier) is ignored, and a type-only import counts as a dependency, because running one test
+// too many costs seconds while missing one costs a broken merge.
 
 export type TestSelection =
   | { ok: true; files: WorkflowSelectedTest[]; changedCount: number }
@@ -24,9 +24,9 @@ export type TestSelection =
 
 export interface TestSelectionDeps {
   /** Defaults to `changedPathsSince`. */
-  changedPaths?: (treeRoot: string) => Promise<ChangedPathsResult>;
+  changedPaths?: (treeRoot: string, baseBranch: string | null) => Promise<ChangedPathsResult>;
   /** Defaults to `deletedPathsSince`: files the change removed, from the same base. */
-  deletedPaths?: (treeRoot: string) => Promise<ChangedPathsResult>;
+  deletedPaths?: (treeRoot: string, baseBranch: string | null) => Promise<ChangedPathsResult>;
   /** Defaults to `git ls-files`. Repository-relative, forward slashes. */
   trackedFiles?: (treeRoot: string) => Promise<string[] | null>;
 }
@@ -245,12 +245,14 @@ export async function selectAffectedTests(
   treeRoot: string,
   config: TestingConfig,
   deps: TestSelectionDeps = {},
+  /** The task's base branch, or null to measure from origin's default branch. */
+  baseBranch: string | null = null,
 ): Promise<TestSelection> {
-  const changedResult = await (deps.changedPaths ?? changedPathsSince)(treeRoot);
+  const changedResult = await (deps.changedPaths ?? changedPathsSince)(treeRoot, baseBranch);
   if (!changedResult.ok) {
     return { ok: false, reason: `the changed files could not be read: ${changedResult.reason}` };
   }
-  const deletedResult = await (deps.deletedPaths ?? deletedPathsSince)(treeRoot);
+  const deletedResult = await (deps.deletedPaths ?? deletedPathsSince)(treeRoot, baseBranch);
   if (!deletedResult.ok) {
     return { ok: false, reason: `the deleted files could not be read: ${deletedResult.reason}` };
   }

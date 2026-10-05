@@ -167,6 +167,8 @@ import {
   reuseWorkflowContextCriteria,
   fallbackWorkflowContext,
   workflowRunCriteriaFrom,
+  bindingBaseBranch,
+  prBaseBranchFor,
   type WorkflowCriteriaSource,
 } from "./context.ts";
 import {
@@ -679,6 +681,11 @@ export class WorkflowManager {
         // runtime, whose pooled leases and durable process rows are daemon-wide resources.
         ...(options.checkScheduler ? { checkSchedule: options.checkScheduler } : {}),
         ...(options.checkDeps ? { checkDeps: options.checkDeps } : {}),
+        // The binding's checkout, not a live session: a check can run after its agent exited.
+        checkBaseBranch: (binding) => prBaseBranchFor(
+          binding.sessionId ? this.registry.taskForSession(binding.sessionId, binding.sessionCwd) : undefined,
+          binding.repoRoot,
+        ),
         ...(options.unresolvedCheckLease
           ? { unresolvedCheckLease: options.unresolvedCheckLease }
           : {}),
@@ -3224,7 +3231,7 @@ export class WorkflowManager {
       originalGoal: this.originalGoal(run.id),
       skillCommand: skill.command,
       repoRoot: binding.repoRoot || null,
-      baseBranch: this.bindingBaseBranch(session, binding.repoRoot),
+      baseBranch: bindingBaseBranch(this.registry, binding, session),
       workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const prepared = this.store.prepareDelivery({
@@ -4799,11 +4806,6 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
-  /** The base branch a pull request from this binding opens against - see `prBaseBranchFor`. */
-  private bindingBaseBranch(session: Session, bindingRepoRoot: string): string | null {
-    return prBaseBranchFor(this.registry.taskForSession(session.id, session.cwd), bindingRepoRoot);
-  }
-
   private originalGoal(runId: string): string {
     for (const submission of this.store.listSubmissions(runId)) {
       if (submission.mode !== "full_workflow") continue;
@@ -5361,7 +5363,7 @@ export class WorkflowManager {
       // Only an action that completes on a pull request grants creating one; an authored
       // action of any other completion kind may only update the PR the task already has.
       pullRequestGrant: snapshot.completion.kind === "pull_request",
-      baseBranch: this.bindingBaseBranch(session, binding.repoRoot),
+      baseBranch: bindingBaseBranch(this.registry, binding, session),
       pullRequestCi: snapshot.completion.kind === "pull_request"
         && this.options.trackCiFailures?.() === true
         && !waitForCiFollows(version.graph, attempt.nodeId),
@@ -8117,15 +8119,3 @@ export function sessionPrMergeability(
   return { mergeable: observed.state, headSha: observed.headSha, baseRef: fields.prBaseRef };
 }
 
-/**
- * The base branch a pull request from a workflow binding opens against: the task's, when the run
- * reviews that task's PRIMARY repository (an empty binding root is the session's own checkout).
- * Null for an attached repository, which keeps its own default branch, and for a task with none.
- */
-export function prBaseBranchFor(
-  task: Pick<Task, "baseBranch" | "repoRoot"> | undefined,
-  bindingRepoRoot: string,
-): string | null {
-  if (!task?.baseBranch) return null;
-  return !bindingRepoRoot || bindingRepoRoot === task.repoRoot ? task.baseBranch : null;
-}

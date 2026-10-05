@@ -769,7 +769,11 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
     ? ["", workflowPullRequestCiContract(), ""]
     : [];
   const conflictPolicy = input.origin.kind === "run" && input.pullRequestConflicts
-    ? [...(ciPolicy.length > 0 ? [] : [""]), workflowPullRequestConflictContract(), ""]
+    ? [
+      ...(ciPolicy.length > 0 ? [] : [""]),
+      workflowPullRequestConflictContract(input.baseBranch ? sanitizeWorkflowFeedback(input.baseBranch) : null),
+      "",
+    ]
     : [];
   const payload = `${[...lines, authorization, ...ciPolicy, ...conflictPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other

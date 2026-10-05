@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { z } from "zod";
-import type { ReviewItem, Session, TranscriptMessage } from "@shared/types.ts";
+import type { ReviewItem, Session, Task, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import type {
   PersonaFeedbackSummary,
@@ -854,14 +854,14 @@ function standardsDocuments(
   }));
 }
 
-async function readRepositoryWorkEvidence(cwd: string | null): Promise<{
+async function readRepositoryWorkEvidence(cwd: string | null, baseBranch: string | null): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
   statusTruncated: boolean;
   statusFingerprint: string;
 }> {
-  const diff = await computeSessionDiff(cwd);
+  const diff = await computeSessionDiff(cwd, undefined, baseBranch);
   if (!diff.ok) {
     throw new Error(`Could not capture repository diff: ${diff.error ?? "unknown error"}`);
   }
@@ -883,7 +883,7 @@ async function readRepositoryWorkEvidence(cwd: string | null): Promise<{
   return { diff, allStatus, status, statusTruncated, statusFingerprint };
 }
 
-async function readRepositoryEvidence(cwd: string | null): Promise<{
+async function readRepositoryEvidence(cwd: string | null, baseBranch: string | null): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
@@ -893,7 +893,7 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   contentTreeOid: string;
   repositoryFingerprint: string;
 }> {
-  const work = await readRepositoryWorkEvidence(cwd);
+  const work = await readRepositoryWorkEvidence(cwd, baseBranch);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
   const { treeOid: contentTreeOid } = await captureWorktreeTree(cwd);
@@ -1027,6 +1027,31 @@ function compatibleSession(binding: WorkflowBinding, session: Session): boolean 
  * run, or one assembled without the field, following the session rather than falling through
  * to a checkout it never named.
  */
+/**
+ * The base branch a pull request from a workflow binding opens against: the task's, when the run
+ * reviews that task's PRIMARY repository (an empty binding root is the session's own checkout).
+ * Null for an attached repository, which keeps its own default branch, and for a task with none.
+ */
+export function prBaseBranchFor(
+  task: Pick<Task, "baseBranch" | "repoRoot"> | undefined,
+  bindingRepoRoot: string,
+): string | null {
+  if (!task?.baseBranch) return null;
+  return !bindingRepoRoot || bindingRepoRoot === task.repoRoot ? task.baseBranch : null;
+}
+
+/**
+ * The base branch a binding's work is measured from: the one its pull request opens against,
+ * so the diff a Persona reviews is the diff that pull request will show. See `prBaseBranchFor`.
+ */
+export function bindingBaseBranch(
+  registry: Pick<Registry, "taskForSession">,
+  binding: Pick<WorkflowBinding, "repoRoot">,
+  session: Pick<Session, "id" | "cwd">,
+): string | null {
+  return prBaseBranchFor(registry.taskForSession(session.id, session.cwd), binding.repoRoot);
+}
+
 export function workflowCheckoutPath(
   binding: Pick<WorkflowBinding, "repoRoot" | "sessionCwd">,
   session: Pick<Session, "cwd" | "workspace">,
@@ -1224,7 +1249,7 @@ export async function readWorkflowContextRaw(
     standards,
     contentTreeOid,
     repositoryFingerprint,
-  } = await readRepositoryEvidence(checkout);
+  } = await readRepositoryEvidence(checkout, bindingBaseBranch(registry, binding, session));
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
   // intent is the thing the review is judged AGAINST rather than a fact about the work.
@@ -1349,7 +1374,7 @@ export async function readWorkflowEvidenceProbe(
   }
   const checkout = workflowCheckoutPath(binding, session);
   if (!checkout) throw new Error("The bound session has no working directory");
-  const work = await readRepositoryWorkEvidence(checkout);
+  const work = await readRepositoryWorkEvidence(checkout, bindingBaseBranch(registry, binding, session));
   return {
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
@@ -1509,7 +1534,10 @@ export async function captureBoundaryChanged(
   const located = sessionMessages(session);
   const size = located?.read.size(located.path) ?? null;
   if ((located?.path ?? null) !== boundary.transcriptPath || size !== boundary.transcriptSize) return true;
-  const repository = await readRepositoryEvidence(workflowCheckoutPath(binding, session));
+  const repository = await readRepositoryEvidence(
+    workflowCheckoutPath(binding, session),
+    bindingBaseBranch(registry, binding, session),
+  );
   return repository.diff.headSha !== boundary.headSha
     || repository.repositoryFingerprint !== boundary.repositoryFingerprint;
 }
