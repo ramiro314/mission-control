@@ -57,7 +57,7 @@ required check would sit in Pending forever. That is why the pattern below alway
 | 6 | Skill flow | The testing-setup shape: audit, one approval form, apply only what was approved |
 | 7 | CI systems | GitHub Actions only; anything else is a clear "not supported" stop |
 | 8 | Does `gates` run on a docs-only PR | No, it skips with the heavy jobs |
-| 9 | Detection | An inline shell step running `git diff --name-only` between base and head, matched against the docs patterns. No third-party action |
+| 9 | Detection | An inline shell step running `git diff --name-only` between base and head, matched against the docs patterns. No third-party action. Implemented with `--no-renames`; see the `changes` job, step 2 |
 | 10 | When detection cannot decide | Run the full suite |
 | 11 | Skill id | `docs-only-ci` (installed as `mission-docs-only-ci`) |
 | 12 | Docs paths in other repos | The audit proposes a set (default `docs/**`, plus what it finds, such as `*.md` or a docs site directory); the human edits it in the form |

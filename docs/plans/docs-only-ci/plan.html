@@ -144,7 +144,7 @@ required check would sit in Pending forever. That is why the pattern below alway
 <tr>
 <td>9</td>
 <td>Detection</td>
-<td>An inline shell step running <code>git diff --name-only</code> between base and head, matched against the docs patterns. No third-party action</td>
+<td>An inline shell step running <code>git diff --name-only</code> between base and head, matched against the docs patterns. No third-party action. Implemented with <code>--no-renames</code>; see the <code>changes</code> job, step 2</td>
 </tr>
 <tr>
 <td>10</td>
@@ -233,7 +233,9 @@ same in target repositories.</p>
 <h2>Design</h2>
 <h3>The job graph</h3>
 <div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 615" role="img" aria-label="CI job graph before and after the docs-only gate">
+  <style>svg rect{fill:var(--panel,#fff);stroke:var(--line,#8899ad)}svg rect.new{fill:var(--new,#e3f4e8);stroke:var(--link,#064b8b);stroke-width:2}svg text{fill:var(--ink,#132239);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted,#344d68)}svg path{stroke:var(--link,#064b8b);fill:none;stroke-width:2}svg polygon{fill:var(--link,#064b8b)}svg rect.bg{fill:var(--panel,#fff);stroke:none}</style>
   <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <rect class="bg" x="0" y="0" width="1040" height="615"/>
   <text x="20" y="30">Before: every pull request runs everything</text>
   <rect x="20" y="80" width="170" height="44" rx="8"/><text x="38" y="108">dependencies x2</text>
   <rect x="250" y="50" width="150" height="40" rx="8"/><text x="292" y="76">gates</text>
