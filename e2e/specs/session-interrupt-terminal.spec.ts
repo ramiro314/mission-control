@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { execPath } from "node:process";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
@@ -128,6 +129,7 @@ function startPane(): Pane {
 const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 
 test.describe("terminal-runtime interrupt", () => {
+  skipSpecOnWin32(test, "tmux and the terminal runtime are unavailable on win32");
   test.skip(tmuxMissing, "tmux is not installed on this machine");
 
   let pane: Pane | undefined;

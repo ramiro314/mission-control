@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import { _electron as electron } from "playwright";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
+skipSpecOnWin32(test, "the managed desktop updater is macOS-only");
 test.skip(process.platform !== "darwin", "the managed desktop updater is macOS-only");
 
 test("the sandboxed desktop preload carries update progress into the dashboard", async ({ daemon }) => {

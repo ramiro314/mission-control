@@ -101,10 +101,18 @@ test("each product step is allowed to fail through one switch, and the job repor
     const all = steps(body);
     const allowed = all.filter((step) => step.includes("continue-on-error"));
     assert.ok(allowed.length > 0, `${id} has a step that is allowed to fail`);
+    let stepMinutes = 0;
     for (const step of allowed) {
       assert.ok(step.includes(`        ${ALLOWED_TO_FAIL}\n`), `${id}: ${step.split("\n")[0]}`);
       assert.match(step, /^ {8}id: \w+$/m, `${id}: an allowed step needs an id to be reported`);
+      const minutes = step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1];
+      assert.ok(minutes, `${id}: ${step.split("\n")[0]} needs its own timeout, or a hang times out the job`);
+      stepMinutes += Number(minutes);
     }
+    assert.ok(
+      stepMinutes + 10 <= Number(jobValue(body, "timeout-minutes")),
+      `${id}'s timeout leaves ten minutes of provisioning beyond its steps' ${stepMinutes}`,
+    );
     const last = all.at(-1)!;
     assert.match(last, /^ {6}- name: Report allowed failures$/m, `${id} ends with the report`);
     assert.match(last, /^ {8}if: \$\{\{ !cancelled\(\) \}\}$/m);

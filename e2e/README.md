@@ -2095,8 +2095,12 @@ correct through refactors. Nine traps, all of which have cost time already:
 9. **Skip on win32 only through `skipSpecOnWin32`** from `test/helpers/win32-skip.ts`, with a
    stated reason. The Windows merge gate reviews every call to it, and only for surfaces that
    are unavailable on win32 (Codex, Pi, the terminal runtime, the macOS updater) or tests that
-   pin a POSIX-only implementation. `test/win32-skip-guard.test.ts` fails the build on a spec
-   or unit test that compares the platform to `"win32"` to skip any other way.
+   pin a POSIX-only implementation. A skip that also fires on win32 for another reason calls
+   it first: a macOS-only spec (`test.skip(process.platform !== "darwin", ...)`) and a spec
+   that skips when `tmux` is missing both put `skipSpecOnWin32(test, ...)` before their own
+   `test.skip`. `test/win32-skip-guard.test.ts` fails the build on a win32 comparison or a
+   platform exclusion that skips without the helper; a missing-tool probe it cannot recognise,
+   so that half is yours to remember.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

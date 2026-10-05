@@ -12,6 +12,7 @@
  * are exercised against something that actually changes.
  */
 import { after, afterEach, test } from "node:test";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -52,7 +53,7 @@ const modeledProvider = (cli: TreehouseCli) =>
  * Every case here starts a real process, and a platform that cannot read a process start
  * identity declines checks by design. Rather than pretend, the suite says so out loud.
  */
-const SUPPORTED = checkRuntimeSupport().supported;
+const UNSUPPORTED = skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported;
 
 const liveRows = (): unknown[] =>
   db
@@ -229,7 +230,7 @@ function run(
 
 // ---- the gate actually runs ------------------------------------------------
 
-test("a failing command fails with its own output, and its tree goes back", { skip: !SUPPORTED }, async () => {
+test("a failing command fails with its own output, and its tree goes back", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const { ref, result } = run(f, { command: FAILS });
   const outcome = await result;
@@ -244,7 +245,7 @@ test("a failing command fails with its own output, and its tree goes back", { sk
   assert.equal(f.leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), false);
 });
 
-test("a passing command passes, and its tree goes back too", { skip: !SUPPORTED }, async () => {
+test("a passing command passes, and its tree goes back too", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const { ref, result } = run(f, { command: PASSES });
   const outcome = await result;
@@ -264,7 +265,7 @@ test("a passing command passes, and its tree goes back too", { skip: !SUPPORTED 
  * the gate would test an unrelated checkout and report the answer as if it were about this
  * submission. A wrong verdict, not a crash, which is the worst shape available here.
  */
-test("the command runs in the LEASED worktree, never in the session's repository", { skip: !SUPPORTED }, async () => {
+test("the command runs in the LEASED worktree, never in the session's repository", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const { ref, result } = run(f, { command: REPORT_CWD });
   const outcome = await result;
@@ -282,7 +283,7 @@ test("the command runs in the LEASED worktree, never in the session's repository
   assert.equal(leaseRows.get(ref.attemptId)?.holderToken, checkHolderToken(ref.attemptId));
 });
 
-test("a nested working subpath runs where it was configured", { skip: !SUPPORTED }, async () => {
+test("a nested working subpath runs where it was configured", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const { ref, result } = run(f, { command: REPORT_CWD, workingSubpath: "packages/web" });
   const outcome = await result;
@@ -330,7 +331,7 @@ test("a dry pool is infrastructure, never a failed verdict", async () => {
  *
  * Found end to end on a real repository, not here. This is the case that keeps it fixed.
  */
-test("an abbreviated captured commit still pins the worktree", { skip: !SUPPORTED }, async () => {
+test("an abbreviated captured commit still pins the worktree", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const short = f.headSha.slice(0, 7);
   assert.notEqual(short, f.headSha);
@@ -358,7 +359,7 @@ test("an abbreviated captured commit still pins the worktree", { skip: !SUPPORTE
  * the wrong-verdict-rather-than-a-crash failure this whole unit exists to avoid, arriving
  * through the door opened to fix a different one.
  */
-test("a revision expression is refused rather than resolved", { skip: !SUPPORTED }, async () => {
+test("a revision expression is refused rather than resolved", { skip: UNSUPPORTED }, async () => {
   for (const expression of ["HEAD", "HEAD~1", "main", "@{yesterday}", "refs/heads/main"]) {
     const f = fixture();
     const ref = attemptRef();
@@ -392,7 +393,7 @@ test("a revision expression is refused rather than resolved", { skip: !SUPPORTED
  * after-the-fact comparison. So this asserts the leased worktree stands on the OBJECT the
  * prefix names, while a ref of that exact spelling points somewhere else entirely.
  */
-test("a ref cannot decide which commit an abbreviation pins", { skip: !SUPPORTED }, async () => {
+test("a ref cannot decide which commit an abbreviation pins", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString();
@@ -435,7 +436,7 @@ test("a ref cannot decide which commit an abbreviation pins", { skip: !SUPPORTED
  * over the empty tree collide on `186c` on any machine. Searching for the pair took 672 commits
  * and 15 seconds once; reproducing it takes two calls.
  */
-test("an ambiguous abbreviated commit is refused rather than guessed", { skip: !SUPPORTED }, async () => {
+test("an ambiguous abbreviated commit is refused rather than guessed", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const fixedIdentity = {
     ...process.env,
@@ -490,7 +491,7 @@ test("an ambiguous abbreviated commit is refused rather than guessed", { skip: !
  * `resolved !== baseSha` and `verifyHeadIs` would each still refuse the pin before any command
  * ran, so the failure would be a blocked run rather than a verdict about the wrong tree.
  */
-test("a ref named like a full commit id cannot shadow it", { skip: !SUPPORTED }, async () => {
+test("a ref named like a full commit id cannot shadow it", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString();
@@ -735,7 +736,7 @@ test("a worktree that could not be handed back withholds the verdict too", async
 
 // ---- startup recovery is wired ---------------------------------------------
 
-test("startup recovery returns a lease whose group is provably gone", { skip: !SUPPORTED }, async () => {
+test("startup recovery returns a lease whose group is provably gone", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const ref = attemptRef();
   const leasePath = await f.leases.acquireForAttempt({ ...ref, repoRoot: f.repoRoot, headSha: f.headSha });
@@ -766,7 +767,7 @@ test("startup recovery returns a lease whose group is provably gone", { skip: !S
   );
 });
 
-test("startup recovery keeps a lease whose group it may not signal", { skip: !SUPPORTED }, async () => {
+test("startup recovery keeps a lease whose group it may not signal", { skip: UNSUPPORTED }, async () => {
   const f = fixture();
   const ref = attemptRef();
   await f.leases.acquireForAttempt({ ...ref, repoRoot: f.repoRoot, headSha: f.headSha });

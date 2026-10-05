@@ -9,7 +9,9 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
 import { observeReactRefresh } from "../fixtures/react-refresh.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
+skipSpecOnWin32(test, "the real sandboxed desktop fixture drives the macOS GUI");
 test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
 
 for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged dashboard after a held press"] as const) {

@@ -496,8 +496,11 @@ jobs:
   # last step lists those failures as warnings and in the job summary. It is step-level, not
   # `continue-on-error` on the job, on purpose: a failed job still reports a failed check run,
   # and Mission Control's Wait for CI fails on any failed check run, so every pull request into
-  # `release/windows` would go red. Provisioning steps (checkout, install, browser download)
-  # still fail the job, because their failure says nothing about Windows support.
+  # `release/windows` would go red. For the same reason each of those steps has its own
+  # `timeout-minutes`, and its job's timeout leaves room for all of them plus provisioning, so a
+  # hang ends as that step's failure instead of a timed-out job. Provisioning steps (checkout,
+  # install, browser download) still fail the job, because their failure says nothing about
+  # Windows support.
   #
   # Once M2 is green, M2.12 sets the variable to 'false' in every job and adds the jobs to
   # `CI result`'s `needs`, which makes them required on this branch. Until then they are out
@@ -574,6 +577,7 @@ jobs:
 
       - name: Typecheck
         id: typecheck
+        timeout-minutes: 10
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run typecheck
 
@@ -592,7 +596,7 @@ jobs:
     needs: [changes, dependencies-windows]
     if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -643,12 +647,14 @@ jobs:
 
       - name: Test prerequisites (pretest)
         id: pretest
+        timeout-minutes: 10
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run pretest
 
       # `--ignore-scripts` skips `pretest` and `posttest`, which the steps around this run.
       - name: Test
         id: test
+        timeout-minutes: 30
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm test --ignore-scripts
         env:
@@ -656,6 +662,7 @@ jobs:
 
       - name: Workflow evidence tests (posttest)
         id: posttest
+        timeout-minutes: 5
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run posttest
 
@@ -672,7 +679,7 @@ jobs:
     needs: [changes, dependencies-windows]
     if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
@@ -697,11 +704,13 @@ jobs:
 
       - name: Build
         id: build
+        timeout-minutes: 10
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run build
 
       - name: Smoke the built bundles
         id: smoke
+        timeout-minutes: 5
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run smoke
@@ -720,7 +729,7 @@ jobs:
     needs: [changes, dependencies-windows]
     if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
@@ -745,17 +754,20 @@ jobs:
 
       - name: State lock tests
         id: state_lock
+        timeout-minutes: 10
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: node --test --import ./test/setup-state.mjs --import tsx test/native-state-lock-provisioning.test.ts test/daemon-state-ownership.test.ts
 
       # The probe loads `dist/native/keep-awake.node`, which only `build:native` produces.
       - name: Build native addons
         id: build_native
+        timeout-minutes: 10
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run build:native
 
       - name: Keep Awake probe
         id: keep_awake
+        timeout-minutes: 5
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run verify:keep-awake-native
 
@@ -772,7 +784,7 @@ jobs:
     needs: [changes, dependencies-windows]
     if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -816,11 +828,13 @@ jobs:
 
       - name: Build
         id: build
+        timeout-minutes: 10
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run build
 
       - name: End-to-end tests
         id: e2e
+        timeout-minutes: 35
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}

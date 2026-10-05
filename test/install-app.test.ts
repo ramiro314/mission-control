@@ -54,6 +54,7 @@ import {
 import { installDirectoryProblem, userAppsDir } from "../scripts/install-destination.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const FORK = "someone-else/ai-harness";
 
@@ -488,7 +489,10 @@ test(
   // where the product runs. The rules it exercises (`stagedVersionProblem`,
   // `stagedRevisionProblem`) are covered on every platform by the tests above; what only this
   // can prove is that the swap path CALLS them.
-  { skip: process.platform !== "darwin" || process.arch !== "arm64" },
+  {
+    skip: skipOnWin32("the macOS install migration is unavailable on win32")
+      || process.platform !== "darwin" || process.arch !== "arm64",
+  },
   async (t) => {
   // Asserted by running `install-app.mjs` rather than its predicates, because the defect this
   // guards is a missing CALL: the pure rule can be perfect while nothing consults it. The app
@@ -1301,7 +1305,7 @@ test("administrator authorization cannot target an arbitrary install directory",
 
 test(
   "the administrator AppleScript compiles without requesting authorization when no transaction is supplied",
-  { skip: process.platform !== "darwin" },
+  { skip: skipOnWin32("the install migration's administrator AppleScript is macOS-only") || process.platform !== "darwin" },
   () => {
     const result = spawnSync("/usr/bin/osascript", ["-e", PRIVILEGED_SWAP_APPLESCRIPT], {
       encoding: "utf8",

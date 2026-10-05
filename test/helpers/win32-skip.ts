@@ -7,6 +7,12 @@
  * compares `process.platform` to `"win32"` directly would leave that list incomplete, so
  * `test/win32-skip-guard.test.ts` refuses one anywhere under `test/` or `e2e/`.
  *
+ * A skip that fires on win32 for another reason calls the helper too, ahead of its own
+ * condition, so on win32 the stated reason is the one reported: a platform exclusion
+ * (`skipOnWin32("…") || process.platform !== "darwin"`, which the guard enforces) and a probe
+ * for a tool that does not exist on win32, such as `tmux -V` (by convention; no syntax tells
+ * that probe apart from any other).
+ *
  * It is for surfaces that are unavailable on win32 (Codex, Pi, the terminal runtime and its
  * backends, terminal discovery, the macOS updater and install migration) and for tests that
  * pin a POSIX-only implementation. Every other test has to pass on Windows.

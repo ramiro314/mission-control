@@ -4,12 +4,21 @@
  * so a skip written any other way would pass that review unseen. This holds the helper's
  * contract and scans `test/` and `e2e/` for any other win32 skip.
  *
- * The scan reads each file's syntax tree. A "win32 condition" is an equality comparison with
- * the string `"win32"`, or a name bound to one (`const isWindows = process.platform ===
- * "win32"`). It is refused where it decides a skip: inside a `skip` or `todo` option, inside
- * the arguments of a `skip`, `fixme` or `todo` call, or as the condition of an `if`, `?:`,
- * `&&` or `||` whose branch skips or bare-returns. A branch that returns a value is a
- * platform-dependent expectation, not a skip, and stays allowed.
+ * The scan reads each file's syntax tree and looks at every condition that decides a skip:
+ * a `skip` or `todo` option, the arguments of a `skip`, `fixme` or `todo` call, or the
+ * condition of an `if`, `?:`, `&&` or `||` whose branch skips or bare-returns. Two kinds of
+ * condition are refused there:
+ *
+ * - A win32 condition: an equality comparison with the string `"win32"`, or a name bound to
+ *   one (`const isWindows = process.platform === "win32"`). Always refused.
+ * - A platform exclusion: `!==` or `!=` against another platform (`process.platform !==
+ *   "darwin"`), or a name bound to one. It skips on win32 too, so it is refused unless the
+ *   same condition calls `skipOnWin32` or a `skipSpecOnWin32` statement precedes it.
+ *
+ * A branch that returns a value is a platform-dependent expectation, not a skip, and stays
+ * allowed. A skip on a missing tool (`tmux -V` failing) cannot be told apart from any other
+ * probe by its syntax; when that tool does not exist on win32 the skip calls the helper too,
+ * by the convention `e2e/README.md` states.
  */
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -33,17 +42,50 @@ const EQUALITY = new Set([
   ts.SyntaxKind.ExclamationEqualsToken,
 ]);
 const LOGICAL = new Set([ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken]);
+const NEGATION = new Set([ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
+/** Every `process.platform` value but win32. */
+const OTHER_PLATFORMS = new Set([
+  "aix", "android", "cygwin", "darwin", "freebsd", "haiku", "linux", "netbsd", "openbsd", "sunos",
+]);
+const HELPERS = new Set(["skipOnWin32", "skipSpecOnWin32"]);
 
 function contains(node: ts.Node, match: (node: ts.Node) => boolean): boolean {
   return match(node) || Boolean(ts.forEachChild(node, (child) => contains(child, match) || undefined));
 }
 
+function literal(side: ts.Expression): string | null {
+  return ts.isStringLiteral(side) || ts.isNoSubstitutionTemplateLiteral(side) ? side.text : null;
+}
+
 function isWin32Comparison(node: ts.Node): boolean {
-  const isWin32 = (side: ts.Expression) =>
-    (ts.isStringLiteral(side) || ts.isNoSubstitutionTemplateLiteral(side)) && side.text === "win32";
   return ts.isBinaryExpression(node)
     && EQUALITY.has(node.operatorToken.kind)
-    && (isWin32(node.left) || isWin32(node.right));
+    && (literal(node.left) === "win32" || literal(node.right) === "win32");
+}
+
+/** `process.platform !== "darwin"`: true on win32 as well as on every other platform. */
+function isPlatformExclusion(node: ts.Node): boolean {
+  return ts.isBinaryExpression(node)
+    && NEGATION.has(node.operatorToken.kind)
+    && (OTHER_PLATFORMS.has(literal(node.left) ?? "") || OTHER_PLATFORMS.has(literal(node.right) ?? ""));
+}
+
+function isHelperCall(node: ts.Node): boolean {
+  return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && HELPERS.has(node.expression.text);
+}
+
+/** Is a `skipSpecOnWin32(...)` or `skipOnWin32(...)` statement earlier in the same block? */
+function precededByHelper(node: ts.Node): boolean {
+  let statement = node;
+  while (statement.parent && !ts.isBlock(statement.parent) && !ts.isSourceFile(statement.parent)) {
+    statement = statement.parent;
+  }
+  const block = statement.parent;
+  if (!block || !(ts.isBlock(block) || ts.isSourceFile(block))) return false;
+  const siblings = block.statements;
+  return siblings
+    .slice(0, siblings.indexOf(statement as ts.Statement))
+    .some((sibling) => ts.isExpressionStatement(sibling) && isHelperCall(sibling.expression));
 }
 
 function skipName(node: ts.Node): string | null {
@@ -68,43 +110,49 @@ function skips(node: ts.Node | undefined): boolean {
 /** Every win32 skip in one file, as `path:line`, that does not go through the helper. */
 function win32Skips(file: string, source: string): string[] {
   const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-  const aliases = new Set<string>();
+  const win32Aliases = new Set<string>();
+  const exclusionAliases = new Set<string>();
   const collect = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node)
-      && ts.isIdentifier(node.name)
-      && node.initializer
-      && contains(node.initializer, isWin32Comparison)
-    ) {
-      aliases.add(node.name.text);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      if (contains(node.initializer, isWin32Comparison)) win32Aliases.add(node.name.text);
+      else if (contains(node.initializer, isPlatformExclusion) && !contains(node.initializer, isHelperCall)) {
+        exclusionAliases.add(node.name.text);
+      }
     }
     ts.forEachChild(node, collect);
   };
   collect(tree);
+  const named = (names: Set<string>) => (n: ts.Node) => ts.isIdentifier(n) && names.has(n.text);
   const mentionsWin32 = (node: ts.Node) =>
-    contains(node, (n) => isWin32Comparison(n) || (ts.isIdentifier(n) && aliases.has(n.text)));
+    contains(node, (n) => isWin32Comparison(n) || named(win32Aliases)(n));
+  const excludesPlatform = (node: ts.Node) =>
+    contains(node, (n) => isPlatformExclusion(n) || named(exclusionAliases)(n));
+  /** Does this condition, deciding the skip `construct`, skip on win32 without the helper? */
+  const refused = (condition: ts.Node, construct: ts.Node) =>
+    mentionsWin32(condition)
+    || (excludesPlatform(condition) && !contains(condition, isHelperCall) && !precededByHelper(construct));
 
   const found: string[] = [];
   const visit = (node: ts.Node): void => {
-    const refused =
+    const skipsOnWin32 =
       (ts.isPropertyAssignment(node)
         && SKIP_NAMES.has(skipName(node.name) ?? "")
-        && mentionsWin32(node.initializer))
+        && refused(node.initializer, node))
       || (ts.isShorthandPropertyAssignment(node)
         && SKIP_NAMES.has(node.name.text)
-        && aliases.has(node.name.text))
-      || (ts.isCallExpression(node) && isSkipCall(node) && node.arguments.some(mentionsWin32))
+        && (win32Aliases.has(node.name.text) || exclusionAliases.has(node.name.text)))
+      || (ts.isCallExpression(node) && isSkipCall(node) && node.arguments.some((arg) => refused(arg, node)))
       || (ts.isIfStatement(node)
-        && mentionsWin32(node.expression)
+        && refused(node.expression, node)
         && (skips(node.thenStatement) || skips(node.elseStatement)))
       || (ts.isConditionalExpression(node)
-        && mentionsWin32(node.condition)
+        && refused(node.condition, node)
         && (skips(node.whenTrue) || skips(node.whenFalse)))
       || (ts.isBinaryExpression(node)
         && LOGICAL.has(node.operatorToken.kind)
-        && mentionsWin32(node.left)
+        && refused(node.left, node)
         && skips(node.right));
-    if (refused) {
+    if (skipsOnWin32) {
       const { line } = tree.getLineAndCharacterOfPosition(node.getStart(tree));
       found.push(`${file}:${line + 1}`);
       return;
@@ -166,6 +214,12 @@ test("the scan refuses every way of skipping on win32 without the helper", () =>
     `const isWindows = process.platform === "win32";\ntest("x", { skip: isWindows }, () => {});`,
     `const skip = process.platform === "win32";\ntest("x", { skip }, () => {});`,
     `const onWindows = () => process.platform === "win32";\ntest.skip(onWindows(), "no tmux");`,
+    `test("x", { skip: process.platform !== "darwin" }, () => {});`,
+    `test("x", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {});`,
+    `test.skip(process.platform !== "darwin", "the desktop shell requires the macOS GUI");`,
+    `test("x", (t) => { if (process.platform != "linux") t.skip("Linux only"); });`,
+    `const macOnly = process.platform !== "darwin";\ntest("x", { skip: macOnly }, () => {});`,
+    `skipSpecOnWin32(test, "r");\ntest("x", () => { test.skip(process.platform !== "darwin", "macOS"); });`,
   ];
   for (const source of refused) {
     assert.equal(win32Skips("fixture.ts", source).length, 1, `refused:\n${source}`);
@@ -178,7 +232,12 @@ test("the scan allows the helper and platform-dependent values", () => {
     `skipSpecOnWin32(test, "the terminal runtime is unavailable on win32");`,
     `const tooLarge = process.platform === "win32" ? /E2BIG|EINVAL/ : /E2BIG/;`,
     `function shell() { if (process.platform === "win32") return "cmd.exe"; return "/bin/sh"; }`,
-    `test("x", { skip: process.platform !== "darwin" }, () => {});`,
+    `test("x", { skip: process.platform === "linux" }, () => {});`,
+    `test("x", { skip: skipOnWin32("macOS only") || process.platform !== "darwin" }, () => {});`,
+    `const macOnly = skipOnWin32("macOS only") || process.platform !== "darwin";\ntest("x", { skip: macOnly }, () => {});`,
+    `skipSpecOnWin32(test, "the desktop shell is macOS-only");\ntest.skip(process.platform !== "darwin", "macOS GUI");`,
+    `test("x", () => {\n  skipSpecOnWin32(test, "macOS only");\n  test.skip(process.platform !== "darwin", "macOS");\n});`,
+    `const tmp = process.platform !== "darwin" ? "/tmp" : "/private/tmp";`,
     `assert.equal(processLifetimeFor("win32"), processLifetimeFor("darwin"));`,
   ];
   for (const source of allowed) {

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
@@ -19,7 +20,8 @@ const tmuxBin = resolveBin(TMUX_BIN);
 const sleepBin = ["/bin/sleep", "/usr/bin/sleep"].find(p => spawnSync(p, ["0"]).status === 0)!;
 assert.ok(sleepBin);
 const originalTmux = process.env.TMUX;
-const unavailable = spawnSync(tmuxBin, ["-V"], {stdio: "ignore"}).status !== 0;
+const unavailable = skipOnWin32("tmux and the terminal runtime are unavailable on win32")
+  || spawnSync(tmuxBin, ["-V"], {stdio: "ignore"}).status !== 0;
 
 class Fixture {
   dir = mkdtempSync(join(tmpdir(), "mc-tmux-kill-"));

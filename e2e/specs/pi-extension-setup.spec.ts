@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, expect } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -140,6 +141,7 @@ test("a healthy installed extension admits a Pi plan dispatch through the real d
     expect(response.ok, await response.text()).toBe(true);
   };
   await put("/api/skills/config", { enabled: true, skills: { "html-plans": true, "phased-plan": true } });
+  skipSpecOnWin32(test, "Pi and the tmux terminal runtime are unavailable on win32");
   test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is required for the real Pi terminal proof");
   const binary = join(daemon.home, "fake-bin", "fake-pi");
   // A catalog probe may already have selected Node to read this path. Keep the wrapper

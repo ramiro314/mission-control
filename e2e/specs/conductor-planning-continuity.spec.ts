@@ -12,6 +12,7 @@ import {
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 test.use({
   daemonEnv: {
@@ -98,6 +99,7 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "tmux and the terminal runtime are unavailable on win32");
   test.skip(tmuxMissing, "tmux is required to observe the provider-owned worker session");
   await enablePipelines(daemon);
   const layout = await request(daemon, "/api/ui/config", "PUT", { layout: "board" });

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
@@ -387,7 +388,7 @@ function tmuxAvailable(): boolean {
   }
 }
 
-test("the placeholder is detected through a real capture-pane", { skip: tmuxAvailable() ? false : "tmux not available" }, async () => {
+test("the placeholder is detected through a real capture-pane", { skip: skipOnWin32("tmux and the terminal runtime are unavailable on win32") || (tmuxAvailable() ? false : "tmux not available") }, async () => {
   // The parser above works on strings a test wrote. This proves the same detection holds on
   // bytes that actually round-tripped through a terminal - the composer line rendered into
   // a live pane and read back out by the real `capturePaneText`.

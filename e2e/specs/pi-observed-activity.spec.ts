@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
@@ -36,6 +37,7 @@ test("a real Pi session's commands reach the conversation and the Activity rail"
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Pi and the tmux terminal runtime are unavailable on win32");
   test.skip(tmuxMissing, "tmux is required for the real Pi terminal boundary");
   const dir = join(daemon.home, "pi-activity");
   const agentDir = join(dir, "agent");

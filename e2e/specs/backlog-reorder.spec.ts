@@ -8,6 +8,7 @@ import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * The backlog has ONE order and it is the operator's, proven the only way it can be: a
@@ -547,6 +548,7 @@ test.describe("dropped on an idle agent", () => {
    * turning this into decoration - see `session-interrupt-terminal.spec.ts`, which makes the
    * same trade for the same reason.
    */
+  skipSpecOnWin32(test, "tmux and the terminal runtime are unavailable on win32");
   test.skip(
     spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,
     "tmux is not installed on this machine",

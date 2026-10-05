@@ -6,6 +6,7 @@ import { execPath } from "node:process";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
@@ -203,6 +204,7 @@ async function useLayout(page: Page, daemon: DaemonHandle, layout: string): Prom
 }
 
 test.describe("a session an external engine is driving", () => {
+  skipSpecOnWin32(test, "tmux and the terminal runtime are unavailable on win32");
   test.skip(tmuxMissing, "tmux is not installed on this machine");
 
   const panes: Pane[] = [];

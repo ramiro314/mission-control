@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -26,6 +27,7 @@ const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 test("hand-run Pi loads the extension, blocks on a dashboard answer and reports live metadata and cost", async ({ daemon, daemonEnv, dashboard }) => {
+  skipSpecOnWin32(test, "Pi and the tmux terminal runtime are unavailable on win32");
   test.skip(tmuxMissing, "tmux is required for passive terminal discovery");
   const tmux = daemonEnv.MISSION_TMUX_BIN!;
   const dir = join(daemon.home, "pi-proof"); mkdirSync(dir);
