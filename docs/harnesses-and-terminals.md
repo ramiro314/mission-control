@@ -42,6 +42,11 @@ snapshot, so an install or shell PATH change becomes visible without restarting 
 resolver honors `XDG_DATA_HOME`, `MISE_DATA_DIR`, `MISE_SHIMS_DIR`, `ASDF_DATA_DIR`, and `VOLTA_HOME`
 before their standard per-user locations.
 
+The platform's locations in steps 2, 4 and 6, and the command that reads the login-shell PATH,
+come from one per-platform table in
+[`src/server/platform/executable-environment.ts`](../src/server/platform/executable-environment.ts).
+macOS and Linux share its POSIX row; no other platform registers one yet.
+
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's
 [harness registry](../src/server/harness/index.ts) adds process, filesystem, transcript,

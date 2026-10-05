@@ -16,7 +16,7 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
-| Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
+| Executable environment | `src/server/executables/`, `src/server/platform/executable-environment.ts` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH. The ladder's platform locations and the login-shell PATH read come from the per-platform table; `main` registers only the POSIX row |
 | Process inspection | `src/server/process-inspection/` | The only place under `src/` that runs `ps` or `lsof`: process listing, cwd, open files, start identity, port listener; one implementation per platform. Standalone scripts (`scripts/update-lock.mjs`, `scripts/recover-database.mjs`) still call `/bin/ps` directly |
 | Hook bridges | `hooks/` | Small Node processes that post hook events to the daemon |
 

@@ -12,11 +12,14 @@ import {
   executableSpecForCommand,
   type ExecutableSpec,
 } from "./catalog.ts";
+import {
+  executableEnvironmentFor,
+  LOGIN_SHELL_PATH_MARKER,
+} from "../platform/executable-environment.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
 
 export const EXECUTABLE_REFRESH_COOLDOWN_MS = 30_000;
 export const LOGIN_SHELL_TIMEOUT_MS = 5_000;
-const PATH_MARKER = "__MISSION_PATH__";
 
 interface PathEntry {
   directory: string;
@@ -122,8 +125,9 @@ function isPathCommand(command: string): boolean {
 export async function probeLoginShellPath(
   env: NodeJS.ProcessEnv = process.env,
   timeoutMs = LOGIN_SHELL_TIMEOUT_MS,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<LoginShellResult> {
-  const shell = env.SHELL?.trim() || "/bin/zsh";
+  const { command: shell, args } = executableEnvironmentFor(platform).loginShellPathRead(env);
   return await new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -138,7 +142,7 @@ export async function probeLoginShellPath(
       // Spawn directly so startup-file grandchildren cannot outlive the discovery bound.
       const child = spawn(
         shell,
-        ["-ilc", `printf '${PATH_MARKER}%s${PATH_MARKER}' "$PATH"`],
+        args,
         {
           ...processLifetime.treeRootOptions,
           env,
@@ -163,10 +167,11 @@ export async function probeLoginShellPath(
           finish({ path: null, problem: "login shell failed" });
           return;
         }
-        const start = stdout.indexOf(PATH_MARKER);
-        const end = start < 0 ? -1 : stdout.indexOf(PATH_MARKER, start + PATH_MARKER.length);
+        const marker = LOGIN_SHELL_PATH_MARKER;
+        const start = stdout.indexOf(marker);
+        const end = start < 0 ? -1 : stdout.indexOf(marker, start + marker.length);
         const path = start >= 0 && end >= 0
-          ? stdout.slice(start + PATH_MARKER.length, end).trim()
+          ? stdout.slice(start + marker.length, end).trim()
           : "";
         finish(path
           ? { path, problem: null }
@@ -206,7 +211,8 @@ export class ExecutableLocator {
     this.env = deps.env ?? process.env;
     this.platform = deps.platform ?? process.platform;
     this.now = deps.now ?? Date.now;
-    this.probe = deps.probeLoginShell ?? probeLoginShellPath;
+    this.probe = deps.probeLoginShell ??
+      ((env) => probeLoginShellPath(env, LOGIN_SHELL_TIMEOUT_MS, this.platform));
     this.isExecutable = deps.executable ?? executableFile;
   }
 
@@ -503,23 +509,13 @@ export class ExecutableLocator {
       }
       return kept;
     };
-    const context = executableCandidateContext(this.env);
-    const dataHome = this.env.XDG_DATA_HOME?.trim() || join(context.home, ".local", "share");
-    const miseData = this.env.MISE_DATA_DIR?.trim() || join(dataHome, "mise");
-    const miseShims = this.env.MISE_SHIMS_DIR?.trim() || join(miseData, "shims");
-    const asdfData = this.env.ASDF_DATA_DIR?.trim() || join(context.home, ".asdf");
-    const voltaHome = this.env.VOLTA_HOME?.trim() || join(context.home, ".volta");
+    const { home } = executableCandidateContext(this.env);
+    const platform = executableEnvironmentFor(this.platform);
     groups.push(
       // Keep managed toolchains ahead of a Finder/Dock launch's system PATH, including
       // for child hooks that resolve their interpreter through /usr/bin/env.
       {
-        values: [
-          join(context.home, ".local", "bin"),
-          miseShims,
-          join(asdfData, "shims"),
-          join(voltaHome, "bin"),
-          join(context.home, "go", "bin"),
-        ],
+        values: platform.userToolDirectories(home, this.env),
         source: "version-manager",
         detail: "supported per-user tool locations",
       },
@@ -531,12 +527,10 @@ export class ExecutableLocator {
       {
         values: ranked(splitPath(shell.path ?? undefined)),
         source: "login-shell",
-        detail: this.env.SHELL?.trim() || "/bin/zsh",
+        detail: platform.loginShellPathRead(this.env).command,
       },
       {
-        values: this.platform === "win32"
-          ? []
-          : ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
+        values: platform.osDefaultDirectories,
         source: "os-default",
         detail: `${this.platform} supported defaults`,
       },
