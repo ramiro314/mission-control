@@ -965,10 +965,12 @@ literal. Ticket 3: <code>src/server/foreman/review-followup.ts</code> (<code>Fol
 <code>src/server/routes.ts</code> (<code>RouteDeps.prConflicts</code>, the escalate route), <code>src/server/pr.ts</code>
 (<code>startPrPoller</code> takes the tracker), <code>src/server/index.ts</code>, <code>src/server/registry.ts</code>
 (<code>setEscalatedPrUrls</code>, <code>repoPrFeedbackFor</code>, session comparator and construction sites),
-<code>src/shared/protocol.ts</code>, <code>src/shared/types.ts</code>, and every test <code>Session</code> literal.</p>
+<code>src/shared/protocol.ts</code>, <code>src/shared/types.ts</code>, <code>src/shared/telemetry-sources/action-exclusions.ts</code>
+(the escalate route&#39;s exclusion), <code>test/fixtures/route-surface.json</code> (its oracle line), and every
+test <code>Session</code> literal.</p>
 <p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>src/server/pr-conflicts.ts</code>,
 <code>test/pr-mergeable.test.ts</code>, <code>test/pr-conflicts.test.ts</code>, <code>test/blocked-prs-attention.test.ts</code>,
-<code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
+<code>test/foreman-conflict-escalation.test.ts</code>, <code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>
 <thead>

@@ -755,11 +755,13 @@ literal. Ticket 3: `src/server/foreman/review-followup.ts` (`FollowupPr`, `Follo
 `src/server/routes.ts` (`RouteDeps.prConflicts`, the escalate route), `src/server/pr.ts`
 (`startPrPoller` takes the tracker), `src/server/index.ts`, `src/server/registry.ts`
 (`setEscalatedPrUrls`, `repoPrFeedbackFor`, session comparator and construction sites),
-`src/shared/protocol.ts`, `src/shared/types.ts`, and every test `Session` literal.
+`src/shared/protocol.ts`, `src/shared/types.ts`, `src/shared/telemetry-sources/action-exclusions.ts`
+(the escalate route's exclusion), `test/fixtures/route-surface.json` (its oracle line), and every
+test `Session` literal.
 
 **Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
 `test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
-`e2e/specs/pr-merge-conflicts.spec.ts`.
+`test/foreman-conflict-escalation.test.ts`, `e2e/specs/pr-merge-conflicts.spec.ts`.
 
 ### PR publication ownership
 
