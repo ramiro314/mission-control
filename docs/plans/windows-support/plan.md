@@ -1,6 +1,6 @@
 # Windows support on a parallel `release/windows` branch
 
-Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
+Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch), and in repair round 4 (how the PR-less gating tickets M2.0 and M3.1 release their dependents). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
 
 ## Goal
 
@@ -205,6 +205,25 @@ Tickets are filed in two stages, so every ticket is valid on the day it is creat
    only after M3.2 has merged, so those tickets cannot dispatch before the Windows code is on
    `main`.
 
+**How each blocking ticket releases its dependents.** In Mission Control, a declared dependency
+is satisfied only by the blocking task's merged PR, or by the operator completing that task with
+`satisfyDependents` (the Complete modal's "Unblock the N tasks waiting on this" checkbox, which
+is never pre-ticked, or `POST /api/tasks/:id/complete` with `"satisfyDependents": true`). See
+`CompleteTaskSchema` in `src/shared/protocol.ts`. So every blocking ticket in this plan names
+its path:
+
+| Blocking ticket | Its dependents | Released by |
+| --- | --- | --- |
+| M0.1, M0.2, M1.1 to M1.4 | M0.3 (M0.1 also gates M0.4) | Their PRs merging into `main` |
+| M0.3 | M0.4 | Its fork-ledger PR merging into `main` (creating the branch alone is not a merge) |
+| M2.0 (SDK spike, no PR) | M2.1 to M2.11 | **The human** completes it with "Unblock" ticked, only when the spike passed |
+| M2.1 to M2.11 | M2.12 | Their PRs merging into `release/windows` (base-branch merge watcher, A8) |
+| M3.1 (gates and reviews, no PR) | M3.2 | **The human** completes it with "Unblock" ticked, only when all M3.1 gates passed |
+| M3.2 | M3.3 | The merge PR merging into `main` |
+
+The tickets that file others (M0.3, M2.12, M3.3) file them at the end of their own work, so
+nothing waits on those filing steps through a dependency edge.
+
 ### M0: Groundwork (on `main`, then branch creation)
 
 1. **Per-task base branch** (above), including the recurring-mission template surface (D35).
@@ -214,7 +233,8 @@ Tickets are filed in two stages, so every ticket is valid on the day it is creat
 3. **Create `release/windows`** from `main` once items 1 and 2 and all of M1 have merged
    (D36), and add the fork-ledger
    entry "Windows support (in progress on `release/windows`)". This ticket **ends by filing the
-   M2 tickets** with `base_branch = release/windows` (D34).
+   M2 tickets** with `base_branch = release/windows` (D34). The ledger entry lands by PR into
+   `main`, and that merge is what releases M0.4.
 4. **Sync runbook and mission** (D28, D35). This waits for item 3, because the template's base
    branch must exist on origin. Write `docs/windows-branch-sync.md`, create the recurring
    mission through the daemon API with template `base_branch = release/windows`, and add the
@@ -245,7 +265,11 @@ POSIX implementation issues the same commands it did before.
    prerequisites, start a throwaway Agent SDK session that spawns `claude` from a small Node
    script (outside Mission Control), send it one message, and record the result in the ticket.
    If it fails, stop and re-plan with the human before any other M2 ticket starts, because D9
-   (SDK first) rests on it. Every other M2 ticket is blocked on this one.
+   (SDK first) rests on it. Every other M2 ticket is blocked on this one. This ticket opens no
+   PR, so it releases its dependents only one way: **if the spike passed, the human completes it
+   with "Unblock the tasks waiting on this" ticked** (`satisfyDependents`). If the spike failed,
+   the human completes it without that box, M2.1 to M2.11 stay blocked, and the stop-and-replan
+   exit applies.
 1. **Windows CI** (D15, D30, D32): add `release/windows` to `ci.yml`'s `push` branches, and add
    `windows-latest` jobs on Node 24 for typecheck, the sharded unit suite, build plus smoke, and
    Playwright e2e. These jobs set npm's `script-shell` to Git Bash. They start allowed to fail
@@ -304,6 +328,11 @@ POSIX implementation issues the same commands it did before.
      the merge PR.
    - macOS is unchanged: the full Linux CI is green, and a `workflow_dispatch` run of the macOS
      `package` job is green on the merge candidate.
+
+   M3.1 opens no PR. **When every gate above has passed, the human completes it with "Unblock
+   the tasks waiting on this" ticked** (`satisfyDependents`), which releases M3.2. If any gate
+   fails, the human completes it without that box (or leaves it open while the failure is fixed
+   on `release/windows`), and M3.2 stays blocked.
 2. **Merge PR** `release/windows` into `main`, merged with a merge commit titled
    `feat: Windows support` (D16). Windows CI jobs now run on `main` as well.
 3. **Retire** (D29), after item 2 has merged: delete `release/windows`, retire the sync

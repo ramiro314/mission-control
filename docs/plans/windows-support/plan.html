@@ -12,7 +12,7 @@ figcaption{color:var(--muted);font-size:13px}
 .b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
 
 details{margin:.5em 0 1em}summary{color:var(--muted);cursor:pointer;font-size:13px}</style></head><body><main><h1 id="windows-support-on-a-parallel-releasewindows-branch">Windows support on a parallel <code>release/windows</code> branch</h1>
-<p>Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see <a href="#ticket-slicing-d34">Ticket slicing</a>). Not implemented.</p>
+<p>Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch), and in repair round 4 (how the PR-less gating tickets M2.0 and M3.1 release their dependents). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see <a href="#ticket-slicing-d34">Ticket slicing</a>). Not implemented.</p>
 <h2 id="goal">Goal</h2>
 <p>Mission Control runs natively on Windows 11 (x64): the daemon, the Foreman worker, the
 dashboard, and the Electron shell in dev mode, with Claude Code SDK sessions dispatched, shown
@@ -380,6 +380,53 @@ valid when it is created, because the field, the branch and every M1 seam alread
 only after M3.2 has merged, so those tickets cannot dispatch before the Windows code is on
 <code>main</code>.</li>
 </ol>
+<p><strong>How each blocking ticket releases its dependents.</strong> In Mission Control, a declared dependency
+is satisfied only by the blocking task&#39;s merged PR, or by the operator completing that task with
+<code>satisfyDependents</code> (the Complete modal&#39;s &quot;Unblock the N tasks waiting on this&quot; checkbox, which
+is never pre-ticked, or <code>POST /api/tasks/:id/complete</code> with <code>&quot;satisfyDependents&quot;: true</code>). See
+<code>CompleteTaskSchema</code> in <code>src/shared/protocol.ts</code>. So every blocking ticket in this plan names
+its path:</p>
+<table>
+<thead>
+<tr>
+<th>Blocking ticket</th>
+<th>Its dependents</th>
+<th>Released by</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>M0.1, M0.2, M1.1 to M1.4</td>
+<td>M0.3 (M0.1 also gates M0.4)</td>
+<td>Their PRs merging into <code>main</code></td>
+</tr>
+<tr>
+<td>M0.3</td>
+<td>M0.4</td>
+<td>Its fork-ledger PR merging into <code>main</code> (creating the branch alone is not a merge)</td>
+</tr>
+<tr>
+<td>M2.0 (SDK spike, no PR)</td>
+<td>M2.1 to M2.11</td>
+<td><strong>The human</strong> completes it with &quot;Unblock&quot; ticked, only when the spike passed</td>
+</tr>
+<tr>
+<td>M2.1 to M2.11</td>
+<td>M2.12</td>
+<td>Their PRs merging into <code>release/windows</code> (base-branch merge watcher, A8)</td>
+</tr>
+<tr>
+<td>M3.1 (gates and reviews, no PR)</td>
+<td>M3.2</td>
+<td><strong>The human</strong> completes it with &quot;Unblock&quot; ticked, only when all M3.1 gates passed</td>
+</tr>
+<tr>
+<td>M3.2</td>
+<td>M3.3</td>
+<td>The merge PR merging into <code>main</code></td>
+</tr>
+</tbody></table>
+<p>The tickets that file others (M0.3, M2.12, M3.3) file them at the end of their own work, so
+nothing waits on those filing steps through a dependency edge.</p>
 <h3 id="m0-groundwork-on-main-then-branch-creation">M0: Groundwork (on <code>main</code>, then branch creation)</h3>
 <ol>
 <li><strong>Per-task base branch</strong> (above), including the recurring-mission template surface (D35).
@@ -389,7 +436,8 @@ needs, with a check that byte-exact tests still pass.</li>
 <li><strong>Create <code>release/windows</code></strong> from <code>main</code> once items 1 and 2 and all of M1 have merged
 (D36), and add the fork-ledger
 entry &quot;Windows support (in progress on <code>release/windows</code>)&quot;. This ticket <strong>ends by filing the
-M2 tickets</strong> with <code>base_branch = release/windows</code> (D34).</li>
+M2 tickets</strong> with <code>base_branch = release/windows</code> (D34). The ledger entry lands by PR into
+<code>main</code>, and that merge is what releases M0.4.</li>
 <li><strong>Sync runbook and mission</strong> (D28, D35). This waits for item 3, because the template&#39;s base
 branch must exist on origin. Write <code>docs/windows-branch-sync.md</code>, create the recurring
 mission through the daemon API with template <code>base_branch = release/windows</code>, and add the
@@ -418,7 +466,11 @@ POSIX implementation issues the same commands it did before.</p>
 prerequisites, start a throwaway Agent SDK session that spawns <code>claude</code> from a small Node
 script (outside Mission Control), send it one message, and record the result in the ticket.
 If it fails, stop and re-plan with the human before any other M2 ticket starts, because D9
-(SDK first) rests on it. Every other M2 ticket is blocked on this one.</li>
+(SDK first) rests on it. Every other M2 ticket is blocked on this one. This ticket opens no
+PR, so it releases its dependents only one way: <strong>if the spike passed, the human completes it
+with &quot;Unblock the tasks waiting on this&quot; ticked</strong> (<code>satisfyDependents</code>). If the spike failed,
+the human completes it without that box, M2.1 to M2.11 stay blocked, and the stop-and-replan
+exit applies.</li>
 <li><strong>Windows CI</strong> (D15, D30, D32): add <code>release/windows</code> to <code>ci.yml</code>&#39;s <code>push</code> branches, and add
 <code>windows-latest</code> jobs on Node 24 for typecheck, the sharded unit suite, build plus smoke, and
 Playwright e2e. These jobs set npm&#39;s <code>script-shell</code> to Git Bash. They start allowed to fail
@@ -468,7 +520,8 @@ built on the branch during M2, with its PR). It <strong>ends by filing the M3 ti
 </ol>
 <h3 id="m3-validation-and-merge-to-main">M3: Validation and merge to <code>main</code></h3>
 <ol>
-<li>All four D8 gates pass:<ul>
+<li><p>All four D8 gates pass:</p>
+<ul>
 <li>The unit suite is green on Windows CI under D37.</li>
 <li>Playwright e2e is green on Windows CI under D37.</li>
 <li>The human has reviewed the skip list and the D38 seam list in the merge PR.</li>
@@ -478,12 +531,18 @@ the merge PR.</li>
 <li>macOS is unchanged: the full Linux CI is green, and a <code>workflow_dispatch</code> run of the macOS
 <code>package</code> job is green on the merge candidate.</li>
 </ul>
+<p>M3.1 opens no PR. <strong>When every gate above has passed, the human completes it with &quot;Unblock
+the tasks waiting on this&quot; ticked</strong> (<code>satisfyDependents</code>), which releases M3.2. If any gate
+fails, the human completes it without that box (or leaves it open while the failure is fixed
+on <code>release/windows</code>), and M3.2 stays blocked.</p>
 </li>
-<li><strong>Merge PR</strong> <code>release/windows</code> into <code>main</code>, merged with a merge commit titled
-<code>feat: Windows support</code> (D16). Windows CI jobs now run on <code>main</code> as well.</li>
-<li><strong>Retire</strong> (D29), after item 2 has merged: delete <code>release/windows</code>, retire the sync
+<li><p><strong>Merge PR</strong> <code>release/windows</code> into <code>main</code>, merged with a merge commit titled
+<code>feat: Windows support</code> (D16). Windows CI jobs now run on <code>main</code> as well.</p>
+</li>
+<li><p><strong>Retire</strong> (D29), after item 2 has merged: delete <code>release/windows</code>, retire the sync
 mission, and set the ledger entry to &quot;merged; follow-ups on main&quot;. This ticket <strong>ends by
-filing the after-the-merge tickets</strong> below (D34).</li>
+filing the after-the-merge tickets</strong> below (D34).</p>
+</li>
 </ol>
 <h3 id="after-the-merge-on-main-not-gating">After the merge (on <code>main</code>, not gating)</h3>
 <p>Filed by M3.3 once the merge has landed:</p>
