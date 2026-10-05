@@ -39,10 +39,12 @@ The agent:
    `.mission/testing.json` content, the smoke set (multi-select), the `affected-tests` template,
    and whether to recommend the **No-Mistakes Review (Affected tests)** workflow.
 3. **Applies only what was approved**: copies the report action, edits CI and test scripts,
-   writes `.mission/testing.json` and the `.gitignore` entry, opens one pull request, and sets the
+   writes `.mission/testing.json` and the `.gitignore` entry, commits it all, and sets the
    repository's `affected-tests` Command with the `set_affected_tests_command` Mission MCP tool.
-4. **Verifies** twice: one local run of the `affected-tests` template on a few test files, and the
-   "Flaky tests" check on the setup pull request's own CI run.
+   It does not open the pull request itself: Foreman's wrap-up (the Ship it? card, or Straight
+   to PR) publishes the commit as one pull request.
+4. **Verifies** twice: one local run of the `affected-tests` template on a few test files, and,
+   once that pull request is open, the "Flaky tests" check on its own CI run.
 
 `set_affected_tests_command` takes only the argv. The daemon refuses it from any session that is
 not running a testing-setup task (the task carries the `testing-setup` label), checks the
@@ -191,9 +193,11 @@ the `Flaky test:` title and flake markers in it are what trigger the **Deflake**
 source needs no intent of its own. With that skill switched on (see
 [Skills](skills-and-settings.md#skills-every-session-mixed-reload-behavior)), the agent reads the
 issue and its occurrence comments, reproduces the flake under load before changing anything,
-fixes its cause, proves the fix with a before and after repeated run at the same load, and opens
-the fix pull request with `Fixes #<n>`. Merging it closes the issue, and the next CI run drops
-the actionable label. Mission Control does not create this source for you.
+fixes its cause, proves the fix with a before and after repeated run at the same load, and
+commits it with `Fixes #<n>` in the commit message and its completion report. The kind's bound
+workflow opens the fix pull request with its Pull Request action, or Foreman's wrap-up does when
+the kind has no workflow, and the pull-request skill carries `Fixes #<n>` into the description.
+Merging it closes the issue, and the next CI run drops the actionable label. Mission Control does not create this source for you.
 
 ## Settings
 

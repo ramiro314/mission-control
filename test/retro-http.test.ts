@@ -253,6 +253,9 @@ test("a merged work pull request starts one linked task and duplicate clicks reu
   assert.notEqual(first.task.id, source.id);
   assert.equal(first.task.repoRoot, source.repoRoot);
   assert.match(first.task.intent, /pull-request skill/);
+  // The follow-up commits and reports; Foreman's wrap-up publishes its pull request.
+  assert.match(first.task.intent, /Do not push or open a pull request yourself/);
+  assert.doesNotMatch(first.task.intent, /open or update this task's own pull request/);
   assert.ok(first.task.intent.includes(COMPLETE_RETRO_NO_CHANGE_TOOL));
   assert.equal(f.typed.length, 0, "the merged source session receives no retro prompt");
 
@@ -446,6 +449,9 @@ test("a session that cannot be typed into files a retro task against its reposit
   assert.ok(task.intent.includes("retro skill"));
   // The honest limit is stated rather than glossed.
   assert.match(task.intent, /transcript may no longer be readable/);
+  // It commits and reports; Foreman's wrap-up publishes the pull request.
+  assert.match(task.intent, /Commit it and report complete; Foreman's wrap-up publishes it as this task's own pull request\./);
+  assert.ok(!task.intent.includes("ships any other task"));
   assert.equal(f.tasks.get(task.id)?.id, task.id, "the task is really in the backlog");
 });
 

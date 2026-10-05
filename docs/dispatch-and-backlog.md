@@ -178,7 +178,10 @@ One dispatch then produces **one** session, not one per repo:
 - The task's intent is **prefixed with a manifest**: where each repo's worktree is, which
   one is primary, the branch each is on, and two standing instructions - read each repo's
   own `AGENTS.md`/`CLAUDE.md` before touching it (only the primary's loads automatically),
-  and open one pull request per repository actually changed.
+  and commit in each repository it changes. The agent does not push or open the pull requests
+  itself: the bound workflow's Pull Request action, or Foreman's wrap-up when no workflow is
+  bound, opens one pull request per repository actually changed. A repository the agent did
+  not change needs no commit and no pull request.
 
 Provisioning is all-or-nothing. If any repo's worktree cannot be created, the ones already
 taken are handed back - pooled trees returned to their pools, plain worktrees removed - and
@@ -214,9 +217,9 @@ alone is ready - there is no coordinated cross-repo merge, so siblings can land 
 and the task's own completion is what tells you the whole piece of work is in.
 
 A post-merge retro follow-up copies this exact repository set from its completed source task,
-but none of the source worktrees, branches, pull-request bindings, or outcomes. Approved memory
-changes therefore open one new pull request per repository changed by the retro, while an
-unchanged attached repository opens none. The source task and all of its merged reviews remain
+but none of the source worktrees, branches, pull-request bindings, or outcomes. The retro commits
+approved memory changes and reports complete, and Foreman's wrap-up then opens one new pull
+request per repository changed by the retro, while an unchanged attached repository opens none. The source task and all of its merged reviews remain
 complete and untouched.
 
 **Every repository you changed gets its own full review.** When the session's work reaches a

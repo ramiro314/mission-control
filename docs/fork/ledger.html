@@ -122,8 +122,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>PR publication ownership</td>
-<td>Active</td>
-<td>#110 (plan), pending (completion latch)</td>
+<td>Active (partial)</td>
+<td>#110 (plan), #120 (completion latch), pending (branch <code>feat/defer-pr-publication</code>)</td>
 </tr>
 <tr>
 <td>Complete frees the worktree</td>
@@ -915,11 +915,11 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>. Part A (completion latch) implemented; Part B (PR authority as a grant) planned.</td>
+<td><strong>Active (partial)</strong>. Landed: Part A (completion latch, #120), and from Part B the deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the retro task intents, and the no-workflow ensemble winner (items 2 and 5, without the pull-request skill precondition). Not yet landed: the execution-authorization split, unbound plan, shape and chat, the phased-plan intent template, and the pull-request skill precondition.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#110 (plan), pending (completion latch)</td>
+<td>#110 (plan), #120 (completion latch), pending (branch <code>feat/defer-pr-publication</code>)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -927,17 +927,19 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 </tr>
 <tr>
 <td>Upstream candidate</td>
-<td>Yes. Upstream has the same post-completion re-run: its Foreman claim and store are unchanged here apart from the latch.</td>
+<td>Mostly. Upstream has the same post-completion re-run: its Foreman claim and store are unchanged here apart from the latch. The manifest, retro and ensemble changes remove self-publishing text that contradicts upstream&#39;s own ship handoff. The deflake and testing-setup changes ride the fork-only Flake-aware testing skills.</td>
 </tr>
 </tbody></table>
-<p><strong>Intent.</strong> A pull request is opened only by the workflow&#39;s Pull Request action or by a direct
-command of the human. Forensics found the visible symptom was not an early PR but a <strong>new
-workflow run starting after the PR existed</strong>: the Pull Request action&#39;s own turn, Inspector
-fixes and background wake-ups each settled under unchanged intent and claimed a fresh run on
-the binding. The completion latch stops that. The grant holders (the workflow Pull Request
-action, the Runs UI &quot;Ask the session to open a PR&quot;, Foreman&#39;s Ship it? card, Straight to PR and
-ship-shepherd handoff, and a human-typed request in the session) are Part B of the plan and not
-yet implemented.</p>
+<p><strong>Intent.</strong> A pull request is opened only by the workflow&#39;s Pull Request action, by Foreman&#39;s
+wrap-up, or by a direct command of the human, never on an agent&#39;s own initiative from a task
+prompt or skill. Forensics found the visible symptom was not an early PR but a <strong>new workflow
+run starting after the PR existed</strong>: the Pull Request action&#39;s own turn, Inspector fixes and
+background wake-ups each settled under unchanged intent and claimed a fresh run on the binding.
+The completion latch stops that. Separately, prompts and skills that told the agent to push and
+open its own pull request now commit and report, and name the publisher. The grant holders (the
+workflow Pull Request action, the Runs UI &quot;Ask the session to open a PR&quot;, Foreman&#39;s Ship it?
+card, Straight to PR and ship-shepherd handoff, and a human-typed request in the session) are the
+rest of Part B and not yet implemented as an authorization split.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li>Every Foreman claim that starts or resubmits a run, prompted or queue-drain, stamps
@@ -956,6 +958,24 @@ is refused on the ordinary consume route.</li>
 <li>Accepted residuals: a drain claim on a session with no recorded goal leaves the stamp null,
 and on the terminal runtime a daemon restart between a packet&#39;s delivery and its echo makes
 that packet read as human and re-arms the latch.</li>
+<li>The multi-repo manifest tells the agent to commit in each repository it changes, not to push
+or open a pull request, and that the workflow or Foreman opens one pull request per changed
+repository. An unchanged repository still needs no commit and no pull request.</li>
+<li>The retro (dispatched as its own task), deflake and testing-setup skills, and both retro task
+intents in <code>src/server/retro.ts</code>, commit and report complete, and name the publisher: the
+bound workflow&#39;s Pull Request action, or Foreman&#39;s wrap-up when no workflow is bound. A retro
+riding a session&#39;s own open review still pushes to it, because updating an existing pull
+request is allowed.</li>
+<li>Deflake carries <code>Fixes #&lt;issue&gt;</code> in its commit message and completion report, so the
+pull-request skill writes it into the description.</li>
+<li>Testing-setup verifies the &quot;Flaky tests&quot; check only after the publish instruction opened the
+pull request.</li>
+<li>The no-workflow ensemble winner commits and reports complete, and Foreman&#39;s Ship it? card
+publishes it.</li>
+<li>An unbound ship-kind session (testing-setup and the retro follow-up: <code>workflowId: null</code>)
+reaches a Foreman publish instruction after a committed turn: the Ship it? card under the
+default <code>ask</code> wrap-up, <code>WRAPUP_PR</code> under Straight to PR. Pinned in
+<code>test/prompted-wrapup-worker-e2e.test.ts</code>.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -966,16 +986,25 @@ for a Foreman completion, and it consumes the prompted generation through
 accepted human prompts; daemon-injected turns are kept out of the Goal by the SDK <code>origin</code>
 and the terminal injection ledger.</li>
 <li>The Straight to PR direct-handoff latch keyed by intent episode, which this mirrors.</li>
+<li>Foreman&#39;s prompted wrap-up publishes an unbound ship task: the Ship it? card, or <code>WRAPUP_PR</code>
+typed into the session under Straight to PR, after the verifier finds the turn finished.</li>
+<li>The ship handoff in <code>src/server/task-contract.ts</code> already forbids pushing and opening a pull
+request in the initial turn.</li>
+<li>The built-in Pull Request session action invokes the pull-request skill, which writes the
+description from the session&#39;s report.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>src/server/workflows/store.ts</code> (<code>claimForemanCompletion</code>,
 <code>consumePromptedGuard</code>), <code>src/server/db.ts</code> (<code>workflow_runs.claim_episode_key</code>),
 <code>src/shared/types.ts</code> (<code>PROMPTED_COMPLETION_OUTCOMES</code>), <code>src/shared/workflow.ts</code> and
 <code>src/shared/protocol.ts</code> (<code>WorkflowCompletionClaimResult</code> state <code>latched</code>, the consume-route
-refinement), <code>src/server/foreman/worker.ts</code> (latched log line), and
-<code>docs/{work-queues,workflows,foreman,recurring-missions}.md</code>,
+refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code>src/server/dispatcher.ts</code>
+(<code>intentWithRepoManifest</code>), <code>src/server/ensembles/engine.ts</code> (<code>buildContinuation</code>),
+<code>src/server/retro.ts</code> (<code>postMergeRetroIntent</code>, <code>retroTaskIntent</code>), <code>skills/retro/SKILL.md</code>,
+<code>docs/{work-queues,workflows,foreman,recurring-missions,dispatch-and-backlog,skills-and-settings,flaky-tests,ensembles}.md</code>,
 <code>docs/agent-guides/{change-contracts,architecture}.md</code>.</p>
 <p><strong>Fork-only files.</strong> <code>test/workflow-completion-latch.test.ts</code>,
-<code>docs/plans/pr-publication-ownership/</code>.</p>
+<code>docs/plans/pr-publication-ownership/</code>. The deflake and testing-setup skill changes land in
+<code>skills/deflake/</code> and <code>skills/testing-setup/</code>, already fork-only through Flake-aware testing.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

@@ -3340,7 +3340,7 @@ export class EnsembleEngine {
     }
     lines.push(
       "",
-      "Inspect the work, address any caveats, then ship it through the normal flow - run the checks, push, and open a pull request yourself. The comparison is advisory: nothing has been pushed, no PR has been opened, and no gate has run.",
+      "Inspect the work, address any caveats, run the checks, commit, and report the task complete. Do not push or open a pull request yourself: Foreman's Ship it? card publishes it. The comparison is advisory: nothing has been pushed, no PR has been opened, and no gate has run.",
     );
     return boundedText(lines.join("\n"), ENSEMBLE_LIMITS.intent);
   }

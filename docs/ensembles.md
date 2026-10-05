@@ -286,7 +286,9 @@ promotion makes that exact commit available in one of two ways:
   cannot be safely reused, so the run launches exactly one new task, `<run title> - selected
   result`, provisioned at the winner's snapshot. Its checkout already contains the winning work;
   its opening prompt carries the original task, the winner's own summary and the reviewer's
-  caveats, and asks it to check and ship - not to rebuild.
+  caveats, and asks it to check and commit - not to rebuild. Without a workflow handoff, the
+  restored session and the replacement both report complete and leave publishing to Foreman's
+  Ship it? card rather than pushing or opening a pull request themselves.
 
 On the replacement path the winner's original task is settled **done**, recording the task it was
 promoted into. Its agent, worktree and branch are deliberately **kept**: it may have done work
