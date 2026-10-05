@@ -52,7 +52,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
-| Per-task base branch | Active (storage, API, MCP, dispatch, reset and PR base) | #151 (plan M0.1) |
+| Per-task base branch | Active (storage, API, MCP, dispatch, reset and PR base; recurring-mission template) | #151 (plan M0.1) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -949,7 +949,7 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1; the check, diff and merge-watcher followers, the task form field and card label, and the recurring-mission template are separate tickets. |
+| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, and the recurring-mission template (D35); the check, diff and merge-watcher followers and the task form field and card label are separate tickets. |
 | PRs | #151 |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Per-task base branch" and M0 item 1; [docs/dispatch-and-backlog.md](../dispatch-and-backlog.md) "Start a task from another branch" |
 | Upstream candidate | Yes. It is a general task field with no Windows-specific behavior. |
@@ -975,6 +975,12 @@ dispatched like any other task. Without one, nothing changes.
 - The agent is told the base: `withTaskKindContract` appends a "Base branch" section naming
   `gh pr create --base <base>`, and the workflow PR handoff and Pull Request session action name
   it again. The fixed wrap-up texts (`WRAPUP_PR`) are unchanged.
+- A recurring mission's task template carries an optional `baseBranch` (in the revision's
+  `template_json`, so no migration; an absent key reads as null). Create and update refuse one
+  `origin` lacks on the `baseBranch` field (`ScheduleManager.prepareDefinition`, 400); preview
+  checks only its shape. Every task a run files, scheduled or Run now, carries it, and dispatch
+  checks it against origin again. The mission editor has a "Base branch" field and the detail
+  shows it.
 
 **Upstream behavior it assumes.**
 
@@ -991,10 +997,14 @@ dispatched like any other task. Without one, nothing changes.
 `/mcp/push-task`, session reset and its preview), `src/server/git/remote-default.ts`,
 `src/server/dispatcher.ts` (`resolveTaskBases`), `src/server/actions.ts` (`resetToOrigin`,
 `resetPreview`), `src/server/reset.ts`, `src/server/task-contract.ts`,
-`src/server/workflows/{feedback,manager}.ts`, and the MCP `create_task` and `push_task` tools in
-`src/mcp/server.ts`.
+`src/server/workflows/{feedback,manager}.ts`, the MCP `create_task` and `push_task` tools in
+`src/mcp/server.ts`, and for the mission template `src/shared/schedules.ts`
+(`ScheduleTemplate.baseBranch`, `SCHEDULE_VALIDATION_FIELDS`), `ScheduleTemplateSchema`,
+`src/server/schedules/{manager,store}.ts`, `src/web/components/schedules/{ScheduleEditor,ScheduleDetail}.tsx`
+and `scheduleDefinitionFingerprint` in `src/web/lib/schedules.ts`.
 
-**Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`.
+**Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`,
+`test/schedule-base-branch.test.ts`, `e2e/specs/mission-base-branch.spec.ts`.
 
 ## Superseded and removed
 

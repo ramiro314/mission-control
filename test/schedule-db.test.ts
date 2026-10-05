@@ -128,6 +128,7 @@ function definition(over: Partial<ScheduleDefinition> = {}): ScheduleDefinition 
       model: null,
       effort: "high",
       workflowId: null,
+      baseBranch: null,
     },
     ...over,
   };
