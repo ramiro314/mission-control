@@ -1,4 +1,5 @@
-import { run, type RunResult } from "../util/exec.ts";
+import type { RunResult } from "../util/exec.ts";
+import { processInspector } from "../process-inspection/index.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
 import type { Harness } from "../harness/types.ts";
@@ -252,32 +253,6 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
 }
 
 /**
- * Snapshot every process on the system with pid/ppid/tty/start and full argv.
- *
- * Two `ps` passes because macOS `ps` has no field delimiter: pass A puts the
- * multi-token `lstart` at the tail (uid, pid, ppid, state, and tty are single tokens before it);
- * pass B puts the multi-token `command` at the tail. We join on pid.
- */
-/**
- * How long a SYSTEM-WIDE `ps` may take before we stop believing its answer.
- *
- * `run`'s four-second default is sized for the small, targeted discovery commands it was
- * written for. These two are neither: their cost grows with the machine's whole process
- * table and with the argv length of everything on it, and the answer is consumed by
- * `unknownReason`, which destructive worktree decisions correctly treat as a refusal.
- *
- * So impatience here does not degrade gracefully - it becomes "native worktree release
- * refused: process listing failed", an operator watching Clean up decline to release a
- * checkout that nothing is actually holding. Measured, `ps -A` answers in about 40ms on a
- * thousand-process machine and stays under 300ms with forty of these running at once, so
- * the four seconds was never about `ps` being slow. It is about the DAEMON: under real
- * load its event loop stalls, and a timer that fires during the stall kills a read that had
- * already finished. A wider window costs nothing on the normal path and takes that whole
- * class of false refusal off the table, while leaving the fail-closed rule intact.
- */
-const PS_TIMEOUT_MS = 30_000;
-
-/**
  * Which way a `ps` read failed, in words an operator can act on.
  *
  * The old text was the child's stderr, or its exit code when that was empty. A killed
@@ -309,56 +284,33 @@ export interface ProcessSnapshot {
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
 export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
-  const [a, b] = await Promise.all([
-    run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs: PS_TIMEOUT_MS }),
-    run("ps", ["-Ao", "pid=,command="], { timeoutMs: PS_TIMEOUT_MS }),
-  ]);
-
-  const commands = new Map<number, string>();
-  for (const line of b.stdout.split("\n")) {
-    const m = line.match(/^\s*(\d+)\s+(.*)$/);
-    if (!m) continue;
-    commands.set(Number(m[1]), (m[2] ?? "").trim());
-  }
-
+  const table = await processInspector().listProcesses();
   const procs: Proc[] = [];
   const cwdScopePids: number[] = [];
   const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
-  for (const line of a.stdout.split("\n")) {
-    // uid pid ppid state tty <lstart: Www Mmm DD HH:MM:SS YYYY>
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/);
-    if (!m) continue;
-    const uid = Number(m[1]);
-    const pid = Number(m[2]);
-    const state = m[4] ?? "";
-    if (effectiveUid !== null && uid === effectiveUid && !state.startsWith("Z")) cwdScopePids.push(pid);
-    const command = commands.get(pid) ?? "";
-    const match = matchAgent(command);
+  for (const row of table.rows) {
+    if (effectiveUid !== null && row.uid === effectiveUid && !row.state.startsWith("Z")) cwdScopePids.push(row.pid);
+    const match = matchAgent(row.command);
     procs.push({
-      pid,
-      ppid: Number(m[3]),
-      tty: normTty(m[5] ?? ""),
-      startRaw: (m[6] ?? "").trim(),
-      startMs: parseStart((m[6] ?? "").trim()),
-      command,
+      pid: row.pid,
+      ppid: row.ppid,
+      tty: normTty(row.tty),
+      startRaw: row.start,
+      startMs: parseStart(row.start),
+      command: row.command,
       agent: match?.agent ?? null,
       agentNative: match?.native ?? false,
     });
   }
-  const failed = [a, b].find(
-    (result) => result.code !== 0 || result.outcomeUnknown || result.overflowed,
-  );
   return {
     processes: procs,
-    unknownReason: failed
-      ? `process listing failed: ${describeFailure(failed)}`
+    unknownReason: table.failure
+      ? `process listing failed: ${describeFailure(table.failure)}`
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
     cwdScopePids,
-    completedCollectorPids: [a.childPid, b.childPid].filter(
-      (pid): pid is number => Number.isInteger(pid) && (pid ?? 0) > 0,
-    ),
+    completedCollectorPids: table.collectorPids,
   };
 }
 
