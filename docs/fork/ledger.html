@@ -48,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>9</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>10</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -114,6 +114,11 @@ or issues.</p>
 <td>Persona reasoning effort</td>
 <td>Active</td>
 <td>Pending (branch <code>feat/persona-effort</code>)</td>
+</tr>
+<tr>
+<td>PR merge-conflict reactions</td>
+<td>Active (signal and chip only)</td>
+<td>#108</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -834,6 +839,72 @@ override schemas), <code>src/shared/workflow-graph.ts</code>, <code>src/shared/l
 editor, version history and run views.</p>
 <p><strong>Fork-only files.</strong> <code>src/web/workflows/EffortSelect.tsx</code>, <code>test/persona-effort.test.ts</code>,
 <code>e2e/specs/workflow-persona-effort.spec.ts</code>.</p>
+<h3>PR merge-conflict reactions</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong>, first ticket: the mergeability signal and the PR chip mark</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#108</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/pr-merge-conflicts/plan.md">docs/plans/pr-merge-conflicts/plan.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. It extends upstream&#39;s own PR poller and chip and adds no fork-only concept.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A session&#39;s pull request that conflicts with its base was invisible: GitHub reports
+it <code>CONFLICTING</code>, CI often stops running, and nothing in Mission Control said so. This ticket
+adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
+rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
+on the PR chip on cards, in the session header and on the rail.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>The branch poller requests <code>mergeable</code> and <code>baseRefName</code>; the by-URL poller requests
+<code>mergeable</code>, <code>baseRefName</code> and <code>headRefOid</code>. GitHub&#39;s value normalises to <code>PrMergeable</code>
+(<code>&quot;mergeable&quot; | &quot;conflicting&quot;</code>), and <code>UNKNOWN</code> is no observation.</li>
+<li><code>Session</code> and every <code>RepoPrFeedback</code> carry <code>prMergeable: { state, headSha } | null</code>,
+<code>prBaseRef</code> and <code>prHeadSha</code>, set and cleared with <code>prState</code>/<code>prChecks</code>. On <code>UNKNOWN</code>,
+<code>prHeadSha</code> advances and the observation is kept whole, old head included. A merged or
+closed pull request has no observation.</li>
+<li><code>currentMergeability(pr)</code> (<code>src/shared/pr-mergeable.ts</code>) answers only when the observation&#39;s
+head is <code>prHeadSha</code>. The chip reads through it.</li>
+<li>A by-URL result writes only those three fields onto every session whose <code>prUrl</code> matches,
+exited sessions included, and onto matching live per-repo observations. It has no authority
+over <code>prState</code> or completion.</li>
+<li><code>reconcilePrs</code> leaves an exited session&#39;s PR fields alone when the branch poller did not
+report it (exited sessions are never polled), so the link survives the exit linger.</li>
+<li>No schema migration: these are live, in-memory observations like <code>prChecks</code>.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>gh pr list --json</code> and <code>gh pr view --json</code> accept <code>mergeable</code>, <code>baseRefName</code> and
+<code>headRefOid</code>.</li>
+<li><code>pollAndReconcilePrs</code> runs the branch passes (<code>reconcilePrs</code>, <code>reconcileRepoPrs</code>) after the
+by-URL lookups in one tick, and <code>prPollTargets</code> excludes exited sessions.</li>
+<li>Exited sessions are removed <code>EXIT_LINGER_MS</code> after exit through <code>beginEviction</code>.</li>
+<li><code>prChipView</code> is the one decision behind <code>PrChip</code>, <code>PrTileFlag</code> and <code>PrRailMark</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/pr.ts</code> (both <code>gh</code> queries, by-URL result
+collection), <code>src/server/registry.ts</code> (<code>PrMatch</code>, <code>LivePrObservation</code>, <code>reconcilePrs</code>,
+<code>reconcileRepoPrs</code>, <code>repoPrFeedbackFor</code>, new <code>reconcilePrUrlMergeability</code>, session comparator,
+session construction sites), <code>src/shared/types.ts</code> (<code>Session</code>, <code>RepoPrFeedback</code>, new
+<code>PrMergeable</code> types), <code>src/web/components/session-bits.tsx</code> (<code>prChipView</code>, <code>PrChip</code>,
+<code>PrTileFlag</code>, <code>PrRailMark</code>), <code>src/web/styles.css</code>, <code>src/web/lib/board-card-preview.ts</code>, the e2e
+fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session</code> literal.</p>
+<p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>test/pr-mergeable.test.ts</code>,
+<code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>
 <thead>

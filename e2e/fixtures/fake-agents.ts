@@ -114,6 +114,10 @@ export interface FakePullRequest {
   createdAt: string;
   mergedAt: string | null;
   headRefOid: string;
+  /** GitHub's mergeability for `headRefOid`. Omitted reads as `UNKNOWN`, like a fresh push. */
+  mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  /** The pull request's base branch. */
+  baseRefName?: string;
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
@@ -748,7 +752,15 @@ if (argv[0] === "--version") {
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);
-  if (found) process.stdout.write(JSON.stringify({ state: found.state, mergedAt: found.mergedAt ?? null }) + "\\n");
+  if (found) {
+    process.stdout.write(JSON.stringify({
+      state: found.state,
+      mergedAt: found.mergedAt ?? null,
+      mergeable: found.mergeable ?? "UNKNOWN",
+      baseRefName: found.baseRefName ?? null,
+      headRefOid: found.headRefOid,
+    }) + "\\n");
+  }
 } else if (command.startsWith("pr list")) {
   const here = scriptedPrs().filter((pr) => pr.cwd === process.cwd());
   process.stdout.write(JSON.stringify(here) + "\\n");

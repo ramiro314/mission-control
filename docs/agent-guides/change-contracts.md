@@ -730,6 +730,14 @@ wrong answer that fails, it is a sibling that is never mentioned again.
   closed, because that field is durable by design.
 - **A `gh` that errored is not an answer.** A poll target in the reconciler's `skip` set leaves
   its observation exactly as it was; only a poll that positively reported nothing retracts one.
+- **Mergeability is bound to the head it was observed on.** `prMergeable` on a session and on
+  each `RepoPrFeedback` is `{ state, headSha }`, beside `prBaseRef` and `prHeadSha`. GitHub's
+  `UNKNOWN` advances `prHeadSha` and keeps the previous observation whole, old head included
+  (`nextMergeability`). Every consumer reads it through `currentMergeability`, which answers
+  only when the observation's head is the current one; reading `prMergeable.state` directly
+  would report a conflict the agent has already pushed a fix for. A by-URL read
+  (`reconcilePrUrlMergeability`) writes only these three fields, so it gains no authority over
+  `prState` or completion.
 - **Foreman's follow-up marks are keyed `(session, pr_key)`**
   (`src/server/foreman/review-followup.ts`, `worker.ts`). A flat session key makes each pull
   request's mark evict its sibling's, which is both a repeated nudge and a permanently reset
