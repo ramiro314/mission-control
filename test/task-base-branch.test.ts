@@ -43,7 +43,7 @@ const { resolveBaseBranch, freshRemoteBranchSha, parseLsRemoteBranchSha } =
 const { resetPreview, resetToOrigin } = await import("../src/server/actions.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { renderPrHandoff, renderSessionAction } = await import("../src/server/workflows/feedback.ts");
-const { prBaseBranchFor } = await import("../src/server/workflows/manager.ts");
+const { prBaseBranchFor } = await import("../src/server/workflows/context.ts");
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 
 const bin = mkdtempSync(join(tmpdir(), "mission-base-branch-bin-"));

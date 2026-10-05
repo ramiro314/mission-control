@@ -41,6 +41,8 @@ export interface AffectedTestsContext {
   workingSubpath: string;
   /** The operator's own checkout, where the gitignored local override lives. */
   localRoot: string | null;
+  /** The task's base branch the change is measured from, or null for origin's default. */
+  baseBranch: string | null;
   selection?: TestSelectionDeps;
 }
 
@@ -83,7 +85,7 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
     return { kind: "done", result: decided("failed", read.note) };
   }
 
-  const selection = await selectAffectedTests(ctx.treeRoot, read.merged.config, ctx.selection);
+  const selection = await selectAffectedTests(ctx.treeRoot, read.merged.config, ctx.selection, ctx.baseBranch);
   if (!selection.ok) {
     return {
       kind: "done",

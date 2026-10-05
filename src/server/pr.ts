@@ -383,6 +383,8 @@ export async function pollAndReconcilePrs(
     [...found.values(), ...repoFound.values()].map((match) => [match.url, match]),
   );
   const mergedUrls = new Map<string, number>();
+  // The branch each of those merged into, which decides whether a task with a base branch landed.
+  const mergedBases = new Map<string, string | null>();
   const closedUrls = new Set<string>();
   const urlResults = new Map<string, PrStateMatch>();
   const dueUrls = urlState.due(linkedUrls, now);
@@ -391,6 +393,7 @@ export async function pollAndReconcilePrs(
     if (!match) continue;
     if (match.state === "merged" && match.mergedAt !== null) {
       mergedUrls.set(url, match.mergedAt);
+      mergedBases.set(url, match.baseRef ?? null);
     }
   }
   await forEachConcurrent(
@@ -402,6 +405,7 @@ export async function pollAndReconcilePrs(
       if (result !== "error" && result !== null) urlResults.set(url, result);
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
+        mergedBases.set(url, result.baseRef ?? null);
       }
       // Read from the URL itself, which is the only place a closed, unmerged state survives:
       // the branch lookup drops it, and the URL is asked about here precisely because the
@@ -437,7 +441,7 @@ export async function pollAndReconcilePrs(
   const operationalMerges = new Map(
     [...mergedUrls].filter(([url]) => operationalUrls.has(url)),
   );
-  registry.reconcilePrMerges(operationalMerges);
+  registry.reconcilePrMerges(operationalMerges, mergedBases);
   // Closures carry no completion authority, but they do move task state (a pending shape
   // choice lapses), so they take the same operational filter as merges.
   registry.reconcilePrClosures(new Set([...closedUrls].filter((url) => operationalUrls.has(url))));

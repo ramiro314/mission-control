@@ -52,7 +52,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
-| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, task form field and card label) | #151 (plan M0.1), #162 |
+| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, task form field and card label) | #151 (plan M0.1), #161, #162 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -949,8 +949,8 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, plus the task form field and card label; the check, diff and merge-watcher followers and the recurring-mission template are separate tickets. |
-| PRs | #151, #162 (task form field and card label) |
+| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, and the task form field and card label; the recurring-mission template and the session Diff view are separate tickets. |
+| PRs | #151, #161, #162 (task form field and card label) |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Per-task base branch" and M0 item 1; [docs/dispatch-and-backlog.md](../dispatch-and-backlog.md) "Start a task from another branch" |
 | Upstream candidate | Yes. It is a general task field with no Windows-specific behavior. |
 
@@ -981,6 +981,16 @@ dispatched like any other task. Without one, nothing changes.
 - The agent is told the base: `withTaskKindContract` appends a "Base branch" section naming
   `gh pr create --base <base>`, and the workflow PR handoff and Pull Request session action name
   it again. The fixed wrap-up texts (`WRAPUP_PR`) are unchanged.
+- A workflow binding's base is `prBaseBranchFor` (`workflows/context.ts`): the task's for its
+  primary repository, null otherwise. The captured evidence diff and an affected-tests check's
+  selection measure from `merge-base(HEAD, origin/<base>)` (`changeSourceRef` in `diff.ts`),
+  and a base missing from the remote-tracking refs fails rather than falls back.
+- The Pull Request action's merge-conflict block names the binding's base. Foreman's nudge and
+  the Wait for CI repair read GitHub's `baseRefName`, unchanged.
+- A merge counts for a task with a base branch only when `gh` reports it merged into that branch
+  (`Registry.mergeCounts`, on both the branch-poll and by-URL paths, before anything is stamped),
+  so neither completion nor dependency satisfaction follows a merge into another branch. A task
+  with no base branch counts a merge wherever it lands, as before.
 
 **Upstream behavior it assumes.**
 
@@ -1001,10 +1011,14 @@ dispatched like any other task. Without one, nothing changes.
 `src/mcp/server.ts`, and the dashboard: `src/web/components/DispatchModal.tsx` (the field, the
 details summary), `src/web/lib/task-draft.ts` (`DispatchDraft.baseBranch`, `taskUpdatePatch`),
 `src/web/lib/api.ts` (`DispatchInput`), `src/web/components/layouts/BacklogColumn.tsx` (the
-card label) and `src/web/styles.css` (`.bl-base`).
+card label) and `src/web/styles.css` (`.bl-base`). The followers add `src/server/diff.ts`
+(`changedPathsSince`, `deletedPathsSince`, `computeSessionDiff`), `src/server/test-selection.ts`,
+`src/server/workflows/{affected-tests,check-runtime,checks,context,engine,agent-contract}.ts`,
+`src/server/registry.ts` (`reconcilePrs`, `reconcilePrMerges`) and `src/server/pr.ts`.
 
 **Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`,
-`test/backlog-base-branch-render.test.ts`, `e2e/specs/task-base-branch.spec.ts`.
+`test/task-base-branch-followers.test.ts`, `test/backlog-base-branch-render.test.ts`,
+`e2e/specs/task-base-branch.spec.ts`.
 
 ## Superseded and removed
 

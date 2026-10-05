@@ -234,6 +234,7 @@ import {
   deleteSessionWorkEpisodeWithOwnership,
   deleteWorkEpisodePrompts,
   historicalTaskWorkEpisodeBindings,
+  historicalTaskWorkEpisodeBindingsForTask,
   rebindPendingSessionWorkEpisodeWithDependencies,
   replaceSessionWorkEpisode,
   replaceSessionWorkEpisodeWithDependencies,
@@ -5277,7 +5278,12 @@ export class Registry extends EventEmitter {
           );
         }
       }
-      if (match?.state === "merged" && match.mergedAt !== null && acceptedEpisode) {
+      if (
+        match?.state === "merged" &&
+        match.mergedAt !== null &&
+        acceptedEpisode &&
+        this.mergeCounts(match.url, match.baseRef)
+      ) {
         if (
           this.reconcileWorkEpisodeMerge(
             { ...acceptedEpisode, prUrl: match.url },
@@ -5578,14 +5584,59 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * The branch each pull request of a task that names a base branch has to merge into, keyed by
+   * pull request URL: every one its current and historical work-episode bindings carry. A task
+   * with no base branch contributes nothing, so its merges count wherever they land, as before.
+   */
+  private prMergeBases(): Map<string, string> {
+    const bases = new Map<string, string>();
+    for (const task of this.tasks.values()) {
+      if (!task.baseBranch) continue;
+      const bindings = [taskWorkEpisodeForTask(task.id), ...historicalTaskWorkEpisodeBindingsForTask(task.id)];
+      for (const binding of bindings) {
+        if (binding?.prUrl) bases.set(binding.prUrl, task.baseBranch);
+      }
+    }
+    return bases;
+  }
+
+  /**
+   * Does a merge of pull request `url` into `baseRef` count as its task's work landing?
+   *
+   * Always, for a task with no base branch. For one that names a base, only a merge into that
+   * branch: the task started from it and its dependents were filed against it, so the same work
+   * merged anywhere else - or into a branch `gh` did not name - completes nothing and releases
+   * nobody. Refused here, before anything is stamped, so every reader of the merge agrees.
+   */
+  private mergeCounts(
+    url: string,
+    baseRef: string | null | undefined,
+    bases: ReadonlyMap<string, string> = this.prMergeBases(),
+  ): boolean {
+    const expected = bases.get(url);
+    return expected === undefined || baseRef === expected;
+  }
+
+  /**
    * Record every merge the by-URL poller observed, against the episode that produced it.
    *
    * One entry point for both harvests on purpose. `reconcileWorkEpisodeMerge` is not a
    * pure write - it satisfies dependency edges, can roll a live episode over and announces
    * `task_pr_merged` - so running a dependency pass and a task-completion pass separately
    * would put the same episode through it twice in one tick.
+   *
+   * `mergedBases` is the branch each pull request merged into, as `gh` reported it. A merge
+   * of a task that names a base branch counts only into that branch - see `mergeCounts`.
    */
-  reconcilePrMerges(mergedUrls: Map<string, number>): void {
+  reconcilePrMerges(
+    observedMerges: Map<string, number>,
+    mergedBases: ReadonlyMap<string, string | null> = new Map(),
+  ): void {
+    if (observedMerges.size === 0) return;
+    const bases = this.prMergeBases();
+    const mergedUrls = new Map(
+      [...observedMerges].filter(([url]) => this.mergeCounts(url, mergedBases.get(url), bases)),
+    );
     if (mergedUrls.size === 0) return;
     const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
     const targets = new Map<string, {

@@ -20,13 +20,16 @@ export function workflowPullRequestCiContract(): string {
  * track with merge conflicts option. Its own block rather than a line of the CI policy, so it
  * reaches the packet whatever the CI setting is. Frozen with the packet like the CI policy. The
  * method itself is `mergeConflictResolutionSteps`, the same one a Wait for CI repair asks for.
+ *
+ * `baseBranch` is the task's base branch, which the PR opens against, so the steps name it.
+ * Null, for a PR against the default branch, leaves the base for the agent to read off the PR.
  */
-export function workflowPullRequestConflictContract(): string {
+export function workflowPullRequestConflictContract(baseBranch: string | null = null): string {
   return [
     "## Workflow pull request merge conflicts",
     "Foreman's Keep sessions on track with merge conflicts option was selected when this packet was prepared.",
-    "If the PR reports merge conflicts with its base branch, resolve them this way:",
-    mergeConflictResolutionSteps(null),
+    `If the PR reports merge conflicts with its base branch${baseBranch ? ` \`${baseBranch}\`` : ""}, resolve them this way:`,
+    mergeConflictResolutionSteps(baseBranch),
   ].join("\n");
 }
 

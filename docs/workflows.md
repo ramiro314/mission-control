@@ -636,7 +636,9 @@ conflicts** preference adds its own block to the same packets, on the same terms
 action whose completion is **Pull request**, with no Wait for CI node after it. It tells the
 session that if the PR reports merge conflicts with its base, it resolves them with the same
 method a Wait for CI conflict repair asks for (below): merge the base branch in, resolve the
-conflicts, run focused tests, push, and never rebase or force-push. It is
+conflicts, run focused tests, push, and never rebase or force-push. For a task with a
+[base branch](dispatch-and-backlog.md#start-a-task-from-another-branch) the block names that
+branch. It is
 independent of the CI preference, so either can be on without the other. It is read once per
 newly prepared packet and frozen with it, like the CI policy. Where a Wait for CI node follows
 the action, the node handles a conflict itself, as described below.
