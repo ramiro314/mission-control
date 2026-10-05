@@ -1,0 +1,3 @@
+# Store and check out text as LF on every platform, so a Windows checkout gets the
+# same bytes as macOS and Linux. Binaries (images, icons) are auto-detected and untouched.
+* text=auto eol=lf
