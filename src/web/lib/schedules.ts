@@ -593,6 +593,7 @@ export function scheduleDefinitionFingerprint(def: {
     model: string | null;
     effort: string | null;
     workflowId: string | null;
+    baseBranch?: string | null;
   };
 }): string {
   return JSON.stringify([
@@ -616,6 +617,7 @@ export function scheduleDefinitionFingerprint(def: {
     // the preview described?", and a field left out of it is a field an operator can change
     // between previewing and saving without the staleness hint ever noticing.
     def.template.workflowId,
+    def.template.baseBranch ?? null,
   ]);
 }
 

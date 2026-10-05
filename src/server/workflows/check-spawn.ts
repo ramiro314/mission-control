@@ -10,6 +10,7 @@ import {
   type CheckGroupEmptiness,
   type CheckGroupTeardownOptions,
 } from "./check-group.ts";
+import { processLifetime } from "../platform/process-lifetime.ts";
 import { processStartIdentity } from "./check-identity.ts";
 
 // Running branch-authored code: the streaming adapter, and the gate that makes its owner
@@ -292,7 +293,7 @@ function infrastructure(reason: string): CheckExecutionResult {
  *
  * The sequence, and every step of it is load-bearing:
  *
- *  1. Spawn the shim `detached: true`, so it is its own process-group leader, with the
+ *  1. Spawn the shim through `processLifetime`, so it is its own process-group leader, with the
  *     configured command HELD.
  *  2. Wait for the shim to say it is ready. Only now is it certain that the process at this
  *     pid is our shim rather than a runtime that failed to start.
@@ -318,14 +319,14 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
 
   let child: ChildProcess;
   try {
+    // Its own process group, which is what makes a single signal reach the descendants a
+    // build spawns - and what makes the emptiness proof a question about a group rather
+    // than about one process.
     child = spawn(runtime.command, argv, {
+      ...processLifetime.treeRootOptions,
       cwd: request.cwd,
       env: { ...request.env, ...runtime.env },
       shell: false,
-      // Its own process group, which is what makes a single signal reach the descendants a
-      // build spawns - and what makes the emptiness proof a question about a group rather
-      // than about one process.
-      detached: true,
       // stdin is IGNORED rather than piped: a command that blocks on input should fail
       // immediately on a closed stdin instead of hanging until the timeout. fds 3 and 4 are
       // the control channel - 3 is the gate the parent writes one byte to, 4 is how the shim

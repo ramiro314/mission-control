@@ -242,6 +242,8 @@ export function ScheduleDetail({
                 <dd className="rm-mono">
                   <RepositoryName path={template.repoRoot} />
                 </dd>
+                <dt>Base branch</dt>
+                <dd className="rm-mono">{template.baseBranch ?? "origin's default branch"}</dd>
                 <dt>Task defaults</dt>
                 <dd>
                   {template.agent ?? "agent follows kind"} · {template.kind}

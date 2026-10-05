@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { unwrapEnvelope } from "./llm/structured.ts";
 import { locateExecutable } from "./executables/locator.ts";
+import { processLifetime } from "./platform/process-lifetime.ts";
 import { claudeImageUserMessage } from "./llm/claude-input.ts";
 import { validateLlmImages } from "./llm/images.ts";
 import {
@@ -73,18 +74,18 @@ export const CLAUDE_DEFAULT_TIMEOUT_MS = Number(
 export const HEADLESS_CWD = tmpdir();
 
 /** Children we spawned, so a process exit doesn't leave them burning tokens. */
-const live = new Set<ReturnType<typeof spawn>>();
+const live = new Set<ChildProcess>();
 
 /**
  * Kill every headless run we started.
  *
- * Children spawn `detached: true` (so the session poller never discovers them as
- * phantom sessions), which also means they SURVIVE their parent's death and keep
- * burning tokens to nowhere. A SIGKILL of the parent still leaks them - nothing
- * can be done about that from in here - but every ordinary exit path is covered.
+ * Children spawn as the root of their own process tree (so the session poller never
+ * discovers them as phantom sessions), which also means they SURVIVE their parent's
+ * death and keep burning tokens to nowhere. A SIGKILL of the parent still leaks them -
+ * nothing can be done about that from in here - but every ordinary exit path is covered.
  */
 export function killLiveClaudeRuns(): void {
-  for (const child of live) killTree(child);
+  for (const child of live) processLifetime.killTree(child);
   live.clear();
 }
 
@@ -187,9 +188,9 @@ async function runClaudeRaw(
     // Inspector, which needs to read source to review a diff properly and carries four
     // other defence layers because of it. The default is empty rather than inherited so
     // that one caller's grant can never become everyone's.
-    // `detached: true` makes the child its own session/process-group leader with no
-    // controlling terminal, so the session poller (which groups agents by tty and
-    // skips tty-less ones) never discovers this headless run as a phantom
+    // `processLifetime.treeRootOptions` make the child its own session/process-group
+    // leader with no controlling terminal, so the session poller (which groups agents
+    // by tty and skips tty-less ones) never discovers this headless run as a phantom
     // session. That covers discovery; `headlessEnv()` covers the other way in - the
     // hooks this run fires - which would otherwise bind it to a real card.
     //
@@ -243,10 +244,10 @@ async function runClaudeRaw(
     const child = (() => {
       try {
         return spawn(executable.path, args, {
+          ...processLifetime.treeRootOptions,
           cwd: opts.cwd ?? HEADLESS_CWD,
           stdio: ["pipe", "pipe", "pipe"],
           env,
-          detached: true,
         });
       } catch (error) {
         cleanupAgentSubprocessEnv(env);
@@ -269,11 +270,11 @@ async function runClaudeRaw(
       return true;
     };
     const onAbort = (): void => {
-      killTree(child);
+      processLifetime.killTree(child);
       if (done()) reject(new Error("claude -p aborted"));
     };
     timer = setTimeout(() => {
-      killTree(child);
+      processLifetime.killTree(child);
       if (done()) reject(new Error("claude -p timed out"));
     }, opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS);
     timer.unref?.();
@@ -471,18 +472,4 @@ function headlessEnv(): NodeJS.ProcessEnv {
   env.MISSION_HEADLESS = "1";
   dropPaneIdentityEnv(env);
   return env;
-}
-
-/**
- * Terminate a detached child. Because it's spawned `detached`, the child is its
- * own process-group leader, so signalling the negative pid kills it plus any
- * grandchildren it spawned; fall back to a direct kill if the group signal fails.
- */
-function killTree(child: ReturnType<typeof spawn>): void {
-  try {
-    if (child.pid) process.kill(-child.pid, "SIGKILL");
-    else child.kill("SIGKILL");
-  } catch {
-    child.kill("SIGKILL");
-  }
 }

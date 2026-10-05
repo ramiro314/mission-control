@@ -164,6 +164,9 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
     model: typeof t.model === "string" ? t.model : null,
     // Absent is "no Workflow", never the dispatch default - see `ScheduleTemplate.workflowId`.
     workflowId: typeof t.workflowId === "string" && t.workflowId !== "" ? t.workflowId : null,
+    // Absent on every template saved before the field existed, and that is origin's default
+    // branch - exactly what those missions have always filed against.
+    baseBranch: typeof t.baseBranch === "string" && t.baseBranch !== "" ? t.baseBranch : null,
   };
 }
 

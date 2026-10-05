@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { locateExecutable } from "../executables/locator.ts";
+import { processLifetime } from "../platform/process-lifetime.ts";
 import { killLiveCodexSdkRuns, runCodexSdkOneShot, type CodexSdkDeps } from "./codex-sdk.ts";
 import { DEFAULT_CODEX_TRANSPORT, type CodexTransport } from "@shared/llm.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
@@ -44,7 +45,7 @@ export function configureCodexRunnerTransport(
 }
 const DEFAULT_TIMEOUT_MS = Number(process.env.MISSION_CODEX_TIMEOUT_MS || 120_000);
 const FAILURE_DETAIL_MAX = 300;
-const live = new Set<ReturnType<typeof spawn>>();
+const live = new Set<ChildProcess>();
 /** Schema directories whose runs have not finished, including during synchronous shutdown. */
 const liveSchemaDirs = new Set<string>();
 
@@ -67,16 +68,11 @@ function headlessEnv(): NodeJS.ProcessEnv {
  * finished. Whether the process dies by signal or limps to a clean exit is a race; that a
  * killed run never resolves must not be.
  */
-const killedRuns = new WeakSet<ReturnType<typeof spawn>>();
+const killedRuns = new WeakSet<ChildProcess>();
 
-function killTree(child: ReturnType<typeof spawn>): void {
+function killTree(child: ChildProcess): void {
   killedRuns.add(child);
-  try {
-    if (child.pid) process.kill(-child.pid, "SIGKILL");
-    else child.kill("SIGKILL");
-  } catch {
-    child.kill("SIGKILL");
-  }
+  processLifetime.killTree(child);
 }
 
 function killLiveCodexRuns(): void {
@@ -363,10 +359,10 @@ export const codexRunner: LlmRunner = {
         const child = (() => {
           try {
             return spawn(executable.path, args, {
+              ...processLifetime.treeRootOptions,
               cwd: tmpdir(),
               stdio: ["pipe", "pipe", "pipe"],
               env,
-              detached: true,
             });
           } catch (error) {
             cleanupAgentSubprocessEnv(env);
