@@ -850,11 +850,11 @@ editor, version history and run views.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>, tickets 1 and 2: the mergeability signal, the PR chip mark, conflict episodes and the Blocked pull requests inbox</td>
+<td><strong>Active</strong>, tickets 1 to 3: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Foreman&#39;s conflict nudges and escalation</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#108</td>
+<td>#108, #125, pending (ticket 3, Foreman conflict nudges)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -870,7 +870,9 @@ it <code>CONFLICTING</code>, CI often stops running, and nothing in Mission Cont
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon&#39;s single
-owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.</p>
+owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.
+Ticket 3 makes Foreman nudge a live session it drives to merge its base in, at most 3 times per
+episode, and hand the conflict to the operator when the nudges do not resolve it.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li>The branch poller requests <code>mergeable</code> and <code>baseRefName</code>; the by-URL poller requests
@@ -907,6 +909,29 @@ checkbox is <strong>Keep sessions on track with merge conflicts</strong>, and fo
 only when all three toggles are off.</li>
 <li>The attention inbox&#39;s <strong>Blocked pull requests</strong> section follows Pipeline halts, each row one
 answer owed, read-only.</li>
+<li>Foreman&#39;s follow-through has a third dimension (ticket 3). <code>FollowupPr</code> carries the head-bound
+<code>mergeable</code> observation, <code>baseRef</code>, <code>headSha</code> and the snapshot&#39;s <code>conflictEscalated</code>;
+<code>feedbackState.conflicting</code> is <code>trackMergeConflicts &amp;&amp; currentMergeability(pr) === &quot;conflicting&quot;</code>. <code>FollowupMark</code> gains <code>conflictHead</code>, <code>conflictNudges</code>, <code>conflictNudgedAt</code>,
+<code>conflictEscalated</code> and <code>conflictEscalatedAt</code>; <code>advanceFollowupMark</code> re-arms them only on a
+current head observed <code>mergeable</code>, leaves them on an unknown head, and seeds
+<code>conflictEscalated</code> from the snapshot.</li>
+<li>A conflict nudge needs a conflicting current head that is not <code>conflictHead</code>, fewer than 3
+nudges (<code>CONFLICT_NUDGE_CAP</code>), and no escalation on either side, plus every existing gate and
+the stamp-then-inject delivery with rollback. Its payload line is &quot;it has merge conflicts with
+<code>&lt;base&gt;</code>&quot;, with the fetch, merge, resolve, focused-tests and no-rebase steps, in one payload
+with CI and findings.</li>
+<li><code>decideReviewFollowup</code> returns <code>escalate</code>, ahead of the pane gates and behind only workflow
+ownership, on a new conflicting head after 3 nudges, or after <code>CONFLICT_GIVE_UP_MS</code> (2
+minutes) settled-idle on the nudged, still-conflicting head, counted from the nudge too. An
+escalated mark re-sends every <code>CONFLICT_ESCALATE_RESEND_MS</code> (1 minute) while the head is
+conflicting. The worker posts <code>POST /api/pr-conflicts/escalate { prUrl, headSha }</code>
+(<code>EscalatePrConflictSchema</code>), restores the mark on failure, and logs and records a
+<code>pr-conflict</code> episode on the first send only.</li>
+<li>The route marks the open episode found by URL alone <code>escalated</code> (<code>503</code> with no tracker,
+<code>{ escalated: false }</code> with no open episode). The flag lives with the episode, so a mergeable
+read re-arms it. An escalated live owner is blocked as <code>nudges-exhausted</code>, after
+<code>session-gone</code> and ahead of <code>foreman-cannot-nudge</code>. <code>Session.prConflictEscalated</code> and
+<code>RepoPrFeedback.prConflictEscalated</code> carry it, set by <code>Registry.setEscalatedPrUrls</code>.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -934,7 +959,13 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 <code>src/shared/types.ts</code> (<code>BlockedPr</code>, <code>blocked_prs</code>, snapshot), <code>src/web/useEventStream.ts</code>,
 <code>src/web/App.tsx</code>, <code>src/web/lib/attention.ts</code>, <code>src/web/components/AttentionInbox.tsx</code>,
 <code>src/web/components/ForemanBar.tsx</code>, <code>src/web/styles.css</code>, and every test <code>ForemanConfig</code>
-literal.</p>
+literal. Ticket 3: <code>src/server/foreman/review-followup.ts</code> (<code>FollowupPr</code>, <code>FollowupMark</code>,
+<code>advanceFollowupMark</code>, <code>decideReviewFollowup</code>, <code>buildPayload</code>), <code>src/server/foreman/worker.ts</code>
+(<code>runReviewFollowup</code>, new <code>escalateConflict</code>), <code>src/server/foreman/client.ts</code>,
+<code>src/server/routes.ts</code> (<code>RouteDeps.prConflicts</code>, the escalate route), <code>src/server/pr.ts</code>
+(<code>startPrPoller</code> takes the tracker), <code>src/server/index.ts</code>, <code>src/server/registry.ts</code>
+(<code>setEscalatedPrUrls</code>, <code>repoPrFeedbackFor</code>, session comparator and construction sites),
+<code>src/shared/protocol.ts</code>, <code>src/shared/types.ts</code>, and every test <code>Session</code> literal.</p>
 <p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>src/server/pr-conflicts.ts</code>,
 <code>test/pr-mergeable.test.ts</code>, <code>test/pr-conflicts.test.ts</code>, <code>test/blocked-prs-attention.test.ts</code>,
 <code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>

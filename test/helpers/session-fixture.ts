@@ -107,6 +107,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     meta: meta(),
     effortBaselineReady: true,
     pendingEffort: null,

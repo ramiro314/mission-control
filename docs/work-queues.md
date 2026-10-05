@@ -277,12 +277,14 @@ popover's **Pull requests** section has three independent, default-on controls:
   PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
   Request action: wait for checks, make scoped repairs with focused tests, push to the same
   branch, and verify CI for the new head before ending the turn.
-- **Keep sessions on track with merge conflicts** (`trackMergeConflicts`) is Foreman's claim on
-  a pull request that conflicts with its base. Turned off, or wherever Foreman cannot type
-  into the session (not invited, dry-run or off, an untrusted repository, no hooks), the
-  conflict is the operator's: it goes to the attention inbox's
-  [Blocked pull requests](attention-and-alerts.md) section as "Foreman can't drive this
-  session".
+- **Keep sessions on track with merge conflicts** (`trackMergeConflicts`) nudges the parked
+  session when its pull request conflicts with its base: merge the base branch in
+  (`git fetch origin <base>`, `git merge origin/<base>`), resolve every conflict, run the tests
+  that cover the touched files, and push to the same branch. Never rebase or force-push.
+  Turned off, or wherever Foreman cannot type into the session (not invited, dry-run or off, an
+  untrusted repository, no hooks), the conflict is the operator's: it goes to the attention
+  inbox's [Blocked pull requests](attention-and-alerts.md) section as "Foreman can't drive
+  this session".
 
 Workflow PR instructions read the CI preference at packet preparation, independently of the
 review-comment preference and the Foreman worker's mode or enabled state. The workflow's own
@@ -321,6 +323,34 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
 - the review-comment half counts only GitHub Inspector findings **already posted on the PR**
   (dry-run drafts and findings still being posted do not count) - the failing-CI half works
   regardless.
+
+**Merge conflicts are capped, then handed to you.** A conflict is nudged **once per
+conflicting head** and at most **3 times per conflict episode**. The episode re-arms only when
+GitHub reports the PR's current head mergeable. A head GitHub has not answered for yet, which
+is usual straight after a fix push, is neither nudged, counted toward the cap nor given up on.
+Foreman **escalates** the conflict to the operator, once per episode, when:
+
+- a new conflicting head appears after 3 nudges, or
+- the session sits settled-idle for 2 minutes on the head it was nudged about, still
+  conflicting, which means the agent parked without pushing a fix.
+
+An escalation types nothing. It is logged, recorded as a Foreman episode, and sent to the
+daemon (`POST /api/pr-conflicts/escalate`), which marks the PR's open conflict episode. The PR
+then shows in [Blocked pull requests](attention-and-alerts.md) as "Foreman's 3 nudges didn't
+resolve it", and Foreman stays silent about that conflict until it re-arms. It still relays
+the PR's review comments and failing CI.
+
+Both halves are in memory, so each survives the other's restart:
+
+- Sessions carry `prConflictEscalated`, and so does each per-repository entry of a multi-repo
+  task. A restarted Foreman seeds its mark from it and sends no further nudge.
+- While Foreman holds an escalated mark on a PR that is still conflicting, it re-sends the
+  escalation at most once a minute. A restarted daemon therefore re-learns it within a minute.
+  If both restart, Foreman may nudge up to 3 more times before escalating again.
+
+A conflict shares one nudge with open review comments and failing CI, as those two share one
+with each other. A workflow that owns the session owns its conflict too, so Foreman neither
+nudges nor escalates it.
 
 **A session holding several pull requests is followed through on each of them.** A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) opens one per

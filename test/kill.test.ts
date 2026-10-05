@@ -52,6 +52,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prMergeable: null,
     prBaseRef: null,
     prHeadSha: null,
+    prConflictEscalated: false,
     meta: null,
     effortBaselineReady: false,
     pendingEffort: null,

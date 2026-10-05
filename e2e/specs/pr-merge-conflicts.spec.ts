@@ -345,3 +345,58 @@ test("a conflict nothing is handling gets a Blocked pull requests row until it i
   await expect(again.getByRole("heading", { name: "Blocked pull requests" })).toHaveCount(0);
   await shoot(dashboard, "09-inbox-cleared", again);
 });
+
+test("a conflict Foreman escalated reads \"Foreman's 3 nudges didn't resolve it\" until it is mergeable", async ({
+  dashboard,
+  daemon,
+}) => {
+  const session = await dispatch(dashboard, daemon);
+  execFileSync("git", ["-C", session.cwd, "switch", "-q", "-c", "e2e/pr-conflict-escalated"]);
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: session.cwd, encoding: "utf8" }).trim();
+  const pr: FakePullRequest = {
+    cwd: session.cwd,
+    url: PR_URL,
+    number: 31,
+    state: "OPEN",
+    createdAt: new Date().toISOString(),
+    mergedAt: null,
+    headRefOid: head,
+    mergeable: "CONFLICTING",
+    baseRefName: "main",
+  };
+  writeGhPullRequests(daemon.home, [pr]);
+  await announcePullRequest(daemon, session);
+
+  const inbox = await openInbox(dashboard);
+  const row = inbox.getByRole("region", { name: "Blocked pull request acme/mission-e2e #31" });
+  await expect(row).toContainText("Foreman can't drive this session", { timeout: 30_000 });
+
+  // What Foreman's worker sends when its nudges run out. The worker does not run here, so the
+  // spec posts the same request to the same route.
+  const escalate = (body: unknown) =>
+    fetch(`${daemon.baseURL}/api/pr-conflicts/escalate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const unknown = await escalate({ prUrl: "https://github.com/acme/mission-e2e/pull/999", headSha: head });
+  expect(await unknown.json()).toEqual({ ok: true, escalated: false });
+  const marked = await escalate({ prUrl: PR_URL, headSha: head });
+  expect(await marked.json()).toEqual({ ok: true, escalated: true });
+
+  await expect(row).toContainText("Foreman's 3 nudges didn't resolve it");
+  await expect(row).not.toContainText("Foreman can't drive this session");
+  await expect
+    .poll(async () => (await api<Array<SessionRow & { prConflictEscalated: boolean }>>(daemon, "/api/sessions"))
+      .find((s) => s.id === session.id)?.prConflictEscalated)
+    .toBe(true);
+  await shoot(dashboard, "10-inbox-nudges-exhausted", inbox);
+
+  // The fix lands: the episode closes, taking the escalation and the row with it.
+  writeGhPullRequests(daemon.home, [{ ...pr, mergeable: "MERGEABLE" }]);
+  await expect(row).toHaveCount(0, { timeout: 60_000 });
+  await expect
+    .poll(async () => (await api<Array<SessionRow & { prConflictEscalated: boolean }>>(daemon, "/api/sessions"))
+      .find((s) => s.id === session.id)?.prConflictEscalated)
+    .toBe(false);
+});

@@ -3,8 +3,7 @@ import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrMergeable, PrState } from "@shared/types.ts";
 import { currentMergeability, nextMergeability, prMergeableFromGitHub } from "@shared/pr-mergeable.ts";
-import { PrConflictTracker, type ConflictObservation } from "./pr-conflicts.ts";
-import type { ForemanConfig } from "@shared/protocol.ts";
+import type { ConflictObservation, PrConflictTracker } from "./pr-conflicts.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
@@ -489,11 +488,13 @@ function conflictReads(
  * delays the next. A no-op (no subprocesses) whenever no session sits on a
  * feature branch and no dependency or task binding contributes a URL.
  */
-export function startPrPoller(registry: Registry, foremanConfig: () => ForemanConfig): () => void {
+export function startPrPoller(
+  registry: Registry,
+  conflicts: PrConflictTracker,
+): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const urlState = new PrUrlPollState();
-  const conflicts = new PrConflictTracker(registry, foremanConfig);
 
   const tick = async (): Promise<void> => {
     if (stopped) return;

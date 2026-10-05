@@ -648,8 +648,8 @@ editor, version history and run views.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, tickets 1 and 2: the mergeability signal, the PR chip mark, conflict episodes and the Blocked pull requests inbox |
-| PRs | #108 |
+| Status | **Active**, tickets 1 to 3: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Foreman's conflict nudges and escalation |
+| PRs | #108, #125, pending (ticket 3, Foreman conflict nudges) |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
 
@@ -659,6 +659,8 @@ adds the one mergeability signal every later conflict reaction (Foreman nudges, 
 rounds, the Blocked pull requests inbox) reads, and shows it as a "Conflicts with `<base>`" mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon's single
 owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles.
+Ticket 3 makes Foreman nudge a live session it drives to merge its base in, at most 3 times per
+episode, and hand the conflict to the operator when the nudges do not resolve it.
 
 **Behavior contracts.**
 
@@ -696,6 +698,30 @@ owner of "is this conflict handled?" and the inbox section for the conflicts not
   only when all three toggles are off.
 - The attention inbox's **Blocked pull requests** section follows Pipeline halts, each row one
   answer owed, read-only.
+- Foreman's follow-through has a third dimension (ticket 3). `FollowupPr` carries the head-bound
+  `mergeable` observation, `baseRef`, `headSha` and the snapshot's `conflictEscalated`;
+  `feedbackState.conflicting` is `trackMergeConflicts && currentMergeability(pr) ===
+  "conflicting"`. `FollowupMark` gains `conflictHead`, `conflictNudges`, `conflictNudgedAt`,
+  `conflictEscalated` and `conflictEscalatedAt`; `advanceFollowupMark` re-arms them only on a
+  current head observed `mergeable`, leaves them on an unknown head, and seeds
+  `conflictEscalated` from the snapshot.
+- A conflict nudge needs a conflicting current head that is not `conflictHead`, fewer than 3
+  nudges (`CONFLICT_NUDGE_CAP`), and no escalation on either side, plus every existing gate and
+  the stamp-then-inject delivery with rollback. Its payload line is "it has merge conflicts with
+  `<base>`", with the fetch, merge, resolve, focused-tests and no-rebase steps, in one payload
+  with CI and findings.
+- `decideReviewFollowup` returns `escalate`, ahead of the pane gates and behind only workflow
+  ownership, on a new conflicting head after 3 nudges, or after `CONFLICT_GIVE_UP_MS` (2
+  minutes) settled-idle on the nudged, still-conflicting head, counted from the nudge too. An
+  escalated mark re-sends every `CONFLICT_ESCALATE_RESEND_MS` (1 minute) while the head is
+  conflicting. The worker posts `POST /api/pr-conflicts/escalate { prUrl, headSha }`
+  (`EscalatePrConflictSchema`), restores the mark on failure, and logs and records a
+  `pr-conflict` episode on the first send only.
+- The route marks the open episode found by URL alone `escalated` (`503` with no tracker,
+  `{ escalated: false }` with no open episode). The flag lives with the episode, so a mergeable
+  read re-arms it. An escalated live owner is blocked as `nudges-exhausted`, after
+  `session-gone` and ahead of `foreman-cannot-nudge`. `Session.prConflictEscalated` and
+  `RepoPrFeedback.prConflictEscalated` carry it, set by `Registry.setEscalatedPrUrls`.
 
 **Upstream behavior it assumes.**
 
@@ -723,7 +749,13 @@ fake `gh` (`pr view` output), and every test `Session` literal. Ticket 2: `src/s
 `src/shared/types.ts` (`BlockedPr`, `blocked_prs`, snapshot), `src/web/useEventStream.ts`,
 `src/web/App.tsx`, `src/web/lib/attention.ts`, `src/web/components/AttentionInbox.tsx`,
 `src/web/components/ForemanBar.tsx`, `src/web/styles.css`, and every test `ForemanConfig`
-literal.
+literal. Ticket 3: `src/server/foreman/review-followup.ts` (`FollowupPr`, `FollowupMark`,
+`advanceFollowupMark`, `decideReviewFollowup`, `buildPayload`), `src/server/foreman/worker.ts`
+(`runReviewFollowup`, new `escalateConflict`), `src/server/foreman/client.ts`,
+`src/server/routes.ts` (`RouteDeps.prConflicts`, the escalate route), `src/server/pr.ts`
+(`startPrPoller` takes the tracker), `src/server/index.ts`, `src/server/registry.ts`
+(`setEscalatedPrUrls`, `repoPrFeedbackFor`, session comparator and construction sites),
+`src/shared/protocol.ts`, `src/shared/types.ts`, and every test `Session` literal.
 
 **Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
 `test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
