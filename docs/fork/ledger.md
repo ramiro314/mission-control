@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **12** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **13** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -54,6 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
+| Windows support | In progress on `release/windows` (plan, `.gitattributes` and the four platform seams on `main`) | #128 (plan), #147, #152, #154, #158, #176, pending (branch `docs/windows-support-ledger`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1130,6 +1131,92 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 **Fork-only files.** `skills/docs-only-ci/SKILL.md`,
 `skills/docs-only-ci/assets/detect-docs-only.sh`, `skills/docs-only-ci/assets/ci-result.sh`,
 `test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`.
+
+### Windows support
+
+| Field | Value |
+| --- | --- |
+| Status | **In progress on `release/windows`**. On `main`: the plan, `.gitattributes`, and the four platform seams (plan M1), each with only its POSIX implementation registered. The win32 implementations, Windows CI, Setup checks and Windows docs are built on `release/windows` (plan M2) and reach `main` in one merge. |
+| PRs | #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), pending (branch `docs/windows-support-ledger`, this entry and the branch, M0.3). The per-task base branch it depends on (M0.1) has its own entry. |
+| Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones" |
+| Upstream candidate | Not now (D18: fork-only). The four seams are platform-neutral and could be offered on their own. |
+
+**Intent.** Mission Control runs natively on Windows 11 x64: the daemon, the Foreman worker,
+the dashboard and the Electron shell in dev mode, with Claude Code SDK sessions dispatched,
+shown on the board and completed. Until that is complete and validated, every Windows-specific
+change lives on the long-lived `release/windows` branch, and `main` stays a macOS product that
+behaves exactly as it did. When the plan's merge gate (D8) passes, `release/windows` merges into
+`main` once; WezTerm terminal sessions and an NSIS installer follow on `main`.
+
+**Behavior contracts.**
+
+- `main` carries no Windows-specific behavior until the final merge. Only platform-neutral
+  changes that leave macOS byte-for-byte unchanged land on `main` directly (D6). A seam an M2
+  ticket discovers is built on `release/windows` instead, kept platform-neutral, and listed in
+  the merge PR (D38).
+- `release/windows` was cut from `origin/main` only after the per-task base branch,
+  `.gitattributes` and all four seams had merged (D36), so it starts with every one of them.
+  `main` reaches it only through merges (the weekly "Sync main into release/windows" mission,
+  D5 and D26): never a rebase, never a force-push. On a sync conflict `main` wins on shared code
+  and the Windows change is re-applied on top; dropping a Windows change needs the human (D27).
+- Windows tickets are tasks with `base_branch = release/windows`, so their worktrees, PRs,
+  checks and merge watcher follow the branch (see "Per-task base branch"). They carry the
+  `windows-support` label.
+- The branch merges into `main` once, as one merge commit titled `feat: Windows support`
+  (D16), after the unit suite and Playwright e2e are green on `windows-latest` under the single
+  win32 skip guard (D37), the human's manual smoke passes, and Linux CI and the macOS `package`
+  run are green. Nothing on either branch cuts a release.
+- `.gitattributes` stores and checks out every text file as LF (`* text=auto eol=lf`, D25).
+- **Process inspection** (`src/server/process-inspection/`): every `ps` and `lsof` read the
+  daemon makes goes through `processInspector()`. Its POSIX implementation issues the same
+  commands the call sites did, and each read returns its `RunResult` so the caller, not the
+  seam, decides whether a partial answer is usable.
+- **Process lifetime** (`src/server/platform/process-lifetime.ts`): starting a child as a tree
+  root (`treeRootOptions`) and signalling or killing that tree (`signalTree`, `killTree`) go
+  through `processLifetime`. Callers keep their own `spawn` call, so the executable contract
+  tests still see each executable. The module is a leaf (Node builtins only), because the
+  Electron main process imports it too.
+- **Executable environment** (`src/server/platform/executable-environment.ts`): the
+  resolver's application, per-user tool and OS default directories, and the login-shell PATH
+  read, come from one per-platform row. The locator keeps the ladder's order and provenance.
+- **Native addon sources** (`scripts/native-addon-sources.mjs`): the one table of each addon's
+  sources per platform. Each `binding.gyp` reads `<@(addon_sources)`. A platform without sources
+  gets none, never another platform's: the required state lock refuses it and the optional Keep
+  Awake skips it. Both builders still publish through `publishNativeAddon`.
+- On `main`, each seam's platform-selection map is empty, so every platform, win32 included,
+  resolves to the POSIX implementation. `release/windows` registers `win32` in those maps.
+
+**Upstream behavior it assumes.**
+
+- Upstream reads processes, signals process groups and searches for executables only at the
+  call sites the seams replaced. An upstream commit that adds a direct `ps`, `lsof`, `pgrep`,
+  `process.kill(-pid)`, `detached: true` spawn, login-shell PATH read, or ladder location
+  outside the seams is a conceptual conflict even when it merges cleanly: route it through the
+  seam on `main`.
+- `process.platform` is how the daemon and the Electron main process tell platforms apart.
+- Both native addons build with `node-gyp` from a `binding.gyp` in `native/<addon>`, and the
+  daemon takes state ownership through `dist/native/state-lock.node` before it serves.
+- `ci.yml` runs on pushes to `main` and on every `pull_request`, so PRs into `release/windows`
+  get Linux CI without a workflow change (D15).
+- Upstream stays macOS-only for packaging. Upstream Windows support of its own would need
+  reconciling with this branch before either merge.
+
+**Upstream surfaces touched.** `src/server/discovery/{processes,proc-cwd,codex-rollouts}.ts`,
+`src/server/workflows/{check-identity,check-group,check-spawn}.ts`, `src/pi/generation-lease.ts`,
+`src/server/claude-cli.ts`, `src/server/llm/codex.ts`,
+`src/server/executables/{locator,catalog}.ts`, `src/main/{update-build,updater}.ts`,
+`native/{state-lock,keep-awake}/binding.gyp`,
+`scripts/build-{state-lock,keep-awake}-native.mjs`, `test/codex-rollout-identity.test.ts`,
+`test/executable-contracts.test.ts`, `test/pi-generation-lease.test.ts`,
+`docs/agent-guides/architecture.md` (the seam rows) and `docs/harnesses-and-terminals.md` (the
+executable search ladder).
+
+**Fork-only files.** `.gitattributes`, `src/server/process-inspection/`,
+`src/server/platform/process-lifetime.ts`, `src/server/platform/executable-environment.ts`,
+`scripts/native-addon-sources.mjs`, `scripts/native-addon-sources.d.mts`,
+`test/process-inspection.test.ts`, `test/process-lifetime.test.ts`,
+`test/executable-environment.test.ts`, `test/native-addon-sources.test.ts`,
+`docs/plans/windows-support/`. Everything else Windows-specific lives on `release/windows`.
 
 ## Superseded and removed
 
