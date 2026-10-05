@@ -121,6 +121,28 @@ export async function sourceRef(cwd: string): Promise<string | null> {
 }
 
 /**
+ * The ref a checkout's changes are measured from: `origin/<baseBranch>` for a task that names
+ * a base branch, else `sourceRef`.
+ *
+ * A named base is required rather than defaulted. Such a task's worktree started from
+ * `origin/<baseBranch>`, so measuring it against origin's default would count every commit the
+ * base carries and the default does not as this change's own - a larger diff under the right
+ * label, and an affected-tests selection that runs the base branch's tests as though this
+ * change had touched them.
+ */
+async function changeSourceRef(
+  cwd: string,
+  baseBranch: string | null,
+): Promise<{ ok: true; ref: string | null } | { ok: false; reason: string }> {
+  if (!baseBranch) return { ok: true, ref: await sourceRef(cwd) };
+  const ref = `origin/${baseBranch}`;
+  const found = await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  return found.code === 0 && found.stdout.trim()
+    ? { ok: true, ref }
+    : { ok: false, reason: `base branch ${baseBranch} is not in this repository's remote-tracking refs` };
+}
+
+/**
  * Diff an immutable Pipeline attempt commit against a source ref resolved for this request.
  * The head is always the stored object id. No working-tree or moving-branch fallback exists.
  */
@@ -236,13 +258,19 @@ export type ChangedPathsResult =
  * "this checkout changed nothing", which is indistinguishable from a real empty result and
  * is the one answer a caller must never act on.
  */
-export async function changedPathsSince(cwd: string | null): Promise<ChangedPathsResult> {
+export async function changedPathsSince(
+  cwd: string | null,
+  /** The task's base branch, measured from instead of origin's default - see `changeSourceRef`. */
+  baseBranch: string | null = null,
+): Promise<ChangedPathsResult> {
   if (!cwd) return { ok: false, reason: "there is no working directory to read" };
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
   const repoRoot = top.stdout.trim();
 
-  const diffBase = await changedPathsBase(cwd);
+  const resolved = await changedPathsBase(cwd, baseBranch);
+  if (!resolved.ok) return resolved;
+  const diffBase = resolved.base;
 
   const paths = new Set<string>();
   // An unborn HEAD has nothing tracked to diff against and `git diff HEAD` says so. Confirmed
@@ -275,13 +303,17 @@ export async function changedPathsSince(cwd: string | null): Promise<ChangedPath
   return { ok: true, repoRoot, paths: [...paths].sort() };
 }
 
-/** `merge-base(HEAD, sourceRef)`, or `HEAD` for a branch with no shared history. */
-async function changedPathsBase(cwd: string): Promise<string> {
-  const ref = await sourceRef(cwd);
-  if (!ref) return "HEAD";
-  const mb = await git(cwd, ["merge-base", "HEAD", ref]);
+/** `merge-base(HEAD, source)`, or `HEAD` for a branch with no shared history. */
+async function changedPathsBase(
+  cwd: string,
+  baseBranch: string | null,
+): Promise<{ ok: true; base: string } | { ok: false; reason: string }> {
+  const source = await changeSourceRef(cwd, baseBranch);
+  if (!source.ok) return source;
+  if (!source.ref) return { ok: true, base: "HEAD" };
+  const mb = await git(cwd, ["merge-base", "HEAD", source.ref]);
   const merged = mb.code === 0 ? mb.stdout.trim() : "";
-  return merged || "HEAD";
+  return { ok: true, base: merged || "HEAD" };
 }
 
 /**
@@ -290,12 +322,17 @@ async function changedPathsBase(cwd: string): Promise<string> {
  * needs it: a test importing a deleted file is broken by the change without being touched.
  * Fails closed exactly as `changedPathsSince` does.
  */
-export async function deletedPathsSince(cwd: string | null): Promise<ChangedPathsResult> {
+export async function deletedPathsSince(
+  cwd: string | null,
+  baseBranch: string | null = null,
+): Promise<ChangedPathsResult> {
   if (!cwd) return { ok: false, reason: "there is no working directory to read" };
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
   const repoRoot = top.stdout.trim();
-  const diffBase = await changedPathsBase(cwd);
+  const resolved = await changedPathsBase(cwd, baseBranch);
+  if (!resolved.ok) return resolved;
+  const diffBase = resolved.base;
   if (diffBase === "HEAD" && (await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])).code !== 0) {
     return { ok: true, repoRoot, paths: [] };
   }
@@ -331,7 +368,16 @@ export async function repoRootOf(cwd: string | null): Promise<string | null> {
  * branch or no shared history (a brand-new branch), so you always see uncommitted
  * work. An explicitly requested `source` gets no such fallback: see below.
  */
-export async function computeSessionDiff(cwd: string | null, source?: string): Promise<SessionDiff> {
+export async function computeSessionDiff(
+  cwd: string | null,
+  source?: string,
+  /**
+   * The task's base branch, measured from instead of origin's default when no explicit
+   * `source` is asked for - see `changeSourceRef`. A named base that is not fetched is an
+   * error rather than a quiet fall back to the default.
+   */
+  baseBranch: string | null = null,
+): Promise<SessionDiff> {
   const base0: SessionDiff = {
     ok: false, error: null, base: null, baseSha: null, headSha: null, repoRoot: null,
     branch: null, filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
@@ -350,7 +396,12 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   const headRes = await git(cwd, ["rev-parse", "--short", "HEAD"]);
   const headSha = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
 
-  const ref = source || (await sourceRef(cwd));
+  let ref: string | null = source || null;
+  if (!ref) {
+    const resolved = await changeSourceRef(cwd, baseBranch);
+    if (!resolved.ok) return { ...base0, branch, headSha, repoRoot, error: resolved.reason };
+    ref = resolved.ref;
+  }
   const base = ref ? ref.replace(/^origin\//, "") : null; // display name (strip remote prefix)
   // Diff from the merge-base so the mainline's own newer commits don't appear -
   // only what this branch/worktree changed since it diverged.

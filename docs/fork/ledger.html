@@ -123,8 +123,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>Per-task base branch</td>
-<td>Active (storage, API, MCP, dispatch, reset and PR base; recurring-mission template)</td>
-<td>#151 (plan M0.1)</td>
+<td>Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher and recurring-mission template)</td>
+<td>#151, #161, #163 (plan M0.1)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1180,11 +1180,11 @@ refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, and the recurring-mission template (D35); the check, diff and merge-watcher followers and the task form field and card label are separate tickets.</td>
+<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, and the recurring-mission template (D35); the task form field and card label and the session Diff view are separate tickets.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#151</td>
+<td>#151, #161, #163</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1215,6 +1215,16 @@ their own default.</li>
 <li>The agent is told the base: <code>withTaskKindContract</code> appends a &quot;Base branch&quot; section naming
 <code>gh pr create --base &lt;base&gt;</code>, and the workflow PR handoff and Pull Request session action name
 it again. The fixed wrap-up texts (<code>WRAPUP_PR</code>) are unchanged.</li>
+<li>A workflow binding&#39;s base is <code>prBaseBranchFor</code> (<code>workflows/context.ts</code>): the task&#39;s for its
+primary repository, null otherwise. The captured evidence diff and an affected-tests check&#39;s
+selection measure from <code>merge-base(HEAD, origin/&lt;base&gt;)</code> (<code>changeSourceRef</code> in <code>diff.ts</code>),
+and a base missing from the remote-tracking refs fails rather than falls back.</li>
+<li>The Pull Request action&#39;s merge-conflict block names the binding&#39;s base. Foreman&#39;s nudge and
+the Wait for CI repair read GitHub&#39;s <code>baseRefName</code>, unchanged.</li>
+<li>A merge counts for a task with a base branch only when <code>gh</code> reports it merged into that branch
+(<code>Registry.mergeCounts</code>, on both the branch-poll and by-URL paths, before anything is stamped),
+so neither completion nor dependency satisfaction follows a merge into another branch. A task
+with no base branch counts a merge wherever it lands, as before.</li>
 <li>A recurring mission&#39;s task template carries an optional <code>baseBranch</code> (in the revision&#39;s
 <code>template_json</code>, so no migration; an absent key reads as null). Create and update refuse one
 <code>origin</code> lacks on the <code>baseBranch</code> field (<code>ScheduleManager.prepareDefinition</code>, 400); preview
@@ -1237,13 +1247,18 @@ resets a reused slot to the frozen commit, so Return resetting to the default is
 <code>/mcp/push-task</code>, session reset and its preview), <code>src/server/git/remote-default.ts</code>,
 <code>src/server/dispatcher.ts</code> (<code>resolveTaskBases</code>), <code>src/server/actions.ts</code> (<code>resetToOrigin</code>,
 <code>resetPreview</code>), <code>src/server/reset.ts</code>, <code>src/server/task-contract.ts</code>,
-<code>src/server/workflows/{feedback,manager}.ts</code>, the MCP <code>create_task</code> and <code>push_task</code> tools in
-<code>src/mcp/server.ts</code>, and for the mission template <code>src/shared/schedules.ts</code>
-(<code>ScheduleTemplate.baseBranch</code>, <code>SCHEDULE_VALIDATION_FIELDS</code>), <code>ScheduleTemplateSchema</code>,
-<code>src/server/schedules/{manager,store}.ts</code>, <code>src/web/components/schedules/{ScheduleEditor,ScheduleDetail}.tsx</code>
-and <code>scheduleDefinitionFingerprint</code> in <code>src/web/lib/schedules.ts</code>.</p>
+<code>src/server/workflows/{feedback,manager}.ts</code>, and the MCP <code>create_task</code> and <code>push_task</code> tools in
+<code>src/mcp/server.ts</code>. The followers add <code>src/server/diff.ts</code> (<code>changedPathsSince</code>,
+<code>deletedPathsSince</code>, <code>computeSessionDiff</code>), <code>src/server/test-selection.ts</code>,
+<code>src/server/workflows/{affected-tests,check-runtime,checks,context,engine,agent-contract}.ts</code>,
+<code>src/server/registry.ts</code> (<code>reconcilePrs</code>, <code>reconcilePrMerges</code>) and <code>src/server/pr.ts</code>. The
+mission template adds <code>src/shared/schedules.ts</code> (<code>ScheduleTemplate.baseBranch</code>,
+<code>SCHEDULE_VALIDATION_FIELDS</code>), <code>ScheduleTemplateSchema</code>, <code>src/server/schedules/{manager,store}.ts</code>,
+<code>src/web/components/schedules/{ScheduleEditor,ScheduleDetail}.tsx</code> and
+<code>scheduleDefinitionFingerprint</code> in <code>src/web/lib/schedules.ts</code>.</p>
 <p><strong>Fork-only files.</strong> <code>test/task-base-branch.test.ts</code>, <code>test/task-base-branch-migration.test.ts</code>,
-<code>test/schedule-base-branch.test.ts</code>, <code>e2e/specs/mission-base-branch.spec.ts</code>.</p>
+<code>test/task-base-branch-followers.test.ts</code>, <code>test/schedule-base-branch.test.ts</code>,
+<code>e2e/specs/mission-base-branch.spec.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>
