@@ -11,6 +11,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import { isWindowsJob, jobs, needs } from "./helpers/ci-workflow.ts";
+
 function repoFile(rel: string): string {
   return readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 }
@@ -21,29 +23,6 @@ const CI_RESULT = repoFile("skills/docs-only-ci/assets/ci-result.sh");
 
 const GATED = ["gates", "unit-node-24", "unit-node-26", "e2e"];
 const DOCS_ONLY_IF = "if: needs.changes.outputs.docs_only != 'true'";
-
-/** Each top-level job's id and its body, the lines up to the next job id. */
-function jobs(workflow: string): Map<string, string> {
-  const lines = workflow.split("\n");
-  const start = lines.indexOf("jobs:");
-  assert.notEqual(start, -1, "ci.yml has a top-level jobs: key");
-  const out = new Map<string, string>();
-  let id: string | null = null;
-  let body: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    const next = line.match(/^ {2}([\w-]+):\s*$/)?.[1];
-    if (next || /^\S/.test(line)) {
-      if (id) out.set(id, body.join("\n"));
-      id = next ?? null;
-      body = [];
-      if (!next) break;
-    } else {
-      body.push(line);
-    }
-  }
-  if (id) out.set(id, body.join("\n"));
-  return out;
-}
 
 /**
  * The value of the `run: |` block scalar in the step named `step`, as YAML reads it with clip
@@ -94,14 +73,6 @@ function blockLines(body: string, key: string): string[] {
   return out;
 }
 
-/** `needs:` as a flow list (`[a, b]`), a block list, or a single id. */
-function needs(body: string): string[] {
-  const inline = body.match(/^ {4}needs:[ \t]*(\S.*?)[ \t]*$/m)?.[1];
-  if (inline) return inline.replace(/^\[|\]$/g, "").split(",").map((id) => id.trim());
-  const block = body.match(/^ {4}needs:[ \t]*\n((?: {6}- .+\n?)+)/m)?.[1] ?? "";
-  return [...block.matchAll(/^ {6}- (.+?)\s*$/gm)].map(([, id]) => id!);
-}
-
 test("the Detect docs-only change step body is the skill's detect asset, byte for byte", () => {
   assert.equal(runBlock(WORKFLOW, "Detect docs-only change"), DETECT);
 });
@@ -143,12 +114,12 @@ test("every gated job needs changes and skips on a docs-only run", () => {
     assert.ok(body.split("\n").includes(`    ${DOCS_ONLY_IF}`), `${id} carries the docs-only condition`);
   }
   for (const [id, body] of all) {
-    if (GATED.includes(id)) continue;
+    if (GATED.includes(id) || isWindowsJob(body)) continue;
     assert.ok(!body.includes("docs_only != 'true'"), `${id} is not gated`);
   }
 });
 
-test("CI result always runs, needs every job but package, and lets only the gated jobs skip", () => {
+test("CI result always runs, needs every job but package and Windows, and lets only the gated jobs skip", () => {
   const all = jobs(WORKFLOW);
   const body = all.get("ci-result");
   assert.ok(body, "ci.yml has a ci-result job");
@@ -157,7 +128,10 @@ test("CI result always runs, needs every job but package, and lets only the gate
   assert.match(body, /^ {4}if: always\(\)$/m);
   assert.deepEqual(
     needs(body).toSorted(),
-    [...all.keys()].filter((id) => id !== "ci-result" && id !== "package").toSorted(),
+    [...all]
+      .filter(([id, job]) => id !== "ci-result" && id !== "package" && !isWindowsJob(job))
+      .map(([id]) => id)
+      .toSorted(),
   );
   assert.deepEqual(blockLines(body, "SKIPPABLE"), GATED);
 });

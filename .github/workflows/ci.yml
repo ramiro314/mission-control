@@ -2,6 +2,7 @@ name: CI
 
 # Exercises the repository's quality gates - typecheck, lint, tests, build, a boot smoke,
 # and the browser end-to-end suite - on every push to main and every pull request.
+# Pushes to `release/windows` run it too, along with the Windows jobs (see "## Windows" below).
 #
 # The smoke step is not redundant with Build, and the comment it replaces claimed it was:
 # it said a production build meant "a broken bundle can't merge unnoticed", which was
@@ -47,7 +48,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/windows]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -479,6 +480,364 @@ jobs:
           name: playwright-report-shard-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
+
+  # ## Windows (D15, D30, D32 in docs/plans/windows-support/plan.md)
+  #
+  # The jobs below run on `windows-latest`, Node 24 only, and only for a push to
+  # `release/windows` or a pull request into it. Each carries the same `if:`; the final merge
+  # into `main` (M3.1) removes its branch half so they run everywhere.
+  #
+  # Each sets npm's `script-shell` to Git Bash through `npm_config_script_shell`, the
+  # prerequisite a Windows developer sets with `npm config set script-shell`, because the
+  # `test` scripts use bash syntax and npm on Windows runs scripts through `cmd.exe`.
+  #
+  # Allowed to fail, for now. `MISSION_WINDOWS_CI_ALLOWED_TO_FAIL` makes each step that runs
+  # the product (typecheck, tests, build, smoke, the native probes) continue on error, and the
+  # last step lists those failures as warnings and in the job summary. It is step-level, not
+  # `continue-on-error` on the job, on purpose: a failed job still reports a failed check run,
+  # and Mission Control's Wait for CI fails on any failed check run, so every pull request into
+  # `release/windows` would go red. Provisioning steps (checkout, install, browser download)
+  # still fail the job, because their failure says nothing about Windows support.
+  #
+  # Once M2 is green, M2.12 sets the variable to 'false' in every job and adds the jobs to
+  # `CI result`'s `needs`, which makes them required on this branch. Until then they are out
+  # of `CI result`, upload no `flake-report-*` artifact (an expected failure is not a flake),
+  # and leave every Linux job as it was.
+  #
+  # The native probes are expected to fail until M2.2 (state lock) and M2.3 (Keep Awake) land.
+  dependencies-windows:
+    name: dependencies (windows, node 24)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      # Every Windows job relies on this, so it is checked once, where it fails loudly.
+      - name: Check npm's script shell
+        run: |
+          shell=$(npm config get script-shell)
+          echo "script-shell: $shell"
+          [ "$shell" = 'C:\Program Files\Git\bin\bash.exe' ]
+
+      - name: Cache node_modules
+        id: dependencies
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+  typecheck-windows:
+    name: typecheck (windows)
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
+      MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run typecheck
+
+      - name: Report allowed failures
+        if: ${{ !cancelled() }}
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: node scripts/ci-allowed-failures.mjs
+
+  # `npm test` is split into its three lifecycle stages. Run whole, its `pretest` builds the
+  # native state lock, which fails on win32 until M2.2, and that would stop the shard before a
+  # single test ran. Split, the shard still reports every test, and the ones that need the
+  # addon fail on their own.
+  unit-windows:
+    name: unit (windows, node 24, shard ${{ matrix.shard }}/6)
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
+      MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
+      MISSION_TEST_CONCURRENCY: '4'
+      MISSION_TEST_SHARDS: '6'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Resolve Electron version
+        id: electron
+        run: echo "v=$(node -p "require('./node_modules/electron/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Electron runtime
+        uses: actions/cache@v5
+        with:
+          path: ~/AppData/Local/electron/Cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
+
+      # The same provisioning as `run-unit-shard`, which Linux uses.
+      - name: Install Electron test runtime
+        run: |
+          for attempt in 1 2 3; do
+            if npm exec -- install-electron --no; then exit 0; fi
+            echo "::warning::Electron runtime download failed (attempt ${attempt}/3)"
+            sleep $((attempt * 10))
+          done
+          exit 1
+
+      - name: Test prerequisites (pretest)
+        id: pretest
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run pretest
+
+      # `--ignore-scripts` skips `pretest` and `posttest`, which the steps around this run.
+      - name: Test
+        id: test
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm test --ignore-scripts
+        env:
+          MISSION_TEST_SHARD: ${{ matrix.shard }}/6
+
+      - name: Workflow evidence tests (posttest)
+        id: posttest
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run posttest
+
+      - name: Report allowed failures
+        if: ${{ !cancelled() }}
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: node scripts/ci-allowed-failures.mjs
+
+  # Its own job rather than the end of each unit shard, as on Linux, so a red unit suite does
+  # not hide whether the bundles build and boot on Windows.
+  build-windows:
+    name: build and smoke (windows)
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
+      MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Build
+        id: build
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run build
+
+      - name: Smoke the built bundles
+        id: smoke
+        if: steps.build.outcome == 'success'
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run smoke
+
+      - name: Report allowed failures
+        if: ${{ !cancelled() }}
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: node scripts/ci-allowed-failures.mjs
+
+  # The two native addons, probed on win32: the state lock through the specs that build and
+  # load it, and Keep Awake through its verification script. Expected to fail until M2.2 and
+  # M2.3 land.
+  native-probes-windows:
+    name: native probes (windows)
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
+      MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: State lock tests
+        id: state_lock
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: node --test --import ./test/setup-state.mjs --import tsx test/native-state-lock-provisioning.test.ts test/daemon-state-ownership.test.ts
+
+      # The probe loads `dist/native/keep-awake.node`, which only `build:native` produces.
+      - name: Build native addons
+        id: build_native
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run build:native
+
+      - name: Keep Awake probe
+        id: keep_awake
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run verify:keep-awake-native
+
+      - name: Report allowed failures
+        if: ${{ !cancelled() }}
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: node scripts/ci-allowed-failures.mjs
+
+  # The same suite and shard count as the Linux `e2e` job. No tmux step: the terminal runtime
+  # is unavailable on win32 for now (M2.7).
+  e2e-windows:
+    name: e2e (windows, shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    env:
+      npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
+      MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "v=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browser
+        id: pw-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.pw.outputs.v }}
+
+      - name: Install Playwright browser
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+
+      - name: Build
+        id: build
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run build
+
+      - name: End-to-end tests
+        id: e2e
+        if: steps.build.outcome == 'success'
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+      - name: Upload e2e report
+        if: ${{ !cancelled() && steps.e2e.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-windows-shard-${{ matrix.shard }}
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Report allowed failures
+        if: ${{ !cancelled() }}
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: node scripts/ci-allowed-failures.mjs
 
   # Merges every test job's flake report, keeps one GitHub issue per flaky test, and publishes
   # the "Flaky tests" check on the commit the tests ran against (the PR head, not the merge
