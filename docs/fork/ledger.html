@@ -49,7 +49,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>10</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>11</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -120,6 +120,11 @@ or issues.</p>
 <td>PR merge-conflict reactions</td>
 <td>Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds)</td>
 <td>#108, #125, #145, pending (branch <code>feat/workflow-merge-conflicts</code>)</td>
+</tr>
+<tr>
+<td>Per-task base branch</td>
+<td>Active (storage, API, MCP, dispatch, reset and PR base)</td>
+<td>#151 (plan M0.1)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1165,6 +1170,70 @@ refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code
 <p><strong>Fork-only files.</strong> <code>test/workflow-completion-latch.test.ts</code>,
 <code>docs/plans/pr-publication-ownership/</code>. The deflake and testing-setup skill changes land in
 <code>skills/deflake/</code> and <code>skills/testing-setup/</code>, already fork-only through Flake-aware testing.</p>
+<h3>Per-task base branch</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1; the check, diff and merge-watcher followers, the task form field and card label, and the recurring-mission template are separate tickets.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#151</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/windows-support/plan.md">docs/plans/windows-support/plan.md</a>, &quot;Per-task base branch&quot; and M0 item 1; <a href="../dispatch-and-backlog.md">docs/dispatch-and-backlog.md</a> &quot;Start a task from another branch&quot;</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. It is a general task field with no Windows-specific behavior.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A task can name a branch on its primary repository&#39;s <code>origin</code> to start from and to
+open its pull request against, so work for a long-lived branch such as <code>release/windows</code> can be
+dispatched like any other task. Without one, nothing changes.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>tasks.base_branch</code> is nullable, added in <code>migrate()</code>; NULL means origin&#39;s default branch and
+is what every existing row reads as. <code>Task.baseBranch</code> carries it on the wire.</li>
+<li><code>DispatchSchema</code> and <code>UpdateTaskSchema</code> take <code>baseBranch</code> (<code>BaseBranchSchema</code>: a plain branch
+name, never an option or a <code>refs/</code> path). MCP <code>create_task</code> sends it only through the strict v3
+route, and <code>push_task</code>&#39;s strict body takes it, so an older daemon refuses rather than drops it.</li>
+<li>Create, update, MCP create and <code>push_task</code> refuse a base branch <code>origin</code> does not advertise
+(<code>baseBranchRefusal</code>, <code>ls-remote</code>, 400). Dispatch refuses it again with a fresh fetch
+(<code>resolveDispatchBranchBase</code>), before any worktree is provisioned.</li>
+<li>Dispatch freezes the primary&#39;s base at <code>origin/&lt;base&gt;</code>&#39;s advertised tip, checked against the
+fetched remote-tracking ref. A pinned <code>baseSha</code> still outranks it. Attached repositories keep
+their own default.</li>
+<li>An assign reset and the session reset route land on <code>origin/&lt;base&gt;</code> for a task that has one.</li>
+<li>The agent is told the base: <code>withTaskKindContract</code> appends a &quot;Base branch&quot; section naming
+<code>gh pr create --base &lt;base&gt;</code>, and the workflow PR handoff and Pull Request session action name
+it again. The fixed wrap-up texts (<code>WRAPUP_PR</code>) are unchanged.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>Agents, not the daemon, run <code>gh pr create</code>; every publication path is a prompt to the session.</li>
+<li><code>resolveTaskBases</code> freezes every repository&#39;s base before provisioning, and native acquire
+resets a reused slot to the frozen commit, so Return resetting to the default is harmless.</li>
+<li><code>withTaskKindContract</code> is the one composition point for both dispatch and assign.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/db.ts</code> (<code>tasks.base_branch</code>, <code>TaskRow</code>, <code>rowToTask</code>,
+<code>upsertTask</code>), <code>src/shared/types.ts</code> (<code>Task.baseBranch</code>), <code>src/shared/protocol.ts</code>
+(<code>BaseBranchSchema</code>, <code>DispatchSchema</code>, <code>UpdateTaskSchema</code>, <code>McpCreateTicketSchema</code>,
+<code>McpPushTaskSchema</code>), <code>src/server/tasks.ts</code> (create, <code>prepareUpdate</code>, <code>assignReserved</code>),
+<code>src/server/routes.ts</code> (<code>POST /api/tasks</code>, <code>POST /api/tasks/:id/update</code>, <code>/mcp/v3/tasks</code>,
+<code>/mcp/push-task</code>, session reset and its preview), <code>src/server/git/remote-default.ts</code>,
+<code>src/server/dispatcher.ts</code> (<code>resolveTaskBases</code>), <code>src/server/actions.ts</code> (<code>resetToOrigin</code>,
+<code>resetPreview</code>), <code>src/server/reset.ts</code>, <code>src/server/task-contract.ts</code>,
+<code>src/server/workflows/{feedback,manager}.ts</code>, and the MCP <code>create_task</code> and <code>push_task</code> tools in
+<code>src/mcp/server.ts</code>.</p>
+<p><strong>Fork-only files.</strong> <code>test/task-base-branch.test.ts</code>, <code>test/task-base-branch-migration.test.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

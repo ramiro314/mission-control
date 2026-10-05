@@ -768,6 +768,33 @@ export const ProductIssuePreflightSchema = z.object({
  */
 export const MAX_TASK_EXTRA_REPOS = 8;
 
+/**
+ * A task's base branch: a plain branch name on `origin`, such as `release/windows`.
+ *
+ * Only the SHAPE is checked here, because this module is browser-safe and cannot ask git.
+ * Whether the branch exists on the repository's origin is the daemon's question, asked when
+ * a task is created, edited and dispatched (`baseBranchRefusal`). The shape rules are git's
+ * own `check-ref-format` rules for a branch, narrowed so a value can never read as an option
+ * (a leading `-`) or as a ref path the daemon would then prefix a second time (`refs/`).
+ */
+export const BaseBranchSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine(isPlainBranchName, { message: "not a valid branch name" });
+
+function isPlainBranchName(name: string): boolean {
+  if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/")) return false;
+  if (name.startsWith("refs/") || name === "HEAD" || name === "@") return false;
+  if (name.endsWith(".") || name.endsWith(".lock")) return false;
+  if (name.includes("..") || name.includes("//") || name.includes("@{")) return false;
+  if (/[~^:?*[\\]/.test(name)) return false;
+  // Spaces and control characters, which git refuses in any ref name.
+  if ([...name].some((ch) => ch.charCodeAt(0) <= 0x20 || ch.charCodeAt(0) === 0x7f)) return false;
+  return name.split("/").every((part) => part.length > 0 && !part.startsWith("."));
+}
+
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
@@ -841,6 +868,8 @@ export const McpCreateTicketSchema = McpCreateTaskBaseSchema.extend({
     .default([]),
   kind: z.enum(MCP_TASK_KINDS).optional().default("ship"),
   labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
+  /** The origin branch the task starts from and opens its pull request against. */
+  baseBranch: BaseBranchSchema.optional(),
 }).strict();
 export type McpCreateTicket = z.infer<typeof McpCreateTicketSchema>;
 
@@ -899,6 +928,12 @@ export const McpPushTaskSchema = z.object({
   cwd: z.string().min(1),
   taskId: z.string().min(1),
   sourceId: z.string().min(1).optional(),
+  /**
+   * Set the task's base branch before it is mirrored, so the pushed item and the task it
+   * links back to describe the same work. Strict, like the rest of this body: an older daemon
+   * refuses the field rather than mirroring a task whose base it silently ignored.
+   */
+  baseBranch: BaseBranchSchema.optional(),
 }).strict();
 export type McpPushTask = z.infer<typeof McpPushTaskSchema>;
 
@@ -1165,6 +1200,12 @@ export const DispatchSchema = z
      * repos a task may coordinate - nothing downstream reads it as a maximum.
      */
     extraRepoRoots: z.array(z.string().min(1)).max(MAX_TASK_EXTRA_REPOS).default([]),
+    /**
+     * The origin branch this task starts from and opens its pull request against. Omitted
+     * or null means origin's default branch. It must exist on the primary repository's
+     * origin; the daemon refuses the request otherwise.
+     */
+    baseBranch: BaseBranchSchema.nullable().optional(),
     intent: z.string().min(1),
     title: z.string().optional(),
     kind: z.enum(TASK_KINDS).default("ship"),
@@ -1435,6 +1476,8 @@ export const UpdateTaskSchema = z
      * refused once the task has left the backlog. That is the behaviour we want, for free.
      */
     extraRepoRoots: z.array(z.string().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
+    /** Change the base branch; null returns the task to origin's default branch. */
+    baseBranch: BaseBranchSchema.nullable().optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
     kind: z

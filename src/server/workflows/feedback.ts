@@ -86,6 +86,21 @@ export interface PrHandoffInput {
    * a session running two reviews must be told which repository's.
    */
   repoRoot: string | null;
+  /** The base branch the pull request opens against, or null for origin's default branch. */
+  baseBranch?: string | null;
+}
+
+/**
+ * The envelope line naming a task's base branch, or nothing on the default branch.
+ *
+ * Restated on the packet that asks for a pull request even though the dispatch contract
+ * already said it: this packet may arrive many turns later, and it is the one turn where a
+ * base the agent lost track of opens a pull request into the wrong branch.
+ */
+function baseBranchLines(baseBranch: string | null | undefined): string[] {
+  return baseBranch
+    ? [`Base branch: ${sanitizeWorkflowFeedback(baseBranch)} - open the pull request against it (gh pr create --base ${sanitizeWorkflowFeedback(baseBranch)}), not the default branch.`]
+    : [];
 }
 
 /**
@@ -153,6 +168,8 @@ export interface SessionActionPacketInput {
    * authorization, which only lets the session update a pull request that already exists.
    */
   pullRequestGrant?: boolean;
+  /** The task's base branch, named only on a packet that may open a pull request. */
+  baseBranch?: string | null;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -734,6 +751,7 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
           : []),
       ]
       : [`Session: ${sanitizeWorkflowFeedback(input.origin.sessionId)}`]),
+    ...(input.pullRequestGrant ? baseBranchLines(input.baseBranch) : []),
     "",
   ];
   // The skill invocation leads, exactly as the PR handoff's does, so the harness resolves it
@@ -791,6 +809,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
     `Run: ${input.runId}`,
     ...(input.repoRoot ? [`Repository: ${bounded(input.repoRoot)}`] : []),
+    ...baseBranchLines(input.baseBranch),
   ].join("\n");
   const instruction = input.repoRoot
     ? "Use the invoked pull-request skill to commit the reviewed work in the repository named above, push it, and open that repository's pull request with a reviewer-ready description and concrete proof. Leave the task's other repositories alone; each has its own review and its own pull request."

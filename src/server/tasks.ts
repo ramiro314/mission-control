@@ -218,6 +218,12 @@ export interface CreateTaskInput {
    * has. Omitted by every single-repo caller, which is nearly all of them.
    */
   extraRepoRoots?: string[];
+  /**
+   * The origin branch to start from and open the pull request against, already checked to
+   * exist on `repoRoot`'s origin by the caller (`baseBranchRefusal`). Omitted or null means
+   * origin's default branch.
+   */
+  baseBranch?: string | null;
   intent: string;
   title?: string;
   kind: TaskKind;
@@ -2979,6 +2985,7 @@ export class TaskManager {
       // rows and for tasks persisted by builds that learned the link only from a child.
       pipelineRun: null,
       repoRoot: input.repoRoot,
+      baseBranch: input.baseBranch ?? null,
       worktreePath: null,
       branch: null,
       provider: null,
@@ -3924,6 +3931,10 @@ export class TaskManager {
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
+      // Checked against origin by the route before it reaches here, like `repoRoot` above.
+      // Written only when the patch names it, so an edit that does not touch the base leaves
+      // the task exactly as it was rather than adding a key it did not carry.
+      ...(patch.baseBranch !== undefined ? { baseBranch: patch.baseBranch } : {}),
       extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it
@@ -4414,6 +4425,8 @@ export class TaskManager {
           undefined,
           driverClearFor(this.supervisor),
           this.pendingTurns,
+          // The checkout is about to take THIS task, so it lands where the task starts.
+          t.baseBranch ?? null,
         ));
     // The driver arm is supplied here rather than left to `rename`'s default for the same
     // reason `driverClearFor` is above: an embedded session handed a new task has to stop

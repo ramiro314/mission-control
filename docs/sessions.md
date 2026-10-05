@@ -1941,7 +1941,7 @@ The MCP tools are:
   never submits the form (see [Foreman drafts](foreman.md#drafts-on-plan-decisions-forms))
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
-  dependsOnCurrentSession?, kind?, labels?, adoptTaskId?)` - add a task to the backlog with the
+  dependsOnCurrentSession?, kind?, labels?, baseBranch?, adoptTaskId?)` - add a task to the backlog with the
   kind's default agent/model/effort, returning its id and canonical repository set so later
   tasks can carry durable dependency edges. `kind` is `ship` (the default) or `bugfix`; `labels`
   are normalized like the dispatch form's, and priority is never set. `adoptTaskId` names an
@@ -1951,8 +1951,10 @@ The MCP tools are:
   only its edges: `title` and `intent` are required otherwise, and a `title`, `intent`, `kind`,
   `labels` or `additionalRepositories` sent beside `adoptTaskId` is refused with 400 rather than
   ignored. The adopted task must belong to the calling repository or to the one `repository`
-  names (resolved like any selector); a task from any other repository is refused with 409. A call carrying
-  `kind`, `labels` or `adoptTaskId` uses its own versioned route, so an older daemon answers 404
+  names (resolved like any selector); a task from any other repository is refused with 409.
+  `baseBranch` gives the new task a [base branch](dispatch-and-backlog.md#start-a-task-from-another-branch)
+  on the primary repository's origin, refused with 400 when origin does not have it, and is refused
+  beside `adoptTaskId`. A call carrying `kind`, `labels`, `baseBranch` or `adoptTaskId` uses its own versioned route, so an older daemon answers 404
   and creates nothing rather than filing a plain ship task or a duplicate of the adopted one.
   `dependsOnCurrentSession` gates the task on the calling session's work, released when its pull
   request merges. Called from a tickets follow-up (a shape task slicing a plan that has already
@@ -1975,7 +1977,7 @@ The MCP tools are:
   caller's backlog. Read-only; a shape task's breakdown review offers these as tasks a ticket may
   adopt. Its `mirror` field lists the task sources the listed repository's tickets could be pushed
   to (`sources`), or says why there are none (`unavailable`)
-- `push_task(taskId, sourceId?)` - mirror one task the calling session filed or adopted to a task
+- `push_task(taskId, sourceId?, baseBranch?)` - mirror one task the calling session filed or adopted to a task
   source, the way the task editor's [Push](dispatch-and-backlog.md#push-a-task-to-github) does,
   with the same ledger row and link. `sourceId` may be omitted when exactly one source can receive
   the task. A source that can relate items links the new item to the items of the task's pushed
@@ -1983,7 +1985,10 @@ The MCP tools are:
   item with `alreadyPushed: true` instead of filing another; a failure flagged `outcomeUnknown`
   means the item may exist, so check the tracker before retrying. A task that does not wait on the
   calling session is refused; from a tickets follow-up, a task that waits on the merged shape task
-  it slices is accepted too, and is filed under that shape task's item. The shape kind pre-approves it
+  it slices is accepted too, and is filed under that shape task's item. `baseBranch` first sets the
+  task's [base branch](dispatch-and-backlog.md#start-a-task-from-another-branch) through the same
+  edit the task editor makes: refused with 400 when origin does not have it, and with 409 once the
+  task has left the backlog. The shape kind pre-approves it
 - `complete_shape_tickets(outcome)` - granted only to a shape task's tickets follow-up, which
   Mission Control starts when the plan's pull request merges with Create tickets recorded, or
   which you start by hand (see [Create tickets from a merged shape task](dispatch-and-backlog.md)). It reports `filed` after

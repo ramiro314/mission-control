@@ -141,6 +141,36 @@ already, and **Ensemble**, whose body replaces Crew and After work outright. The
 offered in either - it appears exactly where flipping it would do something, so it is never a
 control that saves a preference and visibly does nothing. Settings is its durable home.
 
+## Start a task from another branch
+
+A task can carry a **base branch**: a branch on the primary repository's `origin`, such as
+`release/windows`, that the task starts from and opens its pull request against. A task without
+one starts from origin's default branch and targets it, exactly as before.
+
+- **Where it is set.** `POST /api/tasks` and `POST /api/tasks/:id/update` take `baseBranch`;
+  `null` on an edit returns the task to the default branch. The MCP
+  [`create_task` and `push_task`](sessions.md#review-channel-mcp) tools take it too. Like the
+  other provisioning fields, it can change only while the task is in the backlog.
+- **It must exist on origin.** Creating or editing a task with a base branch asks
+  `git ls-remote origin` for it and refuses the request with 400, naming the branch, when origin
+  does not have it or cannot answer. A repository with no `origin` cannot take a base branch.
+- **Dispatch** starts the worktree from the branch's tip, freshly fetched, the same way a task
+  without one starts from origin's default. A branch deleted since the task was filed fails the
+  dispatch before anything is provisioned, and the task goes back to the backlog with the
+  reason on its card.
+- **Reset** lands on `origin/<base>` too: handing a shelved task to a running agent resets that
+  agent's checkout onto the task's base, and the card's reset control and its preview do the
+  same for a session running a task with a base branch.
+- **The pull request** is opened by the agent, so the agent is told. The task's first prompt
+  carries a "Base branch" section naming the branch and `gh pr create --base <base>`, and saying
+  that wherever an instruction says the default branch it means `origin/<base>`. The workflow's
+  pull-request handoff and a Pull Request session action name the base again.
+- **Primary repository only.** On a multi-repo task the attached repositories start from, and
+  open their pull requests against, their own default branch.
+
+Workflow checks, affected tests, the Diff view, pull-request conflict reactions and the merge
+watcher still compare against origin's default branch; they do not yet follow a task's base.
+
 ## Attaching more than one repository
 
 Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
@@ -678,7 +708,8 @@ the agent keeps the one it had - which is exactly why cancelling it later never 
 `git worktree remove` over a directory the harness didn't create.
 
 **The drop resets that agent's checkout first**, the same reset the card's **reset**
-control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release
+control runs: `git reset --hard` onto origin's default branch (or the task's
+[base branch](#start-a-task-from-another-branch)), `git clean -fd`, release
 the branch, and clear the context (`/clear` for Claude Code and Codex, `/new` for Pi; an
 agent that declares no clear command has its context left alone rather than being sent a
 command it does not speak). Without it the next task inherits the last one's branch and

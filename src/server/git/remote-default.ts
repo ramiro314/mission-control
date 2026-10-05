@@ -203,6 +203,52 @@ export async function fetchOrigin(root: string, execute: Run = run): Promise<Rem
 }
 
 /**
+ * Prove the fetch brought down the exact commit `origin` advertised for `branch`.
+ *
+ * The local remote-tracking ref has to agree with the advertised id: a caller is about to
+ * check that commit out, and an id no local object backs would fail later, inside a leased
+ * slot. Disagreement is a refusal, not a repair - the remote moved mid-observation. `label`
+ * names the branch in the refusal ("origin's default branch main", "base branch next").
+ */
+async function fetchedTipMatches(
+  root: string,
+  branch: string,
+  advertised: string,
+  label: string,
+  execute: Run,
+): Promise<RemoteProbe<string>> {
+  const ref = `refs/remotes/origin/${branch}`;
+  const resolved = await execute(
+    "git",
+    ["-C", root, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    { timeoutMs: LOCAL_TIMEOUT_MS },
+  );
+  // `--quiet` makes a genuine miss an exit 1 with empty stderr, which is byte-identical to
+  // a killed child - so the uncertainty flags are read before the exit code.
+  if (resolved.outcomeUnknown || resolved.overflowed) {
+    return failure(`git rev-parse ${ref}`, resolved, LOCAL_TIMEOUT_MS);
+  }
+  const local = resolved.stdout.trim();
+  if (resolved.code !== 0 || !FULL_SHA.test(local)) {
+    return {
+      ok: false,
+      reason: `${label} is not in this repository's remote-tracking refs`,
+      outcomeUnknown: false,
+    };
+  }
+  if (local !== advertised) {
+    return {
+      ok: false,
+      reason:
+        `origin advertised ${branch} at ${advertised} but this repository fetched ${local} - ` +
+        "the remote moved during the observation",
+      outcomeUnknown: false,
+    };
+  }
+  return { ok: true, value: advertised };
+}
+
+/**
  * The full commit id `origin` currently advertises as its default branch's tip.
  *
  * The returned SHA is the one the REMOTE stated, not one read off a local ref - and that
@@ -243,34 +289,9 @@ export async function currentRemoteDefaultSha(
       outcomeUnknown: false,
     };
   }
+  const fetched = await fetchedTipMatches(root, branch, advertised, `origin's default branch ${branch}`, execute);
+  if (!fetched.ok) return fetched;
   const ref = `refs/remotes/origin/${branch}`;
-  const resolved = await execute(
-    "git",
-    ["-C", root, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-    { timeoutMs: LOCAL_TIMEOUT_MS },
-  );
-  // `--quiet` makes a genuine miss an exit 1 with empty stderr, which is byte-identical to
-  // a killed child - so the uncertainty flags are read before the exit code.
-  if (resolved.outcomeUnknown || resolved.overflowed) {
-    return failure(`git rev-parse ${ref}`, resolved, LOCAL_TIMEOUT_MS);
-  }
-  const local = resolved.stdout.trim();
-  if (resolved.code !== 0 || !FULL_SHA.test(local)) {
-    return {
-      ok: false,
-      reason: `origin's default branch ${branch} is not in this repository's remote-tracking refs`,
-      outcomeUnknown: false,
-    };
-  }
-  if (local !== advertised) {
-    return {
-      ok: false,
-      reason:
-        `origin advertised ${branch} at ${advertised} but this repository fetched ${local} - ` +
-        "the remote moved during the observation",
-      outcomeUnknown: false,
-    };
-  }
   if (isBareRepository(root)) {
     // Bare clones also lack origin/HEAD. Keep the verified default available to local
     // worktree status/reset operations, including defaults other than main or master.
@@ -296,4 +317,82 @@ export async function freshRemoteDefaultSha(
   const fetched = await fetchOrigin(root, execute);
   if (!fetched.ok) return fetched;
   return currentRemoteDefaultSha(root, execute);
+}
+
+/**
+ * The tip `ls-remote origin refs/heads/<branch>` advertised for exactly that branch.
+ *
+ * Matched on the whole ref name rather than trusted as the only line: `ls-remote` patterns
+ * match from the tail, so `refs/heads/next` also lists `refs/heads/release/refs/heads/next`.
+ * Null means origin did not advertise the branch.
+ */
+export function parseLsRemoteBranchSha(stdout: string, branch: string): string | null {
+  const ref = `refs/heads/${branch}`;
+  for (const line of stdout.split("\n")) {
+    const [oid, name] = line.split("\t");
+    if (name?.trim() !== ref) continue;
+    const sha = oid?.trim() ?? "";
+    return FULL_SHA.test(sha) ? sha : null;
+  }
+  return null;
+}
+
+/**
+ * The commit `origin` currently advertises for one named branch, or null when it has none.
+ *
+ * A null is a positive finding - the listing succeeded and did not name the branch - and
+ * every uncertain answer is `ok: false`, for the reason `originConfigured` gives.
+ */
+export async function remoteBranchSha(
+  root: string,
+  branch: string,
+  execute: Run = run,
+): Promise<RemoteProbe<string | null>> {
+  const listed = await execute("git", ["-C", root, "ls-remote", "origin", `refs/heads/${branch}`], {
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
+  if (failed(listed)) return failure(`git ls-remote origin ${branch}`, listed, NETWORK_TIMEOUT_MS);
+  return { ok: true, value: parseLsRemoteBranchSha(listed.stdout, branch) };
+}
+
+/**
+ * Why a task may not take `branch` as its base in `root`, or null when it may.
+ *
+ * Asked when a task is created or edited with a base branch: the branch has to exist on
+ * this repository's `origin` right now. It does not fetch - creating a task provisions
+ * nothing, and `freshRemoteBranchSha` asks again, with a fetch, when the task dispatches.
+ */
+export async function baseBranchRefusal(
+  root: string,
+  branch: string,
+  execute: Run = run,
+): Promise<string | null> {
+  const origin = await originConfigured(root, execute);
+  if (!origin.ok) return `could not check base branch ${branch}: ${origin.reason}`;
+  if (!origin.value) return `base branch ${branch} needs an origin remote, and ${root} has none`;
+  const tip = await remoteBranchSha(root, branch, execute);
+  if (!tip.ok) return `could not check base branch ${branch} on origin: ${tip.reason}`;
+  if (tip.value === null) return `base branch ${branch} does not exist on ${root}'s origin`;
+  return null;
+}
+
+/**
+ * Fetch `origin`, then freeze the commit it currently advertises for `branch`.
+ *
+ * The named-branch twin of `freshRemoteDefaultSha`, with the same two-halves rule: the SHA
+ * is the one the remote stated, and the fetched remote-tracking ref has to agree with it.
+ */
+export async function freshRemoteBranchSha(
+  root: string,
+  branch: string,
+  execute: Run = run,
+): Promise<RemoteProbe<string>> {
+  const fetched = await fetchOrigin(root, execute);
+  if (!fetched.ok) return fetched;
+  const advertised = await remoteBranchSha(root, branch, execute);
+  if (!advertised.ok) return advertised;
+  if (advertised.value === null) {
+    return { ok: false, reason: `base branch ${branch} does not exist on origin`, outcomeUnknown: false };
+  }
+  return fetchedTipMatches(root, branch, advertised.value, `base branch ${branch}`, execute);
 }

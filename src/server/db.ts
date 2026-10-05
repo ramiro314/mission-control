@@ -373,6 +373,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- never a dependency edge. NULL when it has none or nobody swept this.
       source_parent TEXT,
       repo_root     TEXT NOT NULL,
+      -- The origin branch the primary repo starts from and opens its PR against.
+      -- NULL means origin's default branch, which is every task filed before this column.
+      base_branch   TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
       pipeline_provider TEXT,
@@ -3734,6 +3737,10 @@ function migrate(d: DatabaseSync): void {
   // rule that later compares a head against it. `task_repos` needs no entry here - a new
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
+  // The origin branch a task starts from and opens its pull request against. NULL with no
+  // backfill: every existing row was dispatched from, and shipped to, origin's default
+  // branch, and NULL is exactly what that means to every reader.
+  addColumn(d, "tasks", "base_branch", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
   addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
   // A shape task's recorded Create tickets choice (`SHAPE_TICKETS_STATES`). Nullable with no
@@ -5064,6 +5071,7 @@ interface TaskRow {
   source_url: string | null;
   source_parent: string | null;
   repo_root: string;
+  base_branch: string | null;
   pipeline_provider: string | null;
   pipeline_slug: string | null;
   pipeline_commission_id: string | null;
@@ -5432,6 +5440,7 @@ function rowToTask(
         : null,
     sourceParent: parseSourceParent(r.source_parent),
     repoRoot: r.repo_root,
+    baseBranch: r.base_branch ?? null,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
         ? { provider: r.pipeline_provider, repoRoot: r.repo_root, slug: r.pipeline_slug }
@@ -5509,7 +5518,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, backlog_rank,
          model, effort,
-         workflow_id, source_id, external_id, source_url, source_parent, repo_root,
+         workflow_id, source_id, external_id, source_url, source_parent, repo_root, base_branch,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -5517,7 +5526,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5526,7 +5535,7 @@ export function upsertTask(t: Task): string[] {
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
-         repo_root=excluded.repo_root,
+         repo_root=excluded.repo_root, base_branch=excluded.base_branch,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
            WHEN ? THEN excluded.pipeline_commission_id
@@ -5559,7 +5568,7 @@ export function upsertTask(t: Task): string[] {
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.sourceParent ? JSON.stringify(t.sourceParent) : null,
-      t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
+      t.repoRoot, t.baseBranch ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,

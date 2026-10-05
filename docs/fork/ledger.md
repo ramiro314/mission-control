@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-09-29, fork PR #62 (merge commit `64a5dcd8`) |
 | Fork commits ahead of upstream | **155** (112 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **10** (plus 3 superseded or removed, and 10 standalone fixes) |
+| Active fork features | **11** (plus 3 superseded or removed, and 10 standalone fixes) |
 | Measured at | `origin/main` `118ca860`, 2026-09-29 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -52,6 +52,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
+| Per-task base branch | Active (storage, API, MCP, dispatch, reset and PR base) | #151 (plan M0.1) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -943,6 +944,57 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 **Fork-only files.** `test/workflow-completion-latch.test.ts`,
 `docs/plans/pr-publication-ownership/`. The deflake and testing-setup skill changes land in
 `skills/deflake/` and `skills/testing-setup/`, already fork-only through Flake-aware testing.
+
+### Per-task base branch
+
+| Field | Value |
+| --- | --- |
+| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1; the check, diff and merge-watcher followers, the task form field and card label, and the recurring-mission template are separate tickets. |
+| PRs | #151 |
+| Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Per-task base branch" and M0 item 1; [docs/dispatch-and-backlog.md](../dispatch-and-backlog.md) "Start a task from another branch" |
+| Upstream candidate | Yes. It is a general task field with no Windows-specific behavior. |
+
+**Intent.** A task can name a branch on its primary repository's `origin` to start from and to
+open its pull request against, so work for a long-lived branch such as `release/windows` can be
+dispatched like any other task. Without one, nothing changes.
+
+**Behavior contracts.**
+
+- `tasks.base_branch` is nullable, added in `migrate()`; NULL means origin's default branch and
+  is what every existing row reads as. `Task.baseBranch` carries it on the wire.
+- `DispatchSchema` and `UpdateTaskSchema` take `baseBranch` (`BaseBranchSchema`: a plain branch
+  name, never an option or a `refs/` path). MCP `create_task` sends it only through the strict v3
+  route, and `push_task`'s strict body takes it, so an older daemon refuses rather than drops it.
+- Create, update, MCP create and `push_task` refuse a base branch `origin` does not advertise
+  (`baseBranchRefusal`, `ls-remote`, 400). Dispatch refuses it again with a fresh fetch
+  (`resolveDispatchBranchBase`), before any worktree is provisioned.
+- Dispatch freezes the primary's base at `origin/<base>`'s advertised tip, checked against the
+  fetched remote-tracking ref. A pinned `baseSha` still outranks it. Attached repositories keep
+  their own default.
+- An assign reset and the session reset route land on `origin/<base>` for a task that has one.
+- The agent is told the base: `withTaskKindContract` appends a "Base branch" section naming
+  `gh pr create --base <base>`, and the workflow PR handoff and Pull Request session action name
+  it again. The fixed wrap-up texts (`WRAPUP_PR`) are unchanged.
+
+**Upstream behavior it assumes.**
+
+- Agents, not the daemon, run `gh pr create`; every publication path is a prompt to the session.
+- `resolveTaskBases` freezes every repository's base before provisioning, and native acquire
+  resets a reused slot to the frozen commit, so Return resetting to the default is harmless.
+- `withTaskKindContract` is the one composition point for both dispatch and assign.
+
+**Upstream surfaces touched.** `src/server/db.ts` (`tasks.base_branch`, `TaskRow`, `rowToTask`,
+`upsertTask`), `src/shared/types.ts` (`Task.baseBranch`), `src/shared/protocol.ts`
+(`BaseBranchSchema`, `DispatchSchema`, `UpdateTaskSchema`, `McpCreateTicketSchema`,
+`McpPushTaskSchema`), `src/server/tasks.ts` (create, `prepareUpdate`, `assignReserved`),
+`src/server/routes.ts` (`POST /api/tasks`, `POST /api/tasks/:id/update`, `/mcp/v3/tasks`,
+`/mcp/push-task`, session reset and its preview), `src/server/git/remote-default.ts`,
+`src/server/dispatcher.ts` (`resolveTaskBases`), `src/server/actions.ts` (`resetToOrigin`,
+`resetPreview`), `src/server/reset.ts`, `src/server/task-contract.ts`,
+`src/server/workflows/{feedback,manager}.ts`, and the MCP `create_task` and `push_task` tools in
+`src/mcp/server.ts`.
+
+**Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`.
 
 ## Superseded and removed
 

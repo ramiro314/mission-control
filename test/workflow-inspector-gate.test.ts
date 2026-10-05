@@ -14,7 +14,7 @@ import type {
   WorkflowContextSnapshot,
   WorkflowInspectorGateState,
 } from "../src/shared/workflow.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import {
   WORKFLOW_RUN_TERMINAL_STATUSES,
   workflowRunIsOpen,
@@ -1778,4 +1778,31 @@ test("restart recovery skips packets after the current submission advances past 
   assert.equal(seeded.store.getDelivery(handoff.delivery.id)?.state, "prepared");
   assert.deepEqual(injected, []);
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
+});
+
+test("the PR handoff names the base branch of the task its session runs", async () => {
+  // The manager chooses the base from the session's task and passes it to the handoff. A task
+  // with no base branch gets exactly the handoff it always did.
+  for (const baseBranch of ["release/windows", null]) {
+    const seeded = await seed({ withHint: false, adopted: false });
+    try {
+      seeded.registry.upsertTask(mkTask({
+        id: `handoff-base-${seeded.ids.session}`,
+        status: "running",
+        sessionId: seeded.ids.session,
+        repoRoot: "/repo",
+        worktreePath: "/repo",
+        baseBranch,
+      }));
+      const handoff = await seeded.manager.preparePr(seeded.ids.run, `base-${baseBranch ? "based" : "default"}`);
+      assert.equal(handoff.ok, true);
+      if (handoff.ok) {
+        assert.equal(handoff.value.kind, "pr_handoff");
+        assert.equal(/gh pr create --base release\/windows/.test(handoff.value.payload), baseBranch !== null);
+        assert.equal(/Base branch:/.test(handoff.value.payload), baseBranch !== null);
+      }
+    } finally {
+      await seeded.manager.stop();
+    }
+  }
 });

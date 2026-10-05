@@ -513,6 +513,7 @@ import {
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
 import { driverClearFor, resetSession } from "./reset.ts";
+import { baseBranchRefusal } from "./git/remote-default.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
@@ -4639,11 +4640,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       shortNameSelectors,
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    if (data.baseBranch) {
+      const refused = await baseBranchRefusal(prepared.repoRoot, data.baseBranch);
+      if (refused) return c.json({ error: refused }, 400);
+    }
 
     try {
       const task = tasks.create({
         repoRoot: prepared.repoRoot,
         extraRepoRoots: prepared.extraRepoRoots,
+        baseBranch: data.baseBranch ?? null,
         title: data.title,
         intent: data.intent,
         kind: data.kind,
@@ -4818,10 +4824,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpPushTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, taskId, sourceId } = parsed.data;
+    const { env, sessionId, cwd, taskId, sourceId, baseBranch } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching active session" }, 404);
-    const task = tasks.get(taskId);
+    let task = tasks.get(taskId);
     if (!task) return c.json({ error: "no such task" }, 404);
     const sourceTaskId = session.task ? shapeTicketFollowupForTask(session.task.id)?.sourceTaskId : undefined;
     const gated = task.dependencies.some((edge) =>
@@ -4845,6 +4851,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         }, 409);
       }
       inst = eligible[0]!;
+    }
+    // The base branch lands on the task through the same edit a person makes, so it is
+    // checked against origin and refused outside the backlog exactly as that edit is.
+    if (baseBranch !== undefined && baseBranch !== task.baseBranch) {
+      const refused = await baseBranchRefusal(task.repoRoot, baseBranch);
+      if (refused) return c.json({ error: refused }, 400);
+      const updated = await tasks.update(task.id, { baseBranch });
+      if (!updated.ok || !updated.task) return c.json({ error: updated.error }, 409);
+      task = updated.task;
     }
     if (task.source?.sourceId === inst.id) {
       return c.json({ task, source: task.source, alreadyPushed: true });
@@ -6107,11 +6122,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ ...r, ...(r.ok ? { pending } : {}) }, r.ok ? 200 : 409);
   });
 
+  // A session running a task that names a base branch resets onto that branch, where the
+  // task started, rather than onto origin's default. The preview and the reset ask the same.
+  const resetBaseBranch = (session: Session): string | null =>
+    registry.taskForSession(session.id, session.cwd)?.baseBranch ?? null;
+
   // Preview what a reset-to-origin would discard (fetches origin; localhost read).
   app.get("/api/sessions/:id/reset/preview", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(await resetPreview(session));
+    return c.json(await resetPreview(session, resetBaseBranch(session)));
   });
 
   // Pull latest and hard-reset the checkout to origin's default branch, then
@@ -6130,6 +6150,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
+      resetBaseBranch(session),
     );
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -7831,6 +7852,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
     const { repoRoot, extraRepoRoots, agent } = prepared;
+    if (parsed.data.baseBranch) {
+      const refused = await baseBranchRefusal(repoRoot, parsed.data.baseBranch);
+      if (refused) return c.json({ error: refused }, 400);
+    }
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -8059,6 +8084,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const resolved = await resolveTaskExtraRepoRoots(primary, patch.extraRepoRoots);
       if (!resolved.ok) return c.json({ error: resolved.error }, 400);
       patch.extraRepoRoots = resolved.repoRoots;
+    }
+    // Checked when the edit names a base branch, and when it moves a task that keeps one to
+    // another repository: either way the branch has to exist on the origin it will start from.
+    const baseBranch = patch.baseBranch === undefined ? existing?.baseBranch : patch.baseBranch;
+    const repoMoved = patch.repoRoot !== undefined && patch.repoRoot !== existing?.repoRoot;
+    if (existing && baseBranch && (patch.baseBranch !== undefined || repoMoved)) {
+      const refused = await baseBranchRefusal(patch.repoRoot ?? existing.repoRoot, baseBranch);
+      if (refused) return c.json({ error: refused }, 400);
     }
     if (existing) {
       const workflowId =

@@ -347,7 +347,9 @@ server.registerTool(
       "prerequisites keep the new task backlogged until their pull requests merge. Pass " +
       "adoptTaskId to have an existing backlog task stand in for this one instead: only the " +
       "dependency edges are added to it, and a cycle is refused. The adopted task must belong " +
-      "to the current repository or to the one named by repository. Repository " +
+      "to the current repository or to the one named by repository. Pass baseBranch to start " +
+      "the task from that branch on origin and open its pull request against it instead of " +
+      "origin's default branch; a branch origin does not have is refused. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
       "authority later. Returns the task id and canonical repository set.",
     inputSchema: {
@@ -414,6 +416,16 @@ server.registerTool(
         .max(MAX_LABELS)
         .optional()
         .describe("Backlog labels for the card. Priority is left for the human to set"),
+      baseBranch: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Branch on the primary repository's origin, such as release/windows, that the task " +
+            "starts from and opens its pull request against. Omit it for origin's default branch. " +
+            "Refused beside adoptTaskId",
+        ),
       adoptTaskId: z
         .string()
         .min(1)
@@ -436,16 +448,17 @@ server.registerTool(
     dependsOnCurrentSession,
     kind,
     labels,
+    baseBranch,
     adoptTaskId,
   }) => {
     try {
       const explicitRepositories =
         repository !== undefined || Boolean(additionalRepositories?.length);
-      // A kind, labels or an adoption must reach a daemon that knows them. The v3 route is
+      // A kind, labels, a base branch or an adoption must reach a daemon that knows them. The v3 route is
       // unknown to an older daemon, so it answers 404 rather than stripping the fields and
       // filing a plain ship task - or a duplicate of the task the human chose to adopt.
       const ticketFields =
-        kind !== undefined || Boolean(labels?.length) || adoptTaskId !== undefined;
+        kind !== undefined || Boolean(labels?.length) || adoptTaskId !== undefined || baseBranch !== undefined;
       const path = ticketFields ? "/mcp/v3/tasks" : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks";
       // One body for every route, each field present only when the caller set it (JSON drops
       // an undefined). What may combine is the daemon's call, not this wrapper's: an adoption
@@ -468,12 +481,13 @@ server.registerTool(
             : {}),
         kind,
         labels,
+        baseBranch,
         adoptTaskId,
       });
       if (path !== "/mcp/tasks" && (await isUnknownRoute(res))) {
         return textResult(
           "Could not create task: this Mission Control daemon does not support " +
-            (ticketFields ? "task kinds, labels or adoption" : "repository selectors") +
+            (ticketFields ? "task kinds, labels, base branches or adoption" : "repository selectors") +
             ". Update or restart Mission Control and retry; no task was created.",
           true,
         );
@@ -490,6 +504,7 @@ server.registerTool(
         labels: string[];
         repoRoot: string;
         extraRepos: Array<{ repoRoot: string }>;
+        baseBranch?: string | null;
         adopted?: boolean;
       };
       return textResult(
@@ -503,6 +518,7 @@ server.registerTool(
             ...(task.adopted ? { adopted: true } : {}),
             repository: task.repoRoot,
             additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
+            ...(task.baseBranch ? { baseBranch: task.baseBranch } : {}),
             dependsOnTaskIds,
             dependsOnCurrentSession,
           },
@@ -578,9 +594,19 @@ server.registerTool(
       "already pushed, and is filed under the item of the planning task it came from. Push " +
       "blockers first. Idempotent: a task already linked to that source returns its link with " +
       "alreadyPushed: true. An outcomeUnknown failure means the item may exist: check the " +
-      "tracker before retrying, and never retry it blind.",
+      "tracker before retrying, and never retry it blind. Pass baseBranch to set the task's base " +
+      "branch on origin first, while it is still in the backlog.",
     inputSchema: {
       taskId: z.string().min(1).describe("Id of the task, as create_task returned it"),
+      baseBranch: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Branch on the task's origin, such as release/windows, that the task starts from and " +
+            "opens its pull request against. Omit it to leave the task's base branch as it is",
+        ),
       sourceId: z
         .string()
         .min(1)
@@ -591,7 +617,7 @@ server.registerTool(
         ),
     },
   },
-  async ({ taskId, sourceId }) => {
+  async ({ taskId, sourceId, baseBranch }) => {
     try {
       const res = await http("/mcp/push-task", "POST", {
         env: ENV,
@@ -599,6 +625,7 @@ server.registerTool(
         cwd: process.cwd(),
         taskId,
         sourceId,
+        baseBranch,
       });
       if (await isUnknownRoute(res)) {
         return textResult(
