@@ -41,6 +41,7 @@ const { Dispatcher, resolveTaskBases } = await import("../src/server/dispatcher.
 const { resolveBaseBranch, freshRemoteBranchSha, parseLsRemoteBranchSha } =
   await import("../src/server/git/remote-default.ts");
 const { resetPreview, resetToOrigin } = await import("../src/server/actions.ts");
+const { clearStoredDefaultBaseBranches } = await import("../src/server/base-branch-backfill.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { renderPrHandoff, renderSessionAction } = await import("../src/server/workflows/feedback.ts");
 const { prBaseBranchFor } = await import("../src/server/workflows/context.ts");
@@ -333,6 +334,22 @@ test("editing a task sets, refuses, and clears its base branch", async () => {
   const toDefault = await api(`/api/tasks/${task.id}/update`, { baseBranch: "main" });
   assert.equal(toDefault.status, 200, await toDefault.clone().text());
   assert.equal(getTask(task.id)?.baseBranch, null, "editing it to origin's default clears it");
+});
+
+test("the startup pass returns a legacy row stored with origin's default to the default", async () => {
+  const { repo } = mkRepo("route-backfill");
+  const { api, tasks } = appFor();
+  const filed = async (title: string, baseBranch: string) =>
+    (await (await api("/api/tasks", { repoRoot: repo, title, intent: title, backlog: true, workflowId: null, baseBranch })).json()) as Task;
+  const legacy = await filed("Legacy", "release/windows");
+  const kept = await filed("Kept", "release/windows");
+  // Written past the route, the way a row from before the normalization reads.
+  assert.equal((await tasks.update(legacy.id, { baseBranch: "main" })).ok, true);
+  assert.equal(getTask(legacy.id)?.baseBranch, "main");
+
+  assert.deepEqual(await clearStoredDefaultBaseBranches(tasks), [legacy.id]);
+  assert.equal(getTask(legacy.id)?.baseBranch, null);
+  assert.equal(getTask(kept.id)?.baseBranch, "release/windows");
 });
 
 test("moving a task that keeps a base branch to a repository whose origin lacks it is refused", async () => {

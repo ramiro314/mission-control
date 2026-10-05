@@ -162,11 +162,12 @@ one starts from origin's default branch and targets it, exactly as before.
   Naming origin's own default branch stores no base branch at all, so a task created or edited
   from now on carries one only when it is not origin's default at the time of the write.
 - **The card** names a stored base branch ("base release/windows") on the backlog card. A task
-  on the default branch shows nothing extra. The rule above holds only when the base is written,
-  so a card can still read `base main` for a task filed with `main` through the API or MCP
-  before this normalization existed, or one whose origin has since changed its default. Clear
-  the field and save to put such a task back on the default; saving with the field unchanged
-  leaves it as it is.
+  on the default branch shows nothing extra. The rule above holds when the base is written, so
+  the daemon also checks once at startup: a backlog task still storing a branch that origin now
+  calls its default (one filed with `main` before this normalization existed, or one whose
+  origin has since changed its default) goes back to the default, and its label disappears. An
+  origin it cannot reach leaves the task as it is until the next start; clearing the field and
+  saving does the same thing at once.
 - **Dispatch** starts the worktree from the branch's tip, freshly fetched, the same way a task
   without one starts from origin's default. A branch deleted since the task was filed fails the
   dispatch before anything is provisioned, and the task goes back to the backlog with the

@@ -365,8 +365,8 @@ export async function remoteBranchSha(
  * A branch that IS origin's default comes back as null, the stored spelling of "the default
  * branch", so a non-null `Task.baseBranch` was not the default when it was written and the
  * board can label it without knowing each repository's default itself. That holds at write
- * time only: rows written before this, or whose origin later moved its default, are not
- * rewritten. One `ls-remote`
+ * time; rows written before this, or whose origin later moved its default, are cleared at
+ * startup by `clearStoredDefaultBaseBranches`. One `ls-remote`
  * answers both questions. An origin that advertises no HEAD branch keeps the name as given.
  */
 export async function resolveBaseBranch(

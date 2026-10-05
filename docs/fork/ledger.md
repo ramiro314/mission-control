@@ -970,10 +970,11 @@ dispatched like any other task. Without one, nothing changes.
   refuses it again with a fresh fetch (`resolveDispatchBranchBase`), before any worktree is
   provisioned.
 - A base branch equal to origin's advertised default is stored as NULL at write time, so a
-  non-null `Task.baseBranch` was not origin's default when it was written. Existing rows are not
-  rewritten: a row stored with the default before this normalization, or whose origin later
-  changed its default, still carries the name and its card labels it until the field is
-  cleared.
+  non-null `Task.baseBranch` was not origin's default when it was written. Rows that predate
+  this, or whose origin later moved its default, are cleared by a startup pass
+  (`clearStoredDefaultBaseBranches` in `src/server/base-branch-backfill.ts`, after the port):
+  backlog tasks only, one `resolveBaseBranch` per distinct repository and branch, and any
+  refusal or unreachable origin leaves the row alone.
 - The dispatch form's backlog details carry a "Base branch" field on create and edit (empty is
   the default; an edit sends `null`), and the daemon's refusal prints on the form. The backlog
   card shows `base <branch>` (`.bl-base`) only when the task has one.
@@ -1021,7 +1022,7 @@ dispatched like any other task. Without one, nothing changes.
 `src/mcp/server.ts`, and the dashboard: `src/web/components/DispatchModal.tsx` (the field, the
 details summary), `src/web/lib/task-draft.ts` (`DispatchDraft.baseBranch`, `taskUpdatePatch`),
 `src/web/lib/api.ts` (`DispatchInput`), `src/web/components/layouts/BacklogColumn.tsx` (the
-card label) and `src/web/styles.css` (`.bl-base`). The followers add `src/server/diff.ts`
+card label), `src/web/styles.css` (`.bl-base`) and `src/server/index.ts` (the startup pass). The followers add `src/server/diff.ts`
 (`changedPathsSince`, `deletedPathsSince`, `computeSessionDiff`), `src/server/test-selection.ts`,
 `src/server/workflows/{affected-tests,check-runtime,checks,context,engine,agent-contract}.ts`,
 `src/server/registry.ts` (`reconcilePrs`, `reconcilePrMerges`) and `src/server/pr.ts`. The
@@ -1032,7 +1033,8 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 
 **Fork-only files.** `test/task-base-branch.test.ts`, `test/task-base-branch-migration.test.ts`,
 `test/task-base-branch-followers.test.ts`, `test/schedule-base-branch.test.ts`,
-`test/backlog-base-branch-render.test.ts`, `e2e/specs/mission-base-branch.spec.ts`,
+`test/backlog-base-branch-render.test.ts`, `test/base-branch-backfill.test.ts`,
+`src/server/base-branch-backfill.ts`, `e2e/specs/mission-base-branch.spec.ts`,
 `e2e/specs/task-base-branch.spec.ts`.
 
 ## Superseded and removed

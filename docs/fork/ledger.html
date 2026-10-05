@@ -1210,10 +1210,11 @@ route, and <code>push_task</code>&#39;s strict body takes it, so an older daemon
 refuses it again with a fresh fetch (<code>resolveDispatchBranchBase</code>), before any worktree is
 provisioned.</li>
 <li>A base branch equal to origin&#39;s advertised default is stored as NULL at write time, so a
-non-null <code>Task.baseBranch</code> was not origin&#39;s default when it was written. Existing rows are not
-rewritten: a row stored with the default before this normalization, or whose origin later
-changed its default, still carries the name and its card labels it until the field is
-cleared.</li>
+non-null <code>Task.baseBranch</code> was not origin&#39;s default when it was written. Rows that predate
+this, or whose origin later moved its default, are cleared by a startup pass
+(<code>clearStoredDefaultBaseBranches</code> in <code>src/server/base-branch-backfill.ts</code>, after the port):
+backlog tasks only, one <code>resolveBaseBranch</code> per distinct repository and branch, and any
+refusal or unreachable origin leaves the row alone.</li>
 <li>The dispatch form&#39;s backlog details carry a &quot;Base branch&quot; field on create and edit (empty is
 the default; an edit sends <code>null</code>), and the daemon&#39;s refusal prints on the form. The backlog
 card shows <code>base &lt;branch&gt;</code> (<code>.bl-base</code>) only when the task has one.</li>
@@ -1261,7 +1262,7 @@ resets a reused slot to the frozen commit, so Return resetting to the default is
 <code>src/mcp/server.ts</code>, and the dashboard: <code>src/web/components/DispatchModal.tsx</code> (the field, the
 details summary), <code>src/web/lib/task-draft.ts</code> (<code>DispatchDraft.baseBranch</code>, <code>taskUpdatePatch</code>),
 <code>src/web/lib/api.ts</code> (<code>DispatchInput</code>), <code>src/web/components/layouts/BacklogColumn.tsx</code> (the
-card label) and <code>src/web/styles.css</code> (<code>.bl-base</code>). The followers add <code>src/server/diff.ts</code>
+card label), <code>src/web/styles.css</code> (<code>.bl-base</code>) and <code>src/server/index.ts</code> (the startup pass). The followers add <code>src/server/diff.ts</code>
 (<code>changedPathsSince</code>, <code>deletedPathsSince</code>, <code>computeSessionDiff</code>), <code>src/server/test-selection.ts</code>,
 <code>src/server/workflows/{affected-tests,check-runtime,checks,context,engine,agent-contract}.ts</code>,
 <code>src/server/registry.ts</code> (<code>reconcilePrs</code>, <code>reconcilePrMerges</code>) and <code>src/server/pr.ts</code>. The
@@ -1271,7 +1272,8 @@ mission template adds <code>src/shared/schedules.ts</code> (<code>ScheduleTempla
 <code>scheduleDefinitionFingerprint</code> in <code>src/web/lib/schedules.ts</code>.</p>
 <p><strong>Fork-only files.</strong> <code>test/task-base-branch.test.ts</code>, <code>test/task-base-branch-migration.test.ts</code>,
 <code>test/task-base-branch-followers.test.ts</code>, <code>test/schedule-base-branch.test.ts</code>,
-<code>test/backlog-base-branch-render.test.ts</code>, <code>e2e/specs/mission-base-branch.spec.ts</code>,
+<code>test/backlog-base-branch-render.test.ts</code>, <code>test/base-branch-backfill.test.ts</code>,
+<code>src/server/base-branch-backfill.ts</code>, <code>e2e/specs/mission-base-branch.spec.ts</code>,
 <code>e2e/specs/task-base-branch.spec.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>

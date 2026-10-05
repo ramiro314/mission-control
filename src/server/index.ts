@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { clearStoredDefaultBaseBranches } from "./base-branch-backfill.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
@@ -741,6 +742,18 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   void archives.recoverJobs().catch((error: unknown) => {
     console.warn("[mission-control] could not resume archive captures:", error);
   });
+  // A backlog task whose stored base branch is now origin's default goes back to the default,
+  // so its card stops labelling it. After the port for the reason above: it asks origin over
+  // the network, once per distinct repository and branch, and writes task rows.
+  void clearStoredDefaultBaseBranches(tasks)
+    .then((cleared) => {
+      if (cleared.length > 0) {
+        console.log(`[mission-control] returned ${cleared.length} task(s) on origin's default branch to the default`);
+      }
+    })
+    .catch((error: unknown) => {
+      console.warn("[mission-control] could not check stored base branches:", error);
+    });
   // Say at BOOT whether the MCP bundle this daemon would hand a dispatched agent still serves
   // the tools this build knows about. The dispatch guards refuse a launch that needs a missing
   // one, but a refusal is something the operator meets at the worst moment - when they finally
