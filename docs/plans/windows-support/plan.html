@@ -266,7 +266,7 @@ brackets.</p>
 <tr>
 <td>D38</td>
 <td>Seams discovered during M2</td>
-<td><strong>The M2 ticket builds the seam itself on <code>release/windows</code></strong>, kept platform-neutral with macOS behavior unchanged, and it reaches <code>main</code> with the final merge. This is a narrow exception to D6 for seams discovered after M1. The ticket notes each such seam in its PR, and M2.12 lists them all in the merge PR so they are reviewed as neutral changes. No cross-branch hand-off, sync trigger or dependency edge is involved. [Repair 3]</td>
+<td><strong>The M2 ticket builds the seam itself on <code>release/windows</code></strong>, kept platform-neutral with macOS behavior unchanged, and it reaches <code>main</code> with the final merge. This is a narrow exception to D6 for seams discovered after M1. The ticket notes each such seam in its PR, M2.12 collects them all into the D38 list in its own PR into <code>release/windows</code>, and M3.1 carries that list into the merge PR, where they are reviewed as neutral changes. No cross-branch hand-off, sync trigger or dependency edge is involved. [Repair 3]</td>
 </tr>
 <tr>
 <td>D37</td>
@@ -278,7 +278,7 @@ brackets.</p>
 <figure class="diagram"><svg viewBox="0 0 900 300" role="img" aria-label="Branch model: upstream and neutral PRs flow into main; main merges weekly into release/windows; Windows feature PRs target release/windows; release/windows merges once into main"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0L10,5L0,10z"/></marker></defs>
 <rect class="b" x="20" y="30" width="170" height="54" rx="8"/><text class="t" x="105" y="53">upstream/main</text><text class="s" x="105" y="71">teamupstart</text>
 <rect class="b" x="20" y="200" width="170" height="54" rx="8"/><text class="t" x="105" y="223">Neutral refactor PRs</text><text class="s" x="105" y="241">macOS unchanged</text>
-<rect class="b" x="330" y="115" width="170" height="54" rx="8"/><text class="t" x="415" y="138">main</text><text class="s" x="415" y="156">Release Please</text>
+<rect class="b" x="330" y="115" width="170" height="54" rx="8"/><text class="t" x="415" y="138">main</text><text class="s" x="415" y="156">merge commits, no release</text>
 <rect class="b" x="690" y="30" width="190" height="54" rx="8"/><text class="t" x="785" y="53">Windows feature PRs</text><text class="s" x="785" y="71">base = release/windows</text>
 <rect class="b" x="690" y="200" width="190" height="54" rx="8"/><text class="t" x="785" y="223">release/windows</text><text class="s" x="785" y="241">Windows CI</text>
 <line class="l" x1="190" y1="57" x2="330" y2="130" marker-end="url(#ah)"/><text class="s" x="255" y="80">weekly Mon sync PR</text>
