@@ -1,3 +1,4 @@
+import { mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
 import { workflowEvidenceAuthorizationContract } from "../execution-authorization.ts";
 
@@ -17,13 +18,15 @@ export function workflowPullRequestCiContract(): string {
 /**
  * The merge-conflict half of the PR action's follow-through, from Foreman's Keep sessions on
  * track with merge conflicts option. Its own block rather than a line of the CI policy, so it
- * reaches the packet whatever the CI setting is. Frozen with the packet like the CI policy.
+ * reaches the packet whatever the CI setting is. Frozen with the packet like the CI policy. The
+ * method itself is `mergeConflictResolutionSteps`, the same one a Wait for CI repair asks for.
  */
 export function workflowPullRequestConflictContract(): string {
   return [
     "## Workflow pull request merge conflicts",
     "Foreman's Keep sessions on track with merge conflicts option was selected when this packet was prepared.",
-    "If the PR reports merge conflicts with its base, merge the base branch in, resolve the conflicts, run focused tests, and push. Never rebase or force-push.",
+    "If the PR reports merge conflicts with its base branch, resolve them this way:",
+    mergeConflictResolutionSteps(null),
   ].join("\n");
 }
 

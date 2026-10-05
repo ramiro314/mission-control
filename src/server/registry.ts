@@ -5509,15 +5509,12 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * The non-terminal runs owning a session (by id or note key, as `workflowOwnsKey` matches)
-   * that review this repository. A run whose repository is unknown reviews the session's own.
+   * The runs owning a session that review this repository: `owningRuns`, narrowed. A run whose
+   * repository is unknown reviews the session's own.
    */
   private activeWorkflowRunIds(sessionId: string, noteKey: string, repoRoot: string | null): string[] {
-    return [...this.workflowRuns.values()]
-      .filter((run) =>
-        (run.sessionId === sessionId || run.noteKey === noteKey)
-        && activeWorkflowOwnsSession([run])
-        && (!run.repoRoot || !repoRoot || run.repoRoot === repoRoot))
+    return this.owningRuns(sessionId, noteKey)
+      .filter((run) => !run.repoRoot || !repoRoot || run.repoRoot === repoRoot)
       .map((run) => run.id);
   }
 
@@ -5528,10 +5525,18 @@ export class Registry extends EventEmitter {
 
   /** The run filter `/api/workflow-runs?session=` applies: by session id or by note key. */
   private workflowOwnsKey(sessionId: string, noteKey: string): boolean {
-    return activeWorkflowOwnsSession(
-      [...this.workflowRuns.values()].filter(
-        (run) => run.sessionId === sessionId || run.noteKey === noteKey,
-      ),
+    return this.owningRuns(sessionId, noteKey).length > 0;
+  }
+
+  /**
+   * The one rule for which runs own a session: non-terminal, matched by session id or note key.
+   * Both "is this session workflow-owned" and "which runs might gate its pull request" read it,
+   * so they cannot disagree about ownership.
+   */
+  private owningRuns(sessionId: string, noteKey: string): WorkflowRunSummary[] {
+    return [...this.workflowRuns.values()].filter(
+      (run) =>
+        (run.sessionId === sessionId || run.noteKey === noteKey) && activeWorkflowOwnsSession([run]),
     );
   }
 

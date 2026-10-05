@@ -691,7 +691,8 @@ Wait for CI, instead of a 45-minute wait for `ci_missing`, and sends the conflic
   `foreman-cannot-nudge` when `trackMergeConflicts` is off or `foremanCannotDrive` /
   `foremanMayActLive` refuse the live session (the same predicates `decideReviewFollowup`
   reads). Work an active workflow run owns is matched through every session naming the PR
-  (exited ones included) and the task's work-episode binding, which outlives the session. It is
+  (exited ones included) and the task's work-episode binding, which outlives the session, through
+  one rule (`Registry.owningRuns`) for both ownership and the runs that may gate the PR. It is
   handled when one of its non-terminal runs for the PR's own repository can still reach a Wait
   for CI node (`WorkflowManager.waitForCiReachable`), and `workflow-not-gating` otherwise. The
   set is published as the `blocked_prs` event, only on change, and on the snapshot as
@@ -712,7 +713,8 @@ Wait for CI, instead of a 45-minute wait for `ci_missing`, and sends the conflic
   `<base>`", whose rationale is `mergeConflictResolutionSteps` (`src/shared/pr-mergeable.ts`):
   merge the base in, never rebase or force-push. The `fail` edge is an ordinary repair round.
 - With `trackMergeConflicts` on, a workflow Pull Request action packet with no Wait for CI after
-  it (`waitForCiFollows`) carries `workflowPullRequestConflictContract`, independent of
+  it (`waitForCiFollows`) carries `workflowPullRequestConflictContract`, whose method is
+  `mergeConflictResolutionSteps`, the same one the Wait for CI repair uses, independent of
   `trackCiFailures` and frozen with the packet. It counts toward the session action envelope
   allowance.
 - `ForemanConfig.trackMergeConflicts` (default true) sits beside `trackCiFailures`; its

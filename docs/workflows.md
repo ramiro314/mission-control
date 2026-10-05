@@ -634,8 +634,9 @@ same checks would push while the node judges the head it was given.
 **Conditional merge-conflict instructions.** Foreman's **Keep sessions on track with merge
 conflicts** preference adds its own block to the same packets, on the same terms: a workflow
 action whose completion is **Pull request**, with no Wait for CI node after it. It tells the
-session that if the PR reports merge conflicts with its base, it merges the base branch in,
-resolves the conflicts, runs focused tests, and pushes, and never rebases or force-pushes. It is
+session that if the PR reports merge conflicts with its base, it resolves them with the same
+method a Wait for CI conflict repair asks for (below): merge the base branch in, resolve the
+conflicts, run focused tests, push, and never rebase or force-push. It is
 independent of the CI preference, so either can be on without the other. It is read once per
 newly prepared packet and frozen with it, like the CI policy. Where a Wait for CI node follows
 the action, the node handles a conflict itself, as described below.

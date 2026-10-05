@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { renderSessionAction } from "../src/server/workflows/feedback.ts";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
+import { mergeConflictResolutionSteps } from "../src/shared/pr-mergeable.ts";
 
 const legacyPrompt = "# Pull Request\n\nOpening it is the whole job; this run's final gate reviews it afterwards.\n";
 const packet = {
@@ -87,7 +88,9 @@ test("the merge-conflict line rides the packet only when its own setting is on",
     // Independent of the CI setting, before the frozen prompt, and after the CI block.
     assert.ok(result.payload.includes(CONFLICTS), `with CI ${pullRequestCi}`);
     assert.ok(result.payload.indexOf(CONFLICTS) < result.payload.indexOf(legacyPrompt));
-    assert.match(result.payload, /merge the base branch in, resolve the conflicts, run focused tests, and push\. Never rebase or force-push\./);
+    // The same method a Wait for CI conflict repair asks for, from its one owner.
+    assert.ok(result.payload.includes(mergeConflictResolutionSteps(null)));
+    assert.match(result.payload, /Do not rebase or force-push\./);
     assert.equal(result.payload.includes("## Workflow pull request CI follow-through"), pullRequestCi);
     if (pullRequestCi) {
       assert.ok(result.payload.indexOf("CI follow-through") < result.payload.indexOf(CONFLICTS));
