@@ -1027,6 +1027,19 @@ function compatibleSession(binding: WorkflowBinding, session: Session): boolean 
  * run, or one assembled without the field, following the session rather than falling through
  * to a checkout it never named.
  */
+export function workflowCheckoutPath(
+  binding: Pick<WorkflowBinding, "repoRoot" | "sessionCwd">,
+  session: Pick<Session, "cwd" | "workspace">,
+): string | null {
+  if (!binding.repoRoot && session.workspace?.authority === "provider") {
+    return session.workspace.availability === "available" &&
+      session.workspace.capabilities.manualWorkflow
+      ? session.workspace.reportedPath
+      : null;
+  }
+  return binding.repoRoot ? binding.sessionCwd : session.cwd;
+}
+
 /**
  * The base branch a pull request from a workflow binding opens against: the task's, when the run
  * reviews that task's PRIMARY repository (an empty binding root is the session's own checkout).
@@ -1050,19 +1063,6 @@ export function bindingBaseBranch(
   session: Pick<Session, "id" | "cwd">,
 ): string | null {
   return prBaseBranchFor(registry.taskForSession(session.id, session.cwd), binding.repoRoot);
-}
-
-export function workflowCheckoutPath(
-  binding: Pick<WorkflowBinding, "repoRoot" | "sessionCwd">,
-  session: Pick<Session, "cwd" | "workspace">,
-): string | null {
-  if (!binding.repoRoot && session.workspace?.authority === "provider") {
-    return session.workspace.availability === "available" &&
-      session.workspace.capabilities.manualWorkflow
-      ? session.workspace.reportedPath
-      : null;
-  }
-  return binding.repoRoot ? binding.sessionCwd : session.cwd;
 }
 
 /** The transcript this capture reads, with delivered workflow turns attributed and dropped. */
