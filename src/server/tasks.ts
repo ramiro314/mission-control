@@ -3932,7 +3932,9 @@ export class TaskManager {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
       // Checked against origin by the route before it reaches here, like `repoRoot` above.
-      baseBranch: patch.baseBranch === undefined ? (t.baseBranch ?? null) : patch.baseBranch,
+      // Written only when the patch names it, so an edit that does not touch the base leaves
+      // the task exactly as it was rather than adding a key it did not carry.
+      ...(patch.baseBranch !== undefined ? { baseBranch: patch.baseBranch } : {}),
       extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it
