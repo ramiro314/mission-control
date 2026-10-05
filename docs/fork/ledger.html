@@ -1209,8 +1209,11 @@ route, and <code>push_task</code>&#39;s strict body takes it, so an older daemon
 (<code>resolveBaseBranch</code>, one <code>ls-remote --symref origin HEAD refs/heads/&lt;base&gt;</code>, 400). Dispatch
 refuses it again with a fresh fetch (<code>resolveDispatchBranchBase</code>), before any worktree is
 provisioned.</li>
-<li>A base branch equal to origin&#39;s advertised default is stored as NULL, so a non-null
-<code>Task.baseBranch</code> always means a non-default base.</li>
+<li>A base branch equal to origin&#39;s advertised default is stored as NULL at write time, so a
+non-null <code>Task.baseBranch</code> was not origin&#39;s default when it was written. Existing rows are not
+rewritten: a row stored with the default before this normalization, or whose origin later
+changed its default, still carries the name and its card labels it until the field is
+cleared.</li>
 <li>The dispatch form&#39;s backlog details carry a &quot;Base branch&quot; field on create and edit (empty is
 the default; an edit sends <code>null</code>), and the daemon&#39;s refusal prints on the form. The backlog
 card shows <code>base &lt;branch&gt;</code> (<code>.bl-base</code>) only when the task has one.</li>

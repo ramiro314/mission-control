@@ -969,8 +969,11 @@ dispatched like any other task. Without one, nothing changes.
   (`resolveBaseBranch`, one `ls-remote --symref origin HEAD refs/heads/<base>`, 400). Dispatch
   refuses it again with a fresh fetch (`resolveDispatchBranchBase`), before any worktree is
   provisioned.
-- A base branch equal to origin's advertised default is stored as NULL, so a non-null
-  `Task.baseBranch` always means a non-default base.
+- A base branch equal to origin's advertised default is stored as NULL at write time, so a
+  non-null `Task.baseBranch` was not origin's default when it was written. Existing rows are not
+  rewritten: a row stored with the default before this normalization, or whose origin later
+  changed its default, still carries the name and its card labels it until the field is
+  cleared.
 - The dispatch form's backlog details carry a "Base branch" field on create and edit (empty is
   the default; an edit sends `null`), and the daemon's refusal prints on the form. The backlog
   card shows `base <branch>` (`.bl-base`) only when the task has one.

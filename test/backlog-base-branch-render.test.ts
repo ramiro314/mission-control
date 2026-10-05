@@ -6,9 +6,9 @@ import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
-// A backlog card names its base branch only when it has one. The daemon stores origin's
-// default branch as null (`resolveBaseBranch`), so "set" already means "not the default",
-// and a card for the common default-branch task carries no extra chip.
+// A backlog card names its base branch only when it has one. The daemon writes origin's
+// default branch as null (`resolveBaseBranch`), so "set" means "not the default when it was
+// written", and a card for the common default-branch task carries no extra chip.
 //
 // `createElement` rather than JSX because the runner's glob only matches .test.ts.
 

@@ -157,10 +157,14 @@ one starts from origin's default branch and targets it, exactly as before.
 - **It must exist on origin.** Creating or editing a task with a base branch asks
   `git ls-remote origin` for it and refuses the request with 400, naming the branch, when origin
   does not have it or cannot answer. A repository with no `origin` cannot take a base branch.
-  Naming origin's own default branch stores no base branch at all, so a task that has one
-  always targets something other than the default.
-- **The card** names a base branch ("base release/windows") on the backlog card. A task on the
-  default branch shows nothing extra.
+  Naming origin's own default branch stores no base branch at all, so a task created or edited
+  from now on carries one only when it is not origin's default at the time of the write.
+- **The card** names a stored base branch ("base release/windows") on the backlog card. A task
+  on the default branch shows nothing extra. The rule above holds only when the base is written,
+  so a card can still read `base main` for a task filed with `main` through the API or MCP
+  before this normalization existed, or one whose origin has since changed its default. Clear
+  the field and save to put such a task back on the default; saving with the field unchanged
+  leaves it as it is.
 - **Dispatch** starts the worktree from the branch's tip, freshly fetched, the same way a task
   without one starts from origin's default. A branch deleted since the task was filed fails the
   dispatch before anything is provisioned, and the task goes back to the backlog with the

@@ -1051,8 +1051,9 @@ function BacklogCard({
             <span className="bl-repos">{task.extraRepos.length + 1} repos</span>
           </Tooltip>
         )}
-        {/* Only a non-default base: the daemon stores origin's default as null, so a set
-            value is always one worth flagging on a card that otherwise assumes the default. */}
+        {/* Any stored base. The daemon writes origin's default as null, so a set value was a
+            non-default base when it was written; an older or since-moved one still shows, and
+            clearing the field in the editor puts the task back on the default. */}
         {task.baseBranch && (
           <Tooltip label={`Starts from ${task.baseBranch} and opens its pull request against it`}>
             <span className="bl-base">base {task.baseBranch}</span>
