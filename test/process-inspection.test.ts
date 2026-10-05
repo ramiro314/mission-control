@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { processInspectorFor } from "../src/server/process-inspection/index.ts";
 import {
   createPosixProcessInspector,
+  defaultCommandRunner,
   posixProcessInspector,
   type CommandRunner,
 } from "../src/server/process-inspection/posix.ts";
@@ -116,5 +120,30 @@ test("the listening pid is the first pid lsof prints, and nothing listening is n
 test("no platform is registered on main, so every platform, win32 included, gets the POSIX inspector", () => {
   for (const platform of ["darwin", "linux", "win32"] as const) {
     assert.equal(processInspectorFor(platform), posixProcessInspector, platform);
+  }
+});
+
+test("the default runner reads through the catalog's ps, and answers null when it cannot", () => {
+  const live = defaultCommandRunner.runSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { timeoutMs: 5000, maxBuffer: 4096 });
+  assert.match(live ?? "", /\d{4}\s*$/, "a live pid prints its start time");
+
+  const dead = spawnSync(process.execPath, ["-e", ""], { timeout: 5000 });
+  assert.equal(dead.status, 0);
+  assert.equal(
+    defaultCommandRunner.runSync("ps", ["-o", "lstart=", "-p", String(dead.pid)], { timeoutMs: 5000, maxBuffer: 4096 }),
+    null,
+    "ps exits non-zero for a pid that is gone",
+  );
+
+  const previous = process.env.MISSION_PS_BIN;
+  process.env.MISSION_PS_BIN = join(tmpdir(), "mission-no-such-ps", "ps");
+  try {
+    assert.equal(
+      defaultCommandRunner.runSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { timeoutMs: 5000, maxBuffer: 4096 }),
+      null,
+      "a configured ps that does not exist is unreadable, not an error",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_PS_BIN; else process.env.MISSION_PS_BIN = previous;
   }
 });

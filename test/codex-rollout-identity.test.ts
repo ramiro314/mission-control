@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { selectRolloutIdentity } from "../src/server/discovery/codex-rollouts.ts";
+import { rolloutFilesByPid, selectRolloutIdentity } from "../src/server/discovery/codex-rollouts.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "mission-rollout-identity-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -78,4 +78,15 @@ test("genuine disagreement stays silent rather than guessing", () => {
 test("no readable rollout resolves to nothing", () => {
   assert.equal(selectRolloutIdentity([], CWD), null);
   assert.equal(selectRolloutIdentity([join(dir, "missing.jsonl")], CWD), null);
+});
+
+test("only rollout transcripts survive, and a pid with none is dropped", () => {
+  const live = "/Users/me/.codex/sessions/2026/07/23/rollout-2026-07-23T10-28-27-abc.jsonl";
+  const forked = "sessions/2026/07/24/rollout-fork.jsonl";
+  const files = new Map([
+    [7, ["/dev/null", live, "/Users/me/.codex/log/codex-tui.log", forked]],
+    [8, ["/dev/null", "/tmp/rollout-2026.jsonl", "/x/sessions/2026/7/23/rollout-a.jsonl"]],
+    [9, []],
+  ]);
+  assert.deepEqual(rolloutFilesByPid(files), new Map([[7, [live, forked]]]));
 });

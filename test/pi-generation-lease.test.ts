@@ -129,3 +129,27 @@ test("a holder cannot enter a partially removed generation after recursive clean
     assert.equal(existsSync(generation), false);
   } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });
+
+test("an unreadable start time keeps a recorded lease, and a changed one releases it, as before the seam", t => {
+  const previous = process.env.MISSION_PS_BIN;
+  const executable = join(root, "configured-ps");
+  writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  process.env.MISSION_PS_BIN = executable;
+  let answer: () => string = () => "Thu Sep 24 12:00:00 2026";
+  const probe = t.mock.method(childProcess, "execFileSync", () => answer()); syncBuiltinESMExports();
+  try {
+    holdPiGeneration(generation, buildId);
+    // `ps` exits non-zero: execFileSync throws, the identity is unknown, and an unknown
+    // identity cannot prove the holder is gone.
+    answer = () => { throw Object.assign(new Error("Command failed: ps"), { status: 1 }); };
+    assert.equal(removeIdlePiGeneration(generation), false);
+    assert.equal(readdirSync(join(generation, ".leases")).length, 1, "the lease is kept");
+    // A readable but different start time proves the pid was reused, so the lease is stale.
+    answer = () => "Fri Sep 25 08:00:00 2026";
+    assert.equal(removeIdlePiGeneration(generation), true);
+    assert.equal(existsSync(generation), false);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_PS_BIN; else process.env.MISSION_PS_BIN = previous;
+    probe.mock.restore(); syncBuiltinESMExports();
+  }
+});
