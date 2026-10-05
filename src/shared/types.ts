@@ -1494,6 +1494,8 @@ export interface SessionQueue {
  * - `verification_failed`: verification INFRASTRUCTURE failed repeatedly and hit its cap.
  *   Deliberately not `held`: no model ever judged this work, so a later recovery must not
  *   send a verifier summary back that does not exist.
+ * - `workflow_latched`: a bound Workflow already completed a run for this intent episode;
+ *   nothing was started and nothing was handed off. Only a new human prompt re-arms it.
  */
 export const PROMPTED_COMPLETION_OUTCOMES = [
   "held",
@@ -1504,6 +1506,7 @@ export const PROMPTED_COMPLETION_OUTCOMES = [
   "empty",
   "verification_failed",
   "direct_handoff_undelivered",
+  "workflow_latched",
 ] as const;
 export type PromptedCompletionOutcome = (typeof PROMPTED_COMPLETION_OUTCOMES)[number];
 

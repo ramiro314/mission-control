@@ -698,6 +698,11 @@ test("the prompted consume wire contract records a reason it cannot disagree wit
     PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "workflow_claimed" } }).success,
     false,
   );
+  // `workflow_latched` is the same transaction's other answer and is reserved the same way.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "workflow_latched" } }).success,
+    false,
+  );
   // `direct_handoff_undelivered` is a correction to a handoff this route already recorded,
   // so opening a consumption with it claims an injection failed that nothing ever attempted.
   assert.equal(

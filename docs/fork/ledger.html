@@ -48,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>9</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
+<td><strong>10</strong> (plus 3 superseded or removed, and 10 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -119,6 +119,11 @@ or issues.</p>
 <td>PR merge-conflict reactions</td>
 <td>Active (signal and chip only)</td>
 <td>#108</td>
+</tr>
+<tr>
+<td>PR publication ownership</td>
+<td>Active</td>
+<td>#110 (plan), pending (completion latch)</td>
 </tr>
 <tr>
 <td>Complete frees the worktree</td>
@@ -900,6 +905,77 @@ session construction sites), <code>src/shared/types.ts</code> (<code>Session</co
 fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session</code> literal.</p>
 <p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>test/pr-mergeable.test.ts</code>,
 <code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
+<h3>PR publication ownership</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong>. Part A (completion latch) implemented; Part B (PR authority as a grant) planned.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#110 (plan), pending (completion latch)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/pr-publication-ownership/plan.md">pr-publication-ownership/plan.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Yes. Upstream has the same post-completion re-run: its Foreman claim and store are unchanged here apart from the latch.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A pull request is opened only by the workflow&#39;s Pull Request action or by a direct
+command of the human. Forensics found the visible symptom was not an early PR but a <strong>new
+workflow run starting after the PR existed</strong>: the Pull Request action&#39;s own turn, Inspector
+fixes and background wake-ups each settled under unchanged intent and claimed a fresh run on
+the binding. The completion latch stops that. The grant holders (the workflow Pull Request
+action, the Runs UI &quot;Ask the session to open a PR&quot;, Foreman&#39;s Ship it? card, Straight to PR and
+ship-shepherd handoff, and a human-typed request in the session) are Part B of the plan and not
+yet implemented.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li>Every Foreman claim that starts or resubmits a run, prompted or queue-drain, stamps
+<code>workflow_runs.claim_episode_key</code> with <code>intent:&lt;objective_version&gt;:&lt;prompt_revision&gt;</code> read
+from <code>session_goals</code> in the claim transaction.</li>
+<li>A prompted claim with no active run, on a binding with a <code>completed</code> run stamped with the
+claim&#39;s episode, is <strong>latched</strong>: it consumes the generation with the <code>workflow_latched</code>
+outcome, appends <code>claim_latched</code> on the completed run, starts and resubmits nothing, and
+answers <code>claimed: true</code> with state <code>latched</code>, so Foreman does not fall through to the Ship it?
+card or Straight to PR.</li>
+<li>Only an accepted human prompt advances the episode and re-arms the binding, for exactly one
+run. Cancelled runs and unstamped (pre-upgrade) runs never latch; queue-drain claims are never
+refused; in-run repair rounds still resubmit the same run.</li>
+<li><code>workflow_latched</code> is appended to <code>PROMPTED_COMPLETION_OUTCOMES</code> and, like <code>workflow_claimed</code>,
+is refused on the ordinary consume route.</li>
+<li>Accepted residuals: a drain claim on a session with no recorded goal leaves the stamp null,
+and on the terminal runtime a daemon restart between a packet&#39;s delivery and its echo makes
+that packet read as human and re-arms the latch.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>WorkflowStore.claimForemanCompletion</code> is the one transaction that creates or resubmits a run
+for a Foreman completion, and it consumes the prompted generation through
+<code>consumePromptedGeneration</code>.</li>
+<li>The intent episode key is <code>intent:&lt;objective_version&gt;:&lt;prompt_revision&gt;</code>, advanced only by
+accepted human prompts; daemon-injected turns are kept out of the Goal by the SDK <code>origin</code>
+and the terminal injection ledger.</li>
+<li>The Straight to PR direct-handoff latch keyed by intent episode, which this mirrors.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/workflows/store.ts</code> (<code>claimForemanCompletion</code>,
+<code>consumePromptedGuard</code>), <code>src/server/db.ts</code> (<code>workflow_runs.claim_episode_key</code>),
+<code>src/shared/types.ts</code> (<code>PROMPTED_COMPLETION_OUTCOMES</code>), <code>src/shared/workflow.ts</code> and
+<code>src/shared/protocol.ts</code> (<code>WorkflowCompletionClaimResult</code> state <code>latched</code>, the consume-route
+refinement), <code>src/server/foreman/worker.ts</code> (latched log line), and
+<code>docs/{work-queues,workflows,foreman,recurring-missions}.md</code>,
+<code>docs/agent-guides/{change-contracts,architecture}.md</code>.</p>
+<p><strong>Fork-only files.</strong> <code>test/workflow-completion-latch.test.ts</code>,
+<code>docs/plans/pr-publication-ownership/</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

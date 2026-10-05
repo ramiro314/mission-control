@@ -530,7 +530,18 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     state: string;
   };
   assert.equal(advancedBody.claimed, true);
-  assert.notEqual(advancedBody.runId, promptedBody.runId);
+  // The first run already completed under this same intent episode, so the later generation
+  // is latched onto it rather than starting a second run: only a new human prompt re-arms it.
+  assert.equal(workflows.store.getRun(promptedBody.runId)?.status, "completed");
+  assert.equal(advancedBody.state, "latched");
+  assert.equal(advancedBody.runId, promptedBody.runId);
+  assert.equal(
+    db.prepare(
+      `SELECT prompted_consumed_generation AS generation FROM foreman_queues WHERE note_key = 'prompted'`,
+    ).get()?.generation,
+    3,
+    "a latched claim still consumes its generation",
+  );
   const replayPrompted = await request(
     app,
     "prompted",
@@ -546,7 +557,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     state: string;
   };
   assert.equal(replayBody.runId, advancedBody.runId, "one proof may claim the binding only once");
-  assert.equal(replayBody.state, "already_claimed");
+  assert.equal(replayBody.state, "latched");
 
   const first = await request(app, "claimed", "2".repeat(64));
   assert.equal(first.status, 200);
