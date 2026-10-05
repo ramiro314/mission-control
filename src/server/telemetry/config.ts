@@ -26,7 +26,10 @@ import { registeredProjections } from "./registration.ts";
 import { noteTelemetryCollectionChanged } from "./retention.ts";
 import { resetSessionTelemetryObservations } from "./sessions.ts";
 import {
+  baselineSeriesForDelta,
+  clearNetworkWaitingDeliveries,
   clearSecret,
+  deleteProfileSeries,
   getDestination,
   getSecret,
   hasSecret,
@@ -34,6 +37,7 @@ import {
   purgeProfileQueue,
   putProjectionState,
   putSecret,
+  recordGap,
   retirePrObservationWindows,
   telemetryTransaction,
   updateDestination,
@@ -100,6 +104,12 @@ export function installProductIngestForTesting(descriptor: string | null): void 
 /** The stored configuration with schema defaults applied. Every default is off. */
 export function getTelemetryConfig(): TelemetryConfig {
   return TelemetryConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+}
+
+/** True only after an operator has stored telemetry intent. A read never creates this row. */
+export function hasStoredTelemetryConfig(): boolean {
+  const stored = getAppConfig(CONFIG_ENTRY);
+  return stored !== null && stored !== undefined;
 }
 
 /**
@@ -368,6 +378,21 @@ export function setTelemetryConfig(
       const isCapturing = profileIsCapturing(next, profile);
       const destination = getDestination(d, profile);
       const endpointDigest = digest(destinationFor(next, profile)?.endpoint ?? "");
+      const previousDestination = destinationFor(previous, profile);
+      const nextDestination = destinationFor(next, profile);
+      const temporalityChanged =
+        previousDestination !== null &&
+        nextDestination !== null &&
+        previousDestination.temporality !== nextDestination.temporality;
+      const shapeChanged =
+        previousDestination !== null &&
+        nextDestination !== null &&
+        previousDestination.exportShape !== nextDestination.exportShape;
+      const waitingIsNoLongerPossible =
+        destination.waitingSince !== null &&
+        (nextDestination === null ||
+          !profileIsExporting(next, profile) ||
+          nextDestination.networkGate !== "cloudflare-edge");
 
       if (!wasCapturing && isCapturing) {
         // A new opt-in starts a new baseline. Runs already in progress stay visible as
@@ -410,19 +435,58 @@ export function setTelemetryConfig(
         // Withdrawal. Unsent batches and this profile's projections go; already accepted data
         // at a remote backend cannot be recalled and is not pretended otherwise.
         purgeProfileQueue(d, profile);
-        updateDestination(d, profile, { endpointDigest, pausedReason: null, lastError: null }, now);
-        continue;
-      }
-
-      if (endpointDigest !== destination.endpointDigest) {
-        // A new destination generation. Batches built for the previous endpoint keep their own
-        // generation and are refused by the sender rather than redirected.
         updateDestination(
           d,
           profile,
-          { generation: destination.generation + 1, endpointDigest, pausedReason: null, lastError: null },
+          { endpointDigest, pausedReason: null, lastError: null, waitingSince: null },
           now,
         );
+        continue;
+      }
+
+      if (shapeChanged) {
+        // A new shape starts this destination's series again from zero. Every counter and
+        // histogram total lives in these rows - the catalog projection holds no reducer state -
+        // and so do the delta watermarks, so deleting them is the whole reset: no merged delta
+        // can span two label sets. Projection checkpoints stay where they are, so facts already
+        // projected are never counted again and facts not yet projected count once, under the
+        // new shape. The policy epoch is deliberately NOT bumped: that would skip those facts.
+        // Queued batches of the old shape are fenced by the generation bump below. The hourly
+        // export ledger is kept, because the hour the backend bills has not started again.
+        deleteProfileSeries(d, profile);
+        if (isCapturing) {
+          recordGap(
+            d,
+            "shape_changed",
+            `${profile} now receives the ${nextDestination?.exportShape ?? "full"} export shape`,
+            now,
+          );
+        }
+      }
+
+      if (endpointDigest !== destination.endpointDigest || temporalityChanged || shapeChanged) {
+        // A new destination generation. Batches built for the previous endpoint keep their own
+        // generation and are refused by the sender rather than redirected.
+        const generation = destination.generation + 1;
+        clearNetworkWaitingDeliveries(d, profile);
+        updateDestination(
+          d,
+          profile,
+          {
+            generation,
+            endpointDigest,
+            pausedReason: null,
+            lastError: null,
+            waitingSince: null,
+          },
+          now,
+        );
+        if (nextDestination?.temporality === "delta") {
+          baselineSeriesForDelta(d, profile, destination.policyEpoch, generation, now);
+        }
+      } else if (waitingIsNoLongerPossible) {
+        clearNetworkWaitingDeliveries(d, profile);
+        updateDestination(d, profile, { waitingSince: null }, now);
       }
     }
 
@@ -462,6 +526,31 @@ export function telemetryStatus(): TelemetryStatus {
     endpoint: endpoint
       ? { ok: endpoint.ok, detail: endpoint.detail, warning: endpoint.warning }
       : null,
+  };
+}
+
+/**
+ * The HTTP representation preserves the exact pre-Phase-1 bytes until telemetry intent exists.
+ * Internal readers always use the fully defaulted schema above; the browser rehydrates this
+ * legacy wire shape at its boundary.
+ */
+export function telemetryStatusResponse(): object {
+  const status = telemetryStatus();
+  if (hasStoredTelemetryConfig()) return status;
+  const legacyDestination = ({
+    enabled,
+    endpoint,
+    headerName,
+    paused,
+  }: TelemetryDestination): object => ({ enabled, endpoint, headerName, paused });
+  return {
+    ...status,
+    config: {
+      enabled: status.config.enabled,
+      user: legacyDestination(status.config.user),
+      product: legacyDestination(status.config.product),
+      revision: status.config.revision,
+    },
   };
 }
 

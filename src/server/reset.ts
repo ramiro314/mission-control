@@ -1,3 +1,4 @@
+import { transferHold } from "./session-transfers/store.ts";
 import type { ResetResult, Session } from "@shared/types.ts";
 import { resetToOrigin, withPaneLockWait, type DriverClear, type PaneLockToken } from "./actions.ts";
 import type { Registry } from "./registry.ts";
@@ -75,6 +76,8 @@ export async function resetSession(
   /** The task's base branch to land on instead of origin's default - see `resetToOrigin`. */
   baseBranch: string | null = null,
 ): Promise<ResetResult> {
+  const transferBlock = transferHold(session);
+  if (transferBlock) return { ok: false, error: transferBlock, root: session.cwd, cleared: false, detached: false };
   const pendingTurnKey = noteKeyFor(session);
   registry.beginSessionReset(session.id);
   try {

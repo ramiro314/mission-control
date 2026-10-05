@@ -16,12 +16,14 @@ import {
 } from "@shared/workflow-stages.ts";
 import {
   CarriedProvenance,
+  ElapsedClock,
   InspectorFooter,
   PipelineFrame,
   ReviewerRow,
   StageCard,
   StageSeam,
   TerminusCard,
+  type ElapsedSpan,
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
@@ -31,11 +33,13 @@ import {
   carriedStatus,
   newestInheritedSource,
   memberPipelineStatus,
+  stageElapsed,
   stageStatus,
   type InheritedPass,
 } from "./run-model.ts";
 import { moveWorkflowStageSelection } from "./run-navigation.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
+import { useNow } from "../useNow.ts";
 
 /** A reviewer or Command whose current attempt has settled and has worklist data to inspect. */
 function opensReviewWorklist(raw: string | undefined): boolean {
@@ -119,6 +123,7 @@ export function RunPipeline({
   metaFor,
   checkOutcomeFor,
   inherited,
+  elapsed,
   onOpenRound,
   actionWaitFor,
   inspectorDetail = null,
@@ -156,6 +161,11 @@ export function RunPipeline({
    * Inspector-only bypass - and this component is deliberately scoped to one round's statuses.
    */
   inherited?: ReadonlyMap<string, InheritedPass>;
+  /**
+   * Node id -> how long it has run in the viewed round (`elapsedSpansFor`). A node absent here
+   * draws no clock: it has not launched, or this round carried it rather than running it.
+   */
+  elapsed?: ReadonlyMap<string, ElapsedSpan>;
   /** Scrub the reader to the round a carried stage passed in. Absent leaves it unlinked. */
   onOpenRound?: (submissionId: string) => void;
   /**
@@ -221,6 +231,9 @@ export function RunPipeline({
     () => new Set(disabledNodeIds ?? []),
     [disabledNodeIds],
   );
+  // One clock for the whole strip, and it ticks only while something is live: a finished
+  // round re-renders nothing once a second, and every clock on screen reads the same instant.
+  const now = useNow([...(elapsed?.values() ?? [])].some((span) => span.finishedAt === null));
 
   if (!pipeline) {
     return (
@@ -338,6 +351,8 @@ export function RunPipeline({
             ? () => onOpenNode(member.nodeId!)
             : null;
           const carried = member.nodeId ? inherited?.get(member.nodeId) ?? null : null;
+          // A carried member did not run in this round, so it has no time of its own here.
+          const span = member.nodeId && !carried ? elapsed?.get(member.nodeId) ?? null : null;
           return {
             key: member.nodeId ?? `${index}:${stageMemberKey(member)}`,
             nodeId: member.nodeId,
@@ -348,6 +363,7 @@ export function RunPipeline({
             directiveActive,
             openWorklist,
             carried,
+            span,
             meta: member.nodeId ? metaFor(member.nodeId) : null,
             status: carried
               ? carriedStatus(carried.roundLabel)
@@ -418,12 +434,14 @@ export function RunPipeline({
             : []);
         const opensWorklist = Boolean(onOpenStage)
           && stageWorklistNodeIds.length === members.length;
+        const stageSpan = stageElapsed(members.map((member) => member.span));
         return (
           <div className="wf-pipeline-slot" key={`stage:${index}`}>
             <StageCard
               name={stageTitle}
               subtitle={stageSummary(stage)}
               status={displayStatus}
+              elapsed={stageSpan ? <ElapsedClock span={stageSpan} now={now} /> : null}
               header={{
                 tabIndex: 0,
                 focusKey: `run-stage:${index}`,
@@ -469,6 +487,7 @@ export function RunPipeline({
                     name={member.name}
                     meta={member.meta}
                     status={member.status}
+                    elapsed={member.span ? <ElapsedClock span={member.span} now={now} /> : null}
                     disabled={member.disabled}
                     hasDirective={member.directiveActive}
                     notice={member.directiveActive

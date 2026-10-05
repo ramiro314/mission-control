@@ -1,9 +1,8 @@
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { trackedTaskManagers } from "./helpers/task-manager.ts";
 import { mkSession, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import { agentIsFree } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
@@ -12,12 +11,18 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-completion-reconciler-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
-const taskManager = trackedTaskManagers(TaskManager);
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { openDb } = await import("../src/server/db.ts");
 
+const managers: InstanceType<typeof TaskManager>[] = [];
+afterEach(async () => {
+  for (const manager of managers.splice(0)) {
+    manager.stopMissionSessionClosures();
+    await manager.settleWorktreeReturns();
+  }
+});
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /**
@@ -95,7 +100,8 @@ function insertHistorical(b: {
  */
 function departed(id: string, over: Partial<ReturnType<typeof baseTask>> = {}) {
   const registry = new Registry();
-  const tasks = taskManager(registry);
+  const tasks = new TaskManager(registry);
+  managers.push(tasks);
   const taskId = `task-${id}`;
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
@@ -349,7 +355,8 @@ test("a task whose agent is still here is left to the narrower path", () => {
 test("a live task is not completed from a partial startup session map", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const presentRegistry = new Registry();
-  const presentTasks = taskManager(presentRegistry);
+  const presentTasks = new TaskManager(presentRegistry);
+  managers.push(presentTasks);
   const presentId = "startup-live";
   const presentTaskId = "task-startup-live";
   presentRegistry.upsertTask(baseTask({
@@ -374,7 +381,8 @@ test("a live task is not completed from a partial startup session map", () => {
   assert.equal(presentRegistry.getTask(presentTaskId)?.status, "running");
 
   const absentRegistry = new Registry();
-  const absentTasks = taskManager(absentRegistry);
+  const absentTasks = new TaskManager(absentRegistry);
+  managers.push(absentTasks);
   const absentTaskId = "task-startup-absent";
   absentRegistry.upsertTask(baseTask({
     id: absentTaskId,

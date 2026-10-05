@@ -125,6 +125,17 @@ export const AUDIENCE_LOCAL: TelemetryAudience = ["local"];
 // ---- signal kinds ----
 
 export const TELEMETRY_SIGNALS = ["metrics", "traces"] as const;
+
+/**
+ * The export shapes a destination may name.
+ *
+ * APPEND-ONLY. A shape id is persisted in the telemetry config blob and read back by exact
+ * value. The records behind these ids live in `telemetry-export-shapes.ts`; the tuple lives
+ * here because the config schema below needs it, and the registry imports the catalog, which
+ * imports this file.
+ */
+export const TELEMETRY_EXPORT_SHAPE_IDS = ["full", "datadog-lean"] as const;
+export type TelemetryExportShapeId = (typeof TELEMETRY_EXPORT_SHAPE_IDS)[number];
 export type TelemetrySignal = (typeof TELEMETRY_SIGNALS)[number];
 
 // ---- bounded limits ----
@@ -156,6 +167,15 @@ export const TELEMETRY_LIMITS = {
    * cover it would multiply the byte budget to keep a handful of small rows.
    */
   reducerStateRetentionMs: 30 * 24 * 60 * 60 * 1000,
+  /**
+   * How long a budgeted destination's hourly export ledger remembers an hour.
+   *
+   * As long as a fact captured in that hour can still be projected, plus the hour itself. A
+   * cumulative point carries its latest event's time, so a fact projected late lands in the hour
+   * it happened in, and that hour's allowance has to still be on record when it does. A point
+   * whose hour is older than this is sent stamped with the pass clock instead.
+   */
+  exportLedgerRetentionMs: 7 * 24 * 60 * 60 * 1000 + 60 * 60 * 1000,
   /** Largest serialized OTLP request. Batches are built under this rather than split after. */
   maxRequestBytes: 1024 * 1024,
   /** Per-request wall clock before an attempt is treated as an ambiguous disconnect. */
@@ -165,6 +185,8 @@ export const TELEMETRY_LIMITS = {
   /** Retry backoff floor and ceiling, before jitter and before any server `Retry-After`. */
   retryMinMs: 1_000,
   retryMaxMs: 60_000,
+  /** Retry ceiling while an edge-gated destination is waiting for network access. */
+  networkWaitRetryMaxMs: 5 * 60_000,
   /** How long a delivery lease is honoured before another pass may reclaim it. */
   leaseMs: 60_000,
   /** How many journal rows one projection pass consumes. Bounds the transaction, not the day. */
@@ -303,6 +325,7 @@ export type TelemetryTransportOutcome =
       throttled: boolean;
       detail: string;
     }
+  | { kind: "waiting"; detail: string; retryAfterMs: number | null }
   | { kind: "paused"; reason: TelemetryPauseReason; detail: string }
   | { kind: "rejected"; detail: string };
 
@@ -323,6 +346,14 @@ export const TelemetryDestinationSchema = z.object({
   headerName: z.string().default("authorization"),
   /** Pausing keeps capture running and drains nothing. Distinct from disabling. */
   paused: z.boolean().default(false),
+  /** Metric stream semantics. Cumulative preserves the historical default byte for byte. */
+  temporality: z.enum(["cumulative", "delta"]).default("cumulative"),
+  /** Optional recognition of a network edge refusal that should wait rather than pause. */
+  networkGate: z.enum(["none", "cloudflare-edge"]).default("none"),
+  /** Count exported points older than this destination is expected to accept. */
+  lateAfterMs: z.number().int().positive().nullable().default(null),
+  /** Which registered export shape this destination receives. `full` is today's export. */
+  exportShape: z.enum(TELEMETRY_EXPORT_SHAPE_IDS).default("full"),
 });
 export type TelemetryDestination = z.infer<typeof TelemetryDestinationSchema>;
 
@@ -440,6 +471,11 @@ export interface TelemetryProfileHealth {
   /** Bounded, sanitized last failure. Never a response body or a URL carrying a credential. */
   lastError: string | null;
   lastAcceptedAt: number | null;
+  /** True while a gated network edge is refusing this network. */
+  waitingForNetwork: boolean;
+  waitingSince: number | null;
+  /** Points sent after this destination's configured acceptance window. */
+  latePointsSent: number;
 }
 
 export interface TelemetryHealth {
@@ -490,8 +526,16 @@ export const TELEMETRY_GAP_KINDS = [
   "series_overflow",
   /** A destination permanently refused a batch. */
   "permanently_rejected",
+  /** A point was sent after the destination's configured acceptance window. */
+  "late_points",
   /** Something was lost and the loss counter itself could not be written. */
   "unknown_gap",
+  /** A contribution was dropped because its export shape's series budget had no room for it. */
+  "budget_exhausted",
+  /** A point waited for the next clock hour so that hour's exported series stayed in budget. */
+  "hourly_cap_deferred",
+  /** A destination changed export shape, so its metric series started again from zero. */
+  "shape_changed",
 ] as const;
 export type TelemetryGapKind = (typeof TELEMETRY_GAP_KINDS)[number];
 
@@ -598,6 +642,9 @@ export interface TelemetryProfileSummary {
   lastAcceptedAt: number | null;
   /** True when the last attempt for this destination failed. The text stays off this channel. */
   failing: boolean;
+  waitingForNetwork: boolean;
+  waitingSince: number | null;
+  latePointsSent: number;
 }
 
 export interface TelemetrySettingsSummary {

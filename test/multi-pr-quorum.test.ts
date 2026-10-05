@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { trackedTaskManagers } from "./helpers/task-manager.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
@@ -33,13 +32,16 @@ import {
 const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-quorum-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
-const taskManager = trackedTaskManagers(TaskManager);
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { openDb } = await import("../src/server/db.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+const managers: InstanceType<typeof TaskManager>[] = [];
+after(() => {
+  for (const manager of managers.splice(0)) manager.stopMissionSessionClosures();
+  rmSync(home, { recursive: true, force: true });
+});
 
 const PRIMARY_BASE = "a".repeat(40);
 const EXTRA_BASE = "b".repeat(40);
@@ -174,7 +176,8 @@ function discovered(id: string, cwd: string): DiscoveredSession {
  */
 function fixture(id: string, over: Partial<Task> = {}) {
   const registry = new Registry();
-  const tasks = taskManager(registry);
+  const tasks = new TaskManager(registry);
+  managers.push(tasks);
   const taskId = `task-${id}`;
   const cwd = `/wt/${id}-0`;
   const extraCwd = `/wt/${id}-1`;
