@@ -9,7 +9,14 @@ import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { parseTestingConfig } from "../src/shared/testing-config.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import {
+  emptyWorkflowCommandView,
+  type PublishedWorkflowGraph,
+  type WorkflowBinding,
+  type WorkflowCheckSlot,
+  type WorkflowContextSnapshot,
+} from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // What follows a task's base branch once it has one, after dispatch: the diff its checks and
 // Personas measure, the tests its affected-tests check selects, the conflict fix its reactions
@@ -20,7 +27,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-base-branch-followers-home-"));
 const repos = mkdtempSync(join(tmpdir(), "mission-base-branch-followers-repos-"));
 process.env.HARNESS_HOME = home;
 
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const taskManager = trackedTaskManagers(TaskManager);
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
@@ -32,6 +39,11 @@ const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts"
 const { runCheck } = await import("../src/server/workflows/checks.ts");
 const { workflowPullRequestConflictContract } = await import("../src/server/workflows/agent-contract.ts");
 const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
+const { captureBoundaryChanged, probeMatchesEvidence, readWorkflowContextRaw, readWorkflowEvidenceProbe } =
+  await import("../src/server/workflows/context.ts");
+const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
+const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { openDb } = await import("../src/server/db.ts");
 
 after(() => {
   for (const dir of [home, repos]) rmSync(dir, { recursive: true, force: true });
@@ -189,6 +201,192 @@ test("an affected-tests check hands its base branch to test selection", async ()
   assert.deepEqual(asked, ["release/windows", "release/windows", null, null]);
 });
 
+// --- the base a workflow resolves for its binding ---
+
+/** A session discovered in `cwd`, running a task bound to it with `baseBranch`. */
+function sessionRunning(id: string, cwd: string, repoRoot: string, baseBranch: string | null) {
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: id,
+    agent: "claude",
+    name: id,
+    nameSource: "process",
+    cwd,
+    gitBranch: "feat/port",
+    gitRoot: cwd,
+    repoRoot: cwd,
+    pid: 1,
+    tty: `tty-${id}`,
+    terminals: [],
+    startedAt: 1,
+  } as DiscoveredSession]);
+  registry.upsertTask(mkTask({
+    id: `task-${id}`,
+    status: "running",
+    sessionId: id,
+    worktreePath: cwd,
+    repoRoot,
+    baseBranch,
+  }));
+  const session = registry.getSession(id)!;
+  const binding = { id: `binding-${id}`, sessionId: id, noteKey: noteKeyFor(session), repoRoot: "" } as WorkflowBinding;
+  return { registry, binding };
+}
+
+test("the diff a workflow captures for its Personas is measured from the bound task's base", async () => {
+  const wt = featureOnRelease("capture-base");
+  const repo = realpathSync(join(repos, "capture-base"));
+
+  const based = sessionRunning("capture-based", wt, repo, "release/windows");
+  const captured = await readWorkflowContextRaw(based.registry, based.binding);
+  assert.match(captured.raw.evidence.diff, /src\/feature\.ts/);
+  assert.doesNotMatch(captured.raw.evidence.diff, /src\/windows\.ts/, "the base branch's own commit is not this change");
+  // The cheap probe answers from the same base, or every repair round would read as moved.
+  const probe = await readWorkflowEvidenceProbe(based.registry, based.binding);
+  assert.equal(probeMatchesEvidence(probe, captured.context.evidence), true);
+  assert.equal(await captureBoundaryChanged(based.registry, based.binding, captured.boundary), false);
+
+  const plain = sessionRunning("capture-plain", wt, repo, null);
+  const plainCapture = await readWorkflowContextRaw(plain.registry, plain.binding);
+  assert.match(plainCapture.raw.evidence.diff, /src\/windows\.ts/, "no base measures from main, as before");
+  assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(based.registry, based.binding), plainCapture.context.evidence), false);
+});
+
+/** Session -> one affected-tests Check -> End. */
+const checkGraph: PublishedWorkflowGraph = {
+  nodes: [
+    { id: "session", kind: "session", position: { x: 0, y: 0 } },
+    { id: "gate", kind: "check", slot: "affected-tests", position: { x: 200, y: 0 } },
+    { id: "end", kind: "end", outcome: "Complete", position: { x: 400, y: 0 } },
+  ],
+  edges: [
+    { id: "s-gate", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+    { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+    { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+  ],
+};
+
+const checkContext: WorkflowContextSnapshot = {
+  primaryGoal: { rawPrompt: "Port it", refined: null, sourceNoteKey: "note" },
+  humanDecisions: [],
+  constraints: [],
+  acceptanceCriteria: [],
+  priorPersonaFeedback: [],
+  session: { agent: "claude", name: "work", cwd: "/repo", branch: "feat/port" },
+  evidence: {
+    headSha: "a".repeat(40),
+    diffFingerprint: "diff",
+    diff: "patch",
+    diffTruncated: false,
+    workingTreeDirty: false,
+    workingTreeStatus: [],
+    workingTreeStatusTruncated: false,
+    transcript: [],
+    transcriptAnchor: null,
+    transcriptTruncated: false,
+    standards: [],
+    standardsTruncated: false,
+  },
+  compaction: { status: "fallback", runner: null, model: null, error: null },
+};
+
+/**
+ * Run one affected-tests Check through the daemon's own WorkflowManager and its engine, for a
+ * binding of the session running a task with `baseBranch`, and return the base the executor saw.
+ */
+async function checkBaseFor(id: string, baseBranch: string | null, bindingRepoRoot = ""): Promise<string | null | undefined> {
+  const db = openDb();
+  const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 });
+  db.prepare(
+    `INSERT INTO workflow_definitions (
+       id, name, normalized_name, description, draft_graph_json, completion_policy_json,
+       binding_defaults_json, draft_revision, current_version_id, archived_at, created_at, updated_at
+     ) VALUES (?, ?, ?, '', '{"nodes":[],"edges":[]}', '{"kind":"none"}', ?, 1, ?, NULL, 1, 1)`,
+  ).run(`workflow-${id}`, `Review ${id}`, `review-${id}`, defaults, `version-${id}`);
+  db.prepare(
+    `INSERT INTO workflow_versions (
+       id, workflow_id, version, source_draft_revision, graph_json,
+       completion_policy_json, binding_defaults_json, published_at
+     ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
+  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify(checkGraph), defaults);
+
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: `task-${id}`, status: "running", sessionId: `session-${id}`, repoRoot: "/repo", baseBranch }));
+  const store = new WorkflowStore();
+  const binding = store.insertBinding({
+    id: `binding-${id}`,
+    workflowVersionId: `version-${id}`,
+    noteKey: `note-${id}`,
+    sessionId: `session-${id}`,
+    sessionAgent: "claude",
+    sessionName: id,
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    repoRoot: bindingRepoRoot,
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission(
+    { id: `run-${id}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `manual:${id}`, now: 2 },
+    { id: `submission-${id}`, triggerSource: "manual", triggerKey: `manual:${id}`, context: {}, evidence: {}, now: 2 },
+  );
+  store.updateSubmissionCapture(`submission-${id}`, {
+    context: workflowJson(checkContext),
+    evidence: workflowJson(checkContext.evidence),
+    fingerprint: `fingerprint-${id}`,
+    status: "running",
+  }, 3);
+
+  const seen: (string | null | undefined)[] = [];
+  const manager = new WorkflowManager(registry, store, {
+    engine: {
+      concurrency: 1,
+      retryBaseMs: 1,
+      workflowPolicy: () => ({
+        liveEnabled: false,
+        repoAllowlist: ["/repo"],
+        kindWorkflowDefaults: { ship: null },
+        retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
+        checksEnabled: true,
+        checkTestLease: false,
+        checkTestConcurrency: null,
+        skipPassedJudges: true,
+      }),
+      workflowCommand: (slot: WorkflowCheckSlot) => ({
+        ...emptyWorkflowCommandView(slot),
+        overrides: [{ repoRoot: "/repo", command: ["node", "--test", "--test-reporter-destination={junit}", "{files}"] }],
+      }),
+      checkDeps: () => ({
+        execute: async (request: { baseBranch?: string | null }) => {
+          seen.push(request.baseBranch);
+          return { kind: "exited" as const, exitCode: 0, output: "", truncatedBytes: 0 };
+        },
+      }),
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission(`submission-${id}`);
+  const started = Date.now();
+  while (seen.length === 0) {
+    if (Date.now() - started > 5_000) throw new Error("the check never ran");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await manager.engine.stop();
+  return seen[0];
+}
+
+test("a workflow check is handed the bound task's base branch by the manager's own wiring", async () => {
+  assert.equal(await checkBaseFor("check-based", "release/windows"), "release/windows");
+  assert.equal(await checkBaseFor("check-plain", null), null, "a task with no base measures from the default");
+  assert.equal(
+    await checkBaseFor("check-attached", "release/windows", "/attached"),
+    null,
+    "an attached repository keeps its own default branch",
+  );
+});
+
 // --- merge-conflict reactions ---
 
 test("the workflow PR action asks for the conflict fix against the task's base branch", () => {
@@ -293,8 +491,8 @@ function withDependent(id: string, baseBranch: string | null = "release/windows"
     registry.applyDiscovery([]);
     registry.emit("event", { type: "session_remove", id });
   };
-  /** One by-URL poll pass in which `url` reports merged into `baseRef`. */
-  const urlPoll = (url: string, baseRef: string) =>
+  /** One by-URL poll pass in which `url` reports merged into `baseRef` (null: `gh` named none). */
+  const urlPoll = (url: string, baseRef: string | null) =>
     pollAndReconcilePrs(
       registry,
       async () => null,
@@ -344,6 +542,21 @@ test("the branch poller records a merge only into the task's base branch", () =>
   const right = withDependent("branch-on-base");
   right.branchPoll("https://github.com/example/repo/pull/903", "merged", "release/windows");
   assert.equal(taskWorkEpisodeForTask(right.taskId)?.mergedAt, NOW);
+  assert.notEqual(right.dependent().dependencies[0]?.satisfiedAt, null, "stamped on the edge");
+  assert.deepEqual(right.tasks.dependencyBlockers(right.dependent()), []);
+});
+
+test("a merge gh reports with no base branch does not count for a task that names one", async () => {
+  const url = "https://github.com/example/repo/pull/905";
+  const f = withDependent("lands-unnamed");
+  f.branchPoll(url, "open", "release/windows");
+  f.depart();
+
+  await f.urlPoll(url, null);
+
+  assert.equal(f.registry.getTask(f.taskId)?.status, "failed");
+  assert.equal(taskWorkEpisodeForTask(f.taskId)?.mergedAt, null);
+  assert.equal(f.tasks.dependencyBlockers(f.dependent())[0]?.state, "stopped");
 });
 
 test("a task with no base branch completes on a merge into any branch, exactly as before", async () => {
