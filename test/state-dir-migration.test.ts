@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Renaming a state dir from an older name (~/.fleet-control, ~/.ai-harness) onto
 // ~/.mission-control.
@@ -28,16 +28,29 @@ function mkHome(dirs: Record<string, string>): string {
   return home;
 }
 
-/** Run a node snippet with HOME set, and nothing else - no env override. */
+/**
+ * The child's home, under both names `os.homedir()` reads: HOME on macOS and Linux, and
+ * USERPROFILE on win32. Setting only HOME would send a Windows child to the real profile.
+ */
+function homeEnv(home: string): NodeJS.ProcessEnv {
+  return { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
+}
+
+/** A dynamic import of a repo file, spelled as a URL so a Windows drive path imports too. */
+function importOf(file: string): string {
+  return `import(${JSON.stringify(pathToFileURL(join(repo, file)).href)})`;
+}
+
+/** Run a node snippet with the home set, and nothing else - no env override. */
 function inHome(home: string, code: string): string {
   return execFileSync(process.execPath, ["--experimental-strip-types", "-e", code], {
     cwd: repo,
-    env: { PATH: process.env.PATH, HOME: home },
+    env: homeEnv(home),
     encoding: "utf8",
   }).trim();
 }
 
-const IMPORT_MIGRATE = `import("${join(repo, "src/server/migrate-state.ts")}")`;
+const IMPORT_MIGRATE = importOf("src/server/migrate-state.ts");
 
 test("the daemon's migrate module moves an old state dir onto the new name", async () => {
   const home = mkHome({ ".fleet-control": "REAL" });
@@ -67,7 +80,7 @@ test("an explicit MISSION_HOME owns its path - nothing is renamed behind it", as
   const home = mkHome({ ".fleet-control": "REAL" });
   execFileSync(process.execPath, ["--experimental-strip-types", "-e", `await ${IMPORT_MIGRATE}`], {
     cwd: repo,
-    env: { PATH: process.env.PATH, HOME: home, MISSION_HOME: join(home, "elsewhere") },
+    env: { ...homeEnv(home), MISSION_HOME: join(home, "elsewhere") },
     encoding: "utf8",
   });
   assert.ok(existsSync(join(home, ".fleet-control")), "the override means hands off");
@@ -79,7 +92,7 @@ test("importing config.ts does NOT move anything - only the daemon's entry may",
   // test file; when the rename lived in its body, running the suite renamed the real
   // ~/.fleet-control. A state dir must never move because someone imported a config.
   const home = mkHome({ ".fleet-control": "REAL" });
-  inHome(home, `await import("${join(repo, "src/server/config.ts")}")`);
+  inHome(home, `await ${importOf("src/server/config.ts")}`);
   assert.ok(existsSync(join(home, ".fleet-control")), "importing config left the dir alone");
   assert.ok(!existsSync(join(home, ".mission-control")), "and invented nothing");
 });

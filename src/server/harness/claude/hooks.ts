@@ -1,4 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
+import { isAbsoluteNativePath } from "@shared/native-path.ts";
 import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
 import { substantivePrompt } from "./scaffolding.ts";
 
@@ -259,10 +260,10 @@ export function isMissionHookCommand(command: string): boolean {
 export function missionHookScriptPath(command: string): string | null {
   for (const match of command.matchAll(/"([^"]*)"/g)) {
     const value = match[1] ?? "";
-    if (value.startsWith("/") && HOOK_SCRIPT.test(value)) return value;
+    if (isAbsoluteNativePath(value) && HOOK_SCRIPT.test(value)) return value;
   }
   for (const token of command.split(/\s+/)) {
-    if (token.startsWith("/") && HOOK_SCRIPT.test(token)) return token;
+    if (isAbsoluteNativePath(token) && HOOK_SCRIPT.test(token)) return token;
   }
   return null;
 }

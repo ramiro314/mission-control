@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
 import { bareRepositoryStatus, isBareRepository, mainRepoRoot } from "./util/git.ts";
@@ -203,7 +203,7 @@ export async function resolveRepoPath(
   };
   const here = canonical(p);
   const tree = toplevel ? canonical(toplevel) : "";
-  const sub = tree && here !== tree && here.startsWith(`${tree}/`)
+  const sub = tree && here !== tree && here.startsWith(`${tree}${sep}`)
     ? here.slice(tree.length + 1)
     : "";
   return { repoRoot, path: sub ? join(repoRoot, sub) : repoRoot };

@@ -5,6 +5,7 @@
 // one decision form, and applies only what was approved. `setAffectedTestsCommand` is how the
 // approved `affected-tests` template reaches Mission Control: a machine-local Command override,
 // written through the same `WorkflowCommandManager.replace` the Command editor's route uses.
+import { basename } from "node:path";
 import type { AgentType, Task } from "@shared/types.ts";
 import type { TestingSetupStartResponse } from "@shared/protocol.ts";
 import { WORKFLOW_LIMITS, commandTemplateProblem, type WorkflowCommandView } from "@shared/workflow.ts";
@@ -130,7 +131,7 @@ function testingSetupAgent(deps: TestingSetupDeps): { agent: AgentType } | { pro
 }
 
 function repoLeafName(repoRoot: string): string {
-  return repoRoot.split("/").filter(Boolean).pop() ?? repoRoot;
+  return basename(repoRoot) || repoRoot;
 }
 
 /** What the agent is told. The procedure is the skill's; the intent only names it and the scope. */

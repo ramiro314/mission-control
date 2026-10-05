@@ -6,10 +6,7 @@
 // invisible until it lies to someone; two features deciding whether to act on the
 // operator's behalf is exactly when you do not want two matchers.
 
-/** Drop a single trailing "/" (keeping bare "/") so "/repo/" and "/repo" compare equal. */
-function stripTrailingSlash(p: string): string {
-  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
-}
+import { pathWithin } from "./native-path.ts";
 
 /**
  * Whether `cwd` sits inside the allowlist.
@@ -19,11 +16,7 @@ function stripTrailingSlash(p: string): string {
  */
 export function cwdAllowlisted(cwd: string | null, allowlist: readonly string[]): boolean {
   if (!cwd) return false;
-  const dir = stripTrailingSlash(cwd);
-  return allowlist.some((root) => {
-    const r = stripTrailingSlash(root);
-    return dir === r || dir.startsWith(`${r}/`);
-  });
+  return allowlist.some((root) => pathWithin(cwd, root));
 }
 
 /**

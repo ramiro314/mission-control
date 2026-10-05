@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   MISSION_API_TOKEN_ENV,
   MISSION_API_TOKEN_FILE_ENV,
@@ -100,8 +100,9 @@ export function createDisposableAgentStateHome(): string {
 /** Remove only a home minted by this module. Safe to repeat after another owner cleaned it. */
 export function cleanupDisposableAgentStateHome(stateHome: string | undefined): void {
   if (!stateHome) return;
-  const prefix = `${DISPOSABLE_STATE_ROOT}/session-`;
-  if (!stateHome.startsWith(prefix) || stateHome.slice(prefix.length).includes("/")) return;
+  const prefix = join(DISPOSABLE_STATE_ROOT, "session-");
+  const rest = stateHome.slice(prefix.length);
+  if (!stateHome.startsWith(prefix) || rest.includes("/") || rest.includes(sep)) return;
   rmSync(stateHome, { recursive: true, force: true });
   liveDisposableStateHomes.delete(stateHome);
 }

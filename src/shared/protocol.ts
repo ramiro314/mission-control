@@ -1,6 +1,7 @@
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
+import { isAbsoluteNativePath } from "./native-path.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
@@ -4950,9 +4951,9 @@ export const PersonaSourcePathSchema = z
   .min(1)
   .max(4096)
   .refine((value) => !value.includes("\0"), { message: "path may not contain a NUL byte" })
-  // Judged on the string exactly as POSIX does, rather than through `node:path`, so this
-  // schema stays usable in a browser that has no `path` module to import.
-  .refine((value) => value.startsWith("/"), {
+  // Judged on the string rather than through `node:path`, so this schema stays usable in a
+  // browser that has no `path` module to import.
+  .refine((value) => isAbsoluteNativePath(value), {
     message: "path must be absolute - Mission Control reads it on the daemon's machine",
   });
 

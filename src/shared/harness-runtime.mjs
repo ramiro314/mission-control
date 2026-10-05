@@ -15,7 +15,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import path, { dirname, join, resolve } from "node:path";
 
 /**
  * Read a config env var by its `MISSION_` name, falling back to the names this app
@@ -68,13 +68,29 @@ export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
  * have several processes racing to invent a state dir.
  */
 export function stateDir() {
-  const override = envVar("HOME");
+  return resolveStateDir();
+}
+
+/**
+ * `stateDir` with its inputs exposed, so the resolution can be tested for a platform other
+ * than the one running the test. Every default is what `stateDir` itself uses.
+ *
+ * The home is `os.homedir()`, which is `$HOME` on macOS and Linux and `%USERPROFILE%` on
+ * win32, so a Windows daemon keeps its state in `%USERPROFILE%\.mission-control` with the
+ * same layout as macOS (D22 in `docs/plans/windows-support/plan.md`).
+ */
+export function resolveStateDir({
+  override = envVar("HOME"),
+  home = homedir(),
+  exists = existsSync,
+  pathApi = path,
+} = {}) {
   if (override) return override;
   for (const name of STATE_DIRS) {
-    const p = join(homedir(), name);
-    if (existsSync(p)) return p;
+    const p = pathApi.join(home, name);
+    if (exists(p)) return p;
   }
-  return join(homedir(), STATE_DIRS[0]);
+  return pathApi.join(home, STATE_DIRS[0]);
 }
 
 /**

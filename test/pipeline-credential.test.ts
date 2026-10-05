@@ -52,9 +52,20 @@ test("an invalid named credential file never falls back to the legacy credential
       readPipelineCallerCredential({
         [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]: path,
         [PIPELINE_CALLER_CREDENTIAL_ENV]: legacy,
-      }, 100),
+      }, 100, "darwin"), // the mode rule is POSIX's; on win32 every file reads as 0o666
       null,
       path,
     );
   }
+});
+
+test("win32 reads a credential file whatever its POSIX mode reports", () => {
+  // Node reports every writable file on win32 as 0o666, so a mode rule there refused every
+  // credential and the Pipeline MCP tools never learned their host identity.
+  const path = credentialFile("win32.json", { credential: current, expiresAt: 101 });
+  chmodSync(path, 0o644);
+  assert.equal(
+    readPipelineCallerCredential({ [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]: path }, 100, "win32"),
+    current,
+  );
 });
