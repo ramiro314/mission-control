@@ -155,7 +155,9 @@ test("repair feedback is deterministic, graph ordered, intent preserving, and co
   assert.match(first.payload, /Keep the original intent/);
   assert.doesNotMatch(first.payload, /Do not use me/);
   assert.doesNotMatch(first.payload, /[\u0000\u001b]/);
-  assert.match(first.payload, /already authorized you to commit the scoped work/);
+  assert.match(first.payload, /Do not push or open a pull request on your own initiative/);
+  assert.match(first.payload, /Once this task's pull request exists, you may push to update it/);
+  assert.doesNotMatch(first.payload, /already authorized you to commit the scoped work/);
   assert.match(first.payload, /already authorized `submit_workflow_evidence`/);
   assert.match(first.payload, /do not ask the human to resubmit the workflow/);
   assert.match(first.payload, /does not authorize merge/);
@@ -207,7 +209,9 @@ test("repair feedback caps fields and total bytes with a stable truncation notic
   });
   assert.ok(Buffer.byteLength(rendered.payload) <= WORKFLOW_LIMITS.feedbackPayloadBytes);
   assert.match(rendered.payload, /Preserve the user's explicit intent\./);
-  assert.match(rendered.payload, /already authorized you to commit the scoped work/);
+  assert.match(rendered.payload, /Do not push or open a pull request on your own initiative/);
+  assert.match(rendered.payload, /Once this task's pull request exists, you may push to update it/);
+  assert.doesNotMatch(rendered.payload, /already authorized you to commit the scoped work/);
   assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
   assert.match(rendered.payload, /\[Workflow repair packet truncated deterministically\.\]$/);
   assert.equal(rendered.truncated, true);
@@ -250,7 +254,9 @@ test("a handoff for one repository of a multi-repo task names it and scopes the 
   assert.match(rendered.payload, /Repository: \/work\/beta/);
   assert.match(rendered.payload, /the repository named above/);
   assert.match(rendered.payload, /Leave the task's other repositories alone/);
-  assert.match(rendered.payload, /already authorized you to commit the scoped work/);
+  // The handoff is a grant holder: the human chose to ask for the pull request.
+  assert.match(rendered.payload, /already authorized you to commit the scoped work, push its task branch, and create or update that pull request/);
+  assert.doesNotMatch(rendered.payload, /Do not push or open a pull request on your own initiative/);
   assert.match(rendered.payload, /does not authorize merge/);
   assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
 });

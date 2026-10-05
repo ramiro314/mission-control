@@ -95,7 +95,7 @@ test("a scout's intent arrives intact, with the contract appended after it", () 
   );
 });
 
-test("every task kind keeps the exact intent prefix and receives conditional PR authorization", () => {
+test("every task kind keeps the exact intent prefix and receives the task authorization", () => {
   for (const kind of ["ship", "scout", "plan", "pipeline"] as const) {
     const task = mkTask({ kind });
     const delivered = withTaskKindContract(
@@ -104,8 +104,8 @@ test("every task kind keeps the exact intent prefix and receives conditional PR 
       kind === "plan" ? { planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" } } : {},
     );
     assert.ok(delivered.startsWith(task.intent), `${kind} keeps the operator's exact prefix`);
-    assert.match(delivered, /already authorized you to commit the scoped work/);
-    assert.match(delivered, /explicit no-PR instruction wins/);
+    assert.match(delivered, /Do not push or open a pull request on your own initiative/);
+    assert.doesNotMatch(delivered, /already authorized you to commit the scoped work/);
     assert.match(delivered, /does not authorize merge, another repository, or another external write/);
     assert.match(delivered, /does not change sandbox approval or server-side validation/);
   }

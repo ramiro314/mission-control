@@ -648,10 +648,10 @@ test("what may be authored is derived from what can be delivered, not chosen bes
     + WORKFLOW_LIMITS.workflowName
     + WORKFLOW_LIMITS.sessionActionSkillId
     + WORKFLOW_LIMITS.checkRepoRoot)
-    + Buffer.byteLength(executionAuthorizationContract({
-      workflowEvidence: true,
-      workflowContinuation: true,
-    }), "utf8")
+    + Math.max(...[false, true].map((pullRequestGrant) => Buffer.byteLength(
+      executionAuthorizationContract({ workflowEvidence: true, workflowContinuation: true, pullRequestGrant }),
+      "utf8",
+    )))
     + Buffer.byteLength(workflowPullRequestCiContract(), "utf8")
     + 200; // run id, version, labels and newlines
   assert.ok(
@@ -710,6 +710,9 @@ test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix
   assert.match(packet.payload, /already authorized `submit_workflow_evidence`/);
   assert.match(packet.payload, /do not ask the human to resubmit the workflow/);
   assert.match(packet.payload, /does not authorize merge/);
+  // An action that does not complete on a pull request may only update an existing one.
+  assert.match(packet.payload, /Once this task's pull request exists, you may push to update it/);
+  assert.doesNotMatch(packet.payload, /already authorized you to commit the scoped work/);
   assert.equal(packet.payloadSha256.length, 64);
 
   // A version minted by some other build, carrying a prompt this one cannot send whole.

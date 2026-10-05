@@ -11,6 +11,7 @@ const packet = {
   promptMarkdown: legacyPrompt,
   skillCommand: "/pull-request",
   workflowEvidence: true,
+  pullRequestGrant: true,
 };
 
 test("CI policy extends a frozen PR stopping instruction without rewriting it", () => {

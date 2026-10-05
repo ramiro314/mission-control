@@ -142,6 +142,12 @@ export interface SessionActionPacketInput {
   workflowEvidence: boolean;
   /** Enabled only for workflow PR completion actions at packet preparation. */
   pullRequestCi?: boolean;
+  /**
+   * The action's contract completes on a pull request, so this packet carries the creation
+   * grant. Off for every other action, authored or on-demand: the packet then carries the task
+   * authorization, which only lets the session update a pull request that already exists.
+   */
+  pullRequestGrant?: boolean;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -251,6 +257,8 @@ function finalizePacket(
   truncated: boolean,
   finalInstruction: string,
   workflowEvidence: boolean,
+  /** Only the PR handoff grants creation; repair and Inspector packets may only update one. */
+  pullRequestGrant = false,
 ): {
   payload: string;
   payloadSha256: string;
@@ -260,6 +268,7 @@ function finalizePacket(
   const authorization = executionAuthorizationContract({
     workflowEvidence,
     workflowContinuation: true,
+    pullRequestGrant,
   });
   const finalBlock = `${authorization}\n\n${finalInstruction}`;
   let payload = `${cleanBody}\n\n${finalBlock}`;
@@ -731,6 +740,7 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
   const authorization = executionAuthorizationContract({
     workflowEvidence: input.workflowEvidence,
     workflowContinuation: input.origin.kind === "run",
+    pullRequestGrant: input.pullRequestGrant === true,
   });
   const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
     ? ["", workflowPullRequestCiContract(), ""]
@@ -778,7 +788,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     ? "Use the invoked pull-request skill to commit the reviewed work in the repository named above, push it, and open that repository's pull request with a reviewer-ready description and concrete proof. Leave the task's other repositories alone; each has its own review and its own pull request."
     : "Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request with a reviewer-ready description and concrete proof.";
   return {
-    ...finalizePacket(body, truncated, instruction, input.workflowEvidence),
+    ...finalizePacket(body, truncated, instruction, input.workflowEvidence, true),
     failedPersonaCount: 0,
   };
 }
