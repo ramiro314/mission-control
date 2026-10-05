@@ -257,13 +257,16 @@ export function isMissionHookCommand(command: string): boolean {
  * script's name and is not a path at all. A caller is going to `stat` whatever comes back
  * and tell the operator it is missing, so "not sure" has to be null rather than a guess.
  */
-export function missionHookScriptPath(command: string): string | null {
+export function missionHookScriptPath(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
   for (const match of command.matchAll(/"([^"]*)"/g)) {
     const value = match[1] ?? "";
-    if (isAbsoluteNativePath(value) && HOOK_SCRIPT.test(value)) return value;
+    if (isAbsoluteNativePath(value, platform) && HOOK_SCRIPT.test(value)) return value;
   }
   for (const token of command.split(/\s+/)) {
-    if (isAbsoluteNativePath(token) && HOOK_SCRIPT.test(token)) return token;
+    if (isAbsoluteNativePath(token, platform) && HOOK_SCRIPT.test(token)) return token;
   }
   return null;
 }

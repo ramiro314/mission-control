@@ -5,7 +5,7 @@
 // one decision form, and applies only what was approved. `setAffectedTestsCommand` is how the
 // approved `affected-tests` template reaches Mission Control: a machine-local Command override,
 // written through the same `WorkflowCommandManager.replace` the Command editor's route uses.
-import { basename } from "node:path";
+import path from "node:path";
 import type { AgentType, Task } from "@shared/types.ts";
 import type { TestingSetupStartResponse } from "@shared/protocol.ts";
 import { WORKFLOW_LIMITS, commandTemplateProblem, type WorkflowCommandView } from "@shared/workflow.ts";
@@ -130,8 +130,12 @@ function testingSetupAgent(deps: TestingSetupDeps): { agent: AgentType } | { pro
   return { problem: problem ?? `The ${TESTING_SETUP_SKILL} skill is unavailable.` };
 }
 
-function repoLeafName(repoRoot: string): string {
-  return basename(repoRoot) || repoRoot;
+/** The repository's folder name for the task title; the path API is a test seam for win32. */
+export function repoLeafName(
+  repoRoot: string,
+  pathApi: Pick<typeof path, "basename"> = path,
+): string {
+  return pathApi.basename(repoRoot) || repoRoot;
 }
 
 /** What the agent is told. The procedure is the skill's; the intent only names it and the scope. */
