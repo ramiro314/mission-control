@@ -1,6 +1,6 @@
 # Windows support on a parallel `release/windows` branch
 
-Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
+Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
 
 ## Goal
 
@@ -73,7 +73,7 @@ brackets.
 | D5 | Keeping up with `main` | A **weekly recurring mission merges `main` into `release/windows`**: merge, never rebase, no force-push. [R1] |
 | D6 | Platform-neutral refactors | **Land on `main` directly** (macOS behavior unchanged). Only Windows-specific behavior goes on `release/windows`. [R1] |
 | D7 | Manual validation | The human has a Windows machine or VM and runs the manual gates. [R1] |
-| D8 | Merge gate criteria | Full unit suite green on a `windows-latest` CI job; Playwright e2e green on Windows CI; a manual smoke on real Windows (dispatch a task, run a session, see it on the board, complete it); macOS CI and the macOS package job still green with no macOS behavior change. [R1] |
+| D8 | Merge gate criteria | Full unit suite green on a `windows-latest` CI job; Playwright e2e green on Windows CI; a manual smoke on real Windows (dispatch a task, run a session, see it on the board, complete it); macOS CI and the macOS package job still green with no macOS behavior change. [R1] D37 defines what "green" means for tests that cannot apply on win32. |
 | D9 | Session runtimes | **SDK runtime first**; a WezTerm terminal backend is a later milestone. [R2] |
 | D10 | Required harness | **Claude Code.** [R2] |
 | D11 | Machine prerequisites | Node 24+, **Git for Windows** (Git Bash on disk), and PowerShell for system queries (process and port queries use PowerShell/CIM instead of `ps`/`lsof`). [R2] |
@@ -101,6 +101,8 @@ brackets.
 | D33 | Native addon toolchain | **Prerequisite: Visual Studio Build Tools (the C++ workload) and Python 3**, checked in Setup. This extends D11. The NSIS installer later ships built addons, so end users never need the toolchain. [Repair 1] |
 | D34 | How M2 tickets get their base branch | **Two stages.** The ticket follow-up files only the M0 and M1 tickets. The M0.3 ticket ends by filing the M2 tickets with `base_branch = release/windows`, once both the field and the branch exist. [Repair 1] |
 | D35 | How the sync mission's tasks target the branch | **`base_branch` is part of the recurring-mission task template** (a D21 surface, built in M0.1). The sync mission sets it to `release/windows`. [Repair 1] |
+| D36 | How M1 seams reach `release/windows` | **Create `release/windows` only after M0.1, M0.2 and all of M1 have merged into `main`**, so the branch starts with every seam and no M2 ticket waits on a sync for M1. A seam found later, during M2, lands on `main` through its own ticket. That ticket ends by triggering Run now on the sync mission and adding the waiting M2 ticket's dependency on the sync task this files (`create_task` with `adoptTaskId` and `dependsOnTaskIds`). [Repair 2] |
+| D37 | What "green" means for the Windows gate | **One explicit win32 skip guard with a stated reason**, used only for tests of surfaces unavailable on win32 (Codex, Pi, the terminal runtime and its backends, terminal discovery, the macOS updater and install migration) and for tests that pin POSIX-only implementations. The skip list is enumerated in the merge PR and reviewed there. Every other test must pass. The same rule applies to the e2e specs. This narrows D8's "full unit suite" to every test that applies to win32. [Repair 2] |
 
 ## Branch model
 
@@ -113,12 +115,13 @@ flowchart LR
   W -- once, after the merge gate:<br/>merge commit 'feat: Windows support' --> M
 ```
 
-- `release/windows` is created from `main` once the per-task base branch feature has merged
-  (milestone M0).
+- `release/windows` is created from `main` (M0.3) only after M0.1, M0.2 and all of M1 have
+  merged (D36), so it starts with the base-branch feature, `.gitattributes` and every seam.
 - **Neutral work goes to `main`** (D6). That means seams that leave macOS byte-for-byte
-  identical, the base-branch feature, and `.gitattributes`. It reaches `release/windows`
-  through the next weekly merge, or through an on-demand run of the same mission when a Windows
-  ticket is waiting on it.
+  identical, the base-branch feature, and `.gitattributes`. Neutral work from before M0.3 is in
+  the branch from the start. Later `main` changes reach it through the weekly merge. A seam an
+  M2 ticket turns out to need lands on `main` by its own ticket, which ends by triggering Run now
+  on the sync mission and making the waiting M2 ticket depend on the resulting sync task (D36).
 - **Windows-specific work goes to `release/windows`** (D4): win32 implementations behind those
   seams, Windows CI, the Makefile port, Setup checks, and Windows docs.
 - Every PR into `release/windows` gets the existing Linux CI through `pull_request`, plus the
@@ -189,10 +192,16 @@ Tickets are filed in two stages, so every ticket is valid on the day it is creat
 
 1. **When this plan's PR merges**, the Mission Control ticket follow-up slices **only M0 and
    M1** into tickets on `main`, with their blocking edges. It files no M2 ticket, because
-   neither `tasks.base_branch` nor `release/windows` exists yet.
-2. **The M0.3 ticket ends by filing the M2 tickets**, each with
-   `base_branch = release/windows`, sliced from M2 below with their blocking edges. M3 and the
-   after-the-merge work are filed by the last M2 ticket, by the same rule.
+   neither `tasks.base_branch` nor `release/windows` exists yet. M0.3 is blocked on M0.1,
+   M0.2 and M1.1 to M1.4 (D36). M0.4 is blocked on M0.3.
+2. **The M0.3 ticket ends by filing the M2 tickets** (M2.0 to M2.12), each with
+   `base_branch = release/windows`, sliced from M2 below with their blocking edges. Each is
+   valid when it is created, because the field, the branch and every M1 seam already exist.
+3. **The M2.12 gate-readiness ticket ends by filing the M3 tickets** (M3.1 to M3.3) on
+   `main`, with M3.1 blocking M3.2 and M3.2 blocking M3.3.
+4. **The M3.3 retirement ticket ends by filing the after-the-merge tickets** on `main`. It runs
+   only after M3.2 has merged, so those tickets cannot dispatch before the Windows code is on
+   `main`.
 
 ### M0: Groundwork (on `main`, then branch creation)
 
@@ -200,7 +209,8 @@ Tickets are filed in two stages, so every ticket is valid on the day it is creat
    Blocks M0.3, M0.4 and every ticket that targets `release/windows`.
 2. **`.gitattributes`** with `* text=auto eol=lf` (D25), plus the renormalization commit it
    needs, with a check that byte-exact tests still pass.
-3. **Create `release/windows`** from `main` once item 1 has merged, and add the fork-ledger
+3. **Create `release/windows`** from `main` once items 1 and 2 and all of M1 have merged
+   (D36), and add the fork-ledger
    entry "Windows support (in progress on `release/windows`)". This ticket **ends by filing the
    M2 tickets** with `base_branch = release/windows` (D34).
 4. **Sync runbook and mission** (D28, D35). This waits for item 3, because the template's base
@@ -211,7 +221,8 @@ Tickets are filed in two stages, so every ticket is valid on the day it is creat
 ### M1: Platform-neutral seams (on `main`, macOS behavior unchanged)
 
 Each seam is a module with a POSIX implementation that keeps today's exact commands, and a
-place for a win32 implementation that `main` does not yet register:
+place for a win32 implementation that `main` does not yet register. All four block M0.3
+(D36):
 
 1. **Process inspection**: list processes, read a process's cwd and command line, and find the
    process listening on a port. This replaces direct `ps`/`lsof`/`pgrep` calls at the call sites
@@ -236,7 +247,9 @@ POSIX implementation issues the same commands it did before.
 1. **Windows CI** (D15, D30, D32): add `release/windows` to `ci.yml`'s `push` branches, and add
    `windows-latest` jobs on Node 24 for typecheck, the sharded unit suite, build plus smoke, and
    Playwright e2e. These jobs set npm's `script-shell` to Git Bash. They start allowed to fail
-   and become required on this branch once M2 is green. They also run two native probes on
+   and become required on this branch once M2 is green. This ticket also adds the single
+   win32 skip guard (D37), a helper that takes a stated reason, and it is the only way a test
+   or e2e spec may skip on win32. They also run two native probes on
    win32: the state-lock tests (`test/native-state-lock-provisioning.test.ts` and
    `test/daemon-state-ownership.test.ts`) and `npm run verify:keep-awake-native`.
 2. **State lock on win32**: a `LockFileEx` implementation in `native/state-lock`, with the
@@ -247,7 +260,12 @@ POSIX implementation issues the same commands it did before.
 4. **win32 seam implementations**: process inspection through PowerShell/CIM, tree kill
    through `taskkill /T /F`, the executable ladder (`%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`,
    `%USERPROFILE%\.local\bin`, mise/Volta Windows locations, `Program Files\Git\bin`), and PATH
-   read from the process and user environment instead of a login shell.
+   read from the process and user environment instead of a login shell. **Process cwd comes
+   first:** CIM's `Win32_Process` exposes no working directory, and cwd feeds both discovery
+   (`discovery/correlate.ts`) and worktree occupancy (`worktrees/occupancy.ts`). The ticket
+   first confirms whether a reliable win32 source exists. If none does, the win32
+   `readProcCwdsSnapshot` returns its existing `unknownReason`, which destructive callers
+   already treat as unsafe to proceed, and the ticket records that choice.
 5. **State home and paths** (D22): resolve `%USERPROFILE%\.mission-control`, and audit for
    string-concatenated `/` paths, `/tmp`, and POSIX file modes on that branch.
 6. **Harness availability** (D10, D20): on win32, Claude Code is available. Codex and Pi report
@@ -268,12 +286,16 @@ POSIX implementation issues the same commands it did before.
 11. **Docs**: a Windows section in `docs/setup.md` (prerequisites including the D33
     toolchain, `script-shell`, Developer Mode, long paths), the Windows rows in `docs/harnesses-and-terminals.md`, and the fork-ledger
     entry.
+12. **Gate readiness**: blocked on M2.1 to M2.11. It confirms the Windows jobs are required and
+    green under D37, and writes the skip list (every use of the win32 skip guard, with its
+    reason) into the draft merge PR description. It **ends by filing the M3 tickets** (D34).
 
 ### M3: Validation and merge to `main`
 
 1. All four D8 gates pass:
-   - The full unit suite is green on Windows CI.
-   - Playwright e2e is green on Windows CI.
+   - The unit suite is green on Windows CI under D37.
+   - Playwright e2e is green on Windows CI under D37.
+   - The human has reviewed the skip list in the merge PR.
    - The human's manual smoke on Windows 11 x64 passes: dispatch a Claude Code task, watch the SDK
      session on the board, message it, and complete it. The steps are written as a checklist in
      the merge PR.
@@ -281,10 +303,13 @@ POSIX implementation issues the same commands it did before.
      `package` job is green on the merge candidate.
 2. **Merge PR** `release/windows` into `main`, merged with a merge commit titled
    `feat: Windows support` (D16). Windows CI jobs now run on `main` as well.
-3. **Retire** (D29): delete `release/windows`, retire the sync mission, and set the ledger
-   entry to "merged; follow-ups on main".
+3. **Retire** (D29), after item 2 has merged: delete `release/windows`, retire the sync
+   mission, and set the ledger entry to "merged; follow-ups on main". This ticket **ends by
+   filing the after-the-merge tickets** below (D34).
 
 ### After the merge (on `main`, not gating)
+
+Filed by M3.3 once the merge has landed:
 
 - **WezTerm terminal backend on Windows** (D9, D19): discovery, focus, capture and write for
   WezTerm panes on win32, which re-enables the terminal runtime there.
@@ -306,7 +331,9 @@ POSIX implementation issues the same commands it did before.
 - A5. The state lock and Keep Awake work on win32. Proved by the M2.1 native probes on
   `windows-latest` (the state-lock tests and `npm run verify:keep-awake-native`) and by the
   manual smoke.
-- A6. The unit suite and Playwright e2e are green on `windows-latest` (Node 24).
+- A6. The unit suite and Playwright e2e are green on `windows-latest` (Node 24) under D37.
+  Every skip on win32 goes through the one guard with a stated reason, and the enumerated skip
+  list in the merge PR has been reviewed.
 - A7. macOS behavior is unchanged. Linux CI and a manual macOS `package` run are green.
 - A8. A Windows ticket dispatched with base branch `release/windows` gets a worktree from
   `release/windows`, opens its PR against it, and unblocks its dependents when it merges.
@@ -329,8 +356,8 @@ POSIX implementation issues the same commands it did before.
   tuned in the Windows CI ticket.
 - **Claude Code on native Windows** depends on Git Bash. Whether the Agent SDK can spawn
   `claude` on win32 is settled first, by the M2.0 spike, with a stop-and-replan exit.
-- **Drift.** The weekly merge keeps conflicts small, but M1 seams landing on `main` while M2
-  builds on them needs the on-demand sync run described in the branch model.
+- **Drift.** The weekly merge keeps conflicts small. M1 is in the branch from the start (D36).
+  A seam discovered during M2 uses the Run now plus dependency hand-off in D36.
 
 ## Out of scope
 
