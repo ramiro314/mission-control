@@ -315,6 +315,9 @@ test("a workflow-bound plan defers its PR but still publishes artifacts before s
   assert.match(prompt, /absence is NOT a/);
   assert.doesNotMatch(prompt, /Judge only whether the implementation work/);
   assert.match(delivered, /end this turn/);
+  // A removed binding falls back to Foreman's wrap-up, never to the agent opening the PR itself.
+  assert.match(delivered, /If the binding is removed, Foreman's Ship it\? or Straight to PR path opens the plan's pull request/);
+  assert.doesNotMatch(delivered, /direct PR path|open the plan's pull request yourself/);
 });
 
 test("unbound plan and shape defer their PR exactly like bound ones", () => {
