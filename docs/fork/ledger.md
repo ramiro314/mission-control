@@ -17,7 +17,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Field | Value |
 | --- | --- |
 | Last synced upstream | **1.26.0**, `upstream/main` at `2012e91b` (upstream #1164) |
-| Sync date | 2026-10-05, sync PR pending (merge commit `fdf3e845`) |
+| Sync date | 2026-10-05, fork PR #175 (merge commit `fdf3e845`) |
 | Fork commits ahead of upstream | **341** (247 excluding merge commits) |
 | Upstream commits behind | **0** |
 | Active fork features | **12** (plus 3 superseded or removed, and 12 standalone fixes) |
@@ -49,7 +49,7 @@ or issues.
 | Per-task-kind default workflows | Active | #12 |
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
-| Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR, 2026-10-05 sync PR (pending) |
+| Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR, #175 (2026-10-05 sync) |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
@@ -557,7 +557,7 @@ flakes into deflake tasks.
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), and the 2026-10-05 sync PR (pending) |
+| PRs | #59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), and #175 (the 2026-10-05 sync) |
 | Plan docs | [upstream-sync/plan.md](../plans/upstream-sync/plan.md), [tickets.md](../plans/upstream-sync/tickets.md) |
 | Upstream candidate | No. It exists only because this is a fork. |
 
@@ -1208,8 +1208,8 @@ upstream #1154 now covers, as its row says.
 | #23 | 2026-09-28 | A slot quarantined during acquire kept a phantom owner and could never be destroyed; reconcile recovers slots already stuck. | `src/server/worktrees/manager.ts`, `src/server/worktrees/store.ts` | Yes: #1148 changed `manager.ts` but not this path. |
 | #24 | 2026-09-28 | Codex "model unsupported" and "quota exhausted" failures were retried as infrastructure failures; they are now typed, not retried, and shown. | `src/server/llm/codex.ts`, `src/shared/llm.ts`, `src/server/llm/structured.ts`, `src/server/workflows/engine.ts` | Yes: generic; adds an `error_code` value. |
 | #33 | 2026-09-29 | The e2e fake `node` shim orphaned fake processes on timeout (it now `exec`s); also repairs the review-answer spec after #30. | `e2e/fixtures/conductor.ts`, `e2e/specs/review-answers-in-conversation.spec.ts` | Maybe: the shim fix is generic; the spec fix follows fork #30. |
-| #77 | 2026-09-30 | A config refresh landing between a keystroke and its effect wiped a typed telemetry destination, the flake in `telemetry-settings.spec.ts`. The destination forms now derive each field at render (typed draft, else the daemon's copy) instead of adopting it from an effect. The sync of 2026-10-05 extended this to upstream #1162 and #1164's metric temporality and export shape fields. | `src/web/components/TelemetrySettingsPanel.tsx` | Yes: upstream still adopts through the effect. |
-| #91 | 2026-10-01 | Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with `ps` and `lsof`, at ~28 concurrent `ps` and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and `test:run` sets a 180 s per-test timeout. | `src/server/tasks.ts`, `package.json`, `test/helpers/task-manager.ts` | Yes for the backoff: upstream has the same flat 30 s retry. The `test:run` flags belong to the fork's flake-aware testing. Upstream #1154 (sync of 2026-10-05) added `TaskManager.stop()` and `test/helpers/task-manager-fixture.ts`, which now cover the test-side half in `multi-pr-quorum` and `task-completion-reconciler`; `task-dependencies` builds the fixture class through this helper. |
+| #77 | 2026-09-30 | A config refresh landing between a keystroke and its effect wiped a typed telemetry destination, the flake in `telemetry-settings.spec.ts`. The destination forms now derive each field at render (typed draft, else the daemon's copy) instead of adopting it from an effect. The sync of 2026-10-05 (#175) extended this to upstream #1162 and #1164's metric temporality and export shape fields. | `src/web/components/TelemetrySettingsPanel.tsx` | Yes: upstream still adopts through the effect. |
+| #91 | 2026-10-01 | Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with `ps` and `lsof`, at ~28 concurrent `ps` and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and `test:run` sets a 180 s per-test timeout. | `src/server/tasks.ts`, `package.json`, `test/helpers/task-manager.ts` | Yes for the backoff: upstream has the same flat 30 s retry. The `test:run` flags belong to the fork's flake-aware testing. Upstream #1154 (sync of 2026-10-05, #175) added `TaskManager.stop()` and `test/helpers/task-manager-fixture.ts`, which now cover the test-side half in `multi-pr-quorum` and `task-completion-reconciler`; `task-dependencies` builds the fixture class through this helper. |
 | pending | pending | 12 of the first 13 `image_evidence_capture` blocks were a session re-registering a rerun log or screenshot under a new client id: the older row for the same path stayed reserved and could never match the rewritten file. Reservation now takes only the latest registration of each checkout path. | `src/server/workflows/store.ts` | Yes: generic workflow evidence reliability. |
 | pending | pending | A subagent hand-back (Claude Code's `<agent-message>` turn) was captured as a human prompt: it bumped the prompt revision, often drew an `unclear` intent verdict, and so stamped the agent's workflow evidence with no intent episode. Foreman's verifier then saw no registered evidence and held the completion. Hand-backs are now scaffolding to the goal path. | `src/server/harness/claude/scaffolding.ts` | Yes: upstream captures the same turns. |
 | pending | pending | A held `plan` or `shape` completion was consumed in silence, so the agent never heard its gaps and the bound workflow never started. Pre-PR recovery now relays held gaps to planning kinds, and only held gaps, with a planning-turn packet. Related to Shape tasks, grill and tickets. | `src/server/foreman/ship-shepherd.ts`, `src/server/foreman/worker.ts`, `src/server/routes.ts`, `src/web/components/ForemanBar.tsx` | Maybe: the `plan` half applies upstream; `shape` does not exist there. |

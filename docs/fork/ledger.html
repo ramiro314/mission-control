@@ -37,7 +37,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Sync date</td>
-<td>2026-10-05, sync PR pending (merge commit <code>fdf3e845</code>)</td>
+<td>2026-10-05, fork PR #175 (merge commit <code>fdf3e845</code>)</td>
 </tr>
 <tr>
 <td>Fork commits ahead of upstream</td>
@@ -109,7 +109,7 @@ or issues.</p>
 <tr>
 <td>Upstream sync process and fork ledger</td>
 <td>Active</td>
-<td>#59, #62, #66, weekly mission PR, 2026-10-05 sync PR (pending)</td>
+<td>#59, #62, #66, weekly mission PR, #175 (2026-10-05 sync)</td>
 </tr>
 <tr>
 <td>Persona reasoning effort</td>
@@ -744,7 +744,7 @@ the workflow editor and ladder components, <code>TaskSourcesPanel.tsx</code>, <c
 </tr>
 <tr>
 <td>PRs</td>
-<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), and the 2026-10-05 sync PR (pending)</td>
+<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), and #175 (the 2026-10-05 sync)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1573,7 +1573,7 @@ upstream #1154 now covers, as its row says.</p>
 <tr>
 <td>#77</td>
 <td>2026-09-30</td>
-<td>A config refresh landing between a keystroke and its effect wiped a typed telemetry destination, the flake in <code>telemetry-settings.spec.ts</code>. The destination forms now derive each field at render (typed draft, else the daemon&#39;s copy) instead of adopting it from an effect. The sync of 2026-10-05 extended this to upstream #1162 and #1164&#39;s metric temporality and export shape fields.</td>
+<td>A config refresh landing between a keystroke and its effect wiped a typed telemetry destination, the flake in <code>telemetry-settings.spec.ts</code>. The destination forms now derive each field at render (typed draft, else the daemon&#39;s copy) instead of adopting it from an effect. The sync of 2026-10-05 (#175) extended this to upstream #1162 and #1164&#39;s metric temporality and export shape fields.</td>
 <td><code>src/web/components/TelemetrySettingsPanel.tsx</code></td>
 <td>Yes: upstream still adopts through the effect.</td>
 </tr>
@@ -1582,7 +1582,7 @@ upstream #1154 now covers, as its row says.</p>
 <td>2026-10-01</td>
 <td>Three test files never exited: completed fixture tasks owed a worktree return that retried every 30 s forever, each try scanning every process with <code>ps</code> and <code>lsof</code>, at ~28 concurrent <code>ps</code> and near-zero idle CPU. Returns now back off to 15 min, the files use instant return seams, and <code>test:run</code> sets a 180 s per-test timeout.</td>
 <td><code>src/server/tasks.ts</code>, <code>package.json</code>, <code>test/helpers/task-manager.ts</code></td>
-<td>Yes for the backoff: upstream has the same flat 30 s retry. The <code>test:run</code> flags belong to the fork&#39;s flake-aware testing. Upstream #1154 (sync of 2026-10-05) added <code>TaskManager.stop()</code> and <code>test/helpers/task-manager-fixture.ts</code>, which now cover the test-side half in <code>multi-pr-quorum</code> and <code>task-completion-reconciler</code>; <code>task-dependencies</code> builds the fixture class through this helper.</td>
+<td>Yes for the backoff: upstream has the same flat 30 s retry. The <code>test:run</code> flags belong to the fork&#39;s flake-aware testing. Upstream #1154 (sync of 2026-10-05, #175) added <code>TaskManager.stop()</code> and <code>test/helpers/task-manager-fixture.ts</code>, which now cover the test-side half in <code>multi-pr-quorum</code> and <code>task-completion-reconciler</code>; <code>task-dependencies</code> builds the fixture class through this helper.</td>
 </tr>
 <tr>
 <td>pending</td>
