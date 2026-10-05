@@ -22,6 +22,7 @@ import type {
   RateLimits,
   RateLimitWindow,
   RateLimitSource,
+  BlockedPr,
   PrChecks,
   PrMergeable,
   PrMergeability,
@@ -295,6 +296,8 @@ import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
+import { activeWorkflowOwnsSession } from "./foreman/review-followup.ts";
+import type { PrReference } from "./pr-conflicts.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { shapeTicketsSummary } from "./shape-tickets.ts";
 
@@ -632,6 +635,10 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // `restoring_session_upsert` / `restoring_session_remove` are DELIBERATELY absent. A
   // provisional row has no driver and is excluded from every fleet execution count; these
   // frames move only its inert Board presentation, so a Line refold could not change.
+  //
+  // `blocked_prs` is DELIBERATELY absent, for `pipeline_halt`'s reason: a conflicting PR
+  // nothing is handling is attention owed, which the inbox carries, and no stage figure
+  // reads the set.
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -855,6 +862,8 @@ export class Registry extends EventEmitter {
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
   private workflowRuns = new Map<string, WorkflowRunSummary>();
+  /** The conflict episodes' last published blocked set (`setBlockedPrs`). */
+  private blockedPrs: BlockedPr[] = [];
   /**
    * What each conversation is ARMED with, as distinct from what is running on it.
    *
@@ -1193,6 +1202,7 @@ export class Registry extends EventEmitter {
     schedules: MissionSchedule[];
     pipelineRuns: PipelineRun[];
     pipelineCommissions: PipelineCommission[];
+    blockedPrs: BlockedPr[];
     fileCommentThreads: FileCommentThread[];
     fileCommentReviews: FileCommentReview[];
     fleetCost: FleetCost | null;
@@ -1220,6 +1230,9 @@ export class Registry extends EventEmitter {
       pipelineRuns: [...this.pipelineRuns.values()],
       // Bounded by active task retention. Event bodies remain in the capped SQLite ledger.
       pipelineCommissions: [...this.pipelineCommissions.values()],
+      // The held set, not a recompute: the PR poller derives it each tick. Empty after a
+      // restart until the first poll, which is the documented restart gap.
+      blockedPrs: this.blockedPrs,
       // Seeded from SQLite at boot for `pipelineRuns`' reason: a dashboard reconnecting
       // after a restart must be handed the queue it was looking at, not a blank gutter
       // until something happens to move a thread.
@@ -5403,7 +5416,15 @@ export class Registry extends EventEmitter {
    * tuples out and back would be a second copy of the same lookup, free to drift.
    */
   taskPrPollTargets(): string[] {
-    const urls = new Set<string>();
+    return [...this.taskPrUrlOwners().keys()];
+  }
+
+  /**
+   * `taskPrPollTargets`, with the task each URL belongs to. The one walk both read, so the
+   * by-URL harvest and the conflict episodes' "a task still references it" cannot disagree.
+   */
+  private taskPrUrlOwners(): Map<string, Task> {
+    const urls = new Map<string, Task>();
     const historical = new Map<string, TaskWorkEpisodeBinding[]>();
     for (const binding of historicalTaskWorkEpisodeBindings()) {
       const list = historical.get(binding.taskId) ?? [];
@@ -5417,17 +5438,77 @@ export class Registry extends EventEmitter {
         ...(historical.get(task.id) ?? []),
       ];
       for (const candidate of candidates) {
-        if (candidate?.prUrl && candidate.mergedAt === null) urls.add(candidate.prUrl);
+        if (candidate?.prUrl && candidate.mergedAt === null) urls.set(candidate.prUrl, task);
       }
       // And the SECONDARY repositories' pull requests, on the same rule. Without them a
       // multi-repo task's quorum could never be met once its agent was gone: the branch
       // poller only asks about LIVE sessions, so nothing would ever observe repo B's merge
       // and the task would sit `running` for ever with repo A's already landed.
       for (const repoPr of workEpisodeRepoPrsForTask(task.id)) {
-        if (repoPr.mergedAt === null) urls.add(repoPr.prUrl);
+        if (repoPr.mergedAt === null) urls.set(repoPr.prUrl, task);
       }
     }
-    return [...urls];
+    return urls;
+  }
+
+  /**
+   * Who still references each pull request, for the conflict episodes
+   * (`src/server/pr-conflicts.ts`): every session naming it, as its own PR or one of its
+   * task's per-repository PRs, and the task whose work carries it.
+   *
+   * Exited sessions are included. A session stops referencing its PR only when it leaves
+   * the map through `session_remove`, which is what lets an exited session's conflict read
+   * as "session ended" rather than vanish.
+   */
+  prReferences(): Map<string, PrReference> {
+    const refs = new Map<string, { sessions: Session[]; task: PrReference["task"]; workflowOwned: boolean }>();
+    const entry = (url: string) => {
+      let ref = refs.get(url);
+      if (!ref) refs.set(url, (ref = { sessions: [], task: null, workflowOwned: false }));
+      return ref;
+    };
+    for (const s of this.sessions.values()) {
+      const urls = new Set([s.prUrl, ...(s.task?.repoPrs ?? []).map((pr) => pr.prUrl)]);
+      for (const url of urls) {
+        if (!url) continue;
+        const ref = entry(url);
+        ref.sessions.push(s);
+        if (s.task && !ref.task) ref.task = { id: s.task.id, title: s.task.fullTitle };
+        if (!ref.workflowOwned) ref.workflowOwned = this.workflowOwnsSession(s);
+      }
+    }
+    for (const [url, task] of this.taskPrUrlOwners()) {
+      const ref = entry(url);
+      ref.task ??= { id: task.id, title: fullTaskTitle(task.title, task.intent) };
+      // The binding outlives the session it names, so a run still active for an agent that
+      // has already been removed still owns the work.
+      const binding = taskWorkEpisodeForTask(task.id);
+      if (!ref.workflowOwned && binding) {
+        ref.workflowOwned = this.workflowOwnsKey(binding.sessionId, binding.agentSessionId);
+      }
+    }
+    return refs;
+  }
+
+  /** Whether a non-terminal workflow run owns this session, as Foreman's follow-through reads it. */
+  workflowOwnsSession(s: Session): boolean {
+    return this.workflowOwnsKey(s.id, noteKeyFor(s));
+  }
+
+  /** The run filter `/api/workflow-runs?session=` applies: by session id or by note key. */
+  private workflowOwnsKey(sessionId: string, noteKey: string): boolean {
+    return activeWorkflowOwnsSession(
+      [...this.workflowRuns.values()].filter(
+        (run) => run.sessionId === sessionId || run.noteKey === noteKey,
+      ),
+    );
+  }
+
+  /** Publish the blocked pull requests, emitting `blocked_prs` only when the set changed. */
+  setBlockedPrs(prs: BlockedPr[]): void {
+    if (JSON.stringify(prs) === JSON.stringify(this.blockedPrs)) return;
+    this.blockedPrs = prs;
+    this.emitEvent({ type: "blocked_prs", prs });
   }
 
   /**

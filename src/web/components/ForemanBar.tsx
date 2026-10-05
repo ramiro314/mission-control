@@ -682,9 +682,20 @@ export function ForemanPopover({
             Keep sessions on track with CI
           </label>
         </Tooltip>
+        <Tooltip label="Keep parked PR sessions on track when their pull request conflicts with its base. Off, a conflict goes to the attention inbox instead">
+          <label className="alert-row">
+            <input
+              type="checkbox"
+              checked={config.trackMergeConflicts !== false}
+              onChange={(e) => void update({ trackMergeConflicts: e.target.checked })}
+            />
+            Keep sessions on track with merge conflicts
+          </label>
+        </Tooltip>
         <p className="alert-hint dim">
           Does not create a PR. Once one exists, sends failing CI back to its session.
           {" "}New workflow PR instructions also ask the session to follow CI through completion.
+          {" "}A conflict Foreman can't drive goes to the attention inbox.
         </p>
         {enabled && config.keepShipTasksMoving !== false && mode !== "live" && (
           <p className="alert-hint dim">
@@ -692,7 +703,9 @@ export function ForemanPopover({
           </p>
         )}
         {enabled &&
-          (config.trackReviewFeedback !== false || config.trackCiFailures !== false) &&
+          (config.trackReviewFeedback !== false ||
+            config.trackCiFailures !== false ||
+            config.trackMergeConflicts !== false) &&
           mode !== "live" && (
             <p className="alert-hint dim">
               Foreman's nudges only type in Live mode on an allowlisted repo - until then a parked PR is left

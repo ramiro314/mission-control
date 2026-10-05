@@ -488,7 +488,7 @@ const retentionObserver = new TaskWorktreeRetentionObserver({
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
-const stopPrPoller = startPrPoller(registry);
+const stopPrPoller = startPrPoller(registry, getForemanConfig);
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
 });

@@ -2,7 +2,9 @@ import { classifyCheckEntry, type CiCheckEntryState } from "@shared/ci-checks.ts
 import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrMergeable, PrState } from "@shared/types.ts";
-import { prMergeableFromGitHub } from "@shared/pr-mergeable.ts";
+import { currentMergeability, nextMergeability, prMergeableFromGitHub } from "@shared/pr-mergeable.ts";
+import { PrConflictTracker, type ConflictObservation } from "./pr-conflicts.ts";
+import type { ForemanConfig } from "@shared/protocol.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
@@ -272,6 +274,8 @@ export async function pollAndReconcilePrs(
   lookupHead: (dir: string) => Promise<string | null> = queryHead,
   /** Seam for the telemetry harvest, so a focused test can drive it without a real store. */
   telemetryTargets: (() => string[]) | null = null,
+  /** The conflict episodes, or null where a caller does not track them. */
+  conflicts: PrConflictTracker | null = null,
 ): Promise<void> {
   const targets = registry.prPollTargets();
   // The SECONDARY repositories of every live multi-repo task, each with its own worktree and
@@ -301,8 +305,16 @@ export async function pollAndReconcilePrs(
   // binding may be long gone. A third cadence would spend a second `gh` call and a second
   // backoff on a pull request the first two are usually already asking about, so it shares
   // this one and is deduplicated into it.
+  //
+  // The FOURTH: every open conflict episode's PR, so an exited session with no task - which
+  // neither harvest above reaches - is still asked about until its conflict closes. Linked,
+  // never operational: keeping a conflict in view gains it no merge-completion authority.
   const linkedUrls = [
-    ...new Set([...operationalUrls, ...(telemetryTargets?.() ?? telemetryPrPollTargets(now))]),
+    ...new Set([
+      ...operationalUrls,
+      ...(telemetryTargets?.() ?? telemetryPrPollTargets(now)),
+      ...(conflicts?.episodes.urls() ?? []),
+    ]),
   ];
   const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
@@ -318,6 +330,7 @@ export async function pollAndReconcilePrs(
     headTargets.length === 0
   ) {
     registry.reconcilePrs(found, skip); // clears any lingering link, spawns nothing
+    conflicts?.reconcile(new Map(), now);
     return;
   }
 
@@ -435,6 +448,40 @@ export async function pollAndReconcilePrs(
   // Delivery is resolved against each observation's current task/session/repository binding.
   // A URL can remain operational for another task or a dependency after this author lost it.
   recordTelemetryPrMerges(mergedUrls, undefined, now);
+  // Last, once every snapshot above has moved: the episodes read who references each PR.
+  conflicts?.reconcile(conflictReads(observed, urlResults), now);
+}
+
+/**
+ * Every read this tick made, from either path, as the conflict episodes take it. A read's
+ * mergeability goes through the one reading rule, so it answers only for the head it names.
+ */
+function conflictReads(
+  branch: ReadonlyMap<string, PrMatch>,
+  byUrl: ReadonlyMap<string, PrStateMatch>,
+): Map<string, ConflictObservation> {
+  const reads = new Map<string, ConflictObservation>();
+  const add = (url: string, state: ConflictObservation["state"], r: {
+    mergeable?: PrMergeable | null;
+    baseRef?: string | null;
+    headSha?: string | null;
+  }): void => {
+    const read = {
+      open: state === "open",
+      mergeable: r.mergeable ?? null,
+      baseRef: r.baseRef ?? null,
+      headSha: r.headSha ?? null,
+    };
+    reads.set(url, {
+      state,
+      mergeable: currentMergeability(nextMergeability(null, read)),
+      baseRef: read.baseRef,
+      headSha: read.headSha,
+    });
+  };
+  for (const [url, r] of byUrl) add(url, r.state, r);
+  for (const [url, match] of branch) add(url, match.state, match);
+  return reads;
 }
 
 /**
@@ -442,15 +489,25 @@ export async function pollAndReconcilePrs(
  * delays the next. A no-op (no subprocesses) whenever no session sits on a
  * feature branch and no dependency or task binding contributes a URL.
  */
-export function startPrPoller(registry: Registry): () => void {
+export function startPrPoller(registry: Registry, foremanConfig: () => ForemanConfig): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const urlState = new PrUrlPollState();
+  const conflicts = new PrConflictTracker(registry, foremanConfig);
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      await pollAndReconcilePrs(registry, queryPr, queryPrUrl, urlState);
+      await pollAndReconcilePrs(
+        registry,
+        queryPr,
+        queryPrUrl,
+        urlState,
+        Date.now(),
+        queryHead,
+        null,
+        conflicts,
+      );
     } catch (err) {
       console.error("[pr] poll failed:", err);
     }

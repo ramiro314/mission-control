@@ -10,7 +10,8 @@ table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{
 .diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
 figcaption{color:var(--muted);font-size:13px}
 .b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
-</style></head><body><main><h1>Fork ledger</h1>
+</style></head><body><main>
+<h1>Fork ledger</h1>
 <p><code>ramiro314/mission-control</code> is a fork of
 <a href="https://github.com/teamupstart/mission-control"><code>teamupstart/mission-control</code></a>. This ledger
 records everything the fork changes against upstream, one entry per fork <strong>feature</strong>, with the
@@ -117,7 +118,7 @@ or issues.</p>
 </tr>
 <tr>
 <td>PR merge-conflict reactions</td>
-<td>Active (signal and chip only)</td>
+<td>Active (signal, chip, Blocked pull requests inbox)</td>
 <td>#108</td>
 </tr>
 <tr>
@@ -849,7 +850,7 @@ editor, version history and run views.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>, first ticket: the mergeability signal and the PR chip mark</td>
+<td><strong>Active</strong>, tickets 1 and 2: the mergeability signal, the PR chip mark, conflict episodes and the Blocked pull requests inbox</td>
 </tr>
 <tr>
 <td>PRs</td>
@@ -868,7 +869,8 @@ editor, version history and run views.</p>
 it <code>CONFLICTING</code>, CI often stops running, and nothing in Mission Control said so. This ticket
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
-on the PR chip on cards, in the session header and on the rail.</p>
+on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon&#39;s single
+owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li>The branch poller requests <code>mergeable</code> and <code>baseRefName</code>; the by-URL poller requests
@@ -886,6 +888,25 @@ over <code>prState</code> or completion.</li>
 <li><code>reconcilePrs</code> leaves an exited session&#39;s PR fields alone when the branch poller did not
 report it (exited sessions are never polled), so the link survives the exit linger.</li>
 <li>No schema migration: these are live, in-memory observations like <code>prChecks</code>.</li>
+<li>Conflict episodes (<code>src/server/pr-conflicts.ts</code>) are in memory and keyed by PR URL alone. An
+episode opens on the first <code>conflicting</code> read of the current head from either poll path,
+advances <code>headSha</code> on each new conflicting head, and closes on <code>mergeable</code>, merged, closed,
+or once no session (until <code>session_remove</code>) and no task references the URL. An unknown
+current head leaves it as it is.</li>
+<li>Every open episode&#39;s URL joins the by-URL poller&#39;s <code>linkedUrls</code>, never <code>operationalUrls</code>, so
+an exited, task-less session&#39;s PR is still polled and gains no merge-completion authority.</li>
+<li>An open episode is blocked as <code>session-gone</code> when no live session owns the PR, or
+<code>foreman-cannot-nudge</code> when <code>trackMergeConflicts</code> is off or <code>foremanCannotDrive</code> /
+<code>foremanMayActLive</code> refuse the live session (the same predicates <code>decideReviewFollowup</code>
+reads). Work an active workflow run owns is not reported, matched through every session
+naming the PR (exited ones included) and the task&#39;s work-episode binding, which outlives the
+session. The set is published as the
+<code>blocked_prs</code> event, only on change, and on the snapshot as <code>blockedPrs</code>.</li>
+<li><code>ForemanConfig.trackMergeConflicts</code> (default true) sits beside <code>trackCiFailures</code>; its
+checkbox is <strong>Keep sessions on track with merge conflicts</strong>, and follow-through gate 1 skips
+only when all three toggles are off.</li>
+<li>The attention inbox&#39;s <strong>Blocked pull requests</strong> section follows Pipeline halts, each row one
+answer owed, read-only.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -895,6 +916,9 @@ report it (exited sessions are never polled), so the link survives the exit ling
 by-URL lookups in one tick, and <code>prPollTargets</code> excludes exited sessions.</li>
 <li>Exited sessions are removed <code>EXIT_LINGER_MS</code> after exit through <code>beginEviction</code>.</li>
 <li><code>prChipView</code> is the one decision behind <code>PrChip</code>, <code>PrTileFlag</code> and <code>PrRailMark</code>.</li>
+<li><code>taskPrPollTargets</code> covers every task in a <code>completableByMerge</code> status, so a dispatched task&#39;s
+PR stays referenced after its session is removed.</li>
+<li><code>foldAttention</code> sections never interleave, and the inbox draws one arm per item kind.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>src/server/pr.ts</code> (both <code>gh</code> queries, by-URL result
 collection), <code>src/server/registry.ts</code> (<code>PrMatch</code>, <code>LivePrObservation</code>, <code>reconcilePrs</code>,
@@ -902,8 +926,17 @@ collection), <code>src/server/registry.ts</code> (<code>PrMatch</code>, <code>Li
 session construction sites), <code>src/shared/types.ts</code> (<code>Session</code>, <code>RepoPrFeedback</code>, new
 <code>PrMergeable</code> types), <code>src/web/components/session-bits.tsx</code> (<code>prChipView</code>, <code>PrChip</code>,
 <code>PrTileFlag</code>, <code>PrRailMark</code>), <code>src/web/styles.css</code>, <code>src/web/lib/board-card-preview.ts</code>, the e2e
-fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session</code> literal.</p>
-<p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>test/pr-mergeable.test.ts</code>,
+fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session</code> literal. Ticket 2: <code>src/server/pr.ts</code>
+(the episode harvest and <code>startPrPoller</code>&#39;s Foreman config), <code>src/server/registry.ts</code>
+(<code>taskPrUrlOwners</code>, <code>prReferences</code>, <code>workflowOwnsSession</code>, <code>setBlockedPrs</code>, snapshot),
+<code>src/server/index.ts</code>, <code>src/server/foreman/review-followup.ts</code> (<code>foremanCannotDrive</code>, gate 1),
+<code>src/server/foreman/worker.ts</code>, <code>src/shared/protocol.ts</code>, <code>src/shared/app-config-entries.ts</code>,
+<code>src/shared/types.ts</code> (<code>BlockedPr</code>, <code>blocked_prs</code>, snapshot), <code>src/web/useEventStream.ts</code>,
+<code>src/web/App.tsx</code>, <code>src/web/lib/attention.ts</code>, <code>src/web/components/AttentionInbox.tsx</code>,
+<code>src/web/components/ForemanBar.tsx</code>, <code>src/web/styles.css</code>, and every test <code>ForemanConfig</code>
+literal.</p>
+<p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>src/server/pr-conflicts.ts</code>,
+<code>test/pr-mergeable.test.ts</code>, <code>test/pr-conflicts.test.ts</code>, <code>test/blocked-prs-attention.test.ts</code>,
 <code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>

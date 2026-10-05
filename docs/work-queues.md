@@ -268,7 +268,7 @@ queue that has never moved is exactly where you go looking for the reason.
 
 Once work has an **open pull request**, its session can park while the
 [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) posts comments or CI goes red. The Foreman
-popover's **Pull requests** section has two independent, default-on controls:
+popover's **Pull requests** section has three independent, default-on controls:
 
 - **Keep sessions on track with review comments** nudges the parked session to resolve
   GitHub Inspector comments already posted on its PR.
@@ -277,6 +277,12 @@ popover's **Pull requests** section has two independent, default-on controls:
   PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
   Request action: wait for checks, make scoped repairs with focused tests, push to the same
   branch, and verify CI for the new head before ending the turn.
+- **Keep sessions on track with merge conflicts** (`trackMergeConflicts`) is Foreman's claim on
+  a pull request that conflicts with its base. Turned off, or wherever Foreman cannot type
+  into the session (not invited, dry-run or off, an untrusted repository, no hooks), the
+  conflict is the operator's: it goes to the attention inbox's
+  [Blocked pull requests](attention-and-alerts.md) section as "Foreman can't drive this
+  session".
 
 Workflow PR instructions read the CI preference at packet preparation, independently of the
 review-comment preference and the Foreman worker's mode or enabled state. The workflow's own
@@ -288,7 +294,8 @@ This instruction does not replace the workflow's reviewed-content check. A CI re
 that changes the published tree can still block the PR action pending a fresh review. It does
 not grant merge authority or move Inspector review ownership into the CI turn.
 
-Each control can be disabled without disabling the other. A later GitHub Inspector round or a new
+Each control can be disabled without disabling the others, and the follow-through is off only
+when all three are. A later GitHub Inspector round or a new
 CI failure episode re-arms only the corresponding follow-through.
 
 When upgrading from the earlier combined **Keep sessions on track** control, its saved answer

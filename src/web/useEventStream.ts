@@ -1,6 +1,7 @@
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  BlockedPr,
   FileCommentReview,
   FileCommentThread,
   FleetCost,
@@ -96,6 +97,11 @@ export interface MissionState {
   pipelineRuns: PipelineRun[];
   /** Dormant until Phase 3 activates dispatch, but restart-safe and SSE-only now. */
   pipelineCommissions: PipelineCommission[];
+  /**
+   * Conflicting pull requests nothing is handling, replaced whole by the snapshot and by
+   * every `blocked_prs` frame. The daemon derives it; the inbox only draws it.
+   */
+  blockedPrs: BlockedPr[];
   /**
    * Every line-comment thread the daemon holds for a session it still knows about, each
    * carrying its own messages so a thread renders from ONE frame.
@@ -221,6 +227,7 @@ export function useEventStream(): MissionState {
   const [pipelineCommissions, setPipelineCommissions] = useState<Map<string, PipelineCommission>>(
     new Map(),
   );
+  const [blockedPrs, setBlockedPrs] = useState<BlockedPr[]>([]);
   const [fileCommentThreads, setFileCommentThreads] = useState<Map<string, FileCommentThread>>(
     new Map(),
   );
@@ -324,6 +331,8 @@ export function useEventStream(): MissionState {
           setPipelineCommissions(
             new Map((msg.pipelineCommissions ?? []).map((commission) => [commission.id, commission])),
           );
+          // The `?? []` is the version-skew guard an older daemon needs.
+          setBlockedPrs(msg.blockedPrs ?? []);
           // Replaced wholesale for the same reason, with this collection's own edge: a
           // session removed while a tab was disconnected takes its threads with it, and a
           // merge would leave an orphaned gutter on screen for the rest of the session.
@@ -561,6 +570,11 @@ export function useEventStream(): MissionState {
         case "line_summary":
           setLineSummary(msg.line);
           break;
+        // Replaced whole: the daemon re-derives the set on every PR poll and sends it only
+        // when it moved, so a row that is gone from it is a conflict that is handled or over.
+        case "blocked_prs":
+          setBlockedPrs(msg.prs);
+          break;
         case "settings_status":
           setSettingsStatus(msg.status);
           break;
@@ -677,6 +691,7 @@ export function useEventStream(): MissionState {
     schedules: schedulesList,
     pipelineRuns: pipelineRunsList,
     pipelineCommissions: pipelineCommissionsList,
+    blockedPrs,
     fileCommentThreads: fileCommentThreadsList,
     fileCommentReviews: fileCommentReviewsList,
     fleetCost,

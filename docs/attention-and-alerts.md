@@ -22,9 +22,23 @@ obligation:
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
    time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
-5. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+5. **Blocked pull requests** - a pull request that conflicts with its base and that nothing is
+   handling. Each row names the PR (repository and number), its base branch, and the owning
+   task or session, says why it needs you - **session ended** when no live session owns it,
+   **Foreman can't drive this session** when the owning session is live but Foreman will not
+   type into it - and how long it has been **Conflicting for**. It links to the PR and, while
+   the daemon still holds it, the session. Read-only, like Pipeline halts: the row clears itself
+   when GitHub reports the PR mergeable, merged or closed, or when no session or task references
+   it any more. A PR whose work an active workflow owns is not listed here, even after the
+   workflow's agent has exited.
+
+   The daemon decides membership, in memory, from the PR poller's reads
+   (`src/server/pr-conflicts.ts`), and sends the whole set as `blocked_prs` when it changes and
+   on connect. An exited session's conflicting PR stays on the by-URL poller until its conflict
+   closes. After a daemon restart the section is empty until the first PR poll.
+6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-6. **Stuck finalizations** - a promotion that stopped on an error.
+7. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides

@@ -354,6 +354,7 @@ export function App(): React.JSX.Element {
     ensembleSummaries,
     pipelineRuns,
     pipelineCommissions,
+    blockedPrs,
     fileCommentThreads,
     fileCommentReviews,
     fleetCost,
@@ -2338,8 +2339,9 @@ export function App(): React.JSX.Element {
         pipelineRuns,
         pipelineCommissions,
         tasks,
+        blockedPrs,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks],
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, blockedPrs],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.

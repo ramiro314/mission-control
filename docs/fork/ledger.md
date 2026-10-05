@@ -51,7 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
-| PR merge-conflict reactions | Active (signal and chip only) | #108 |
+| PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox) | #108 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -648,7 +648,7 @@ editor, version history and run views.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, first ticket: the mergeability signal and the PR chip mark |
+| Status | **Active**, tickets 1 and 2: the mergeability signal, the PR chip mark, conflict episodes and the Blocked pull requests inbox |
 | PRs | #108 |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
@@ -657,7 +657,8 @@ editor, version history and run views.
 it `CONFLICTING`, CI often stops running, and nothing in Mission Control said so. This ticket
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a "Conflicts with `<base>`" mark
-on the PR chip on cards, in the session header and on the rail.
+on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon's single
+owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles.
 
 **Behavior contracts.**
 
@@ -676,6 +677,25 @@ on the PR chip on cards, in the session header and on the rail.
 - `reconcilePrs` leaves an exited session's PR fields alone when the branch poller did not
   report it (exited sessions are never polled), so the link survives the exit linger.
 - No schema migration: these are live, in-memory observations like `prChecks`.
+- Conflict episodes (`src/server/pr-conflicts.ts`) are in memory and keyed by PR URL alone. An
+  episode opens on the first `conflicting` read of the current head from either poll path,
+  advances `headSha` on each new conflicting head, and closes on `mergeable`, merged, closed,
+  or once no session (until `session_remove`) and no task references the URL. An unknown
+  current head leaves it as it is.
+- Every open episode's URL joins the by-URL poller's `linkedUrls`, never `operationalUrls`, so
+  an exited, task-less session's PR is still polled and gains no merge-completion authority.
+- An open episode is blocked as `session-gone` when no live session owns the PR, or
+  `foreman-cannot-nudge` when `trackMergeConflicts` is off or `foremanCannotDrive` /
+  `foremanMayActLive` refuse the live session (the same predicates `decideReviewFollowup`
+  reads). Work an active workflow run owns is not reported, matched through every session
+  naming the PR (exited ones included) and the task's work-episode binding, which outlives the
+  session. The set is published as the
+  `blocked_prs` event, only on change, and on the snapshot as `blockedPrs`.
+- `ForemanConfig.trackMergeConflicts` (default true) sits beside `trackCiFailures`; its
+  checkbox is **Keep sessions on track with merge conflicts**, and follow-through gate 1 skips
+  only when all three toggles are off.
+- The attention inbox's **Blocked pull requests** section follows Pipeline halts, each row one
+  answer owed, read-only.
 
 **Upstream behavior it assumes.**
 
@@ -685,6 +705,9 @@ on the PR chip on cards, in the session header and on the rail.
   by-URL lookups in one tick, and `prPollTargets` excludes exited sessions.
 - Exited sessions are removed `EXIT_LINGER_MS` after exit through `beginEviction`.
 - `prChipView` is the one decision behind `PrChip`, `PrTileFlag` and `PrRailMark`.
+- `taskPrPollTargets` covers every task in a `completableByMerge` status, so a dispatched task's
+  PR stays referenced after its session is removed.
+- `foldAttention` sections never interleave, and the inbox draws one arm per item kind.
 
 **Upstream surfaces touched.** `src/server/pr.ts` (both `gh` queries, by-URL result
 collection), `src/server/registry.ts` (`PrMatch`, `LivePrObservation`, `reconcilePrs`,
@@ -692,9 +715,18 @@ collection), `src/server/registry.ts` (`PrMatch`, `LivePrObservation`, `reconcil
 session construction sites), `src/shared/types.ts` (`Session`, `RepoPrFeedback`, new
 `PrMergeable` types), `src/web/components/session-bits.tsx` (`prChipView`, `PrChip`,
 `PrTileFlag`, `PrRailMark`), `src/web/styles.css`, `src/web/lib/board-card-preview.ts`, the e2e
-fake `gh` (`pr view` output), and every test `Session` literal.
+fake `gh` (`pr view` output), and every test `Session` literal. Ticket 2: `src/server/pr.ts`
+(the episode harvest and `startPrPoller`'s Foreman config), `src/server/registry.ts`
+(`taskPrUrlOwners`, `prReferences`, `workflowOwnsSession`, `setBlockedPrs`, snapshot),
+`src/server/index.ts`, `src/server/foreman/review-followup.ts` (`foremanCannotDrive`, gate 1),
+`src/server/foreman/worker.ts`, `src/shared/protocol.ts`, `src/shared/app-config-entries.ts`,
+`src/shared/types.ts` (`BlockedPr`, `blocked_prs`, snapshot), `src/web/useEventStream.ts`,
+`src/web/App.tsx`, `src/web/lib/attention.ts`, `src/web/components/AttentionInbox.tsx`,
+`src/web/components/ForemanBar.tsx`, `src/web/styles.css`, and every test `ForemanConfig`
+literal.
 
-**Fork-only files.** `src/shared/pr-mergeable.ts`, `test/pr-mergeable.test.ts`,
+**Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
+`test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
 `e2e/specs/pr-merge-conflicts.spec.ts`.
 
 ### PR publication ownership

@@ -179,6 +179,7 @@ const foremanFields = {
   wrapup: "setting",
   trackReviewFeedback: "setting",
   trackCiFailures: "setting",
+  trackMergeConflicts: "setting",
   keepShipTasksMoving: "setting",
   shipRecoveryMinutes: "setting",
   autoBacklog: "setting",

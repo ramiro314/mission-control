@@ -138,7 +138,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     mayActLive: true,
     workflowOwnsSession: false,
     mark: null,
-    cfg: { trackReviewComments: true, trackCiFailures: true, settleMs: SETTLE },
+    cfg: { trackReviewComments: true, trackCiFailures: true, trackMergeConflicts: true, settleMs: SETTLE },
     now: NOW,
     ...over,
   });
@@ -213,9 +213,18 @@ test("the invite refusal outranks every other reason a session cannot be nudged"
 test("the trigger off is the first and cheapest skip", () => {
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 3 }) }),
-    cfg: { trackReviewComments: false, trackCiFailures: false, settleMs: SETTLE },
+    cfg: { trackReviewComments: false, trackCiFailures: false, trackMergeConflicts: false, settleMs: SETTLE },
   });
   assert.deepEqual(d, { kind: "skip", why: "PR follow-through is off" });
+});
+
+test("the trigger is off only when all three follow-through toggles are", () => {
+  const d = decide({
+    session: mkSession({ inspector: inspector({ open: 3 }) }),
+    cfg: { trackReviewComments: false, trackCiFailures: false, trackMergeConflicts: true, settleMs: SETTLE },
+  });
+  assert.equal(d.kind, "skip");
+  assert.notEqual(d.kind === "skip" && d.why, "PR follow-through is off");
 });
 
 test("review comments and CI can be followed independently", () => {
@@ -223,7 +232,7 @@ test("review comments and CI can be followed independently", () => {
 
   const ciOnly = decide({
     session: both,
-    cfg: { trackReviewComments: false, trackCiFailures: true, settleMs: SETTLE },
+    cfg: { trackReviewComments: false, trackCiFailures: true, trackMergeConflicts: false, settleMs: SETTLE },
   });
   assert.equal(ciOnly.kind, "nudge");
   if (ciOnly.kind === "nudge") {
@@ -233,7 +242,7 @@ test("review comments and CI can be followed independently", () => {
 
   const commentsOnly = decide({
     session: both,
-    cfg: { trackReviewComments: true, trackCiFailures: false, settleMs: SETTLE },
+    cfg: { trackReviewComments: true, trackCiFailures: false, trackMergeConflicts: false, settleMs: SETTLE },
   });
   assert.equal(commentsOnly.kind, "nudge");
   if (commentsOnly.kind === "nudge") {
@@ -245,7 +254,7 @@ test("review comments and CI can be followed independently", () => {
 test("CI follow-through waits for an existing PR and never creates one", () => {
   const d = decide({
     session: mkSession({ prState: null, prUrl: null, prChecks: "failing" }),
-    cfg: { trackReviewComments: false, trackCiFailures: true, settleMs: SETTLE },
+    cfg: { trackReviewComments: false, trackCiFailures: true, trackMergeConflicts: false, settleMs: SETTLE },
   });
   assert.deepEqual(d, { kind: "skip", why: "no open pull request" });
 });

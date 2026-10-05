@@ -7,7 +7,8 @@ import {
 } from "@shared/pipeline.ts";
 import { PipelineActions } from "../pipelines/PipelineActions.tsx";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
-import type { AttentionFold, AttentionItem } from "../lib/attention.ts";
+import { BLOCKED_PR_REASON_TEXT } from "@shared/types.ts";
+import { conflictingFor, type AttentionFold, type AttentionItem } from "../lib/attention.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
@@ -45,6 +46,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   session_dialog: "Parked on a menu",
   pipeline_halt: "Pipeline halts",
   pipeline_commission: "Pipeline lifecycle",
+  blocked_pr: "Blocked pull requests",
   session_blocked: "Waiting on you",
   parked_finalization: "Stuck finalizations",
 };
@@ -96,7 +98,7 @@ export function AttentionInbox({
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
-          <span className="dim"> · answers, decisions, halts and stuck finalizations</span>
+          <span className="dim"> · answers, decisions, halts, blocked PRs and stuck finalizations</span>
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -291,6 +293,41 @@ function InboxItem({
           />
         </section>
       );
+    case "blocked_pr": {
+      const { pr } = item;
+      const title = pr.repo !== null && pr.number !== null ? `${pr.repo} #${pr.number}` : pr.url;
+      return (
+        <section className="inbox-item inbox-blocked-pr" aria-label={`Blocked pull request ${title}`}>
+          <div className="inbox-head">
+            <span className="inbox-glyph" aria-hidden>
+              ⚠
+            </span>
+            <strong>{title}</strong>
+            <span className="inbox-meta">
+              into {pr.baseRef ?? "its base"} · {pr.taskTitle ?? pr.sessionName ?? "(unnamed)"}
+            </span>
+            <span className="inbox-spacer" />
+            {/* An anchor like the halt row's: it leaves for GitHub, so it closes the inbox. */}
+            <Tooltip label="Open this pull request on GitHub to resolve its merge conflicts">
+              <a className="btn btn-ghost" href={pr.url} target="_blank" rel="noreferrer" onClick={onLeave}>
+                Open PR
+              </a>
+            </Tooltip>
+            {pr.sessionId !== null && (
+              <Tooltip label="Focus the session that owns this pull request">
+                <button className="btn btn-ghost" onClick={() => onOpenSession(pr.sessionId!)}>
+                  Open session
+                </button>
+              </Tooltip>
+            )}
+          </div>
+          <p className="inbox-line">
+            Merge conflicts nobody is resolving: {BLOCKED_PR_REASON_TEXT[pr.reason]}
+            <span className="dim"> · {conflictingFor(pr.since, Date.now())}</span>
+          </p>
+        </section>
+      );
+    }
     case "session_blocked":
       return (
         <section className="inbox-item inbox-blocked">

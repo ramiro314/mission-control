@@ -29,6 +29,7 @@ const BASE: ForemanConfig = {
   wrapup: "ask",
   trackReviewFeedback: true,
   trackCiFailures: true,
+  trackMergeConflicts: true,
   keepShipTasksMoving: true,
   shipRecoveryMinutes: 20,
   autoBacklog: false,
@@ -441,6 +442,7 @@ test("pre-PR recovery, review comments, and CI render as independent default-on 
     "Keep pre-PR ship tasks moving",
     "Keep sessions on track with review comments",
     "Keep sessions on track with CI",
+    "Keep sessions on track with merge conflicts",
   ]) {
     const at = html.indexOf(label);
     assert.notEqual(at, -1, label);
@@ -463,18 +465,28 @@ test("the two PR follow-through permissions persist independently", () => {
   assert.doesNotMatch(commentsOnly.slice(0, ciAt).split("<input").pop() ?? "", /checked/);
 });
 
+test("the merge-conflict toggle sits after the CI toggle and renders its saved value", () => {
+  const off = renderPopover(mkState({ trackMergeConflicts: false }));
+  const ciAt = off.indexOf("Keep sessions on track with CI");
+  const conflictsAt = off.indexOf("Keep sessions on track with merge conflicts");
+  assert.ok(ciAt !== -1 && conflictsAt > ciAt, "beside the other follow-through toggles");
+  assert.doesNotMatch(off.slice(0, conflictsAt).split("<input").pop() ?? "", /checked/);
+});
+
 test("a daemon too old to know the follow-through keys still renders them as on", () => {
   // Same failure the backlog guard guards against: a web build ahead of the daemon gets no
   // key, and an unticked box would swear the feature is off while the server runs it on.
   const state = mkState();
   delete (state.config as Partial<ForemanConfig>).trackReviewFeedback;
   delete (state.config as Partial<ForemanConfig>).trackCiFailures;
+  delete (state.config as Partial<ForemanConfig>).trackMergeConflicts;
   delete (state.config as Partial<ForemanConfig>).keepShipTasksMoving;
   const html = renderPopover(state);
   for (const label of [
     "Keep pre-PR ship tasks moving",
     "Keep sessions on track with review comments",
     "Keep sessions on track with CI",
+    "Keep sessions on track with merge conflicts",
   ]) {
     const at = html.indexOf(label);
     assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/, label);

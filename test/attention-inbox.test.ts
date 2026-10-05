@@ -389,6 +389,7 @@ test("the inbox renders every item kind the fold can produce", () => {
     "session_reviews",
     "session_dialog",
     "pipeline_halt",
+    "blocked_pr",
     "session_blocked",
     "parked_finalization",
   ]) {
@@ -430,6 +431,7 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
     "inbox-dialog",
     "inbox-blocked",
     "inbox-halt",
+    "inbox-blocked-pr",
     "inbox-runbook",
     "inbox-parked",
     "inbox-gate",

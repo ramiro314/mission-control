@@ -1921,6 +1921,43 @@ export interface PrMergeability {
   prHeadSha: string | null;
 }
 
+/**
+ * Why nobody is handling a conflicting pull request, so it needs the operator.
+ *
+ * - `session-gone`: no live session owns the PR. The session exited or was removed, and the
+ *   PR is seen only through the by-URL poller.
+ * - `foreman-cannot-nudge`: the owning session is live, but Foreman will not type into it.
+ */
+export type BlockedPrReason = "session-gone" | "foreman-cannot-nudge";
+
+/** The inbox's words for each `BlockedPrReason`: why the row needs you. */
+export const BLOCKED_PR_REASON_TEXT: Record<BlockedPrReason, string> = {
+  "session-gone": "session ended",
+  "foreman-cannot-nudge": "Foreman can't drive this session",
+};
+
+/**
+ * One conflicting pull request nothing is handling, as the daemon's conflict episodes
+ * (`src/server/pr-conflicts.ts`) derive it. Rides the `blocked_prs` event and the snapshot.
+ */
+export interface BlockedPr {
+  url: string;
+  /** `owner/repo`, from the URL. Null for a URL that is not a GitHub pull request. */
+  repo: string | null;
+  number: number | null;
+  baseRef: string | null;
+  /** The latest head observed conflicting. */
+  headSha: string | null;
+  /** When the episode opened: the first conflicting read. */
+  since: number;
+  reason: BlockedPrReason;
+  taskId: string | null;
+  taskTitle: string | null;
+  /** The owning session while the daemon still holds it, else null. */
+  sessionId: string | null;
+  sessionName: string | null;
+}
+
 // ---- dispatched tasks (agents) ----
 
 /**
@@ -3228,6 +3265,12 @@ export type ServerEvent =
        */
       pipelineCommissions?: PipelineCommission[];
       /**
+       * Conflicting pull requests nothing is handling. Bounded by open conflict episodes,
+       * which are bounded by the pull requests a session or task still references: one row
+       * per such PR at most, and EMPTY on a fleet with no unhandled conflict.
+       */
+      blockedPrs: BlockedPr[];
+      /**
        * Every line-comment thread the daemon holds for a session it still knows about.
        *
        * BOUNDED BY LIVE SESSIONS, not by history. A thread belongs to exactly one session
@@ -3403,6 +3446,11 @@ export type ServerEvent =
    * that never existed - four stages from one instant and two from another.
    */
   | { type: "line_summary"; line: LineSummary }
+  /**
+   * The whole set of blocked pull requests, emitted only when it changed. A snapshot rather
+   * than an upsert/remove pair: the set is small and re-derived whole on every PR poll.
+   */
+  | { type: "blocked_prs"; prs: BlockedPr[] }
   /**
    * The settings status tuple, emitted whenever a config write or a task-source sweep
    * changed it. Reduced into `MissionState.settingsStatus`, which is the ONE client-side
