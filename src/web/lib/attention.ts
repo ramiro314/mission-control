@@ -1,5 +1,5 @@
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
-import type { ReviewItem, Session, Task } from "@shared/types.ts";
+import type { BlockedPr, ReviewItem, Session, Task } from "@shared/types.ts";
 import {
   pipelineCommissionAttention,
   pipelineCommissionAttentionEntries,
@@ -45,6 +45,13 @@ export function pipelineSessionDisplay(
  */
 function isSettling(session: Session): boolean {
   return session.state === "exited" || session.state === "stopping";
+}
+
+/** How long a blocked pull request has conflicted, as its inbox row says it: "Conflicting for 4m". */
+export function conflictingFor(since: number, now: number): string {
+  const minutes = Math.max(0, Math.floor((now - since) / 60_000));
+  const span = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return `Conflicting for ${span}`;
 }
 
 /**
@@ -123,6 +130,17 @@ export type AttentionItem =
       reason: string;
       /** The provider's runbook that owns clearing this class, as one line. */
       runbook: string;
+    }
+  | {
+      /**
+       * A conflicting pull request nothing is handling: the session is gone, or Foreman
+       * cannot drive it. The daemon's conflict episodes decide that (`blocked_prs`); this
+       * only places the row. Read-only, like a pipeline halt: it clears itself when the
+       * conflict goes away.
+       */
+      kind: "blocked_pr";
+      id: string;
+      pr: BlockedPr;
     }
   | {
       /**
@@ -218,6 +236,8 @@ export interface AttentionInput {
   pipelineRuns?: readonly PipelineRun[];
   pipelineCommissions?: readonly PipelineCommission[];
   tasks?: readonly Task[];
+  /** The daemon's blocked pull requests. Optional for the same fail-open reason as above. */
+  blockedPrs?: readonly BlockedPr[];
 }
 
 /**
@@ -230,8 +250,9 @@ export interface AttentionInput {
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
  *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
  *  4. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
- *  5. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
- *  6. **Parked finalizations** - a stuck destructive step.
+ *  5. **Blocked pull requests** - a conflicting PR that nothing is handling.
+ *  6. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
+ *  7. **Parked finalizations** - a stuck destructive step.
  *
  * The five that predate pipelines keep their relative order exactly: the new section was
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
@@ -370,7 +391,16 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (5) The backstop: sessions the fleet paints amber that nothing above accounts for. See
+  // (5) Conflicting pull requests nothing is handling, oldest conflict first. Not marked
+  // `represented`: a blocked PR is an obligation about the PR, and an amber session that owns
+  // one still owes its own answer below.
+  for (const pr of [...(input.blockedPrs ?? [])].sort(
+    (a, b) => a.since - b.since || (a.url < b.url ? -1 : 1),
+  )) {
+    items.push({ kind: "blocked_pr", id: `blocked-pr:${pr.url}`, pr });
+  }
+
+  // (6) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
   const blocked = input.sessions
@@ -386,7 +416,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (6) A finalization that stopped on an error. The run is past its decision and holding a
+  // (7) A finalization that stopped on an error. The run is past its decision and holding a
   // half-finished destructive step, which is a retry only a person can ask for.
   for (const summary of [...input.ensembles]
     .filter((e) => e.status === "finalizing" && e.error)

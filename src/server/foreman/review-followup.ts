@@ -41,6 +41,8 @@ export interface ReviewFollowupConfig {
   trackReviewComments: boolean;
   /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
   trackCiFailures: boolean;
+  /** Keep conflicting pull requests on track, from `ForemanConfig.trackMergeConflicts`. */
+  trackMergeConflicts: boolean;
   /** How long a session must sit idle before its work counts as settled. */
   settleMs: number;
 }
@@ -210,6 +212,29 @@ export function activeWorkflowOwnsSession(
   return runs.some((run) => !["completed", "cancelled", "failed"].includes(run.status));
 }
 
+/**
+ * Why Foreman's follow-through will not type into this session, or null when it may.
+ *
+ * Gate 2 of `decideReviewFollowup`, and also what the daemon's conflict episodes
+ * (`src/server/pr-conflicts.ts`) read to decide a conflict is "foreman-cannot-nudge", so the
+ * two cannot disagree about which sessions Foreman drives. Live mode and the allowlist are
+ * `foremanMayActLive`'s, the other half of that answer.
+ */
+export function foremanCannotDrive(
+  s: Pick<Session, "foremanInvite" | "agent" | "state" | "hooksSeen">,
+): string | null {
+  if (s.foremanInvite === null) return "Foreman is not invited into this session";
+  // No `workQueue` capability means no hooks and no reliable state to read; an exited
+  // session has nothing left to type into.
+  // `workQueue` is the reliable-idle/drivable proxy for this automation.
+  if (!capabilitiesFor(s.agent).workQueue) {
+    return `${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`;
+  }
+  if (s.state === "exited") return "the session exited";
+  if (!s.hooksSeen) return "the session is not hook-instrumented";
+  return null;
+}
+
 function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig): Feedback {
   const findings = cfg.trackReviewComments && !!pr.inspector && pr.inspector.postedOpen > 0;
   return { findings, ciFailing: cfg.trackCiFailures && pr.checks === "failing" };
@@ -228,7 +253,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
-  if (!cfg.trackReviewComments && !cfg.trackCiFailures) {
+  if (!cfg.trackReviewComments && !cfg.trackCiFailures && !cfg.trackMergeConflicts) {
     return skip("PR follow-through is off");
   }
 
@@ -241,15 +266,8 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   //    and it did so because it iterated every session with an open PR. A hand-started
   //    session with a PR on its branch is capable, hooked, live, and still none of
   //    Foreman's business.
-  if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
-  // No `workQueue` capability means no hooks and no reliable state to read; an exited
-  // session has nothing left to type into.
-  // `workQueue` is the reliable-idle/drivable proxy for this automation.
-  if (!capabilitiesFor(s.agent).workQueue) {
-    return skip(`${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`);
-  }
-  if (s.state === "exited") return skip("the session exited");
-  if (!s.hooksSeen) return skip("the session is not hook-instrumented");
+  const refusal = foremanCannotDrive(s);
+  if (refusal) return skip(refusal);
 
   // 3. There has to be an OPEN pull request to speak about. A merged one is done; a
   //    closed-unmerged one is dropped like no PR at all (see `Session.prUrl`). WHICH one is

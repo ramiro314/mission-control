@@ -440,6 +440,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     wrapup: "ask",
     trackReviewFeedback: true,
     trackCiFailures: true,
+    trackMergeConflicts: true,
     keepShipTasksMoving: true,
     shipRecoveryMinutes: 20,
     autoBacklog: false,

@@ -1029,6 +1029,7 @@ async function runReviewFollowup(
         cfg: {
           trackReviewComments: cfg.trackReviewFeedback,
           trackCiFailures: cfg.trackCiFailures,
+          trackMergeConflicts: cfg.trackMergeConflicts,
           settleMs: SETTLE_MS,
         },
         now,
@@ -1074,6 +1075,7 @@ async function runReviewFollowup(
         cfg: {
           trackReviewComments: freshCfg.trackReviewFeedback,
           trackCiFailures: freshCfg.trackCiFailures,
+          trackMergeConflicts: freshCfg.trackMergeConflicts,
           settleMs: SETTLE_MS,
         },
         now: Date.now(),

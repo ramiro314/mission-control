@@ -2000,6 +2000,12 @@ export const ForemanConfigSchema = z.object({
    * failing episode until CI recovers and fails again.
    */
   trackCiFailures: z.boolean().default(true),
+  /**
+   * Whether Foreman keeps a session on track when its OPEN pull request conflicts with its
+   * base. Off, a live session's conflict is the operator's: it goes to the attention inbox's
+   * Blocked pull requests section as "Foreman can't drive this session".
+   */
+  trackMergeConflicts: z.boolean().default(true),
   /** Permission for bounded recovery before the first task-owned pull request exists. */
   keepShipTasksMoving: z.boolean().default(true),
   /** Quiet minutes before the first pre-PR recovery attempt. */

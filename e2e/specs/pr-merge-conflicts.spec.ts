@@ -249,3 +249,99 @@ test("a conflict in a multi-repo task's attached repo names that PR and links to
   await expect(alert).toHaveAttribute("href", secondUrl);
   await shoot(dashboard, "05-header-attached-repo-conflict", detail);
 });
+
+/** Open the attention inbox from the topbar segment that counts it. */
+async function openInbox(page: Page): Promise<Locator> {
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  const toAnswer = page.locator("button.pulse-seg", { hasText: "to answer" });
+  // Retried whole, as `attention-pills-agree.spec.ts` explains: an SSE frame replaces the
+  // segment rather than moving it, so one resolved click can land on a detached node.
+  await expect(async () => {
+    if (!(await inbox.isVisible())) await toAnswer.click({ timeout: 3000 });
+    await expect(inbox).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 45_000 });
+  return inbox;
+}
+
+async function openForemanSettings(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+  const popover = page.getByRole("dialog", { name: "Foreman settings" });
+  await expect(popover).toBeVisible();
+  return popover;
+}
+
+test("a conflict nothing is handling gets a Blocked pull requests row until it is mergeable", async ({
+  dashboard,
+  daemon,
+}) => {
+  const session = await dispatch(dashboard, daemon);
+  execFileSync("git", ["-C", session.cwd, "switch", "-q", "-c", "e2e/pr-conflict-blocked"]);
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: session.cwd, encoding: "utf8" }).trim();
+  const pr: FakePullRequest = {
+    cwd: session.cwd,
+    url: PR_URL,
+    number: 31,
+    state: "OPEN",
+    createdAt: new Date().toISOString(),
+    mergedAt: null,
+    headRefOid: head,
+    mergeable: "CONFLICTING",
+    baseRefName: "main",
+  };
+  writeGhPullRequests(daemon.home, [pr]);
+  await announcePullRequest(daemon, session);
+
+  // Foreman is off by default, so it cannot drive this session: nobody handles the conflict.
+  const inbox = await openInbox(dashboard);
+  await expect(inbox.getByRole("heading", { name: "Blocked pull requests" })).toBeVisible({ timeout: 30_000 });
+  const row = inbox.getByRole("region", { name: "Blocked pull request acme/mission-e2e #31" });
+  await expect(row).toContainText("Foreman can't drive this session");
+  await expect(row).toContainText("into main");
+  await expect(row).toContainText(/Conflicting for \d+m/);
+  await expect(row.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", PR_URL);
+  await expect(row.getByRole("button", { name: "Open session" })).toBeVisible();
+  await shoot(dashboard, "06-inbox-foreman-cannot-drive", inbox);
+  await dashboard.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+
+  // The setting: beside the other follow-through toggles, on by default, and it persists.
+  const popover = await openForemanSettings(dashboard);
+  const conflicts = popover.getByRole("checkbox", { name: "Keep sessions on track with merge conflicts" });
+  await expect(popover.getByRole("checkbox", { name: "Keep sessions on track with CI" })).toBeChecked();
+  await expect(conflicts).toBeChecked();
+  const pullRequests = popover.getByRole("group", { name: "Pull requests" });
+  await pullRequests.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "07-foreman-merge-conflicts-toggle", pullRequests);
+  await conflicts.uncheck();
+  await expect
+    .poll(async () => (await api<{ trackMergeConflicts: boolean }>(daemon, "/api/foreman/config")).trackMergeConflicts)
+    .toBe(false);
+  await dashboard.reload();
+  const reopened = await openForemanSettings(dashboard);
+  await expect(
+    reopened.getByRole("checkbox", { name: "Keep sessions on track with merge conflicts" }),
+  ).not.toBeChecked();
+  await dashboard.keyboard.press("Escape");
+
+  // Still blocked, for the same reason, after the reload.
+  const again = await openInbox(dashboard);
+  const sameRow = again.getByRole("region", { name: "Blocked pull request acme/mission-e2e #31" });
+  await expect(sameRow).toContainText("Foreman can't drive this session");
+
+  // The session ends. The same row now says so, fed by the by-URL poller through the task.
+  const killed = await fetch(`${daemon.baseURL}/api/sessions/${session.id}/kill`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  expect(killed.ok, "the session was killed").toBe(true);
+  await expect(sameRow).toContainText("session ended", { timeout: 30_000 });
+  await expect(sameRow).toContainText(/open a pull request that conflicts/i);
+  await shoot(dashboard, "08-inbox-session-ended", again);
+
+  // GitHub now reports the pull request mergeable: the row clears itself.
+  writeGhPullRequests(daemon.home, [{ ...pr, mergeable: "MERGEABLE" }]);
+  await expect(sameRow).toHaveCount(0, { timeout: 60_000 });
+  await expect(again.getByRole("heading", { name: "Blocked pull requests" })).toHaveCount(0);
+  await shoot(dashboard, "09-inbox-cleared", again);
+});
