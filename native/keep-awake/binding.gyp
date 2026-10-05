@@ -2,7 +2,7 @@
   "targets": [
     {
       "target_name": "keep_awake",
-      "sources": ["keep_awake.mm"],
+      "sources": ["<@(addon_sources)"],
       "defines": ["NAPI_VERSION=10"],
       "conditions": [
         [

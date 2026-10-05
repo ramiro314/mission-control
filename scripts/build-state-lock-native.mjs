@@ -7,12 +7,16 @@ import { arch as processArch, platform as processPlatform } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { publishNativeAddon } from "./native-addon-publish.mjs";
+import {
+  gypSourcesArgs,
+  hasNativeAddonSources,
+  nativeAddonSources,
+} from "./native-addon-sources.mjs";
 
-const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
 const SUPPORTED_ARCHITECTURES = new Set(["arm64", "x64"]);
 
 export function stateLockBuildTarget(platform, arch) {
-  if (!SUPPORTED_PLATFORMS.has(platform) || !SUPPORTED_ARCHITECTURES.has(arch)) {
+  if (!hasNativeAddonSources("state-lock", platform) || !SUPPORTED_ARCHITECTURES.has(arch)) {
     throw new Error(`state ownership lock does not support ${platform} ${arch}`);
   }
   return { platform, arch };
@@ -20,6 +24,7 @@ export function stateLockBuildTarget(platform, arch) {
 
 export async function buildStateLockNative() {
   const target = stateLockBuildTarget(processPlatform, processArch);
+  const sources = nativeAddonSources("state-lock", target.platform);
   const sourceDir = resolve("native/state-lock");
   const nodeGyp = resolve("node_modules/node-gyp/bin/node-gyp.js");
   const outputDir = resolve("dist/native");
@@ -41,7 +46,14 @@ export async function buildStateLockNative() {
     });
     execFileSync(
       process.execPath,
-      [nodeGyp, "rebuild", "--directory", isolatedSourceDir, `--arch=${target.arch}`],
+      [
+        nodeGyp,
+        "rebuild",
+        "--directory",
+        isolatedSourceDir,
+        `--arch=${target.arch}`,
+        ...gypSourcesArgs(sources),
+      ],
       { stdio: "inherit" },
     );
     await publishNativeAddon(join(isolatedSourceDir, "build/Release/state_lock.node"), output);

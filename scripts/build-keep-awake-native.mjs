@@ -7,11 +7,22 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
 import { publishNativeAddon } from "./native-addon-publish.mjs";
+import {
+  gypSourcesArgs,
+  hasNativeAddonSources,
+  nativeAddonSources,
+} from "./native-addon-sources.mjs";
 
+const PLATFORM_LABELS = { darwin: "Darwin" };
+
+// Keep Awake is optional, so a platform with no declared sources skips the build instead of
+// failing it.
 export function nativeBuildTarget(platform, arch) {
-  if (platform !== "darwin") return { kind: "skip", platform };
+  if (!hasNativeAddonSources("keep-awake", platform)) return { kind: "skip", platform };
   if (arch === "arm64" || arch === "x64") return { kind: "build", arch };
-  throw new Error(`keep-awake native build does not support Darwin ${arch}`);
+  throw new Error(
+    `keep-awake native build does not support ${PLATFORM_LABELS[platform] ?? platform} ${arch}`,
+  );
 }
 
 async function main() {
@@ -29,7 +40,14 @@ async function main() {
 
   execFileSync(
     process.execPath,
-    [nodeGyp, "rebuild", "--directory", sourceDir, `--arch=${target.arch}`],
+    [
+      nodeGyp,
+      "rebuild",
+      "--directory",
+      sourceDir,
+      `--arch=${target.arch}`,
+      ...gypSourcesArgs(nativeAddonSources("keep-awake", processPlatform)),
+    ],
     { stdio: "inherit" },
   );
   await mkdir(outputDir, { recursive: true });
