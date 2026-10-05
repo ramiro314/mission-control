@@ -369,6 +369,12 @@ test("MCP create_task files a task with a base branch through the v3 route, and 
 
   const refused = await mcp("/mcp/v3/tasks", { ...body, baseBranch: "release/gone" });
   assert.equal(refused.status, 400);
+
+  const named = await mcp("/mcp/v3/tasks", { ...body, title: "Default ticket", baseBranch: "main" });
+  assert.equal(named.status, 200, await named.clone().text());
+  const onDefault = (await named.json()) as Task;
+  assert.equal(onDefault.baseBranch, null, "naming origin's default stores the default");
+  assert.equal(getTask(onDefault.id)?.baseBranch, null);
 });
 
 test("the MCP client sends a base branch only to the routes that refuse what they do not know", () => {
@@ -423,6 +429,17 @@ test("MCP push_task sets the task's base branch before mirroring it, and refuses
     const pushed = getTask(ticket.id)!;
     assert.equal(pushed.baseBranch, "release/windows");
     assert.equal(pushed.source?.sourceId, "src-gh");
+
+    // Naming origin's default returns the task to it: stored as null, not as "main".
+    const toDefault = await push("main");
+    assert.equal(toDefault.status, 200, await toDefault.clone().text());
+    const onDefault = getTask(ticket.id)!;
+    assert.equal(onDefault.baseBranch, null, "naming origin's default stores the default");
+    // Already on the default, so naming it again writes nothing.
+    const again = await push("main");
+    assert.equal(again.status, 200, await again.clone().text());
+    assert.equal(getTask(ticket.id)?.baseBranch, null);
+    assert.equal(getTask(ticket.id)?.updatedAt, onDefault.updatedAt, "an unchanged base is not rewritten");
   } finally {
     delete process.env.MISSION_GH_BIN;
     setTaskSourcesConfig(TaskSourcesConfigSchema.parse({ sources: [] }));
