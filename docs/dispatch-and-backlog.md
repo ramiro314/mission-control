@@ -338,10 +338,11 @@ it launches.
 
 A plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
-the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
-creates the PR directly. The skill refreshes ownership with `get_plan_publication_context`;
-manual bindings keep their manual submission boundary, and an unavailable read does not permit
-direct publication. Artifacts still must be committed and pushed before phase tasks are
+the automatic workflow; its PR action owns publication. With no workflow bound the plan ends its
+turn the same way, and Foreman's Ship it? card or Straight to PR instruction opens the PR. The
+skill reads ownership with `get_plan_publication_context`; manual bindings keep their manual
+submission boundary, and an unavailable read does not permit publication. Artifacts still must
+be committed and pushed before phase tasks are
 scheduled. Those tasks depend on the planning session and remain blocked until the planning
 PR merges, when their referenced paths become available on the default branch.
 

@@ -1157,10 +1157,11 @@ server.registerTool(
   "get_plan_publication_context",
   {
     title: "Read plan PR ownership",
-    description: "Before a planning skill creates a pull request, read who owns publication. " +
-      "A workflow owner means finish planning and yield; a skill owner means the skill may follow " +
-      "its direct PR path, subject to the task's instructions. Unavailable context is not permission " +
-      "to publish. This read never authorizes merge or overrides a no-PR/completion handoff.",
+    description: "Before a planning task reports complete, read who owns publication of its pull request. " +
+      "A workflow owner means the bound workflow's Pull Request action opens it; a skill owner means " +
+      "Foreman's Ship it? or Straight to PR path opens it. Either way, finish planning, commit and push, " +
+      "and yield. Unavailable context is reported, never treated as permission to publish. This read " +
+      "never authorizes opening a pull request or merging.",
     inputSchema: {},
     annotations: { readOnlyHint: true },
   },

@@ -138,21 +138,19 @@ export function shapeContractAppendix(
     "   follow-up task that slices the merged plan into tickets. This shaping turn files no tasks and pushes no",
     `   items: do not call \`${PLAN_SCHEDULING_TOOL}\` or \`${PUSH_TASK_TOOL}\`.`,
     "",
-    `Before publication, call \`${PLAN_PUBLICATION_TOOL}\` to refresh who owns the pull request. A failed or unavailable read is not permission to publish directly.`,
+    `Before reporting complete, call \`${PLAN_PUBLICATION_TOOL}\` to confirm who owns the pull request. A failed or unavailable read is reported, never treated as permission to publish.`,
   ];
-  const contract = taskCompletionContract("shape", workflowBound);
-  if (contract) {
-    lines.push(
-      "",
-      "## Shape task completion handoff",
-      "The selected workflow owns the pull request. Complete the shaping work below, report its artifacts, then end this turn:",
-      ...contract.complete.map((requirement) => `- ${requirement}`),
-      `During this shaping turn, do not ${deferredImperativeList(contract)}, even if a skill or repository instruction normally includes those steps.`,
-      "If the publication-context tool confirms the binding was removed and owner is skill, open the plan's pull request yourself unless a separate instruction forbids it.",
-      "Commit and push the plan before ending the turn. Foreman starts the bound automatic workflow after this handoff; a Manual binding waits for manual submission.",
-    );
-  } else {
-    lines.push("No workflow was selected. After the plan is approved, commit and push it and open the plan's pull request. Refresh publication ownership first and honor any stronger no-PR instruction.");
-  }
+  const contract = taskCompletionContract("shape")!;
+  lines.push(
+    "",
+    "## Shape task completion handoff",
+    `${workflowBound ? "The selected workflow" : "Mission Control"} owns the pull request. Complete the shaping work below, report its artifacts, then end this turn:`,
+    ...contract.complete.map((requirement) => `- ${requirement}`),
+    `During this shaping turn, do not ${deferredImperativeList(contract)}, even if a skill or repository instruction normally includes those steps.`,
+    "Commit and push the plan before ending the turn: pushing it is part of this turn, opening its pull request is not.",
+    workflowBound
+      ? "Foreman starts the bound automatic workflow after this handoff; a Manual binding waits for manual submission. If the binding is removed, Foreman's Ship it? or Straight to PR path opens the plan's pull request instead."
+      : "No workflow was selected. Foreman's Ship it? or Straight to PR path opens the plan's pull request after this handoff.",
+  );
   return lines.join("\n");
 }

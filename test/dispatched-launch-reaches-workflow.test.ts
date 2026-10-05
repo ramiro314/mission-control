@@ -568,7 +568,7 @@ test("Foreman's prompted plan handoff supplies the PR deferral and claims its wo
   assert.equal(await tick(), true);
   assert.equal(prompts.length, 1);
   assert.match(prompts[0]!, /Write an approved phased plan, schedule its tasks, and open a pull request/);
-  const contract = taskCompletionContract("plan", true)!;
+  const contract = taskCompletionContract("plan")!;
   for (const action of contract.deferred) assert.ok(prompts[0]!.includes(action.noun), `missing verifier deferral: ${action.id}`);
   for (const requirement of contract.complete) assert.ok(prompts[0]!.includes(requirement), `missing planning requirement: ${requirement}`);
   assert.deepEqual(writes, [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`]);
@@ -658,7 +658,7 @@ test("Foreman's prompted plan handoff preserves a stable Manual binding and asks
   const binding = d.workflows.store.updateBinding(d.bindingId, { triggerMode: "manual" });
   assert.equal(await tick(), true);
   assert.equal(prompts.length, 1, "the Manual plan still reaches verification");
-  for (const action of taskCompletionContract("plan", true)!.deferred) {
+  for (const action of taskCompletionContract("plan")!.deferred) {
     assert.ok(prompts[0]!.includes(action.noun), `missing Manual-plan verifier deferral: ${action.id}`);
   }
   const sessionPath = `/api/sessions/${encodeURIComponent(d.sessionId)}`;

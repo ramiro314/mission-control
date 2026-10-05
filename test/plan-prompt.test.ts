@@ -197,10 +197,13 @@ test("the contract points at the skills instead of restating their procedure", (
   assert.ok(!appendix.includes("SVG"), "no diagram guidance");
 
   // And it stays SHORT, for the reason the scout appendix records: it competes with the
-  // operator's own request, and a page of rules is read like a page of none.
+  // operator's own request, and a page of rules is read like a page of none. The completion
+  // handoff that follows is rendered from the shared completion contract, not written here,
+  // so the budget applies to the hand-over above it.
+  const handover = appendix.slice(0, appendix.indexOf("## Plan task completion handoff"));
   assert.ok(
-    appendix.split("\n").length < 30,
-    `the appendix is ${appendix.split("\n").length} lines - it is meant to hand work over, not describe it`,
+    handover.split("\n").length < 30,
+    `the hand-over is ${handover.split("\n").length} lines - it is meant to hand work over, not describe it`,
   );
 });
 

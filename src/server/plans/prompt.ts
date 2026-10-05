@@ -109,22 +109,21 @@ export function planContractAppendix(skills: PlanSkillInvocations, workflowBound
     "",
     "Unlike a scout, a plan is meant to land. The phase tasks carry paths rather than content, so those paths",
     "have to resolve on the default branch before any of the phases can start.",
-    `Before publication, call \`${PLAN_PUBLICATION_TOOL}\` to refresh who owns the pull request. A failed or unavailable read is not permission to publish directly.`,
+    `Before reporting complete, call \`${PLAN_PUBLICATION_TOOL}\` to confirm who owns the pull request. A failed or unavailable read is reported, never treated as permission to publish.`,
   ];
-  const contract = taskCompletionContract("plan", workflowBound);
-  if (contract) {
-    lines.push(
-      "",
-      "## Plan task completion handoff",
-      "The selected workflow owns the pull request. Complete the planning work below, report its artifacts and task map, then end this turn:",
-      ...contract.complete.map((requirement) => `- ${requirement}`),
-      `During this planning turn, do not ${deferredImperativeList(contract)}, even if a skill or repository instruction normally includes those steps.`,
-      "This plan handoff applies while a workflow owns publication. If the publication-context tool confirms the binding was removed and owner is skill, follow the skill's direct PR path unless a separate instruction forbids it.",
-      "Keep the skill's commit-and-push requirement before scheduling. Foreman starts the bound automatic workflow after this handoff; a Manual binding waits for manual submission. The workflow's later instruction owns PR follow-through. Neither handoff nor review completion releases phase dependencies; publication by merge does.",
-    );
-  } else {
-    lines.push("No workflow was selected. The phased-plan skill owns the planning pull request; with phasing declined, create the plan's ordinary pull request after approval. Refresh publication ownership first and honor any stronger no-PR instruction.");
-  }
+  const contract = taskCompletionContract("plan")!;
+  lines.push(
+    "",
+    "## Plan task completion handoff",
+    `${workflowBound ? "The selected workflow" : "Mission Control"} owns the pull request. Complete the planning work below, report its artifacts and task map, then end this turn:`,
+    ...contract.complete.map((requirement) => `- ${requirement}`),
+    `During this planning turn, do not ${deferredImperativeList(contract)}, even if a skill or repository instruction normally includes those steps.`,
+    "Keep the skill's commit-and-push requirement before scheduling: pushing the plan is part of this turn, opening its pull request is not.",
+    workflowBound
+      ? "Foreman starts the bound automatic workflow after this handoff; a Manual binding waits for manual submission. If the binding is removed, Foreman's Ship it? or Straight to PR path opens the plan's pull request instead."
+      : "No workflow was selected. Foreman's Ship it? or Straight to PR path opens the plan's pull request after this handoff.",
+    "Only an instruction delivered after this handoff starts PR follow-through. Neither handoff nor review completion releases phase dependencies; publication by merge does.",
+  );
   return lines.join("\n");
 }
 

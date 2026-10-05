@@ -10,7 +10,7 @@ const bound: PlanPublicationContext = {
 };
 
 test("a plan verifier's completed result survives only the same binding and version", async () => {
-  const contract = taskCompletionContract("plan", bound.owner === "workflow");
+  const contract = taskCompletionContract("plan");
   assert.ok(contract?.deferred.some((action) => action.id === "pull-request"));
   const verdict = { complete: true, summary: "Approved plan and phase tasks are ready; PR deferred", gaps: [] };
   let verified = 0;
@@ -29,7 +29,8 @@ test("a plan verifier's completed result survives only the same binding and vers
 test("unbound plans cannot use a stale complete result after workflow attachment", async () => {
   const unbound: PlanPublicationContext = { owner: "skill" };
   const complete = { complete: true };
-  assert.equal(taskCompletionContract("plan", false), null);
+  // The boundary does not depend on the binding: an unbound plan defers its PR to Foreman.
+  assert.ok(taskCompletionContract("plan")?.deferred.some((action) => action.id === "pull-request"));
   assert.equal(await withPlanPublicationGuard(unbound, async () => complete, async () => bound), null);
   assert.equal(await withPlanPublicationGuard(unbound, async () => complete, async () => unbound), complete);
   const incomplete = { complete: false, gaps: ["Human approval is missing"] };

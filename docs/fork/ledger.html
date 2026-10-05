@@ -123,7 +123,7 @@ or issues.</p>
 <tr>
 <td>PR publication ownership</td>
 <td>Active (partial)</td>
-<td>#110 (plan), #120 (completion latch), pending (branch <code>feat/defer-pr-publication</code>)</td>
+<td>#110 (plan), #119 (deferred publication), #120 (completion latch), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
 </tr>
 <tr>
 <td>Complete frees the worktree</td>
@@ -915,11 +915,11 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active (partial)</strong>. Landed: Part A (completion latch, #120), and from Part B the deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the retro task intents, and the no-workflow ensemble winner (items 2 and 5, without the pull-request skill precondition). Not yet landed: the execution-authorization split, unbound plan, shape and chat, the phased-plan intent template, and the pull-request skill precondition.</td>
+<td><strong>Active (partial)</strong>. Landed: Part A (completion latch, #120); from Part B the deferred publication for the multi-repo manifest, the retro, deflake and testing-setup skills, the retro task intents, and the no-workflow ensemble winner (items 2 and 5, without the pull-request skill precondition, #119); and unbound plan and shape with the phased-plan intent template (items 3 and 4, branch <code>feat/unbound-plan-shape-deferral</code>). Not yet landed: the execution-authorization split, unbound chat, and the pull-request skill precondition.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#110 (plan), #120 (completion latch), pending (branch <code>feat/defer-pr-publication</code>)</td>
+<td>#110 (plan), #119 (deferred publication), #120 (completion latch), pending (branch <code>feat/unbound-plan-shape-deferral</code>)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -976,6 +976,21 @@ publishes it.</li>
 reaches a Foreman publish instruction after a committed turn: the Ship it? card under the
 default <code>ask</code> wrap-up, <code>WRAPUP_PR</code> under Straight to PR. Pinned in
 <code>test/prompted-wrapup-worker-e2e.test.ts</code>.</li>
+<li><code>taskCompletionContract</code> is kind-only. <code>plan</code> and <code>shape</code> return their planning contract whether
+or not a workflow is bound, so the Foreman verifier judges an unopened PR as deferred, not as a
+gap, for unbound planning tasks too.</li>
+<li>The plan and shape prompts render the completion handoff whether or not a workflow is bound.
+The unbound branch says commit and push the plan, report complete, end the turn, and that
+Foreman&#39;s Ship it? or Straight to PR path opens the PR; a bound task whose binding is removed
+falls back to the same path. Pushing stays part of the planning turn (the kind-contract push
+exception); opening the PR never is.</li>
+<li>No planning prompt, skill text, or <code>get_plan_publication_context</code> description tells an
+owner-<code>skill</code> session to open the PR itself. The tool&#39;s <code>owner</code> wire values
+(<code>workflow</code>, <code>skill</code>, <code>unavailable</code>) are unchanged.</li>
+<li>Phase task intents written by the phased-plan skill ask the agent to commit the phase; Mission
+Control publishes it as a reviewable PR whose merge releases dependent phases.</li>
+<li>An unbound plan session reaches a Foreman publish instruction after a committed, pushed turn
+without a verifier hold. Pinned in <code>test/prompted-wrapup-worker-e2e.test.ts</code>.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -992,6 +1007,9 @@ typed into the session under Straight to PR, after the verifier finds the turn f
 request in the initial turn.</li>
 <li>The built-in Pull Request session action invokes the pull-request skill, which writes the
 description from the session&#39;s report.</li>
+<li>Foreman&#39;s prompted wrap-up falls through to the Ship it? card or Straight to PR when a planning
+task&#39;s completion claim returns <code>no_binding</code> and publication ownership is <code>skill</code>.</li>
+<li>The verify prompt renders a non-null completion contract as trusted policy above the evidence.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>src/server/workflows/store.ts</code> (<code>claimForemanCompletion</code>,
 <code>consumePromptedGuard</code>), <code>src/server/db.ts</code> (<code>workflow_runs.claim_episode_key</code>),
@@ -1000,6 +1018,8 @@ description from the session&#39;s report.</li>
 refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code>src/server/dispatcher.ts</code>
 (<code>intentWithRepoManifest</code>), <code>src/server/ensembles/engine.ts</code> (<code>buildContinuation</code>),
 <code>src/server/retro.ts</code> (<code>postMergeRetroIntent</code>, <code>retroTaskIntent</code>), <code>skills/retro/SKILL.md</code>,
+<code>src/shared/task-completion.ts</code>, <code>src/server/plans/{prompt,shape,tools}.ts</code>, the
+<code>get_plan_publication_context</code> description in <code>src/mcp/server.ts</code>, <code>skills/phased-plan/SKILL.md</code>,
 <code>docs/{work-queues,workflows,foreman,recurring-missions,dispatch-and-backlog,skills-and-settings,flaky-tests,ensembles}.md</code>,
 <code>docs/agent-guides/{change-contracts,architecture}.md</code>.</p>
 <p><strong>Fork-only files.</strong> <code>test/workflow-completion-latch.test.ts</code>,

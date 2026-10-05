@@ -228,8 +228,8 @@ For each call:
      guide;
   3. **the boundaries** - implement only this phase, keep the cross-phase contracts the phase file
      names, and leave later phases' scope alone;
-  4. **the bar** - run the verification the phase file specifies and open a reviewable pull request
-     whose merge can release dependent phases.
+  4. **the bar** - run the verification the phase file specifies and commit the phase; Mission
+     Control publishes it as a reviewable pull request whose merge releases dependent phases.
 - State plainly in the `intent` that the phase document is the proposed route, not a specification:
   the agent follows it where the repository agrees, uses its own judgement where the repository
   disagrees or a better implementation presents itself, and records any deviation and its reasoning
@@ -268,8 +268,9 @@ A well-formed `intent` reads like a person asking for the feature:
 > deviation and its reasoning in the pull request.
 >
 > Implement only this phase and preserve the cross-phase contracts it names; later phases own the
-> scheduling UI and the catalog. Run the verification that phase file specifies, then open a
-> reviewable pull request - its merge releases the dependent phase tasks.
+> scheduling UI and the catalog. Run the verification that phase file specifies, then commit the
+> phase; Mission Control publishes it as a reviewable pull request whose merge releases the dependent
+> phase tasks.
 
 For a phase implemented in `docs-site` whose plan files live in `mission-control`, the corresponding
 call keeps the same concise intent and adds repository scope rather than copying the phase document:
@@ -277,7 +278,7 @@ call keeps the same concise intent and adds repository scope rather than copying
 ```text
 create_task({
   title: "Documentation Publishing - Phase 2: Render published guides",
-  intent: "Render the approved guides in docs-site. Read docs/plans/documentation-publishing/plan.md, docs/plans/documentation-publishing/phased-plan.md, and docs/plans/documentation-publishing/phase-2-render-published-guides.md in the attached mission-control checkout first. The phase file is the proposed route, not a specification; adapt with judgement and record deviations in the pull request. Mission-control is context-only and must not be changed. Implement only Phase 2, preserve its contracts, run its verification, and open the reviewable docs-site pull request.",
+  intent: "Render the approved guides in docs-site. Read docs/plans/documentation-publishing/plan.md, docs/plans/documentation-publishing/phased-plan.md, and docs/plans/documentation-publishing/phase-2-render-published-guides.md in the attached mission-control checkout first. The phase file is the proposed route, not a specification; adapt with judgement and record deviations in the pull request. Mission-control is context-only and must not be changed. Implement only Phase 2, preserve its contracts, run its verification, and commit the phase; Mission Control publishes it as a reviewable docs-site pull request whose merge releases dependent phases.",
   repository: "docs-site",
   additionalRepositories: ["mission-control"],
   dependsOnTaskIds: ["<phase-1-task-id>"],
@@ -298,34 +299,36 @@ calling session's current workflow binding, including a workflow attached after 
 Do not infer ownership from whether a run has started, whether evidence registration is
 available, or a task's earlier selection. A workflow without Personas still owns publication.
 
-- `owner: "workflow"`: finish the approved artifacts, requested task map, and applicable plan
-  evidence, then report that planning is complete and end the turn. Do not create or update a PR,
-  act on PR review feedback, wait for PR CI, or merge during this planning turn. Foreman starts
-  an automatic binding after completion; a Manual binding waits for manual submission. The
-  workflow's later PR instruction owns publication. A workflow without a PR action needs its
-  configuration corrected, not a competing PR path from this skill.
-- `owner: "skill"`: follow the direct publication section below. This includes explicit removal
-  of a previous binding. A separate no-PR instruction or task handoff still takes precedence.
-- `owner: "unavailable"`, a failed call, or a missing tool: report the exact issue and stop before
-  PR work. Do not treat an unknown binding as absent or read Mission Control's SQLite yourself.
+This session never opens the planning pull request on its own initiative. Whatever the owner,
+finish the approved artifacts, requested task map, and applicable plan evidence, then
+report that planning is complete and end the turn. Do not create or update a PR, act on PR review
+feedback, wait for PR CI, or merge during this planning turn.
 
-The commit-and-push requirement before scheduling applies to both owners. Keep every
-`dependsOnCurrentSession` edge: neither the planning handoff, workflow success, nor an open PR
-releases those phase tasks. Only the existing publication/merge condition does.
+- `owner: "workflow"`: Foreman starts an automatic binding after completion; a Manual binding
+  waits for manual submission. The workflow's later PR instruction owns publication. A workflow
+  without a PR action needs its configuration corrected, not a competing PR path from this skill.
+- `owner: "skill"`: no workflow is bound, including after explicit removal of a previous binding.
+  Foreman's Ship it? card or Straight to PR path opens the planning pull request after completion.
+- `owner: "unavailable"`, a failed call, or a missing tool: report the exact issue.
+  Do not treat an unknown binding as absent or read Mission Control's SQLite yourself.
 
-When bound, finish with the artifact paths, phase-to-task-id map, direct dependency edges,
-possible concurrency, and the workflow handoff. Do not claim a PR exists or that phase tasks
+The commit-and-push requirement before scheduling applies to every owner: pushing the artifacts is
+part of this turn, opening their pull request is not. Keep every `dependsOnCurrentSession` edge:
+neither the planning handoff, workflow success, nor an open PR releases those phase tasks. Only the
+existing publication/merge condition does.
+
+Finish the planning turn with the artifact paths, phase-to-task-id map, direct dependency edges,
+possible concurrency, and who opens the pull request. Do not claim a PR exists or that phase tasks
 have been released.
 
-## Direct publication when no workflow is bound
+## When a later instruction asks you to publish
 
 The scheduled tasks are gated on the planning session, so the plan is not delivered until the
 artifacts reach the default branch. Merging is the act that publishes the paths every task names.
-After task creation succeeds and the context confirms `owner: "skill"`:
+When the workflow's Pull Request action, a Foreman PR instruction, or the human in this session asks
+for the pull request:
 
-1. Refresh `get_plan_publication_context` immediately before PR work. If ownership changed or the
-   read fails, follow the ownership section above. With ownership still confirmed, open a pull
-   request containing exactly the artifact commit this run pushed before scheduling (the
+1. Open a pull request containing exactly the artifact commit this run pushed before scheduling (the
    source plan and its HTML, the phased-plan index and its HTML, every phase file), on a branch
    following the repository's branch and commit conventions. Commit and push anything the run
    produced after that point, so the branch holds every artifact the tasks reference. Follow the
@@ -333,8 +336,7 @@ After task creation succeeds and the context confirms `owner: "skill"`:
    description names the approved decisions, the phase-to-task-id map, and states that the backlogged
    phase tasks are released by this PR's merge.
 2. Watch the pull request until CI passes. Fix failures this PR caused; a failure that reproduces on
-   the base branch is reported, not chased. Do not stop at "pushed" - the deliverable is a green,
-   merged PR.
+   the base branch is reported, not chased.
 3. Address Inspector (or other automated reviewer) comments **if and only if both hold**: the
    comment is valid - it identifies a real defect in the artifacts, verified against the repository
    rather than taken on faith - AND fixing it does not change the intended behavior of the scoped
@@ -356,6 +358,6 @@ After task creation succeeds and the context confirms `owner: "skill"`:
    say so and cancel the scheduled tasks; leaving them backlogged against unpublished paths strands
    them.
 
-Finish by reporting the artifact paths, the phase-to-task-id map, the direct dependency edges
+After publishing, report the artifact paths, the phase-to-task-id map, the direct dependency edges
 (including the active planning-session edge on every task), which tasks may execute concurrently,
 and the pull request URL with its CI and merge state.
