@@ -1095,7 +1095,7 @@ through a bundled skill.
 **Upstream surfaces touched.** `.github/workflows/ci.yml` (the `docs-checks` job),
 `package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count),
 `docs/skills-and-settings.md` (the skill's row), `test/skills-catalog.test.ts` (the skill's
-cases).
+cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`).
 
 **Fork-only files.** `skills/docs-only-ci/SKILL.md`,
 `skills/docs-only-ci/assets/detect-docs-only.sh`, `skills/docs-only-ci/assets/ci-result.sh`,
