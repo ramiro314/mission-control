@@ -118,8 +118,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>PR merge-conflict reactions</td>
-<td>Active (signal, chip, Blocked pull requests inbox, workflow repair rounds)</td>
-<td>#108, #125, pending (branch <code>feat/workflow-merge-conflicts</code>)</td>
+<td>Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds)</td>
+<td>#108, #125, #145, pending (branch <code>feat/workflow-merge-conflicts</code>)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -850,11 +850,11 @@ editor, version history and run views.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>, tickets 1, 2 and the workflow ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Wait for CI&#39;s conflict repair round</td>
+<td><strong>Active</strong>, tickets 1 to 3 and the workflow ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its <code>pr-conflict</code> alert, and Wait for CI&#39;s conflict repair round</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#108, #125, pending (branch <code>feat/workflow-merge-conflicts</code>)</td>
+<td>#108, #125, #145, pending (branch <code>feat/workflow-merge-conflicts</code>)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -870,10 +870,11 @@ it <code>CONFLICTING</code>, CI often stops running, and nothing in Mission Cont
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon&#39;s single
-owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles. The
-workflow ticket gives a workflow-owned session its conflict as an ordinary repair round from
-Wait for CI, instead of a 45-minute wait for <code>ci_missing</code>, and sends the conflict to the inbox as
-<code>workflow-not-gating</code> when the run can no longer reach a Wait for CI node.</p>
+owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.
+Ticket 3 adds one desktop alert per PR entering that section. The workflow ticket gives a
+workflow-owned session its conflict as an ordinary repair round from Wait for CI, instead of a
+45-minute wait for <code>ci_missing</code>, and sends the conflict to the inbox as <code>workflow-not-gating</code>
+when the run can no longer reach a Wait for CI node.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li>The branch poller requests <code>mergeable</code> and <code>baseRefName</code>; the by-URL poller requests
@@ -933,6 +934,12 @@ checkbox is <strong>Keep sessions on track with merge conflicts</strong>, and fo
 only when all three toggles are off.</li>
 <li>The attention inbox&#39;s <strong>Blocked pull requests</strong> section follows Pipeline halts, each row one
 answer owed, read-only.</li>
+<li><code>AlertKind</code> <code>&quot;pr-conflict&quot;</code> (attention, id <code>pr-conflict:&lt;url&gt;</code>) fires from <code>detectAlerts</code> when
+a PR enters <code>AlertScope.blockedPrs</code>; a reason change while it stays blocked does not re-fire.
+<code>useNotifier</code> holds <code>alertedPrConflicts</code> (PR URL to when it was last seen blocked or seen
+leaving) for the page&#39;s lifetime and passes it as <code>AlertMemory</code>, so a PR re-alerts only after
+<code>PR_CONFLICT_REALERT_MS</code> (5 minutes) out of the set, never after a reconnect or daemon restart.
+Only the browser raises it: the away watcher&#39;s scope carries no <code>blockedPrs</code>.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -963,19 +970,20 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 <code>src/shared/types.ts</code> (<code>BlockedPr</code>, <code>blocked_prs</code>, snapshot), <code>src/web/useEventStream.ts</code>,
 <code>src/web/App.tsx</code>, <code>src/web/lib/attention.ts</code>, <code>src/web/components/AttentionInbox.tsx</code>,
 <code>src/web/components/ForemanBar.tsx</code>, <code>src/web/styles.css</code>, and every test <code>ForemanConfig</code>
-literal. Workflow ticket: <code>src/shared/wait-for-ci.ts</code> (<code>decideWaitForCi</code>,
-<code>WaitForCiDecision</code>), <code>src/shared/workflow.ts</code> (new <code>waitForCiReachable</code>,
-<code>workflowRunActiveNodeIds</code>), <code>src/shared/types.ts</code> (<code>BlockedPrReason</code>),
-<code>src/server/workflows/engine.ts</code> (<code>waitForCiVerdict</code>, <code>observeWaitForCi</code>),
+literal. Ticket 3: <code>src/shared/alerts.ts</code> (<code>AlertKind</code>, <code>AlertScope</code>, <code>detectAlerts</code>),
+<code>src/web/useNotifier.ts</code> and <code>src/web/App.tsx</code> (the alert scope). Workflow ticket:
+<code>src/shared/wait-for-ci.ts</code> (<code>decideWaitForCi</code>, <code>WaitForCiDecision</code>), <code>src/shared/workflow.ts</code>
+(new <code>waitForCiReachable</code>, <code>workflowRunActiveNodeIds</code>), <code>src/shared/types.ts</code>
+(<code>BlockedPrReason</code>), <code>src/server/workflows/engine.ts</code> (<code>waitForCiVerdict</code>, <code>observeWaitForCi</code>),
 <code>src/server/workflows/manager.ts</code> (options, packet preparation, <code>observeWaitForCiAttempt</code>, new
 <code>waitForCiReachable</code>, <code>sessionPrMergeability</code>), <code>src/server/workflows/feedback.ts</code>
 (<code>renderSessionAction</code>), <code>src/server/workflows/agent-contract.ts</code>, <code>src/server/registry.ts</code>
-(<code>taskPrUrlOwners</code>, <code>prReferences</code>), <code>src/server/pr.ts</code> (<code>startPrPoller</code>) and
-<code>src/server/index.ts</code>.</p>
+(<code>taskPrUrlOwners</code>, <code>prReferences</code>, <code>owningRuns</code>), <code>src/server/pr.ts</code> (<code>startPrPoller</code>,
+<code>reclassifyOnWorkflowRunChange</code>) and <code>src/server/index.ts</code>.</p>
 <p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>src/server/pr-conflicts.ts</code>,
 <code>test/pr-mergeable.test.ts</code>, <code>test/pr-conflicts.test.ts</code>, <code>test/blocked-prs-attention.test.ts</code>,
-<code>test/workflow-ci-reachability.test.ts</code>, <code>e2e/specs/pr-merge-conflicts.spec.ts</code>,
-<code>e2e/specs/workflow-merge-conflicts.spec.ts</code>.</p>
+<code>test/pr-conflict-alerts.test.ts</code>, <code>test/workflow-ci-reachability.test.ts</code>,
+<code>e2e/specs/pr-merge-conflicts.spec.ts</code>, <code>e2e/specs/workflow-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>
 <thead>

@@ -51,7 +51,7 @@ or issues.
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
-| PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox, workflow repair rounds) | #108, #125, pending (branch `feat/workflow-merge-conflicts`) |
+| PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -648,8 +648,8 @@ editor, version history and run views.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, tickets 1, 2 and the workflow ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Wait for CI's conflict repair round |
-| PRs | #108, #125, pending (branch `feat/workflow-merge-conflicts`) |
+| Status | **Active**, tickets 1 to 3 and the workflow ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its `pr-conflict` alert, and Wait for CI's conflict repair round |
+| PRs | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
 
@@ -658,10 +658,11 @@ it `CONFLICTING`, CI often stops running, and nothing in Mission Control said so
 adds the one mergeability signal every later conflict reaction (Foreman nudges, workflow repair
 rounds, the Blocked pull requests inbox) reads, and shows it as a "Conflicts with `<base>`" mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon's single
-owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles. The
-workflow ticket gives a workflow-owned session its conflict as an ordinary repair round from
-Wait for CI, instead of a 45-minute wait for `ci_missing`, and sends the conflict to the inbox as
-`workflow-not-gating` when the run can no longer reach a Wait for CI node.
+owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles.
+Ticket 3 adds one desktop alert per PR entering that section. The workflow ticket gives a
+workflow-owned session its conflict as an ordinary repair round from Wait for CI, instead of a
+45-minute wait for `ci_missing`, and sends the conflict to the inbox as `workflow-not-gating`
+when the run can no longer reach a Wait for CI node.
 
 **Behavior contracts.**
 
@@ -722,6 +723,12 @@ Wait for CI, instead of a 45-minute wait for `ci_missing`, and sends the conflic
   only when all three toggles are off.
 - The attention inbox's **Blocked pull requests** section follows Pipeline halts, each row one
   answer owed, read-only.
+- `AlertKind` `"pr-conflict"` (attention, id `pr-conflict:<url>`) fires from `detectAlerts` when
+  a PR enters `AlertScope.blockedPrs`; a reason change while it stays blocked does not re-fire.
+  `useNotifier` holds `alertedPrConflicts` (PR URL to when it was last seen blocked or seen
+  leaving) for the page's lifetime and passes it as `AlertMemory`, so a PR re-alerts only after
+  `PR_CONFLICT_REALERT_MS` (5 minutes) out of the set, never after a reconnect or daemon restart.
+  Only the browser raises it: the away watcher's scope carries no `blockedPrs`.
 
 **Upstream behavior it assumes.**
 
@@ -752,20 +759,21 @@ fake `gh` (`pr view` output), and every test `Session` literal. Ticket 2: `src/s
 `src/shared/types.ts` (`BlockedPr`, `blocked_prs`, snapshot), `src/web/useEventStream.ts`,
 `src/web/App.tsx`, `src/web/lib/attention.ts`, `src/web/components/AttentionInbox.tsx`,
 `src/web/components/ForemanBar.tsx`, `src/web/styles.css`, and every test `ForemanConfig`
-literal. Workflow ticket: `src/shared/wait-for-ci.ts` (`decideWaitForCi`,
-`WaitForCiDecision`), `src/shared/workflow.ts` (new `waitForCiReachable`,
-`workflowRunActiveNodeIds`), `src/shared/types.ts` (`BlockedPrReason`),
-`src/server/workflows/engine.ts` (`waitForCiVerdict`, `observeWaitForCi`),
+literal. Ticket 3: `src/shared/alerts.ts` (`AlertKind`, `AlertScope`, `detectAlerts`),
+`src/web/useNotifier.ts` and `src/web/App.tsx` (the alert scope). Workflow ticket:
+`src/shared/wait-for-ci.ts` (`decideWaitForCi`, `WaitForCiDecision`), `src/shared/workflow.ts`
+(new `waitForCiReachable`, `workflowRunActiveNodeIds`), `src/shared/types.ts`
+(`BlockedPrReason`), `src/server/workflows/engine.ts` (`waitForCiVerdict`, `observeWaitForCi`),
 `src/server/workflows/manager.ts` (options, packet preparation, `observeWaitForCiAttempt`, new
 `waitForCiReachable`, `sessionPrMergeability`), `src/server/workflows/feedback.ts`
 (`renderSessionAction`), `src/server/workflows/agent-contract.ts`, `src/server/registry.ts`
-(`taskPrUrlOwners`, `prReferences`), `src/server/pr.ts` (`startPrPoller`) and
-`src/server/index.ts`.
+(`taskPrUrlOwners`, `prReferences`, `owningRuns`), `src/server/pr.ts` (`startPrPoller`,
+`reclassifyOnWorkflowRunChange`) and `src/server/index.ts`.
 
 **Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
 `test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
-`test/workflow-ci-reachability.test.ts`, `e2e/specs/pr-merge-conflicts.spec.ts`,
-`e2e/specs/workflow-merge-conflicts.spec.ts`.
+`test/pr-conflict-alerts.test.ts`, `test/workflow-ci-reachability.test.ts`,
+`e2e/specs/pr-merge-conflicts.spec.ts`, `e2e/specs/workflow-merge-conflicts.spec.ts`.
 
 ### PR publication ownership
 
