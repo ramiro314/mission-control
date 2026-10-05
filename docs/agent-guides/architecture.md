@@ -253,7 +253,7 @@ release still follows observed merge. No second workflow trigger or SQLite write
 outcome, bounded summary, bounded blocking gaps, decision time - describing why the current
 consumed generation stopped. Outcomes are append-only:
 `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`, `empty`, `verification_failed`,
-`direct_handoff_undelivered`.
+`direct_handoff_undelivered`, `workflow_latched`.
 
 It is written by the same statement that consumes the generation, on both atomic boundaries: the
 ordinary consume route and the Workflow completion claim transaction. A refused or rolled-back

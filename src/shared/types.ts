@@ -761,6 +761,17 @@ export interface Session {
    */
   prChecks: PrChecks | null;
   /**
+   * Whether the PR conflicts with its base, bound to the head GitHub reported it for. Read it
+   * through `currentMergeability` (`src/shared/pr-mergeable.ts`), never directly: a kept
+   * observation from an earlier head says nothing about `prHeadSha`. Set and cleared with
+   * `prState`; null for a merged PR and before GitHub has given a definitive answer.
+   */
+  prMergeable: PrMergeableObservation | null;
+  /** The PR's base branch (`baseRefName`), or null while unknown. */
+  prBaseRef: string | null;
+  /** The PR's current head commit, advanced on every read, or null while unknown. */
+  prHeadSha: string | null;
+  /**
    * The Inspector's state for this session's pull request, or null when there is no PR
    * or the Inspector never adopted it.
    *
@@ -1483,6 +1494,8 @@ export interface SessionQueue {
  * - `verification_failed`: verification INFRASTRUCTURE failed repeatedly and hit its cap.
  *   Deliberately not `held`: no model ever judged this work, so a later recovery must not
  *   send a verifier summary back that does not exist.
+ * - `workflow_latched`: a bound Workflow already completed a run for this intent episode;
+ *   nothing was started and nothing was handed off. Only a new human prompt re-arms it.
  */
 export const PROMPTED_COMPLETION_OUTCOMES = [
   "held",
@@ -1493,6 +1506,7 @@ export const PROMPTED_COMPLETION_OUTCOMES = [
   "empty",
   "verification_failed",
   "direct_handoff_undelivered",
+  "workflow_latched",
 ] as const;
 export type PromptedCompletionOutcome = (typeof PROMPTED_COMPLETION_OUTCOMES)[number];
 
@@ -1890,6 +1904,22 @@ export type PrState = "open" | "merged";
 
 /** Rolled-up CI status for a session's PR. A single failing check dominates. */
 export type PrChecks = "passing" | "failing" | "pending";
+
+/** GitHub's `mergeable` for a PR. `UNKNOWN` is not a state: it is no observation. */
+export type PrMergeable = "mergeable" | "conflicting";
+
+/** A definitive `mergeable` read, bound to the head commit it was made on. */
+export interface PrMergeableObservation {
+  state: PrMergeable;
+  headSha: string;
+}
+
+/** The mergeability fields a session and each `RepoPrFeedback` carry for one PR. */
+export interface PrMergeability {
+  prMergeable: PrMergeableObservation | null;
+  prBaseRef: string | null;
+  prHeadSha: string | null;
+}
 
 // ---- dispatched tasks (agents) ----
 
@@ -2541,7 +2571,7 @@ export interface TaskRepoPrSummary {
  * meanings so one decision core can read either. Its presence means the poll saw this
  * repository's pull request open; see `TaskRepoPrSummary.feedback`.
  */
-export interface RepoPrFeedback {
+export interface RepoPrFeedback extends PrMergeability {
   /** The pull request's number, for `gh` commands scoped to its own repository. */
   prNumber: number;
   /** That pull request's CI rollup as of the last poll, or null when it reported none. */

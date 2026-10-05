@@ -6772,35 +6772,42 @@ export class WorkflowStore {
       }
       const triggerKey = `foreman:${binding.id}:${input.completionKind}:${input.marker}`;
       const expectedIntent = input.expectedIntent;
-      const currentIntent = expectedIntent || input.completionKind === "prompted"
-        ? this.db.prepare(
-            `SELECT objective, objective_version, prompt_revision,
-                    resolved_prompt_revision, relationship
-               FROM session_goals WHERE note_key = ?`,
-          ).get(noteKey) as {
-            objective: string | null;
-            objective_version: number;
-            prompt_revision: number;
-            resolved_prompt_revision: number;
-            relationship: string | null;
-          } | undefined
-        : undefined;
+      // Read for every claim, drain included: a drain claim checks nothing against it, but the
+      // run it starts or resubmits is stamped with the episode it read here (see the latch).
+      const currentIntent = this.db.prepare(
+        `SELECT objective, objective_version, prompt_revision,
+                resolved_prompt_revision, relationship
+           FROM session_goals WHERE note_key = ?`,
+      ).get(noteKey) as {
+        objective: string | null;
+        objective_version: number;
+        prompt_revision: number;
+        resolved_prompt_revision: number;
+        relationship: string | null;
+      } | undefined;
+      // The same formula a resolved prompted episode key uses, so a drain-started run and the
+      // prompted claim of its own Pull Request turn compare equal unless a human prompt came
+      // in between. Null when the session never recorded a goal: that run cannot latch.
+      const claimEpisodeKey = currentIntent
+        ? `intent:${currentIntent.objective_version}:${currentIntent.prompt_revision}`
+        : null;
 
       const duplicateEvent = this.db.prepare(
-        `SELECT run_id, payload_json FROM workflow_events
-          WHERE event_kind = 'workflow_completion_claimed'
+        `SELECT run_id, event_kind FROM workflow_events
+          WHERE event_kind IN ('workflow_completion_claimed', 'claim_latched')
             AND json_extract(payload_json, '$.triggerKey') = ?
           ORDER BY id ASC LIMIT 1`,
-      ).get(triggerKey) as { run_id: string; payload_json: string } | undefined;
+      ).get(triggerKey) as { run_id: string; event_kind: string } | undefined;
       if (duplicateEvent) {
         const run = this.mustRun(duplicateEvent.run_id);
-        const submission = this.submissionByTrigger(triggerKey);
+        const latched = duplicateEvent.event_kind === "claim_latched";
+        const submission = latched ? null : this.submissionByTrigger(triggerKey);
         return {
           result: {
             claimed: true,
             runId: run.id,
             submissionId: submission?.id ?? null,
-            state: "already_claimed",
+            state: latched ? "latched" : "already_claimed",
           },
           binding,
           run,
@@ -6841,15 +6848,32 @@ export class WorkflowStore {
       let created = false;
       let previousFingerprint: string | undefined;
 
-      if (!run) {
+      // The completion latch. A completed run already reviewed this intent episode, so a
+      // prompted turn under that same episode - the Pull Request action's own turn, an
+      // Inspector fix, a background wake-up, any daemon-injected turn - is not a new ask.
+      // Only an accepted human prompt advances the episode and re-arms the binding. Cancelled
+      // runs and unstamped (pre-upgrade) runs never latch, and a drain claim is never refused:
+      // it fires again only on new queue items, which are human work.
+      const latchedBy = !run && input.completionKind === "prompted"
+        ? this.db.prepare(
+            `SELECT id FROM workflow_runs
+              WHERE binding_id = ? AND status = 'completed' AND claim_episode_key = ?
+              ORDER BY completed_at DESC, id DESC LIMIT 1`,
+          ).get(binding.id, expectedIntent!.episodeKey) as { id: string } | undefined
+        : undefined;
+
+      if (latchedBy) {
+        run = this.mustRun(latchedBy.id);
+        state = "latched";
+      } else if (!run) {
         const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
         this.db.prepare(
           `INSERT INTO workflow_runs (
              id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
              trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
              gate_state_json, started_at, updated_at, completed_at, intent_json,
-             intent_provenance_json
-           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?)`,
+             intent_provenance_json, claim_episode_key
+           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
         ).run(
           input.runId,
           binding.id,
@@ -6861,6 +6885,7 @@ export class WorkflowStore {
           input.now,
           frozenIntentJson(input.runId, input.intent),
           provenance.json,
+          claimEpisodeKey,
         );
         this.announceIntentProvenance(input.runId, provenance.provenance);
         this.insertSubmissionInTransaction({
@@ -6896,12 +6921,15 @@ export class WorkflowStore {
             now: input.now,
           });
           assertRunLifecycle(run.id, "capturing", "capturing", null);
+          // Restamped with the episode of the claim that fed this round, so the stamp is
+          // always the episode of the LAST claim the run reviewed.
           this.db.prepare(
             `UPDATE workflow_runs
                 SET status = 'capturing', current_phase = 'capturing',
-                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
+                    gate_state_json = NULL, updated_at = ?, completed_at = NULL,
+                    claim_episode_key = ?
               WHERE id = ?`,
-          ).run(input.now, run.id);
+          ).run(input.now, claimEpisodeKey, run.id);
           run = this.mustRun(run.id);
           submission = this.mustSubmission(input.submissionId);
           state = "resubmitted";
@@ -6936,11 +6964,34 @@ export class WorkflowStore {
               input.expectedWorkCycle!,
               input.expectedIntent!.episodeKey,
               input.summary,
+              state === "latched" ? "workflow_latched" : "workflow_claimed",
               input.now,
             );
         if (!retired) {
           throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
         }
+      }
+      if (state === "latched") {
+        // Recorded on the completed run that latched the binding, and deliberately NOT as a
+        // `workflow_completion_claimed`: this claim reviewed nothing on that run, so it must
+        // not read as one of its claims. The trigger key keeps a replay idempotent.
+        this.appendEvent(run.id, "claim_latched", {
+          triggerKey,
+          completionKind: input.completionKind,
+          marker: input.marker,
+          summary: input.summary,
+          expectedWorkCycle: input.expectedWorkCycle,
+          episodeKey: input.expectedIntent!.episodeKey,
+          completedRunId: run.id,
+        }, input.now);
+        return {
+          result: { claimed: true, runId: run.id, submissionId: null, state },
+          binding,
+          run,
+          submission: null,
+          created: false,
+          previousFingerprint: undefined,
+        };
       }
       this.appendEvent(run.id, "workflow_completion_claimed", {
         triggerKey,
@@ -10836,6 +10887,7 @@ export class WorkflowStore {
     expectedWorkCycle: { logicalKey: string; generation: number },
     episodeKey: string,
     summary: string,
+    outcome: "workflow_claimed" | "workflow_latched",
     now: number,
   ): boolean {
     if (expectedWorkCycle.logicalKey !== noteKey) return false;
@@ -10849,9 +10901,9 @@ export class WorkflowStore {
       // and inside this transaction - so a claim that later throws rolls the reason back
       // with the consumption it described. Routing this through the ordinary consume route
       // instead would split one atomic claim into two writes a crash could land between,
-      // which is why `workflow_claimed` is the one outcome that route refuses.
+      // which is why `workflow_claimed` and `workflow_latched` are outcomes that route refuses.
       decision: {
-        outcome: "workflow_claimed",
+        outcome,
         summary,
         gaps: [],
       },

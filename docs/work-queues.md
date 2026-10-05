@@ -120,8 +120,19 @@ completion stays quiet for that episode however many generations follow. Recordi
 *before* anything is typed, and a failed or ambiguous injection is never retried automatically:
 the **Ship it?** card is the recovery, exactly as it is for a send that could not be delivered.
 Type a new instruction and completion re-arms on the next episode; clearing the context rotates
-the session onto a fresh key that has made no handoff at all. Only direct shipping latches -
-submitting a bound **Foreman Complete** Workflow does not, so its repair rounds keep working.
+the session onto a fresh key that has made no handoff at all.
+
+There are two latches, and both re-arm only on a new human instruction:
+
+- **Direct shipping** latches the session for the intent episode its handoff was recorded
+  against, as above.
+- **A completed bound Workflow run** latches its **Foreman Complete** binding for the episode
+  of the claim that last fed it. The Pull Request action's own turn, Inspector fixes,
+  background-task wake-ups and every other daemon-injected turn settle under that same episode,
+  so their completions are consumed with the `workflow_latched` outcome and start nothing: no
+  second run, no **Ship it?** card, no Straight to PR. Submitting the run does not latch, so its
+  repair rounds keep working while it is active; only a `completed` run does, and a cancelled
+  one never does. Queue-drain claims are never refused by it.
 
 If Claude resumes the same objective from a background task notification, that notification
 remains excluded from the human Goal, while its later settled Stop completes a new work-cycle
@@ -147,8 +158,8 @@ complete means. Nothing else about the evidence bar moves: a missing implementat
 new code path or missing required documentation is still blocking.
 
 **Every consumed generation records why it stopped.** The same statement that consumes a
-generation stores its outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
-`empty`, or `verification_failed` - along with a bounded summary and, for a hold, its blocking
+generation stores its outcome - `held`, `workflow_claimed`, `workflow_latched`, `asked`,
+`direct_handoff`, `retired`, `empty`, or `verification_failed` - along with a bounded summary and, for a hold, its blocking
 gaps. That reason is *current projection*, replaced wholesale by the next generation; the
 Foreman episode ledger remains the history. It exists because a silent hold used to spend a
 completed generation and leave nothing behind: every later tick skipped the generation as already

@@ -29,6 +29,7 @@ const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { getInspectorPr, openDb, primaryRepoPrForTask, taskReposFor, workEpisodeRepoPrsForTask } =
   await import("../src/server/db.ts");
 const { adoptPr } = await import("../src/server/inspector/worker.ts");
+const { currentMergeability } = await import("../src/shared/pr-mergeable.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -646,4 +647,45 @@ test("the Inspector's findings reach the repository they were left on", () => {
   const summary = repoPrLines(f).get("/other")?.feedback?.inspector;
   assert.equal(summary?.prKey, "example/other#20");
   assert.equal(summary?.postedOpen, 0);
+});
+
+// ---- mergeability on the per-repo feedback ---------------------------------------------------
+
+test("an attached repo's feedback carries its mergeability, kept whole on UNKNOWN", () => {
+  const f = fixture("repo-mergeable");
+  f.registry.reconcileRepoPrs(
+    new Map([repoMatch(f, "/other", { headSha: "A", mergeable: "conflicting", baseRef: "main" })]),
+    new Set(),
+  );
+  let feedback = repoPrLines(f).get("/other")?.feedback;
+  assert.deepEqual(feedback?.prMergeable, { state: "conflicting", headSha: "A" });
+  assert.equal(feedback?.prBaseRef, "main");
+  assert.equal(currentMergeability(feedback!), "conflicting");
+
+  f.registry.reconcileRepoPrs(
+    new Map([repoMatch(f, "/other", { headSha: "B", mergeable: null, baseRef: "main" })]),
+    new Set(),
+  );
+  feedback = repoPrLines(f).get("/other")?.feedback;
+  assert.deepEqual(feedback?.prMergeable, { state: "conflicting", headSha: "A" });
+  assert.equal(feedback?.prHeadSha, "B");
+  assert.equal(currentMergeability(feedback!), null);
+});
+
+test("a by-URL read writes mergeability back onto the matching repoPrs entry", () => {
+  const f = fixture("repo-by-url");
+  f.registry.reconcileRepoPrs(
+    new Map([repoMatch(f, "/other", { headSha: "A", mergeable: "conflicting", baseRef: "main" })]),
+    new Set(),
+  );
+  const emitted: string[] = [];
+  f.registry.on("event", (e: { type: string }) => emitted.push(e.type));
+
+  f.registry.reconcilePrUrlMergeability(
+    new Map([[PR_B, { open: true, mergeable: "mergeable", baseRef: "main", headSha: "B" }]]),
+  );
+  const feedback = repoPrLines(f).get("/other")?.feedback;
+  assert.equal(currentMergeability(feedback!), "mergeable");
+  assert.equal(feedback?.prChecks, null, "only the mergeability fields move");
+  assert.ok(emitted.includes("session_upsert"), "the card is re-sent");
 });
