@@ -133,8 +133,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>Windows support</td>
-<td>In progress on <code>release/windows</code> (plan, <code>.gitattributes</code> and the four platform seams on <code>main</code>)</td>
-<td>#128 (plan), #147, #152, #154, #158, #176, pending (branch <code>docs/windows-support-ledger</code>)</td>
+<td>In progress on <code>release/windows</code> (plan, <code>.gitattributes</code>, the four platform seams and the weekly sync runbook on <code>main</code>)</td>
+<td>#128 (plan), #147, #152, #154, #158, #176, #184, pending (branch <code>docs/windows-branch-sync</code>)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1410,11 +1410,11 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 </tr>
 <tr>
 <td>PRs</td>
-<td>#128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), pending (branch <code>docs/windows-support-ledger</code>, this entry and the branch, M0.3). The per-task base branch it depends on (M0.1) has its own entry.</td>
+<td>#128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), pending (branch <code>docs/windows-branch-sync</code>, the weekly sync runbook and mission, M0.4). The per-task base branch it depends on (M0.1) has its own entry.</td>
 </tr>
 <tr>
 <td>Plan docs</td>
-<td><a href="../plans/windows-support/plan.md">docs/plans/windows-support/plan.md</a>, &quot;Decisions&quot;, &quot;Branch model&quot; and &quot;Milestones&quot;</td>
+<td><a href="../plans/windows-support/plan.md">docs/plans/windows-support/plan.md</a>, &quot;Decisions&quot;, &quot;Branch model&quot; and &quot;Milestones&quot;; the sync runbook <a href="../windows-branch-sync.md">docs/windows-branch-sync.md</a></td>
 </tr>
 <tr>
 <td>Upstream candidate</td>
@@ -1436,7 +1436,8 @@ the merge PR (D38).</li>
 <li><code>release/windows</code> was cut from <code>origin/main</code> only after the per-task base branch,
 <code>.gitattributes</code> and all four seams had merged (D36), so it starts with every one of them.
 <code>main</code> reaches it only through merges (the weekly &quot;Sync main into release/windows&quot; mission,
-D5 and D26): never a rebase, never a force-push. On a sync conflict <code>main</code> wins on shared code
+D5 and D26, following <a href="../windows-branch-sync.md">docs/windows-branch-sync.md</a>): never a rebase,
+never a force-push. On a sync conflict <code>main</code> wins on shared code
 and the Windows change is re-applied on top; dropping a Windows change needs the human (D27).</li>
 <li>Windows tickets are tasks with <code>base_branch = release/windows</code>, so their worktrees, PRs,
 checks and merge watcher follow the branch (see &quot;Per-task base branch&quot;). They carry the
@@ -1494,7 +1495,7 @@ executable search ladder).</p>
 <code>scripts/native-addon-sources.mjs</code>, <code>scripts/native-addon-sources.d.mts</code>,
 <code>test/process-inspection.test.ts</code>, <code>test/process-lifetime.test.ts</code>,
 <code>test/executable-environment.test.ts</code>, <code>test/native-addon-sources.test.ts</code>,
-<code>docs/plans/windows-support/</code>. Everything else Windows-specific lives on <code>release/windows</code>.</p>
+<code>docs/plans/windows-support/</code>, <code>docs/windows-branch-sync.md</code>. Everything else Windows-specific lives on <code>release/windows</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

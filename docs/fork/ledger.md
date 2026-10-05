@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| Windows support | In progress on `release/windows` (plan, `.gitattributes` and the four platform seams on `main`) | #128 (plan), #147, #152, #154, #158, #176, pending (branch `docs/windows-support-ledger`) |
+| Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, pending (branch `docs/windows-branch-sync`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1142,8 +1142,8 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 | Field | Value |
 | --- | --- |
 | Status | **In progress on `release/windows`**. On `main`: the plan, `.gitattributes`, and the four platform seams (plan M1), each with only its POSIX implementation registered. The win32 implementations, Windows CI, Setup checks and Windows docs are built on `release/windows` (plan M2) and reach `main` in one merge. |
-| PRs | #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), pending (branch `docs/windows-support-ledger`, this entry and the branch, M0.3). The per-task base branch it depends on (M0.1) has its own entry. |
-| Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones" |
+| PRs | #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), pending (branch `docs/windows-branch-sync`, the weekly sync runbook and mission, M0.4). The per-task base branch it depends on (M0.1) has its own entry. |
+| Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones"; the sync runbook [docs/windows-branch-sync.md](../windows-branch-sync.md) |
 | Upstream candidate | Not now (D18: fork-only). The four seams are platform-neutral and could be offered on their own. |
 
 **Intent.** Mission Control runs natively on Windows 11 x64: the daemon, the Foreman worker,
@@ -1162,7 +1162,8 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
 - `release/windows` was cut from `origin/main` only after the per-task base branch,
   `.gitattributes` and all four seams had merged (D36), so it starts with every one of them.
   `main` reaches it only through merges (the weekly "Sync main into release/windows" mission,
-  D5 and D26): never a rebase, never a force-push. On a sync conflict `main` wins on shared code
+  D5 and D26, following [docs/windows-branch-sync.md](../windows-branch-sync.md)): never a rebase,
+  never a force-push. On a sync conflict `main` wins on shared code
   and the Windows change is re-applied on top; dropping a Windows change needs the human (D27).
 - Windows tickets are tasks with `base_branch = release/windows`, so their worktrees, PRs,
   checks and merge watcher follow the branch (see "Per-task base branch"). They carry the
@@ -1221,7 +1222,7 @@ executable search ladder).
 `scripts/native-addon-sources.mjs`, `scripts/native-addon-sources.d.mts`,
 `test/process-inspection.test.ts`, `test/process-lifetime.test.ts`,
 `test/executable-environment.test.ts`, `test/native-addon-sources.test.ts`,
-`docs/plans/windows-support/`. Everything else Windows-specific lives on `release/windows`.
+`docs/plans/windows-support/`, `docs/windows-branch-sync.md`. Everything else Windows-specific lives on `release/windows`.
 
 ## Superseded and removed
 
