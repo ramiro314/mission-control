@@ -69,11 +69,12 @@ function fakeClient(escalate: () => Promise<boolean>) {
 }
 
 const session = mkSession({ id: "s1", name: "atlas" });
+const LEADER = () => true;
 
 test("the first escalation of an episode is sent, stamped and recorded once as a pr-conflict episode", async () => {
   const fake = fakeClient(async () => true);
   const marks = new Map([[KEY, mark()]]);
-  await escalateConflict(fake.client, session, marks, decision(false));
+  await escalateConflict(fake.client, session, marks, decision(false), LEADER);
 
   assert.deepEqual(fake.escalations, [[URL_, "D"]]);
   assert.equal(fake.episodes.length, 1);
@@ -89,7 +90,7 @@ test("the first escalation of an episode is sent, stamped and recorded once as a
 test("a re-send reaches the daemon but records no second episode", async () => {
   const fake = fakeClient(async () => true);
   const marks = new Map([[KEY, mark({ conflictEscalated: true, conflictEscalatedAt: 40 })]]);
-  await escalateConflict(fake.client, session, marks, decision(true));
+  await escalateConflict(fake.client, session, marks, decision(true), LEADER);
 
   assert.deepEqual(fake.escalations, [[URL_, "D"]]);
   assert.deepEqual(fake.episodes, []);
@@ -102,13 +103,38 @@ test("a failed request restores the prior mark, so the next pass retries, and re
     throw new Error("escalatePrConflict -> 500");
   });
   const marks = new Map([[KEY, prior]]);
-  await escalateConflict(fake.client, session, marks, decision(false));
+  await escalateConflict(fake.client, session, marks, decision(false), LEADER);
   assert.equal(marks.get(KEY), prior);
   assert.deepEqual(fake.episodes, []);
 
   const fresh = new Map<string, FollowupMark>();
-  await escalateConflict(fake.client, session, fresh, decision(false));
+  await escalateConflict(fake.client, session, fresh, decision(false), LEADER);
   assert.equal(fresh.has(KEY), false, "a mark that did not exist before is not left behind");
+});
+
+test("a worker that lost the lease mid-pass neither sends nor records", async () => {
+  const fake = fakeClient(async () => true);
+  const prior = mark();
+  const marks = new Map([[KEY, prior]]);
+  await escalateConflict(fake.client, session, marks, decision(false), () => false);
+  assert.deepEqual(fake.escalations, []);
+  assert.deepEqual(fake.episodes, []);
+  assert.equal(marks.get(KEY), prior, "the mark is left for whichever worker leads next");
+});
+
+test("a failed episode record is logged, keeps the escalated mark and does not throw", async () => {
+  const fake = fakeClient(async () => true);
+  const client = {
+    ...fake.client,
+    escalatePrConflict: fake.client.escalatePrConflict,
+    recordEpisode: async () => {
+      throw new Error("daemon unreachable");
+    },
+  } as unknown as Client;
+  const marks = new Map([[KEY, mark()]]);
+  await escalateConflict(client, session, marks, decision(false), LEADER);
+  assert.deepEqual(fake.escalations, [[URL_, "D"]], "the escalation itself landed");
+  assert.equal(marks.get(KEY)?.conflictEscalated, true);
 });
 
 // ---- the client ----

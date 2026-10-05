@@ -932,8 +932,9 @@ ownership, on a new conflicting head after 3 nudges, or after <code>CONFLICT_GIV
 minutes) settled-idle on the nudged, still-conflicting head, counted from the nudge too. An
 escalated mark re-sends every <code>CONFLICT_ESCALATE_RESEND_MS</code> (1 minute) while the head is
 conflicting. The worker posts <code>POST /api/pr-conflicts/escalate { prUrl, headSha }</code>
-(<code>EscalatePrConflictSchema</code>), restores the mark on failure, and logs and records a
-<code>pr-conflict</code> episode on the first send only.</li>
+(<code>EscalatePrConflictSchema</code>) only while it holds the lease, restores the mark on failure, and
+logs and records a <code>pr-conflict</code> episode on the first send only. A failed record is logged and
+costs nothing else.</li>
 <li>The route marks the open episode found by URL alone <code>escalated</code> (<code>503</code> with no tracker,
 <code>{ escalated: false }</code> with no open episode). The flag lives with the episode, so a mergeable
 read re-arms it. An escalated live owner is blocked as <code>nudges-exhausted</code>, after

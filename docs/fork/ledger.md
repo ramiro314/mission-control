@@ -722,8 +722,9 @@ episode, and hand the conflict to the operator when the nudges do not resolve it
   minutes) settled-idle on the nudged, still-conflicting head, counted from the nudge too. An
   escalated mark re-sends every `CONFLICT_ESCALATE_RESEND_MS` (1 minute) while the head is
   conflicting. The worker posts `POST /api/pr-conflicts/escalate { prUrl, headSha }`
-  (`EscalatePrConflictSchema`), restores the mark on failure, and logs and records a
-  `pr-conflict` episode on the first send only.
+  (`EscalatePrConflictSchema`) only while it holds the lease, restores the mark on failure, and
+  logs and records a `pr-conflict` episode on the first send only. A failed record is logged and
+  costs nothing else.
 - The route marks the open episode found by URL alone `escalated` (`503` with no tracker,
   `{ escalated: false }` with no open episode). The flag lives with the episode, so a mergeable
   read re-arms it. An escalated live owner is blocked as `nudges-exhausted`, after

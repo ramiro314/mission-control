@@ -1039,7 +1039,7 @@ async function runReviewFollowup(
       // freshness recheck: a PR that turned mergeable in between has no open episode, and
       // the daemon ignores the escalation. The next pull request is still considered.
       if (decision.kind === "escalate") {
-        await escalateConflict(client, session, marks, decision);
+        await escalateConflict(client, session, marks, decision, () => isLeader);
         continue;
       }
 
@@ -1129,13 +1129,21 @@ async function runReviewFollowup(
  * mark the open episode escalated. A failed request restores the previous mark, so the next
  * pass tries again. The first escalation of an episode is logged and recorded as a Foreman
  * episode; a re-send, which exists only so a restarted daemon re-learns it, is silent.
+ *
+ * Leadership is re-checked first, as the nudge path re-checks it before typing: the lease can
+ * be lost mid-pass, and a worker that no longer leads must not write the audit record a new
+ * leader may also write. The record itself fails soft. The escalation has already landed by
+ * then, so a failed write costs the record and nothing else - not the mark, and not the rest
+ * of this pass's sessions.
  */
 export async function escalateConflict(
   client: ForemanClient,
   session: Session,
   marks: Map<string, FollowupMark>,
   decision: Extract<ReviewFollowupDecision, { kind: "escalate" }>,
+  holdsLease: () => boolean,
 ): Promise<void> {
+  if (!holdsLease()) return;
   const prior = marks.get(decision.prKey) ?? null;
   marks.set(decision.prKey, decision.mark);
   let landed: boolean;
@@ -1152,7 +1160,19 @@ export async function escalateConflict(
     `${session.name}: handed the merge conflict on ${decision.url} to the operator - ${decision.reason}` +
       (landed ? "" : " (the daemon had no open conflict episode for it)"),
   );
-  await client.recordEpisode(session.id, {
+  try {
+    await recordConflictEscalation(client, session, decision);
+  } catch (err) {
+    log(`${session.name}: could not record the merge-conflict escalation (${String(err)})`);
+  }
+}
+
+function recordConflictEscalation(
+  client: ForemanClient,
+  session: Session,
+  decision: Extract<ReviewFollowupDecision, { kind: "escalate" }>,
+): Promise<void> {
+  return client.recordEpisode(session.id, {
     marker: `pr-conflict:${decision.url}:${decision.headSha}`,
     situation: "pr-conflict",
     surface: "terminal",
