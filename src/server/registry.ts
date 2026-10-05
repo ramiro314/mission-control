@@ -502,7 +502,6 @@ interface LivePrObservation extends PrMergeability {
   checks: PrChecks | null;
 }
 
-/** A branch-poller match as a mergeability read. */
 /**
  * Whether a submitted prompt carries text but none of it is anybody's ask - a Claude
  * `<task-notification>` reporting that a background watcher exited, say.
@@ -517,6 +516,7 @@ function isMachineOnlyPrompt(spec: HookSpec, evt: HookIngest): boolean {
   return spec.submittedPromptText(evt) !== null && spec.promptText(evt) === null;
 }
 
+/** A branch-poller match as a mergeability read. */
 function mergeabilityReadOf(match: PrMatch): MergeabilityRead {
   return {
     open: match.state === "open",
