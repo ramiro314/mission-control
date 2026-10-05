@@ -16,8 +16,8 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
-| Executable environment | `src/server/executables/`, `src/server/platform/executable-environment.ts` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH. The ladder's platform locations and the login-shell PATH read come from the per-platform table; `main` registers only the POSIX row |
-| Process inspection | `src/server/process-inspection/` | The only place under `src/` that runs `ps` or `lsof`: process listing, cwd, open files, start identity, port listener; one implementation per platform. Standalone scripts (`scripts/update-lock.mjs`, `scripts/recover-database.mjs`) still call `/bin/ps` directly |
+| Executable environment | `src/server/executables/`, `src/server/platform/executable-environment.ts` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH. The ladder's platform locations, a command's file names, and the login-shell PATH read come from the per-platform table: macOS and Linux share the POSIX row, and the `win32` row searches PATHEXT names and reads PATH from the registry through Windows PowerShell |
+| Process inspection | `src/server/process-inspection/` | The only place under `src/` that runs `ps` or `lsof`, or their Windows PowerShell counterparts: process listing, cwd, open files, start identity, port listener; one implementation per platform. On `win32` cwd and open files have no reliable source and always answer as a failed read, so worktree occupancy reports unknown there. Standalone scripts (`scripts/update-lock.mjs`, `scripts/recover-database.mjs`) still call `/bin/ps` directly |
 | Hook bridges | `hooks/` | Small Node processes that post hook events to the daemon |
 
 The live browser channel is SSE only. Do not add browser polling.

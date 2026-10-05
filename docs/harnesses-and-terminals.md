@@ -45,7 +45,9 @@ before their standard per-user locations.
 The platform's locations in steps 2, 4 and 6, and the command that reads the login-shell PATH,
 come from one per-platform table in
 [`src/server/platform/executable-environment.ts`](../src/server/platform/executable-environment.ts).
-macOS and Linux share its POSIX row; no other platform registers one yet.
+macOS and Linux share its POSIX row. The `win32` row looks a bare command up by each PATHEXT
+name (`claude.exe`, never npm's extensionless shell script) and fills the login-shell step from
+the machine and user PATH in the registry, read through Windows PowerShell.
 
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's
