@@ -70,7 +70,7 @@ async function seedRun(page: Page, daemon: DaemonHandle, gate: string): Promise<
     liveEnabled: true,
     checksEnabled: true,
     repoAllowlist: [daemon.repo],
-    defaultWorkflowId: null,
+    kindWorkflowDefaults: { ship: null },
     checkCommands: [{
       repoRoot: daemon.repo,
       slot: "test",
