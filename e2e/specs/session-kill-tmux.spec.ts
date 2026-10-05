@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as base, expect } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 // Exercise the actual Kill dialog, route, discovery and tmux target resolver. The only
@@ -44,6 +45,7 @@ const test = base.extend<{ terminal: TmuxFixture }>({
 });
 
 test.describe("Kill in tmux", () => {
+  skipSpecOnWin32(test, "tmux and the terminal runtime are unavailable on win32");
   test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is not installed");
 
   for (const shared of [true, false]) {

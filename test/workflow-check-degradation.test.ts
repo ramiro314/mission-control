@@ -5,6 +5,7 @@
  * verdict, and removes the tree.
  */
 import { after, afterEach, test } from "node:test";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -31,7 +32,7 @@ const leaseRows = new CheckLeaseStore(db);
 setWorktreesConfig({ enabled: false });
 
 /** A real process is started only by the case that gets that far; the rest are platform-free. */
-const SUPPORTED = checkRuntimeSupport().supported;
+const UNSUPPORTED = skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported;
 
 const liveRows = (): unknown[] =>
   db
@@ -143,7 +144,7 @@ test("dispatch keeps isolation when native allocation is disabled", async () => 
  * commit it actually tested. A real verdict proves the gate did not silently decline, and
  * matching HEAD proves the cold tree kept the captured-commit contract.
  */
-test("a check with native allocation disabled runs in git and reports its real verdict", { skip: !SUPPORTED }, async () => {
+test("a check with native allocation disabled runs in git and reports its real verdict", { skip: UNSUPPORTED }, async () => {
   const { repo, head } = mkRepo("check-degrades");
   const ref = attemptRef();
 

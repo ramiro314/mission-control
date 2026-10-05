@@ -2045,7 +2045,7 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
 and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Eight traps, all of which have cost time already:
+correct through refactors. Nine traps, all of which have cost time already:
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -2092,6 +2092,15 @@ correct through refactors. Eight traps, all of which have cost time already:
    guaranteed close, not for the timeout. `test/e2e-daemon-db-access.test.ts` fails the build
    if any spec opens the file directly, because the author who does will not see it any other
    way.
+9. **Skip on win32 only through `skipSpecOnWin32`** from `test/helpers/win32-skip.ts`, with a
+   stated reason. The Windows merge gate reviews every call to it, and only for surfaces that
+   are unavailable on win32 (Codex, Pi, the terminal runtime, the macOS updater) or tests that
+   pin a POSIX-only implementation. A skip that also fires on win32 for another reason calls
+   it first: a macOS-only spec (`test.skip(process.platform !== "darwin", ...)`) and a spec
+   that skips when `tmux` is missing both put `skipSpecOnWin32(test, ...)` before their own
+   `test.skip`. `test/win32-skip-guard.test.ts` fails the build on a win32 comparison or a
+   platform exclusion that skips without the helper; a missing-tool probe it cannot recognise,
+   so that half is yours to remember.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

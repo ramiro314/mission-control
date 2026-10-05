@@ -6,7 +6,9 @@ import { buildSync } from "esbuild";
 import { _electron as electron, type Page } from "playwright";
 import { expect, test } from "../fixtures/test.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
+skipSpecOnWin32(test, "this desktop shell fixture drives the macOS GUI");
 test.skip(process.platform !== "darwin", "the desktop shell requires the macOS GUI");
 
 async function gatedDaemon(target: string) {

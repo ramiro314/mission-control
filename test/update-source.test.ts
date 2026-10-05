@@ -9,6 +9,7 @@ import { packagedSourceCommit } from "../scripts/install-app.mjs";
 import { bundleSourceCommit } from "../scripts/apply-update.mjs";
 import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
 import { validateReceipt } from "../src/shared/install-receipt-schema.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 test("all source identity readers agree on packaged metadata and reject missing or malformed identity", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "mission-source-identity-"));
@@ -29,7 +30,8 @@ test("all source identity readers agree on packaged metadata and reject missing 
 });
 
 test("the real installer rejects the wrong same-version commit and records the exact installed SHA", {
-  skip: process.platform !== "darwin" || process.arch !== "arm64",
+  skip: skipOnWin32("the macOS updater's installer is unavailable on win32")
+    || process.platform !== "darwin" || process.arch !== "arm64",
 }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "mission-alpha-install-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

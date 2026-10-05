@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 // Run the pinned Pi TUI with a deterministic loopback provider. Discovery only acts on our
@@ -12,6 +13,7 @@ const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 test("Pi terminal interrupts reach the conversation from the dashboard and directly from the pane", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "Pi and the tmux terminal runtime are unavailable on win32");
   test.skip(tmuxMissing, "tmux is required for the real Pi terminal boundary");
   const dir = join(daemon.home, "pi-interrupt");
   const agentDir = join(dir, "agent");

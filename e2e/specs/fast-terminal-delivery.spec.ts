@@ -3,11 +3,13 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 // Discovery is required for terminal sessions. Address only our unique tmux card,
 // never the rest of the fleet discovered on a developer's machine.
 test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_RUNTIME_META_POLL_MS: "500" } });
+skipSpecOnWin32(test, "tmux and the terminal runtime are unavailable on win32");
 test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is required");
 
 // The fake's whole response is one append: a passive read can never catch it working.

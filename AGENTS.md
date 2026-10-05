@@ -138,8 +138,11 @@ CI reports thirty-four non-package jobs, plus the "Flaky tests" check run that `
 publishes. `changes` decides whether a pull request touched only `docs/`; on such a pull request
 `gates`, both unit matrices and E2E skip, while `docs checks` and `flake report` still run, and
 `CI result` (job id `ci-result`, the one check branch protection should require) passes only
-when every other non-package job succeeded or was one of those four skipped. Pushes to `main`,
-tags and manual runs always run everything. Two independent `dependencies` checks use GitHub-hosted
+when every other non-package, non-Windows job succeeded or was one of those four skipped. Pushes
+to `main`, tags and manual runs always run everything. Pushes to `release/windows` and pull
+requests into it also run twenty-five Windows jobs on `windows-latest`, which stay out of
+`CI result` and are allowed to fail until the Windows support plan's M2 is green (see the
+"Windows" comment in `ci.yml`). Two independent `dependencies` checks use GitHub-hosted
 `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
 `gates` (typecheck and lint), `docs checks` (`npm run docs:links` plus every unit test that
 reads the repository's real docs, discovered by the pattern its workflow comment names), Node.js

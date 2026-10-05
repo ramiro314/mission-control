@@ -1,4 +1,5 @@
 import { after, test } from "node:test";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -2107,7 +2108,7 @@ test("a disabled check auto-passes without reaching the execution runtime", asyn
  * just take a minute to say so.
  */
 test("stop() cancels a live check group instead of waiting out its command", {
-  skip: !checkRuntimeSupport().supported,
+  skip: skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported,
 }, async () => {
   const store = seedSubmission("check-stop", checkGraph);
   const engine = new WorkflowEngine(store, () => {}, {
