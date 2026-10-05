@@ -29,9 +29,13 @@ const LIVE = ForemanConfigSchema.parse({
   repoAllowlist: ["/wt"],
 });
 
-const policy = (over: Partial<typeof LIVE> = {}, workflowOwns = false) => ({
-  foreman: { ...LIVE, ...over },
-  workflowOwns: () => workflowOwns,
+const policy = (over: Partial<typeof LIVE> = {}) => ({ ...LIVE, ...over });
+
+/** A reference to one PR, as `Registry.prReferences` builds it. */
+const ref = (sessions: ReturnType<typeof mkSession>[], workflowOwned = false) => ({
+  sessions,
+  task: null,
+  workflowOwned,
 });
 
 test("an episode opens on the first conflicting read and closes on mergeable, merged or closed", () => {
@@ -81,12 +85,14 @@ test("an episode closes once no session and no task reference its PR", () => {
 });
 
 test("session-gone: no live session owns the PR", () => {
-  assert.equal(unhandledReason(null, policy()), "session-gone");
+  assert.equal(unhandledReason(ref([]), policy()), "session-gone");
+  const exited = mkSession({ cwd: "/wt/app", state: "exited" });
+  assert.equal(unhandledReason(ref([exited]), policy()), "session-gone", "an exited owner is not live");
 });
 
 test("foreman-cannot-nudge covers every case Foreman's follow-through refuses to type", () => {
   const live = mkSession({ cwd: "/wt/app", state: "idle" });
-  assert.equal(unhandledReason(live, policy()), null, "Foreman drives this one");
+  assert.equal(unhandledReason(ref([live]), policy()), null, "Foreman drives this one");
   const cases: Array<[string, ReturnType<typeof mkSession>, ReturnType<typeof policy>]> = [
     ["trackMergeConflicts off", live, policy({ trackMergeConflicts: false })],
     ["not invited", { ...live, foremanInvite: null }, policy()],
@@ -96,13 +102,16 @@ test("foreman-cannot-nudge covers every case Foreman's follow-through refuses to
     ["no hooks", { ...live, hooksSeen: false }, policy()],
   ];
   for (const [why, session, p] of cases) {
-    assert.equal(unhandledReason(session, p), "foreman-cannot-nudge", why);
+    assert.equal(unhandledReason(ref([session]), p), "foreman-cannot-nudge", why);
   }
 });
 
-test("a session an active workflow owns is not reported here", () => {
+test("work an active workflow owns is not reported here, live or not", () => {
   const live = mkSession({ cwd: "/wt/app", state: "idle", foremanInvite: null });
-  assert.equal(unhandledReason(live, policy({}, true)), null);
+  assert.equal(unhandledReason(ref([live], true), policy()), null);
+  const exited = mkSession({ cwd: "/wt/app", state: "exited" });
+  assert.equal(unhandledReason(ref([exited], true), policy()), null, "not session-gone");
+  assert.equal(unhandledReason(ref([], true), policy()), null, "nor once the session is removed");
 });
 
 /**
@@ -310,4 +319,31 @@ test("a conflict in a session an active workflow owns raises no blocked row", as
   await h.poll();
   assert.deepEqual(h.tracker.episodes.urls(), [PR], "the episode is open");
   assert.equal(h.frames.length, 0, "but nothing is blocked");
+});
+
+test("a workflow run still active after its agent exits keeps the conflict out of the inbox", async (t) => {
+  const h = harness({ task: true });
+  // Bound by note key, as a workflow binding is: the run outlives the session it drove.
+  h.reg.upsertWorkflowRun({ id: "step", status: "running", sessionId: "live", noteKey: "live-episode" } as WorkflowRunSummary);
+  await h.poll();
+  assert.equal(h.frames.length, 0, "owned while live");
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  h.reg.applyDiscovery([]);
+  assert.equal(h.reg.getSession("live")!.state, "exited");
+  await h.poll();
+  assert.equal(h.frames.length, 0, "still owned after the agent exits, not session-gone");
+
+  t.mock.timers.tick(10_000);
+  assert.equal(h.reg.getSession("live"), undefined, "the session was removed");
+  // `orphanBinding` nulls the run's session id; the note key and the task's binding remain.
+  h.reg.upsertWorkflowRun({ id: "step", status: "blocked", sessionId: null, noteKey: "live-episode" } as WorkflowRunSummary);
+  await h.poll();
+  assert.equal(h.frames.length, 0, "and after removal, through the task's work-episode binding");
+  assert.deepEqual(h.tracker.episodes.urls(), [PR], "the episode itself stays open");
+
+  // Once the run is over, nothing owns the work, and the conflict is the operator's.
+  h.reg.upsertWorkflowRun({ id: "step", status: "failed", sessionId: null, noteKey: "live-episode" } as WorkflowRunSummary);
+  await h.poll();
+  assert.equal(h.frames.at(-1)![0]!.reason, "session-gone");
 });

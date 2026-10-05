@@ -91,30 +91,30 @@ export interface PrReference {
   sessions: readonly Session[];
   /** The task whose work carries the PR, or null. */
   task: { id: string; title: string } | null;
-}
-
-/** What the classification reads besides the reference itself. */
-export interface ConflictPolicy {
-  foreman: ForemanConfig;
-  /** Whether a non-terminal workflow run owns this session. */
-  workflowOwns: (session: Session) => boolean;
+  /**
+   * Whether a non-terminal workflow run owns this PR's work: any session naming it, exited
+   * ones included, or the task's work-episode binding, which outlives the session. A
+   * workflow step's agent often exits while its run is still active.
+   */
+  workflowOwned: boolean;
 }
 
 /**
  * Why nothing is handling this conflict, or null when something is.
  *
- * No live session means `session-gone`. A live session a workflow owns is the workflow's to
- * classify (not reported here). Otherwise it is `foreman-cannot-nudge` exactly when Foreman's
- * follow-through would refuse to type into it, read through the same predicates
- * `decideReviewFollowup` uses, plus `trackMergeConflicts` being off.
+ * Work an active workflow owns is the workflow's to classify (not reported here), whether or
+ * not its session is still live. Otherwise no live session means `session-gone`, and a live
+ * one is `foreman-cannot-nudge` exactly when Foreman's follow-through would refuse to type
+ * into it, read through the same predicates `decideReviewFollowup` uses, plus
+ * `trackMergeConflicts` being off.
  */
 export function unhandledReason(
-  live: Session | null,
-  policy: ConflictPolicy,
+  ref: PrReference,
+  foreman: ForemanConfig,
 ): BlockedPrReason | null {
+  if (ref.workflowOwned) return null;
+  const live = liveOwner(ref);
   if (!live) return "session-gone";
-  if (policy.workflowOwns(live)) return null;
-  const { foreman } = policy;
   if (
     !foreman.trackMergeConflicts ||
     foremanCannotDrive(live) !== null ||
@@ -134,17 +134,16 @@ function liveOwner(ref: PrReference): Session | null {
 export function blockedPrs(
   episodes: readonly ConflictEpisode[],
   references: ReadonlyMap<string, PrReference>,
-  policy: ConflictPolicy,
+  foreman: ForemanConfig,
 ): BlockedPr[] {
   const out: BlockedPr[] = [];
   for (const episode of episodes) {
     const ref = references.get(episode.url);
     if (!ref) continue;
-    const live = liveOwner(ref);
-    // The session the row names: the live owner, else the exited one the daemon still holds.
-    const shown = live ?? ref.sessions[0] ?? null;
-    const reason = unhandledReason(live, policy);
+    const reason = unhandledReason(ref, foreman);
     if (reason === null) continue;
+    // The session the row names: the live owner, else the exited one the daemon still holds.
+    const shown = liveOwner(ref) ?? ref.sessions[0] ?? null;
     const parsed = parsePrUrl(episode.url);
     out.push({
       url: episode.url,
@@ -166,7 +165,6 @@ export function blockedPrs(
 /** The registry surface the tracker reads and publishes through. */
 export interface PrConflictHost {
   prReferences(): Map<string, PrReference>;
-  workflowOwnsSession(session: Session): boolean;
   setBlockedPrs(prs: BlockedPr[]): void;
 }
 
@@ -188,10 +186,7 @@ export class PrConflictTracker {
     // After the reads, so a read of a PR nothing references never leaves an episode behind.
     this.episodes.retain((url) => references.has(url));
     this.host.setBlockedPrs(
-      blockedPrs(this.episodes.list(), references, {
-        foreman: this.foremanConfig(),
-        workflowOwns: (s) => this.host.workflowOwnsSession(s),
-      }),
+      blockedPrs(this.episodes.list(), references, this.foremanConfig()),
     );
   }
 }

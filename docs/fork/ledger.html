@@ -898,7 +898,9 @@ an exited, task-less session&#39;s PR is still polled and gains no merge-complet
 <li>An open episode is blocked as <code>session-gone</code> when no live session owns the PR, or
 <code>foreman-cannot-nudge</code> when <code>trackMergeConflicts</code> is off or <code>foremanCannotDrive</code> /
 <code>foremanMayActLive</code> refuse the live session (the same predicates <code>decideReviewFollowup</code>
-reads). A session an active workflow owns is not reported. The set is published as the
+reads). Work an active workflow run owns is not reported, matched through every session
+naming the PR (exited ones included) and the task&#39;s work-episode binding, which outlives the
+session. The set is published as the
 <code>blocked_prs</code> event, only on change, and on the snapshot as <code>blockedPrs</code>.</li>
 <li><code>ForemanConfig.trackMergeConflicts</code> (default true) sits beside <code>trackCiFailures</code>; its
 checkbox is <strong>Keep sessions on track with merge conflicts</strong>, and follow-through gate 1 skips

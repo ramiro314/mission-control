@@ -29,7 +29,8 @@ obligation:
    type into it - and how long it has been **Conflicting for**. It links to the PR and, while
    the daemon still holds it, the session. Read-only, like Pipeline halts: the row clears itself
    when GitHub reports the PR mergeable, merged or closed, or when no session or task references
-   it any more. A session an active workflow owns is not listed here.
+   it any more. A PR whose work an active workflow owns is not listed here, even after the
+   workflow's agent has exited.
 
    The daemon decides membership, in memory, from the PR poller's reads
    (`src/server/pr-conflicts.ts`), and sends the whole set as `blocked_prs` when it changes and

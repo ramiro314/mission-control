@@ -5461,10 +5461,10 @@ export class Registry extends EventEmitter {
    * as "session ended" rather than vanish.
    */
   prReferences(): Map<string, PrReference> {
-    const refs = new Map<string, { sessions: Session[]; task: PrReference["task"] }>();
+    const refs = new Map<string, { sessions: Session[]; task: PrReference["task"]; workflowOwned: boolean }>();
     const entry = (url: string) => {
       let ref = refs.get(url);
-      if (!ref) refs.set(url, (ref = { sessions: [], task: null }));
+      if (!ref) refs.set(url, (ref = { sessions: [], task: null, workflowOwned: false }));
       return ref;
     };
     for (const s of this.sessions.values()) {
@@ -5474,21 +5474,32 @@ export class Registry extends EventEmitter {
         const ref = entry(url);
         ref.sessions.push(s);
         if (s.task && !ref.task) ref.task = { id: s.task.id, title: s.task.fullTitle };
+        if (!ref.workflowOwned) ref.workflowOwned = this.workflowOwnsSession(s);
       }
     }
     for (const [url, task] of this.taskPrUrlOwners()) {
       const ref = entry(url);
       ref.task ??= { id: task.id, title: fullTaskTitle(task.title, task.intent) };
+      // The binding outlives the session it names, so a run still active for an agent that
+      // has already been removed still owns the work.
+      const binding = taskWorkEpisodeForTask(task.id);
+      if (!ref.workflowOwned && binding) {
+        ref.workflowOwned = this.workflowOwnsKey(binding.sessionId, binding.agentSessionId);
+      }
     }
     return refs;
   }
 
   /** Whether a non-terminal workflow run owns this session, as Foreman's follow-through reads it. */
   workflowOwnsSession(s: Session): boolean {
-    const noteKey = noteKeyFor(s);
+    return this.workflowOwnsKey(s.id, noteKeyFor(s));
+  }
+
+  /** The run filter `/api/workflow-runs?session=` applies: by session id or by note key. */
+  private workflowOwnsKey(sessionId: string, noteKey: string): boolean {
     return activeWorkflowOwnsSession(
       [...this.workflowRuns.values()].filter(
-        (run) => run.sessionId === s.id || run.noteKey === noteKey,
+        (run) => run.sessionId === sessionId || run.noteKey === noteKey,
       ),
     );
   }

@@ -687,7 +687,9 @@ owner of "is this conflict handled?" and the inbox section for the conflicts not
 - An open episode is blocked as `session-gone` when no live session owns the PR, or
   `foreman-cannot-nudge` when `trackMergeConflicts` is off or `foremanCannotDrive` /
   `foremanMayActLive` refuse the live session (the same predicates `decideReviewFollowup`
-  reads). A session an active workflow owns is not reported. The set is published as the
+  reads). Work an active workflow run owns is not reported, matched through every session
+  naming the PR (exited ones included) and the task's work-episode binding, which outlives the
+  session. The set is published as the
   `blocked_prs` event, only on change, and on the snapshot as `blockedPrs`.
 - `ForemanConfig.trackMergeConflicts` (default true) sits beside `trackCiFailures`; its
   checkbox is **Keep sessions on track with merge conflicts**, and follow-through gate 1 skips
