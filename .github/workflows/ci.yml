@@ -131,6 +131,53 @@ jobs:
       - name: Lint
         run: npm run lint
 
+  # What a docs change can break: the doc-link check and the unit tests that read the
+  # repository's real docs. It runs on every run, so a docs-only change that skips the rest
+  # of CI still has this safety net, and it never has to run "only sometimes".
+  #
+  # On full runs the doc-drift tests also run inside the unit shards. That costs well under
+  # a minute and keeps this job's meaning the same on every run.
+  docs-checks:
+    name: docs checks
+    needs: dependencies-node-24
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Doc links
+        run: npm run docs:links
+
+      # Discovery pattern: `grep -l '\.\./docs/' test/*.test.ts`. A test that reads the
+      # repository's real docs reaches them through `../docs/`; fixture paths inside a temp
+      # checkout do not. A new doc-drift test must match this pattern to run here.
+      #
+      # No match fails the step: a pattern that matches nothing has rotted, and passing
+      # silently would hide it.
+      - name: Doc-drift tests
+        run: |
+          files=$(grep -l '\.\./docs/' test/*.test.ts || true)
+          if [ -z "$files" ]; then
+            echo "::error::No test file matches '\.\./docs/'; the discovery pattern no longer finds the doc-drift tests."
+            exit 1
+          fi
+          echo "Discovered:" $files
+          # Unquoted on purpose: one argument per file. Test file names carry no whitespace.
+          node --test --import ./test/setup-state.mjs --import tsx $files
+
   # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
   # unflagged from Node 24); this pins the supported floor and the current release. Node 25
   # is EOL.

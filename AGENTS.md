@@ -134,12 +134,13 @@ MISSION_TEST_CONCURRENCY=4 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI reports thirty-one non-package jobs, plus the "Flaky tests" check run that the last of them
+CI reports thirty-two non-package jobs, plus the "Flaky tests" check run that the last of them
 publishes. Two independent `dependencies` checks use GitHub-hosted
 `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
-`gates` (typecheck and lint), Node.js 24 unit shards, and E2E depend only on the Node.js 24
-producer; Node.js 26 unit shards depend only on the Node.js 26 producer, so a failure in one
-release does not hide checks for the other. Unit tests, builds, bundle smoke, and fifteen E2E
+`gates` (typecheck and lint), `docs checks` (`npm run docs:links` plus every unit test that
+reads the repository's real docs, discovered by the pattern its workflow comment names), Node.js
+24 unit shards, and E2E depend only on the Node.js 24 producer; Node.js 26 unit shards depend
+only on the Node.js 26 producer, so a failure in one release does not hide checks for the other. Unit tests, builds, bundle smoke, and fifteen E2E
 shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated
 from shared self-hosted infrastructure. The shared unit steps live
 in `.github/actions/run-unit-shard/action.yml`. Unit and E2E shards rerun or read retries for
