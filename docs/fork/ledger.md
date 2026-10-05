@@ -53,7 +53,7 @@ or issues.
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
-| Docs-only CI | Active (the `docs checks` job and the `docs-only-ci` skill; the skip and `CI result` in this repository are pending) | #164, pending (branch `feat/docs-only-ci-skill`) |
+| Docs-only CI | Active (the `docs checks` job and the `docs-only-ci` skill; the skip and `CI result` in this repository are pending) | #164, #168 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1043,7 +1043,7 @@ mission template adds `src/shared/schedules.ts` (`ScheduleTemplate.baseBranch`,
 | Field | Value |
 | --- | --- |
 | Status | **Active**, in progress. The `docs checks` job, `npm run docs:links` and the `docs-only-ci` skill exist; the `changes` detection job, the docs-only skip and the `CI result` summary job in this repository's own `ci.yml` are a later ticket of the same plan. |
-| PRs | #164 (the `docs checks` job), pending on branch `feat/docs-only-ci-skill` (the skill) |
+| PRs | #164 (the `docs checks` job), #168 (the `docs-only-ci` skill) |
 | Plan docs | [docs-only-ci/plan.md](../plans/docs-only-ci/plan.md), "Design", "`docs checks` job", "The `docs-only-ci` skill", and decisions 5, 6, 7, 11 to 15 and 20 |
 | Upstream candidate | Maybe. The `docs checks` job and the `docs:links` script are generic; the skip is shaped around the fork's Wait for CI and "Flaky tests" check. |
 
