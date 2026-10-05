@@ -850,11 +850,11 @@ editor, version history and run views.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>, tickets 1 to 3: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Foreman&#39;s conflict nudges and escalation</td>
+<td><strong>Active</strong>, tickets 1 to 3 and the Foreman nudge ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its <code>pr-conflict</code> alert, and Foreman&#39;s conflict nudges and escalation</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#108, #125, pending (ticket 3, Foreman conflict nudges)</td>
+<td>#108, #125, #145, pending (the Foreman nudge ticket)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -871,7 +871,8 @@ adds the one mergeability signal every later conflict reaction (Foreman nudges, 
 rounds, the Blocked pull requests inbox) reads, and shows it as a &quot;Conflicts with <code>&lt;base&gt;</code>&quot; mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon&#39;s single
 owner of &quot;is this conflict handled?&quot; and the inbox section for the conflicts nothing handles.
-Ticket 3 makes Foreman nudge a live session it drives to merge its base in, at most 3 times per
+Ticket 3 adds one desktop alert per PR entering that section.
+The Foreman nudge ticket makes Foreman nudge a live session it drives to merge its base in, at most 3 times per
 episode, and hand the conflict to the operator when the nudges do not resolve it.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
@@ -909,7 +910,13 @@ checkbox is <strong>Keep sessions on track with merge conflicts</strong>, and fo
 only when all three toggles are off.</li>
 <li>The attention inbox&#39;s <strong>Blocked pull requests</strong> section follows Pipeline halts, each row one
 answer owed, read-only.</li>
-<li>Foreman&#39;s follow-through has a third dimension (ticket 3). <code>FollowupPr</code> carries the head-bound
+<li><code>AlertKind</code> <code>&quot;pr-conflict&quot;</code> (attention, id <code>pr-conflict:&lt;url&gt;</code>) fires from <code>detectAlerts</code> when
+a PR enters <code>AlertScope.blockedPrs</code>; a reason change while it stays blocked does not re-fire.
+<code>useNotifier</code> holds <code>alertedPrConflicts</code> (PR URL to when it was last seen blocked or seen
+leaving) for the page&#39;s lifetime and passes it as <code>AlertMemory</code>, so a PR re-alerts only after
+<code>PR_CONFLICT_REALERT_MS</code> (5 minutes) out of the set, never after a reconnect or daemon restart.
+Only the browser raises it: the away watcher&#39;s scope carries no <code>blockedPrs</code>.</li>
+<li>Foreman&#39;s follow-through has a third dimension (the Foreman nudge ticket). <code>FollowupPr</code> carries the head-bound
 <code>mergeable</code> observation, <code>baseRef</code>, <code>headSha</code> and the snapshot&#39;s <code>conflictEscalated</code>;
 <code>feedbackState.conflicting</code> is <code>trackMergeConflicts &amp;&amp; currentMergeability(pr) === &quot;conflicting&quot;</code>. <code>FollowupMark</code> gains <code>conflictHead</code>, <code>conflictNudges</code>, <code>conflictNudgedAt</code>,
 <code>conflictEscalated</code> and <code>conflictEscalatedAt</code>; <code>advanceFollowupMark</code> re-arms them only on a
@@ -959,7 +966,8 @@ fake <code>gh</code> (<code>pr view</code> output), and every test <code>Session
 <code>src/shared/types.ts</code> (<code>BlockedPr</code>, <code>blocked_prs</code>, snapshot), <code>src/web/useEventStream.ts</code>,
 <code>src/web/App.tsx</code>, <code>src/web/lib/attention.ts</code>, <code>src/web/components/AttentionInbox.tsx</code>,
 <code>src/web/components/ForemanBar.tsx</code>, <code>src/web/styles.css</code>, and every test <code>ForemanConfig</code>
-literal. Ticket 3: <code>src/server/foreman/review-followup.ts</code> (<code>FollowupPr</code>, <code>FollowupMark</code>,
+literal. Ticket 3: <code>src/shared/alerts.ts</code> (<code>AlertKind</code>, <code>AlertScope</code>, <code>detectAlerts</code>),
+<code>src/web/useNotifier.ts</code> and <code>src/web/App.tsx</code> (the alert scope). The Foreman nudge ticket: <code>src/server/foreman/review-followup.ts</code> (<code>FollowupPr</code>, <code>FollowupMark</code>,
 <code>advanceFollowupMark</code>, <code>decideReviewFollowup</code>, <code>buildPayload</code>), <code>src/server/foreman/worker.ts</code>
 (<code>runReviewFollowup</code>, new <code>escalateConflict</code>), <code>src/server/foreman/client.ts</code>,
 <code>src/server/routes.ts</code> (<code>RouteDeps.prConflicts</code>, the escalate route), <code>src/server/pr.ts</code>
@@ -970,7 +978,8 @@ literal. Ticket 3: <code>src/server/foreman/review-followup.ts</code> (<code>Fol
 test <code>Session</code> literal.</p>
 <p><strong>Fork-only files.</strong> <code>src/shared/pr-mergeable.ts</code>, <code>src/server/pr-conflicts.ts</code>,
 <code>test/pr-mergeable.test.ts</code>, <code>test/pr-conflicts.test.ts</code>, <code>test/blocked-prs-attention.test.ts</code>,
-<code>test/foreman-conflict-escalation.test.ts</code>, <code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
+<code>test/pr-conflict-alerts.test.ts</code>, <code>test/foreman-conflict-escalation.test.ts</code>,
+<code>e2e/specs/pr-merge-conflicts.spec.ts</code>.</p>
 <h3>PR publication ownership</h3>
 <table>
 <thead>

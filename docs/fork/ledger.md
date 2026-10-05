@@ -648,8 +648,8 @@ editor, version history and run views.
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**, tickets 1 to 3: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox, and Foreman's conflict nudges and escalation |
-| PRs | #108, #125, pending (ticket 3, Foreman conflict nudges) |
+| Status | **Active**, tickets 1 to 3 and the Foreman nudge ticket: the mergeability signal, the PR chip mark, conflict episodes, the Blocked pull requests inbox and its `pr-conflict` alert, and Foreman's conflict nudges and escalation |
+| PRs | #108, #125, #145, pending (the Foreman nudge ticket) |
 | Plan docs | [docs/plans/pr-merge-conflicts/plan.md](../plans/pr-merge-conflicts/plan.md) |
 | Upstream candidate | Yes. It extends upstream's own PR poller and chip and adds no fork-only concept. |
 
@@ -659,7 +659,8 @@ adds the one mergeability signal every later conflict reaction (Foreman nudges, 
 rounds, the Blocked pull requests inbox) reads, and shows it as a "Conflicts with `<base>`" mark
 on the PR chip on cards, in the session header and on the rail. Ticket 2 adds the daemon's single
 owner of "is this conflict handled?" and the inbox section for the conflicts nothing handles.
-Ticket 3 makes Foreman nudge a live session it drives to merge its base in, at most 3 times per
+Ticket 3 adds one desktop alert per PR entering that section.
+The Foreman nudge ticket makes Foreman nudge a live session it drives to merge its base in, at most 3 times per
 episode, and hand the conflict to the operator when the nudges do not resolve it.
 
 **Behavior contracts.**
@@ -698,7 +699,13 @@ episode, and hand the conflict to the operator when the nudges do not resolve it
   only when all three toggles are off.
 - The attention inbox's **Blocked pull requests** section follows Pipeline halts, each row one
   answer owed, read-only.
-- Foreman's follow-through has a third dimension (ticket 3). `FollowupPr` carries the head-bound
+- `AlertKind` `"pr-conflict"` (attention, id `pr-conflict:<url>`) fires from `detectAlerts` when
+  a PR enters `AlertScope.blockedPrs`; a reason change while it stays blocked does not re-fire.
+  `useNotifier` holds `alertedPrConflicts` (PR URL to when it was last seen blocked or seen
+  leaving) for the page's lifetime and passes it as `AlertMemory`, so a PR re-alerts only after
+  `PR_CONFLICT_REALERT_MS` (5 minutes) out of the set, never after a reconnect or daemon restart.
+  Only the browser raises it: the away watcher's scope carries no `blockedPrs`.
+- Foreman's follow-through has a third dimension (the Foreman nudge ticket). `FollowupPr` carries the head-bound
   `mergeable` observation, `baseRef`, `headSha` and the snapshot's `conflictEscalated`;
   `feedbackState.conflicting` is `trackMergeConflicts && currentMergeability(pr) ===
   "conflicting"`. `FollowupMark` gains `conflictHead`, `conflictNudges`, `conflictNudgedAt`,
@@ -749,7 +756,8 @@ fake `gh` (`pr view` output), and every test `Session` literal. Ticket 2: `src/s
 `src/shared/types.ts` (`BlockedPr`, `blocked_prs`, snapshot), `src/web/useEventStream.ts`,
 `src/web/App.tsx`, `src/web/lib/attention.ts`, `src/web/components/AttentionInbox.tsx`,
 `src/web/components/ForemanBar.tsx`, `src/web/styles.css`, and every test `ForemanConfig`
-literal. Ticket 3: `src/server/foreman/review-followup.ts` (`FollowupPr`, `FollowupMark`,
+literal. Ticket 3: `src/shared/alerts.ts` (`AlertKind`, `AlertScope`, `detectAlerts`),
+`src/web/useNotifier.ts` and `src/web/App.tsx` (the alert scope). The Foreman nudge ticket: `src/server/foreman/review-followup.ts` (`FollowupPr`, `FollowupMark`,
 `advanceFollowupMark`, `decideReviewFollowup`, `buildPayload`), `src/server/foreman/worker.ts`
 (`runReviewFollowup`, new `escalateConflict`), `src/server/foreman/client.ts`,
 `src/server/routes.ts` (`RouteDeps.prConflicts`, the escalate route), `src/server/pr.ts`
@@ -761,7 +769,8 @@ test `Session` literal.
 
 **Fork-only files.** `src/shared/pr-mergeable.ts`, `src/server/pr-conflicts.ts`,
 `test/pr-mergeable.test.ts`, `test/pr-conflicts.test.ts`, `test/blocked-prs-attention.test.ts`,
-`test/foreman-conflict-escalation.test.ts`, `e2e/specs/pr-merge-conflicts.spec.ts`.
+`test/pr-conflict-alerts.test.ts`, `test/foreman-conflict-escalation.test.ts`,
+`e2e/specs/pr-merge-conflicts.spec.ts`.
 
 ### PR publication ownership
 
