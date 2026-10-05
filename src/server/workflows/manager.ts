@@ -5338,6 +5338,9 @@ export class WorkflowManager {
       workflowEvidence: versionSupportsWorkflowEvidence(version),
       // Off when a Wait for CI node follows this action: the node owns CI then, and an
       // agent chasing it too would push while the node judges the head it was given.
+      // Only an action that completes on a pull request grants creating one; an authored
+      // action of any other completion kind may only update the PR the task already has.
+      pullRequestGrant: snapshot.completion.kind === "pull_request",
       pullRequestCi: snapshot.completion.kind === "pull_request"
         && this.options.trackCiFailures?.() === true
         && !waitForCiFollows(version.graph, attempt.nodeId),

@@ -2035,22 +2035,32 @@ The MCP tools are:
   slot or `all`. At least one item is required. The daemon resolves and re-hashes the source;
   the caller never supplies an absolute path, digest, submission id, or storage location
 
-Mission Control-authored task and workflow execution prompts carry a standing, conditional
-authorization for already-scoped work. If the task or current workflow asks for a pull request,
-the agent may commit the scoped work, push its task branch, and create or update that pull
-request in the issued repository without asking for another confirmation. This is not an
-instruction to create a pull request, an explicit no-PR instruction still wins, and merge,
-other repositories, and other external writes remain unauthorized. Prompt authorization is
-also separate from sandbox approval posture and does not widen it.
+Mission Control-authored task and workflow execution prompts carry an execution authorization
+for already-scoped work, and pull-request authority in it is a grant, not a standing permission.
+Every initial task prompt, and every workflow repair or Inspector packet, says not to push or
+open a pull request on the agent's own initiative, even when the task text or repository
+instructions mention one. The workflow Pull Request action, the Runs "Ask the session to open a
+PR" handoff, a Foreman pull-request instruction, or the human asking in the session grants it.
+Once the task's pull request exists the agent may push to update it, and before then it pushes
+only where its task kind's completion contract requires it (plan and shape push their plan).
+Only the Pull Request action's packet and the PR handoff carry the creation grant: commit, push
+the task branch, and create or update the pull request without asking again. Merge, other
+repositories, and other external writes remain unauthorized either way, and prompt
+authorization is separate from sandbox approval posture and does not widen it.
 
-A newly delivered ship task narrows that standing authorization for its initial implementation
-turn. The agent implements and verifies the change, reports that the work is complete, and
-stops without committing, pushing, opening or updating a pull request, or waiting for pull
+An unbound chat task has no automatic publisher, so its dispatch message counts as the human's
+first message in the session: a pull-request request there or later in the session is the grant.
+Otherwise the agent commits and says the work is committed and not published, and that asking
+in the session publishes it. A chat task with a workflow bound defers to that workflow.
+
+A newly delivered ship task's completion handoff spells out its initial implementation turn.
+The agent implements and verifies the change, commits it locally, reports that the work is
+complete, and stops without pushing, opening or updating a pull request, or waiting for pull
 request CI. That settled completion is the handoff to Foreman. Foreman either starts the
 selected workflow or sends the direct pull-request follow-up; a workflow can later deliver its
-own Pull Request action. Only that later Foreman or workflow instruction starts the commit,
-push, pull-request, and CI work. This keeps a bound workflow ahead of shipping without taking
-away the standing authorization the later instruction needs.
+own Pull Request action. Only that later Foreman or workflow instruction starts the push,
+pull-request, and CI work. This keeps a bound workflow ahead of shipping, and the later
+instruction carries the grant it needs.
 
 When `submit_workflow_evidence` is exposed, the prompt likewise authorizes the exact
 server-validated call for task-produced, checkout-relative files and issued repository scopes.

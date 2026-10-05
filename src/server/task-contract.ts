@@ -32,8 +32,9 @@ import {
  * A REGISTRY over the kinds rather than a chain of `if`s, so that adding a kind's contract
  * means adding one entry here and nowhere else, and so that a kind added without a contract
  * does not compile. `ship` owns the completion handoff that keeps pull-request work behind
- * Foreman or the selected workflow. Every task still receives the shared execution
- * authorization below.
+ * Foreman or the selected workflow. Every task still receives the shared task authorization
+ * below, which withholds the pull-request creation grant: only the workflow Pull Request
+ * action, a Foreman PR instruction, or the human asking in the session carries it.
  *
  * The appendix is a SUFFIX, always. Whatever the caller already composed - the repo manifest
  * on a multi-repo dispatch, Pi's repository-memory pointer - is context the agent needs BEFORE
@@ -98,6 +99,20 @@ const SHIP_COMPLETION_HANDOFF = [
   "Mission Control owns what happens after this completion. Foreman will either start the task's selected workflow or send a later instruction for the direct pull-request path. Only an instruction delivered after this handoff, from Foreman or the workflow, starts push, pull-request, and CI follow-through; it publishes the local commit you already made rather than starting over.",
 ].join("\n");
 
+/**
+ * An unbound chat task's publication paragraph.
+ *
+ * Nothing publishes a chat task with no workflow: Foreman retires chat without a wrap-up. Its
+ * dispatch intent is the human's own first message in the session, so a pull-request request
+ * there is the in-session grant the task authorization names. A chat task with a workflow bound
+ * renders nothing here and defers to that workflow's Pull Request action, like ship.
+ */
+const UNBOUND_CHAT_PUBLICATION = [
+  "## Chat task publication",
+  "No workflow is bound to this chat task, so nothing publishes it for you. Its dispatch message above is the human's own first message in this session: if it, or a later human message in this session, asks for a pull request, that request is the grant, and you may commit, push the task branch, and open that pull request.",
+  "Otherwise, commit the scoped work, then say in your reply that the work is committed and not published, and that asking in this session publishes it.",
+].join("\n");
+
 /** The kind's contract, or a loud failure - `ship` has one and this file depends on it. */
 function requireCompletionContract(kind: TaskKind): TaskCompletionContract {
   const contract = taskCompletionContract(kind);
@@ -111,7 +126,7 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: planningContract("plan", planContractAppendix),
   pipeline: () => null,
-  chat: () => null,
+  chat: (task) => (task.workflowId === null ? UNBOUND_CHAT_PUBLICATION : null),
   // A tickets follow-up (a row in `shape_ticket_followups`) gets the tickets-only variant.
   shape: planningContract("shape", (skills, workflowBound, task) =>
     shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id))),
@@ -175,6 +190,7 @@ export function withTaskKindContract(
     executionAuthorizationContract({
       workflowEvidence: false,
       workflowContinuation: false,
+      pullRequestGrant: false,
     }),
     KIND_CONTRACT[task.kind](task, inputs),
     // Whether a Persona will read evidence is the workflow's property, resolved once by the

@@ -622,6 +622,25 @@ test("only PR actions with CI tracking enabled receive the runtime policy", asyn
   }
 });
 
+test("only an action that completes on a pull request carries the creation grant", async () => {
+  // Every other authored action, whatever its prompt says, gets the task authorization: it may
+  // update the task's pull request once one exists, never open one.
+  for (const pullRequest of [false, true]) {
+    const h = await harness(`pr-grant-${pullRequest}`, { pullRequest, deliveryMode: "preview" });
+    try {
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+      const { payload } = h.store.listDeliveries(runId)[0]!;
+      assert.equal(/already authorized you to commit the scoped work, push its task branch, and create or update that pull request/.test(payload), pullRequest);
+      assert.equal(/Do not push or open a pull request on your own initiative/.test(payload), !pullRequest);
+      assert.equal(/Once this task's pull request exists, you may push to update it/.test(payload), !pullRequest);
+      assert.match(payload, /does not authorize merge, another repository, or another external write/);
+    } finally {
+      await h.stop();
+    }
+  }
+});
+
 test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
   const h = await harness("ci-policy-default", {
     pullRequest: true,

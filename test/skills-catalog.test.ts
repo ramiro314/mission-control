@@ -376,6 +376,15 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
 
   const text = readFileSync(new URL("../skills/pull-request/SKILL.md", import.meta.url), "utf8");
 
+  // The skill opens a pull request only under a grant, and names all four holders, so a task
+  // text that merely mentions a PR never reads as permission to open one.
+  assert.match(text, /\n## Precondition: a pull-request grant\n/);
+  assert.match(text, /workflow Pull Request\s+action/);
+  assert.match(text, /"Ask the session to open a PR" handoff/);
+  assert.match(text, /Foreman pull-request instruction/);
+  assert.match(text, /human-typed message in\s+this session that asks for one/);
+  assert.match(text, /mentioning a pull\s+request is not a grant/);
+
   // The description is split by audience, and each section is a literal heading rather than a
   // described convention, so the order is part of the contract: the approver's section first,
   // the implementation detail second. Asserted in sequence so dropping one is a failure even
