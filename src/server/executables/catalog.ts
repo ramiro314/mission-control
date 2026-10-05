@@ -4,6 +4,7 @@ import {
   EXECUTABLE_IDS,
   type ExecutableId,
 } from "@shared/executables.ts";
+import { executableEnvironmentFor } from "../platform/executable-environment.ts";
 
 export interface ExecutableCandidateContext {
   env: NodeJS.ProcessEnv;
@@ -31,10 +32,9 @@ export interface ExecutableSpec {
 
 const none = (): readonly string[] => [];
 const appCandidates = (appPath: string, executablePath: string) =>
-  ({ home }: ExecutableCandidateContext): readonly string[] => [
-    join("/Applications", appPath, executablePath),
-    join(home, "Applications", appPath, executablePath),
-  ];
+  ({ home, platform }: ExecutableCandidateContext): readonly string[] =>
+    executableEnvironmentFor(platform).applicationDirectories(home)
+      .map((directory) => join(directory, appPath, executablePath));
 
 function spec(
   id: ExecutableId,
