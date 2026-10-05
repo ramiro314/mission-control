@@ -36,6 +36,9 @@ obligation:
    (`src/server/pr-conflicts.ts`), and sends the whole set as `blocked_prs` when it changes and
    on connect. An exited session's conflicting PR stays on the by-URL poller until its conflict
    closes. After a daemon restart the section is empty until the first PR poll.
+
+   A PR entering this section raises one `pr-conflict` desktop alert naming it (see
+   [Blocked pull requests alert](#blocked-pull-requests-alert)).
 6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
 7. **Stuck finalizations** - a promotion that stopped on an error.
@@ -85,6 +88,20 @@ idle, a task finishing) are detected but never notify; they're digest material. 
 fire on the *transition* into attention (once, not every tick) and de-dupe, so a
 waiting session pings you once. The chime is synthesized with the Web Audio API (no
 asset, no network).
+
+### Blocked pull requests alert
+
+A pull request entering the [Blocked pull requests](#attention-inbox-one-place-to-drain-what-needs-you)
+section raises one attention alert, "`<repo> #<n>` has merge conflicts", with its base and why it
+needs you. It fires once per PR, not per reason: a session that exits while its PR is already
+listed as **Foreman can't drive this session** only changes the row to **session ended**.
+
+The dashboard tab remembers, for as long as the page stays loaded, which PRs it has seen in the
+section and when it last saw each. A PR that leaves and comes back alerts again only if it was
+gone for at least 5 minutes, so a conflict fixed and broken again straight away, an SSE
+reconnect, or a daemon restart (which empties the section until the first poll) never repeats
+the alert. Reloading the page forgets this, and like every alert, a PR already listed when the
+page loads is taken as known rather than announced.
 
 ### Stuck sessions
 

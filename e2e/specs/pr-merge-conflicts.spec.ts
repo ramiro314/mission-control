@@ -270,10 +270,59 @@ async function openForemanSettings(page: Page): Promise<Locator> {
   return popover;
 }
 
+const NOTIFICATIONS = "__e2eNotifications";
+
+interface RecordedNotification {
+  title: string;
+  body: string;
+  tag: string;
+}
+
+/**
+ * Replace `window.Notification` with a recorder that reports permission granted.
+ *
+ * The log lives in `sessionStorage` so it outlasts the spec's reload: a recorder rebuilt
+ * empty by every navigation could not tell "the reloaded page stayed quiet" from "it alerted
+ * again". `alerts.notifications` ships off, so it is switched on here too.
+ */
+async function recordNotifications(page: Page, daemon: DaemonHandle): Promise<void> {
+  await page.addInitScript((key) => {
+    class FakeNotification {
+      onclick: (() => void) | null = null;
+      static permission = "granted";
+      static requestPermission = async (): Promise<string> => "granted";
+      constructor(title: string, options?: { body?: string; tag?: string }) {
+        const log = JSON.parse(sessionStorage.getItem(key) ?? "[]") as RecordedNotification[];
+        log.push({ title, body: options?.body ?? "", tag: options?.tag ?? "" });
+        sessionStorage.setItem(key, JSON.stringify(log));
+      }
+      close(): void {}
+    }
+    (window as unknown as { Notification: unknown }).Notification = FakeNotification;
+  }, NOTIFICATIONS);
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ alerts: { notifications: true, sound: false } }),
+  });
+  expect(response.ok, "the daemon accepted the alert settings").toBe(true);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+}
+
+async function prConflictNotifications(page: Page): Promise<RecordedNotification[]> {
+  const log = await page.evaluate(
+    (key) => JSON.parse(sessionStorage.getItem(key) ?? "[]") as RecordedNotification[],
+    NOTIFICATIONS,
+  );
+  return log.filter((n) => n.tag.startsWith("pr-conflict:"));
+}
+
 test("a conflict nothing is handling gets a Blocked pull requests row until it is mergeable", async ({
   dashboard,
   daemon,
 }) => {
+  await recordNotifications(dashboard, daemon);
   const session = await dispatch(dashboard, daemon);
   execFileSync("git", ["-C", session.cwd, "switch", "-q", "-c", "e2e/pr-conflict-blocked"]);
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: session.cwd, encoding: "utf8" }).trim();
@@ -300,6 +349,13 @@ test("a conflict nothing is handling gets a Blocked pull requests row until it i
   await expect(row).toContainText(/Conflicting for \d+m/);
   await expect(row.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", PR_URL);
   await expect(row.getByRole("button", { name: "Open session" })).toBeVisible();
+  // Entry: exactly one desktop alert, naming the PR.
+  const alerted: RecordedNotification = {
+    title: "acme/mission-e2e #31 has merge conflicts",
+    body: "Conflicts with main: Foreman can't drive this session",
+    tag: `pr-conflict:${PR_URL}`,
+  };
+  await expect.poll(() => prConflictNotifications(dashboard)).toEqual([alerted]);
   await shoot(dashboard, "06-inbox-foreman-cannot-drive", inbox);
   await dashboard.keyboard.press("Escape");
   await expect(inbox).toBeHidden();
@@ -327,6 +383,8 @@ test("a conflict nothing is handling gets a Blocked pull requests row until it i
   const again = await openInbox(dashboard);
   const sameRow = again.getByRole("region", { name: "Blocked pull request acme/mission-e2e #31" });
   await expect(sameRow).toContainText("Foreman can't drive this session");
+  // The reload baselined the already-blocked PR silently.
+  expect(await prConflictNotifications(dashboard)).toEqual([alerted]);
 
   // The session ends. The same row now says so, fed by the by-URL poller through the task.
   const killed = await fetch(`${daemon.baseURL}/api/sessions/${session.id}/kill`, {
@@ -337,6 +395,8 @@ test("a conflict nothing is handling gets a Blocked pull requests row until it i
   expect(killed.ok, "the session was killed").toBe(true);
   await expect(sameRow).toContainText("session ended", { timeout: 30_000 });
   await expect(sameRow).toContainText(/open a pull request that conflicts/i);
+  // A reason change only updates the row: still the one alert from entry.
+  expect(await prConflictNotifications(dashboard)).toEqual([alerted]);
   await shoot(dashboard, "08-inbox-session-ended", again);
 
   // GitHub now reports the pull request mergeable: the row clears itself.

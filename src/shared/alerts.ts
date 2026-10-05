@@ -13,7 +13,7 @@
 // happened, and DELIVERY decides what is worth interrupting for (see
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
-import type { Session, Task } from "./types.ts";
+import { BLOCKED_PR_REASON_TEXT, type BlockedPr, type Session, type Task } from "./types.ts";
 import {
   activePaneDialog,
   dialogIdentity,
@@ -52,7 +52,9 @@ export type AlertKind =
    */
   | "workflow-repeat"
   | "ensemble"
-  | "pipeline";
+  | "pipeline"
+  /** A conflicting pull request entered the daemon's blocked set: nothing is handling it. */
+  | "pr-conflict";
 export type AlertSeverity = "attention" | "info";
 
 export interface Alert {
@@ -100,6 +102,35 @@ export interface AlertScope {
   ensembleSummaries?: EnsembleSummary[];
   pipelineCommissions?: PipelineCommission[];
   pipelineRuns?: PipelineRun[];
+  /**
+   * Conflicting pull requests nothing is handling, from the `blocked_prs` frame. Only the
+   * browser passes it: the `pr-conflict` alert needs the page-lifetime memory below, and the
+   * daemon has none that survives its own restart.
+   */
+  blockedPrs?: BlockedPr[];
+}
+
+/**
+ * How long a blocked pull request must have been out of the blocked set before coming back
+ * alerts again. Long enough to cover a daemon restart, where the set is empty until the first
+ * poll and Foreman's escalation re-send (about a minute), and a conflict that is fixed and
+ * reappears straight away.
+ */
+export const PR_CONFLICT_REALERT_MS = 5 * 60_000;
+
+/**
+ * What `detectAlerts` remembers across calls, owned by the caller for the page's lifetime.
+ *
+ * `alertedPrConflicts` maps a PR URL to when it was last seen in the blocked set (or seen
+ * leaving it). It lives outside the scope on purpose: a reconnect snapshot replaces the scope
+ * whole, and one taken during a daemon restart omits every blocked PR, so an edge read off the
+ * scope alone would announce each of them again when they return. `detectAlerts` updates it
+ * in place and drops entries older than `PR_CONFLICT_REALERT_MS`, which no longer suppress
+ * anything.
+ */
+export interface AlertMemory {
+  alertedPrConflicts: Map<string, number>;
+  now: number;
 }
 
 /**
@@ -170,13 +201,26 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
   };
 }
 
+function prConflictAlert(pr: BlockedPr): Alert {
+  const name = pr.repo && pr.number !== null ? `${pr.repo} #${pr.number}` : pr.url;
+  const reason = BLOCKED_PR_REASON_TEXT[pr.reason];
+  return {
+    id: `pr-conflict:${pr.url}`,
+    kind: "pr-conflict",
+    title: `${name} has merge conflicts`,
+    body: pr.baseRef ? `Conflicts with ${pr.baseRef}: ${reason}` : reason,
+    sessionId: pr.sessionId,
+    severity: "attention",
+  };
+}
+
 /**
  * The NEW alerts implied by the transition prev -> next. Each attention cause is
  * detected from session FIELDS directly (not the coarse bucket or a reason string),
  * edge-triggered per cause - so a review landing on a session that's already
  * awaiting input still alerts, and the alert kind can't drift from wording changes.
  */
-export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
+export function detectAlerts(prev: AlertScope, next: AlertScope, memory?: AlertMemory): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
   const attentionByCommission = (scope: AlertScope) => {
@@ -601,6 +645,26 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       sessionId: null,
       severity: "attention",
     });
+  }
+
+  // pr-conflict: a PR entered the blocked set. Keyed by URL alone, so a change of reason while
+  // it stays blocked (`foreman-cannot-nudge` becoming `session-gone`) only updates its inbox
+  // row: the operator was already told this PR needs them. Re-entry alerts again only after
+  // `PR_CONFLICT_REALERT_MS` out of the set, per `memory`; without one, every entry alerts.
+  const prevBlocked = new Set((prev.blockedPrs ?? []).map((pr) => pr.url));
+  const seen = memory?.alertedPrConflicts;
+  const now = memory?.now ?? 0;
+  for (const pr of next.blockedPrs ?? []) {
+    if (prevBlocked.has(pr.url)) continue;
+    const last = seen?.get(pr.url);
+    if (last !== undefined && now - last < PR_CONFLICT_REALERT_MS) continue;
+    alerts.push(prConflictAlert(pr));
+  }
+  if (seen) {
+    // A PR in `prev` was blocked until this transition, whether or not it is still in `next`.
+    for (const url of prevBlocked) seen.set(url, now);
+    for (const pr of next.blockedPrs ?? []) seen.set(pr.url, now);
+    for (const [url, at] of seen) if (now - at >= PR_CONFLICT_REALERT_MS) seen.delete(url);
   }
 
   return alerts;
