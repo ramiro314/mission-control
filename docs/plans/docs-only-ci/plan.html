@@ -1,0 +1,486 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Docs-only pull requests skip the full CI, and a skill installs the same gate elsewhere</title><style>
+:root{color-scheme:dark;--bg:#10151d;--panel:#1a2432;--ink:#edf3fa;--muted:#b8c9dc;--line:#52647c;--link:#9bcfff;--new:#1f3a2a}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f4f7fb;--panel:#fff;--ink:#132239;--muted:#344d68;--line:#8899ad;--link:#064b8b;--new:#e3f4e8}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{max-width:1080px;margin:auto;padding:44px 24px 80px}h1{font-size:clamp(28px,3.6vw,42px);line-height:1.15;letter-spacing:-.02em;margin:0 0 25px}h2{font-size:25px;margin:42px 0 15px}h3{font-size:20px;margin:28px 0 12px}p,li{max-width:94ch;overflow-wrap:anywhere}a{color:var(--link)}code{font:.88em/1.6 ui-monospace,monospace;overflow-wrap:anywhere}pre{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.wide{overflow-x:auto;max-width:100%;border:1px solid var(--line);border-radius:10px;margin:20px 0;background:var(--panel)}table{border-collapse:collapse;min-width:660px;width:100%;font-size:15px}th,td{padding:11px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}svg{display:block;min-width:900px;width:100%;height:auto}svg rect{fill:var(--panel);stroke:var(--line)}svg rect.new{fill:var(--new);stroke:var(--link);stroke-width:2}svg text{fill:var(--ink);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted)}svg path{stroke:var(--link);fill:none;stroke-width:2}svg polygon{fill:var(--link)}li{margin:7px 0}
+</style></head><body><main>
+<h1>Docs-only pull requests skip the full CI, and a skill installs the same gate elsewhere</h1>
+<p>Status: shaped on 2026-10-04 from the shape task &quot;When a PR only has changes in docs/ GitHub
+shouldn&#39;t run a full CI build. Mission Control should also have a skill that adds the same
+functionality for other repos.&quot; Decisions recorded from three interview rounds. Approved as
+written by the operator the same day, with &quot;Create tickets after the plan merges&quot; chosen as the
+follow-up. Revised in Plan Validation repair round 1: Wait for CI requires a &quot;Flaky tests&quot; check,
+so the operator chose to keep <code>flake report</code> running on docs-only PRs (decision 20), and the
+verification gained committed table-driven tests of both step scripts. Not implemented.</p>
+<h2>Problem</h2>
+<p>Every pull request runs the whole of <code>.github/workflows/ci.yml</code>: two dependency caches, <code>gates</code>
+(typecheck and lint), six Node 24 and six Node 26 unit shards (each also builds and runs the
+bundle smoke), fifteen E2E shards, and <code>flake report</code>. That is thirty-one jobs, which <code>AGENTS.md</code>
+counts, for a pull request that may only edit Markdown under <code>docs/</code>. Plans, reports and fork
+ledger updates are frequent in this repository, so the cost recurs.</p>
+<p>The operator also wants the same behavior available to other repositories through a Mission
+Control skill.</p>
+<h2>What a docs change can and cannot break (verified 2026-10-04)</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Reads <code>docs/</code>?</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Typecheck</td>
+<td>No</td>
+<td><code>tsconfig.json</code> includes <code>src</code>, <code>hooks</code>, <code>test</code>, <code>integrations</code>, <code>vite.config.ts</code></td>
+</tr>
+<tr>
+<td>Lint</td>
+<td>No</td>
+<td><code>oxlint src hooks test scripts e2e integrations</code></td>
+</tr>
+<tr>
+<td>Build, smoke, package</td>
+<td>No</td>
+<td>nothing in <code>src</code> imports from <code>docs/</code>; <code>electron-builder.yml</code> ships <code>dist</code>, <code>skills</code>, <code>personas/FOREMAN.md</code> and named scripts, not <code>docs/</code></td>
+</tr>
+<tr>
+<td>E2E</td>
+<td>No</td>
+<td>specs create <code>docs/...</code> only inside temp fixture checkouts</td>
+</tr>
+<tr>
+<td>Unit tests</td>
+<td><strong>5 files</strong></td>
+<td>doc-drift guards, below</td>
+</tr>
+<tr>
+<td><code>scripts/check-doc-links.mjs</code></td>
+<td>Yes</td>
+<td>walks every Markdown file under <code>docs/</code>; <strong>no CI job or npm script runs it today</strong>; it passes on <code>main</code> (676 files)</td>
+</tr>
+</tbody></table></div>
+<p>Twenty-two test files mention <code>docs/</code>, but seventeen only use it as a fixture path in a temp
+directory. These five read the repository&#39;s real docs and can be turned red by a docs-only change:</p>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Asserts</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>test/keybinding-hints.test.ts</code></td>
+<td><code>docs/ui.md</code> still enumerates every control that prints its chord</td>
+</tr>
+<tr>
+<td><code>test/llm-config.test.ts</code></td>
+<td><code>README.md</code> and <code>docs/configuration.md</code> name every headless transport env var</td>
+</tr>
+<tr>
+<td><code>test/db-shell.test.ts</code></td>
+<td><code>docs/sqlite-database.html</code> catalogs every <code>db.ts</code> table exactly once, with family counts</td>
+</tr>
+<tr>
+<td><code>test/setup-guide-links.test.ts</code></td>
+<td>every reference inside <code>docs/setup-guide.html</code> resolves</td>
+</tr>
+<tr>
+<td><code>test/setup-guide-embedding.test.ts</code></td>
+<td><code>docs/setup-guide.html</code> equals what <code>npm run docs:embed</code> produces from <code>docs/images/</code></td>
+</tr>
+</tbody></table></div>
+<p><code>main</code> has no branch protection, so no check is required here today. A repository that does
+require checks cannot use a plain <code>paths-ignore</code> filter: a filtered workflow never reports, and a
+required check would sit in Pending forever. That is why the pattern below always reports.</p>
+<h2>Decisions (recorded from the interview)</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>What counts as docs-only for Mission Control</td>
+<td>Every changed path is under <code>docs/**</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>What still runs on a docs-only PR</td>
+<td>A <code>docs checks</code> job: the tests that reference <code>../docs/</code>, discovered automatically, plus <code>check-doc-links</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Do docs-only pushes to <code>main</code> skip</td>
+<td>No. Only pull requests skip; <code>main</code>, tags and <code>workflow_dispatch</code> always run the full suite</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Mechanism for Mission Control</td>
+<td>The same pattern the skill installs: a <code>changes</code> detection job the heavy jobs depend on, plus one summary job that always runs and reports, so a required check never sits in Pending. Dogfooded here first. The answer listed <code>flake report</code> among the gated jobs; decision 20 supersedes that part</td>
+</tr>
+<tr>
+<td>5</td>
+<td>How operators reach the skill</td>
+<td>Skill only: Skills catalog and <code>/slash</code>, no repository action, route or button</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Skill flow</td>
+<td>The testing-setup shape: audit, one approval form, apply only what was approved</td>
+</tr>
+<tr>
+<td>7</td>
+<td>CI systems</td>
+<td>GitHub Actions only; anything else is a clear &quot;not supported&quot; stop</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Does <code>gates</code> run on a docs-only PR</td>
+<td>No, it skips with the heavy jobs</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Detection</td>
+<td>An inline shell step running <code>git diff --name-only</code> between base and head, matched against the docs patterns. No third-party action. Implemented with <code>--no-renames</code>; see the <code>changes</code> job, step 2</td>
+</tr>
+<tr>
+<td>10</td>
+<td>When detection cannot decide</td>
+<td>Run the full suite</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Skill id</td>
+<td><code>docs-only-ci</code> (installed as <code>mission-docs-only-ci</code>)</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Docs paths in other repos</td>
+<td>The audit proposes a set (default <code>docs/**</code>, plus what it finds, such as <code>*.md</code> or a docs site directory); the human edits it in the form</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Docs checks job in other repos</td>
+<td>Proposed only when the audit finds tests or scripts that read the docs paths</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Required checks in other repos</td>
+<td>Read them with <code>gh api</code> and tell the operator exactly which to swap for the summary job; never edit branch protection</td>
+</tr>
+<tr>
+<td>15</td>
+<td>When <code>docs checks</code> runs</td>
+<td>On every run, docs-only or not</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Summary check name</td>
+<td><code>CI result</code> (job id <code>ci-result</code>)</td>
+</tr>
+<tr>
+<td>17</td>
+<td>Keeping the dogfooded copy identical</td>
+<td>A unit test asserting the <code>ci.yml</code> step scripts equal the skill&#39;s template assets byte for byte</td>
+</tr>
+<tr>
+<td>18</td>
+<td>Proving the skip</td>
+<td>Before merge: a throwaway docs-only PR stacked on the feature branch, recorded as evidence, closed unmerged</td>
+</tr>
+<tr>
+<td>19</td>
+<td>Delivery</td>
+<td>One phase, one pull request</td>
+</tr>
+<tr>
+<td>20</td>
+<td>How a docs-only PR gets past Wait for CI (repair round 1)</td>
+<td><code>flake report</code> is <strong>not</strong> gated: it runs on docs-only PRs, reads zero reports and publishes &quot;Flaky tests: No flaky tests&quot;. Gates, unit and E2E still skip. Chosen over a &quot;Docs-only change&quot; marker check that Wait for CI would accept, and over documenting the block</td>
+</tr>
+</tbody></table></div>
+<h2>Wait for CI and the &quot;Flaky tests&quot; check (investigated in repair round 1)</h2>
+<p>Plan Validation asked how Mission Control&#39;s Wait for CI node treats a run with no &quot;Flaky tests&quot;
+check. Read on 2026-10-04:</p>
+<ul>
+<li><code>decideWaitForCi</code> (<code>src/shared/wait-for-ci.ts</code>) passes only when every check on the head
+commit has settled green <strong>and</strong> a check named &quot;Flaky tests&quot; exists. A green run without one
+waits <code>WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS</code> (five minutes) and then blocks with
+<code>ci_flake_report_missing</code>. There is no exception, so it holds for every repository.</li>
+<li>The node reads only check names, conclusions, titles and summaries from the Inspector&#39;s
+<code>statusCheckRollup</code> query. <code>SKIPPED</code> counts as passing (<code>src/shared/ci-checks.ts</code>), and
+<code>package (macOS arm64)</code> already reports <code>skipped</code> on every pull request, so &quot;a job was
+skipped&quot; is not a docs-only signal.</li>
+<li>A job&#39;s step summary never reaches its check run: on <code>main</code>&#39;s head, <code>flake report</code> writes
+<code>$GITHUB_STEP_SUMMARY</code> and its check run&#39;s <code>summary</code> is null. A docs-only marker would need a
+check created through the Checks API with <code>checks: write</code>.</li>
+<li>The flake-report action is safe with zero reports. <code>publish</code> in
+<code>src/flake-report-action/publish.ts</code> merges what it read, so zero reports give zero flakes.
+It then does exactly what a clean full run does: it opens and updates no flake issues, strips
+the actionable label from closed ones, and publishes &quot;Flaky tests&quot; with conclusion <code>success</code>
+and title &quot;No flaky tests&quot;. Where the token is read-only (<code>ctx.readOnlyReason</code>, for example a
+fork PR), it publishes no check, on any run, which is the same as today. The engine reads a
+missing report as zero flakes (<code>flakeReport?.flakes.length ?? 0</code> in
+<code>src/server/workflows/engine.ts</code>).</li>
+</ul>
+<p><strong>Resolution (decision 20):</strong> <code>flake report</code> stays ungated. Its existing <code>if: ${{ !cancelled() }}</code>
+already lets it run when the jobs it needs were skipped, so a docs-only run still publishes
+&quot;Flaky tests&quot;, and Wait for CI passes with no change to Mission Control&#39;s code. The skill does the
+same in target repositories.</p>
+<h2>Design</h2>
+<h3>The job graph</h3>
+<div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 615" role="img" aria-label="CI job graph before and after the docs-only gate">
+  <style>svg rect{fill:var(--panel,#fff);stroke:var(--line,#8899ad)}svg rect.new{fill:var(--new,#e3f4e8);stroke:var(--link,#064b8b);stroke-width:2}svg text{fill:var(--ink,#132239);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted,#344d68)}svg path{stroke:var(--link,#064b8b);fill:none;stroke-width:2}svg polygon{fill:var(--link,#064b8b)}svg rect.bg{fill:var(--panel,#fff);stroke:none}</style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <rect class="bg" x="0" y="0" width="1040" height="615"/>
+  <text x="20" y="30">Before: every pull request runs everything</text>
+  <rect x="20" y="80" width="170" height="44" rx="8"/><text x="38" y="108">dependencies x2</text>
+  <rect x="250" y="50" width="150" height="40" rx="8"/><text x="292" y="76">gates</text>
+  <rect x="250" y="106" width="150" height="40" rx="8"/><text x="284" y="132">unit x12</text>
+  <rect x="250" y="162" width="150" height="40" rx="8"/><text x="285" y="188">e2e x15</text>
+  <rect x="460" y="134" width="160" height="40" rx="8"/><text x="487" y="160">flake report</text>
+  <path d="M190 96 L250 70" marker-end="url(#a)"/><path d="M190 104 L250 126" marker-end="url(#a)"/><path d="M190 112 L250 180" marker-end="url(#a)"/>
+  <path d="M400 126 L460 150" marker-end="url(#a)"/><path d="M400 182 L460 160" marker-end="url(#a)"/>
+  <text x="660" y="130" class="small">31 jobs on a PR that only edits docs/</text>
+
+  <text x="20" y="232">After: a changes job gates the heavy jobs; CI result always reports</text>
+  <rect class="new" x="20" y="292" width="170" height="44" rx="8"/><text x="70" y="320">changes</text>
+  <rect x="20" y="410" width="170" height="44" rx="8"/><text x="38" y="438">dependencies x2</text>
+  <rect x="250" y="280" width="150" height="40" rx="8"/><text x="292" y="306">gates</text>
+  <rect x="250" y="330" width="150" height="40" rx="8"/><text x="284" y="356">unit x12</text>
+  <rect x="250" y="380" width="150" height="40" rx="8"/><text x="285" y="406">e2e x15</text>
+  <rect class="new" x="250" y="470" width="150" height="40" rx="8"/><text x="270" y="496">docs checks</text>
+  <rect x="460" y="355" width="160" height="40" rx="8"/><text x="487" y="381">flake report</text>
+  <rect class="new" x="760" y="360" width="160" height="44" rx="8"/><text x="795" y="388">CI result</text>
+  <path d="M190 310 L250 300" marker-end="url(#a)"/><path d="M190 316 L250 348" marker-end="url(#a)"/><path d="M190 322 L250 396" marker-end="url(#a)"/>
+  <path d="M190 442 L250 488" marker-end="url(#a)"/>
+  <path d="M400 350 L460 370" marker-end="url(#a)"/><path d="M400 400 L460 382" marker-end="url(#a)"/>
+  <path d="M105 292 C105 252 820 252 830 360" marker-end="url(#a)"/>
+  <path d="M400 300 C620 300 700 340 760 368" marker-end="url(#a)"/>
+  <path d="M400 340 C560 312 660 330 760 374" marker-end="url(#a)"/>
+  <path d="M620 375 L760 380" marker-end="url(#a)"/>
+  <path d="M400 410 C560 444 660 424 760 388" marker-end="url(#a)"/>
+  <path d="M400 490 C620 490 700 420 760 396" marker-end="url(#a)"/>
+  <path d="M190 448 C200 600 830 600 840 404" marker-end="url(#a)"/>
+  <text x="20" y="474" class="small">also feeds gates, unit, e2e</text>
+  <text x="250" y="590" class="small">CI result needs every job except package; a skip passes only when changes reported docs_only = true</text>
+  <text x="250" y="608" class="small">docs-only PR: gates, unit and e2e skip; flake report still publishes &quot;Flaky tests&quot; for Wait for CI</text>
+</svg></div>
+<p><code>package</code> is unchanged: release-only, outside the gate, and not a need of <code>CI result</code>.</p>
+<h3><code>changes</code> job</h3>
+<ul>
+<li>Runs on every event, <code>ubuntu-latest</code>, short timeout, <code>contents: read</code>.</li>
+<li>Checks out with <code>fetch-depth: 0</code> so the merge base is reachable.</li>
+<li>One step, <code>Detect docs-only change</code>, whose <code>run:</code> body is the skill asset
+<code>skills/docs-only-ci/assets/detect-docs-only.sh</code>, verbatim. Its inputs come through <code>env</code>, so
+the script text is identical in every repository and only the <code>env</code> block differs:<ul>
+<li><code>DOCS_ONLY_PATHS</code>: newline-separated shell <code>case</code> patterns. Mission Control sets <code>docs/*</code>.
+In a <code>case</code> pattern <code>*</code> matches across <code>/</code>, so <code>docs/*</code> covers every depth and <code>*.md</code> means
+Markdown anywhere. The skill documents this.</li>
+<li><code>EVENT_NAME</code>, <code>BASE_SHA</code>, <code>HEAD_SHA</code> from the <code>github</code> context.</li>
+</ul>
+</li>
+<li>Behavior, emitting one output <code>docs_only=true|false</code> to <code>$GITHUB_OUTPUT</code>:<ol>
+<li>Not a <code>pull_request</code> event: <code>false</code>.</li>
+<li><code>git diff --no-renames --name-only &quot;$BASE_SHA...$HEAD_SHA&quot;</code> fails, or lists zero files:
+<code>false</code>. <code>--no-renames</code> is required, not a style choice: with git&#39;s default rename
+detection, a file moved from <code>src/</code> into <code>docs/</code> is listed only by its new <code>docs/</code> path,
+so a PR that removes a source file would look docs-only and skip the tests. Without rename
+detection the move lists both the deleted source path and the added docs path, and the
+source path fails the match. It also disables copy detection, which matters for the same
+reason.</li>
+<li>Every listed path matches at least one pattern: <code>true</code>. Otherwise <code>false</code>.</li>
+<li>It prints the decision and the first non-matching path, so a full run says why.</li>
+</ol>
+</li>
+<li>The script never exits non-zero on a detection problem; every doubt resolves to <code>false</code> (full
+suite, decision 10). If the job itself fails (runner trouble), its dependents skip and
+<code>CI result</code> fails, which is loud rather than a silent pass.</li>
+</ul>
+<h3>Gated jobs</h3>
+<p><code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code> and <code>e2e</code> add <code>changes</code> to <code>needs</code> and
+<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>.</p>
+<p><code>flake-report</code> is unchanged (decision 20). It keeps <code>needs: [unit-node-24, unit-node-26, e2e]</code>
+and <code>if: ${{ !cancelled() }}</code>, which runs it when those jobs were skipped. On a docs-only run it
+downloads no reports and publishes &quot;Flaky tests: No flaky tests&quot;, which is what Wait for CI
+requires. Both <code>dependencies</code> jobs keep running too: a warm cache hit takes seconds,
+<code>docs checks</code> needs Node 24&#39;s tree, and gating them adds wiring for no saving.</p>
+<h3><code>docs checks</code> job</h3>
+<p>Runs on every run (decision 15), needs <code>dependencies-node-24</code>, restores <code>node_modules</code> the same
+way <code>gates</code> does, then:</p>
+<ol>
+<li><code>node scripts/check-doc-links.mjs</code>. Exposed as <code>npm run docs:links</code> so contributors can run it.</li>
+<li>Discovers test files with <code>grep -l &#39;\.\./docs/&#39; test/*.test.ts</code>. If discovery returns no
+files, the step fails: a pattern that matches nothing has rotted, and silence would hide it.</li>
+<li>Runs them with the suite&#39;s loader:
+<code>node --test --import ./test/setup-state.mjs --import tsx &lt;files&gt;</code>.</li>
+</ol>
+<p>On full runs the five tests also run inside the unit shards. That duplication costs well under a
+minute and keeps <code>CI result</code>&#39;s logic free of a &quot;docs checks ran only sometimes&quot; case.</p>
+<h3><code>CI result</code> job</h3>
+<ul>
+<li><code>needs</code> every job above except <code>package</code>, <code>if: always()</code>, <code>ubuntu-latest</code>.</li>
+<li>One step whose <code>run:</code> body is the skill asset <code>skills/docs-only-ci/assets/ci-result.sh</code>,
+verbatim. Inputs through <code>env</code>: <code>NEEDS_JSON: ${{ toJSON(needs) }}</code>, <code>DOCS_ONLY</code> from
+<code>changes</code>, and <code>SKIPPABLE</code>, the newline-separated job ids allowed to skip on a docs-only run
+(<code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code>, <code>e2e</code> here; <code>flake-report</code> is not among them).</li>
+<li><code>NEEDS_JSON</code> is parsed with <code>jq</code>, which GitHub-hosted Ubuntu runners and macOS 15 and later
+ship. Both scripts stay compatible with bash 3.2, macOS&#39;s <code>/bin/bash</code>, so the committed test
+below runs on a developer&#39;s machine as well as in CI.</li>
+<li>Rule: every need must be <code>success</code>, except that a job listed in <code>SKIPPABLE</code> may be <code>skipped</code>
+<strong>only when</strong> <code>DOCS_ONLY</code> is <code>true</code>. Any <code>failure</code>, <code>cancelled</code>, or other <code>skipped</code> fails the
+job, naming each offending job and its result.</li>
+<li>This is the one check a protected repository marks as required.</li>
+</ul>
+<h3>The <code>docs-only-ci</code> skill</h3>
+<pre><code>skills/docs-only-ci/
+  SKILL.md
+  assets/
+    detect-docs-only.sh   # the changes step body, copied verbatim
+    ci-result.sh          # the summary step body, copied verbatim
+</code></pre>
+<p>Frontmatter: <code>name: docs-only-ci</code>, a description that triggers on requests to skip or gate CI
+for docs-only pull requests, and <code>metadata.mission</code> with <code>category: testing</code> and
+<code>enforcement: triggered</code>, like <code>testing-setup</code>. Reached only from the Skills catalog and
+<code>/docs-only-ci</code> (decision 5): no route, task type or Trust panel button.</p>
+<p>Procedure, mirroring <code>skills/testing-setup/SKILL.md</code>:</p>
+<ol>
+<li><strong>Audit, read-only.</strong><ul>
+<li>Confirm GitHub Actions. Any other CI (GitLab, CircleCI, Jenkins, Buildkite) stops with
+&quot;not supported&quot; and no form.</li>
+<li>Find the workflows that trigger on <code>pull_request</code>, and their jobs.</li>
+<li>Propose docs patterns: <code>docs/*</code> if it exists, plus what the repository shows, such as
+root or nested Markdown and a docs site directory.</li>
+<li>Find tests and scripts that read those paths, to decide whether to propose a docs checks
+job.</li>
+<li>Find any existing <code>paths</code> or <code>paths-ignore</code> filter, which would be replaced by the gate.</li>
+<li>Read required checks with
+<code>gh api repos/{owner}/{repo}/branches/{default}/protection/required_status_checks</code>. A
+403 or 404 is reported as &quot;could not read branch protection&quot;, never as &quot;no required
+checks&quot;.</li>
+<li>Note a testing-setup <code>flake-report</code> job. It is never gated (decision 20), because Wait for
+CI needs its &quot;Flaky tests&quot; check on every run. If its <code>if:</code> does not already let it run when
+its test jobs were skipped (<code>!cancelled()</code> or <code>always()</code>), the form proposes adding that.</li>
+<li>If the gate is already installed and matches the assets, say so and stop: no form, no
+commit.</li>
+</ul>
+</li>
+<li><strong>One approval form</strong> through <code>request_plan_decisions</code>: the docs patterns (editable), which
+jobs to gate, whether to add a docs checks job and which command it runs, and the exact
+workflow edits. Every option allows Other.</li>
+<li><strong>Apply only what was approved</strong> in one commit: the <code>changes</code> job with the asset pasted as
+its step body, the gated jobs&#39; <code>needs</code> and <code>if</code>, the optional docs checks job, and
+<code>CI result</code> with the asset pasted as its step body. Mission Control publishes the pull
+request; the skill follows the task&#39;s publication ownership rather than opening one itself.</li>
+<li><strong>Report required checks.</strong> When protection requires checks that a docs-only run now skips,
+the report and the PR body name each one and say to replace them with <code>CI result</code>. When
+protection could not be read, they list every check name the workflow produces so the
+operator can compare. The skill never edits protection (decision 14).</li>
+<li><strong>Verify</strong> on the setup pull request&#39;s own CI that <code>changes</code> and <code>CI result</code> report. Where
+the operator wants proof of the skip, open a throwaway docs-only pull request stacked on the
+setup branch and close it unmerged.</li>
+</ol>
+<h3>Drift guard</h3>
+<p>A new <code>test/docs-only-ci-template.test.ts</code> reads <code>.github/workflows/ci.yml</code> as text (the
+repository has no YAML parser and <code>test/oss-readiness.test.ts</code> already reads it this way),
+extracts the <code>run: |</code> block scalar of the <code>Detect docs-only change</code> step and of the <code>CI result</code>
+step by indentation, dedents each, and asserts each equals its asset byte for byte. It also
+asserts the <code>changes</code> and <code>ci-result</code> jobs exist, run on <code>ubuntu-latest</code>, and that every gated
+job carries the <code>docs_only != &#39;true&#39;</code> condition. Editing one copy without the other fails
+<code>npm test</code>.</p>
+<h3>Documentation and ledger</h3>
+<ul>
+<li><code>AGENTS.md</code>: the CI paragraph&#39;s count becomes thirty-four non-package jobs, and the paragraph
+names <code>changes</code>, <code>docs checks</code> and <code>CI result</code> and the docs-only skip.</li>
+<li><code>ci.yml</code> header comment: the gate, what skips, why <code>main</code> never skips, and why <code>CI result</code>
+exists.</li>
+<li><code>docs/flaky-tests.md</code>: on a docs-only PR, <code>flake report</code> still runs, reads zero reports and
+publishes &quot;Flaky tests: No flaky tests&quot;, which keeps Wait for CI passing.</li>
+<li><code>docs/skills-and-settings.md</code>: the new bundled skill.</li>
+<li><code>docs/upstream-sync.md</code>: <code>skills/docs-only-ci/</code> and the gate&#39;s <code>ci.yml</code> jobs are fork-only
+surfaces.</li>
+<li><code>docs/fork/ledger.md</code>: a new &quot;Docs-only CI&quot; entry and an &quot;At a glance&quot; row, with
+<code>ledger.html</code> re-rendered in the same commit.</li>
+</ul>
+<h2>Verification</h2>
+<ul>
+<li><code>node --test --import ./test/setup-state.mjs --import tsx test/docs-only-ci-template.test.ts</code>
+passes, and fails when one byte of either asset or either <code>ci.yml</code> step body changes.</li>
+<li>Running the docs checks job&#39;s commands locally passes: <code>npm run docs:links</code>, then the
+discovered test files with the suite loader.</li>
+<li>A committed <code>test/docs-only-ci-scripts.test.ts</code> (AGENTS.md working rule 3) runs both assets
+with <code>bash -eo pipefail</code>, which is how GitHub Actions runs a <code>run:</code> step, and passes inputs only
+through <code>env</code>. Each case asserts the exit code and the output line:<ul>
+<li><code>detect-docs-only.sh</code>, with a stub <code>git</code> first on <code>PATH</code>, must print <code>docs_only=false</code> and
+exit 0 for a non-PR event, a failing diff, zero changed files, one non-docs path among
+docs paths, and a file renamed from <code>src/</code> into <code>docs/</code>. For the rename case the stub
+asserts it was called with <code>--no-renames</code> and then lists both paths, so dropping the flag
+fails the test. It must print <code>docs_only=true</code> for all docs paths, and for a nested <code>.md</code> path
+matched by a <code>*.md</code> pattern.</li>
+<li><code>ci-result.sh</code> must <strong>pass</strong> when every need succeeded, and when only <code>SKIPPABLE</code> jobs were
+skipped with <code>DOCS_ONLY=true</code>.</li>
+<li>It must <strong>fail</strong>, naming the offending job, when:<ul>
+<li>a <code>SKIPPABLE</code> job was skipped and <code>DOCS_ONLY</code> is <code>false</code>;</li>
+<li><code>DOCS_ONLY</code> is empty because <code>changes</code> failed;</li>
+<li>any need is <code>failure</code> or <code>cancelled</code>;</li>
+<li>a job outside <code>SKIPPABLE</code> (for example <code>docs-checks</code> or <code>flake-report</code>) was skipped on a
+docs-only run;</li>
+<li><code>changes</code> itself did not succeed.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>A Wait for CI case in the same file feeds <code>decideWaitForCi</code> the check list a docs-only run
+produces: <code>changes</code>, <code>docs checks</code>, <code>CI result</code>, <code>flake report</code> and &quot;Flaky tests&quot; passing, and
+gates, unit, E2E and package <code>skipped</code>. It asserts the decision is <code>pass</code>, not a wait that ends
+in <code>ci_flake_report_missing</code>.</li>
+<li><code>npm run typecheck</code> and <code>npm run lint</code> pass.</li>
+<li><strong>On GitHub, before merge:</strong><ul>
+<li>The implementation PR&#39;s own run shows <code>changes</code> reporting <code>docs_only=false</code>, every heavy job
+running, and <code>CI result</code> green.</li>
+<li>A throwaway PR, based on the feature branch, that touches only one file under <code>docs/</code>, shows
+<code>changes</code> reporting <code>docs_only=true</code>; <code>gates</code>, unit and E2E skipped;
+<code>flake report</code> and <code>docs checks</code> ran, and &quot;Flaky tests&quot; and <code>CI result</code> are green. Its run is
+captured with <code>gh pr checks</code> and registered as evidence, then the PR is closed unmerged. A
+<code>pull_request</code> run uses the merge ref&#39;s <code>ci.yml</code>, so the new workflow runs on that stacked PR.</li>
+<li>That PR&#39;s head-commit check runs, read with
+<code>gh api repos/{owner}/{repo}/commits/{sha}/check-runs</code> and mapped through
+<code>classifyCheckEntry</code>, are passed to <code>decideWaitForCi</code>, and the decision is <code>pass</code>. This proves
+a docs-only PR passes Wait for CI on the real check list, not only on the fixture.</li>
+<li>Optionally, a second throwaway commit on that PR that breaks one doc-drift guard (for
+example, removing a table row from <code>docs/sqlite-database.html</code>) shows <code>docs checks</code> and
+<code>CI result</code> failing.</li>
+</ul>
+</li>
+</ul>
+<h2>Out of scope and follow-ups</h2>
+<ul>
+<li>Turning on branch protection for <code>main</code> here, or marking <code>CI result</code> required. Not asked
+for; the gate makes it possible.</li>
+<li>A Trust panel repository action for the skill (decision 5 chose skill only).</li>
+<li>CI systems other than GitHub Actions.</li>
+<li>Path classes other than docs, such as skipping E2E for server-only changes.</li>
+<li>Skipping on pushes to <code>main</code>.</li>
+</ul>
+<h2>Risks</h2>
+<ul>
+<li><strong>A docs-reading test that does not spell <code>../docs/</code>.</strong> Discovery would miss it, and a
+docs-only PR could break it unseen until <code>main</code>&#39;s push run. Mitigation: <code>main</code> always runs the
+full suite (decision 3), and the discovery pattern is named in the <code>ci.yml</code> comment so a
+reviewer of a new doc-drift test can check it.</li>
+<li><strong>A future build step that reads <code>docs/</code>.</strong> The &quot;cannot break&quot; table above would then be
+wrong. The <code>ci.yml</code> header names the assumption so the change that breaks it sees it.</li>
+<li><strong>Required-check names.</strong> In this repository nothing is required, so renaming or adding jobs
+stays free. In a protected repository the operator must swap required checks for <code>CI result</code>
+by hand, which the skill reports.</li>
+<li><strong><code>fetch-depth: 0</code> on a large repository</strong> makes <code>changes</code> slower. Acceptable here; the skill
+notes it and the audit can propose a shallow fetch of the base and head SHAs instead when
+history is large.</li>
+</ul>
+<h2>Rendering</h2>
+<p><code>plan.html</code> is generated from this file by <code>node docs/plans/docs-only-ci/render-plan.mjs</code>, which
+inlines <code>job-graph.svg</code> in place of the mermaid block. <code>--check</code> fails when the page is stale.</p>
+</main></body></html>
