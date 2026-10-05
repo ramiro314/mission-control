@@ -1,6 +1,6 @@
 # Windows support on a parallel `release/windows` branch
 
-Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch), and in repair round 4 (how the PR-less gating tickets M2.0 and M3.1 release their dependents). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
+Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch), and in repair round 4 (how the PR-less gating ticket M2.0 releases its dependents), and in repair round 5 (M3 restructured into two tickets: M3.1 owns the merge PR on its own session branch, and M3.2 retires). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
 
 ## Goal
 
@@ -199,10 +199,10 @@ Tickets are filed in two stages, so every ticket is valid on the day it is creat
 2. **The M0.3 ticket ends by filing the M2 tickets** (M2.0 to M2.12), each with
    `base_branch = release/windows`, sliced from M2 below with their blocking edges. Each is
    valid when it is created, because the field, the branch and every M1 seam already exist.
-3. **The M2.12 gate-readiness ticket ends by filing the M3 tickets** (M3.1 to M3.3) on
-   `main`, with M3.1 blocking M3.2 and M3.2 blocking M3.3.
-4. **The M3.3 retirement ticket ends by filing the after-the-merge tickets** on `main`. It runs
-   only after M3.2 has merged, so those tickets cannot dispatch before the Windows code is on
+3. **The M2.12 gate-readiness ticket ends by filing the M3 tickets** (M3.1 and M3.2) on
+   `main` (default base branch), with M3.1 blocking M3.2.
+4. **The M3.2 retirement ticket ends by filing the after-the-merge tickets** on `main`. It runs
+   only after M3.1's merge PR has merged, so those tickets cannot dispatch before the Windows code is on
    `main`.
 
 **How each blocking ticket releases its dependents.** In Mission Control, a declared dependency
@@ -218,10 +218,9 @@ its path:
 | M0.3 | M0.4 | Its fork-ledger PR merging into `main` (creating the branch alone is not a merge) |
 | M2.0 (SDK spike, no PR) | M2.1 to M2.11 | **The human** completes it with "Unblock" ticked, only when the spike passed |
 | M2.1 to M2.11 | M2.12 | Their PRs merging into `release/windows` (base-branch merge watcher, A8) |
-| M3.1 (gates and reviews, no PR) | M3.2 | **The human** completes it with "Unblock" ticked, only when all M3.1 gates passed |
-| M3.2 | M3.3 | The merge PR merging into `main` |
+| M3.1 (merge PR and gates) | M3.2 | Its own merge PR (session branch `merge/windows-into-main`, base `main`) merging into `main`, which the human does only when every gate passed |
 
-The tickets that file others (M0.3, M2.12, M3.3) file them at the end of their own work, so
+The tickets that file others (M0.3, M2.12, M3.2) file them at the end of their own work, so
 nothing waits on those filing steps through a dependency edge.
 
 ### M0: Groundwork (on `main`, then branch creation)
@@ -313,35 +312,44 @@ POSIX implementation issues the same commands it did before.
     toolchain, `script-shell`, Developer Mode, long paths), the Windows rows in `docs/harnesses-and-terminals.md`, and the fork-ledger
     entry.
 12. **Gate readiness**: blocked on M2.1 to M2.11. It confirms the Windows jobs are required and
-    green under D37, and writes two lists into the draft merge PR description: the skip list
-    (every use of the win32 skip guard, with its reason) and the D38 list (every neutral seam
-    built on the branch during M2, with its PR). It **ends by filing the M3 tickets** (D34).
+    green under D37, and writes two lists into the description of its own PR into
+    `release/windows`: the skip list (every use of the win32 skip guard, with its reason) and the
+    D38 list (every neutral seam built on the branch during M2, with its PR). M3.1 copies both
+    lists into the merge PR. It **ends by filing the M3 tickets** (D34).
 
 ### M3: Validation and merge to `main`
 
-1. All four D8 gates pass:
+1. **Merge PR and gates.** M3.1 is an ordinary task on `main` (no base branch set), so the
+   merge watcher tracks its PR like any other session PR. Its session:
+   - Cuts its session branch `merge/windows-into-main` from `origin/main`.
+   - Merges `origin/release/windows` into that branch, resolving any conflicts by the D27 rule.
+   - Makes sure the Windows CI jobs run on this PR and on `main` afterwards (D15), removing any
+     `release/windows`-only condition M2.1 may have added.
+   - Opens the PR against `main`, titled `feat: Windows support`. The description carries
+     M2.12's skip list and D38 list, plus the manual smoke checklist.
+   - Starts a `workflow_dispatch` run of the macOS `package` job on `merge/windows-into-main`.
+
+   All four D8 gates are judged on this PR, which is the merge candidate:
    - The unit suite is green on Windows CI under D37.
    - Playwright e2e is green on Windows CI under D37.
-   - The human has reviewed the skip list and the D38 seam list in the merge PR.
-   - The human's manual smoke on Windows 11 x64 passes: dispatch a Claude Code task, watch the SDK
-     session on the board, message it, and complete it. The steps are written as a checklist in
-     the merge PR.
-   - macOS is unchanged: the full Linux CI is green, and a `workflow_dispatch` run of the macOS
-     `package` job is green on the merge candidate.
+   - The human has reviewed the skip list and the D38 seam list in the PR.
+   - The human's manual smoke on Windows 11 x64 passes on the PR's head commit: dispatch a
+     Claude Code task, watch the SDK session on the board, message it, and complete it.
+   - macOS is unchanged: the full Linux CI is green on the PR, and the `package` dispatch run is
+     green.
 
-   M3.1 opens no PR. **When every gate above has passed, the human completes it with "Unblock
-   the tasks waiting on this" ticked** (`satisfyDependents`), which releases M3.2. If any gate
-   fails, the human completes it without that box (or leaves it open while the failure is fixed
-   on `release/windows`), and M3.2 stays blocked.
-2. **Merge PR** `release/windows` into `main`, merged with a merge commit titled
-   `feat: Windows support` (D16). Windows CI jobs now run on `main` as well.
-3. **Retire** (D29), after item 2 has merged: delete `release/windows`, retire the sync
-   mission, and set the ledger entry to "merged; follow-ups on main". This ticket **ends by
-   filing the after-the-merge tickets** below (D34).
+   **The human merges the PR, with a merge commit (D16), only when every gate has passed.** That
+   merge completes M3.1 through the merge watcher and releases M3.2. No `satisfyDependents` step
+   is involved. If a gate fails, the fix lands on `release/windows` through an ordinary M2-style
+   ticket. M3.1's session then merges `origin/release/windows` into its branch again, and the
+   gates are re-run on the updated PR.
+2. **Retire** (D29), after M3.1's PR has merged: delete `release/windows`, retire the sync
+   mission, and set the ledger entry to "merged; follow-ups on main" by PR into `main`. This
+   ticket **ends by filing the after-the-merge tickets** below (D34).
 
 ### After the merge (on `main`, not gating)
 
-Filed by M3.3 once the merge has landed:
+Filed by M3.2 once the merge has landed:
 
 - **WezTerm terminal backend on Windows** (D9, D19): discovery, focus, capture and write for
   WezTerm panes on win32, which re-enables the terminal runtime there.
