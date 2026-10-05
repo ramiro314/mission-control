@@ -540,6 +540,11 @@ test("the shipped docs-only-ci skill audits, asks once, applies only what was ap
   assert.match(text, /\*\*The testing-setup `flake-report` job\.\*\*[\s\S]*\*\*never gated\*\*/);
   assert.match(text, /`!cancelled\(\)` or `always\(\)`[\s\S]*propose\s+`if: \$\{\{ !cancelled\(\) \}\}`/);
   assert.match(text, /Never offer\s+`flake-report`/);
+  // A job its own `if:` can skip on an ordinary pull request would turn CI result red on a full
+  // run, so it stays out of CI result's needs and SKIPPABLE, and the form says so.
+  assert.match(text, /\*\*Jobs with their own skip condition\.\*\*[\s\S]*\*\*out of `CI result`'s `needs` and out of `SKIPPABLE`\*\*/);
+  assert.match(text, /needs: \[changes, <every other job that runs on every pull request>\]/);
+  assert.match(text, /every job left out\s+of `CI result`'s `needs` and why/);
   // One approval form, then only what was approved, in one commit.
   assert.match(text, /\*\*`request_plan_decisions`\*\* once, with every proposed change/);
   assert.match(text, /never split the proposal across several forms/);

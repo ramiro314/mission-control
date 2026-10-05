@@ -1327,6 +1327,10 @@ audit, one <code>request_plan_decisions</code> form, only the approved edits in 
 the required checks to swap for <code>CI result</code> (never an edit to branch protection), and
 verification on the setup pull request&#39;s own CI. Non-GitHub-Actions CI stops with &quot;not
 supported&quot;; an installed gate matching the assets stops with no form.</li>
+<li><code>CI result</code>&#39;s <code>needs</code> holds only jobs that run on every pull request unless the gate skips
+them. A job whose own <code>if:</code> (draft, label, fork, event conditions) can skip it on an ordinary
+pull request, or that needs such a job, stays out of <code>needs</code> and <code>SKIPPABLE</code> and is reported
+as not covered by <code>CI result</code>.</li>
 <li>The skill never gates a testing-setup <code>flake-report</code> job, and proposes <code>!cancelled()</code> on it when
 its <code>if:</code> would not run after skipped test jobs (decision 20).</li>
 <li><code>assets/detect-docs-only.sh</code> prints <code>docs_only=true|false</code> (and appends it to

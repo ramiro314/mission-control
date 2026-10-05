@@ -76,13 +76,23 @@ Read the repository; change nothing yet. Record a finding for each item, with th
    jobs were skipped - `!cancelled()` or `always()`. If it has no `if:`, or one without a status
    function (`success()` is then implied, and skipped needs skip it too), propose
    `if: ${{ !cancelled() }}`.
-8. **Jobs downstream of a gated job.** A job that needs a gated job is skipped with it unless its
+8. **Jobs with their own skip condition.** A job whose `if:` can be false on an ordinary pull
+   request - draft-only, label-gated, fork-gated
+   (`github.event.pull_request.head.repo.full_name == github.repository`), actor-, event- or
+   path-filtered, anything beyond a bare status function such as `always()` or `!cancelled()` -
+   reports `skipped` on some pull requests that are not docs-only, and `ci-result.sh` reads that
+   as a failure. So does a job that needs one without a status function in its own `if:`, since
+   it is skipped with it. Such a job stays **out of `CI result`'s `needs` and out of `SKIPPABLE`**. It may
+   still be gated, with its own condition kept. List each one with its condition: `CI result`
+   does not cover it, so if branch protection requires it today it stays required on its own
+   (GitHub counts a job skipped by its `if:` as passing a required check).
+9. **Jobs downstream of a gated job.** A job that needs a gated job is skipped with it unless its
    `if:` uses a status function. Either add it to the gated set or leave it running with
    `!cancelled()`, and say which.
-9. **History size.** `changes` checks out with `fetch-depth: 0` so the merge base is reachable.
-   On a very large repository, note it; the form can propose fetching only the base and head
-   commits instead.
-10. **Already installed.** If the workflow already has a `changes` job whose `Detect docs-only
+10. **History size.** `changes` checks out with `fetch-depth: 0` so the merge base is reachable.
+    On a very large repository, note it; the form can propose fetching only the base and head
+    commits instead.
+11. **Already installed.** If the workflow already has a `changes` job whose `Detect docs-only
     change` step body equals `assets/detect-docs-only.sh` and a `CI result` step whose body equals
     `assets/ci-result.sh`, and the audit finds nothing else to change, report that the gate is
     installed and stop: no form, no commit. If the bodies differ from the assets, propose
@@ -92,8 +102,9 @@ Read the repository; change nothing yet. Record a finding for each item, with th
 
 Call the Mission Control MCP tool **`request_plan_decisions`** once, with every proposed change.
 Never ask in prose, and never split the proposal across several forms. The `plan` markdown
-carries the audit findings and the exact workflow edits as a diff; the `decisions` let the human
-choose. Every decision allows Other (`allowOther: true`).
+carries the audit findings and the exact workflow edits as a diff, including every job left out
+of `CI result`'s `needs` and why (it never runs on a pull request, or its own condition can skip
+it on one); the `decisions` let the human choose. Every decision allows Other (`allowOther: true`).
 
 The decisions (omit one whose change is not needed, and keep ids stable):
 
@@ -139,7 +150,8 @@ repository's own:
 ```
 
 Each approved gated job adds `changes` to its `needs` and the condition below. An existing `if:`
-is kept and joined with `&&`.
+is kept and joined with `&&`; when that condition is more than a status function, the job is one
+of audit item 8's and stays out of `CI result`'s `needs` and `SKIPPABLE`.
 
 ```yaml
     needs: [changes, <its existing needs>]
@@ -149,7 +161,7 @@ is kept and joined with `&&`.
 ```yaml
   ci-result:
     name: CI result
-    needs: [changes, <every other job that runs on a pull request>]
+    needs: [changes, <every other job that runs on every pull request>]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -167,9 +179,10 @@ is kept and joined with `&&`.
 ```
 
 Then, as approved: add the `docs checks` job (no `changes` need, no gate: it runs on every run),
-set `flake-report`'s `if:`, and remove a replaced `paths` or `paths-ignore` filter. `SKIPPABLE`
-lists the gated jobs and nothing else; `flake-report`, `docs checks` and `changes` are never in
-it.
+set `flake-report`'s `if:`, and remove a replaced `paths` or `paths-ignore` filter. `CI result`'s
+`needs` holds only jobs that run on every pull request unless the gate skips them. `SKIPPABLE`
+lists the gated jobs among those and nothing else; `flake-report`, `docs checks` and `changes`
+are never in it.
 
 **Commit all of it** on the task branch, in one commit. Do not push or open a pull request
 yourself: the task's bound workflow opens it with its Pull Request action, or Foreman's wrap-up
@@ -181,8 +194,10 @@ approved, so the pull request description can carry it.
 You never edit branch protection or rulesets. When they require a check that a docs-only run
 now skips, the report names each one and says to replace it with `CI result`, and so does the
 pull request description through your report. When protection could not be read, list every
-check name the workflow produces so the operator can compare. Until the swap, a docs-only pull
-request in a protected repository waits on a skipped required check.
+check name the workflow produces so the operator can compare. Until the swap, a required check
+from a gated matrix job never appears under its required name on a docs-only pull request (a
+skipped matrix job is not expanded into its entries), so the pull request waits on it. Name the
+jobs of audit item 8 too: `CI result` does not cover them, so a requirement on one stays.
 
 ## 5. Verify
 

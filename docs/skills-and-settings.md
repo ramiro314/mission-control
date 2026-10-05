@@ -120,7 +120,10 @@ docs patterns, the approved heavy jobs gated on it, an optional `docs checks` jo
 always-reporting `CI result` job. The two step scripts ship in the skill's `assets/` and are
 pasted verbatim, with every input passed through `env`. A testing-setup `flake report` job is
 never gated, because Wait for CI needs its "Flaky tests" check on every run; the form proposes
-`!cancelled()` on it when it would not run after skipped test jobs. The agent never edits branch
+`!cancelled()` on it when it would not run after skipped test jobs. A job whose own `if:` can
+skip it on an ordinary pull request (draft, label or fork conditions) stays out of `CI result`,
+which would otherwise read that skip as a failure, and the report says `CI result` does not
+cover it. The agent never edits branch
 protection: it reports which required checks to swap for `CI result`. The setup pull request's
 own CI is the verification. The procedure lives in
 [`skills/docs-only-ci/SKILL.md`](../skills/docs-only-ci/SKILL.md).
