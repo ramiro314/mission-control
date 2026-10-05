@@ -1130,7 +1130,7 @@ async function runReviewFollowup(
  * pass tries again. The first escalation of an episode is logged and recorded as a Foreman
  * episode; a re-send, which exists only so a restarted daemon re-learns it, is silent.
  */
-async function escalateConflict(
+export async function escalateConflict(
   client: ForemanClient,
   session: Session,
   marks: Map<string, FollowupMark>,
