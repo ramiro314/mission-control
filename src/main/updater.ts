@@ -3,7 +3,7 @@ import { prepareMigration, keepSystemInstallation, readMigrationJournal, atomicM
 import { processIdentity } from "../../scripts/update-lock.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { closeSync, copyFileSync, openSync, rmSync, statSync, mkdirSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -435,7 +435,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
     try {
       await new Promise<void>((resolve, reject) => {
         // Its own process group, so the helper outlives this app quitting to install the update.
-        const child = processLifetime.spawn(
+        const child = spawn(
           args.node,
           [
             helper,
@@ -458,6 +458,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
               : []),
           ],
           {
+            ...processLifetime.treeRootOptions,
             stdio: ["ignore", logFd, logFd],
             env: args.env ?? updateChildEnvironment(),
           },

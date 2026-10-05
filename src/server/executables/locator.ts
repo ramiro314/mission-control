@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, normalize, resolve as resolvePath } from "node:path";
 import type {
@@ -135,10 +136,11 @@ export async function probeLoginShellPath(
     try {
       // `execFile` deliberately omits process-group ownership from its public options.
       // Spawn directly so startup-file grandchildren cannot outlive the discovery bound.
-      const child = processLifetime.spawn(
+      const child = spawn(
         shell,
         ["-ilc", `printf '${PATH_MARKER}%s${PATH_MARKER}' "$PATH"`],
         {
+          ...processLifetime.treeRootOptions,
           env,
           // Login startup files may emit substantial diagnostics. The probe does not
           // consume them, so discard stderr instead of allowing pipe backpressure to

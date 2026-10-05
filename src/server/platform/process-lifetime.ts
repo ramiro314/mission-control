@@ -1,9 +1,13 @@
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 
 // Process lifetime: start a child as the root of a process tree, and end that whole tree.
 //
 // Every caller that needs a child's descendants to die with it goes through here, so a platform
 // that cannot express "the tree" as a POSIX process group has one place to say how it does.
+//
+// The seam owns the spawn OPTIONS, not the `spawn` call. Each caller keeps its own direct call,
+// so `test/executable-contracts.test.ts` still sees which executable every call site runs and
+// where that executable came from; a shared `spawn(command)` here would hide all of them.
 //
 // The Electron main process and the daemon both import this file, so it stays a leaf: Node
 // builtins only, nothing from the rest of `src/server`. `test/process-lifetime.test.ts` holds
@@ -11,12 +15,10 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:c
 
 export interface ProcessLifetime {
   /**
-   * Spawn a child as the root of its own tree, which `signalTree` and `killTree` can reach.
-   *
-   * Always called as `(command, args, options)`. The caller supplies every option except the
-   * one that makes the tree; that one belongs to the implementation.
+   * Spread into a `spawn` call's options to start the child as the root of its own tree, which
+   * `signalTree` and `killTree` can reach. Spread first; the caller never sets these keys.
    */
-  spawn: typeof nodeSpawn;
+  readonly treeRootOptions: Readonly<Pick<SpawnOptions, "detached">>;
   /**
    * Signal every process in the tree rooted at `pid`. Throws exactly as `process.kill` does,
    * and signal `0` sends nothing: it asks whether the tree still exists.
@@ -27,12 +29,10 @@ export interface ProcessLifetime {
 }
 
 export interface ProcessLifetimeDeps {
-  spawn(command: string, args: readonly string[], options: SpawnOptions): ChildProcess;
   kill(pid: number, signal: NodeJS.Signals | 0): void;
 }
 
 const nodeDeps: ProcessLifetimeDeps = {
-  spawn: (command, args, options) => nodeSpawn(command, args, options),
   kill: (pid, signal) => {
     process.kill(pid, signal);
   },
@@ -48,8 +48,7 @@ const nodeDeps: ProcessLifetimeDeps = {
 export function createPosixProcessLifetime(deps: ProcessLifetimeDeps = nodeDeps): ProcessLifetime {
   const signalTree = (pid: number, signal: NodeJS.Signals | 0): void => deps.kill(-pid, signal);
   return {
-    spawn: ((command: string, args: readonly string[], options: SpawnOptions) =>
-      deps.spawn(command, args, { ...options, detached: true })) as typeof nodeSpawn,
+    treeRootOptions: Object.freeze({ detached: true }),
     signalTree,
     killTree(child) {
       try {

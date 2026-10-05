@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -12,20 +11,14 @@ import {
 const SEAM = "src/server/platform/process-lifetime.ts";
 
 function recorder(killError?: () => Error) {
-  const spawns: Array<[string, readonly string[], SpawnOptions]> = [];
   const kills: Array<[number, NodeJS.Signals | 0]> = [];
-  const spawned = { pid: 4242 } as ChildProcess;
   const deps: ProcessLifetimeDeps = {
-    spawn: (command, args, options) => {
-      spawns.push([command, args, options]);
-      return spawned;
-    },
     kill: (pid, signal) => {
       kills.push([pid, signal]);
       if (killError) throw killError();
     },
   };
-  return { deps, spawns, kills, spawned };
+  return { deps, kills };
 }
 
 function fakeChild(pid: number | undefined, throws = false) {
@@ -43,16 +36,16 @@ function fakeChild(pid: number | undefined, throws = false) {
 
 const esrch = (): Error => Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
 
-test("POSIX spawn adds detached: true and passes every other option through untouched", () => {
-  const { deps, spawns, spawned } = recorder();
-  const lifetime = createPosixProcessLifetime(deps);
-  const options: SpawnOptions = { cwd: "/repo", env: { A: "1" }, stdio: ["ignore", "pipe", "pipe"] };
+test("POSIX tree-root spawn options are exactly detached: true, and cannot be edited", () => {
+  const { treeRootOptions } = createPosixProcessLifetime(recorder().deps);
 
-  assert.equal(lifetime.spawn("node", ["-e", "1"], options), spawned);
-  assert.deepEqual(spawns, [
-    ["node", ["-e", "1"], { cwd: "/repo", env: { A: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: true }],
-  ]);
-  assert.equal(options.detached, undefined, "the caller's options object is not mutated");
+  assert.deepEqual(treeRootOptions, { detached: true });
+  assert.ok(Object.isFrozen(treeRootOptions));
+  assert.deepEqual(
+    { ...treeRootOptions, cwd: "/repo", stdio: ["ignore", "pipe", "pipe"] },
+    { detached: true, cwd: "/repo", stdio: ["ignore", "pipe", "pipe"] },
+    "spread into a call site, it adds detached and leaves every other option alone",
+  );
 });
 
 test("POSIX signalTree signals the negative pid with the signal it was given", () => {

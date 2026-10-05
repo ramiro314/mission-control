@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { basename } from "node:path";
 import type { Socket } from "node:net";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
@@ -322,7 +322,8 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     // Its own process group, which is what makes a single signal reach the descendants a
     // build spawns - and what makes the emptiness proof a question about a group rather
     // than about one process.
-    child = processLifetime.spawn(runtime.command, argv, {
+    child = spawn(runtime.command, argv, {
+      ...processLifetime.treeRootOptions,
       cwd: request.cwd,
       env: { ...request.env, ...runtime.env },
       shell: false,

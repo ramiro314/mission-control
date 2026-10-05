@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -358,7 +358,8 @@ export const codexRunner: LlmRunner = {
         const env = headlessEnv();
         const child = (() => {
           try {
-            return processLifetime.spawn(executable.path, args, {
+            return spawn(executable.path, args, {
+              ...processLifetime.treeRootOptions,
               cwd: tmpdir(),
               stdio: ["pipe", "pipe", "pipe"],
               env,

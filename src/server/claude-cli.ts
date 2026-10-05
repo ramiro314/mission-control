@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { unwrapEnvelope } from "./llm/structured.ts";
 import { locateExecutable } from "./executables/locator.ts";
@@ -188,9 +188,9 @@ async function runClaudeRaw(
     // Inspector, which needs to read source to review a diff properly and carries four
     // other defence layers because of it. The default is empty rather than inherited so
     // that one caller's grant can never become everyone's.
-    // `processLifetime.spawn` makes the child its own session/process-group leader with no
-    // controlling terminal, so the session poller (which groups agents by tty and
-    // skips tty-less ones) never discovers this headless run as a phantom
+    // `processLifetime.treeRootOptions` make the child its own session/process-group
+    // leader with no controlling terminal, so the session poller (which groups agents
+    // by tty and skips tty-less ones) never discovers this headless run as a phantom
     // session. That covers discovery; `headlessEnv()` covers the other way in - the
     // hooks this run fires - which would otherwise bind it to a real card.
     //
@@ -243,7 +243,8 @@ async function runClaudeRaw(
     const env = headlessEnv();
     const child = (() => {
       try {
-        return processLifetime.spawn(executable.path, args, {
+        return spawn(executable.path, args, {
+          ...processLifetime.treeRootOptions,
           cwd: opts.cwd ?? HEADLESS_CWD,
           stdio: ["pipe", "pipe", "pipe"],
           env,

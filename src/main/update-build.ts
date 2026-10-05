@@ -6,7 +6,7 @@
 // the quit - is what puts a progress bar in front of the person instead of a closed window
 // and a two-minute silence. The swap still belongs to the helper, and still takes seconds.
 
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import {
   isUpdatePrepareStage,
@@ -384,7 +384,8 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
       // a group of its own is that the group survives an abnormal end of this app, so the
       // controller aborts on quit; a build orphaned by a crash writes only inside the clone
       // and installs nothing.
-      child = processLifetime.spawn(request.node, stageInstallArgs(script, request.targetTag), {
+      child = spawn(request.node, stageInstallArgs(script, request.targetTag), {
+        ...processLifetime.treeRootOptions,
         cwd: request.sourceClone,
         stdio: ["ignore", "pipe", "pipe"],
         env: request.env ?? updateChildEnvironment(),
