@@ -165,6 +165,9 @@ The full list, with each feature's contracts and surfaces, is the
   the fork's changes to `.github/workflows/ci.yml` and `.github/actions/run-unit-shard/`,
   `skills/testing-setup/` (with its copy of the action), `skills/deflake/`, the
   `set_affected_tests_command` MCP tool and `src/server/testing-setup.ts`.
+- **Docs-only CI**: `skills/docs-only-ci/` (with its two step scripts in `assets/`),
+  `test/docs-only-ci-scripts.test.ts`, the `docs checks` job in `.github/workflows/ci.yml` and
+  the `docs:links` script in `package.json`.
 - **Shape tasks**: the `shape` task kind, **Shape this**, `src/server/plans/shape.ts`, and
   `skills/grill/`.
 - **Tickets**: `skills/tickets/`, ticket creation and adoption through `create_task`, and

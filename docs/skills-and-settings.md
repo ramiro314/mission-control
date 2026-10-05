@@ -110,6 +110,24 @@ wrap-up publishes the commit, and the "Flaky tests" check is then verified on th
 own CI. The [flaky tests guide](flaky-tests.md#setting-up-a-repository) has the details. The
 procedure lives in [`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md).
 
+The **Docs-only CI** row installs a docs-only gate in another GitHub Actions repository. It has
+no route, task type or button: run it from this catalog or as `/docs-only-ci` in a session
+working in that repository. The agent audits read-only (any CI other than GitHub Actions stops
+with "not supported", and an already-installed gate matching the skill's assets stops with no
+form), proposes every change in one `request_plan_decisions` form, and applies only what was
+approved in one commit: a `changes` job that decides whether a pull request touched only the
+docs patterns, the approved heavy jobs gated on it, an optional `docs checks` job, and one
+always-reporting `CI result` job. The two step scripts ship in the skill's `assets/` and are
+pasted verbatim, with every input passed through `env`. A testing-setup `flake report` job is
+never gated, because Wait for CI needs its "Flaky tests" check on every run; the form proposes
+`!cancelled()` on it when it would not run after skipped test jobs. A job whose own `if:` can
+skip it on an ordinary pull request (draft, label or fork conditions) stays out of `CI result`,
+which would otherwise read that skip as a failure, and the report says `CI result` does not
+cover it. The agent never edits branch
+protection: it reports which required checks to swap for `CI result`. The setup pull request's
+own CI is the verification. The procedure lives in
+[`skills/docs-only-ci/SKILL.md`](../skills/docs-only-ci/SKILL.md).
+
 The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. It estimates total non-test implementation effort and complexity before choosing the fewest
