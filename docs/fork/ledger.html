@@ -1679,8 +1679,8 @@ git config before a managed worktree is added. No Windows row is probed on anoth
 and the native window frame with an auto-hidden menu bar, and <code>menu-template.ts</code> drops the
 macOS app menu there. Every other platform keeps the macOS answers.</li>
 <li><strong>Windows CI</strong> (D15, D30, D32): <code>windows-latest</code> jobs on Node 24 run on pushes to
-<code>release/windows</code> and pull requests into it (no other pull request), with npm&#39;s <code>script-shell</code>
-set to Git Bash. Their product
+<code>release/windows</code> and pull requests into it that change more than <code>docs/</code> (no other pull
+request), with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
 steps are allowed to fail until M2.12, and stay out of <code>CI result</code>. Every test or spec that
 skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</code> in <code>test/helpers/win32-skip.ts</code>,
 with a stated reason (D37).</li>

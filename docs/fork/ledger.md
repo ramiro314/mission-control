@@ -1390,8 +1390,8 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   and the native window frame with an auto-hidden menu bar, and `menu-template.ts` drops the
   macOS app menu there. Every other platform keeps the macOS answers.
 - **Windows CI** (D15, D30, D32): `windows-latest` jobs on Node 24 run on pushes to
-  `release/windows` and pull requests into it (no other pull request), with npm's `script-shell`
-  set to Git Bash. Their product
+  `release/windows` and pull requests into it that change more than `docs/` (no other pull
+  request), with npm's `script-shell` set to Git Bash. Their product
   steps are allowed to fail until M2.12, and stay out of `CI result`. Every test or spec that
   skips on win32 goes through `skipOnWin32` or `skipSpecOnWin32` in `test/helpers/win32-skip.ts`,
   with a stated reason (D37).

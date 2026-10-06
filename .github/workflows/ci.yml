@@ -4,7 +4,8 @@ name: CI
 # and the browser end-to-end suite - on every push to main and every pull request. A pull
 # request runs them on Node 24 only; see "Node 26 off pull requests" below.
 # Pushes to `release/windows` run it too, along with the Windows jobs, which also run on a pull
-# request into `release/windows` and on no other pull request (see "## Windows" below).
+# request into `release/windows` that changes more than docs, and on no other pull request (see
+# "## Windows" below).
 #
 # The smoke step is not redundant with Build, and the comment it replaces claimed it was:
 # it said a production build meant "a broken bundle can't merge unnoticed", which was
@@ -86,8 +87,9 @@ name: CI
 # With about 50 s for `changes` and `dependencies-node-24` before the shards and 25 s for
 # `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
 # target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
-# The budget is for a pull request into `main`. One into `release/windows` also runs the
-# twenty-one Windows jobs, which queue behind the cap and lengthen that run instead.
+# The budget is for a pull request into `main`. One into `release/windows` that changes more
+# than docs also runs the twenty-one Windows jobs, which queue behind the cap and lengthen that
+# run instead.
 # `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
 # test derives the peak from this file's job graph and pins it at 19, so a new job that runs
 # beside the shards on a pull request fails it until it is counted against the 20-job cap. See
@@ -678,10 +680,11 @@ jobs:
   #
   # The jobs below run on `windows-latest`, Node 24 only, for a push to `release/windows`, a
   # manual run on it, and a pull request into it (`github.base_ref`), so a Windows fix shows its
-  # Windows result before it merges. A pull request into any other branch skips them. Each
-  # carries the same `if:`, and none needs `changes`: a docs-only pull request into
-  # `release/windows` runs them too. The final merge into `main` (M3.1) replaces the condition
-  # so they run on every push and pull request.
+  # Windows result before it merges. A pull request into any other branch skips them, and so
+  # does a docs-only one: each needs `changes` and carries the same `if:`, with the docs-only
+  # condition the Linux gated jobs use (see "Docs-only pull requests" above), but not the
+  # tree-reuse one, which applies only to a push to `main`. The final merge into `main` (M3.1)
+  # replaces the branch half of the condition so they run on every push and pull request.
   #
   # Each sets npm's `script-shell` to Git Bash through `npm_config_script_shell`, the
   # prerequisite a Windows developer sets with `npm config set script-shell`, because the
@@ -705,7 +708,8 @@ jobs:
   # leave every Linux job as it was.
   dependencies-windows:
     name: dependencies (windows, node 24)
-    if: github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows'
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -743,8 +747,8 @@ jobs:
 
   typecheck-windows:
     name: typecheck (windows)
-    needs: dependencies-windows
-    if: github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows'
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -787,8 +791,8 @@ jobs:
   # addon fail on their own.
   unit-windows:
     name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
-    needs: dependencies-windows
-    if: github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows'
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:
@@ -870,8 +874,8 @@ jobs:
   # not hide whether the bundles build and boot on Windows.
   build-windows:
     name: build and smoke (windows)
-    needs: dependencies-windows
-    if: github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows'
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -920,8 +924,8 @@ jobs:
   # M2.3 land.
   native-probes-windows:
     name: native probes (windows)
-    needs: dependencies-windows
-    if: github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows'
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 40
     env:
@@ -975,8 +979,8 @@ jobs:
   # is unavailable on win32 for now (M2.7).
   e2e-windows:
     name: e2e (windows, shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: dependencies-windows
-    if: github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows'
+    needs: [changes, dependencies-windows]
+    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:

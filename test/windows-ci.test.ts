@@ -40,11 +40,16 @@ function shards(body: string): number[] | undefined {
 
 /**
  * Evaluates the Windows `if:` for one event, through the JavaScript operators it shares.
- * `base_ref` is GitHub's empty string on every event but a pull request.
+ * `base_ref` is GitHub's empty string on every event but a pull request, and `changes` answers
+ * `docs_only=false` for every event but a pull request.
  */
-function windowsJobsRun(event: { event_name: string; ref: string; base_ref?: string }): boolean {
+function windowsJobsRun(
+  event: { event_name: string; ref: string; base_ref?: string },
+  docsOnly = false,
+): boolean {
   const condition = jobValue(WINDOWS.get("unit-windows")!, "if")!;
-  return new Function("github", `return (${condition});`)({ base_ref: "", ...event });
+  const changes = { outputs: { docs_only: String(docsOnly) } };
+  return new Function("github", "needs", `return (${condition});`)({ base_ref: "", ...event }, { changes });
 }
 
 test("pushes to main and release/windows run CI, and every pull request does", () => {
@@ -70,7 +75,7 @@ test("they run for a push, manual run or pull request on release/windows, and no
   const conditions = new Set([...WINDOWS.values()].map((body) => jobValue(body, "if")));
   assert.equal(conditions.size, 1, "every Windows job carries the same condition");
   for (const [id, body] of WINDOWS) {
-    assert.ok(!needs(body).includes("changes"), `${id} does not wait for changes`);
+    assert.ok(needs(body).includes("changes"), `${id} needs changes, which its condition reads`);
   }
 
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/release/windows" }), true);
@@ -81,6 +86,12 @@ test("they run for a push, manual run or pull request on release/windows, and no
     "a pull request into release/windows shows its Windows result before it merges",
   );
   assert.equal(windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "main" }), false);
+  assert.equal(
+    windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "release/windows" }, true),
+    false,
+    "a docs-only pull request into release/windows skips them",
+  );
+  assert.doesNotMatch(conditions.values().next().value!, /tree_reused/, "tree reuse applies only to a push to main");
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/main" }), false);
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/tags/v1.2.3" }), false);
 });
