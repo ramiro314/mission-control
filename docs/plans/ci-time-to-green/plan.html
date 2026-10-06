@@ -78,17 +78,17 @@ and about 45 s is setup.</li>
 <tbody><tr>
 <td>R1</td>
 <td><code>npm run build</code> + <code>npm run smoke</code> runs at the end of all 12 unit shards</td>
-<td>12 x ~17 s, and every unit job stays open for it</td>
+<td>12 x about 17 s, and every unit job stays open for it</td>
 </tr>
 <tr>
 <td>R2</td>
 <td>The unit shard action builds the native state lock and installs the Electron runtime, then <code>pretest</code> checks or does both again</td>
-<td>~2 s warm, duplicated logic</td>
+<td>about 2 s warm, duplicated logic</td>
 </tr>
 <tr>
 <td>R3</td>
 <td><code>npm test</code>&#39;s <code>posttest</code> reruns <code>test:workflow-evidence</code> in every shard, though those two files are already in the shard glob</td>
-<td>12 x ~3 s</td>
+<td>12 x about 3 s</td>
 </tr>
 <tr>
 <td>R4</td>
@@ -101,7 +101,7 @@ and about 45 s is setup.</li>
 <td>a full 33-job run per merge</td>
 </tr>
 </tbody></table></div>
-<p>Local <code>npm run build</code> (<del>14 s) and <code>tsc --noEmit</code> (</del>44 s) were measured too, and are out of scope
+<p>Local <code>npm run build</code> (about 14 s) and <code>tsc --noEmit</code> (about 44 s) were measured too, and are out of scope
 (decision 1).</p>
 <h2>Decisions (recorded from the interview)</h2>
 <div class="wide"><table>
@@ -159,7 +159,7 @@ and about 45 s is setup.</li>
 </tr>
 <tr>
 <td>10</td>
-<td>Build <code>dist</code> once for e2e, given it adds ~30-45 s to the critical path to save 19 s</td>
+<td>Build <code>dist</code> once for e2e, given it adds about 30-45 s to the critical path to save 19 s</td>
 <td>Prototype it, keep it only if measured PR wall clock does not regress</td>
 </tr>
 <tr>
