@@ -402,13 +402,13 @@ export class Dispatcher {
         withShapeTicketsCompletion(task, options.missionMcp ?? null),
         workflowEvidence,
       );
-      // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
-      // the fork further down. Resolved before provisioning so the guard can refuse before
-      // any worktree exists. A toggle flipped mid-batch still reaches the next session.
       // First of the refusals below: a harness this host cannot run needs no binary,
       // runtime or tool bundle resolved to say so, and no worktree is ever acquired.
       const hostUnsupported = harnessUnsupportedWhy(task.agent, this.deps.platform ?? hostPlatform());
       if (hostUnsupported) throw new Error(hostUnsupported);
+      // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
+      // the fork further down. Resolved before provisioning so the guard can refuse before
+      // any worktree exists. A toggle flipped mid-batch still reaches the next session.
       const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
