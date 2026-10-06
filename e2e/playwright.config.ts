@@ -30,10 +30,13 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   // `MISSION_PLAYWRIGHT_JSON` adds the JSON report CI's flake report action reads: with
   // `retries: 1`, a test that failed and then passed on its retry is reported as `flaky`.
+  // `MISSION_PLAYWRIGHT_JUNIT` adds JUnit with per-test durations, which the Windows e2e job
+  // uploads for its shard timings.
   reporter: [
     ["list"],
     ...(process.env.CI ? [["html", { open: "never" }] as const] : []),
     ...(process.env.MISSION_PLAYWRIGHT_JSON ? [["json", { outputFile: process.env.MISSION_PLAYWRIGHT_JSON }] as const] : []),
+    ...(process.env.MISSION_PLAYWRIGHT_JUNIT ? [["junit", { outputFile: process.env.MISSION_PLAYWRIGHT_JUNIT }] as const] : []),
   ],
   use: {
     // Traces are most of the reason this suite uses @playwright/test rather than driving

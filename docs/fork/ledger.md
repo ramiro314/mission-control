@@ -1394,7 +1394,11 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   request), with npm's `script-shell` set to Git Bash. Their product
   steps are allowed to fail until M2.12, and stay out of `CI result`. Every test or spec that
   skips on win32 goes through `skipOnWin32` or `skipSpecOnWin32` in `test/helpers/win32-skip.ts`,
-  with a stated reason (D37).
+  with a stated reason (D37). Each Windows unit shard runs under a two-minute per-test timeout,
+  `--test-force-exit`, and the per-file budget in `test/file-watchdog.mjs`, so a hang fails by
+  name and the shard still prints its summary. The unit and e2e shards upload JUnit as
+  `windows-unit-junit-shard-<n>` and `windows-e2e-junit-shard-<n>`, which Linux shard timings
+  never read.
 - **Makefile** (D31): run from Git Bash with a separately installed GNU make. On Windows
   (`OS=Windows_NT`), `make app`, `make install` and `make install-app` say they are macOS only
   and exit, and so do `make claude`, `up`, `down`, `restart`, `stop-all` and `status`, which
