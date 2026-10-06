@@ -133,8 +133,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>CI time-to-green</td>
-<td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, and one provisioning path in the unit shard; balanced sharding, shard budget and tree reuse to follow)</td>
-<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path)</td>
+<td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, and <code>main</code>-push tree reuse; balanced sharding and shard budget to follow)</td>
+<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), pending (branch <code>ci/main-push-tree-reuse</code>, tree reuse)</td>
 </tr>
 <tr>
 <td>Windows support</td>
@@ -1414,11 +1414,11 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress</strong>. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, and a unit shard provisions once through <code>pretest</code>. Duration-balanced unit sharding, shard counts from a concurrency budget and <code>main</code>-push tree reuse are planned and not built.</td>
+<td><strong>In progress</strong>. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through <code>pretest</code>, and a push to <code>main</code> skips the Node 24 suite, <code>gates</code> and E2E when its pull request&#39;s green run already tested the same tree. Duration-balanced unit sharding and shard counts from a concurrency budget are planned and not built.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3)</td>
+<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), pending (branch <code>ci/main-push-tree-reuse</code>, plan sections 6 and 7)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1433,8 +1433,10 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
 Free&#39;s 20 concurrent jobs per account, and every unit shard built and smoked the same <code>dist/</code>.
 Each shard also provisioned its environment twice, in the action and again through <code>pretest</code>,
-and its <code>posttest</code> reran two test files its own glob already held. The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
-<code>main</code>.</p>
+and its <code>posttest</code> reran two test files its own glob already held. Every merge then reran the
+whole suite on <code>main</code> against the tree its pull request had just tested. The fork cuts the
+redundant runs so a pull request is green sooner, and keeps every check that could answer
+differently on <code>main</code>.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
 <li><code>dependencies-node-26</code>, <code>unit-node-26</code> and <code>build-smoke-node-26</code> carry
@@ -1451,8 +1453,25 @@ stay byte-identical to <code>skills/docs-only-ci/assets/</code>.</li>
 <li><code>flake report</code> still needs <code>unit-node-26</code>, and its <code>!cancelled()</code> runs it after the skip.</li>
 <li>A Node 26 failure on <code>main</code> turns that workflow run red; <code>CI result</code> there does not cover
 Node 26.</li>
+<li>Every pull request run&#39;s <code>changes</code> job writes <code>{tree, docs_only}</code> (the merge ref&#39;s
+<code>HEAD^{tree}</code> and the docs-only answer) and uploads it as the <code>tested-tree</code> artifact, retention
+7 days. A recording problem warns and uploads nothing, and the upload step carries
+<code>continue-on-error</code>, so neither ever fails the run; the <code>main</code> push then finds no artifact and
+runs everything.</li>
+<li><code>changes</code> alone holds <code>actions: read</code> and <code>pull-requests: read</code>. Its <code>Detect reused tree</code> step
+outputs <code>tree_reused=true</code> only on a push to <code>refs/heads/main</code> whose commit maps to exactly one
+merged pull request, whose newest <code>pull_request</code> run of <code>ci.yml</code> for that pull request&#39;s head
+is a completed success, whose <code>tested-tree</code> artifact says <code>docs_only</code> is <code>false</code>, and whose
+recorded tree equals the pushed commit&#39;s tree. Every other event, API error, missing or
+unreadable artifact and mismatch outputs <code>false</code>, logs why, and exits 0.</li>
+<li><code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> carry
+<code>needs.changes.outputs.tree_reused != &#39;true&#39;</code> beside the docs-only condition, and no other job
+reads <code>tree_reused</code> except <code>CI result</code>, whose <code>DOCS_ONLY</code> env is &quot;docs-only OR tree reused&quot;
+(it now means &quot;the skippable jobs may skip&quot;). Its step body stays the skill asset, so its log
+says &quot;docs-only change&quot; for a reused tree too.</li>
 <li><code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code> and
-<code>test/docs-only-ci-template.test.ts</code> hold the job graph above.</li>
+<code>test/docs-only-ci-template.test.ts</code> hold the job graph above, and
+<code>test/ci-tree-reuse.test.ts</code> holds each reuse condition and failure path.</li>
 <li><code>pretest</code> is the one definition of test provisioning, locally and in CI. The unit shard
 action runs <code>npm run pretest</code> once and has no step of its own that installs Electron or
 builds the native state lock. <code>Resolve Electron version</code> and <code>Cache the Electron runtime</code>
@@ -1482,16 +1501,22 @@ same <code>if:</code> and stay out of <code>CI result</code>&#39;s <code>needs</
 native state lock), and <code>posttest</code> adds only tests already inside <code>test/**/*.test.ts</code>.</li>
 <li>Electron&#39;s <code>install.js</code> downloads the runtime on first use (Electron 42+) and exits non-zero
 when the download fails.</li>
+<li>The workflow file is <code>.github/workflows/ci.yml</code> (tree reuse looks its runs up by that name),
+<code>actions/checkout</code> checks out the pull request&#39;s merge ref on <code>pull_request</code>, and a squash or
+merge commit made while <code>main</code> has not moved has that merge ref&#39;s tree.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the header comment, the Node 26 jobs&#39;
 <code>if:</code> and <code>needs</code>, the two build-smoke jobs, <code>flake-report</code>&#39;s and <code>ci-result</code>&#39;s comments,
-<code>ci-result</code>&#39;s <code>needs</code> and <code>SKIPPABLE</code>), <code>.github/actions/run-unit-shard/action.yml</code> (the
+<code>ci-result</code>&#39;s <code>needs</code>, <code>SKIPPABLE</code> and <code>DOCS_ONLY</code> env, the <code>changes</code> job&#39;s permissions,
+outputs and three tree-reuse steps, the gated jobs&#39; <code>if:</code>), <code>.github/actions/run-unit-shard/action.yml</code> (the
 description, the removed build and smoke steps, the single <code>pretest</code> step and the direct
 <code>test:run</code> Test step), <code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>, <code>AGENTS.md</code> (the
 CI paragraph and the native state lock paragraph), <code>docs/flaky-tests.md</code> (Node 26 on pull
-requests and the unit shard bullet), <code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code>.</p>
-<p><strong>Fork-only files.</strong> <code>docs/plans/ci-time-to-green/plan.md</code>. <code>test/docs-only-ci-template.test.ts</code>
-(fork-only through Docs-only CI) now also holds the Node 26 jobs&#39; condition.</p>
+requests, the unit shard bullet, and a reused <code>main</code> push), <code>test/init-script.test.ts</code>,
+<code>test/oss-readiness.test.ts</code>.</p>
+<p><strong>Fork-only files.</strong> <code>docs/plans/ci-time-to-green/plan.md</code>, <code>scripts/ci-tree-reuse.sh</code>,
+<code>test/ci-tree-reuse.test.ts</code>. <code>test/docs-only-ci-template.test.ts</code> (fork-only through Docs-only
+CI) now also holds the Node 26 jobs&#39; condition and the tree-reuse wiring.</p>
 <h3>Windows support</h3>
 <table>
 <thead>
