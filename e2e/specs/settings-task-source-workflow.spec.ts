@@ -126,4 +126,13 @@ test("a workflow picked for a task source is saved and binds the task a sweep fi
   });
   expect(archived.status()).toBe(409);
   expect(((await archived.json()) as { error: string }).error).toContain("Used by the task source Flake issues");
+
+  // None stores an explicit null, and Kind default removes the field again.
+  await picker.selectOption({ label: "None" });
+  await expect.poll(() => storedWorkflowId(page, daemon), { message: "None should store null" }).toBeNull();
+  await picker.selectOption({ index: 0 });
+  await expect(picker.locator("option:checked")).toHaveText(/^Kind default/);
+  await expect
+    .poll(() => storedWorkflowId(page, daemon), { message: "Kind default should store no workflowId" })
+    .toBeUndefined();
 });

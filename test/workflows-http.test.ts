@@ -391,6 +391,36 @@ test("a task source names only a bindable workflow, and keeps it from being arch
     })).status,
     200,
   );
+  const archivedId = published.workflow.id;
+
+  // Archived is the third refusal: a new choice of it stores nothing.
+  const naming = await save(archivedId);
+  assert.equal(naming.status, 409);
+  assert.match((await naming.json() as { error: string }).error, /must be an active published workflow/);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, undefined);
+
+  // A source whose STORED choice has gone stale does not block its siblings: a whole-list
+  // save that keeps the choice unchanged passes, while changing it to another unbindable id
+  // is still refused.
+  const sibling = { ...stored, id: "src-other", label: "other" };
+  setTaskSourcesConfig(TaskSourcesConfigSchema.parse({
+    sources: [{ ...stored, defaults: { workflowId: archivedId } }, sibling],
+  }));
+  const saveBoth = (workflowId: string, siblingLabel: string) => request("/api/task-sources/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      sources: [{ ...stored, defaults: { workflowId } }, { ...sibling, label: siblingLabel }],
+    }),
+  });
+  assert.equal((await saveBoth(archivedId, "renamed")).status, 200);
+  assert.deepEqual(
+    getTaskSourcesConfig().sources.map((s) => [s.label, s.defaults.workflowId]),
+    [["flakes", archivedId], ["renamed", undefined]],
+  );
+  const changed = await saveBoth("workflow-missing", "renamed again");
+  assert.equal(changed.status, 409);
+  assert.match((await changed.json() as { error: string }).error, /task source flakes must be an active published workflow/);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, archivedId, "the refusal stored nothing");
   setTaskSourcesConfig({ sources: [] });
 });
 
