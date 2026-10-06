@@ -174,6 +174,50 @@ export function parseJUnit(xml: string): JUnitParse {
   return { ok: true, results: { cases } };
 }
 
+export type JUnitFileTimes = { ok: true; times: Map<string, number> } | { ok: false; error: string };
+
+/** The first `file` a test case at or under `element` reports. */
+function firstCaseFile(element: XmlElement): string | null {
+  if (element.name === "testcase") return element.attrs.file ?? null;
+  for (const child of element.children) {
+    const file = firstCaseFile(child);
+    if (file) return file;
+  }
+  return null;
+}
+
+function sumTopLevelTimes(element: XmlElement, into: Map<string, number>): void {
+  for (const child of element.children) {
+    if (child.name === "testsuites") {
+      sumTopLevelTimes(child, into);
+    } else if (child.name === "testsuite" || child.name === "testcase") {
+      const file = firstCaseFile(child);
+      const seconds = Number(child.attrs.time);
+      if (!file || !Number.isFinite(seconds) || seconds < 0) continue;
+      into.set(file, (into.get(file) ?? 0) + seconds * 1000);
+    }
+  }
+}
+
+/**
+ * The milliseconds each test file took, keyed by the `file` the runner reported. Each top-level
+ * `testsuite` or `testcase` counts once, at its own time: a suite's time covers its `before` and
+ * `after` hooks as well as its cases, so summing the cases alone would miss a file whose cost is
+ * in a suite hook. A suite belongs to the file its first case reports. An element with no such
+ * file, or no readable `time`, adds nothing.
+ */
+export function junitFileTimes(xml: string): JUnitFileTimes {
+  let doc: XmlElement;
+  try {
+    doc = parseXml(xml);
+  } catch (err) {
+    return { ok: false, error: `The JUnit results are not well-formed XML: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const times = new Map<string, number>();
+  sumTopLevelTimes(doc, times);
+  return { ok: true, times };
+}
+
 /** The identity a rerun compares by: the same file and the same test name. */
 export function junitCaseKey(testCase: Pick<JUnitCase, "file" | "classname" | "name">): string {
   return `${testCase.file ?? ""}\u0000${testCase.classname ?? ""}\u0000${testCase.name}`;

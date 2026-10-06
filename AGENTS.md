@@ -105,7 +105,8 @@ and then `test:run`, so it provisions through the same path as a local `npm test
 `ensureNativeStateLockAddon` from `test/helpers/native-state-lock.ts` at module scope, because
 the single-file command above runs no npm lifecycle; the helper rebuilds only when the addon
 does not load. Do not let a spec inherit that artifact from whatever else its shard was dealt -
-`--test-shard` splits by file, so adding an unrelated test file elsewhere in `test/` silently
+CI deals whole files to shards by recorded duration (`scripts/unit-shard.mjs`), so adding an
+unrelated test file elsewhere in `test/`, or regenerating `test/shard-timings.json`, silently
 reassigns which files keep each other working, and that is exactly how shard 6 went red on
 `main` while every other shard stayed green.
 
@@ -160,7 +161,9 @@ failure in one release does not hide checks for the other. `npm run build` and `
 run once per release, in its `build-smoke` job, not in the unit shards. Unit tests, build and
 smoke, and fifteen E2E shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request
 jobs remain isolated from shared self-hosted infrastructure. The shared unit steps live
-in `.github/actions/run-unit-shard/action.yml`. Unit and E2E shards rerun or read retries for
+in `.github/actions/run-unit-shard/action.yml`, and each unit shard takes its files from
+`scripts/unit-shard.mjs`, balanced by the generated `test/shard-timings.json` (regenerate it with
+`npm run test:timings -- <run-id>`; see [flaky tests in CI](docs/flaky-tests.md)). Unit and E2E shards rerun or read retries for
 their failed tests, and the `flake report` job, the only one granted `checks: write` and
 `issues: write`, publishes "Flaky tests" and the flake issues (see
 [flaky tests in CI](docs/flaky-tests.md)); its action under `.github/actions/mission-flake-report/`

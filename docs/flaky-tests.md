@@ -64,8 +64,10 @@ The report action, `.github/actions/mission-flake-report/`, runs in two modes.
 **`mode: rerun`**, a step in each test job:
 
 - **Unit shards** (`.github/actions/run-unit-shard/action.yml`). The shard provisions once
-  with `npm run pretest`, then calls the `test:run` script directly (so `posttest` does not
-  repeat files the shard already ran). `test:run` writes JUnit XML when `MISSION_TEST_JUNIT`
+  with `npm run pretest`, asks `scripts/unit-shard.mjs` for its files (see
+  [How unit shards pick their files](#how-unit-shards-pick-their-files)), then calls the
+  `test:run` script directly over them (so `posttest` does not repeat files the shard already
+  ran). `test:run` writes JUnit XML when `MISSION_TEST_JUNIT`
   names a path, and the shard records its exit code instead of failing. The action reads the results, reruns only the failed
   files once with its `rerun-command` template (`test:run` again, over the failed files), and
   compares. `test:run` is the one owner of how this repository gets JUnit out of `node --test`. `{files}` becomes one argument per failed file and
@@ -97,6 +99,35 @@ E2E alone. `flake report` still needs them and runs after the skip the same way.
 flakes only on Node 26 is reported from the `main` run, against the merged commit. When that
 push reuses the tree its pull request already tested, the Node 24 shards and E2E skip there
 too, and "Flaky tests" on the merged commit covers the Node 26 shards alone.
+
+### How unit shards pick their files
+
+Unit shards are balanced by how long each test file takes, not by file index. The shard's
+"Select shard files" step runs `node scripts/unit-shard.mjs <index>/<total>`, which expands
+`test/**/*.test.ts` (the glob `npm test` names), weights each file by its milliseconds in
+`test/shard-timings.json`, and deals the files longest first to whichever shard is lightest so
+far. A file the timings do not name weighs the median of those they do, and with no timings at
+all every file weighs the same. The output depends only on the file set and the timings file,
+and the step prints how many files the shard runs.
+
+The timings only steer balance. The file set always comes from the glob, so a stale, partial or
+empty timings file can make one shard slower than the rest but never drops a test file or runs
+one twice. `test/unit-shard.test.ts` holds that invariant. E2E shards are unaffected: they keep
+Playwright's `--shard`.
+
+`test/shard-timings.json` is generated; never edit it by hand. Each unit shard uploads its first
+run's JUnit results as the `unit-junit-node-<v>-shard-<n>` artifact (kept 7 days). When the
+slowest unit shard drifts well above the others, pick a recent green run and regenerate:
+
+```sh
+npm run test:timings -- <run-id>
+```
+
+It downloads that run's `unit-junit-*` artifacts with `gh run download` (set `GH_REPO` to read
+another repository), sums each file's top-level suite and test times per Node release (a
+`describe` suite counts at its own time, so its hooks are included), averages the releases
+the run covered, keeps only files that exist in the checkout, and rewrites the file. Commit the
+result on its own.
 
 ## The "Flaky tests" check
 

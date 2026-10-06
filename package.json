@@ -58,6 +58,7 @@
     "test:run": "node --test --test-timeout=180000 ${MISSION_TEST_JUNIT:+--test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=$MISSION_TEST_JUNIT} --import ./test/setup-state.mjs --import tsx",
     "posttest": "npm run test:workflow-evidence",
     "test:workflow-evidence": "node --test --import ./test/setup-state.mjs --import tsx test/workflow-image-evidence.test.ts test/workflow-test-evidence-audit.test.ts",
+    "test:timings": "node --import tsx scripts/unit-shard-timings.ts",
     "pretest:electron": "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs",
     "test:electron": "node --test --import ./test/setup-state.mjs --import tsx 'test/*-electron.test.ts'",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",

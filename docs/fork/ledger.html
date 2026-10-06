@@ -133,8 +133,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>CI time-to-green</td>
-<td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, and <code>main</code>-push tree reuse; balanced sharding and shard budget to follow)</td>
-<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), pending (branch <code>ci/main-push-tree-reuse</code>, tree reuse)</td>
+<td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, <code>main</code>-push tree reuse, and duration-balanced unit shards; shard budget to follow)</td>
+<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards)</td>
 </tr>
 <tr>
 <td>Windows support</td>
@@ -1414,11 +1414,11 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress</strong>. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through <code>pretest</code>, and a push to <code>main</code> skips the Node 24 suite, <code>gates</code> and E2E when its pull request&#39;s green run already tested the same tree. Duration-balanced unit sharding and shard counts from a concurrency budget are planned and not built.</td>
+<td><strong>In progress</strong>. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through <code>pretest</code>, unit shards are balanced by recorded file duration, and a push to <code>main</code> skips the Node 24 suite, <code>gates</code> and E2E when its pull request&#39;s green run already tested the same tree. Shard counts from a concurrency budget are planned and not built.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), pending (branch <code>ci/main-push-tree-reuse</code>, plan sections 6 and 7)</td>
+<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1433,7 +1433,8 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
 Free&#39;s 20 concurrent jobs per account, and every unit shard built and smoked the same <code>dist/</code>.
 Each shard also provisioned its environment twice, in the action and again through <code>pretest</code>,
-and its <code>posttest</code> reran two test files its own glob already held. Every merge then reran the
+and its <code>posttest</code> reran two test files its own glob already held. Unit shards split by file
+index, so the slowest took up to about twice as long as the fastest. Every merge then reran the
 whole suite on <code>main</code> against the tree its pull request had just tested. The fork cuts the
 redundant runs so a pull request is green sooner, and keeps every check that could answer
 differently on <code>main</code>.</p>
@@ -1479,13 +1480,31 @@ stay, so the runtime <code>pretest</code> probes is normally restored rather tha
 <li><code>scripts/ensure-electron-runtime.mjs</code> retries a failed runtime install three times, waiting
 10 s and then 20 s between attempts, and fails with the last attempt&#39;s detail. This protects
 a cold cache locally as well as in CI.</li>
-<li>The shard&#39;s Test step runs <code>npm run --silent test:run</code> with <code>--test-concurrency</code>,
-<code>--test-shard</code> and the unit glob, not <code>npm test</code>, so <code>posttest</code> (<code>test:workflow-evidence</code>)
-does not run in CI. JUnit output and the flake rerun both go through <code>test:run</code>. Local
-<code>npm test</code>, with its <code>pretest</code> and <code>posttest</code>, is unchanged.</li>
+<li>The shard&#39;s Test step runs <code>npm run --silent test:run</code> with <code>--test-concurrency</code> and the
+shard&#39;s files, not <code>npm test</code>, so <code>posttest</code> (<code>test:workflow-evidence</code>) does not run in CI.
+JUnit output and the flake rerun both go through <code>test:run</code>. Local <code>npm test</code>, with its
+<code>pretest</code> and <code>posttest</code> and its index-based <code>MISSION_TEST_SHARD</code>, is unchanged.</li>
+<li>A unit shard&#39;s files come from <code>node scripts/unit-shard.mjs &lt;index&gt;/&lt;total&gt;</code> (its &quot;Select shard
+files&quot; step, which prints the file count), not <code>--test-shard</code>. The partitioner expands
+<code>test/**/*.test.ts</code>, the glob <code>npm test</code> names, weights each file by its milliseconds in
+<code>test/shard-timings.json</code> (a missing file weighs the median of the recorded ones, every file
+the same when none are recorded), and deals longest first to the lightest shard, ties broken
+by path and then by shard index. The result is deterministic for a file set and timings file,
+and every file lands in exactly one shard whatever the timings say; it refuses to print an
+empty shard, which <code>node --test</code> would read as &quot;discover your own files&quot;.</li>
+<li>Each unit shard uploads its first run&#39;s <code>junit.xml</code> as <code>unit-junit-node-&lt;v&gt;-shard-&lt;n&gt;</code>,
+retained 7 days, whatever the test outcome (<code>!cancelled()</code>).</li>
+<li><code>test/shard-timings.json</code> is generated and never hand-edited. <code>npm run test:timings -- &lt;run-id&gt;</code> (<code>scripts/unit-shard-timings.ts</code>) downloads that run&#39;s <code>unit-junit-*</code> artifacts
+with <code>gh run download</code>, sums each file&#39;s top-level <code>testsuite</code> and <code>testcase</code> times per Node
+release (through <code>junitFileTimes</code> in <code>src/shared/junit.ts</code>), averages the releases, keeps only files that
+exist in the checkout and rewrites the file. Regeneration is manual, when shard spread drifts.</li>
+<li>E2E keeps Playwright&#39;s <code>--shard</code>, and shard counts are unchanged.</li>
 <li><code>test/flake-report-action.test.ts</code> holds the shard&#39;s single <code>npm run pretest</code>, the absence of
-<code>npm test</code>, and a Test command equal to <code>package.json</code>&#39;s <code>test</code> script with CI&#39;s concurrency
-and shard; <code>test/electron-runtime-preflight.test.ts</code> holds the retry.</li>
+<code>npm test</code> and <code>--test-shard</code>, and a Test command equal to <code>package.json</code>&#39;s <code>test</code> script with
+CI&#39;s concurrency and the partitioner&#39;s files in place of the shard option and glob;
+<code>test/unit-shard.test.ts</code> holds the partition invariant, determinism, median weighting, the
+JUnit upload and the generator&#39;s arithmetic; <code>test/electron-runtime-preflight.test.ts</code> holds
+the retry.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -1499,6 +1518,12 @@ display.</li>
 same <code>if:</code> and stay out of <code>CI result</code>&#39;s <code>needs</code>.</li>
 <li><code>package.json</code>&#39;s <code>pretest</code> provisions everything the unit suite needs (Electron runtime,
 native state lock), and <code>posttest</code> adds only tests already inside <code>test/**/*.test.ts</code>.</li>
+<li><code>node --test</code>&#39;s JUnit reporter writes a <code>time</code> in seconds and an absolute <code>file</code> on every
+<code>testcase</code>, and a <code>describe</code> block becomes a <code>testsuite</code> with no <code>file</code> whose time is its wall
+time, hooks included. Summing a suite&#39;s cases instead would miss hook time and over-count a
+suite that runs its cases concurrently.</li>
+<li>Unit test files do not depend on which other files share their shard (the native state lock
+paragraph in <code>AGENTS.md</code>), so moving a file between shards is safe.</li>
 <li>Electron&#39;s <code>install.js</code> downloads the runtime on first use (Electron 42+) and exits non-zero
 when the download fails.</li>
 <li>The workflow file is <code>.github/workflows/ci.yml</code> (tree reuse looks its runs up by that name),
@@ -1510,13 +1535,18 @@ merge commit made while <code>main</code> has not moved has that merge ref&#39;s
 <code>ci-result</code>&#39;s <code>needs</code>, <code>SKIPPABLE</code> and <code>DOCS_ONLY</code> env, the <code>changes</code> job&#39;s permissions,
 outputs and three tree-reuse steps, the gated jobs&#39; <code>if:</code>), <code>.github/actions/run-unit-shard/action.yml</code> (the
 description, the removed build and smoke steps, the single <code>pretest</code> step and the direct
-<code>test:run</code> Test step), <code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>, <code>AGENTS.md</code> (the
-CI paragraph and the native state lock paragraph), <code>docs/flaky-tests.md</code> (Node 26 on pull
-requests, the unit shard bullet, and a reused <code>main</code> push), <code>test/init-script.test.ts</code>,
-<code>test/oss-readiness.test.ts</code>.</p>
+<code>test:run</code> Test step over the partitioner&#39;s files, the &quot;Select shard files&quot; and
+&quot;Upload JUnit results&quot; steps), <code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>,
+<code>src/shared/junit.ts</code> (the added <code>junitFileTimes</code>, which the bundled flake report action does not
+import), <code>package.json</code> (<code>test:timings</code>), <code>AGENTS.md</code> (the CI paragraph and the native state lock
+paragraph), <code>docs/flaky-tests.md</code> (Node 26 on pull requests, the unit shard bullet, &quot;How unit
+shards pick their files&quot;, and a reused <code>main</code> push), <code>test/init-script.test.ts</code>,
+<code>test/oss-readiness.test.ts</code>, <code>test/flake-report-action.test.ts</code>.</p>
 <p><strong>Fork-only files.</strong> <code>docs/plans/ci-time-to-green/plan.md</code>, <code>scripts/ci-tree-reuse.sh</code>,
-<code>test/ci-tree-reuse.test.ts</code>. <code>test/docs-only-ci-template.test.ts</code> (fork-only through Docs-only
-CI) now also holds the Node 26 jobs&#39; condition and the tree-reuse wiring.</p>
+<code>test/ci-tree-reuse.test.ts</code>, <code>scripts/unit-shard.mjs</code> and its <code>.d.mts</code>,
+<code>scripts/unit-shard-timings.ts</code>, <code>test/shard-timings.json</code>, <code>test/unit-shard.test.ts</code>.
+<code>test/docs-only-ci-template.test.ts</code> (fork-only through Docs-only CI) now also holds the Node 26
+jobs&#39; condition and the tree-reuse wiring.</p>
 <h3>Windows support</h3>
 <table>
 <thead>
