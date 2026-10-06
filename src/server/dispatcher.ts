@@ -273,7 +273,10 @@ export class Dispatcher {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
       /** Shared machine-install probe, supplied by the Pi extension phase. */
       piExtensionInstalled?: () => boolean | Promise<boolean>;
-      /** The host platform harness availability is read for. Injected so a test can ask about win32. */
+      /**
+       * The host platform harness and runtime availability are read for. Injected so a test
+       * can ask about win32.
+       */
       platform?: NodeJS.Platform;
       /** Whether that server actually publishes the tools this launch declares. Injected so a test need not spawn one. */
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
@@ -311,8 +314,6 @@ export class Dispatcher {
        */
       onSessionBound?: (taskId: string) => void;
       resolveRuntime?: typeof resolveDispatchRuntime;
-      /** The platform whose runtime availability a launch is checked against. */
-      platform?: NodeJS.Platform;
       /** Exact terminal default for this harness, or null for Automatic. */
       resolveTerminalBackend?: typeof resolveDispatchTerminalBackend;
       /**
