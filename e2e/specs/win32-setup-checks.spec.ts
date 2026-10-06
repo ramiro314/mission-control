@@ -70,6 +70,9 @@ test.describe("on a win32 host", () => {
       }
     }
     await shoot(page, "setup-windows");
+    // The pane scrolls on its own, so the lower rows need their own capture.
+    await setupRow(page, "dependency-python3").scrollIntoViewIfNeeded();
+    await shoot(page, "setup-windows-lower");
   });
 });
 
