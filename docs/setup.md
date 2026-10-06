@@ -13,7 +13,7 @@ arrive.
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
 agent CLIs, terminal backends, GitHub CLI authentication, agent extensions,
-ai-conductor, and the system Node.js runtime.
+ai-conductor, the system Node.js runtime, and, on Windows, the Windows prerequisites.
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
 checks are ready, and whether any gap is a required one - above a rail of dependency families.
@@ -64,6 +64,19 @@ installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager
 PATH still selects an older runtime, correct that selection and restart Mission Control with
 the corrected environment. The updater still performs its fuller Node/npm checks in the build
 directory before preparing an update.
+
+On Windows, a **Windows** family checks the prerequisites for running Mission Control there:
+**Git for Windows** (a `git` whose version names `.windows.`, which also installs Git Bash),
+**Developer Mode** (the `AllowDevelopmentWithoutDevLicense` registry value, which real
+symlinks for skills and extensions need), **Long paths** (the `LongPathsEnabled` registry
+value), npm's **script-shell** pointing at bash, **Visual Studio Build Tools** with the C++
+workload (asked through `vswhere`), and **Python 3** (in node-gyp's order: `python3`,
+`python`, then `py -3`). Each row reads **Ready** with its evidence, or explains the gap and
+shows the command that fixes it, to copy and run yourself: the Windows fixes need an
+administrator terminal or the Settings app, so Mission Control never runs them. The family does
+not appear on macOS or Linux, and none of its checks run there. Separately, on Windows Mission
+Control sets `core.longpaths=true` in a repository's git config before it adds a managed
+worktree to it, so checkouts with paths longer than 260 characters succeed.
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and

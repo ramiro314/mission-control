@@ -2,8 +2,10 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
+import { enableWorktreeLongPaths } from "../git/long-paths.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
+import { hostPlatform } from "../platform/host.ts";
 import { run } from "../util/exec.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 import {
@@ -108,11 +110,13 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
   private readonly execute: typeof run;
+  private readonly platform: NodeJS.Platform;
 
   /** Every command is recorded while it runs, so occupancy never counts our own Git. */
-  constructor(execute: typeof run = run) {
+  constructor(execute: typeof run = run, platform: NodeJS.Platform = hostPlatform()) {
     this.execute = (bin, args, opts = {}) =>
       trackOwnWorktreeProcess((onSpawn) => execute(bin, args, { ...opts, onSpawn }));
+    this.platform = platform;
   }
 
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
@@ -224,6 +228,8 @@ export class NativeWorktreeGit implements WorktreeGit {
         outcomeUnknown: false,
       };
     }
+    const longPaths = await enableWorktreeLongPaths(identity.mainCheckoutRoot, this.execute, this.platform);
+    if (longPaths && !longPaths.ok) return longPaths;
     const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", path, commit],
