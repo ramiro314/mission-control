@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (one provisioning path in the unit shard; the rest of the plan is ticketed) | #200 (plan), pending (one provisioning path) |
+| CI time-to-green | In progress (one provisioning path in the unit shard; the rest of the plan is ticketed) | #200 (plan), #214 (one provisioning path) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1143,7 +1143,7 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 | Field | Value |
 | --- | --- |
 | Status | **In progress**. Section 3 of the plan (one provisioning path in the unit shard) is built; sections 1, 2 and 4 to 8 are separate tickets. |
-| PRs | #200 (plan), pending (one provisioning path in the unit shard) |
+| PRs | #200 (plan), #214 (one provisioning path in the unit shard) |
 | Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), "Design" section 3 and decision 6 |
 | Upstream candidate | Maybe. The download retry and the single provisioning path are generic; the shard action is shaped around the fork's flake-aware testing. |
 
