@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import { createResumeLease, resumeLeaseRoot, resumeLeaseStatus } from "../src/server/terminal/resume-lease.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-daemon-owner-"));
@@ -205,7 +206,11 @@ test("ordinary restart works and stale ownership recovers after a crash", async 
   await stopDaemon(restarted.child);
 });
 
-test("ownership contention refuses startup before the state database is touched", async () => {
+test("ownership contention refuses startup before the state database is touched", {
+  skip: skipOnWin32(
+    "seeds a terminal-runtime resume lease, whose directory check pins POSIX uid and mode bits; the terminal runtime is unavailable on win32",
+  ),
+}, async () => {
   const home = join(root, "untouched");
   const holder = startOwnershipHolder(home, await unusedPort());
   await waitFor(holder, (output) => output.includes("ownership-held"), "ownership holder did not start");

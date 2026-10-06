@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { stateLockBuildTarget } from "../scripts/build-state-lock-native.mjs";
 import { clearDarwinProvenance } from "../scripts/native-addon-publish.mjs";
@@ -81,9 +83,11 @@ test("an already-clean Darwin addon is success, but another xattr failure is fat
 });
 
 test("the native state lock resolves identically from source and bundle locations", () => {
+  // `file:///repo` on POSIX; win32 needs a drive letter, so derive the URL from an absolute path.
+  const repo = pathToFileURL(resolve("/repo")).href;
   assert.equal(
-    nativeStateLockAddonPath("file:///repo/src/server/state-ownership-native.ts"),
-    nativeStateLockAddonPath("file:///repo/dist/server/index.mjs"),
+    nativeStateLockAddonPath(`${repo}/src/server/state-ownership-native.ts`),
+    nativeStateLockAddonPath(`${repo}/dist/server/index.mjs`),
   );
 });
 
