@@ -56,6 +56,20 @@ test("CI's first run and its rerun share one test invocation", () => {
   const shard = readFileSync(join(root, ".github", "actions", "run-unit-shard", "action.yml"), "utf8");
   const rerun = /^\s+rerun-command:\s*(.+)$/m.exec(shard)?.[1];
   assert.equal(rerun, "xvfb-run -a env MISSION_TEST_JUNIT={junit} npm run --silent test:run -- {files}");
+
+  // The shard calls `test:run` itself, after provisioning once through `pretest`, so `posttest`
+  // never reruns `test:workflow-evidence` files the shard's glob already holds.
+  const steps = shard.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  assert.equal(steps.match(/npm run pretest/g)?.length, 1);
+  assert.doesNotMatch(steps, /\bnpm test\b|install-electron|build:state-lock-native/);
+
+  // The shard's command is `npm test`'s own, with CI's required concurrency and shard in place of
+  // the local fallbacks, so a change to the glob or flags in either copy fails here.
+  const expected = scripts.test!
+    .replace(/--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-\d+\}/, '--test-concurrency="$MISSION_TEST_CONCURRENCY"')
+    .replace("${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}", '--test-shard="$MISSION_TEST_SHARD"');
+  const command = /^\s+(xvfb-run -a npm run --silent test:run -- .*)$/m.exec(steps)?.[1];
+  assert.equal(command, `xvfb-run -a ${expected}`);
 });
 
 // JUnit fixtures, in the shape `node --test --test-reporter=junit` writes.

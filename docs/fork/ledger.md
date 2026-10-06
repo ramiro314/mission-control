@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, and `main`-push tree reuse; balanced sharding to follow) | #200 (plan), #215, pending (branch `ci/main-push-tree-reuse`) |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, and `main`-push tree reuse; balanced sharding and shard budget to follow) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), pending (branch `ci/main-push-tree-reuse`, tree reuse) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1145,17 +1145,19 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 
 | Field | Value |
 | --- | --- |
-| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. Duration-balanced unit sharding, one provisioning path in the unit shard and shard counts from a concurrency budget are planned and not built. |
-| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), pending (branch `ci/main-push-tree-reuse`, plan sections 6 and 7) |
+| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. Duration-balanced unit sharding and shard counts from a concurrency budget are planned and not built. |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), pending (branch `ci/main-push-tree-reuse`, plan sections 6 and 7) |
 | Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
-| Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. |
+| Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
 
 **Intent.** A pull request waited about 12 minutes for `CI result`, though its longest job took
 about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
-Free's 20 concurrent jobs per account, and every unit shard built and smoked the same `dist/`,
-and every merge reran the whole suite on `main` against the tree its pull request had just
-tested. The fork cuts the redundant runs so a pull request is green sooner, and keeps every
-check that could answer differently on `main`.
+Free's 20 concurrent jobs per account, and every unit shard built and smoked the same `dist/`.
+Each shard also provisioned its environment twice, in the action and again through `pretest`,
+and its `posttest` reran two test files its own glob already held. Every merge then reran the
+whole suite on `main` against the tree its pull request had just tested. The fork cuts the
+redundant runs so a pull request is green sooner, and keeps every check that could answer
+differently on `main`.
 
 **Behavior contracts.**
 
@@ -1192,6 +1194,20 @@ check that could answer differently on `main`.
 - `test/init-script.test.ts`, `test/oss-readiness.test.ts` and
   `test/docs-only-ci-template.test.ts` hold the job graph above, and
   `test/ci-tree-reuse.test.ts` holds each reuse condition and failure path.
+- `pretest` is the one definition of test provisioning, locally and in CI. The unit shard
+  action runs `npm run pretest` once and has no step of its own that installs Electron or
+  builds the native state lock. `Resolve Electron version` and `Cache the Electron runtime`
+  stay, so the runtime `pretest` probes is normally restored rather than downloaded.
+- `scripts/ensure-electron-runtime.mjs` retries a failed runtime install three times, waiting
+  10 s and then 20 s between attempts, and fails with the last attempt's detail. This protects
+  a cold cache locally as well as in CI.
+- The shard's Test step runs `npm run --silent test:run` with `--test-concurrency`,
+  `--test-shard` and the unit glob, not `npm test`, so `posttest` (`test:workflow-evidence`)
+  does not run in CI. JUnit output and the flake rerun both go through `test:run`. Local
+  `npm test`, with its `pretest` and `posttest`, is unchanged.
+- `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, the absence of
+  `npm test`, and a Test command equal to `package.json`'s `test` script with CI's concurrency
+  and shard; `test/electron-runtime-preflight.test.ts` holds the retry.
 
 **Upstream behavior it assumes.**
 
@@ -1203,6 +1219,10 @@ check that could answer differently on `main`.
   display.
 - Node 24 and Node 26 are the supported releases. An upstream Node 26-only job must take the
   same `if:` and stay out of `CI result`'s `needs`.
+- `package.json`'s `pretest` provisions everything the unit suite needs (Electron runtime,
+  native state lock), and `posttest` adds only tests already inside `test/**/*.test.ts`.
+- Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
+  when the download fails.
 - The workflow file is `.github/workflows/ci.yml` (tree reuse looks its runs up by that name),
   `actions/checkout` checks out the pull request's merge ref on `pull_request`, and a squash or
   merge commit made while `main` has not moved has that merge ref's tree.
@@ -1211,9 +1231,11 @@ check that could answer differently on `main`.
 `if:` and `needs`, the two build-smoke jobs, `flake-report`'s and `ci-result`'s comments,
 `ci-result`'s `needs`, `SKIPPABLE` and `DOCS_ONLY` env, the `changes` job's permissions,
 outputs and three tree-reuse steps, the gated jobs' `if:`), `.github/actions/run-unit-shard/action.yml` (the
-description and the removed build and smoke steps), `AGENTS.md` (the CI paragraph),
-`docs/flaky-tests.md` (Node 26 on pull requests, and on a reused `main` push),
-`test/init-script.test.ts`, `test/oss-readiness.test.ts`.
+description, the removed build and smoke steps, the single `pretest` step and the direct
+`test:run` Test step), `scripts/ensure-electron-runtime.mjs` and its `.d.mts`, `AGENTS.md` (the
+CI paragraph and the native state lock paragraph), `docs/flaky-tests.md` (Node 26 on pull
+requests, the unit shard bullet, and a reused `main` push), `test/init-script.test.ts`,
+`test/oss-readiness.test.ts`.
 
 **Fork-only files.** `docs/plans/ci-time-to-green/plan.md`, `scripts/ci-tree-reuse.sh`,
 `test/ci-tree-reuse.test.ts`. `test/docs-only-ci-template.test.ts` (fork-only through Docs-only

@@ -425,8 +425,8 @@ jobs:
   # is EOL. Node 26 runs off pull requests only; see "Node 26 off pull requests" above.
   #
   # Six shards leave practical headroom below the three-minute target. Four shards put the
-  # slowest partition at 179.7 seconds before its required posttest, which was too close to
-  # the target to absorb ordinary runner variance.
+  # slowest partition at 179.7 seconds, which was too close to the target to absorb ordinary
+  # runner variance.
   unit-node-24:
     name: unit (node 24, shard ${{ matrix.shard }}/6)
     needs: [changes, dependencies-node-24]

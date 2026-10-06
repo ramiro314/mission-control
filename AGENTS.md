@@ -99,8 +99,9 @@ run reproduces the suite's concurrency when it cannot.
 
 A test that spawns the real daemon needs one build artifact the suite does not otherwise
 produce. `src/server/index.ts` acquires state ownership through `dist/native/state-lock.node`
-before it serves anything, and CI runs `npm test` before `npm run build`, so `pretest` builds
-that addon once and a warm suite compiles nothing. A spec that spawns a daemon still calls
+before it serves anything, and a CI unit shard never runs `npm run build`, so `pretest` builds
+that addon once and a warm suite compiles nothing. A CI unit shard runs `npm run pretest` itself
+and then `test:run`, so it provisions through the same path as a local `npm test`. A spec that spawns a daemon still calls
 `ensureNativeStateLockAddon` from `test/helpers/native-state-lock.ts` at module scope, because
 the single-file command above runs no npm lifecycle; the helper rebuilds only when the addon
 does not load. Do not let a spec inherit that artifact from whatever else its shard was dealt -
