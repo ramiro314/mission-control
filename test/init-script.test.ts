@@ -80,6 +80,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
     const expression = condition
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
       .replaceAll("github.event_name", "'pull_request'")
+      .replaceAll("github.base_ref", "'main'")
       .replaceAll("github.ref", "'refs/pull/1/merge'")
       .replace(/needs\.changes\.outputs\.\w+/g, "'false'");
     return Boolean(new Function("startsWith", "always", "cancelled", `return (${expression});`)(
