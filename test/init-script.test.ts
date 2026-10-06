@@ -80,7 +80,6 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
     const expression = condition
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
       .replaceAll("github.event_name", "'pull_request'")
-      .replaceAll("github.base_ref", "'main'")
       .replaceAll("github.ref", "'refs/pull/1/merge'")
       .replace(/needs\.changes\.outputs\.\w+/g, "'false'");
     return Boolean(new Function("startsWith", "always", "cancelled", `return (${expression});`)(
@@ -316,7 +315,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
       ],
-      cacheActionVersions: ["v5", "v5", "v5", "v5", "v5", "v5", "v5"],
+      cacheActionVersions: ["v5", "v5", "v5", "v5"],
       unitWorkers: ["'4'", "'4'"],
       unitShardTotals: ["'3'", "'6'"],
       unitShards: [

@@ -3,7 +3,8 @@ name: CI
 # Exercises the repository's quality gates - typecheck, lint, tests, build, a boot smoke,
 # and the browser end-to-end suite - on every push to main and every pull request. A pull
 # request runs them on Node 24 only; see "Node 26 off pull requests" below.
-# Pushes to `release/windows` run it too, along with the Windows jobs (see "## Windows" below).
+# Pushes to `release/windows` run it too, along with the Windows jobs, which never run on a
+# pull request (see "## Windows" below).
 #
 # The smoke step is not redundant with Build, and the comment it replaces claimed it was:
 # it said a production build meant "a broken bundle can't merge unnoticed", which was
@@ -674,8 +675,10 @@ jobs:
   # ## Windows (D15, D30, D32 in docs/plans/windows-support/plan.md)
   #
   # The jobs below run on `windows-latest`, Node 24 only, and only for a push to
-  # `release/windows` or a pull request into it. Each carries the same `if:`; the final merge
-  # into `main` (M3.1) removes its branch half so they run everywhere.
+  # `release/windows` or a manual run on it, never on a pull request: like the Node 26 jobs,
+  # they check a pull request after it merges, not before. Each carries the same `if:`, and
+  # none needs `changes`, since a push is never docs-only. The final merge into `main` (M3.1)
+  # removes its branch half so they run on every push.
   #
   # Each sets npm's `script-shell` to Git Bash through `npm_config_script_shell`, the
   # prerequisite a Windows developer sets with `npm config set script-shell`, because the
@@ -685,8 +688,8 @@ jobs:
   # the product (typecheck, tests, build, smoke, the native probes) continue on error, and the
   # last step lists those failures as warnings and in the job summary. It is step-level, not
   # `continue-on-error` on the job, on purpose: a failed job still reports a failed check run,
-  # and Mission Control's Wait for CI fails on any failed check run, so every pull request into
-  # `release/windows` would go red. For the same reason each of those steps has its own
+  # which would turn every push to `release/windows` red. For the same reason each of those
+  # steps has its own
   # `timeout-minutes`, and its job's timeout leaves room for all of them plus provisioning, so a
   # hang ends as that step's failure instead of a timed-out job. Provisioning steps (checkout,
   # install, browser download) still fail the job, because their failure says nothing about
@@ -700,8 +703,7 @@ jobs:
   # The native probes are expected to fail until M2.2 (state lock) and M2.3 (Keep Awake) land.
   dependencies-windows:
     name: dependencies (windows, node 24)
-    needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -739,8 +741,8 @@ jobs:
 
   typecheck-windows:
     name: typecheck (windows)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -783,8 +785,8 @@ jobs:
   # addon fail on their own.
   unit-windows:
     name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:
@@ -866,8 +868,8 @@ jobs:
   # not hide whether the bundles build and boot on Windows.
   build-windows:
     name: build and smoke (windows)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -916,8 +918,8 @@ jobs:
   # M2.3 land.
   native-probes-windows:
     name: native probes (windows)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 40
     env:
@@ -971,8 +973,8 @@ jobs:
   # is unavailable on win32 for now (M2.7).
   e2e-windows:
     name: e2e (windows, shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:
