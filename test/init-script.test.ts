@@ -99,13 +99,30 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
   const shardJobs = ["unit-node-24", "e2e"];
   const beforeShards = new Set(shardJobs.flatMap((id) => [...transitiveNeeds(id)]));
   const afterShards = (id: string) => shardJobs.some((shard) => transitiveNeeds(id).has(shard));
+  // A matrix runs the product of its lists at once. A shape this cannot count (`include:`,
+  // `exclude:`, a block list, an inline map, an expression) throws, like an unreadable `if:`.
+  const matrixLegs = (id: string, body: string) => {
+    const matrix = /^( +)matrix:[ \t]*(.*)$/m.exec(body);
+    if (!matrix) return 1;
+    if (matrix[2]!.trim()) throw new Error(`${id}: cannot count matrix legs from: ${matrix[2]!.trim()}`);
+    const nested = body.slice(matrix.index + matrix[0].length).split(/\r?\n/).slice(1);
+    const end = nested.findIndex((line) => line.trim() && !line.startsWith(`${matrix[1]} `));
+    return nested
+      .slice(0, end < 0 ? undefined : end)
+      .filter((line) => line.trim() && !line.trim().startsWith("#"))
+      .reduce((legs, line) => {
+        const list = /^\s+[\w-]+:[ \t]*\[([^\]]+)\][ \t]*$/.exec(line);
+        if (!list) throw new Error(`${id}: cannot count matrix legs from: ${line.trim()}`);
+        return legs * list[1]!.split(",").length;
+      }, 1);
+  };
   const peakJobs = [...allJobs]
     .filter(([id, body]) =>
       runsOnFullPullRequest(body) && !beforeShards.has(id) && !afterShards(id)
     )
     .map(([id, body]) => ({
       id,
-      legs: capture(body, /^[ \t]+shard:[ \t]*\[([^\]]+)\]/m)?.split(",").length ?? 1,
+      legs: matrixLegs(id, body),
     }));
   const e2eConfigUrl = pathToFileURL(join(repo, "e2e", "playwright.config.ts")).href;
   const previousCi = process.env.CI;
