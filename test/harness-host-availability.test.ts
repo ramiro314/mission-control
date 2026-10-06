@@ -145,7 +145,8 @@ test("Claude Code on win32, and every harness on macOS, pass the host refusal", 
     let reachedBases = false;
     await new Dispatcher(registry, async () => {}, {
       platform,
-      resolveRuntime: () => "terminal",
+      // The terminal runtime is refused on win32 for its own reason, so Claude Code dispatches there through the SDK.
+      resolveRuntime: () => platform === "win32" ? "sdk" : "terminal",
       resolveBases: async () => { reachedBases = true; throw new Error("stop at the bases"); },
     }).dispatch(id);
     assert.equal(reachedBases, true, `${agent} on ${platform}: ${registry.getTask(id)?.error}`);

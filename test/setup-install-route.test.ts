@@ -194,6 +194,24 @@ test("the route refuses inert remedies before launch", async () => {
   assert.deepEqual(calls, []);
 });
 
+test("the route never opens a Windows fix: a manual command is refused for the operator to run", async () => {
+  const calls: LaunchCall[] = [];
+  const app = appFor({ calls });
+  const windowsIds = ["git-for-windows", "windows-developer-mode", "windows-long-paths", "npm-script-shell", "vs-build-tools", "python3"] as const;
+  for (const id of windowsIds) {
+    const response = await post(app, { id, backend: "cmux" });
+    assert.equal(response.status, 409, id);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      id,
+      outcome: "refused",
+      label: SETUP_DEPENDENCY_INFO[id].label,
+      detail: "This setup remedy is a command you run yourself; Mission Control does not open it.",
+    }, id);
+  }
+  assert.deepEqual(calls, [], "no terminal is opened for an administrator or registry command");
+});
+
 test("a provider remedy delegates through server verification and preserves its argv and cwd", async () => {
   const calls: LaunchCall[] = [];
   const listed: Array<{ provider: string; roots: readonly string[] }> = [];

@@ -34710,6 +34710,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .setup-pane-head p,
 .setup-impact,
 .setup-why,
+.setup-remedy-note,
 .setup-evidence,
 .setup-source,
 .setup-loading {
@@ -34717,6 +34718,7 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 
 .setup-pane-head p,
+.setup-remedy-note,
 .setup-evidence,
 .setup-loading {
   color: var(--dim);
