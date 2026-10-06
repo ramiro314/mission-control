@@ -158,13 +158,15 @@ that reads the repository's real docs, discovered by the pattern its workflow co
 Node.js 24 unit shards, `build-smoke-node-24` and E2E depend only on the Node.js 24 producer;
 Node.js 26 unit shards and `build-smoke-node-26` depend only on the Node.js 26 producer, so a
 failure in one release does not hide checks for the other. `npm run build` and `npm run smoke`
-run once per release, in its `build-smoke` job, not in the unit shards. Unit tests, build and
-smoke, and E2E shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request
-jobs remain isolated from shared self-hosted infrastructure. A pull request's run peaks at twenty
-concurrent jobs, GitHub Free's per-account cap: `gates`, `docs checks`, `build-smoke-node-24`,
-three Node.js 24 unit shards and fourteen E2E shards. The "Shard budget" comment in `ci.yml`
-holds the arithmetic, and `test/init-script.test.ts` pins it. The shared unit steps live
-in `.github/actions/run-unit-shard/action.yml`, and each unit shard takes its files from
+run once per release, in its `build-smoke` job, not in the unit or E2E shards:
+`build-smoke-node-24` uploads the `dist/` it built and smoked as the `dist-node-24` artifact, and
+every E2E shard needs that job and downloads it. Unit tests, build and smoke, and E2E shards use
+ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated from shared
+self-hosted infrastructure. A pull request's run peaks at nineteen concurrent jobs, one under
+GitHub Free's per-account cap of twenty: `gates`, `docs checks`, three Node.js 24 unit shards and
+fourteen E2E shards, with `build-smoke-node-24` finished before E2E starts. The "Shard budget"
+comment in `ci.yml` holds the arithmetic, and `test/init-script.test.ts` pins it. The shared unit
+steps live in `.github/actions/run-unit-shard/action.yml`, and each unit shard takes its files from
 `scripts/unit-shard.mjs`, balanced by the generated `test/shard-timings.json` (regenerate it with
 `npm run test:timings -- <run-id>`; see [flaky tests in CI](docs/flaky-tests.md)). Unit and E2E shards rerun or read retries for
 their failed tests, and the `flake report` job, the only one granted `checks: write` and

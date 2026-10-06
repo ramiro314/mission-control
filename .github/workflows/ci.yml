@@ -63,14 +63,17 @@ name: CI
 # ## Shard budget
 #
 # GitHub Free runs at most 20 jobs at once per account. At its peak a pull request's run holds
-# `gates`, `docs checks`, `build-smoke-node-24`, N Node 24 unit shards and M E2E shards
-# (`changes` and `dependencies-node-24` have finished; `flake report` and `CI result` have not
-# started), so 3 + N + M <= 20. N = 3 and M = 14 fill it exactly. The numbers come from pull
-# request run 37415279889, which ran six unit and fifteen E2E shards:
+# `gates`, `docs checks`, N Node 24 unit shards and M E2E shards (`changes`,
+# `dependencies-node-24` and `build-smoke-node-24`, whose `dist/` the E2E shards download, have
+# finished; `flake report` and `CI result` have not started), so 2 + N + M <= 20. N = 3 and
+# M = 14 make 19, one slot spare: M was set to 14 while `build-smoke-node-24` still ran beside the
+# shards, and is held there so the shared `dist/` was measured as one change. The numbers come
+# from pull request run 37415279889, which ran six unit and fifteen E2E shards:
 #
 # - E2E is the critical path. Its fifteen browser-test steps took 3,686 s in all, 173 to 326 s
 #   each, the slowest 1.33 times the mean. Fourteen shards make that a 263 s mean and about
-#   350 s slowest, plus about 45 s of setup and build per job: about 6.6 minutes.
+#   350 s slowest, plus about 30 s of setup per job after about 40 s waiting for
+#   `build-smoke-node-24`: about 7 minutes.
 # - Unit time has a floor. `test/session-contracts.test.ts` alone takes 224 s, and the shard
 #   holding it took 308 s. Other shards took about 38 s plus 0.41 s per recorded second they
 #   were dealt, and `test/shard-timings.json` records 1,400 s. Three shards deal 467 s each,
@@ -82,8 +85,9 @@ name: CI
 # `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
 # target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
 # `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
-# test derives the peak from this file's job graph and pins it at 20, so a new job that runs
-# beside the shards on a pull request fails it until a shard makes room. See docs/plans/ci-time-to-green/plan.md, section 5.
+# test derives the peak from this file's job graph and pins it at 19, so a new job that runs
+# beside the shards on a pull request fails it until it is counted against the 20-job cap. See
+# docs/plans/ci-time-to-green/plan.md, sections 5 and 8.
 #
 # ## Tree reuse on `main`
 #
@@ -415,6 +419,20 @@ jobs:
       - name: Smoke the built bundles
         run: npm run smoke
 
+      # The `dist/` every E2E shard tests; see the `e2e` job. Uploaded after smoke, so E2E only
+      # ever drives a bundle that booted. A tarball, because an artifact drops file modes and
+      # `dist/satellites/*.mjs` and the native addons are executable.
+      - name: Pack dist for E2E
+        run: tar -cf dist.tar dist
+
+      - name: Upload dist for E2E
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-node-24
+          path: dist.tar
+          if-no-files-found: error
+          retention-days: 1
+
   # Off pull requests, like the rest of Node 26; see "Node 26 off pull requests" above.
   build-smoke-node-26:
     name: build and smoke (node 26)
@@ -509,17 +527,20 @@ jobs:
   # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which
   # is also why it lives in `e2e/` and not `test/`.
   #
-  # Each shard builds its own `dist/` rather than downloading one from `build-smoke-node-24`.
-  # A build is 5 seconds; uploading and downloading an artifact is slower than that, and it
-  # would also make every shard wait on a job it otherwise has no reason to know about.
+  # Every shard tests the one `dist/` that `build-smoke-node-24` built and smoked, downloaded as
+  # the `dist-node-24` artifact, instead of building its own. That saves each shard its 19 s
+  # `Build` step and delays every shard's start by the build job (about 40 s), and a build or
+  # smoke failure skips E2E rather than running it against a bundle that does not boot. Plan
+  # section 8 (docs/plans/ci-time-to-green/plan.md) keeps it only if the pull request median does
+  # not regress; the CI time-to-green entry in docs/fork/ledger.md records both medians.
   #
   # Gated to Node 24 rather than the matrix. The matrix exists to pin the `node:sqlite`
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Fourteen shards, the rest of the 20-job budget once unit has its three; see "Shard budget"
-  # above. The target is measured rather than enforced by a timeout so a regression leaves
-  # complete diagnostics.
+  # Fourteen shards, which with unit's three leave one slot of the 20-job budget spare; see
+  # "Shard budget" above. The target is measured rather than enforced by a timeout so a
+  # regression leaves complete diagnostics.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -528,7 +549,7 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: [changes, dependencies-node-24]
+    needs: [changes, dependencies-node-24, build-smoke-node-24]
     if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -602,8 +623,13 @@ jobs:
       - name: Install tmux for the terminal-runtime e2e specs
         run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
 
-      - name: Build
-        run: npm run build
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-node-24
+
+      - name: Unpack dist
+        run: tar -xf dist.tar
 
       # Playwright retries once in CI and reports a test that failed and then passed as
       # `flaky` in its JSON report; the flake report action reads that instead of rerunning.
