@@ -3,6 +3,7 @@ import type { KindWorkflowDefaults } from "./task.ts";
 import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
+import { pathWithin, stripTrailingSeparator, subpathWithin } from "./native-path.ts";
 import type { PlanPublicationContext } from "./plan-publication.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type {
@@ -3565,11 +3566,6 @@ export function resolveWorkflowCommand(
   return null;
 }
 
-/** Drop a single trailing separator so `/repo/` and `/repo` compare equal. */
-function trimSlash(p: string): string {
-  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
-}
-
 /**
  * Where a session stands, in the three vocabularies resolution needs.
  *
@@ -3583,11 +3579,6 @@ export interface CheckLocation {
   cwd: string | null;
   repoRoot: string | null;
   checkoutSubpath: string | null;
-}
-
-/** Whether `inner` is `outer` or sits beneath it, compared by whole path components. */
-function subpathWithin(inner: string, outer: string): boolean {
-  return inner === outer || inner.startsWith(`${outer}/`);
 }
 
 /**
@@ -3615,7 +3606,7 @@ function checkCommandApplies(entryRoot: string, location: CheckLocation): boolea
   if (!location.repoRoot || location.checkoutSubpath === null) return false;
   const entrySubpath = checkCommandSubpath(location.repoRoot, entryRoot);
   if (!entrySubpath) return false;
-  return subpathWithin(trimSlash(location.checkoutSubpath), entrySubpath);
+  return pathWithin(location.checkoutSubpath, entrySubpath);
 }
 
 /**
@@ -3649,9 +3640,9 @@ function checkCommandApplies(entryRoot: string, location: CheckLocation): boolea
  * a root the matcher can never match would be an entry that silently never applies.
  */
 export function checkCommandRoot(repoRoot: string, requestedPath: string): string {
-  const root = trimSlash(repoRoot);
-  const path = trimSlash(requestedPath);
-  return path === root || path.startsWith(`${root}/`) ? path : root;
+  const root = stripTrailingSeparator(repoRoot);
+  const path = stripTrailingSeparator(requestedPath);
+  return pathWithin(path, root) ? path : root;
 }
 
 export function checkCommandSubpath(
@@ -3659,11 +3650,8 @@ export function checkCommandSubpath(
   entryRoot: string,
 ): string {
   if (!repoRoot) return "";
-  const root = trimSlash(repoRoot);
-  const entry = trimSlash(entryRoot);
-  if (entry === root) return "";
   // A boundary match, like the allowlist's: `/repo-backup` is not inside `/repo`.
-  return entry.startsWith(`${root}/`) ? entry.slice(root.length + 1) : "";
+  return subpathWithin(entryRoot, repoRoot) ?? "";
 }
 
 /**

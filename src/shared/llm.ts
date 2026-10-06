@@ -24,6 +24,7 @@ import type { LlmSpendModelUsage, LlmSpendPrice, LlmSpendRole } from "./llm-spen
 import type { ModelSource } from "./model-choice.ts";
 import type { ThinkingLevel } from "./types.ts";
 import { RASTER_IMAGE_MIME_TYPES, type RasterImageMimeType } from "./images.ts";
+import { isAbsoluteNativePath } from "./native-path.ts";
 
 /**
  * Every provider that can do the app's offline work.
@@ -477,6 +478,7 @@ export interface LlmRunner {
 export function grantRefusal(
   sandbox: LlmSandboxSpec | null,
   grant: LlmToolGrant,
+  platform?: string,
 ): string | null {
   if (!sandbox) return "this runner cannot sandbox a tool grant";
   if (grant.tools.length === 0) return "a grant with no tools: pass no grant instead";
@@ -484,10 +486,10 @@ export function grantRefusal(
   if (unknown.length > 0) {
     return `tool(s) this runner will not grant: ${unknown.join(", ")}`;
   }
-  // Not `path.isAbsolute` - this file may not import `node:path`. A leading slash is the
-  // check that matters anyway: the failure being prevented is a path resolved against
-  // whatever process spawned the run.
-  if (!grant.cwd.startsWith("/")) return `grant cwd must be absolute, got ${grant.cwd || "(empty)"}`;
+  // Not `path.isAbsolute` - this file may not import `node:path`. Absolute is the check that
+  // matters anyway: the failure being prevented is a path resolved against whatever process
+  // spawned the run.
+  if (!isAbsoluteNativePath(grant.cwd, platform)) return `grant cwd must be absolute, got ${grant.cwd || "(empty)"}`;
   return null;
 }
 

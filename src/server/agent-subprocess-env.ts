@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import {
   MISSION_API_TOKEN_ENV,
   MISSION_API_TOKEN_FILE_ENV,
@@ -99,11 +99,24 @@ export function createDisposableAgentStateHome(): string {
 
 /** Remove only a home minted by this module. Safe to repeat after another owner cleaned it. */
 export function cleanupDisposableAgentStateHome(stateHome: string | undefined): void {
-  if (!stateHome) return;
-  const prefix = `${DISPOSABLE_STATE_ROOT}/session-`;
-  if (!stateHome.startsWith(prefix) || stateHome.slice(prefix.length).includes("/")) return;
+  if (!stateHome || !isDisposableAgentStateHome(stateHome)) return;
   rmSync(stateHome, { recursive: true, force: true });
   liveDisposableStateHomes.delete(stateHome);
+}
+
+/**
+ * Whether `stateHome` is one `session-*` directory directly under the disposable root, in
+ * the platform's own separators. The root and path API are parameters so a win32 spelling
+ * can be tested from any platform.
+ */
+export function isDisposableAgentStateHome(
+  stateHome: string,
+  root: string = DISPOSABLE_STATE_ROOT,
+  pathApi: Pick<typeof path, "join" | "sep"> = path,
+): boolean {
+  const prefix = pathApi.join(root, "session-");
+  const rest = stateHome.slice(prefix.length);
+  return stateHome.startsWith(prefix) && !rest.includes("/") && !rest.includes(pathApi.sep);
 }
 
 /** Release the disposable home named by a child environment. */

@@ -9,6 +9,12 @@ export const BASE_URL: string;
 
 export const STATE_DIRS: readonly string[];
 export function stateDir(): string;
+export function resolveStateDir(inputs?: {
+  override?: string;
+  home?: string;
+  exists?: (path: string) => boolean;
+  pathApi?: { join(...segments: string[]): string };
+}): string;
 export function migrateStateDir(): { from: string; to: string } | null;
 export function tokenPath(): string;
 export const MISSION_API_TOKEN_ENV: string;

@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
 import { bareRepositoryStatus, isBareRepository, mainRepoRoot } from "./util/git.ts";
@@ -203,10 +203,25 @@ export async function resolveRepoPath(
   };
   const here = canonical(p);
   const tree = toplevel ? canonical(toplevel) : "";
-  const sub = tree && here !== tree && here.startsWith(`${tree}/`)
+  return { repoRoot, path: reRootPath(repoRoot, here, tree) };
+}
+
+/**
+ * `here`'s subpath within the checkout `tree`, re-rooted onto `repoRoot`; `repoRoot` itself
+ * when `here` is not strictly inside `tree`. All three are canonical native paths, so the
+ * boundary is the platform's separator. The path API is a parameter so a win32 spelling can
+ * be tested from any platform.
+ */
+export function reRootPath(
+  repoRoot: string,
+  here: string,
+  tree: string,
+  pathApi: Pick<typeof path, "join" | "sep"> = path,
+): string {
+  const sub = tree && here !== tree && here.startsWith(`${tree}${pathApi.sep}`)
     ? here.slice(tree.length + 1)
     : "";
-  return { repoRoot, path: sub ? join(repoRoot, sub) : repoRoot };
+  return sub ? pathApi.join(repoRoot, sub) : repoRoot;
 }
 
 /** A resolved repo root a task may be filed against, or the sentence refusing it. */

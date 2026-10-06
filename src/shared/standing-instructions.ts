@@ -10,6 +10,8 @@
 // a settings panel that wanted to preview a match reads the same function the launch does
 // rather than reimplementing longest-path-match in the browser.
 
+import { pathWithin, stripTrailingSeparator } from "./native-path.ts";
+
 /** Semantic ceiling for one repository's block, and for the machine-wide default. */
 export const STANDING_INSTRUCTIONS_MAX_LENGTH = 8_000;
 
@@ -84,11 +86,6 @@ export interface StandingInstructionsDelivery {
   sources: StandingInstructionsSource[];
 }
 
-/** Drop a single trailing "/" (keeping bare "/") so "/repo/" and "/repo" compare equal. */
-function stripTrailingSlash(p: string): string {
-  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
-}
-
 /**
  * Whether `repoPath` sits at, or inside, the stored key `root`.
  *
@@ -97,9 +94,7 @@ function stripTrailingSlash(p: string): string {
  * key of `/repo`, and a `startsWith` alone says it does.
  */
 function withinKey(repoPath: string, root: string): boolean {
-  const dir = stripTrailingSlash(repoPath);
-  const r = stripTrailingSlash(root);
-  return dir === r || dir.startsWith(`${r}/`);
+  return pathWithin(repoPath, root);
 }
 
 /**
@@ -131,7 +126,7 @@ export function resolveStandingInstructions(
   let best: string | null = null;
   for (const key of Object.keys(config.repositories)) {
     if (!withinKey(repoPath, key)) continue;
-    if (best === null || stripTrailingSlash(key).length > stripTrailingSlash(best).length) {
+    if (best === null || stripTrailingSeparator(key).length > stripTrailingSeparator(best).length) {
       best = key;
     }
   }
