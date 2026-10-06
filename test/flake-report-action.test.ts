@@ -62,7 +62,14 @@ test("CI's first run and its rerun share one test invocation", () => {
   const steps = shard.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
   assert.equal(steps.match(/npm run pretest/g)?.length, 1);
   assert.doesNotMatch(steps, /\bnpm test\b|install-electron|build:state-lock-native/);
-  assert.match(steps, /^\s+xvfb-run -a npm run --silent test:run -- .*--test-shard="\$MISSION_TEST_SHARD" 'test\/\*\*\/\*\.test\.ts'$/m);
+
+  // The shard's command is `npm test`'s own, with CI's required concurrency and shard in place of
+  // the local fallbacks, so a change to the glob or flags in either copy fails here.
+  const expected = scripts.test!
+    .replace(/--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-\d+\}/, '--test-concurrency="$MISSION_TEST_CONCURRENCY"')
+    .replace("${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}", '--test-shard="$MISSION_TEST_SHARD"');
+  const command = /^\s+(xvfb-run -a npm run --silent test:run -- .*)$/m.exec(steps)?.[1];
+  assert.equal(command, `xvfb-run -a ${expected}`);
 });
 
 // JUnit fixtures, in the shape `node --test --test-reporter=junit` writes.
