@@ -315,7 +315,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
       ],
-      cacheActionVersions: ["v5", "v5", "v5", "v5"],
+      cacheActionVersions: ["v5", "v5", "v5", "v5", "v5", "v5", "v5"],
       unitWorkers: ["'4'", "'4'"],
       unitShardTotals: ["'3'", "'6'"],
       unitShards: [
