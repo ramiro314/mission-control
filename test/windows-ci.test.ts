@@ -39,13 +39,9 @@ function shards(body: string): number[] | undefined {
 }
 
 /** Evaluates the Windows `if:` for one event, through the JavaScript operators it shares. */
-function windowsJobsRun(event: { ref: string; base_ref?: string; docs_only?: string }): boolean {
+function windowsJobsRun(event: { event_name: string; ref: string }): boolean {
   const condition = jobValue(WINDOWS.get("unit-windows")!, "if")!;
-  const evaluate = new Function("github", "needs", `return (${condition});`);
-  return evaluate(
-    { ref: event.ref, base_ref: event.base_ref ?? "" },
-    { changes: { outputs: { docs_only: event.docs_only ?? "false" } } },
-  );
+  return new Function("github", `return (${condition});`)(event);
 }
 
 test("pushes to main and release/windows run CI, and every pull request does", () => {
@@ -67,23 +63,18 @@ test("the Windows jobs are exactly the planned set, on windows-latest with Node 
   }
 });
 
-test("they run for a push to release/windows and a pull request into it, and nothing else", () => {
+test("they run for a push or manual run on release/windows, never a pull request", () => {
   const conditions = new Set([...WINDOWS.values()].map((body) => jobValue(body, "if")));
   assert.equal(conditions.size, 1, "every Windows job carries the same condition");
   for (const [id, body] of WINDOWS) {
-    assert.ok(needs(body).includes("changes"), `${id} needs changes`);
+    assert.ok(!needs(body).includes("changes"), `${id} does not wait for changes`);
   }
 
-  assert.equal(windowsJobsRun({ ref: "refs/heads/release/windows" }), true);
-  assert.equal(windowsJobsRun({ ref: "refs/pull/7/merge", base_ref: "release/windows" }), true);
-  assert.equal(windowsJobsRun({ ref: "refs/heads/main" }), false);
-  assert.equal(windowsJobsRun({ ref: "refs/pull/7/merge", base_ref: "main" }), false);
-  assert.equal(windowsJobsRun({ ref: "refs/tags/v1.2.3" }), false);
-  assert.equal(
-    windowsJobsRun({ ref: "refs/pull/7/merge", base_ref: "release/windows", docs_only: "true" }),
-    false,
-    "a docs-only pull request skips them, as it skips the Linux test jobs",
-  );
+  assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/release/windows" }), true);
+  assert.equal(windowsJobsRun({ event_name: "workflow_dispatch", ref: "refs/heads/release/windows" }), true);
+  assert.equal(windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge" }), false);
+  assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/main" }), false);
+  assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/tags/v1.2.3" }), false);
 });
 
 test("each product step is allowed to fail through one switch, and the job reports it", () => {
@@ -130,7 +121,7 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
     ["npm run pretest", "npm test --ignore-scripts", "npm run posttest"],
     "the unit shard runs all three stages of npm test",
   );
-  assert.match(WINDOWS.get("unit-windows")!, /MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/6$/m);
+  assert.match(WINDOWS.get("unit-windows")!, /MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/3$/m);
   assert.deepEqual(shards(WINDOWS.get("unit-windows")!), shards(ALL.get("unit-node-24")!));
   assert.ok(run("build-windows").includes("npm run build"));
   assert.ok(run("build-windows").includes("npm run smoke"));

@@ -1,4 +1,4 @@
-import { run } from "./util/exec.ts";
+import { run, type RunResult } from "./util/exec.ts";
 import { clipUtf8Bytes, utf8Bytes } from "./util/utf8.ts";
 import type { SessionDiff } from "@shared/types.ts";
 
@@ -21,6 +21,28 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 function git(cwd: string, args: string[]): ReturnType<typeof run> {
   return run("git", ["-C", cwd, ...args], { timeoutMs: 15000 });
+}
+
+/**
+ * The text of a patch read, or null when the read FAILED.
+ *
+ * A read that overflowed `run`'s stdout buffer is oversized, not unreadable: Node keeps the
+ * first `maxBuffer` bytes (8 MB) and kills git, and that prefix is far longer than the
+ * `MAX_PATCH_BYTES` clip every caller applies next, so the clipped patch is byte-for-byte
+ * what a complete read would have produced. Failing it closed instead blocked every run on a
+ * branch that vendored an SDK, because the same bytes come back on every retry.
+ *
+ * Only an overflow that actually delivered a full clip's worth is accepted. A short stdout
+ * means the overflow was on stderr, so the patch is cut somewhere unknown. Timeouts, crashes
+ * and every other non-zero exit stay failures: `run` reports them with whatever stdout was
+ * flushed, and an unchecked one reads as "no changes were made".
+ */
+export function patchText(res: RunResult): { text: string; overflowed: boolean } | null {
+  if (res.code === 0 && !res.outcomeUnknown) return { text: res.stdout, overflowed: false };
+  if (res.overflowed && !res.outcomeUnknown && utf8Bytes(res.stdout) >= MAX_PATCH_BYTES) {
+    return { text: res.stdout, overflowed: true };
+  }
+  return null;
 }
 
 /**
@@ -84,10 +106,10 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
     if (m[2] !== "-") deletions += Number(m[2]);
   }
 
-  const patchRes = await git(cwd, ["diff", parent, full]);
-  if (patchRes.code !== 0) return failed("could not read the diff");
-  let patch = patchRes.stdout;
-  let truncated = false;
+  const patchRes = patchText(await git(cwd, ["diff", parent, full]));
+  if (!patchRes) return failed("could not read the diff");
+  let patch = patchRes.text;
+  let truncated = patchRes.overflowed;
   if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
     patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
     truncated = true;
@@ -206,10 +228,10 @@ export async function computePinnedRefDiff(
     if (match[1] !== "-") insertions += Number(match[1]);
     if (match[2] !== "-") deletions += Number(match[2]);
   }
-  const patchResult = await git(repoRoot, ["diff", baseFull, headFull]);
-  if (patchResult.code !== 0) return { ...base0, error: "could not read the pinned diff" };
-  let patch = patchResult.stdout;
-  let truncated = false;
+  const patchResult = patchText(await git(repoRoot, ["diff", baseFull, headFull]));
+  if (!patchResult) return { ...base0, error: "could not read the pinned diff" };
+  let patch = patchResult.text;
+  let truncated = patchResult.overflowed;
   if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
     patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
     truncated = true;
@@ -458,6 +480,7 @@ export async function computeSessionDiff(
   let insertions = 0;
   let deletions = 0;
   let patch = "";
+  let overflowed = false;
   // An UNBORN HEAD - a brand-new or orphan branch with no commit yet - has nothing
   // tracked to diff against, and `git diff HEAD` fails saying so. That is an empty
   // tracked half, not a broken command, so it is skipped rather than failed: the
@@ -485,11 +508,12 @@ export async function computeSessionDiff(
       if (m[1] !== "-") insertions += Number(m[1]);
       if (m[2] !== "-") deletions += Number(m[2]);
     }
-    const patchRes = await git(cwd, ["diff", diffBase]);
-    if (patchRes.code !== 0) {
+    const patchRes = patchText(await git(cwd, ["diff", diffBase]));
+    if (!patchRes) {
       return { ...base0, branch, headSha, repoRoot, base: base ?? null, baseSha, error: "could not read the diff" };
     }
-    patch = patchRes.stdout;
+    patch = patchRes.text;
+    overflowed = patchRes.overflowed;
   }
 
   // Untracked files are worktree changes too - render them as new files. `--no-index`
@@ -518,23 +542,39 @@ export async function computeSessionDiff(
     };
   }
   const untracked = untrackedRes.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  const untrackedFailed = (path: string): SessionDiff => ({
+    ...base0,
+    branch,
+    headSha,
+    repoRoot,
+    base: base ?? null,
+    baseSha,
+    error: `could not read untracked file ${path}`,
+  });
   for (const path of untracked.slice(0, MAX_UNTRACKED)) {
     const d = await git(untrackedCwd, ["diff", "--no-index", "--", "/dev/null", path]);
+    // Too big to buffer is oversized, not unreadable - see `patchText`. Its partial text
+    // undercounts the file's lines, so the count comes from `--numstat` instead.
+    const big = patchText(d);
+    if (big?.overflowed) {
+      const stat = await git(untrackedCwd, ["diff", "--no-index", "--numstat", "--", "/dev/null", path]);
+      const m = stat.outcomeUnknown || (stat.code !== 0 && stat.code !== 1)
+        ? null
+        : stat.stdout.match(/^(\d+|-)\t/);
+      if (!m) return untrackedFailed(path);
+      patch += big.text;
+      overflowed = true;
+      filesChanged++;
+      if (m[1] !== "-") insertions += Number(m[1]);
+      continue;
+    }
     if (
       d.outcomeUnknown
       || d.overflowed
       || (d.code !== 0 && d.code !== 1)
       || (d.code === 1 && !d.stdout)
     ) {
-      return {
-        ...base0,
-        branch,
-        headSha,
-        repoRoot,
-        base: base ?? null,
-        baseSha,
-        error: `could not read untracked file ${path}`,
-      };
+      return untrackedFailed(path);
     }
     if (!d.stdout) continue;
     patch += d.stdout;
@@ -542,7 +582,7 @@ export async function computeSessionDiff(
     insertions += countAdded(d.stdout);
   }
 
-  let truncated = untracked.length > MAX_UNTRACKED;
+  let truncated = overflowed || untracked.length > MAX_UNTRACKED;
   if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
     patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
     truncated = true;

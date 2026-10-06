@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-10-05, fork PR #175 (merge commit `fdf3e845`) |
 | Fork commits ahead of upstream | **341** (247 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **13** (plus 3 superseded or removed, and 12 standalone fixes) |
+| Active fork features | **14** (plus 3 superseded or removed, and 12 standalone fixes) |
 | Measured at | `sync/upstream-2026-10-05` `3cc1b233`, 2026-10-05 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -54,7 +54,8 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch) | #128 (plan), #147, #152, #154, #158, #176, #184, #185, #187, #191, #192, #196, #197, #209, #210, #220, pending (branch `docs/windows-support-docs`) |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E `dist/` built by `build-smoke-node-24`; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), #222 (shared E2E `dist/`) |
+| Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch) | #128 (plan), #147, #152, #154, #158, #176, #184, #185, #224, #187, #191, #192, #196, #197, #209, #210, #220, pending (branch `docs/windows-support-docs`) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1065,15 +1066,17 @@ through a bundled skill.
   `run:` body is `skills/docs-only-ci/assets/detect-docs-only.sh` verbatim with
   `DOCS_ONLY_PATHS` set to `docs/*`. Only a `pull_request` event can be docs-only; every doubt
   is `false`, which runs the full suite.
-- `gates`, `unit-node-24`, `unit-node-26` and `e2e` need `changes` and carry
-  `if: needs.changes.outputs.docs_only != 'true'`. Nothing else is gated: both `dependencies`
-  jobs, `docs checks` and `flake report` run on docs-only pull requests, and `package` is
-  unchanged (tags and manual runs only).
+- `gates`, `unit-node-24`, `build-smoke-node-24` and `e2e` need `changes` and carry
+  `if: needs.changes.outputs.docs_only != 'true'`. Nothing else is gated: `dependencies-node-24`,
+  `docs checks` and `flake report` run on docs-only pull requests, the Node 26 jobs run on no
+  pull request at all (see CI time-to-green), and `package` is unchanged (tags and manual runs
+  only).
 - `flake report` keeps `if: ${{ !cancelled() }}`, so on a docs-only run it reads zero reports
   and publishes "Flaky tests: No flaky tests", which Wait for CI requires (decision 20).
 - `CI result` (job id `ci-result`, `ubuntu-latest`, `if: always()`) needs every job except
-  `package`. Its step body is `skills/docs-only-ci/assets/ci-result.sh` verbatim, with
-  `SKIPPABLE` listing exactly the four gated job ids. It is the one check branch protection
+  `package` and the Node 26 jobs, the jobs that never run on a pull request. Its step body is
+  `skills/docs-only-ci/assets/ci-result.sh` verbatim, with `SKIPPABLE` listing exactly the four
+  gated job ids. It is the one check branch protection
   should require; nothing is required on `main` today.
 - `test/docs-only-ci-template.test.ts` fails `npm test` when either `ci.yml` step body differs
   from its asset by one byte, and holds the `changes` and `ci-result` jobs, the gated jobs'
@@ -1121,12 +1124,13 @@ through a bundled skill.
   passing, which is what lets a docs-only run through Wait for CI.
 - Nothing outside `test/` reads `docs/`: typecheck, lint, build, smoke, E2E and packaging do
   not. An upstream change that makes one of them read `docs/` breaks the gate's premise.
-- `ci.yml`'s job ids `gates`, `unit-node-24`, `unit-node-26`, `e2e` and `flake-report`. An
+- `ci.yml`'s job ids `gates`, `unit-node-24`, `build-smoke-node-24`, `e2e` and `flake-report`. An
   upstream job added to `ci.yml` must also be added to `CI result`'s `needs` (the template test
   fails until it is), and to `SKIPPABLE` only if it is gated.
 
 **Upstream surfaces touched.** `.github/workflows/ci.yml` (the `changes`, `docs-checks` and
-`ci-result` jobs, the header comment, and `needs` and `if:` on `gates`, both unit jobs and `e2e`),
+`ci-result` jobs, the header comment, and `needs` and `if:` on `gates`, `unit-node-24`,
+`build-smoke-node-24` and `e2e`),
 `package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count and the docs-only skip),
 `docs/flaky-tests.md` (`flake report` on a docs-only run), `test/init-script.test.ts` (the
 consumer jobs' `needs`),
@@ -1137,13 +1141,169 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 `skills/docs-only-ci/assets/detect-docs-only.sh`, `skills/docs-only-ci/assets/ci-result.sh`,
 `test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`.
 
+### CI time-to-green
+
+| Field | Value |
+| --- | --- |
+| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, unit shards are balanced by recorded file duration, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. A pull request's run peaks at 19 concurrent jobs, with three Node 24 unit shards and fourteen E2E shards, and every E2E shard tests the one `dist/` that `build-smoke-node-24` built and smoked instead of building its own. The median wall clock against the 8-minute target is measured on #221; the shared `dist/` stays only if its pull request median does not regress #221's (plan section 8). |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5), #222 (plan section 8) |
+| Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
+| Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
+
+**Intent.** A pull request waited about 12 minutes for `CI result`, though its longest job took
+about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
+Free's 20 concurrent jobs per account, and every unit shard built and smoked the same `dist/`.
+Each shard also provisioned its environment twice, in the action and again through `pretest`,
+and its `posttest` reran two test files its own glob already held. Unit shards split by file
+index, so the slowest took up to about twice as long as the fastest. Every merge then reran the
+whole suite on `main` against the tree its pull request had just tested. The fork cuts the
+redundant runs so a pull request is green sooner, and keeps every check that could answer
+differently on `main`.
+
+**Behavior contracts.**
+
+- `dependencies-node-26`, `unit-node-26` and `build-smoke-node-26` carry
+  `if: github.event_name != 'pull_request'` and no other condition, and need only Node 26 jobs.
+  They run on every push to `main`, tag and manual run, and never on a pull request.
+- `build-smoke-node-24` (`needs: [changes, dependencies-node-24]`, the docs-only condition) and
+  `build-smoke-node-26` (`needs: dependencies-node-26`) run on `ubuntu-latest`, restore
+  `node_modules` with `fail-on-cache-miss`, then run `npm run build` and `npm run smoke`.
+- After smoke, `build-smoke-node-24` packs `dist/` into `dist.tar` (a tarball, because an artifact
+  drops file modes) and uploads it as the `dist-node-24` artifact, retained 7 days so a later rerun
+  of a failed E2E shard, which reuses the original attempt's artifact, still finds it. `e2e` needs
+  `build-smoke-node-24`, has no `Build` step, and downloads and unpacks that artifact instead, so
+  every shard tests the bundle that smoked, and a build or smoke failure skips E2E. Plan section 8
+  keeps this only if the pull request median does not regress #221's; both medians and the query are
+  in its pull request description.
+- `.github/actions/run-unit-shard/action.yml` has no `Build` or `Smoke the built bundles` step,
+  and its description says build and smoke run in the build-smoke jobs.
+- `CI result` needs `build-smoke-node-24` and none of the Node 26 jobs, matching `package`, and
+  `SKIPPABLE` lists `build-smoke-node-24`. Its step body and the `Detect docs-only change` body
+  stay byte-identical to `skills/docs-only-ci/assets/`.
+- `flake report` still needs `unit-node-26`, and its `!cancelled()` runs it after the skip.
+- A Node 26 failure on `main` turns that workflow run red; `CI result` there does not cover
+  Node 26.
+- Every pull request run's `changes` job writes `{tree, docs_only}` (the merge ref's
+  `HEAD^{tree}` and the docs-only answer) and uploads it as the `tested-tree` artifact, retention
+  7 days. A recording problem warns and uploads nothing, and the upload step carries
+  `continue-on-error`, so neither ever fails the run; the `main` push then finds no artifact and
+  runs everything.
+- `changes` alone holds `actions: read` and `pull-requests: read`. Its `Detect reused tree` step
+  outputs `tree_reused=true` only on a push to `refs/heads/main` whose commit maps to exactly one
+  merged pull request, whose newest `pull_request` run of `ci.yml` for that pull request's head
+  is a completed success, whose `tested-tree` artifact says `docs_only` is `false`, and whose
+  recorded tree equals the pushed commit's tree. Every other event, API error, missing or
+  unreadable artifact and mismatch outputs `false`, logs why, and exits 0.
+- `gates`, `unit-node-24`, `build-smoke-node-24` and `e2e` carry
+  `needs.changes.outputs.tree_reused != 'true'` beside the docs-only condition, and no other job
+  reads `tree_reused` except `CI result`, whose `DOCS_ONLY` env is "docs-only OR tree reused"
+  (it now means "the skippable jobs may skip"). Its step body stays the skill asset, so its log
+  says "docs-only change" for a reused tree too.
+- `test/init-script.test.ts`, `test/oss-readiness.test.ts` and
+  `test/docs-only-ci-template.test.ts` hold the job graph above, and
+  `test/ci-tree-reuse.test.ts` holds each reuse condition and failure path.
+- `pretest` is the one definition of test provisioning, locally and in CI. The unit shard
+  action runs `npm run pretest` once and has no step of its own that installs Electron or
+  builds the native state lock. `Resolve Electron version` and `Cache the Electron runtime`
+  stay, so the runtime `pretest` probes is normally restored rather than downloaded.
+- `scripts/ensure-electron-runtime.mjs` retries a failed runtime install three times, waiting
+  10 s and then 20 s between attempts, and fails with the last attempt's detail. This protects
+  a cold cache locally as well as in CI.
+- The shard's Test step runs `npm run --silent test:run` with `--test-concurrency` and the
+  shard's files, not `npm test`, so `posttest` (`test:workflow-evidence`) does not run in CI.
+  JUnit output and the flake rerun both go through `test:run`. Local `npm test`, with its
+  `pretest` and `posttest` and its index-based `MISSION_TEST_SHARD`, is unchanged.
+- A unit shard's files come from `node scripts/unit-shard.mjs <index>/<total>` (its "Select shard
+  files" step, which prints the file count), not `--test-shard`. The partitioner expands
+  `test/**/*.test.ts`, the glob `npm test` names, weights each file by its milliseconds in
+  `test/shard-timings.json` (a missing file weighs the median of the recorded ones, every file
+  the same when none are recorded), and deals longest first to the lightest shard, ties broken
+  by path and then by shard index. The result is deterministic for a file set and timings file,
+  and every file lands in exactly one shard whatever the timings say; it refuses to print an
+  empty shard, which `node --test` would read as "discover your own files".
+- Each unit shard uploads its first run's `junit.xml` as `unit-junit-node-<v>-shard-<n>`,
+  retained 7 days, whatever the test outcome (`!cancelled()`).
+- `test/shard-timings.json` is generated and never hand-edited. `npm run test:timings --
+  <run-id>` (`scripts/unit-shard-timings.ts`) downloads that run's `unit-junit-*` artifacts
+  with `gh run download`, sums each file's top-level `testsuite` and `testcase` times per Node
+  release (through `junitFileTimes` in `src/shared/junit.ts`), averages the releases, keeps only files that
+  exist in the checkout and rewrites the file. Regeneration is manual, when shard spread drifts.
+- E2E keeps Playwright's `--shard`.
+- A pull request's run peaks at no more than 20 concurrent jobs, GitHub Free's per-account cap:
+  `gates`, `docs checks`, N Node 24 unit shards and M E2E shards, with 2 + N + M <= 20, since
+  `build-smoke-node-24` finishes before E2E starts. N = 3 and M = 14, from the step times of pull
+  request run 37415279889: the shard holding `test/session-contracts.test.ts` (224 s alone) stays
+  near 300 s at any N of three or more, so the remaining slots go to E2E, the critical path. M was
+  set while `build-smoke-node-24` still ran beside the shards and is held at 14, leaving one slot
+  spare, so the shared `dist/` was measured as one change. Node 26 keeps six unit shards, outside
+  the budget. The arithmetic is the "Shard budget" comment in `ci.yml`; `MISSION_TEST_SHARDS`, the
+  matrix lists and `test/init-script.test.ts` change together. That test pins the shard lists, the
+  shared `dist/` steps and artifact name, and derives the peak from the job graph (every job a
+  full pull request runs at once with the shards, matrix legs counted) and pins it at 19, so a new
+  job beside the shards fails it.
+- `test/shard-timings.json` holds real timings, generated by `npm run test:timings` from run
+  37415279889 (1,039 files, the whole unit glob). The timings are per file, so a shard count
+  change needs no regeneration.
+- `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, the absence of
+  `npm test` and `--test-shard`, and a Test command equal to `package.json`'s `test` script with
+  CI's concurrency and the partitioner's files in place of the shard option and glob;
+  `test/unit-shard.test.ts` holds the partition invariant, determinism, median weighting, the
+  JUnit upload and the generator's arithmetic; `test/electron-runtime-preflight.test.ts` holds
+  the retry.
+
+**Upstream behavior it assumes.**
+
+- The `.github/workflows/ci.yml` layout: per-release `dependencies-node-<v>` jobs producing
+  lockfile-keyed `node_modules` caches, unit shards through
+  `.github/actions/run-unit-shard/action.yml`, and `npm run build` starting with `build:native`,
+  which builds the native state lock the daemon bundle needs before smoke runs it.
+- `scripts/smoke-bundles.mjs` runs the bundles directly, with neither the Electron runtime nor a
+  display.
+- Node 24 and Node 26 are the supported releases. An upstream Node 26-only job must take the
+  same `if:` and stay out of `CI result`'s `needs`.
+- `package.json`'s `pretest` provisions everything the unit suite needs (Electron runtime,
+  native state lock), and `posttest` adds only tests already inside `test/**/*.test.ts`.
+- `node --test`'s JUnit reporter writes a `time` in seconds and an absolute `file` on every
+  `testcase`, and a `describe` block becomes a `testsuite` with no `file` whose time is its wall
+  time, hooks included. Summing a suite's cases instead would miss hook time and over-count a
+  suite that runs its cases concurrently.
+- Unit test files do not depend on which other files share their shard (the native state lock
+  paragraph in `AGENTS.md`), so moving a file between shards is safe.
+- Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
+  when the download fails.
+- The workflow file is `.github/workflows/ci.yml` (tree reuse looks its runs up by that name),
+  `actions/checkout` checks out the pull request's merge ref on `pull_request`, and a squash or
+  merge commit made while `main` has not moved has that merge ref's tree.
+
+**Upstream surfaces touched.** `.github/workflows/ci.yml` (the header comment, the Node 26 jobs'
+`if:` and `needs`, the two build-smoke jobs, `flake-report`'s and `ci-result`'s comments,
+`ci-result`'s `needs`, `SKIPPABLE` and `DOCS_ONLY` env, the `changes` job's permissions,
+outputs and three tree-reuse steps, the gated jobs' `if:`, the "Shard budget" header section,
+the `unit-node-24` and `e2e` shard counts, `build-smoke-node-24`'s `dist/` upload steps, and the
+`e2e` job's `needs`, its comment and its download steps in place of `Build`), `.github/actions/run-unit-shard/action.yml` (the
+description, the removed build and smoke steps, the single `pretest` step and the direct
+`test:run` Test step over the partitioner's files, the "Select shard files" and
+"Upload JUnit results" steps), `scripts/ensure-electron-runtime.mjs` and its `.d.mts`,
+`src/shared/junit.ts` (the added `junitFileTimes`, which the bundled flake report action does not
+import), `package.json` (`test:timings`), `AGENTS.md` (the CI paragraph and the native state lock
+paragraph), `docs/flaky-tests.md` (Node 26 on pull requests, the unit shard bullet, "How unit
+shards pick their files", and a reused `main` push), `test/init-script.test.ts`,
+`test/oss-readiness.test.ts`, `test/flake-report-action.test.ts`, `e2e/README.md` (the CI shard
+count and the shared `dist/`).
+
+**Fork-only files.** `docs/plans/ci-time-to-green/plan.md`, `scripts/ci-tree-reuse.sh`,
+`test/ci-tree-reuse.test.ts`, `scripts/unit-shard.mjs` and its `.d.mts`,
+`scripts/unit-shard-timings.ts`, `test/shard-timings.json`, `test/unit-shard.test.ts`.
+`test/docs-only-ci-template.test.ts` (fork-only through Docs-only CI) now also holds the Node 26
+jobs' condition and the tree-reuse wiring.
+
 ### Windows support
 
 | Field | Value |
 | --- | --- |
 | Status | **In progress on `release/windows`**. On `main`: the plan, `.gitattributes`, and the four platform seams (plan M1), each with only its POSIX implementation registered. On `release/windows`: Windows CI and the win32 skip guard, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, and the Windows docs (plan M2.1, M2.3 to M2.9 and M2.11). Still to land there: the win32 state lock (M2.2, open as #201), the Makefile under Git Bash (M2.10) and gate readiness (M2.12). The branch reaches `main` in one merge. |
-| PRs | On `main`: #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On `release/windows`: #187 (Windows CI and the skip guard, M2.1), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), pending (branch `docs/windows-support-docs`, the Windows docs and this entry's update, M2.11). The per-task base branch it depends on (M0.1) has its own entry. |
-| Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones"; the sync runbook `docs/windows-branch-sync.md` (on `main`); the M2.0 SDK spike result on issue #186; the Windows section of [docs/setup.md](../setup.md#windows-11) and of [docs/harnesses-and-terminals.md](../harnesses-and-terminals.md#windows) |
+| PRs | On `main`: #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On `release/windows`: #224 (the first weekly sync of `main`, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), pending (branch `docs/windows-support-docs`, the Windows docs and this entry's update, M2.11). The per-task base branch it depends on (M0.1) has its own entry. |
+| Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones"; the sync runbook [docs/windows-branch-sync.md](../windows-branch-sync.md); the M2.0 SDK spike result on issue #186; the Windows section of [docs/setup.md](../setup.md#windows-11) and of [docs/harnesses-and-terminals.md](../harnesses-and-terminals.md#windows) |
 | Upstream candidate | Not now (D18: fork-only). The four seams, and the neutral seams M2 built on the branch (D38), are platform-neutral and could be offered on their own. |
 
 **Intent.** Mission Control runs natively on Windows 11 x64: the daemon, the Foreman worker,
@@ -1162,9 +1322,9 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
 - `release/windows` was cut from `origin/main` only after the per-task base branch,
   `.gitattributes` and all four seams had merged (D36), so it starts with every one of them.
   `main` reaches it only through merges (the weekly "Sync main into release/windows" mission,
-  D5 and D26, following `docs/windows-branch-sync.md` on `main`): never a rebase, never a
-  force-push. On a sync conflict `main` wins on shared code and the Windows change is
-  re-applied on top; dropping a Windows change needs the human (D27).
+  D5 and D26, following [docs/windows-branch-sync.md](../windows-branch-sync.md)): never a rebase,
+  never a force-push. On a sync conflict `main` wins on shared code
+  and the Windows change is re-applied on top; dropping a Windows change needs the human (D27).
 - Windows tickets are tasks with `base_branch = release/windows`, so their worktrees, PRs,
   checks and merge watcher follow the branch (see "Per-task base branch"). They carry the
   `windows-support` label.
