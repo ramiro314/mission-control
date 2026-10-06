@@ -606,7 +606,13 @@ export function SettingsPage({
       case "repositories":
         return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":
-        return <TaskSourcesPanel state={taskSources} />;
+        return (
+          <TaskSourcesPanel
+            state={taskSources}
+            workflows={workflowSummaries}
+            kindWorkflowDefaults={workflowSettings.config?.kindWorkflowDefaults ?? null}
+          />
+        );
       case "standing-instructions":
         return <StandingInstructionsPanel state={standingInstructions} />;
       case "conductor":
