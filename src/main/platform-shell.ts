@@ -33,6 +33,28 @@ export function trayIcon(platform: NodeJS.Platform, buildDir: string): TrayIcon 
     : { path: join(buildDir, "trayTemplate.png"), template: true };
 }
 
+/** The two calls `trayImageFor` makes on an image, so a test can stand in for `nativeImage`. */
+export interface TrayImage {
+  isEmpty(): boolean;
+  setTemplateImage(option: boolean): void;
+}
+
+/**
+ * Load `icon` through `load` and mark it a template only when `icon` says so, falling back to
+ * `empty()` when the file is missing or unreadable. `tray.ts` passes `nativeImage`; this is
+ * where the win32 icon stays colored rather than becoming a black mask.
+ */
+export function trayImageFor<I extends TrayImage>(
+  icon: TrayIcon,
+  load: (path: string) => I | null,
+  empty: () => I,
+): I {
+  const img = icon.path ? load(icon.path) : null;
+  if (!img || img.isEmpty()) return empty();
+  if (icon.template) img.setTemplateImage(true); // recolors for light/dark menu bars
+  return img;
+}
+
 /**
  * The window's title-bar options.
  *

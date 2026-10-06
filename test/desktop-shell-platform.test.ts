@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { appMenuTemplate, RENDERER_OWNED_ACCELERATORS } from "../src/main/menu-template.ts";
-import { trayIcon, windowChrome } from "../src/main/platform-shell.ts";
+import { trayIcon, trayImageFor, windowChrome } from "../src/main/platform-shell.ts";
 
 /**
  * The desktop shell's per-platform choices: the tray image, the window chrome and the
@@ -90,6 +90,62 @@ test("the win32 tray icon is a well-formed .ico with the sizes the notification 
   for (const size of [16, 24, 32]) assert.ok(sizes.includes(size), `no ${size}px entry`);
   // And the macOS template the other branch loads is still there.
   assert.ok(readFileSync(trayIcon("darwin", BUILD_DIR).path).length > 0);
+});
+
+/** A stand-in for `nativeImage` that records whether it was marked a template. */
+class FakeImage {
+  template: boolean | null = null;
+  constructor(readonly path: string, private readonly empty = false) {}
+  isEmpty(): boolean {
+    return this.empty;
+  }
+  setTemplateImage(option: boolean): void {
+    this.template = option;
+  }
+}
+
+test("the tray marks the macOS image a template and leaves the win32 image colored", () => {
+  // This is where the platform's answer takes effect: `tray.ts` hands `nativeImage` to it.
+  const load = (path: string) => new FakeImage(path);
+  const fallback = new FakeImage("(empty)", true);
+
+  const darwin = trayImageFor(trayIcon("darwin", BUILD_DIR), load, () => fallback);
+  assert.equal(darwin.path, join(BUILD_DIR, "trayTemplate.png"));
+  assert.equal(darwin.template, true);
+
+  const win32 = trayImageFor(trayIcon("win32", BUILD_DIR), load, () => fallback);
+  assert.equal(win32.path, join(BUILD_DIR, "tray.ico"));
+  assert.equal(win32.template, null, "the win32 tray icon was marked a template");
+
+  // A missing or unreadable file falls back to the empty image, untouched.
+  assert.equal(trayImageFor(trayIcon("darwin", BUILD_DIR), () => null, () => fallback), fallback);
+  const unreadable = trayImageFor(
+    trayIcon("darwin", BUILD_DIR),
+    (path) => new FakeImage(path, true),
+    () => fallback,
+  );
+  assert.equal(unreadable, fallback);
+  assert.equal(fallback.template, null);
+});
+
+test("the shell takes its tray image and window chrome from the running platform", () => {
+  // The two answers above are pure; these are the three lines that hand them to Electron.
+  // Same shape as the `menu.ts` pin in `app-menu-template.test.ts`: none of these files can
+  // be imported outside the Electron process.
+  const source = (path: string): string => readFileSync(join(REPO_ROOT, path), "utf8");
+  assert.match(
+    source("src/main/index.ts"),
+    /trayIcon: trayIcon\(process\.platform, join\(appRoot, "build"\)\)/,
+    "index.ts no longer picks the tray icon for the running platform",
+  );
+  const tray = source("src/main/tray.ts");
+  assert.match(tray, /return trayImageFor\(\s*icon,/, "tray.ts no longer loads its image through trayImageFor");
+  assert.doesNotMatch(tray, /setTemplateImage/, "tray.ts decides the template itself again");
+  assert.match(
+    source("src/main/window.ts"),
+    /\.\.\.windowChrome\(process\.platform\)/,
+    "window.ts no longer takes its chrome from the running platform",
+  );
 });
 
 test("macOS keeps its inset traffic lights; win32 keeps its native frame and window controls", () => {

@@ -8,7 +8,7 @@ import { Tray, Menu, nativeImage, app } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
-import type { TrayIcon } from "./platform-shell.ts";
+import { trayImageFor, type TrayIcon } from "./platform-shell.ts";
 
 interface ReportCounts {
   needsYou: number;
@@ -30,14 +30,11 @@ let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
 
 function trayImage(icon: TrayIcon): Electron.NativeImage {
-  if (icon.path && existsSync(icon.path)) {
-    const img = nativeImage.createFromPath(icon.path);
-    if (!img.isEmpty()) {
-      if (icon.template) img.setTemplateImage(true); // recolors for light/dark menu bars
-      return img;
-    }
-  }
-  return nativeImage.createEmpty();
+  return trayImageFor(
+    icon,
+    (path) => (existsSync(path) ? nativeImage.createFromPath(path) : null),
+    () => nativeImage.createEmpty(),
+  );
 }
 
 function summary(c: ReportCounts): string {
