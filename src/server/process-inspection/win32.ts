@@ -1,12 +1,12 @@
 import { powerShellArgs } from "../platform/executable-environment.ts";
 import type { RunResult } from "../util/exec.ts";
-import { flattenProcessText, type ProcessInspector, type ProcessRow } from "./contract.ts";
+import type { ProcessInspector, ProcessRow } from "./contract.ts";
 import { defaultCommandRunner, type CommandRunner } from "./runner.ts";
 
 /**
- * Windows has no `ps` and no `lsof`. Every read here is one Windows PowerShell call over CIM
- * (`Win32_Process`) or the TCP/IP module, answering in JSON so a command line carrying quotes,
- * tabs or non-ASCII text arrives intact.
+ * Windows has no `ps` and no `lsof`. The listing and the port read are one Windows PowerShell
+ * call each, over CIM (`Win32_Process`) or the TCP/IP module, answering in JSON so a command
+ * line carrying quotes, tabs or non-ASCII text arrives intact.
  *
  * Two reads have no supported source on Windows, and answer as a failed read rather than as an
  * empty one:
@@ -19,6 +19,15 @@ import { defaultCommandRunner, type CommandRunner } from "./runner.ts";
  *   already treats as a refusal.
  * - **Open files.** The same is true of another process's open handles. Only Codex rollout
  *   discovery reads them, and Codex is unavailable on win32.
+ *
+ * And the two SYNCHRONOUS reads answer "unreadable" without running anything. A synchronous
+ * read blocks the daemon's event loop for as long as it runs, and the only source is starting
+ * Windows PowerShell, which alone takes most of a second: every call would freeze the dashboard.
+ * A per-pid cache is no way out, because Windows reuses pids and a stale start time is a wrong
+ * identity. Unreadable is the answer both callers already handle. `processStartIdentity`
+ * (`workflows/check-identity.ts`) refuses every platform but Linux and macOS before reading, and
+ * a Pi generation lease (`pi/generation-lease.ts`) exists only where Pi runs, which win32
+ * refuses (plan D20). A win32 caller that needs a start identity needs an asynchronous read.
  */
 
 /** The system-wide listing, sized like the POSIX `ps` it replaces: see `PS_TIMEOUT_MS`. */
@@ -29,17 +38,6 @@ const LIST_TIMEOUT_MS = 30_000;
  */
 const PORT_READ_TIMEOUT_MS = 10_000;
 
-/**
- * A synchronous single-pid read, which BLOCKS the daemon's event loop for as long as it runs:
- * most of a second on win32, where POSIX's `ps` takes milliseconds. Its two callers do not
- * reach it on win32 today. `processStartIdentity` (`workflows/check-identity.ts`) answers null
- * on every platform but Linux and macOS before reading anything, and Pi generation leases
- * (`pi/generation-lease.ts`) exist only where Pi runs, which win32 refuses (plan D20). A new
- * win32 caller on a hot path needs an asynchronous read instead. The budget is POSIX's largest
- * synchronous one, so even a stalled CIM freezes the daemon for no longer than `ps` could.
- */
-const SYNC_READ_TIMEOUT_MS = 5_000;
-
 export const WIN32_CWD_UNAVAILABLE =
   "Windows exposes no supported way to read another process's working directory";
 export const WIN32_OPEN_FILES_UNAVAILABLE =
@@ -47,8 +45,8 @@ export const WIN32_OPEN_FILES_UNAVAILABLE =
 
 /**
  * One `Win32_Process` as a row. `CreationDate` is printed the way macOS prints `lstart`
- * (`Fri Jul 3 15:15:37 2026`, local time), so discovery's `Date.parse` and every identity
- * comparison read it exactly as they read `ps`. `CommandLine` is null for a process this user
+ * (`Fri Jul 3 15:15:37 2026`, local time), so discovery's `Date.parse` and the occupancy
+ * recheck's start comparison read it exactly as they read `ps`. `CommandLine` is null for a process this user
  * may not inspect, which becomes "" like a pid `ps` did not cover.
  */
 const ROW_FUNCTION = [
@@ -64,16 +62,6 @@ export const WIN32_LIST_PROCESSES_SCRIPT = [
   "$rows = @(Get-CimInstance -ClassName Win32_Process | ForEach-Object { ConvertTo-MissionRow $_ })",
   "[Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress))",
 ].join("\n");
-
-/** One pid's row, or exit 1 when no process has it. `pid` must already be a positive integer. */
-export function win32ProcessScript(pid: number): string {
-  return [
-    ROW_FUNCTION,
-    `$p = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'`,
-    "if (-not $p) { exit 1 }",
-    "[Console]::Out.Write((ConvertTo-Json -InputObject (ConvertTo-MissionRow $p) -Compress))",
-  ].join("\n");
-}
 
 /** The pid owning the first listening socket on `port`, or nothing. `port` must be valid. */
 export function win32ListeningPidScript(port: number): string {
@@ -122,17 +110,6 @@ function unreadable(reason: string): RunResult {
 }
 
 export function createWin32ProcessInspector(runner: CommandRunner = defaultCommandRunner): ProcessInspector {
-  const readRow = (pid: number): Win32Row | null => {
-    if (!positiveInteger(pid)) return null;
-    const raw = runner.runSync("powershell", powerShellArgs(win32ProcessScript(pid)), {
-      timeoutMs: SYNC_READ_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-    });
-    if (raw === null) return null;
-    const row = asRow(parseJson(raw));
-    return row?.pid === pid ? row : null;
-  };
-
   return {
     async listProcesses() {
       const result = await runner.run("powershell", powerShellArgs(WIN32_LIST_PROCESSES_SCRIPT), {
@@ -168,16 +145,13 @@ export function createWin32ProcessInspector(runner: CommandRunner = defaultComma
       return { files: new Map<number, string[]>(), result: unreadable(WIN32_OPEN_FILES_UNAVAILABLE) };
     },
 
-    readStartAndCommandSync(pid) {
-      const row = readRow(pid);
-      if (!row) return null;
-      const start = flattenProcessText(row.start);
-      const command = flattenProcessText(row.command);
-      return start && command ? { start, command } : null;
+    // Unreadable without running anything: see the synchronous reads above.
+    readStartAndCommandSync() {
+      return null;
     },
 
-    readStartTimeSync(pid) {
-      return readRow(pid)?.start || null;
+    readStartTimeSync() {
+      return null;
     },
 
     async findListeningPid(port) {

@@ -19,7 +19,6 @@ import {
   WIN32_OPEN_FILES_UNAVAILABLE,
   win32ListeningPidScript,
   win32ProcessInspector,
-  win32ProcessScript,
 } from "../src/server/process-inspection/win32.ts";
 import { windowsPowerShellPath } from "../src/server/platform/executable-environment.ts";
 import { readProcCwdsSnapshot } from "../src/server/discovery/proc-cwd.ts";
@@ -207,7 +206,7 @@ function powerShellRunner(answers: Record<string, RunResult | string | null> = {
   return { runner, calls };
 }
 
-test("the win32 inspector issues one encoded PowerShell script per read, and none for cwd or open files", async () => {
+test("the win32 inspector issues one encoded PowerShell script per asynchronous read, and none otherwise", async () => {
   const { runner, calls } = powerShellRunner();
   const inspector = createWin32ProcessInspector(runner);
   await inspector.listProcesses();
@@ -219,21 +218,17 @@ test("the win32 inspector issues one encoded PowerShell script per read, and non
 
   assert.deepEqual(calls, [
     { sync: false, bin: "powershell", flags: POWERSHELL_FLAGS, script: WIN32_LIST_PROCESSES_SCRIPT, opts: { timeoutMs: 30_000 } },
-    { sync: true, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ProcessScript(31), opts: { timeoutMs: 5_000, maxBuffer: 1024 * 1024 } },
-    { sync: true, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ProcessScript(41), opts: { timeoutMs: 5_000, maxBuffer: 1024 * 1024 } },
+    // No synchronous read, cwd or open-file read spawns anything.
     { sync: false, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ListeningPidScript(4317), opts: { timeoutMs: 10_000 } },
   ]);
 });
 
 test("the win32 scripts ask CIM and the TCP/IP module the questions ps and lsof answered", () => {
-  for (const script of [WIN32_LIST_PROCESSES_SCRIPT, win32ProcessScript(31)]) {
-    assert.match(script, /Get-CimInstance -ClassName Win32_Process/);
-    // `lstart`'s shape, in invariant English, so `Date.parse` and identities read it as they read ps.
-    assert.match(script, /\$p\.CreationDate\.ToString\('ddd MMM d HH:mm:ss yyyy', \[Globalization\.CultureInfo\]::InvariantCulture\)/);
-    assert.match(script, /ConvertTo-Json -InputObject .* -Compress/);
-  }
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /Get-CimInstance -ClassName Win32_Process/);
+  // `lstart`'s shape, in invariant English, so `Date.parse` and the occupancy recheck read it as they read ps.
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /\$p\.CreationDate\.ToString\('ddd MMM d HH:mm:ss yyyy', \[Globalization\.CultureInfo\]::InvariantCulture\)/);
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /ConvertTo-Json -InputObject \$rows -Compress/);
   assert.match(WIN32_LIST_PROCESSES_SCRIPT, /\$rows = @\(/, "an array even when one process answers");
-  assert.match(win32ProcessScript(31), /-Filter 'ProcessId = 31'\nif \(-not \$p\) \{ exit 1 \}/);
   assert.equal(
     win32ListeningPidScript(4317),
     "$c = Get-NetTCPConnection -State Listen -LocalPort 4317 -ErrorAction SilentlyContinue | Select-Object -First 1\n"
@@ -320,30 +315,14 @@ test("the win32 cwd failure is readProcCwdsSnapshot's unknown reason, and worktr
   assert.deepEqual(occupancy.get(slot), { status: "unknown", reason });
 });
 
-test("a win32 single-pid read flattens the command and refuses half an identity", () => {
-  const row = (pid: number, command: string | null, start = "Fri Jul 3 15:15:37 2026") =>
-    JSON.stringify({ pid, ppid: 1, start, command });
-  const { runner, calls } = powerShellRunner({
-    [win32ProcessScript(5)]: `\uFEFF${row(5, "node.exe  -e\tshim")}`,
-    [win32ProcessScript(6)]: row(6, ""),
-    [win32ProcessScript(8)]: row(9, "node.exe"),
-    [win32ProcessScript(10)]: "not json",
-  });
+test("win32 synchronous reads answer unreadable without blocking the daemon on PowerShell", () => {
+  const { runner, calls } = powerShellRunner();
   const inspector = createWin32ProcessInspector(runner);
-  assert.deepEqual(inspector.readStartAndCommandSync(5), { start: "Fri Jul 3 15:15:37 2026", command: "node.exe -e shim" });
-  assert.equal(inspector.readStartTimeSync(5), "Fri Jul 3 15:15:37 2026");
-  assert.equal(inspector.readStartAndCommandSync(6), null, "a row with no command is not half an identity");
-  assert.equal(inspector.readStartTimeSync(6), "Fri Jul 3 15:15:37 2026", "the start alone is still readable");
-  assert.equal(inspector.readStartAndCommandSync(7), null, "a pid PowerShell could not find has no identity");
-  assert.equal(inspector.readStartAndCommandSync(8), null, "an answer about another pid is not this pid's");
-  assert.equal(inspector.readStartTimeSync(10), null, "output that is not JSON is unreadable");
-
-  const before = calls.length;
-  for (const pid of [0, -1, 1.5, Number.NaN]) {
+  for (const pid of [process.pid, 1, 0, -1, 1.5]) {
     assert.equal(inspector.readStartAndCommandSync(pid), null);
     assert.equal(inspector.readStartTimeSync(pid), null);
   }
-  assert.equal(calls.length, before, "an impossible pid never reaches a script");
+  assert.deepEqual(calls, [], "no synchronous read starts a process");
 });
 
 test("the win32 listening pid is the one PowerShell prints, and nothing listening is null", async () => {
@@ -371,10 +350,6 @@ test("the win32 inspector reads this process through the real Windows PowerShell
   assert.equal(own.ppid, process.ppid);
   assert.ok(!Number.isNaN(Date.parse(own.start)), `discovery can parse ${own.start}`);
   assert.match(own.command, /node/i);
-
-  const read = inspector.readStartAndCommandSync(process.pid);
-  assert.equal(read?.start, own.start, "the single-pid read and the listing agree on the start");
-  assert.equal(inspector.readStartTimeSync(process.pid), own.start);
 
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

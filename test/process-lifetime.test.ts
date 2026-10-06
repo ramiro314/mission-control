@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, win32 as win32Path } from "node:path";
+import { join, relative, sep, win32 as win32Path } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
@@ -397,7 +397,8 @@ test("no process-group spawn or signal is written outside the seam", () => {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
       else if (/\.(ts|tsx|mts)$/.test(entry.name)) {
-        const file = relative(".", path);
+        // POSIX separators, so the seam and the lists above match on a win32 host too.
+        const file = relative(".", path).split(sep).join("/");
         if (file === SEAM) continue;
         for (const site of processTreeSites(file, readFileSync(path, "utf8"), detachedHead.has(file))) {
           if (file === daemonised && site.endsWith(" detached")) continue;
