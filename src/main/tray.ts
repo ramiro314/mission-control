@@ -1,12 +1,14 @@
-// Menu-bar presence. The tray shows a live one-line session summary and a menu of
-// app-level actions. Counts come from polling the daemon's /api/report (the same
-// projection the Roundup panel uses) - simple and robust; sub-second latency
-// isn't needed for a status glance.
+// Menu-bar presence (the notification area on Windows). The tray shows a live one-line
+// session summary and a menu of app-level actions. The count beside the icon is macOS
+// only - `setTitle` does nothing elsewhere - so the tooltip carries it too. Counts come from
+// polling the daemon's /api/report (the same projection the Roundup panel uses) - simple and
+// robust; sub-second latency isn't needed for a status glance.
 
 import { Tray, Menu, nativeImage, app } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
+import { trayImageFor, type TrayIcon } from "./platform-shell.ts";
 
 interface ReportCounts {
   needsYou: number;
@@ -27,15 +29,12 @@ let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
 
-function trayImage(iconPath: string): Electron.NativeImage {
-  if (iconPath && existsSync(iconPath)) {
-    const img = nativeImage.createFromPath(iconPath);
-    if (!img.isEmpty()) {
-      img.setTemplateImage(true); // recolors for light/dark menu bars
-      return img;
-    }
-  }
-  return nativeImage.createEmpty();
+function trayImage(icon: TrayIcon): Electron.NativeImage {
+  return trayImageFor(
+    icon,
+    (path) => (existsSync(path) ? nativeImage.createFromPath(path) : null),
+    () => nativeImage.createEmpty(),
+  );
 }
 
 function summary(c: ReportCounts): string {
@@ -91,8 +90,8 @@ async function refresh(handlers: TrayHandlers): Promise<void> {
   }
 }
 
-export function createTray(iconPath: string, handlers: TrayHandlers): Tray {
-  tray = new Tray(trayImage(iconPath));
+export function createTray(icon: TrayIcon, handlers: TrayHandlers): Tray {
+  tray = new Tray(trayImage(icon));
   tray.on("click", () => handlers.onOpen());
   render(handlers);
   void refresh(handlers);

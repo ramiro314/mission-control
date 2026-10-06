@@ -1,4 +1,4 @@
-// The macOS application menu, as a template and nothing else.
+// The desktop application menu, as a template and nothing else.
 //
 // Split out from `menu.ts` so the one decision in here that a person can get wrong is
 // testable in `test/` for milliseconds: which keys the menu claims from the renderer. A menu
@@ -100,10 +100,20 @@ export interface AppMenuState {
   rendererOwnsNumberRow: boolean;
 }
 
+/**
+ * The application menu for `platform`.
+ *
+ * macOS gets an app menu named after the app, with About, Services and Hide, which exist only
+ * there. win32 has no app menu: the same commands move to the conventional places, Settings
+ * and Exit under File and Check for Updates under Help, and the Edit, View and Window menus
+ * are shared. The `quit` role is labelled Exit on win32 by Electron itself. Every platform
+ * but win32 keeps the macOS shape, as it always has.
+ */
 export function appMenuTemplate(
   appName: string,
   handlers: AppMenuHandlers,
   state: AppMenuState = { rendererOwnsNumberRow: false },
+  platform: NodeJS.Platform = "darwin",
 ): MenuItemConstructorOptions[] {
   // Given up only while the renderer is claiming them. The roles carry Electron's own
   // accelerators, labels and behavior, so the fallback is the stock View menu rather than an
@@ -115,18 +125,50 @@ export function appMenuTemplate(
         { label: "Zoom Out", click: (_item, window) => zoomWindow(window, -ZOOM_STEP) },
       ]
     : [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }];
+  const checkForUpdates: MenuItemConstructorOptions = {
+    label: "Check for Updates…",
+    click: () => handlers.onCheckForUpdates(),
+  };
+  const settings: MenuItemConstructorOptions = {
+    label: "Settings…",
+    accelerator: "CmdOrCtrl+,",
+    click: () => handlers.onOpenSettings(),
+  };
+  const view: MenuItemConstructorOptions = {
+    // Spelled out rather than `role: "viewMenu"`, and the zoom items are the whole reason.
+    // The stock submenu is exactly this list, so writing it out costs nothing and buys the
+    // one thing the role cannot express: three zoom entries whose accelerators depend on
+    // whether the dashboard is using those keys. Reload, DevTools and full screen keep
+    // their standard accelerators in both states, none of which the dashboard binds -
+    // `⌃R` is a dashboard chord and is not `⌘R`.
+    label: "View",
+    submenu: [
+      { role: "reload" },
+      { role: "forceReload" },
+      { role: "toggleDevTools" },
+      { type: "separator" },
+      ...zoom,
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ],
+  };
+  if (platform === "win32") {
+    return [
+      { label: "File", submenu: [settings, { type: "separator" }, { role: "quit" }] },
+      { role: "editMenu" },
+      view,
+      { role: "windowMenu" },
+      { label: "Help", submenu: [checkForUpdates] },
+    ];
+  }
   return [
     {
       label: appName,
       submenu: [
         { role: "about" },
-        { label: "Check for Updates…", click: () => handlers.onCheckForUpdates() },
+        checkForUpdates,
         { type: "separator" },
-        {
-          label: "Settings…",
-          accelerator: "CmdOrCtrl+,",
-          click: () => handlers.onOpenSettings(),
-        },
+        settings,
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
@@ -138,24 +180,7 @@ export function appMenuTemplate(
       ],
     },
     { role: "editMenu" },
-    {
-      // Spelled out rather than `role: "viewMenu"`, and the zoom items are the whole reason.
-      // The stock submenu is exactly this list, so writing it out costs nothing and buys the
-      // one thing the role cannot express: three zoom entries whose accelerators depend on
-      // whether the dashboard is using those keys. Reload, DevTools and full screen keep
-      // their standard accelerators in both states, none of which the dashboard binds -
-      // `⌃R` is a dashboard chord and is not `⌘R`.
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { role: "toggleDevTools" },
-        { type: "separator" },
-        ...zoom,
-        { type: "separator" },
-        { role: "togglefullscreen" },
-      ],
-    },
+    view,
     { role: "windowMenu" },
   ];
 }

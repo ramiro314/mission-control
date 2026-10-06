@@ -257,7 +257,7 @@ test("the preference reaches the menu across all four layers", () => {
   );
   assert.match(
     menu,
-    /appMenuTemplate\(app\.name, installed, state\)/,
+    /appMenuTemplate\(app\.name, installed, state, process\.platform\)/,
     "the menu is rebuilt without the claim it was told about",
   );
   // Idempotent, because the dashboard reports on load, on change and on every reload. Without
