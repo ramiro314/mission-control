@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-tools-dispatch-")));
 process.env.MISSION_HOME = home;
@@ -34,7 +37,7 @@ function repo() {
 }
 
 for (const kind of ["plan", "scout"] as const) {
-  test(`Pi ${kind} is refused at preparation without a worktree`, async () => {
+  test(`Pi ${kind} is refused at preparation without a worktree`, PI, async () => {
     const clone = repo();
     const before = gitIn(clone, "worktree", "list", "--porcelain");
     const result = await prepareTaskRepositories({
@@ -51,7 +54,7 @@ for (const kind of ["plan", "scout"] as const) {
 }
 
 for (const kind of ["plan", "scout", "ship"] as const) {
-  test(`existing Pi ${kind} fails visibly before bases, leases, or spawn`, async () => {
+  test(`existing Pi ${kind} fails visibly before bases, leases, or spawn`, PI, async () => {
     const clone = repo();
     const registry = new Registry();
     const id = `pi-${kind}`;
@@ -73,7 +76,7 @@ for (const kind of ["plan", "scout", "ship"] as const) {
   });
 }
 
-test("one machine probe can satisfy availability without changing Pi's MCP client", async () => {
+test("one machine probe can satisfy availability without changing Pi's MCP client", PI, async () => {
   let calls = 0;
   assert.deepEqual(await missionToolsAvailability("pi", () => { calls++; return true; }), {
     available: true, reason: null,
@@ -89,7 +92,7 @@ test("one machine probe can satisfy availability without changing Pi's MCP clien
 });
 
 for (const agent of ["claude", "codex"] as const) {
-  test(`${agent} dispatch argv is byte-identical to the pre-capability baseline`, async () => {
+  test(`${agent} dispatch argv is byte-identical to the pre-capability baseline`, { skip: skipOnWin32(agent === "codex" ? "Codex is unavailable on win32" : "the terminal runtime is unavailable on win32") }, async () => {
     const clone = repo();
     setHarnessesConfig({ autoModeOnDispatch: true });
     const registry = new Registry();
@@ -123,7 +126,7 @@ for (const agent of ["claude", "codex"] as const) {
   });
 }
 
-test("workflow-required evidence is refused early, while one successful probe reaches Pi's launch", async () => {
+test("workflow-required evidence is refused early, while one successful probe reaches Pi's launch", PI, async () => {
   const clone = repo();
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "workflow-pi", agent: "pi", repoRoot: clone }));
@@ -149,7 +152,7 @@ test("workflow-required evidence is refused early, while one successful probe re
   assert.equal(spawned, true, registry.getTask("installed-pi")!.error!);
 });
 
-test("a tickets follow-up's launch is granted complete_shape_tickets, and another shape launch is not", async () => {
+test("a tickets follow-up's launch is granted complete_shape_tickets, and another shape launch is not", { skip: skipOnWin32("the terminal runtime is unavailable on win32") }, async () => {
   const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
   const { COMPLETE_SHAPE_TICKETS_TOOL } = await import("../src/server/plans/tools.ts");
   const clone = repo();

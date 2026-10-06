@@ -7,6 +7,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeCodexCatalogMode } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Codex is unavailable on win32");
 
 const CODEX_DEFAULT = "Default model for dispatched Codex sessions";
 /**

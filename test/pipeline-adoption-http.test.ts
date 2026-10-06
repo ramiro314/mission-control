@@ -15,6 +15,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-adoption-http-"));
 process.env.MISSION_HOME = home;
@@ -158,7 +159,7 @@ test("the authenticated adoption route derives provider and repository from its 
   assert.equal(registry.getSession(task.sessionId!)?.pipeline, null);
 });
 
-test("the authenticated adoption route accepts its preallocated managed host before SDK registration", async () => {
+test("the authenticated adoption route accepts its preallocated managed host before SDK registration", { skip: skipOnWin32("Codex is unavailable on win32") }, async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const repoRoot = "/repo/pipeline-adoption-preallocated";

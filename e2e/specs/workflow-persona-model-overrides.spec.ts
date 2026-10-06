@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * Choosing the provider and model for ONE reviewer occurrence, in the editor, and then having
@@ -399,6 +400,7 @@ test("a published override is the provider and model a run actually launches and
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   // A one-reviewer workflow, so the run is short and exactly one CLI launch is attributable.
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "E2E routed reviewer",

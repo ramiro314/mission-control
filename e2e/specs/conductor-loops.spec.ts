@@ -92,6 +92,7 @@ async function enablePipelines(
 test("concurrent same-intent Pipeline dispatches reserve independent Engineer runs", async ({
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
   const intent = "Keep duplicate Engineer work exclusive";
   const dispatch = (title: string) =>
@@ -282,6 +283,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -791,6 +793,7 @@ test("guided managed Agent SDK pipeline asks for an eligible harness", async ({
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -821,6 +824,7 @@ test("terminal pipeline normalizes a stale non-Claude agent and refuses before s
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "the terminal runtime is unavailable on win32; it also selects Codex");
   await enablePipelines(daemon, false, "terminal");
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -851,6 +855,7 @@ test("an open pipeline dispatch follows a live runtime change and refuses Termin
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -888,6 +893,7 @@ test("guided dispatch offers pipeline only in an enabled repo and refuses commis
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "the terminal runtime is unavailable on win32; it also selects Pi");
   await enablePipelines(daemon, false, "terminal");
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();

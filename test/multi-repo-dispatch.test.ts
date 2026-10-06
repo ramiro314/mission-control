@@ -9,6 +9,9 @@ import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 // Dispatching a task that attaches secondary repositories, and the two rules that make it
 // safe rather than merely working:
@@ -208,7 +211,7 @@ test("the unwind is provider-aware in every ordering", async () => {
 
 // ---- the embedded-runtime guard --------------------------------------------------------
 
-test("a driver that cannot carry the grant refuses the dispatch instead of dropping repos", async () => {
+test("a driver that cannot carry the grant refuses the dispatch instead of dropping repos", PI, async () => {
   // `MultiRepoDispatchSpec.sdk` enforced rather than merely declared. Both shipped harnesses
   // answer true, so this drives the guard through the injectable runtime resolver against a
   // harness whose spec says false - the state a future driver would arrive in.
@@ -245,7 +248,7 @@ test("a driver that cannot carry the grant refuses the dispatch instead of dropp
   assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard-1")), false);
 });
 
-test("the TERMINAL runtime refuses the same task rather than launching without the flags", async () => {
+test("the TERMINAL runtime refuses the same task rather than launching without the flags", PI, async () => {
   // The guard is runtime-agnostic, and this is the half that would otherwise fail silently:
   // rendering no flags and launching anyway leaves an agent holding a manifest that says
   // "You have write access to all of them" over worktrees it cannot write to.
@@ -283,7 +286,7 @@ test("the TERMINAL runtime refuses the same task rather than launching without t
   }
 });
 
-test("Pi dispatches both worktrees without directory grant flags", async () => {
+test("Pi dispatches both worktrees without directory grant flags", PI, async () => {
   const api = mkRepo("pi-supported-api");
   const web = mkRepo("pi-supported-web");
   const registry = new Registry();
@@ -320,7 +323,7 @@ test("Pi dispatches both worktrees without directory grant flags", async () => {
     argv[argv.indexOf("--session-id") + 1]);
 });
 
-test("a single-repo task on a harness with no capability still dispatches normally", async () => {
+test("a single-repo task on a harness with no capability still dispatches normally", PI, async () => {
   // The guard is scoped to tasks that actually attach repos. Without this, declaring no
   // capability would become a general ban on dispatching that harness at all.
   const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;

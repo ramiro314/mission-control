@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Session } from "../../src/shared/types.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { meta, mkSession } from "../../test/helpers/session-fixture.ts";
@@ -73,6 +74,8 @@ test("configured SDK models stay selected until metadata confirms them in Consol
 
 for (const { agent, initial, next } of cases) {
   test(`${agent} SDK model dropdown changes the next turn and stays selected across views`, async ({ dashboard, daemon }) => {
+    if (agent === "codex") skipSpecOnWin32(test, "Codex is unavailable on win32");
+    if (agent === "pi") skipSpecOnWin32(test, "Pi is unavailable on win32");
     if (agent === "pi") {
       const installed = await dashboard.request.post(`${daemon.baseURL}/api/setup/install`, { data: { id: "pi-integration" } });
       expect(installed.ok(), await installed.text()).toBe(true);

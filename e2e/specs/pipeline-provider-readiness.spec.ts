@@ -9,6 +9,9 @@ import {
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Codex is unavailable on win32; every case dispatches a Codex pipeline");
 
 test.use({
   daemonEnv: {

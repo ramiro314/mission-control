@@ -6,6 +6,9 @@ import childProcess, { spawnSync, type ExecFileSyncOptionsWithStringEncoding } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { holdPiGeneration, removeIdlePiGeneration } from "../src/pi/generation-lease.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 const root = mkdtempSync(join(tmpdir(), "pi-generation-lease-"));
 const buildId = "a".repeat(64);
@@ -17,7 +20,7 @@ beforeEach(() => {
 });
 after(() => rmSync(root, { recursive: true, force: true }));
 
-test("lease identity uses the catalog-selected process utility and its child environment", t => {
+test("lease identity uses the catalog-selected process utility and its child environment", PI, t => {
   const previous = process.env.MISSION_PS_BIN;
   const executable = join(root, "configured-ps");
   writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
@@ -130,7 +133,7 @@ test("a holder cannot enter a partially removed generation after recursive clean
   } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });
 
-test("an unreadable start time keeps a recorded lease, and a changed one releases it, as before the seam", t => {
+test("an unreadable start time keeps a recorded lease, and a changed one releases it, as before the seam", PI, t => {
   const previous = process.env.MISSION_PS_BIN;
   const executable = join(root, "configured-ps");
   writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });

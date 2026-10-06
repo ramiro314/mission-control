@@ -9,6 +9,9 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQueryOptions,
 } from "../src/server/harness/claude/sdk-types.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const CODEX = { skip: skipOnWin32("Codex is unavailable on win32") };
 
 const home = mkdtempSync(join(tmpdir(), "foreman-codex-runner-"));
 const argvPath = join(home, "argv");
@@ -62,7 +65,7 @@ const { configureClaudeRunnerTransport } = await import("../src/server/llm/claud
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-test("Foreman structured review actually routes through Codex with the selected model", async () => {
+test("Foreman structured review actually routes through Codex with the selected model", CODEX, async () => {
   const result = await reviewSession({
     session: {
       agent: "codex",
@@ -96,7 +99,7 @@ test("Foreman structured review actually routes through Codex with the selected 
 //
 // Latent rather than live only because Foreman currently runs on Claude. The moment an
 // operator selects Codex, every queue verification stops.
-test("Foreman queue verification hands Codex a strict schema and still reads a spare reply", async () => {
+test("Foreman queue verification hands Codex a strict schema and still reads a spare reply", CODEX, async () => {
   // Every semantic optional declined the way a strict provider declines one: with null, since
   // the key is now always present. This is the reply shape the fix has to keep readable.
   replyWith({

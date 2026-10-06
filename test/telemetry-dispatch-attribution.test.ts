@@ -7,6 +7,9 @@ import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TERMINAL_RUNTIME = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 // The dispatcher's OWN telemetry branches, driven through `Dispatcher.dispatch` rather than by
 // calling the observation helper.
@@ -136,7 +139,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
   ["harness_default", null, null, null, "claude-opus-4-8", "claude-opus-4-8"],
   ["harness", null, null, null, null, null],
 ] as const) {
-  test(`a terminal launch uses and reports the model from the ${tier} tier`, async () => {
+  test(`a terminal launch uses and reports the model from the ${tier} tier`, TERMINAL_RUNTIME, async () => {
     const repo = seedRepo(`terminal-${tier}`);
     setHarnessesConfig({
       defaultModel: { claude: defaultModel },
@@ -213,7 +216,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
   });
 }
 
-test("a pipeline launch is recorded, and claims no resolution it never made", async () => {
+test("a pipeline launch is recorded, and claims no resolution it never made", TERMINAL_RUNTIME, async () => {
   const registry = new Registry();
   registry.upsertTask(
     mkTask({
@@ -320,7 +323,7 @@ test("an embedded launch reports the SDK runtime, from the resolution and not th
 
 // ---- the exits that are not successes ----
 
-test("an operator settling a dispatch underneath it is superseded, not failed", async () => {
+test("an operator settling a dispatch underneath it is superseded, not failed", TERMINAL_RUNTIME, async () => {
   const repo = seedRepo("superseded");
   const registry = new Registry();
   registry.upsertTask(
@@ -359,7 +362,7 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
   assert.equal(facts.agent, "claude");
 });
 
-test("a failure after resolution carries the model that launch resolved", async () => {
+test("a failure after resolution carries the model that launch resolved", TERMINAL_RUNTIME, async () => {
   const repo = seedRepo("failed-after");
   const registry = new Registry();
   const detach = attachSessionTelemetry(registry);

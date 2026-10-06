@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { settled } from "../fixtures/settle.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -437,6 +438,7 @@ test("a Foreman completion review keeps terminal provenance and gains chat hiera
 });
 
 test("a Codex run of commands folds into one record too", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   // The claim the rendering makes is about a stretch of work, not about a vendor, and it was
   // true of exactly one harness: Codex's reader hung every command off the prose turn that
   // preceded it, so `transcriptRows` - which folds tool-ONLY turns - never had anything to

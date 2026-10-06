@@ -9,6 +9,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { launchedCommand } from "../fixtures/isolated-launch.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Pi is unavailable on win32");
 
 test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js") } });
 

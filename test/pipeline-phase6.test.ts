@@ -44,6 +44,10 @@ import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const CODEX = { skip: skipOnWin32("Codex is unavailable on win32") };
+const TERMINAL = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -257,7 +261,7 @@ test("conductor idea dispatch scrubs nesting and preserves the intent as one arg
   ]);
 });
 
-test("a pipeline task launches the provider in its repository without an agent binding", async () => {
+test("a pipeline task launches the provider in its repository without an agent binding", TERMINAL, async () => {
   const registry = new Registry();
   registry.upsertTask(
     mkTask({
@@ -373,7 +377,7 @@ test("a Codex pipeline task refuses the Claude-only Terminal runtime before spaw
   );
 });
 
-test("managed SDK pipeline dispatch composes the selected host prompt with no terminal or worktree", async () => {
+test("managed SDK pipeline dispatch composes the selected host prompt with no terminal or worktree", CODEX, async () => {
   const registry = new Registry();
   registry.upsertTask(
     mkTask({
@@ -654,7 +658,7 @@ test("SDK preflight and start failures never fall back to Terminal", async () =>
   }
 });
 
-test("rejected managed Pipeline launch clears its preallocated nonexistent session", async () => {
+test("rejected managed Pipeline launch clears its preallocated nonexistent session", CODEX, async () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({
     id: "pipeline-sdk-rejected-stale-liveness",
@@ -2351,7 +2355,7 @@ test("running and dispatching tasks refuse a second active owner before terminal
   }
 });
 
-test("different repository and slug identities may launch beside active pipeline tasks", async () => {
+test("different repository and slug identities may launch beside active pipeline tasks", TERMINAL, async () => {
   const repoRoot = "/repo/distinct-pipeline-runs";
   const link = { provider: "ai-conductor" as const, repoRoot, slug: "target-run" };
   const registry = new Registry();

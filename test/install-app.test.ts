@@ -56,6 +56,8 @@ import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
+const MACOS_INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
+
 const FORK = "someone-else/ai-harness";
 
 function ghStub(releases: { tagName: string }[], seen: string[][] = []) {
@@ -232,7 +234,7 @@ test("the updater-owned clone's former canonical remote is accepted for migratio
   );
 });
 
-test("a privileged updater clone is replaced without depending on permissions inside it", async (t) => {
+test("a privileged updater clone is replaced without depending on permissions inside it", MACOS_INSTALLER, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-privileged-clone-"));
   const origin = join(root, "origin");
   const clone = join(root, "app-src");
@@ -372,7 +374,7 @@ test("the packaged app is verified against the source tree before the swap", () 
   );
 });
 
-test("install arguments parse, and an unknown one stops the install", () => {
+test("install arguments parse, and an unknown one stops the install", MACOS_INSTALLER, () => {
   // `appsDir` is null until a destination is resolved, because the default now depends on the
   // receipt and on this account's home rather than being one constant.
   assert.deepEqual(parseArgs(["--dry-run", "--ref", "v1.2.3", "--from-origin"]), {
@@ -426,7 +428,7 @@ test("the usage text names the personal default rather than the system folder", 
   assert.ok(help.stdout.includes(userAppsDir()));
 });
 
-test("the two halves of an update are selected by flags, and never both at once", () => {
+test("the two halves of an update are selected by flags, and never both at once", MACOS_INSTALLER, () => {
   // The app builds with `--stage-only` while it is still open, and the detached helper
   // installs that bundle with `--from-staged` after it quits. An older install script has
   // neither, and says so in the words `stagingUnsupported` looks for.
@@ -580,7 +582,7 @@ test(
   },
 );
 
-test("isolating a verified bundle never damages a build that is not ours", () => {
+test("isolating a verified bundle never damages a build that is not ours", MACOS_INSTALLER, () => {
   // The whole transaction, with its mutations injected, because the case that matters cannot be
   // provoked from outside: another builder replacing the bundle in the microsecond between the
   // pin check and the rename, and then recreating the path so the restore cannot land.
@@ -805,7 +807,7 @@ const SWAP = {
   pid: 4242,
 };
 
-test("the staged bundle and the set-aside app are hidden siblings of the destination", () => {
+test("the staged bundle and the set-aside app are hidden siblings of the destination", MACOS_INSTALLER, () => {
   const { staged, previous, failed } = stagingPaths({ appsDir: "/Applications", pid: 4242 });
   // Same directory, so both moves below are renames on one filesystem rather than a second copy.
   assert.equal(staged, "/Applications/.Mission Control.app.incoming-4242");
@@ -814,7 +816,7 @@ test("the staged bundle and the set-aside app are hidden siblings of the destina
   assert.notEqual(staged, previous);
 });
 
-test("an unwritable /Applications uses one narrowly scoped administrator transaction", () => {
+test("an unwritable /Applications uses one narrowly scoped administrator transaction", MACOS_INSTALLER, () => {
   const commands: string[] = [];
   const result = replaceAppBundle({
     sourceBundle: "/private/tmp/Mission 'Control.app",
@@ -850,7 +852,7 @@ test("an unwritable /Applications uses one narrowly scoped administrator transac
   );
 });
 
-test("the install and the rollback ask for authorization in their own words", () => {
+test("the install and the rollback ask for authorization in their own words", MACOS_INSTALLER, () => {
   // One shared prompt meant the panel that UNDOES an update still read "install this update",
   // so the only reading available to the person answering it was that approving it applied the
   // upgrade. The failing update log records exactly that: the install panel was dismissed and
@@ -873,7 +875,7 @@ test("the install and the rollback ask for authorization in their own words", ()
   assert.deepEqual(prompts, [RESTORE_AUTHORIZATION_PROMPT]);
 });
 
-test("an elevated install hands the new bundle back to the signed-in account", () => {
+test("an elevated install hands the new bundle back to the signed-in account", MACOS_INSTALLER, () => {
   // The ratchet this closes: the privileged `cp` runs as root, so every elevated install left a
   // root-owned bundle - and a root-owned bundle is what sent the NEXT update down the
   // privileged path too. One install needing authorization made all of them need it.
@@ -944,7 +946,7 @@ test("a bundle this account cannot rewrite is replaced without asking for author
   assert.ok(fs.paths.has(SWAP.appPath), "the new app is live");
 });
 
-test("authorization is requested only after the plain attempt has failed", () => {
+test("authorization is requested only after the plain attempt has failed", MACOS_INSTALLER, () => {
   // Attempt, then escalate - rather than predicting which path will work. A move that genuinely
   // cannot be done unprivileged still reaches the administrator transaction, so nothing that
   // used to be installable stops being installable.
@@ -993,7 +995,7 @@ test("a plain attempt that left the app dismantled is not retried with authoriza
   assert.deepEqual(prompts, [], "no authorization was requested for an unsafe retry");
 });
 
-test("an escalated failure reports why the plain attempt failed as well", () => {
+test("an escalated failure reports why the plain attempt failed as well", MACOS_INSTALLER, () => {
   // "User canceled" on its own reads as the whole story. It is not: an ordinary install was
   // tried first, and why THAT could not finish is what tells anyone reading the log what to fix.
   const { staged } = stagingPaths(SWAP);
@@ -1164,7 +1166,7 @@ test("retention reports the fixed slot when filing there succeeds", () => {
   assert.ok(fs.paths.has(failed));
 });
 
-test("bundles displaced by an earlier privileged install are reclaimed, except the live one", () => {
+test("bundles displaced by an earlier privileged install are reclaimed, except the live one", MACOS_INSTALLER, () => {
   const removed: string[] = [];
   const stranded = sweepDisplacedBundles({
     appsDir: "/Applications",
@@ -1192,7 +1194,7 @@ test("bundles displaced by an earlier privileged install are reclaimed, except t
   assert.deepEqual(stranded, ["/Applications/.Mission Control.app.previous-222"]);
 });
 
-test("a concurrent transaction's rollback bundle is never swept", () => {
+test("a concurrent transaction's rollback bundle is never swept", MACOS_INSTALLER, () => {
   // The worst defect the sweep could have, and it is not hypothetical: `install-app.mjs` is a
   // supported command anyone can run directly, so a swap can be in flight with no helper claim
   // held. Between "move the installed app aside" and "move the staged app live", that
@@ -1217,7 +1219,7 @@ test("a concurrent transaction's rollback bundle is never swept", () => {
   assert.deepEqual(stranded, []);
 });
 
-test("only a canonical decimal pid suffix is ever deleted", () => {
+test("only a canonical decimal pid suffix is ever deleted", MACOS_INSTALLER, () => {
   // `Number()` is far too generous to decide what to delete recursively: `123.0`, `0x7b`, `1e3`
   // and whitespace-padded forms all coerce to valid integers, and an unsafe integer survives
   // `Number.isInteger` too. `stagingPaths` only ever writes a canonical decimal pid, so every
@@ -1291,7 +1293,7 @@ test("an owner spec is produced only from usable numeric ids", () => {
   assert.equal(bundleOwnerSpec(501, undefined), null);
 });
 
-test("administrator authorization cannot target an arbitrary install directory", () => {
+test("administrator authorization cannot target an arbitrary install directory", MACOS_INSTALLER, () => {
   const plan = privilegedBundleSwapCommand({
     sourceBundle: "/tmp/Mission Control.app",
     appPath: "/tmp/Applications/Mission Control.app",
@@ -1403,7 +1405,7 @@ test("post-swap deletion failure cannot turn an installed app into a failed tran
   assert.ok(fs.paths.has(previous), "the displaced app remains when cleanup fails");
 });
 
-test("the privileged shell transaction tolerates a failed post-swap retention step", async (t) => {
+test("the privileged shell transaction tolerates a failed post-swap retention step", MACOS_INSTALLER, async (t) => {
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     t.skip("the permission failure requires a non-root test process");
     return;
@@ -1444,7 +1446,7 @@ test("the privileged shell transaction tolerates a failed post-swap retention st
   assert.equal(readFileSync(join(failed, "locked.txt"), "utf8"), "retained evidence\n");
 });
 
-test("the real writability check does not demand a rewritable outgoing bundle", async (t) => {
+test("the real writability check does not demand a rewritable outgoing bundle", MACOS_INSTALLER, async (t) => {
   // The regression that made auto-upgrade fail repeatedly, pinned against the DEFAULT check
   // rather than an injected one. The tests above pass `appsDirWritable` explicitly, so they
   // cannot notice `directoryTreeIsWritable` being reinstated in the default - and that

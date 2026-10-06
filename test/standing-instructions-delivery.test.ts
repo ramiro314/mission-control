@@ -9,6 +9,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 // Repository standing instructions reaching a real launch, on every one of the five shipped
 // harness · runtime pairs.
@@ -64,6 +65,11 @@ const DEFAULT_RULE = "Preserve unrelated work.";
 const BLOCK = `${STANDING_INSTRUCTIONS_HEADING}\n\n${DEFAULT_RULE}\n\n${RULE}`;
 
 const clones: string[] = [];
+
+// win32 refuses these launches before the spawn seam: the terminal runtime, Codex and Pi.
+const TERMINAL = { skip: skipOnWin32("the terminal runtime is unavailable on win32; dispatches with the runtime resolved to terminal") };
+const CODEX = { skip: skipOnWin32("Codex is unavailable on win32") };
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 after(() => {
   rmSync(home, { recursive: true, force: true });
@@ -206,7 +212,7 @@ async function terminalDispatch(options: {
   return { registry, argv, terminalBackend, prompt, sessionId, nativeId };
 }
 
-test("a saved terminal backend reaches the next launch and stays with its task home", async () => {
+test("a saved terminal backend reaches the next launch and stays with its task home", TERMINAL, async () => {
   setHarnessesConfig({ terminalBackend: { claude: "herdr" } });
   const run = await terminalDispatch({
     agent: "claude",
@@ -291,7 +297,7 @@ async function sdkDispatch(options: {
 
 // ---- the decisive regression guard ----
 
-test("a repository with NO standing instructions dispatches a byte-identical prompt and argv", async () => {
+test("a repository with NO standing instructions dispatches a byte-identical prompt and argv", TERMINAL, async () => {
   const repo = seedRepo("guard-repo");
   const intent = "sort out the flexbox helper";
   const baseline = await terminalDispatch({
@@ -327,7 +333,7 @@ test("a repository with NO standing instructions dispatches a byte-identical pro
 
 // ---- delivery, per pair ----
 
-test("claude · terminal carries it on ONE --append-system-prompt, and not in turn one", async () => {
+test("claude · terminal carries it on ONE --append-system-prompt, and not in turn one", TERMINAL, async () => {
   const repo = seedRepo("claude-terminal");
   setRule(repo, RULE);
   const run = await terminalDispatch({
@@ -345,7 +351,7 @@ test("claude · terminal carries it on ONE --append-system-prompt, and not in tu
   );
 });
 
-test("codex · terminal carries it in turn one, and nowhere else", async () => {
+test("codex · terminal carries it in turn one, and nowhere else", CODEX, async () => {
   for (const agent of ["codex"] as const) {
     const repo = seedRepo(`${agent}-terminal`);
     setRule(repo, RULE);
@@ -371,7 +377,7 @@ test("codex · terminal carries it in turn one, and nowhere else", async () => {
   }
 });
 
-test("claude · sdk and codex · sdk carry it out of band, and not in turn one", async () => {
+test("claude · sdk and codex · sdk carry it out of band, and not in turn one", CODEX, async () => {
   for (const agent of ["claude", "codex"] as const) {
     const repo = seedRepo(`${agent}-sdk`);
     setRule(repo, RULE);
@@ -407,7 +413,7 @@ test("an SDK dispatch with no rules passes an empty out-of-band value", async ()
 
 // ---- the launch snapshot ----
 
-test("the snapshot records what was delivered, survives every rotation, and never re-resolves", async () => {
+test("the snapshot records what was delivered, survives every rotation, and never re-resolves", TERMINAL, async () => {
   const repo = seedRepo("snapshot-repo");
   setRule(repo, RULE);
   const run = await terminalDispatch({
@@ -513,7 +519,7 @@ test("a multi-repo dispatch's row holds the WHOLE composed block and one source 
   assert.equal(supervisor.starts[0]?.standingInstructions?.delivery.text, snapshot.text);
 });
 
-test("the out-of-band fallback turn one keeps manifest -> instructions -> intent order", async () => {
+test("the out-of-band fallback turn one keeps manifest -> instructions -> intent order", CODEX, async () => {
   // A Codex SDK launch can only discover at launch that its channel is unusable, so the
   // dispatcher hands the supervisor a SECOND turn one with the block already composed in. It
   // has to be composed the same way the channel-less pairs compose theirs - by
@@ -855,7 +861,7 @@ function registryTask(run: TerminalRun, taskId: string) {
   return task;
 }
 
-test("Pi standing instructions move out of turn one without changing the empty launch", async () => {
+test("Pi standing instructions move out of turn one without changing the empty launch", PI, async () => {
   const repo = seedRepo("pi-terminal-channel");
   const intent = "THE-OPERATOR-REQUEST";
   const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-none", intent });
@@ -875,7 +881,7 @@ test("Pi standing instructions move out of turn one without changing the empty l
 // Opt-in runtime measurement. The temporary observer only reads the live system prompt;
 // it never supplies instructions, calls a model, or installs the later phase's extension.
 test("live Pi receives the dispatched block once and preserves another append", {
-  skip: !process.env.MISSION_PI_LIVE_PROBE_BIN,
+  skip: skipOnWin32("Pi is unavailable on win32") || !process.env.MISSION_PI_LIVE_PROBE_BIN,
 }, async () => {
   const repo = seedRepo("pi-live-channel");
   setRule(repo, RULE);

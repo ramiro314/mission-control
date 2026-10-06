@@ -14,11 +14,14 @@ import {
   resolveInstallDestination,
   userAppsDir,
 } from "../scripts/install-destination.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
 
 const HOME = "/Users/someone";
 const USER_DIR = join(HOME, "Applications");
 
-test("a fresh install with no arguments goes to this account's own Applications folder", () => {
+test("a fresh install with no arguments goes to this account's own Applications folder", INSTALLER, () => {
   assert.deepEqual(resolveInstallDestination({ home: HOME }), {
     appsDir: USER_DIR,
     installScope: "user",
@@ -46,7 +49,7 @@ test("the fixed system destination is never the personal default", () => {
   });
 });
 
-test("--apps-dir stays a transport override and never becomes a system opt-out", () => {
+test("--apps-dir stays a transport override and never becomes a system opt-out", INSTALLER, () => {
   // Every update helper ever shipped forwards the receipt's own directory through --apps-dir.
   // Reading that as consent would convert every legacy install into a deliberate system one
   // during the very update that is supposed to leave it eligible to move.
@@ -65,7 +68,7 @@ test("--apps-dir stays a transport override and never becomes a system opt-out",
   assert.equal(classifyAppsDir("/Applications", HOME), null);
 });
 
-test("an explicit policy already in the receipt survives the next update", () => {
+test("an explicit policy already in the receipt survives the next update", INSTALLER, () => {
   const system = { appPath: "/Applications/Mission Control.app", installScope: "system" as const };
   assert.deepEqual(
     resolveInstallDestination({ appsDir: "/Applications", receipt: system, home: HOME }),
@@ -79,7 +82,7 @@ test("an explicit policy already in the receipt survives the next update", () =>
   });
 });
 
-test("an ordinary reinstall stays where the receipt says, and an unknown override is custom", () => {
+test("an ordinary reinstall stays where the receipt says, and an unknown override is custom", INSTALLER, () => {
   // Relocation is an update-time decision. A repeated `make install` must not move an app out
   // from under somebody who never asked it to.
   const legacy = { appPath: "/Applications/Mission Control.app" };
@@ -265,7 +268,7 @@ test("a file, a foreign owner, and an unwritable folder each stop the install wi
   assert.ok(!unwritable.includes("administrator"));
 });
 
-test("the destination inspector reads the real filesystem, spaces and symlinks included", () => {
+test("the destination inspector reads the real filesystem, spaces and symlinks included", INSTALLER, () => {
   const root = mkdtempSync(join(tmpdir(), "mission-destination-"));
   try {
     const home = join(root, "a home with spaces");

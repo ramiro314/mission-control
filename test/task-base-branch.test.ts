@@ -17,6 +17,9 @@ import {
   UpdateTaskSchema,
 } from "../src/shared/protocol.ts";
 import { TaskSourcesConfigSchema } from "../src/shared/task-source.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 // A task's optional base branch: stored on the row, accepted by the task API and MCP, checked
 // against origin, followed by the worktree start point at dispatch and at reset, and named to
@@ -211,7 +214,7 @@ function piDispatcher(registry: InstanceType<typeof Registry>, launched: { cwd: 
   });
 }
 
-test("dispatch starts a task with a base branch from origin/<base>, and tells the agent where to open its PR", async () => {
+test("dispatch starts a task with a base branch from origin/<base>, and tells the agent where to open its PR", PI, async () => {
   const { repo, mainTip, releaseTip } = mkRepo("dispatch-base");
   const registry = new Registry();
   registry.upsertTask(dispatchingTask("based", repo, "release/windows"));
@@ -228,7 +231,7 @@ test("dispatch starts a task with a base branch from origin/<base>, and tells th
   assert.match(prompt, /gh pr create --base release\/windows/);
 });
 
-test("dispatch refuses a base branch origin no longer has, before anything is provisioned", async () => {
+test("dispatch refuses a base branch origin no longer has, before anything is provisioned", PI, async () => {
   const { repo } = mkRepo("dispatch-gone");
   const registry = new Registry();
   registry.upsertTask(dispatchingTask("gone", repo, "release/gone"));

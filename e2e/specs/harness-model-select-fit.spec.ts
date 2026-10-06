@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectOptionsFitSelect } from "../fixtures/select-fit.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * The accessible name every harness card gives its Model picker, and the only thing this
@@ -14,6 +15,8 @@ const MODEL_PICKER = /^Default model for dispatched .+ sessions$/;
 /** A row only live Codex discovery supplies, so its presence proves the real catalog loaded. */
 const CODEX_DISCOVERED = "gpt-5.4";
 const EVIDENCE = artifactsDir("harness-model-select-fit");
+
+skipSpecOnWin32(test, "Codex is unavailable on win32; both tests wait on live Codex model discovery");
 
 /** Reviewer evidence, off by default: the assertions above are what gates the change. */
 async function shoot(page: Page, name: string): Promise<void> {

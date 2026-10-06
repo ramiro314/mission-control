@@ -10,6 +10,7 @@ import { migrationPlanFixture } from '../../test/helpers/migration-plan.ts';
 import { MIGRATION_PROTOCOL, migrationBundleIdentity, prepareMigration } from '../../scripts/install-migration.mjs';
 import { expectContentClearsBorder } from '../fixtures/modal-inset.ts';
 import { expect, test } from '../fixtures/test.ts';
+import { skipSpecOnWin32 } from '../../test/helpers/win32-skip.ts';
 
 const migration: UpdateMigration = {source: '/Applications/Mission Control.app', target: '/Users/Fixture/Applications/Mission Control.app', status: 'offered', repairs: []};
 const ready: UpdateSnapshot = {phase: 'ready', currentVersion: '1.17.0', newVersion: '1.17.1', releaseTag: 'v1.17.1', stagedAt: 1, lastOutcome: null, migration};
@@ -55,6 +56,7 @@ async function capture(page: Page, name: string): Promise<void> {
 }
 
 test('the packaged migration policy offers the personal destination for an alpha update', async ({dashboard, daemon}) => {
+  skipSpecOnWin32(test, 'the macOS install migration is unavailable on win32');
   // Read the shipped gate: a canned migration snapshot would pass while packaging disabled it.
   const config = readFileSync(new URL('../../electron-builder.yml', import.meta.url), 'utf8');
   const metadata = config.match(/^  missionInstallMigration:\n((?: {4}[^\n]*\n)+)/m)?.[1] ?? '';

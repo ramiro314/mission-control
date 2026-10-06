@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -305,6 +306,7 @@ test("a published node effort is the effort a run launches with and reports besi
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "E2E effort reviewer",
     guidanceMarkdown: "# E2E effort reviewer\n\nE2E_PASS_VERDICT",
@@ -335,6 +337,7 @@ test("an effort the run's model cannot run is not passed, and run detail says so
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   // Every write path refuses this combination, so it is seeded the way a capability change or
   // a restored row would leave it: a Persona on gpt-5.6-luna whose stored effort is `max`.
   // Publish freezes it, and the run is what has to notice.

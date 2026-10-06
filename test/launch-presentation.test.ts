@@ -8,6 +8,9 @@ import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/type
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TERMINAL_RUNTIME = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 // Hiding launch instructions from conversations
 // (docs/plans/hidden-launch-instructions/phase-1-durable-launch-presentation.md): a fresh
@@ -768,7 +771,7 @@ async function terminalDispatch(options: {
   return { registry, atDelivery, atSpawn, delivered, sessionId };
 }
 
-test("a terminal launch marker exists BEFORE the paste, and matches what was pasted", async () => {
+test("a terminal launch marker exists BEFORE the paste, and matches what was pasted", TERMINAL_RUNTIME, async () => {
   const repo = seedRepo("terminal-launch");
   const intent = "sort out the flexbox helper";
   const run = await terminalDispatch({
@@ -794,7 +797,7 @@ test("a terminal launch marker exists BEFORE the paste, and matches what was pas
   assert.equal(getSessionLaunchTurn(`native-task-terminal-ok`)?.displayText, intent);
 });
 
-test("a terminal launch whose delivery fails rolls its marker back", async () => {
+test("a terminal launch whose delivery fails rolls its marker back", TERMINAL_RUNTIME, async () => {
   // A marker with no delivery behind it would tell the dashboard to project a turn nothing
   // ever wrote, and the next real human message under that key is what it would be compared
   // against - so this is a correctness rollback, not tidiness.
@@ -813,7 +816,7 @@ test("a terminal launch whose delivery fails rolls its marker back", async () =>
   assert.equal(run.registry.getTask("task-terminal-fail")?.status, "failed");
 });
 
-test("Pi fingerprints the memory-pointer prefixed text it actually launched with", async () => {
+test("Pi fingerprints the memory-pointer prefixed text it actually launched with", { skip: skipOnWin32("Pi and the tmux terminal runtime are unavailable on win32") }, async () => {
   // Pi's only channel is turn one, so the repository-memory pointer is composed INTO the
   // positional prompt. Fingerprinting the pre-pointer `intent` instead would silently never
   // match, and every Pi dispatch would render its launch contract in full.

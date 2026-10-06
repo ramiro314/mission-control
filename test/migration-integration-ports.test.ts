@@ -6,6 +6,9 @@ import { stateDir } from '../src/shared/harness-runtime.mjs';
 import type { App } from 'electron';
 import { createMigrationIntegrationPorts } from '../src/main/migration-integration-ports.ts';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALL_MIGRATION = { skip: skipOnWin32("the macOS install migration is unavailable on win32") };
 
 const receipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.2.3', installedVersion: '1.2.3', sourceClone: '/source', appPath: '/Applications/Mission Control.app', installedAt: '2026-09-15T00:00:00.000Z'};
 const plan = migrationPlanFixture(receipt);
@@ -21,7 +24,7 @@ test('the production integration port routes diagnostics through the private red
 });
 
 for (const enabled of [false, true]) {
-  test(`macOS removes the source login registration before preserving login ${enabled ? 'on' : 'off'}`, async () => {
+  test(`macOS removes the source login registration before preserving login ${enabled ? 'on' : 'off'}`, INSTALL_MIGRATION, async () => {
     let source = true;
     let target = !enabled;
     const calls: string[] = [];
@@ -42,7 +45,7 @@ for (const enabled of [false, true]) {
   });
 }
 
-test('source cleanup failure leaves target login untouched and remains retryable', async () => {
+test('source cleanup failure leaves target login untouched and remains retryable', INSTALL_MIGRATION, async () => {
   let writes = 0;
   const app = {getLoginItemSettings: () => ({openAtLogin: false}), setLoginItemSettings: () => { writes++; }} as unknown as App;
   const ports = createMigrationIntegrationPorts(app, {executable, platform: 'darwin', sourceCleanup: async () => { throw new Error('source removal failed'); }});
@@ -50,7 +53,7 @@ test('source cleanup failure leaves target login untouched and remains retryable
   assert.equal(writes, 0);
 });
 
-test('Windows verifies the executable field and login repair refuses a different running bundle', async () => {
+test('Windows verifies the executable field and login repair refuses a different running bundle', INSTALL_MIGRATION, async () => {
   const app = {getLoginItemSettings: ({path}: {path?: string}) => ({openAtLogin: path === executable, executableWillLaunchAtLogin: false}), setLoginItemSettings: () => {}} as unknown as App;
   await assert.rejects(createMigrationIntegrationPorts(app, {executable, platform: 'win32'}).retargetLogin(plan, true), /could not be verified/);
   await assert.rejects(createMigrationIntegrationPorts(app, {executable: '/foreign', platform: 'darwin'}).retargetLogin(plan, true), /personal installation/);

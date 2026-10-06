@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const CODEX = { skip: skipOnWin32("Codex is unavailable on win32") };
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 // What is at stake: which of two completely different things a dispatch launches.
 //
@@ -168,7 +172,7 @@ test("a fresh config uses the Agent SDK for harnesses that declare an embedded d
   assert.deepEqual(config.sessionRuntime, { claude: "sdk", codex: "sdk", pi: "terminal" });
 });
 
-test("with both toggles on, Claude and Codex dispatch through the supervisor without a home", async () => {
+test("with both toggles on, Claude and Codex dispatch through the supervisor without a home", CODEX, async () => {
   const repos = {
     claude: seedRepo("sdk-claude-repo"),
     codex: seedRepo("sdk-codex-repo"),
@@ -250,7 +254,7 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
   }
 });
 
-test("with both toggles off, Claude and Codex stay on the terminal branch", async () => {
+test("with both toggles off, Claude and Codex stay on the terminal branch", CODEX, async () => {
   const registry = new Registry();
   for (const agent of ["claude", "codex"] as const) {
     registry.upsertTask(
@@ -533,7 +537,7 @@ test("a build with no supervisor refuses the runtime rather than silently using 
   assert.match(task.error ?? "", /no session supervisor/);
 });
 
-test("a managed Pi dispatch refuses before provisioning when its extension is not ready", async () => {
+test("a managed Pi dispatch refuses before provisioning when its extension is not ready", PI, async () => {
   const repo = seedRepo("pi-extension-missing-repo");
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
   const registry = new Registry();
@@ -554,7 +558,7 @@ test("a managed Pi dispatch refuses before provisioning when its extension is no
   assert.equal(supervisor.starts.length, 0);
 });
 
-test("a managed Pi dispatch refuses before provisioning when Pi is missing but its extension is ready", async () => {
+test("a managed Pi dispatch refuses before provisioning when Pi is missing but its extension is ready", PI, async () => {
   const repo = seedRepo("pi-cli-missing-repo");
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
   const registry = new Registry();

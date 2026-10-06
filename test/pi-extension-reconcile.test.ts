@@ -12,6 +12,10 @@ import { join } from "node:path";
 import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+// Every test publishes, reads or guards the Pi integration link, which win32 does not support.
+const PI = { skip: skipOnWin32("Pi is unavailable on win32; publishes its integration through exchangePaths") };
 
 const home = mkdtempSync(join(tmpdir(), "mission-extension-reconcile-"));
 process.env.MISSION_HOME = home;
@@ -35,7 +39,7 @@ beforeEach(() => {
   writePiIntegration(join(home, "build"));
 });
 
-test("extension resolver uses the shared override, isolated home, real home order", () => {
+test("extension resolver uses the shared override, isolated home, real home order", PI, () => {
   assert.ok(spec.linkName.endsWith(".js"));
   assert.equal(capabilitiesFor("claude").extensions, null);
   assert.equal(capabilitiesFor("codex").extensions, null);
@@ -52,7 +56,7 @@ test("extension resolver uses the shared override, isolated home, real home orde
   }
 });
 
-test("off on a new install writes nothing; install, repoint and uninstall are idempotent", () => {
+test("off on a new install writes nothing; install, repoint and uninstall are idempotent", PI, () => {
   assert.equal(reconcileExtensionLink(false).changed, false);
   assert.equal(existsSync(dir), false);
   assert.equal(reconcileExtensionLink(true).changed, true);
@@ -71,7 +75,7 @@ test("off on a new install writes nothing; install, repoint and uninstall are id
 });
 
 for (const replacement of ["file", "directory", "foreign-link", "same-target-link"] as const) {
-  test(`disable preserves a concurrent ${replacement} arriving during withdrawal`, (t) => {
+  test(`disable preserves a concurrent ${replacement} arriving during withdrawal`, PI, (t) => {
     mkdirSync(dir); symlinkSync(target, link);
     const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator bytes");
     let arrival: fs.Stats | undefined;
@@ -99,7 +103,7 @@ for (const replacement of ["file", "directory", "foreign-link", "same-target-lin
   });
 }
 
-test("disable refuses a replacement arriving before it pins the observed owned inode", (t) => {
+test("disable refuses a replacement arriving before it pins the observed owned inode", PI, (t) => {
   mkdirSync(dir); symlinkSync(target, link);
   let arrival: fs.Stats | undefined;
   const fault = mockSymlinkPublication(t, "linkSymlinkNoReplace", (publish, from, to) => {
@@ -118,7 +122,7 @@ test("disable refuses a replacement arriving before it pins the observed owned i
   } finally { fault.restore(); }
 });
 
-test("disable retains a captured foreign entry and durable off when another arrival blocks restoration", async (t) => {
+test("disable retains a captured foreign entry and durable off when another arrival blocks restoration", PI, async (t) => {
   mkdirSync(dir); symlinkSync(target, link);
   writeFileSync(join(home, "pi-extension.json"), '{"enabled":true}\n');
   let arrival: fs.Stats | undefined;
@@ -145,7 +149,7 @@ test("disable retains a captured foreign entry and durable off when another arri
 });
 
 for (const operation of ["symlinkSync", "exchangePaths"] as const) {
-  test(`failed replacement ${operation} preserves the working link and enabled intent`, (t) => {
+  test(`failed replacement ${operation} preserves the working link and enabled intent`, PI, (t) => {
     const prior = join(home, "previous.js");
     const contents = "export const missionControlBuild = { previous: true };\n";
     writeFileSync(prior, contents);
@@ -184,7 +188,7 @@ for (const operation of ["symlinkSync", "exchangePaths"] as const) {
   });
 }
 
-test("real files, directories, foreign links and unknown dangling links are never modified", () => {
+test("real files, directories, foreign links and unknown dangling links are never modified", PI, () => {
   mkdirSync(dir);
   const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator code");
   // Near misses for the moved-installation repair below. A dangling link is adopted only
@@ -213,7 +217,7 @@ test("real files, directories, foreign links and unknown dangling links are neve
   }
 });
 
-test("fresh publication refuses an entry arriving while its link is still private", (t) => {
+test("fresh publication refuses an entry arriving while its link is still private", PI, (t) => {
   const symlink = fs.symlinkSync;
   let arrival: fs.Stats | undefined;
   const fault = t.mock.method(fs, "symlinkSync", (...args: Parameters<typeof fs.symlinkSync>) => {
@@ -237,7 +241,7 @@ test("fresh publication refuses an entry arriving while its link is still privat
 });
 
 for (const replacement of ["file", "directory", "foreign-link", "same-target-link"] as const) {
-  test(`replacement publication preserves a concurrent ${replacement} after its last identity read`, (t) => {
+  test(`replacement publication preserves a concurrent ${replacement} after its last identity read`, PI, (t) => {
     mkdirSync(dir);
     const prior = join(home, "previous.js");
     writeFileSync(prior, "export const missionControlBuild = {};\n");
@@ -269,7 +273,7 @@ for (const replacement of ["file", "directory", "foreign-link", "same-target-lin
 }
 
 for (const replacement of ["file", "directory", "foreign-link", "same-target-link", "missing"] as const) {
-  test(`replacement publication retains the prior owned link when ${replacement} arrives after exchange`, (t) => {
+  test(`replacement publication retains the prior owned link when ${replacement} arrives after exchange`, PI, (t) => {
     mkdirSync(dir);
     const prior = join(home, "previous.js"); writeFileSync(prior, "export const missionControlBuild = {};\n");
     symlinkSync(prior, link);
@@ -313,7 +317,7 @@ for (const replacement of ["file", "directory", "foreign-link", "same-target-lin
 
 for (const replacement of ["file", "foreign-link", "same-target-link"] as const) {
   for (const commitFails of [false, true]) {
-    test(`fresh publication does not adopt a concurrent ${replacement} before ${commitFails ? "failing" : "successful"} intent commit`, (t) => {
+    test(`fresh publication does not adopt a concurrent ${replacement} before ${commitFails ? "failing" : "successful"} intent commit`, PI, (t) => {
       mkdirSync(dir);
       const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator code");
       const stat = fs.lstatSync;
@@ -346,7 +350,7 @@ for (const replacement of ["file", "foreign-link", "same-target-link"] as const)
 
 for (const previous of [false, true]) {
   for (const conflict of ["withdrawal", "restoration"] as const) {
-    test(`${previous ? "replacement" : "fresh"} rollback preserves arrivals during ${conflict}`, (t) => {
+    test(`${previous ? "replacement" : "fresh"} rollback preserves arrivals during ${conflict}`, PI, (t) => {
       mkdirSync(dir);
       const prior = join(home, "previous.js"); writeFileSync(prior, "export const missionControlBuild = {};\n");
       if (previous) symlinkSync(prior, link);
@@ -391,7 +395,7 @@ for (const previous of [false, true]) {
   }
 }
 
-test("a second arrival blocks restoration of a foreign swap victim without deleting either entry", (t) => {
+test("a second arrival blocks restoration of a foreign swap victim without deleting either entry", PI, (t) => {
   mkdirSync(dir);
   const prior = join(home, "previous.js"); writeFileSync(prior, "export const missionControlBuild = {};\n");
   symlinkSync(prior, link);
@@ -426,7 +430,7 @@ test("a second arrival blocks restoration of a foreign swap victim without delet
 
 for (const previous of [false, true]) {
   for (const replacement of ["file", "directory", "foreign-link", "same-target-link", "missing"] as const) {
-    test(`failed ${previous ? "replacement" : "fresh"} publication preserves a concurrent ${replacement}`, () => {
+    test(`failed ${previous ? "replacement" : "fresh"} publication preserves a concurrent ${replacement}`, PI, () => {
       mkdirSync(dir);
       const prior = join(home, "previous.js");
       writeFileSync(prior, "export const missionControlBuild = {};\n");
@@ -468,7 +472,7 @@ for (const previous of [false, true]) {
       }
     });
   }
-  test(`failed ${previous ? "replacement" : "fresh"} publication rolls back its own unchanged link`, () => {
+  test(`failed ${previous ? "replacement" : "fresh"} publication rolls back its own unchanged link`, PI, () => {
     mkdirSync(dir);
     const prior = join(home, "previous.js");
     writeFileSync(prior, "export const missionControlBuild = {};\n");
@@ -481,7 +485,7 @@ for (const previous of [false, true]) {
   });
 }
 
-test("the build output layout the reconciler recognizes is the one this build writes", () => {
+test("the build output layout the reconciler recognizes is the one this build writes", PI, () => {
   // piExtensionPath keeps its specifier literal so the bundle smoke check can read it,
   // so nothing but this stops the two drifting apart.
   const previous = process.env.MISSION_PI_EXTENSION;
@@ -493,7 +497,7 @@ test("the build output layout the reconciler recognizes is the one this build wr
   } finally { if (previous === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = previous; }
 });
 
-test("a moved or deleted installation's dangling link is repaired instead of refused", () => {
+test("a moved or deleted installation's dangling link is repaired instead of refused", PI, () => {
   // Reported from a real machine: the app bundle moved from /Applications to
   // ~/Applications, so the machine-wide link pointed at a target that no longer existed.
   // Startup reconciliation refused it as "not ours", Pi silently loaded no extension, and
@@ -514,7 +518,7 @@ test("a moved or deleted installation's dangling link is repaired instead of ref
   assert.equal(existsSync(link), false);
 });
 
-test("missing build cannot replace a working link, and off removes our dangling link", () => {
+test("missing build cannot replace a working link, and off removes our dangling link", PI, () => {
   reconcileExtensionLink(true);
   rmSync(target);
   assert.equal(reconcileExtensionLink(true).blocked.length, 1);
@@ -526,7 +530,7 @@ test("missing build cannot replace a working link, and off removes our dangling 
   assert.equal(uninstallExtensionLink().changed, true);
 });
 
-test("reconciliation reports a filesystem error without mutating the installed link", () => {
+test("reconciliation reports a filesystem error without mutating the installed link", PI, () => {
   reconcileExtensionLink(true);
   const before = lstatSync(link);
   const contents = readFileSync(target, "utf8");
@@ -554,7 +558,7 @@ test("reconciliation reports a filesystem error without mutating the installed l
 });
 
 for (const operation of ["writeFileSync", "renameSync"] as const) {
-  test(`failed intent publication ${operation} preserves persisted intent and cleans staging`, async (t) => {
+  test(`failed intent publication ${operation} preserves persisted intent and cleans staging`, PI, async (t) => {
     await applyPiExtensionConfig({ enabled: true });
     const intentFile = join(home, "pi-extension.json");
     const priorIntent = readFileSync(intentFile, "utf8");
@@ -598,7 +602,7 @@ for (const operation of ["writeFileSync", "renameSync"] as const) {
   });
 }
 
-test("API GET returns default and persisted intent; PUT validates and reports foreign-file conflicts", async () => {
+test("API GET returns default and persisted intent; PUT validates and reports foreign-file conflicts", PI, async () => {
   const intentFile = join(home, "pi-extension.json");
   rmSync(intentFile, { force: true });
   const app = buildApp({ registry: {} as never, reviews: {} as never, tasks: {} as never, queues: {} as never });
@@ -632,7 +636,7 @@ test("API GET returns default and persisted intent; PUT validates and reports fo
   assert.equal(getPiExtensionConfig().enabled, false, "blocked removal cannot resurrect on restart");
 });
 
-test("standalone install persists the same intent without opening SQLite", async () => {
+test("standalone install persists the same intent without opening SQLite", PI, async () => {
   const run = (args: string[] = []) => execFileSync(process.execPath,
     ["--import", "tsx", "scripts/install-pi-extension.ts", ...args],
     { env: process.env, encoding: "utf8" });
@@ -661,7 +665,7 @@ test("standalone install persists the same intent without opening SQLite", async
   assert.throws(() => run(["--invalid"]));
 });
 
-test("standalone install fails closed on a malformed inherited isolation capture", () => {
+test("standalone install fails closed on a malformed inherited isolation capture", PI, () => {
   const isolated = join(home, "malformed-capture");
   assert.throws(() => execFileSync(process.execPath,
     ["--import", "tsx", "scripts/install-pi-extension.ts"],
@@ -670,7 +674,7 @@ test("standalone install fails closed on a malformed inherited isolation capture
   assert.equal(existsSync(isolated), false, "refusal happens before any state or link write");
 });
 
-test("intent writer reuses the state guard before touching an operator state home", () => {
+test("intent writer reuses the state guard before touching an operator state home", PI, () => {
   const previous = process.env.MISSION_HOME;
   process.env.MISSION_HOME = join(homedir(), ".mission-control");
   try {
@@ -678,7 +682,7 @@ test("intent writer reuses the state guard before touching an operator state hom
   } finally { process.env.MISSION_HOME = previous; }
 });
 
-test("an accepted intent write cannot exempt a frozen database path from isolation", async () => {
+test("an accepted intent write cannot exempt a frozen database path from isolation", PI, async () => {
   const previous = process.env.MISSION_HOME;
   process.env.MISSION_HOME = join(home, "other-state");
   try {
@@ -687,7 +691,7 @@ test("an accepted intent write cannot exempt a frozen database path from isolati
   } finally { process.env.MISSION_HOME = previous; }
 });
 
-test("malformed installation intent is never overwritten or interpreted as off", async () => {
+test("malformed installation intent is never overwritten or interpreted as off", PI, async () => {
   const file = join(home, "pi-extension.json");
   const prior = readFileSync(file, "utf8");
   writeFileSync(file, "operator data");
@@ -700,7 +704,7 @@ test("malformed installation intent is never overwritten or interpreted as off",
   } finally { writeFileSync(file, prior); }
 });
 
-test("uninstall-hooks tears down extension even when no Claude hooks remain, without enabling it", () => {
+test("uninstall-hooks tears down extension even when no Claude hooks remain, without enabling it", PI, () => {
   const settings = join(home, "settings.json"); writeFileSync(settings, "{}\n");
   reconcileExtensionLink(true);
   const args = ["--import", "tsx", "hooks/install.mjs", "--uninstall"];
@@ -714,7 +718,7 @@ test("uninstall-hooks tears down extension even when no Claude hooks remain, wit
 
 // Exercise destructive calls against a disposable operator home, so a broken guard
 // fails the test without harming the actual operator. Preserve inherited test signals.
-test("isolation guard refuses exact, dot-dot and symlinked live paths on install and teardown", () => {
+test("isolation guard refuses exact, dot-dot and symlinked live paths on install and teardown", PI, () => {
   const fake = join(home, "operator"); mkdirSync(fake, { recursive: true });
   const script = `
     import assert from 'node:assert/strict';
@@ -739,7 +743,7 @@ test("isolation guard refuses exact, dot-dot and symlinked live paths on install
   assert.match(output, /link unchanged/);
 });
 
-test("real operator paths stay unchanged through a scratch symlink and dot-dot spelling", () => {
+test("real operator paths stay unchanged through a scratch symlink and dot-dot spelling", PI, () => {
   const real = join(homedir(), ...spec.homeDir);
   const snapshot = () => existsSync(real) ? readdirSync(real).sort().map((name) => {
     const path = join(real, name); const stat = lstatSync(path);
@@ -774,7 +778,7 @@ async function waitForListening(child: ChildProcess, output: () => string): Prom
   }
 }
 
-test("an actual isolated daemon leaves the operator's real extension directory unchanged", async () => {
+test("an actual isolated daemon leaves the operator's real extension directory unchanged", PI, async () => {
   const real = join(homedir(), ...spec.homeDir);
   const snapshot = () => existsSync(real) ? readdirSync(real).sort().map((name) => {
     const path = join(real, name); const stat = lstatSync(path);
@@ -803,7 +807,7 @@ test("an actual isolated daemon leaves the operator's real extension directory u
 });
 
 for (const clockAdvanceMs of [0, 17 * 60_000]) {
-  test(`daemon startup logs failed extension reconciliation and remains available${clockAdvanceMs ? " across a wall-clock jump" : ""}`, async (t) => {
+  test(`daemon startup logs failed extension reconciliation and remains available${clockAdvanceMs ? " across a wall-clock jump" : ""}`, PI, async (t) => {
     const isolated = join(home, `failed-startup-reconcile-${clockAdvanceMs}`);
     const extensions = join(isolated, spec.isolatedDirName);
     mkdirSync(extensions, { recursive: true });
@@ -849,7 +853,7 @@ for (const clockAdvanceMs of [0, 17 * 60_000]) {
   });
 }
 
-test("daemon startup upgrades an enabled legacy link to its bundled generation and retains the old files", async () => {
+test("daemon startup upgrades an enabled legacy link to its bundled generation and retains the old files", PI, async () => {
   const isolated = join(home, "startup-upgrade");
   const extensions = join(isolated, spec.isolatedDirName);
   mkdirSync(extensions, { recursive: true });

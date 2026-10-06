@@ -463,6 +463,7 @@ test("commission disclosures reset to their feature defaults when rail selection
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   const dispatchCommission = async (title: string, planSlug: string): Promise<void> => {
@@ -577,6 +578,7 @@ test("a recoverable Engineer land refusal is visible everywhere until provider r
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
   const layout = await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
   expect(layout.ok, await layout.text()).toBe(true);

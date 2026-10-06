@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
@@ -18,6 +19,7 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
   page,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
   await page.setViewportSize({ width: 1440, height: 1200 });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
@@ -117,6 +119,7 @@ test.describe("with iTerm2 installed", () => {
   test.use({ daemonEnv: { ITERM_BIN: "/usr/bin/true" } });
 
   test("Setup offers iTerm2 as a registry-driven launch target", async ({ page, daemon }) => {
+    skipSpecOnWin32(test, "iTerm and the terminal runtime are unavailable on win32");
     await page.route("**/api/setup/install", async (route) => {
       expect(route.request().postDataJSON()).toEqual({ id: "wezterm", backend: "iterm" });
       await route.fulfill({

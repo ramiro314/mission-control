@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const home = mkdtempSync(join(tmpdir(), "managed-resume-"));
 process.env.MISSION_HOME = home;
@@ -29,6 +30,8 @@ const { TerminalLaunchError } = await import("../src/server/terminal/launch-erro
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const session = (id: string) => mkSession({ id, runtime: "sdk", agentSessionId: id, cwd: home, terminals: [] });
+// The real wrapper is a /bin/sh script whose process group these tests signal; win32 has neither.
+const WRAPPER = { skip: skipOnWin32("the terminal runtime is unavailable on win32; runs the managed resume wrapper under /bin/sh and signals its process group") };
 const context = { managed: true, requiredTools: [], extraDirs: [] } as const;
 
 test("concurrent session aliases admit only one preparation for a native conversation", async () => {
@@ -295,7 +298,7 @@ test("interrupted provisioning, revocation and deletion reconcile idempotently",
   assert.equal(existsSync(lease.home), false);
 });
 
-for (const ending of ["normal", "crash", "SIGHUP", "SIGINT", "SIGQUIT"] as const) test(`real wrapper ${ending} ${ending === "crash" ? "retains a surviving child" : "releases its home with an unambiguous inventory"}`, async () => {
+for (const ending of ["normal", "crash", "SIGHUP", "SIGINT", "SIGQUIT"] as const) test(`real wrapper ${ending} ${ending === "crash" ? "retains a surviving child" : "releases its home with an unambiguous inventory"}`, WRAPPER, async () => {
   const crash = ending === "crash";
   const nativeId = `real-wrapper-${ending}`;
   const p = await prepareTerminalResume(session(nativeId), context);
@@ -361,7 +364,7 @@ console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 
 });
 
 for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
-  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 20_000 }, async () => {
+  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { ...WRAPPER, timeout: 20_000 }, async () => {
   const nativeId = `detached-${doubleFork}-${signal}`;
   writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
   const p = await prepareTerminalResume(session(nativeId), context);

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
@@ -51,6 +52,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
 }
 
 test("a Codex Persona out of quota shows the provider's reason on its failed node", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   test.setTimeout(120_000);
   const sessionId = await dispatch(dashboard, daemon);
   const reviewer = await api<{ id: string }>(daemon, "/api/personas", {

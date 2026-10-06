@@ -17,6 +17,7 @@ import {
   toggleConductorObservation,
 } from "../fixtures/conductor-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 // The installed-engine Phase 1 vertical slice. The fake CLI records argv and owns its project
 // registry, while the browser drives the separate Mission Control consent write. No agent binary
@@ -668,6 +669,7 @@ test.describe("with a verified checkout and an unresponsive hosted terminal", ()
   });
 
   test("reports only that the installer terminal may still be opening", async ({ page, daemon }) => {
+    skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
     test.setTimeout(35_000);
     await openConductor(page, daemon.baseURL);
     await page.getByRole("button", { name: "Review installer" }).click();
