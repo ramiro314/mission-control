@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
+import { CHECK_WORKTREES_DIR } from "../src/server/config.ts";
+import { provisionWorktree } from "../src/server/dispatcher.ts";
 import { enableWorktreeLongPaths } from "../src/server/git/long-paths.ts";
 import { run, stubRun } from "../src/server/util/exec.ts";
 import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
+import { GitCheckTreeProvider } from "../src/server/workflows/check-lease.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 
 const roots: string[] = [];
@@ -88,4 +91,64 @@ test("a failed core.longpaths write stops the add before git worktree add runs",
     outcomeUnknown: false,
   });
   assert.deepEqual(steps, ["config core.longpaths"]);
+});
+
+/**
+ * A real failed `core.longpaths` write: git takes `config.lock` with O_EXCL, so a directory
+ * already standing there makes `git config` refuse with "could not lock config file".
+ */
+function lockConfig(clone: string): void {
+  mkdirSync(join(clone, ".git", "config.lock"));
+}
+
+/** The registered worktrees, which a refused add must leave at the main checkout alone. */
+function worktreeCount(clone: string): number {
+  return git(clone, "worktree", "list", "--porcelain").split("\n").filter((line) => line.startsWith("worktree ")).length;
+}
+
+test("the dispatcher's git fallback sets core.longpaths on win32 and nothing on macOS", async () => {
+  for (const platform of ["win32", "darwin"] as const) {
+    const { clone, sha } = repository();
+    const tree = await provisionWorktree(clone, `fallback-${platform}`, "slug", platform, sha, 0, undefined, platform);
+    assert.equal(tree.provider, "git");
+    if (platform === "win32") {
+      assert.equal(git(tree.path, "config", "core.longpaths"), "true");
+    } else {
+      assert.throws(() => git(tree.path, "config", "core.longpaths"), "macOS leaves the repository config alone");
+    }
+  }
+});
+
+test("a failed core.longpaths write stops the dispatcher's git fallback before it adds a worktree", async () => {
+  const { clone, sha } = repository();
+  lockConfig(clone);
+  await assert.rejects(
+    provisionWorktree(clone, "fallback-locked", "slug", "locked", sha, 0, undefined, "win32"),
+    /^Error: git config core\.longpaths failed: .*could not lock config file/,
+  );
+  assert.equal(worktreeCount(clone), 1);
+  assert.throws(() => git(clone, "rev-parse", "--verify", "refs/heads/harness/slug-locked"), "no branch was created");
+});
+
+test("check worktrees set core.longpaths on win32 and nothing on macOS", async () => {
+  for (const platform of ["win32", "darwin"] as const) {
+    const { clone, sha } = repository();
+    const lease = await new GitCheckTreeProvider(platform).acquire({ repoRoot: clone, attemptId: `check-${platform}`, baseSha: sha });
+    if (platform === "win32") {
+      assert.equal(git(lease.path, "config", "core.longpaths"), "true");
+    } else {
+      assert.throws(() => git(lease.path, "config", "core.longpaths"), "macOS leaves the repository config alone");
+    }
+  }
+});
+
+test("a failed core.longpaths write stops a check worktree before it is added", async () => {
+  const { clone, sha } = repository();
+  lockConfig(clone);
+  await assert.rejects(
+    new GitCheckTreeProvider("win32").acquire({ repoRoot: clone, attemptId: "check-locked", baseSha: sha }),
+    /^Error: git config core\.longpaths failed: .*could not lock config file/,
+  );
+  assert.equal(worktreeCount(clone), 1);
+  assert.equal(existsSync(join(CHECK_WORKTREES_DIR, "check-locked")), false);
 });

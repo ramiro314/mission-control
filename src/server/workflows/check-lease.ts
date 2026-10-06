@@ -7,6 +7,7 @@ import { openDb } from "../db.ts";
 import { verifyPinnedBase } from "../dispatcher.ts";
 import { verifyHeadIs } from "../git/ensemble-snapshot.ts";
 import { enableWorktreeLongPaths } from "../git/long-paths.ts";
+import { hostPlatform } from "../platform/host.ts";
 import { run, stubRun, type RunResult } from "../util/exec.ts";
 import { LegacyTreehouseService } from "../worktrees/legacy-treehouse.ts";
 import { WorktreeManager } from "../worktrees/manager.ts";
@@ -435,6 +436,9 @@ const GIT_WORKTREE_REMOVE_TIMEOUT_MS = 30_000;
 export class GitCheckTreeProvider implements CheckTreeProvider {
   readonly kind: WorktreeProvider = "git";
 
+  /** `platform` is the host whose worktree git config applies; injected so a test can ask about win32. */
+  constructor(private readonly platform: NodeJS.Platform = hostPlatform()) {}
+
   async acquire(input: {
     repoRoot: string;
     attemptId: string;
@@ -449,7 +453,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       );
     }
 
-    const longPaths = await enableWorktreeLongPaths(input.repoRoot);
+    const longPaths = await enableWorktreeLongPaths(input.repoRoot, run, this.platform);
     if (longPaths && longPaths.code !== 0) {
       throw new Error(`git config core.longpaths failed: ${longPaths.stderr.trim() || `exit ${longPaths.code}`}`);
     }
