@@ -2,7 +2,8 @@
  * Mission Control's own `ci.yml` runs the `docs-only-ci` skill's two step scripts, pasted
  * verbatim as `run: |` block scalars. This holds the two copies byte for byte, so editing one
  * without the other fails `npm test`, and holds the wiring around them: the `changes` and
- * `CI result` jobs, and the docs-only condition on every gated job.
+ * `CI result` jobs, the docs-only condition on every gated job, and the Node 26 jobs that stay
+ * off pull requests and so out of `CI result`.
  *
  * The repository has no YAML parser, so the workflow is read as text, the way
  * `test/oss-readiness.test.ts` reads it.
@@ -19,8 +20,11 @@ const WORKFLOW = repoFile(".github/workflows/ci.yml");
 const DETECT = repoFile("skills/docs-only-ci/assets/detect-docs-only.sh");
 const CI_RESULT = repoFile("skills/docs-only-ci/assets/ci-result.sh");
 
-const GATED = ["gates", "unit-node-24", "unit-node-26", "e2e"];
+const GATED = ["gates", "unit-node-24", "build-smoke-node-24", "e2e"];
 const DOCS_ONLY_IF = "if: needs.changes.outputs.docs_only != 'true'";
+/** Never run on a pull request, so `CI result` cannot need them, as it cannot need `package`. */
+const OFF_PULL_REQUESTS = ["dependencies-node-26", "build-smoke-node-26", "unit-node-26"];
+const OFF_PULL_REQUESTS_IF = "if: github.event_name != 'pull_request'";
 
 /** Each top-level job's id and its body, the lines up to the next job id. */
 function jobs(workflow: string): Map<string, string> {
@@ -148,7 +152,17 @@ test("every gated job needs changes and skips on a docs-only run", () => {
   }
 });
 
-test("CI result always runs, needs every job but package, and lets only the gated jobs skip", () => {
+test("the Node 26 jobs skip only on a pull request and need nothing that can skip", () => {
+  const all = jobs(WORKFLOW);
+  for (const id of OFF_PULL_REQUESTS) {
+    const body = all.get(id);
+    assert.ok(body, `ci.yml has a ${id} job`);
+    assert.deepEqual(body.match(/^ {4}if:.*$/gm), [`    ${OFF_PULL_REQUESTS_IF}`], `${id}'s only condition is the event`);
+    assert.ok(needs(body).every((need) => OFF_PULL_REQUESTS.includes(need)), `${id} needs only Node 26 jobs`);
+  }
+});
+
+test("CI result always runs, needs every pull-request job, and lets only the gated jobs skip", () => {
   const all = jobs(WORKFLOW);
   const body = all.get("ci-result");
   assert.ok(body, "ci.yml has a ci-result job");
@@ -157,7 +171,9 @@ test("CI result always runs, needs every job but package, and lets only the gate
   assert.match(body, /^ {4}if: always\(\)$/m);
   assert.deepEqual(
     needs(body).toSorted(),
-    [...all.keys()].filter((id) => id !== "ci-result" && id !== "package").toSorted(),
+    [...all.keys()]
+      .filter((id) => id !== "ci-result" && id !== "package" && !OFF_PULL_REQUESTS.includes(id))
+      .toSorted(),
   );
   assert.deepEqual(blockLines(body, "SKIPPABLE"), GATED);
 });

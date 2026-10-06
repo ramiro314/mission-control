@@ -1,5 +1,5 @@
 name: Run unit shard
-description: Restore one Node dependency tree and run one complete unit shard, rerun its failed test files once, then build and smoke check.
+description: Restore one Node dependency tree and run one complete unit shard, then rerun its failed test files once. Build and smoke run once per Node release in the build-smoke jobs, not here.
 
 inputs:
   node-version:
@@ -93,12 +93,3 @@ runs:
         path: ${{ runner.temp }}/flake/report.json
         if-no-files-found: warn
         retention-days: 7
-
-    - name: Build
-      shell: bash
-      run: npm run build
-
-    # Executes the bundles produced by Build, not the source modules covered by unit tests.
-    - name: Smoke the built bundles
-      shell: bash
-      run: npm run smoke

@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (one provisioning path in the unit shard; the rest of the plan is ticketed) | #200 (plan), #214 (one provisioning path) |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, and one provisioning path in the unit shard; balanced sharding, shard budget and tree reuse to follow) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1066,15 +1066,17 @@ through a bundled skill.
   `run:` body is `skills/docs-only-ci/assets/detect-docs-only.sh` verbatim with
   `DOCS_ONLY_PATHS` set to `docs/*`. Only a `pull_request` event can be docs-only; every doubt
   is `false`, which runs the full suite.
-- `gates`, `unit-node-24`, `unit-node-26` and `e2e` need `changes` and carry
-  `if: needs.changes.outputs.docs_only != 'true'`. Nothing else is gated: both `dependencies`
-  jobs, `docs checks` and `flake report` run on docs-only pull requests, and `package` is
-  unchanged (tags and manual runs only).
+- `gates`, `unit-node-24`, `build-smoke-node-24` and `e2e` need `changes` and carry
+  `if: needs.changes.outputs.docs_only != 'true'`. Nothing else is gated: `dependencies-node-24`,
+  `docs checks` and `flake report` run on docs-only pull requests, the Node 26 jobs run on no
+  pull request at all (see CI time-to-green), and `package` is unchanged (tags and manual runs
+  only).
 - `flake report` keeps `if: ${{ !cancelled() }}`, so on a docs-only run it reads zero reports
   and publishes "Flaky tests: No flaky tests", which Wait for CI requires (decision 20).
 - `CI result` (job id `ci-result`, `ubuntu-latest`, `if: always()`) needs every job except
-  `package`. Its step body is `skills/docs-only-ci/assets/ci-result.sh` verbatim, with
-  `SKIPPABLE` listing exactly the four gated job ids. It is the one check branch protection
+  `package` and the Node 26 jobs, the jobs that never run on a pull request. Its step body is
+  `skills/docs-only-ci/assets/ci-result.sh` verbatim, with `SKIPPABLE` listing exactly the four
+  gated job ids. It is the one check branch protection
   should require; nothing is required on `main` today.
 - `test/docs-only-ci-template.test.ts` fails `npm test` when either `ci.yml` step body differs
   from its asset by one byte, and holds the `changes` and `ci-result` jobs, the gated jobs'
@@ -1122,12 +1124,13 @@ through a bundled skill.
   passing, which is what lets a docs-only run through Wait for CI.
 - Nothing outside `test/` reads `docs/`: typecheck, lint, build, smoke, E2E and packaging do
   not. An upstream change that makes one of them read `docs/` breaks the gate's premise.
-- `ci.yml`'s job ids `gates`, `unit-node-24`, `unit-node-26`, `e2e` and `flake-report`. An
+- `ci.yml`'s job ids `gates`, `unit-node-24`, `build-smoke-node-24`, `e2e` and `flake-report`. An
   upstream job added to `ci.yml` must also be added to `CI result`'s `needs` (the template test
   fails until it is), and to `SKIPPABLE` only if it is gated.
 
 **Upstream surfaces touched.** `.github/workflows/ci.yml` (the `changes`, `docs-checks` and
-`ci-result` jobs, the header comment, and `needs` and `if:` on `gates`, both unit jobs and `e2e`),
+`ci-result` jobs, the header comment, and `needs` and `if:` on `gates`, `unit-node-24`,
+`build-smoke-node-24` and `e2e`),
 `package.json` (`docs:links`), `AGENTS.md` (the CI paragraph's job count and the docs-only skip),
 `docs/flaky-tests.md` (`flake report` on a docs-only run), `test/init-script.test.ts` (the
 consumer jobs' `needs`),
@@ -1142,17 +1145,36 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 
 | Field | Value |
 | --- | --- |
-| Status | **In progress**. Section 3 of the plan (one provisioning path in the unit shard) is built; sections 1, 2 and 4 to 8 are separate tickets. |
-| PRs | #200 (plan), #214 (one provisioning path in the unit shard) |
-| Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), "Design" section 3 and decision 6 |
-| Upstream candidate | Maybe. The download retry and the single provisioning path are generic; the shard action is shaped around the fork's flake-aware testing. |
+| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, and a unit shard provisions once through `pretest`. Duration-balanced unit sharding, shard counts from a concurrency budget and `main`-push tree reuse are planned and not built. |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3) |
+| Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
+| Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
 
-**Intent.** Cut CI wall clock to green by removing work every run repeats. A unit shard
-provisioned its environment twice, once in the action and again through `pretest`, and its
-`posttest` reran the two workflow-evidence test files its own glob already held.
+**Intent.** A pull request waited about 12 minutes for `CI result`, though its longest job took
+about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
+Free's 20 concurrent jobs per account, and every unit shard built and smoked the same `dist/`.
+Each shard also provisioned its environment twice, in the action and again through `pretest`,
+and its `posttest` reran two test files its own glob already held. The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
+`main`.
 
 **Behavior contracts.**
 
+- `dependencies-node-26`, `unit-node-26` and `build-smoke-node-26` carry
+  `if: github.event_name != 'pull_request'` and no other condition, and need only Node 26 jobs.
+  They run on every push to `main`, tag and manual run, and never on a pull request.
+- `build-smoke-node-24` (`needs: [changes, dependencies-node-24]`, the docs-only condition) and
+  `build-smoke-node-26` (`needs: dependencies-node-26`) run on `ubuntu-latest`, restore
+  `node_modules` with `fail-on-cache-miss`, then run `npm run build` and `npm run smoke`.
+- `.github/actions/run-unit-shard/action.yml` has no `Build` or `Smoke the built bundles` step,
+  and its description says build and smoke run in the build-smoke jobs.
+- `CI result` needs `build-smoke-node-24` and none of the Node 26 jobs, matching `package`, and
+  `SKIPPABLE` lists `build-smoke-node-24`. Its step body and the `Detect docs-only change` body
+  stay byte-identical to `skills/docs-only-ci/assets/`.
+- `flake report` still needs `unit-node-26`, and its `!cancelled()` runs it after the skip.
+- A Node 26 failure on `main` turns that workflow run red; `CI result` there does not cover
+  Node 26.
+- `test/init-script.test.ts`, `test/oss-readiness.test.ts` and
+  `test/docs-only-ci-template.test.ts` hold the job graph above.
 - `pretest` is the one definition of test provisioning, locally and in CI. The unit shard
   action runs `npm run pretest` once and has no step of its own that installs Electron or
   builds the native state lock. `Resolve Electron version` and `Cache the Electron runtime`
@@ -1162,25 +1184,37 @@ provisioned its environment twice, once in the action and again through `pretest
   a cold cache locally as well as in CI.
 - The shard's Test step runs `npm run --silent test:run` with `--test-concurrency`,
   `--test-shard` and the unit glob, not `npm test`, so `posttest` (`test:workflow-evidence`)
-  does not run in CI. JUnit output and the flake rerun both go through `test:run`.
-- Local `npm test`, with its `pretest` and `posttest`, is unchanged.
-- `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, its direct
-  `test:run` call and the absence of `npm test`; `test/electron-runtime-preflight.test.ts`
-  holds the retry.
+  does not run in CI. JUnit output and the flake rerun both go through `test:run`. Local
+  `npm test`, with its `pretest` and `posttest`, is unchanged.
+- `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, the absence of
+  `npm test`, and a Test command equal to `package.json`'s `test` script with CI's concurrency
+  and shard; `test/electron-runtime-preflight.test.ts` holds the retry.
 
 **Upstream behavior it assumes.**
 
+- The `.github/workflows/ci.yml` layout: per-release `dependencies-node-<v>` jobs producing
+  lockfile-keyed `node_modules` caches, unit shards through
+  `.github/actions/run-unit-shard/action.yml`, and `npm run build` starting with `build:native`,
+  which builds the native state lock the daemon bundle needs before smoke runs it.
+- `scripts/smoke-bundles.mjs` runs the bundles directly, with neither the Electron runtime nor a
+  display.
+- Node 24 and Node 26 are the supported releases. An upstream Node 26-only job must take the
+  same `if:` and stay out of `CI result`'s `needs`.
 - `package.json`'s `pretest` provisions everything the unit suite needs (Electron runtime,
   native state lock), and `posttest` adds only tests already inside `test/**/*.test.ts`.
 - Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
   when the download fails.
 
-**Upstream surfaces touched.** `.github/actions/run-unit-shard/action.yml` (provisioning and
-Test steps), `.github/workflows/ci.yml` (the unit matrix comment),
-`scripts/ensure-electron-runtime.mjs` and its `.d.mts`, `AGENTS.md` (the native state lock
-paragraph), `docs/flaky-tests.md` (the unit shard bullet).
+**Upstream surfaces touched.** `.github/workflows/ci.yml` (the header comment, the Node 26 jobs'
+`if:` and `needs`, the two build-smoke jobs, `flake-report`'s and `ci-result`'s comments,
+`ci-result`'s `needs` and `SKIPPABLE`), `.github/actions/run-unit-shard/action.yml` (the
+description, the removed build and smoke steps, the single `pretest` step and the direct
+`test:run` Test step), `scripts/ensure-electron-runtime.mjs` and its `.d.mts`, `AGENTS.md` (the
+CI paragraph and the native state lock paragraph), `docs/flaky-tests.md` (Node 26 on pull
+requests and the unit shard bullet), `test/init-script.test.ts`, `test/oss-readiness.test.ts`.
 
-**Fork-only files.** None.
+**Fork-only files.** `docs/plans/ci-time-to-green/plan.md`. `test/docs-only-ci-template.test.ts`
+(fork-only through Docs-only CI) now also holds the Node 26 jobs' condition.
 
 ### Windows support
 

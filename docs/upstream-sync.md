@@ -168,7 +168,13 @@ The full list, with each feature's contracts and surfaces, is the
 - **Docs-only CI**: `skills/docs-only-ci/` (with its two step scripts in `assets/`),
   `test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`, the `changes`,
   `docs checks` and `CI result` jobs in `.github/workflows/ci.yml` with the docs-only condition
-  on `gates`, unit and E2E, and the `docs:links` script in `package.json`.
+  on `gates`, Node 24 unit, `build-smoke-node-24` and E2E, and the `docs:links` script in
+  `package.json`.
+- **CI time-to-green**: in `.github/workflows/ci.yml`, the Node 26 jobs' `if:` that keeps them
+  off pull requests, the `build-smoke-node-24` and `build-smoke-node-26` jobs, and the missing
+  `Build` and `Smoke the built bundles` steps in `.github/actions/run-unit-shard/action.yml`. An
+  upstream change that adds build or smoke back to the shard, or adds a Node 26 job, needs the
+  same treatment.
 - **Shape tasks**: the `shape` task kind, **Shape this**, `src/server/plans/shape.ts`, and
   `skills/grill/`.
 - **Tickets**: `skills/tickets/`, ticket creation and adoption through `create_task`, and

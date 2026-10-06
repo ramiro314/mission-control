@@ -133,8 +133,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>CI time-to-green</td>
-<td>In progress (one provisioning path in the unit shard; the rest of the plan is ticketed)</td>
-<td>#200 (plan), #214 (one provisioning path)</td>
+<td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, and one provisioning path in the unit shard; balanced sharding, shard budget and tree reuse to follow)</td>
+<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path)</td>
 </tr>
 <tr>
 <td>Windows support</td>
@@ -1331,15 +1331,17 @@ through a bundled skill.</p>
 <code>run:</code> body is <code>skills/docs-only-ci/assets/detect-docs-only.sh</code> verbatim with
 <code>DOCS_ONLY_PATHS</code> set to <code>docs/*</code>. Only a <code>pull_request</code> event can be docs-only; every doubt
 is <code>false</code>, which runs the full suite.</li>
-<li><code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code> and <code>e2e</code> need <code>changes</code> and carry
-<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. Nothing else is gated: both <code>dependencies</code>
-jobs, <code>docs checks</code> and <code>flake report</code> run on docs-only pull requests, and <code>package</code> is
-unchanged (tags and manual runs only).</li>
+<li><code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> need <code>changes</code> and carry
+<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. Nothing else is gated: <code>dependencies-node-24</code>,
+<code>docs checks</code> and <code>flake report</code> run on docs-only pull requests, the Node 26 jobs run on no
+pull request at all (see CI time-to-green), and <code>package</code> is unchanged (tags and manual runs
+only).</li>
 <li><code>flake report</code> keeps <code>if: ${{ !cancelled() }}</code>, so on a docs-only run it reads zero reports
 and publishes &quot;Flaky tests: No flaky tests&quot;, which Wait for CI requires (decision 20).</li>
 <li><code>CI result</code> (job id <code>ci-result</code>, <code>ubuntu-latest</code>, <code>if: always()</code>) needs every job except
-<code>package</code>. Its step body is <code>skills/docs-only-ci/assets/ci-result.sh</code> verbatim, with
-<code>SKIPPABLE</code> listing exactly the four gated job ids. It is the one check branch protection
+<code>package</code> and the Node 26 jobs, the jobs that never run on a pull request. Its step body is
+<code>skills/docs-only-ci/assets/ci-result.sh</code> verbatim, with <code>SKIPPABLE</code> listing exactly the four
+gated job ids. It is the one check branch protection
 should require; nothing is required on <code>main</code> today.</li>
 <li><code>test/docs-only-ci-template.test.ts</code> fails <code>npm test</code> when either <code>ci.yml</code> step body differs
 from its asset by one byte, and holds the <code>changes</code> and <code>ci-result</code> jobs, the gated jobs&#39;
@@ -1387,12 +1389,13 @@ a catalog row and links as <code>mission-&lt;id&gt;</code>.</li>
 passing, which is what lets a docs-only run through Wait for CI.</li>
 <li>Nothing outside <code>test/</code> reads <code>docs/</code>: typecheck, lint, build, smoke, E2E and packaging do
 not. An upstream change that makes one of them read <code>docs/</code> breaks the gate&#39;s premise.</li>
-<li><code>ci.yml</code>&#39;s job ids <code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code>, <code>e2e</code> and <code>flake-report</code>. An
+<li><code>ci.yml</code>&#39;s job ids <code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code>, <code>e2e</code> and <code>flake-report</code>. An
 upstream job added to <code>ci.yml</code> must also be added to <code>CI result</code>&#39;s <code>needs</code> (the template test
 fails until it is), and to <code>SKIPPABLE</code> only if it is gated.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the <code>changes</code>, <code>docs-checks</code> and
-<code>ci-result</code> jobs, the header comment, and <code>needs</code> and <code>if:</code> on <code>gates</code>, both unit jobs and <code>e2e</code>),
+<code>ci-result</code> jobs, the header comment, and <code>needs</code> and <code>if:</code> on <code>gates</code>, <code>unit-node-24</code>,
+<code>build-smoke-node-24</code> and <code>e2e</code>),
 <code>package.json</code> (<code>docs:links</code>), <code>AGENTS.md</code> (the CI paragraph&#39;s job count and the docs-only skip),
 <code>docs/flaky-tests.md</code> (<code>flake report</code> on a docs-only run), <code>test/init-script.test.ts</code> (the
 consumer jobs&#39; <code>needs</code>),
@@ -1411,26 +1414,45 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress</strong>. Section 3 of the plan (one provisioning path in the unit shard) is built; sections 1, 2 and 4 to 8 are separate tickets.</td>
+<td><strong>In progress</strong>. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, and a unit shard provisions once through <code>pretest</code>. Duration-balanced unit sharding, shard counts from a concurrency budget and <code>main</code>-push tree reuse are planned and not built.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#200 (plan), #214 (one provisioning path in the unit shard)</td>
+<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
-<td><a href="../plans/ci-time-to-green/plan.md">ci-time-to-green/plan.md</a>, &quot;Design&quot; section 3 and decision 6</td>
+<td><a href="../plans/ci-time-to-green/plan.md">ci-time-to-green/plan.md</a>, sections 1 to 8 and decisions 1 to 15</td>
 </tr>
 <tr>
 <td>Upstream candidate</td>
-<td>Maybe. The download retry and the single provisioning path are generic; the shard action is shaped around the fork&#39;s flake-aware testing.</td>
+<td>Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork&#39;s 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic.</td>
 </tr>
 </tbody></table>
-<p><strong>Intent.</strong> Cut CI wall clock to green by removing work every run repeats. A unit shard
-provisioned its environment twice, once in the action and again through <code>pretest</code>, and its
-<code>posttest</code> reran the two workflow-evidence test files its own glob already held.</p>
+<p><strong>Intent.</strong> A pull request waited about 12 minutes for <code>CI result</code>, though its longest job took
+about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
+Free&#39;s 20 concurrent jobs per account, and every unit shard built and smoked the same <code>dist/</code>.
+Each shard also provisioned its environment twice, in the action and again through <code>pretest</code>,
+and its <code>posttest</code> reran two test files its own glob already held. The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
+<code>main</code>.</p>
 <p><strong>Behavior contracts.</strong></p>
 <ul>
+<li><code>dependencies-node-26</code>, <code>unit-node-26</code> and <code>build-smoke-node-26</code> carry
+<code>if: github.event_name != &#39;pull_request&#39;</code> and no other condition, and need only Node 26 jobs.
+They run on every push to <code>main</code>, tag and manual run, and never on a pull request.</li>
+<li><code>build-smoke-node-24</code> (<code>needs: [changes, dependencies-node-24]</code>, the docs-only condition) and
+<code>build-smoke-node-26</code> (<code>needs: dependencies-node-26</code>) run on <code>ubuntu-latest</code>, restore
+<code>node_modules</code> with <code>fail-on-cache-miss</code>, then run <code>npm run build</code> and <code>npm run smoke</code>.</li>
+<li><code>.github/actions/run-unit-shard/action.yml</code> has no <code>Build</code> or <code>Smoke the built bundles</code> step,
+and its description says build and smoke run in the build-smoke jobs.</li>
+<li><code>CI result</code> needs <code>build-smoke-node-24</code> and none of the Node 26 jobs, matching <code>package</code>, and
+<code>SKIPPABLE</code> lists <code>build-smoke-node-24</code>. Its step body and the <code>Detect docs-only change</code> body
+stay byte-identical to <code>skills/docs-only-ci/assets/</code>.</li>
+<li><code>flake report</code> still needs <code>unit-node-26</code>, and its <code>!cancelled()</code> runs it after the skip.</li>
+<li>A Node 26 failure on <code>main</code> turns that workflow run red; <code>CI result</code> there does not cover
+Node 26.</li>
+<li><code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code> and
+<code>test/docs-only-ci-template.test.ts</code> hold the job graph above.</li>
 <li><code>pretest</code> is the one definition of test provisioning, locally and in CI. The unit shard
 action runs <code>npm run pretest</code> once and has no step of its own that installs Electron or
 builds the native state lock. <code>Resolve Electron version</code> and <code>Cache the Electron runtime</code>
@@ -1440,24 +1462,36 @@ stay, so the runtime <code>pretest</code> probes is normally restored rather tha
 a cold cache locally as well as in CI.</li>
 <li>The shard&#39;s Test step runs <code>npm run --silent test:run</code> with <code>--test-concurrency</code>,
 <code>--test-shard</code> and the unit glob, not <code>npm test</code>, so <code>posttest</code> (<code>test:workflow-evidence</code>)
-does not run in CI. JUnit output and the flake rerun both go through <code>test:run</code>.</li>
-<li>Local <code>npm test</code>, with its <code>pretest</code> and <code>posttest</code>, is unchanged.</li>
-<li><code>test/flake-report-action.test.ts</code> holds the shard&#39;s single <code>npm run pretest</code>, its direct
-<code>test:run</code> call and the absence of <code>npm test</code>; <code>test/electron-runtime-preflight.test.ts</code>
-holds the retry.</li>
+does not run in CI. JUnit output and the flake rerun both go through <code>test:run</code>. Local
+<code>npm test</code>, with its <code>pretest</code> and <code>posttest</code>, is unchanged.</li>
+<li><code>test/flake-report-action.test.ts</code> holds the shard&#39;s single <code>npm run pretest</code>, the absence of
+<code>npm test</code>, and a Test command equal to <code>package.json</code>&#39;s <code>test</code> script with CI&#39;s concurrency
+and shard; <code>test/electron-runtime-preflight.test.ts</code> holds the retry.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
+<li>The <code>.github/workflows/ci.yml</code> layout: per-release <code>dependencies-node-&lt;v&gt;</code> jobs producing
+lockfile-keyed <code>node_modules</code> caches, unit shards through
+<code>.github/actions/run-unit-shard/action.yml</code>, and <code>npm run build</code> starting with <code>build:native</code>,
+which builds the native state lock the daemon bundle needs before smoke runs it.</li>
+<li><code>scripts/smoke-bundles.mjs</code> runs the bundles directly, with neither the Electron runtime nor a
+display.</li>
+<li>Node 24 and Node 26 are the supported releases. An upstream Node 26-only job must take the
+same <code>if:</code> and stay out of <code>CI result</code>&#39;s <code>needs</code>.</li>
 <li><code>package.json</code>&#39;s <code>pretest</code> provisions everything the unit suite needs (Electron runtime,
 native state lock), and <code>posttest</code> adds only tests already inside <code>test/**/*.test.ts</code>.</li>
 <li>Electron&#39;s <code>install.js</code> downloads the runtime on first use (Electron 42+) and exits non-zero
 when the download fails.</li>
 </ul>
-<p><strong>Upstream surfaces touched.</strong> <code>.github/actions/run-unit-shard/action.yml</code> (provisioning and
-Test steps), <code>.github/workflows/ci.yml</code> (the unit matrix comment),
-<code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>, <code>AGENTS.md</code> (the native state lock
-paragraph), <code>docs/flaky-tests.md</code> (the unit shard bullet).</p>
-<p><strong>Fork-only files.</strong> None.</p>
+<p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the header comment, the Node 26 jobs&#39;
+<code>if:</code> and <code>needs</code>, the two build-smoke jobs, <code>flake-report</code>&#39;s and <code>ci-result</code>&#39;s comments,
+<code>ci-result</code>&#39;s <code>needs</code> and <code>SKIPPABLE</code>), <code>.github/actions/run-unit-shard/action.yml</code> (the
+description, the removed build and smoke steps, the single <code>pretest</code> step and the direct
+<code>test:run</code> Test step), <code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>, <code>AGENTS.md</code> (the
+CI paragraph and the native state lock paragraph), <code>docs/flaky-tests.md</code> (Node 26 on pull
+requests and the unit shard bullet), <code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code>.</p>
+<p><strong>Fork-only files.</strong> <code>docs/plans/ci-time-to-green/plan.md</code>. <code>test/docs-only-ci-template.test.ts</code>
+(fork-only through Docs-only CI) now also holds the Node 26 jobs&#39; condition.</p>
 <h3>Windows support</h3>
 <table>
 <thead>
