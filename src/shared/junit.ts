@@ -174,6 +174,37 @@ export function parseJUnit(xml: string): JUnitParse {
   return { ok: true, results: { cases } };
 }
 
+export type JUnitFileTimes = { ok: true; times: Map<string, number> } | { ok: false; error: string };
+
+function sumCaseTimes(element: XmlElement, into: Map<string, number>): void {
+  for (const child of element.children) {
+    if (child.name === "testcase") {
+      const seconds = Number(child.attrs.time);
+      if (!child.attrs.file || !Number.isFinite(seconds) || seconds < 0) continue;
+      into.set(child.attrs.file, (into.get(child.attrs.file) ?? 0) + seconds * 1000);
+    } else if (child.name === "testsuite" || child.name === "testsuites") {
+      sumCaseTimes(child, into);
+    }
+  }
+}
+
+/**
+ * The milliseconds each test file's cases took, keyed by the `file` the runner reported. Only
+ * `testcase` times are summed: a `testsuite`'s time already contains its cases'. Cases with no
+ * `file` or no readable `time` add nothing.
+ */
+export function junitFileTimes(xml: string): JUnitFileTimes {
+  let doc: XmlElement;
+  try {
+    doc = parseXml(xml);
+  } catch (err) {
+    return { ok: false, error: `The JUnit results are not well-formed XML: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const times = new Map<string, number>();
+  sumCaseTimes(doc, times);
+  return { ok: true, times };
+}
+
 /** The identity a rerun compares by: the same file and the same test name. */
 export function junitCaseKey(testCase: Pick<JUnitCase, "file" | "classname" | "name">): string {
   return `${testCase.file ?? ""}\u0000${testCase.classname ?? ""}\u0000${testCase.name}`;

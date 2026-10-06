@@ -17,6 +17,7 @@ import { runContextFrom, type RunContext } from "../src/flake-report-action/cont
 import { gitHubClient, type FetchLike } from "../src/flake-report-action/github.ts";
 import { publish } from "../src/flake-report-action/publish.ts";
 import { classifyPlaywright, rerunJUnit, type SpawnCommand } from "../src/flake-report-action/rerun.ts";
+import { UNIT_TEST_GLOB } from "../scripts/unit-shard.mjs";
 
 // What is at stake: CI's verdict. A flake must keep its job green and reach its history issue;
 // a real failure, or a job that failed for a reason no test explains, must never be classified
@@ -63,13 +64,19 @@ test("CI's first run and its rerun share one test invocation", () => {
   assert.equal(steps.match(/npm run pretest/g)?.length, 1);
   assert.doesNotMatch(steps, /\bnpm test\b|install-electron|build:state-lock-native/);
 
-  // The shard's command is `npm test`'s own, with CI's required concurrency and shard in place of
-  // the local fallbacks, so a change to the glob or flags in either copy fails here.
+  // The shard's command is `npm test`'s own, with CI's required concurrency in place of the local
+  // fallback and the partitioner's files in place of `--test-shard` and the glob, so a change to
+  // the flags in either copy fails here. The partitioner expands the glob `npm test` names.
+  const shardAndGlob = `\${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD} '${UNIT_TEST_GLOB}'`;
+  assert.ok(scripts.test!.endsWith(shardAndGlob));
   const expected = scripts.test!
     .replace(/--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-\d+\}/, '--test-concurrency="$MISSION_TEST_CONCURRENCY"')
-    .replace("${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}", '--test-shard="$MISSION_TEST_SHARD"');
+    .replace(shardAndGlob, '"${files[@]}"');
   const command = /^\s+(xvfb-run -a npm run --silent test:run -- .*)$/m.exec(steps)?.[1];
   assert.equal(command, `xvfb-run -a ${expected}`);
+  assert.match(steps, /^\s+mapfile -t files < "\$RUNNER_TEMP\/unit-shard-files\.txt"$/m);
+  assert.match(steps, /^\s+node scripts\/unit-shard\.mjs "\$MISSION_TEST_SHARD" > "\$RUNNER_TEMP\/unit-shard-files\.txt"$/m);
+  assert.doesNotMatch(steps, /--test-shard/);
 });
 
 // JUnit fixtures, in the shape `node --test --test-reporter=junit` writes.

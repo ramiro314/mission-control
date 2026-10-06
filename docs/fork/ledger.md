@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, and one provisioning path in the unit shard; balanced sharding, shard budget and tree reuse to follow) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path) |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, and duration-balanced unit shards; shard budget and tree reuse to follow) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), duration-balanced unit shards (PR pending) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1145,8 +1145,8 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 
 | Field | Value |
 | --- | --- |
-| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, and a unit shard provisions once through `pretest`. Duration-balanced unit sharding, shard counts from a concurrency budget and `main`-push tree reuse are planned and not built. |
-| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3) |
+| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, and unit shards are balanced by recorded file duration. Shard counts from a concurrency budget and `main`-push tree reuse are planned and not built. |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), duration-balanced unit shards (plan section 4, PR pending) |
 | Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
 | Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
 
@@ -1154,7 +1154,8 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
 Free's 20 concurrent jobs per account, and every unit shard built and smoked the same `dist/`.
 Each shard also provisioned its environment twice, in the action and again through `pretest`,
-and its `posttest` reran two test files its own glob already held. The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
+and its `posttest` reran two test files its own glob already held. Unit shards split by file
+index, so the slowest took up to about twice as long as the fastest. The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
 `main`.
 
 **Behavior contracts.**
@@ -1182,13 +1183,32 @@ and its `posttest` reran two test files its own glob already held. The fork cuts
 - `scripts/ensure-electron-runtime.mjs` retries a failed runtime install three times, waiting
   10 s and then 20 s between attempts, and fails with the last attempt's detail. This protects
   a cold cache locally as well as in CI.
-- The shard's Test step runs `npm run --silent test:run` with `--test-concurrency`,
-  `--test-shard` and the unit glob, not `npm test`, so `posttest` (`test:workflow-evidence`)
-  does not run in CI. JUnit output and the flake rerun both go through `test:run`. Local
-  `npm test`, with its `pretest` and `posttest`, is unchanged.
+- The shard's Test step runs `npm run --silent test:run` with `--test-concurrency` and the
+  shard's files, not `npm test`, so `posttest` (`test:workflow-evidence`) does not run in CI.
+  JUnit output and the flake rerun both go through `test:run`. Local `npm test`, with its
+  `pretest` and `posttest` and its index-based `MISSION_TEST_SHARD`, is unchanged.
+- A unit shard's files come from `node scripts/unit-shard.mjs <index>/<total>` (its "Select shard
+  files" step, which prints the file count), not `--test-shard`. The partitioner expands
+  `test/**/*.test.ts`, the glob `npm test` names, weights each file by its milliseconds in
+  `test/shard-timings.json` (a missing file weighs the median of the recorded ones, every file
+  the same when none are recorded), and deals longest first to the lightest shard, ties broken
+  by path and then by shard index. The result is deterministic for a file set and timings file,
+  and every file lands in exactly one shard whatever the timings say; it refuses to print an
+  empty shard, which `node --test` would read as "discover your own files".
+- Each unit shard uploads its first run's `junit.xml` as `unit-junit-node-<v>-shard-<n>`,
+  retained 7 days, whatever the test outcome (`!cancelled()`).
+- `test/shard-timings.json` is generated and never hand-edited. `npm run test:timings --
+  <run-id>` (`scripts/unit-shard-timings.ts`) downloads that run's `unit-junit-*` artifacts
+  with `gh run download`, sums `testcase` times per file per Node release (through
+  `junitFileTimes` in `src/shared/junit.ts`), averages the releases, keeps only files that
+  exist in the checkout and rewrites the file. Regeneration is manual, when shard spread drifts.
+- E2E keeps Playwright's `--shard`, and shard counts are unchanged.
 - `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, the absence of
-  `npm test`, and a Test command equal to `package.json`'s `test` script with CI's concurrency
-  and shard; `test/electron-runtime-preflight.test.ts` holds the retry.
+  `npm test` and `--test-shard`, and a Test command equal to `package.json`'s `test` script with
+  CI's concurrency and the partitioner's files in place of the shard option and glob;
+  `test/unit-shard.test.ts` holds the partition invariant, determinism, median weighting, the
+  JUnit upload and the generator's arithmetic; `test/electron-runtime-preflight.test.ts` holds
+  the retry.
 
 **Upstream behavior it assumes.**
 
@@ -1202,6 +1222,10 @@ and its `posttest` reran two test files its own glob already held. The fork cuts
   same `if:` and stay out of `CI result`'s `needs`.
 - `package.json`'s `pretest` provisions everything the unit suite needs (Electron runtime,
   native state lock), and `posttest` adds only tests already inside `test/**/*.test.ts`.
+- `node --test`'s JUnit reporter writes a `time` in seconds and an absolute `file` on every
+  `testcase`, and a `testsuite`'s time already includes its cases'.
+- Unit test files do not depend on which other files share their shard (the native state lock
+  paragraph in `AGENTS.md`), so moving a file between shards is safe.
 - Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
   when the download fails.
 
@@ -1209,11 +1233,16 @@ and its `posttest` reran two test files its own glob already held. The fork cuts
 `if:` and `needs`, the two build-smoke jobs, `flake-report`'s and `ci-result`'s comments,
 `ci-result`'s `needs` and `SKIPPABLE`), `.github/actions/run-unit-shard/action.yml` (the
 description, the removed build and smoke steps, the single `pretest` step and the direct
-`test:run` Test step), `scripts/ensure-electron-runtime.mjs` and its `.d.mts`, `AGENTS.md` (the
-CI paragraph and the native state lock paragraph), `docs/flaky-tests.md` (Node 26 on pull
-requests and the unit shard bullet), `test/init-script.test.ts`, `test/oss-readiness.test.ts`.
+`test:run` Test step over the partitioner's files, the "Select shard files" and
+"Upload JUnit results" steps), `scripts/ensure-electron-runtime.mjs` and its `.d.mts`,
+`src/shared/junit.ts` (the added `junitFileTimes`, which the bundled flake report action does not
+import), `package.json` (`test:timings`), `AGENTS.md` (the CI paragraph and the native state lock
+paragraph), `docs/flaky-tests.md` (Node 26 on pull requests, the unit shard bullet and "How unit
+shards pick their files"), `test/init-script.test.ts`, `test/oss-readiness.test.ts`,
+`test/flake-report-action.test.ts`.
 
-**Fork-only files.** `docs/plans/ci-time-to-green/plan.md`. `test/docs-only-ci-template.test.ts`
+**Fork-only files.** `docs/plans/ci-time-to-green/plan.md`, `scripts/unit-shard.mjs` and its
+`.d.mts`, `scripts/unit-shard-timings.ts`, `test/shard-timings.json`, `test/unit-shard.test.ts`. `test/docs-only-ci-template.test.ts`
 (fork-only through Docs-only CI) now also holds the Node 26 jobs' condition.
 
 ### Windows support
