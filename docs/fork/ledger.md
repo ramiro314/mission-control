@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, and shard counts from a 20-job budget; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), this PR (shard budget) |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, and shard counts from a 20-job budget; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1145,8 +1145,8 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 
 | Field | Value |
 | --- | --- |
-| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, unit shards are balanced by recorded file duration, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. A pull request's run peaks at 20 concurrent jobs, with three Node 24 unit shards and fourteen E2E shards. The median wall clock against the 8-minute target is measured on the shard budget's pull request. |
-| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), the shard budget PR (plan section 5) |
+| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, unit shards are balanced by recorded file duration, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. A pull request's run peaks at 20 concurrent jobs, with three Node 24 unit shards and fourteen E2E shards. The median wall clock against the 8-minute target is measured on #221. |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5) |
 | Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
 | Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
 
