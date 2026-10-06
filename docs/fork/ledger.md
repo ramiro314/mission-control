@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, and duration-balanced unit shards; shard budget and tree reuse to follow) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), duration-balanced unit shards (PR pending) |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, and duration-balanced unit shards; shard budget to follow) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), pending (branch `harness/duration-balanced-unit-shards-fr-3d4387`, balanced unit shards) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1145,8 +1145,8 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 
 | Field | Value |
 | --- | --- |
-| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, and unit shards are balanced by recorded file duration. Shard counts from a concurrency budget and `main`-push tree reuse are planned and not built. |
-| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), duration-balanced unit shards (plan section 4, PR pending) |
+| Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, unit shards are balanced by recorded file duration, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. Shard counts from a concurrency budget are planned and not built. |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), pending (branch `harness/duration-balanced-unit-shards-fr-3d4387`, plan section 4) |
 | Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
 | Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
 
@@ -1155,8 +1155,10 @@ about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs agai
 Free's 20 concurrent jobs per account, and every unit shard built and smoked the same `dist/`.
 Each shard also provisioned its environment twice, in the action and again through `pretest`,
 and its `posttest` reran two test files its own glob already held. Unit shards split by file
-index, so the slowest took up to about twice as long as the fastest. The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
-`main`.
+index, so the slowest took up to about twice as long as the fastest. Every merge then reran the
+whole suite on `main` against the tree its pull request had just tested. The fork cuts the
+redundant runs so a pull request is green sooner, and keeps every check that could answer
+differently on `main`.
 
 **Behavior contracts.**
 
@@ -1174,8 +1176,25 @@ index, so the slowest took up to about twice as long as the fastest. The fork cu
 - `flake report` still needs `unit-node-26`, and its `!cancelled()` runs it after the skip.
 - A Node 26 failure on `main` turns that workflow run red; `CI result` there does not cover
   Node 26.
+- Every pull request run's `changes` job writes `{tree, docs_only}` (the merge ref's
+  `HEAD^{tree}` and the docs-only answer) and uploads it as the `tested-tree` artifact, retention
+  7 days. A recording problem warns and uploads nothing, and the upload step carries
+  `continue-on-error`, so neither ever fails the run; the `main` push then finds no artifact and
+  runs everything.
+- `changes` alone holds `actions: read` and `pull-requests: read`. Its `Detect reused tree` step
+  outputs `tree_reused=true` only on a push to `refs/heads/main` whose commit maps to exactly one
+  merged pull request, whose newest `pull_request` run of `ci.yml` for that pull request's head
+  is a completed success, whose `tested-tree` artifact says `docs_only` is `false`, and whose
+  recorded tree equals the pushed commit's tree. Every other event, API error, missing or
+  unreadable artifact and mismatch outputs `false`, logs why, and exits 0.
+- `gates`, `unit-node-24`, `build-smoke-node-24` and `e2e` carry
+  `needs.changes.outputs.tree_reused != 'true'` beside the docs-only condition, and no other job
+  reads `tree_reused` except `CI result`, whose `DOCS_ONLY` env is "docs-only OR tree reused"
+  (it now means "the skippable jobs may skip"). Its step body stays the skill asset, so its log
+  says "docs-only change" for a reused tree too.
 - `test/init-script.test.ts`, `test/oss-readiness.test.ts` and
-  `test/docs-only-ci-template.test.ts` hold the job graph above.
+  `test/docs-only-ci-template.test.ts` hold the job graph above, and
+  `test/ci-tree-reuse.test.ts` holds each reuse condition and failure path.
 - `pretest` is the one definition of test provisioning, locally and in CI. The unit shard
   action runs `npm run pretest` once and has no step of its own that installs Electron or
   builds the native state lock. `Resolve Electron version` and `Cache the Electron runtime`
@@ -1228,22 +1247,28 @@ index, so the slowest took up to about twice as long as the fastest. The fork cu
   paragraph in `AGENTS.md`), so moving a file between shards is safe.
 - Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
   when the download fails.
+- The workflow file is `.github/workflows/ci.yml` (tree reuse looks its runs up by that name),
+  `actions/checkout` checks out the pull request's merge ref on `pull_request`, and a squash or
+  merge commit made while `main` has not moved has that merge ref's tree.
 
 **Upstream surfaces touched.** `.github/workflows/ci.yml` (the header comment, the Node 26 jobs'
 `if:` and `needs`, the two build-smoke jobs, `flake-report`'s and `ci-result`'s comments,
-`ci-result`'s `needs` and `SKIPPABLE`), `.github/actions/run-unit-shard/action.yml` (the
+`ci-result`'s `needs`, `SKIPPABLE` and `DOCS_ONLY` env, the `changes` job's permissions,
+outputs and three tree-reuse steps, the gated jobs' `if:`), `.github/actions/run-unit-shard/action.yml` (the
 description, the removed build and smoke steps, the single `pretest` step and the direct
 `test:run` Test step over the partitioner's files, the "Select shard files" and
 "Upload JUnit results" steps), `scripts/ensure-electron-runtime.mjs` and its `.d.mts`,
 `src/shared/junit.ts` (the added `junitFileTimes`, which the bundled flake report action does not
 import), `package.json` (`test:timings`), `AGENTS.md` (the CI paragraph and the native state lock
-paragraph), `docs/flaky-tests.md` (Node 26 on pull requests, the unit shard bullet and "How unit
-shards pick their files"), `test/init-script.test.ts`, `test/oss-readiness.test.ts`,
-`test/flake-report-action.test.ts`.
+paragraph), `docs/flaky-tests.md` (Node 26 on pull requests, the unit shard bullet, "How unit
+shards pick their files", and a reused `main` push), `test/init-script.test.ts`,
+`test/oss-readiness.test.ts`, `test/flake-report-action.test.ts`.
 
-**Fork-only files.** `docs/plans/ci-time-to-green/plan.md`, `scripts/unit-shard.mjs` and its
-`.d.mts`, `scripts/unit-shard-timings.ts`, `test/shard-timings.json`, `test/unit-shard.test.ts`. `test/docs-only-ci-template.test.ts`
-(fork-only through Docs-only CI) now also holds the Node 26 jobs' condition.
+**Fork-only files.** `docs/plans/ci-time-to-green/plan.md`, `scripts/ci-tree-reuse.sh`,
+`test/ci-tree-reuse.test.ts`, `scripts/unit-shard.mjs` and its `.d.mts`,
+`scripts/unit-shard-timings.ts`, `test/shard-timings.json`, `test/unit-shard.test.ts`.
+`test/docs-only-ci-template.test.ts` (fork-only through Docs-only CI) now also holds the Node 26
+jobs' condition and the tree-reuse wiring.
 
 ### Windows support
 

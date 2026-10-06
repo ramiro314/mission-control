@@ -25,7 +25,8 @@ name: CI
 #
 # A pull request whose every changed path is under `docs/` skips `gates`, the Node 24 unit
 # matrix, `build-smoke-node-24` and E2E. `changes` decides that; each gated job needs it and
-# carries `if: needs.changes.outputs.docs_only != 'true'`. What a docs change can break still runs:
+# carries `needs.changes.outputs.docs_only != 'true'` in its `if:`, beside the tree-reuse
+# condition below. What a docs change can break still runs:
 # `docs checks` (the doc-link check and every test matched by its discovery pattern,
 # `grep -l '\.\./docs/' test/*.test.ts`), and `flake report`, which reads zero reports and
 # publishes "Flaky tests: No flaky tests", the check Mission Control's Wait for CI requires.
@@ -34,9 +35,11 @@ name: CI
 # packaging do not today. A change that makes one of them read `docs/` must remove the gate or
 # add that step to `docs checks`.
 #
-# Only pull requests skip. A push to `main`, a tag or a manual run always runs everything, so a
-# doc-drift test the discovery pattern misses is still caught on `main`. Any doubt in detection
-# (a failed diff, no changed files, no base commit) also runs everything.
+# Only pull requests skip for docs. A tag or a manual run always runs everything, and so does a
+# push to `main` unless "Tree reuse on `main`" below applies, which a docs-only pull request's
+# run never satisfies; so a doc-drift test the discovery pattern misses is still caught on
+# `main`. Any doubt in detection (a failed diff, no changed files, no base commit) also runs
+# everything.
 #
 # A plain `paths-ignore` filter is not used: a filtered workflow never reports, so a required
 # check would wait forever. `CI result` always runs and reports instead, passing only when
@@ -56,6 +59,23 @@ name: CI
 # `needs`, as `package` is not, so their skip on a pull request fails nothing. A Node 26 failure
 # on `main` turns that workflow run red instead; `CI result` there does not cover Node 26. See
 # docs/plans/ci-time-to-green/plan.md, section 1.
+#
+# ## Tree reuse on `main`
+#
+# Every pull request run's `changes` job uploads a `tested-tree` artifact (7 days): the tree of
+# the merge ref it tested and its `docs_only` value. On a push to `main`, `changes` sets
+# `tree_reused=true` only when the pushed commit maps to exactly one merged pull request, that
+# pull request's newest `pull_request` run of this workflow for its head commit succeeded, its
+# artifact says `docs_only=false`, and its tree is the pushed commit's tree. Then `gates`, the
+# Node 24 unit matrix, `build-smoke-node-24` and E2E skip beside their docs-only condition, and
+# nothing else does: the Node 26 jobs, `dependencies-node-24`, `docs checks` and `flake report`
+# still run. Tags and manual runs never reuse. Every API error, missing artifact or mismatch
+# answers `false`, logs why, and runs everything. `scripts/ci-tree-reuse.sh` is both steps;
+# `test/ci-tree-reuse.test.ts` holds each condition.
+#
+# The artifact only comes from a green run of this workflow on the merged pull request's head,
+# whose code, this file included, is the merged tree. Reuse trusts nothing the full run would
+# not have. See docs/plans/ci-time-to-green/plan.md, sections 6 and 7.
 
 on:
   push:
@@ -73,18 +93,25 @@ permissions:
   contents: read
 
 jobs:
-  # Decides whether this run is a docs-only pull request; see "Docs-only pull requests" above.
-  # Full history so the merge base of the pull request's base and head is reachable. The step
-  # never fails on a detection problem: it answers `false` and the full suite runs. If the job
-  # itself fails, the gated jobs skip and `CI result` fails, which is loud rather than a pass.
+  # Decides whether this run is a docs-only pull request, and whether a push to `main` reuses a
+  # tree its pull request already tested; see "Docs-only pull requests" and "Tree reuse on
+  # `main`" above. Full history so the merge base of the pull request's base and head is
+  # reachable. Neither step fails on a detection problem: each answers `false` and the full
+  # suite runs. If the job itself fails, the gated jobs skip and `CI result` fails, which is loud
+  # rather than a pass.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # `actions: read` and `pull-requests: read` are for tree reuse alone: the merged pull
+    # request, its CI runs and their `tested-tree` artifact. No other job gets them.
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
+      tree_reused: ${{ steps.reuse.outputs.tree_reused }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -147,6 +174,39 @@ jobs:
           done <<< "$changed"
 
           decide true "Every changed path matches the docs patterns."
+
+      # What this pull request run tests: the merge ref's tree, and whether it skipped the suite.
+      # The later push to `main` reads it back; see "Tree reuse on `main`" above.
+      - name: Record tested tree
+        if: github.event_name == 'pull_request'
+        env:
+          DOCS_ONLY: ${{ steps.detect.outputs.docs_only }}
+        run: bash scripts/ci-tree-reuse.sh record "$RUNNER_TEMP/tested-tree.json"
+
+      # `continue-on-error` because the artifact only feeds an optimisation: a failed upload
+      # must not fail `changes` and skip the gated jobs. The `main` push then finds no artifact
+      # and runs everything.
+      - name: Upload tested tree
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-tree
+          path: ${{ runner.temp }}/tested-tree.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Answers `false` on every event but a push to `main`, without calling the API.
+      - name: Detect reused tree
+        id: reuse
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ci.yml
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-tree-reuse.sh decide
 
   # `setup-node` caches npm's package tarballs, not the installed dependency tree. In a
   # measured 21-job run every job restored the same warm 385 MB npm cache, but `npm ci`
@@ -220,7 +280,7 @@ jobs:
   gates:
     name: gates (typecheck, lint)
     needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -304,7 +364,7 @@ jobs:
   build-smoke-node-24:
     name: build and smoke (node 24)
     needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -370,7 +430,7 @@ jobs:
   unit-node-24:
     name: unit (node 24, shard ${{ matrix.shard }}/6)
     needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -445,7 +505,7 @@ jobs:
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -617,8 +677,8 @@ jobs:
   # needs every job that runs on a pull request, so `package` (tags and manual runs only) and
   # the Node 26 jobs (see "Node 26 off pull requests") are not among them. `always()` so it
   # reports whatever its needs did: it passes only when each succeeded, or is listed in
-  # SKIPPABLE and was skipped on a docs-only run. SKIPPABLE is exactly the gated jobs; a
-  # skipped `docs-checks`, `flake-report` or `changes` fails it.
+  # SKIPPABLE and was skipped on a docs-only or tree-reused run. SKIPPABLE is exactly the gated
+  # jobs; a skipped `docs-checks`, `flake-report` or `changes` fails it.
   ci-result:
     name: CI result
     needs:
@@ -639,7 +699,10 @@ jobs:
         shell: bash
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          # Now means "the skippable jobs may skip": a docs-only pull request, or a push to
+          # `main` whose tree was reused. It keeps the asset's name so the step body below stays
+          # byte-identical to the skill; its log still says "docs-only change" for both.
+          DOCS_ONLY: ${{ (needs.changes.outputs.docs_only == 'true' || needs.changes.outputs.tree_reused == 'true') && 'true' || 'false' }}
           SKIPPABLE: |
             gates
             unit-node-24
