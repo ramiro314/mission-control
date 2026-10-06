@@ -782,20 +782,20 @@ jobs:
   # single test ran. Split, the shard still reports every test, and the ones that need the
   # addon fail on their own.
   unit-windows:
-    name: unit (windows, node 24, shard ${{ matrix.shard }}/6)
+    name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
     needs: [changes, dependencies-windows]
     if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3]
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
+      MISSION_TEST_SHARDS: '3'
     defaults:
       run:
         shell: bash
@@ -844,11 +844,11 @@ jobs:
       # `--ignore-scripts` skips `pretest` and `posttest`, which the steps around this run.
       - name: Test
         id: test
-        timeout-minutes: 30
+        timeout-minutes: 60
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm test --ignore-scripts
         env:
-          MISSION_TEST_SHARD: ${{ matrix.shard }}/6
+          MISSION_TEST_SHARD: ${{ matrix.shard }}/3
 
       - name: Workflow evidence tests (posttest)
         id: posttest
@@ -978,7 +978,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'

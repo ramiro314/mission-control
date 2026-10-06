@@ -152,7 +152,7 @@ commit's tree (`scripts/ci-tree-reuse.sh`; any doubt runs everything, and tags a
 never reuse). It needs every job that runs
 on a pull request, so neither `package` nor the Node.js 26 jobs are among them; a Node.js 26
 failure on `main` turns that workflow run red instead. Pushes to `release/windows` and pull
-requests into it also run twenty-five Windows jobs on `windows-latest`, which stay out of
+requests into it also run twenty-one Windows jobs on `windows-latest`, which stay out of
 `CI result` and are allowed to fail until the Windows support plan's M2 is green (see the
 "Windows" comment in `ci.yml`). Two independent `dependencies` checks use
 GitHub-hosted `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js

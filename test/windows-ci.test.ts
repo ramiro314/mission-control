@@ -130,7 +130,7 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
     ["npm run pretest", "npm test --ignore-scripts", "npm run posttest"],
     "the unit shard runs all three stages of npm test",
   );
-  assert.match(WINDOWS.get("unit-windows")!, /MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/6$/m);
+  assert.match(WINDOWS.get("unit-windows")!, /MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/3$/m);
   assert.deepEqual(shards(WINDOWS.get("unit-windows")!), shards(ALL.get("unit-node-24")!));
   assert.ok(run("build-windows").includes("npm run build"));
   assert.ok(run("build-windows").includes("npm run smoke"));
