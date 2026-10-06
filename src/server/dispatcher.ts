@@ -20,8 +20,10 @@ import type {
 } from "@shared/types.ts";
 import {
   capabilitiesFor,
+  harnessUnsupportedWhy,
   skillCommand,
 } from "@shared/harness-capabilities.ts";
+import { hostPlatform } from "./platform/host.ts";
 import {
   PIPELINE_ENGINEER_SKILL,
   pipelineRunKeyOf,
@@ -271,6 +273,8 @@ export class Dispatcher {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
       /** Shared machine-install probe, supplied by the Pi extension phase. */
       piExtensionInstalled?: () => boolean | Promise<boolean>;
+      /** The host platform harness availability is read for. Injected so a test can ask about win32. */
+      platform?: NodeJS.Platform;
       /** Whether that server actually publishes the tools this launch declares. Injected so a test need not spawn one. */
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
       /** Publish the checkout-scoped scout bearer before its agent starts. */
@@ -402,6 +406,10 @@ export class Dispatcher {
         withShapeTicketsCompletion(task, options.missionMcp ?? null),
         workflowEvidence,
       );
+      // First of the refusals below: a harness this host cannot run needs no binary,
+      // runtime or tool bundle resolved to say so, and no worktree is ever acquired.
+      const hostUnsupported = harnessUnsupportedWhy(task.agent, this.deps.platform ?? hostPlatform());
+      if (hostUnsupported) throw new Error(hostUnsupported);
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.

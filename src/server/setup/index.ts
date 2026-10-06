@@ -24,6 +24,8 @@ import type { TerminalBackendId } from "@shared/terminal.ts";
 import { ghBin } from "../config.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
 import { resolveAgentBin } from "../harness/index.ts";
+import { harnessUnsupportedWhy } from "@shared/harness-capabilities.ts";
+import { hostPlatform } from "../platform/host.ts";
 import { installedPluginsRead, claudePluginsDir } from "../plugins/installed-plugins.ts";
 import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
 import { readCatalog } from "../skills/catalog.ts";
@@ -82,6 +84,8 @@ async function present(bin: string, deps: SetupDeps, id?: ExecutableId): Promise
 async function agentStatus(id: SetupDependencyId, deps: SetupDeps): Promise<SetupStatus> {
   const agent = DEPENDENCY_AGENT[id];
   if (!agent) throw new Error(`no agent for ${id}`);
+  const unsupported = deps.agentUnsupported?.(agent);
+  if (unsupported) return { state: "needs-setup", why: unsupported, evidence: null };
   return present(deps.agentBin(agent), deps, AGENT_EXECUTABLE[agent]);
 }
 
@@ -362,6 +366,7 @@ export function defaultSetupDeps(): SetupDeps {
         : null;
     },
     agentBin: resolveAgentBin,
+    agentUnsupported: (agent) => harnessUnsupportedWhy(agent, hostPlatform()),
     installedBackend: async (id) => {
       const spec = terminalBackendBin(id);
       return resolveBinPath(resolveBin(spec));

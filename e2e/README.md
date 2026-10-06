@@ -163,6 +163,16 @@ Run it after `npm run build` with
 The successful Board screenshot is `e2e/.artifacts/terminal-session-name/ghostty-dispatch.png`.
 The Console screenshot beside it is `ghostty-dispatch-console.png`.
 
+### A win32 host
+
+`win32-harness-availability.spec.ts` opts into `MC_E2E_WIN32_HOST=1`. `win32-host-build.ts`
+builds the production daemon entry into a private, gitignored sibling of
+`dist/server/index.mjs` with only `src/server/platform/host.ts` replaced, so the daemon
+answers harness availability as win32 while every process, path and terminal stays this
+host's. That lets the spec check the Codex and Pi refusals in Settings > Setup and in the
+dispatch dialog on every runner, a real Windows one included. Other specs keep the ordinary
+daemon bundle.
+
 ### Dispatch over a large comment index
 
 `file-comment-dispatch-performance.spec.ts` keeps its CPU assertion opt-in because a browser

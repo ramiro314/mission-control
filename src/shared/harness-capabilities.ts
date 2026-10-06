@@ -523,6 +523,14 @@ interface HarnessCapabilitiesBase {
    * harness with no out-of-band channel declares an empty record and is prefixed instead.
    */
   standingInstructions: StandingInstructionsSpec;
+  /**
+   * The host platforms (`process.platform` values) this harness cannot run on. Empty for a
+   * harness that runs everywhere the daemon does.
+   *
+   * Pure data, so the refusal sentence comes from `harnessUnsupportedWhy` and every surface
+   * (Settings > Setup, the task-creation door and the dispatcher) gives the same answer.
+   */
+  unsupportedHosts: readonly string[];
 }
 
 const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
@@ -648,6 +656,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         sdk: "claude-sdk-system-prompt-append",
       },
     },
+    // Windows support ships Claude Code only (D10 in `docs/plans/windows-support/plan.md`).
+    unsupportedHosts: [],
   },
   codex: {
     id: "codex",
@@ -791,6 +801,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Only the embedded driver. `thread/start` takes `developerInstructions`; a terminal
     // Codex has no equivalent, so that pair is prefixed into turn one instead.
     standingInstructions: { outOfBand: { sdk: "codex-developer-instructions" } },
+    // Not yet brought up on Windows (D20); a later ticket removes the entry.
+    unsupportedHosts: ["win32"],
   },
   pi: {
     id: "pi",
@@ -919,6 +931,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     standingInstructions: {
       outOfBand: { terminal: "pi-append-system-prompt", sdk: "pi-append-system-prompt" },
     },
+    // Not yet brought up on Windows (D20); a later ticket removes the entry.
+    unsupportedHosts: ["win32"],
   },
 };
 
@@ -1141,6 +1155,20 @@ export function sdkRuntimeUnsupportedWhy(agent: AgentType): string | null {
 export function workQueueUnsupportedWhy(agent: AgentType): string | null {
   if (HARNESS_CAPABILITIES[agent].workQueue) return null;
   return `Foreman doesn't drive ${AGENT_IDENTITY[agent].label} sessions, so anything queued here would never be picked up.`;
+}
+
+const HOST_LABELS: Readonly<Record<string, string>> = { win32: "Windows", darwin: "macOS", linux: "Linux" };
+
+/**
+ * Why this harness cannot run on this host platform, or null when it can.
+ *
+ * One sentence for every refusing surface: Settings > Setup shows it on the harness's row,
+ * and task creation and the dispatcher refuse with it before any worktree is acquired.
+ */
+export function harnessUnsupportedWhy(agent: AgentType, platform: string): string | null {
+  if (!capabilitiesFor(agent).unsupportedHosts.includes(platform)) return null;
+  const label = AGENT_IDENTITY[agent].label;
+  return `Mission Control does not support ${label} on ${HOST_LABELS[platform] ?? platform} yet, so ${label} tasks cannot be dispatched on this machine.`;
 }
 
 /** Shared refusal copy; callers with a machine probe use it only when that probe fails. */

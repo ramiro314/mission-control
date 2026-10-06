@@ -41,6 +41,8 @@ export interface SetupDeps {
   executableDiagnostic?(id: ExecutableId): Promise<{ path: string; source: string } | null>;
   environment: EnvironmentDeps;
   agentBin(agent: AgentType): string;
+  /** The harness's host refusal (`harnessUnsupportedWhy`), which must win before installation probing. */
+  agentUnsupported?(agent: AgentType): string | null;
   installedBackend(id: TerminalBackendId): Promise<string | null>;
   /** An adapter-level host refusal that must win before installation probing. */
   backendUnsupported?(id: TerminalBackendId): string | null;
