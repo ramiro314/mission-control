@@ -8,7 +8,9 @@
 // A path's own spelling decides its separators, not the host: one spelled as a win32 path
 // (a drive root or a UNC share) treats both "\" and "/" as boundaries, and every other path
 // keeps "/" alone. That keeps macOS byte-for-byte unchanged, including the case where "\" is
-// an ordinary filename character inside a POSIX path.
+// an ordinary filename character inside a POSIX path. The same spelling also decides case: a
+// win32 path compares case-insensitively, as NTFS does, so a shell's `c:\code` is inside an
+// allowlisted `C:\Code`; a POSIX path stays exact.
 
 /** Whether `p` is spelled as an absolute win32 path: `C:\`, `C:/`, or a `\\server` share. */
 function isWin32Spelled(p: string): boolean {
@@ -46,16 +48,22 @@ export function stripTrailingSeparator(p: string): string {
  * repository-relative path. `""` when they are the same path, null when `inner` is not inside.
  *
  * Matched on the component BOUNDARY, not `startsWith` alone: `/repo-backup` is not inside
- * `/repo`.
+ * `/repo`. The subpath keeps `inner`'s own spelling, case included.
  */
 export function subpathWithin(inner: string, outer: string): string | null {
   const dir = stripTrailingSeparator(inner);
   const root = stripTrailingSeparator(outer);
-  if (dir === root) return "";
   const separators = separatorsOf(root);
-  if (!separators.some((sep) => dir.startsWith(`${root}${sep}`))) return null;
+  const win32 = separators.length > 1;
+  const same = (a: string, b: string): boolean => (win32 ? a.toLowerCase() === b.toLowerCase() : a === b);
+  if (same(dir, root)) return "";
+  // Compared head-then-boundary rather than through one folded `startsWith`, so the slice
+  // below lands on `dir`'s own boundary even where folding changes a string's length.
+  if (!same(dir.slice(0, root.length), root) || !separators.includes(dir.charAt(root.length))) {
+    return null;
+  }
   const rest = dir.slice(root.length + 1);
-  return separators.length > 1 ? rest.replaceAll("\\", "/") : rest;
+  return win32 ? rest.replaceAll("\\", "/") : rest;
 }
 
 /** Whether `inner` is `outer` or sits beneath it, compared by whole path components. */

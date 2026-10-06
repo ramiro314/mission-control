@@ -37,6 +37,21 @@ test("containment matches whole components in both spellings", () => {
   assert.equal(pathWithin("packages/web/src", "packages/web"), true);
 });
 
+test("a win32 path compares case-insensitively, as NTFS does, and keeps its own spelling", () => {
+  assert.equal(subpathWithin("c:\\code\\mono\\Web", "C:\\code\\mono"), "Web");
+  assert.equal(subpathWithin("C:\\Code\\Mono", "c:\\code\\mono\\"), "");
+  assert.equal(subpathWithin("c:\\code\\mono-backup", "C:\\code\\mono"), null);
+  assert.equal(cwdAllowlisted("c:\\code\\mono\\packages\\web", ["C:\\Code"]), true);
+  assert.equal(checkCommandSubpath("C:\\code\\mono", "c:\\code\\mono\\Packages\\Web"), "Packages/Web");
+});
+
+test("a POSIX path stays case-sensitive", () => {
+  assert.equal(pathWithin("/Repo/web", "/repo"), false);
+  assert.equal(pathWithin("/repo", "/Repo"), false);
+  assert.equal(pathWithin("//x", "/"), true);
+  assert.equal(pathWithin("/x", "/"), false);
+});
+
 test("a backslash in a POSIX path is still a filename character", () => {
   assert.equal(pathWithin("/repo\\sub", "/repo"), false);
   assert.equal(stripTrailingSeparator("/repo\\"), "/repo\\");
