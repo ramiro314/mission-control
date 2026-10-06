@@ -16,8 +16,12 @@ import { syncBuiltinESMExports } from "node:module";
 import { writePiIntegration } from "./helpers/pi-integration.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 ensureNativeStateLockAddon();
+
+/** Every case that publishes for real reaches `exchangePaths`, which win32 does not support. */
+const PUBLISHES = { skip: skipOnWin32("Pi is unavailable on win32, and publishing its integration reaches exchangePaths, which win32 does not support") };
 
 test("directory publication refuses to discard unrelated output-directory contents", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-build-foreign-"));
@@ -32,7 +36,9 @@ test("directory publication refuses to discard unrelated output-directory conten
 });
 
 for (const failure of ["swap", "rollback"] as const) {
-  test(`failed build ${failure} preserves the previous integration for recovery`, async t => {
+  test(`failed build ${failure} preserves the previous integration for recovery`, {
+    skip: failure === "rollback" && PUBLISHES.skip,
+  }, async t => {
     const root = await mkdtemp(join(tmpdir(), "pi-build-swap-"));
     const dir = join(fs.realpathSync(root), "integration"); writePiIntegration(dir);
     const prior = verifyPiIntegration(dir);
@@ -63,7 +69,7 @@ for (const failure of ["swap", "rollback"] as const) {
   });
 }
 
-test("failed final build verification restores the previous complete integration", async t => {
+test("failed final build verification restores the previous complete integration", PUBLISHES, async t => {
   const root = await mkdtemp(join(tmpdir(), "pi-build-rollback-"));
   const dir = join(fs.realpathSync(root), "integration"); writePiIntegration(dir);
   const prior = verifyPiIntegration(dir);
@@ -79,7 +85,7 @@ test("failed final build verification restores the previous complete integration
   finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("configured and explicit non-.js targets are rejected before touching the destination", async () => {
+test("configured and explicit non-.js targets are rejected before touching the destination", PUBLISHES, async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-suffix-"));
   const prior = process.env.MISSION_PI_EXTENSION;
   try {
@@ -129,7 +135,7 @@ test("configured and explicit .js targets not named extension.js are rejected wi
   }
 });
 
-test("concurrent publishers expose only the old or complete .js bundle", async () => {
+test("concurrent publishers expose only the old or complete .js bundle", PUBLISHES, async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-publish-"));
   const output = join(dir, "extension.js");
   await writeFile(output, "previous");
@@ -151,7 +157,7 @@ test("concurrent publishers expose only the old or complete .js bundle", async (
   } finally { clearInterval(poll); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("different process builds cannot interleave integration publication", { timeout: 20_000 }, async () => {
+test("different process builds cannot interleave integration publication", { ...PUBLISHES, timeout: 20_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-build-race-"));
   const output = join(dir, "integration", "extension.js");
   const release = join(dir, "release");

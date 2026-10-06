@@ -55,7 +55,7 @@ or issues.
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
 | CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E `dist/` built by `build-smoke-node-24`; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), #222 (shared E2E `dist/`) |
-| Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch) | #128 (plan), #147, #152, #154, #158, #176, #184, #185, #224, #187, #191, #192, #196, #197, #209, #210, #220, pending (branch `docs/windows-support-docs`) |
+| Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch) | #128 (plan), #147, #152, #154, #158, #176, #184, #185, #224, #187, #191, #192, #196, #197, #201, #209, #210, #220, #225, #233, pending (gate readiness, M2.12) |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
 | Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |
@@ -1301,8 +1301,8 @@ jobs' condition and the tree-reuse wiring.
 
 | Field | Value |
 | --- | --- |
-| Status | **In progress on `release/windows`**. On `main`: the plan, `.gitattributes`, and the four platform seams (plan M1), each with only its POSIX implementation registered. On `release/windows`: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Still to land there: gate readiness (M2.12). The branch reaches `main` in one merge. |
-| PRs | On `main`: #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On `release/windows`: #224 (the first weekly sync of `main`, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry's update, M2.11). The per-task base branch it depends on (M0.1) has its own entry. |
+| Status | **In progress on `release/windows`**. On `main`: the plan, `.gitattributes`, and the four platform seams (plan M1), each with only its POSIX implementation registered. On `release/windows`: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) is in review: it fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on `main`. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches `main` in one merge. |
+| PRs | On `main`: #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On `release/windows`: #224 (the first weekly sync of `main`, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry's update, M2.11), pending (gate readiness, M2.12). The per-task base branch it depends on (M0.1) has its own entry. |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones"; the sync runbook [docs/windows-branch-sync.md](../windows-branch-sync.md); the M2.0 SDK spike result on issue #186; the Windows section of [docs/setup.md](../setup.md#windows-11) and of [docs/harnesses-and-terminals.md](../harnesses-and-terminals.md#windows) |
 | Upstream candidate | Not now (D18: fork-only). The four seams, and the neutral seams M2 built on the branch (D38), are platform-neutral and could be offered on their own. |
 
@@ -1390,7 +1390,7 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   and the native window frame with an auto-hidden menu bar, and `menu-template.ts` drops the
   macOS app menu there. Every other platform keeps the macOS answers.
 - **Windows CI** (D15, D30, D32): `windows-latest` jobs on Node 24 run on pushes to
-  `release/windows` and PRs into it, with npm's `script-shell` set to Git Bash. Their product
+  `release/windows`, never on a pull request, with npm's `script-shell` set to Git Bash. Their product
   steps are allowed to fail until M2.12, and stay out of `CI result`. Every test or spec that
   skips on win32 goes through `skipOnWin32` or `skipSpecOnWin32` in `test/helpers/win32-skip.ts`,
   with a stated reason (D37).
@@ -1402,6 +1402,12 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   the `concurrently` lanes behind `make dev`, `make desktop` and `make start` run `tsx watch`
   with stdin from /dev/null (`dev:server:lane`, `dev:foreman:lane`), because on win32 a daemon
   that touched `process.stdin` blocked behind the watcher's read of the shared pipe (D38).
+- **Durable flushes** (`src/server/platform/durable-sync.ts`, D38): the database and settings
+  backups flush a file and its directory through `syncFile` and `syncDirectory`. POSIX keeps the
+  read-only descriptor it always used. win32 opens the file for writing, because
+  `FlushFileBuffers` refuses a read-only handle, and makes no directory flush. `npm run smoke`
+  skips the Pi artifact where `harnessUnsupportedWhy("pi", hostPlatform())` answers, the same
+  question `build:pi-extension` asks.
 
 **Upstream behavior it assumes.**
 
@@ -1438,11 +1444,12 @@ executable search ladder). On `release/windows` also: `src/server/dispatcher.ts`
 `src/server/keep-awake.ts`, `src/server/worktrees/git.ts`, `src/server/repos.ts`,
 `src/server/harness/claude/hooks.ts`, `src/server/agent-subprocess-env.ts`,
 `src/server/testing-setup.ts`, `src/mcp/pipeline-credential.ts`,
+`src/server/{database-backups/service,settings-backups/store}.ts`,
 `src/shared/{harness-capabilities,setup-catalog,allowlist,llm,workflow,standing-instructions,protocol,types,executables}.ts`,
 `src/shared/harness-runtime.mjs`,
 `src/main/{index,menu,menu-template,tray,window}.ts`, `src/web/components/SetupPanel.tsx`,
 `scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs`, `scripts/build-pi-extension.ts`,
-`Makefile`, `package.json` (`dev:electron:app`, the `dev:*:lane` scripts), `docs/overview.md`,
+`scripts/smoke-bundles.mjs`, `test/pi-extension-build.test.ts`, `Makefile`, `package.json` (`dev:electron:app`, the `dev:*:lane` scripts), `docs/overview.md`,
 `.github/workflows/ci.yml` (the Windows jobs), `e2e/fixtures/daemon.ts`, the e2e specs that
 skip on win32, `AGENTS.md`, `e2e/README.md`, `docs/setup.md`, `docs/sessions.md` and
 `docs/desktop-and-packaging.md`.
@@ -1453,12 +1460,12 @@ skip on win32, `AGENTS.md`, `e2e/README.md`, `docs/setup.md`, `docs/sessions.md`
 `test/process-inspection.test.ts`, `test/process-lifetime.test.ts`,
 `test/executable-environment.test.ts`, `test/native-addon-sources.test.ts`,
 `docs/plans/windows-support/`, `docs/windows-branch-sync.md`. On `release/windows` also:
-`src/server/platform/{host,session-runtimes}.ts`, `src/server/setup/windows.ts`,
+`src/server/platform/{host,session-runtimes,durable-sync}.ts`, `src/server/setup/windows.ts`,
 `src/server/git/long-paths.ts`, `src/shared/native-path.ts`, `src/main/platform-shell.ts`,
 `native/state-lock/state_lock_win.cc`, `native/keep-awake/keep_awake_win.cc`, `build/tray.ico`, `scripts/ci-allowed-failures.mjs`,
 `scripts/probe-keep-awake-native.d.mts`, `e2e/fixtures/win32-host-build.ts`,
 `e2e/specs/win32-{harness-availability,setup-checks}.spec.ts`, `test/helpers/win32-skip.ts`,
-`test/helpers/ci-workflow.ts`, and the tests `test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,harness-host-availability,keep-awake-probe,makefile-windows,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts`.
+`test/helpers/ci-workflow.ts`, and the tests `test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,makefile-windows,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts`.
 
 ## Superseded and removed
 
