@@ -5,6 +5,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { piExtensionPath } from "../src/server/config.ts";
+import { hostPlatform } from "../src/server/platform/host.ts";
+import { harnessUnsupportedWhy } from "../src/shared/harness-capabilities.ts";
 import { PI_INTEGRATION_FILES, piIntegrationManifest, verifyPiIntegration } from "../src/server/extensions/pi-artifact.ts";
 import { exchangePaths } from "../src/server/symlink-publication.ts";
 import { acquireHelperLock, realHelperLockOperations, releaseHelperLock } from "./update-lock.mjs";
@@ -43,7 +45,7 @@ async function publishBuild(stage: string, dir: string, retainPrevious: () => vo
  * points here: the publisher verifies and copies it before exposing it to Pi. */
 export async function buildPiExtension(target?: string): Promise<void> {
   const output = piExtensionPath(target);
-  if (!output.endsWith("/extension.js")) throw new Error("Pi integration output must be named extension.js");
+  if (basename(output) !== "extension.js") throw new Error("Pi integration output must be named extension.js");
   await mkdir(dirname(output), { recursive: true });
   const dir = await realpath(dirname(output));
   const stage = await mkdtemp(join(dirname(dir), ".pi-integration-build-"));
@@ -64,4 +66,12 @@ export async function buildPiExtension(target?: string): Promise<void> {
     await publishBuild(stage, dir, () => { retainStage = true; });
   } finally { if (!retainStage) await rm(stage, { recursive: true, force: true }); }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await buildPiExtension();
+
+/** The `build:pi-extension` entry. A host where Pi is unsupported (D20) has no Pi to load the
+ * integration, so the build says so and publishes nothing. */
+export async function buildPiExtensionForHost(platform: string = hostPlatform(), log: (line: string) => void = console.log): Promise<void> {
+  const unsupported = harnessUnsupportedWhy("pi", platform);
+  if (unsupported) { log(`Skipping the Pi integration build. ${unsupported}`); return; }
+  await buildPiExtension();
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await buildPiExtensionForHost();

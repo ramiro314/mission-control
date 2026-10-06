@@ -21,6 +21,16 @@ FOREMAN_MATCH := src/server/foreman/worker.ts
 # use would silently leave that target with no prerequisite. See the rule for why.
 NPM_STAMP := node_modules/.install-stamp
 
+# Windows (D31 in docs/plans/windows-support/plan.md): run make from Git Bash, with a
+# separately installed GNU make. `OS` is `Windows_NT` in every Windows environment, Git Bash
+# included, and unset elsewhere. There, a target that cannot work says why and fails before it
+# runs anything: the macOS app targets, and the targets that find processes through lsof, pgrep
+# and pkill, which Git Bash does not ship. Everywhere else both guards expand to nothing.
+ifeq ($(OS),Windows_NT)
+macos_only = @echo "make $@ builds or installs the macOS app, so it is not available on Windows." >&2; exit 1
+posix_process_tools = @echo "make $@ needs lsof, pgrep and pkill, which Git Bash on Windows does not provide. Run the stack in the foreground with make start or make dev instead." >&2; exit 1
+endif
+
 .DEFAULT_GOAL := help
 .PHONY: help init install session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
 
@@ -37,12 +47,14 @@ init: ## First-run bootstrap: deps, build, and hooks (ARGS="--with-e2e" also che
 # they install this worktree and write no receipt, so a work-in-progress build is never
 # mistaken for a managed install.
 install: ## Install Mission Control.app from a clean, updater-owned clone (ARGS="--ref v1.2.3")
+	$(macos_only)
 	node scripts/install-app.mjs $(ARGS)
 
 session: ## Ask the running daemon for a manual worktree lease (e.g. make session ARGS="-- claude")
 	node scripts/new-session.mjs $(ARGS)
 
 claude: ## One shot: bootstrap, ensure the daemon, lease a worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"
+	$(posix_process_tools)
 	@$(MAKE) --no-print-directory init
 	@lsof -ti tcp:$(PORT) >/dev/null 2>&1 \
 		&& echo "✓ harness daemon already up on http://127.0.0.1:$(PORT)" \
@@ -65,6 +77,7 @@ web: ## Just the Vite web dev server
 	npm run dev:web
 
 up: ## Start the daemon in the background (auto-reload); logs to .harness.log
+	$(posix_process_tools)
 	@$(MAKE) --no-print-directory down >/dev/null 2>&1 || true
 	@nohup npm run dev:server > $(LOG) 2>&1 & \
 		sleep 1.5; \
@@ -74,6 +87,7 @@ up: ## Start the daemon in the background (auto-reload); logs to .harness.log
 			echo "daemon failed to bind :$(PORT) - see: make logs"; fi
 
 down: ## Stop the background daemon
+	$(posix_process_tools)
 	@if pgrep -f "$(MATCH)" >/dev/null 2>&1; then \
 		pkill -f "$(MATCH)"; echo "daemon stopped"; \
 	else echo "no daemon running"; fi
@@ -83,6 +97,7 @@ restart: ## Stop the whole stack and start it fresh in the foreground (daemon + 
 	@$(MAKE) --no-print-directory start
 
 stop-all: ## Stop every harness dev process (daemon, Vite, Electron shell, Foreman)
+	$(posix_process_tools)
 	@pkill -f "$(FOREMAN_MATCH)" >/dev/null 2>&1 && echo "foreman stopped" || true
 	@pkill -f "electronmon" >/dev/null 2>&1 && echo "electron shell stopped" || true
 	@webpids=$$(lsof -ti tcp:$(WEB_PORT) 2>/dev/null); \
@@ -91,6 +106,7 @@ stop-all: ## Stop every harness dev process (daemon, Vite, Electron shell, Forem
 	@sleep 1
 
 status: ## Show whether the daemon is running
+	$(posix_process_tools)
 	@pid=$$(lsof -ti tcp:$(PORT) 2>/dev/null | head -1); \
 	if [ -n "$$pid" ]; then echo "running (pid $$pid) on http://127.0.0.1:$(PORT)"; \
 	else echo "not running"; fi
@@ -105,6 +121,7 @@ build: $(NPM_STAMP) ## Build everything (web UI, daemon, Electron main, MCP + ho
 	npm run build
 
 app: ## Build and package the macOS app (.app + .dmg) into release/
+	$(macos_only)
 	npm run package
 
 # APPS_DIR overrides the destination; it must already exist. The default is this account's own
