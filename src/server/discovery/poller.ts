@@ -62,8 +62,11 @@ async function noTerminalSessions(): ReturnType<typeof discover> {
  * `sessionsObserved()` gate and keeps the sweep's other duties running, among them the driver
  * Git refresh SDK sessions depend on.
  */
-export function discoveryFor(platform: NodeJS.Platform = process.platform): typeof discover {
-  return runtimeUnavailableWhy("terminal", platform) === null ? discover : noTerminalSessions;
+export function discoveryFor(
+  platform: NodeJS.Platform = process.platform,
+  sweep: typeof discover = discover,
+): typeof discover {
+  return runtimeUnavailableWhy("terminal", platform) === null ? sweep : noTerminalSessions;
 }
 
 /**
@@ -71,7 +74,11 @@ export function discoveryFor(platform: NodeJS.Platform = process.platform): type
  * reconciles the registry (which emits SSE events for anything that changed).
  * Ticks never overlap: a slow sweep just delays the next one.
  */
-export function startPoller(registry: Registry, platform: NodeJS.Platform = process.platform): () => void {
+export function startPoller(
+  registry: Registry,
+  platform: NodeJS.Platform = process.platform,
+  sweep: typeof discover = discover,
+): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -95,7 +102,7 @@ export function startPoller(registry: Registry, platform: NodeJS.Platform = proc
     return () => {};
   }
 
-  const find = discoveryFor(platform);
+  const find = discoveryFor(platform, sweep);
   const tick = async (): Promise<void> => {
     if (stopped) return;
     // Refresh after the sweep attempt, so a rediscovered pane-backed session and one the

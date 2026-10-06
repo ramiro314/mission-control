@@ -74,19 +74,41 @@ test("terminal discovery does not run on win32: each sweep is empty and complete
   assert.deepEqual(await win32(), { sessions: [], terminals: [] });
 });
 
-test("on win32 the poller opens the sessions-observed gate and leaves SDK sessions alone", async () => {
-  const registry = new Registry();
-  const sdk = registry.registerSdkSession({ id: "sdk:restored", agent: "claude", name: "Restored", cwd: home });
+/** A stand-in for the real process walk that counts how often the poller asked for it. */
+function countingSweep() {
+  const counter = { calls: 0 };
+  const sweep: typeof discover = async () => {
+    counter.calls++;
+    return { sessions: [], terminals: [] };
+  };
+  return { counter, sweep };
+}
+
+async function runPollerOnce(registry: InstanceType<typeof Registry>, platform: NodeJS.Platform, sweep: typeof discover) {
   const observed = new Promise<void>((resolve) => registry.onSessionsObserved(resolve));
-  const stop = startPoller(registry, "win32");
+  const stop = startPoller(registry, platform, sweep);
   try {
     await observed;
   } finally {
     stop();
   }
+}
+
+test("on win32 the poller never runs the process walk, and still opens the sessions-observed gate", async () => {
+  const registry = new Registry();
+  const sdk = registry.registerSdkSession({ id: "sdk:restored", agent: "claude", name: "Restored", cwd: home });
+  const { counter, sweep } = countingSweep();
+  await runPollerOnce(registry, "win32", sweep);
+  assert.equal(counter.calls, 0, "terminal discovery must not run on win32");
   assert.equal(registry.sessionsObserved(), true);
   // The sweep evicts only terminal sessions it did not see, so a restored SDK session survives.
   assert.deepEqual(registry.snapshot().sessions.map((s) => s.id), [sdk.id]);
+
+  // Control: the same poller on darwin does run the walk, so the platform argument is what
+  // decides it.
+  const control = countingSweep();
+  await runPollerOnce(new Registry(), "darwin", control.sweep);
+  assert.equal(control.counter.calls, 1);
 });
 
 test("a terminal dispatch on win32 is refused with a reason before anything is provisioned", async () => {
@@ -134,4 +156,33 @@ test("an SDK dispatch on win32 starts an embedded session", async () => {
   assert.equal(task?.status, "running");
   assert.equal(supervisor.starts.length, 1);
   assert.match(task?.sessionId ?? "", /^sdk:/);
+});
+
+test("a terminal-hosted Pipeline dispatch on win32 is refused with a reason before a home opens", async () => {
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "pipeline-win32-terminal", kind: "pipeline", agent: "claude", repoRoot: home, title: "Run conductor" }),
+  );
+  let spawned = false;
+  await new Dispatcher(registry, async () => {}, {
+    platform: "win32",
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "terminal",
+      cwd: home,
+      argv: ["/bin/conduct-ts", "engineer", "--idea", "Run conductor"],
+      pipelineRun: { provider: "ai-conductor", repoRoot: home, slug: "run-conductor" },
+    }),
+    spawn: async () => {
+      spawned = true;
+      return { homeName: "unreachable terminal", homeBackend: "tmux", terminalResourceId: null };
+    },
+  }).dispatch("pipeline-win32-terminal");
+
+  const task = registry.getTask("pipeline-win32-terminal");
+  assert.equal(task?.status, "failed");
+  assert.match(task?.error ?? "", /terminal runtime is not available on Windows/);
+  assert.match(task?.error ?? "", /Switch the Pipelines launch runtime to Agent SDK/);
+  assert.equal(spawned, false);
+  assert.equal(task?.homeName ?? null, null);
 });
