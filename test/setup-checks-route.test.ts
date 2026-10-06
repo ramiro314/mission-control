@@ -3,7 +3,7 @@ import { after, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SETUP_DEPENDENCY_IDS } from "../src/shared/setup-catalog.ts";
+import { setupDependencyIdsFor } from "../src/shared/setup-catalog.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-setup-route-"));
 process.env.MISSION_HOME = home;
@@ -39,6 +39,8 @@ function deps(
   ready?: boolean,
 ): SetupDeps {
   return {
+    // Pinned, so a win32 runner reads the same rows as every other host.
+    hostPlatform: () => "darwin",
     environment: { homeDir: home, readText: async () => ({ ok: false, missing: true, reason: "missing" }), subdirectories: async () => [] },
     agentBin: (agent) => `/fake/${agent}`,
     installedBackend: async (id) => `/fake/${id}`,
@@ -84,7 +86,7 @@ test("the route returns every row and folds an environment warning field by fiel
     rows: Array<Record<string, unknown>>;
     banner: { visible: boolean; attentionRowIds: unknown[]; attentionCount: number };
   };
-  assert.equal(body.rows.length, SETUP_DEPENDENCY_IDS.length + 2);
+  assert.equal(body.rows.length, setupDependencyIdsFor("darwin").length + 2);
   const folded = body.rows.find((row) => JSON.stringify(row.rowId) === JSON.stringify({ source: "environment-check", id: "upstartclaw-core-setup" }));
   assert.deepEqual(folded, {
     rowId: { source: "environment-check", id: "upstartclaw-core-setup" },
@@ -143,7 +145,7 @@ test("the read prunes repaired acknowledgements before composing its banner", as
   };
 
   assert.equal(response.status, 200);
-  assert.equal(body.rows.length, SETUP_DEPENDENCY_IDS.length + 1, "every dependency and the derived terminal row remain present");
+  assert.equal(body.rows.length, setupDependencyIdsFor("darwin").length + 1, "every dependency and the derived terminal row remain present");
   assert.deepEqual(store.value, { firstLaunchAcknowledged: true, acknowledged: [] });
   assert.equal(store.writes, 1);
   assert.deepEqual(body.banner, { visible: false, attentionRowIds: [], attentionCount: 0 });

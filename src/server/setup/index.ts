@@ -10,7 +10,6 @@ import {
   CMUX_SOCKET_CONTROL_REMEDY,
   ENVIRONMENT_ROW_METADATA,
   HERDR_SERVER_REMEDY,
-  SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   TERMINAL_PAIR_INFO,
@@ -18,6 +17,7 @@ import {
   type SetupDependencyId,
   type SetupRowView,
   type SetupStatus,
+  setupDependencyIdsFor,
 } from "@shared/setup-catalog.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 
@@ -41,6 +41,14 @@ import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/e
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
+import {
+  developerModeStatus,
+  gitForWindowsStatus,
+  longPathsStatus,
+  npmScriptShellStatus,
+  python3Status,
+  vsBuildToolsStatus,
+} from "./windows.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 
@@ -317,6 +325,12 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
   "node-runtime": nodeRuntimeStatus,
+  "git-for-windows": gitForWindowsStatus,
+  "windows-developer-mode": developerModeStatus,
+  "windows-long-paths": longPathsStatus,
+  "npm-script-shell": npmScriptShellStatus,
+  "vs-build-tools": vsBuildToolsStatus,
+  python3: python3Status,
 };
 
 function reasonOf(error: unknown): string {
@@ -366,6 +380,7 @@ export function defaultSetupDeps(): SetupDeps {
         : null;
     },
     agentBin: resolveAgentBin,
+    hostPlatform,
     agentUnsupported: (agent) => harnessUnsupportedWhy(agent, hostPlatform()),
     installedBackend: async (id) => {
       const spec = terminalBackendBin(id);
@@ -403,12 +418,14 @@ export function defaultSetupDeps(): SetupDeps {
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
   await deps.refreshPath?.();
+  // A row scoped to other hosts is neither probed nor reported: no Windows check runs on macOS.
+  const ids = setupDependencyIdsFor((deps.hostPlatform ?? hostPlatform)());
   const [probed, targets, environment] = await Promise.all([
-    Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
+    Promise.all(ids.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
   ]);
-  const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
+  const probeById = new Map(ids.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
   const derived: SetupRowView = {
     ...TERMINAL_PAIR_INFO,
@@ -419,7 +436,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const environmentRows = environment.map(environmentRow).filter((row): row is SetupRowView => row !== null);
   const rows: SetupRowView[] = [];
   for (const family of SETUP_FAMILY_IDS) {
-    for (const id of SETUP_DEPENDENCY_IDS) {
+    for (const id of ids) {
       const info = SETUP_DEPENDENCY_INFO[id];
       if (info.family === family) {
         const probe = probeById.get(id)!;

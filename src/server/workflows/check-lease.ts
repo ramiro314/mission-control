@@ -6,6 +6,7 @@ import { CHECK_WORKTREES_DIR } from "../config.ts";
 import { openDb } from "../db.ts";
 import { verifyPinnedBase } from "../dispatcher.ts";
 import { verifyHeadIs } from "../git/ensemble-snapshot.ts";
+import { enableWorktreeLongPaths } from "../git/long-paths.ts";
 import { run, stubRun, type RunResult } from "../util/exec.ts";
 import { LegacyTreehouseService } from "../worktrees/legacy-treehouse.ts";
 import { WorktreeManager } from "../worktrees/manager.ts";
@@ -448,6 +449,10 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       );
     }
 
+    const longPaths = await enableWorktreeLongPaths(input.repoRoot);
+    if (longPaths && longPaths.code !== 0) {
+      throw new Error(`git config core.longpaths failed: ${longPaths.stderr.trim() || `exit ${longPaths.code}`}`);
+    }
     const added = await run(
       "git",
       ["-C", input.repoRoot, "worktree", "add", "--detach", path, input.baseSha],

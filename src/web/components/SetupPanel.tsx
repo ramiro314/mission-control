@@ -414,6 +414,14 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
   if (remedy.kind === "skill") {
     return <CopyCommand argv={[remedy.command]} note="Copy skill command" />;
   }
+  if (remedy.kind === "manual-command") {
+    return (
+      <div className="setup-remedy-actions">
+        <CopyCommand argv={[remedy.command]} note="Copy this command" />
+        <p className="setup-remedy-note">{remedy.note}</p>
+      </div>
+    );
+  }
   return (
     <Tooltip label={remedy.label}>
       <a
@@ -908,6 +916,9 @@ export function SetupPanel({
         <nav className="setup-rail" aria-label="Setup families">
           {SETUP_FAMILY_IDS.map((family) => {
             const familyRows = rows.filter((row) => row.family === family);
+            // A host-scoped family (Windows) has no rows on any other host, so it is left out
+            // rather than shown empty, including while the first snapshot loads.
+            if (SETUP_FAMILY_INFO[family].hosts && familyRows.length === 0) return null;
             const counts = tally(familyRows);
             const label = SETUP_FAMILY_INFO[family].label;
             return (

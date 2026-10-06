@@ -151,6 +151,8 @@ export async function executeSetupInstall(
       return refused(body.id, info.label, "This setup remedy opens a link and has no command to run.");
     case "skill":
       return refused(body.id, info.label, "This setup remedy is a skill command and must run inside a session.");
+    case "manual-command":
+      return refused(body.id, info.label, "This setup remedy is a command you run yourself; Mission Control does not open it.");
     case "service":
       // A service starts in the daemon, not in a window. `POST /api/setup/service` owns it,
       // and this route will not open a terminal that has nothing to show.

@@ -10,7 +10,11 @@ import {
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-2), ["herdr", "node-runtime"], "new persisted ids append after existing entries");
+  assert.deepEqual(
+    SETUP_DEPENDENCY_IDS.slice(-8),
+    ["herdr", "node-runtime", "git-for-windows", "windows-developer-mode", "windows-long-paths", "npm-script-shell", "vs-build-tools", "python3"],
+    "new persisted ids append after existing entries",
+  );
   assert.equal(SETUP_DEPENDENCY_INFO["gh-cli"].requirement, "required");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-auth"].requirement, "required");
   assert.deepEqual(SETUP_DEPENDENCY_INFO.iterm.remedy, {
@@ -23,6 +27,10 @@ test("the setup catalog is exhaustive, append-only, and carries usable remedies"
     if (remedy.kind === "command") {
       assert.ok(remedy.argv.length > 0, id);
       assert.ok(remedy.argv.every((part) => part.trim() === part && part.length > 0), id);
+    }
+    if (remedy.kind === "manual-command") {
+      assert.ok(remedy.command.trim() === remedy.command && remedy.command.length > 0, id);
+      assert.ok(remedy.note.length > 0, id);
     }
   }
 });
