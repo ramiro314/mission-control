@@ -6,6 +6,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const EVIDENCE = artifactsDir("sdk-startup-bootstrap");
 const TASK = "prove the Board renders while SDK restoration is pending";
@@ -16,6 +17,9 @@ test.use({
     MC_E2E_CODEX_THREAD_ID: "01999999-2222-7000-8000-000000000001",
   },
 });
+// Only the Codex fake can hold a restore open (MC_E2E_CODEX_RESUME_DELAY_MS), so this spec
+// dispatches Codex, which win32 refuses. It runs there once the Claude fake can delay a restore.
+skipSpecOnWin32(test, "Codex is unavailable on win32; only the Codex fake can delay the SDK restore this spec waits on");
 
 async function useLayout(
   page: Page,
