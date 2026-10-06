@@ -76,14 +76,19 @@ function record(name, body) {
  * the PR poller then asks `gh` about the checkout on its own clock. Without both of these the
  * fake `gh` (see `writeGhPullRequests`) answers "no PR here", and a tick that lands after the
  * tool result retracts the link the driver just set.
+ *
+ * Repeatable: a second `PI_CREATE_PR` in one checkout resets the branch and replaces its
+ * record rather than failing on an existing branch or reporting the pull request twice.
  */
 function openPullRequest(cwd, url) {
-  execFileSync("git", ["switch", "-q", "-c", `pi/pr-${url.split("/").pop()}`], { cwd, stdio: "pipe" });
+  execFileSync("git", ["switch", "-q", "-C", `pi/pr-${url.split("/").pop()}`], { cwd, stdio: "pipe" });
+  // Compared with the `gh` child's own `process.cwd()`, which is always the real path.
+  const checkout = realpathSync(cwd);
   const path = required("MC_E2E_GH_PRS");
-  const prs = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : [];
+  const prs = (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : [])
+    .filter((pr) => pr.cwd !== checkout || pr.url !== url);
   prs.push({
-    // Compared with the `gh` child's own `process.cwd()`, which is always the real path.
-    cwd: realpathSync(cwd),
+    cwd: checkout,
     url,
     number: Number(url.split("/").pop()),
     state: "OPEN",
