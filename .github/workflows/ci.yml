@@ -957,13 +957,16 @@ jobs:
         run: npm run smoke
 
       # The `dist/` every Windows E2E shard tests, as `dist-node-24` is for Linux; see
-      # `build-smoke-node-24`. Only a bundle that booted is uploaded.
+      # `build-smoke-node-24`. Gated on Build, not on smoke as on Linux: smoke still fails on
+      # win32 (its Pi driver check spawns `node_modules/.bin/esbuild`, ENOENT on run
+      # 37541228166), and gating on it skipped every Windows e2e shard. Gate on smoke once it
+      # passes here.
       - name: Pack dist for E2E
-        if: steps.smoke.outcome == 'success'
+        if: steps.build.outcome == 'success'
         run: tar -cf dist.tar dist
 
       - name: Upload dist for E2E
-        if: steps.smoke.outcome == 'success'
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: dist-windows
@@ -1047,9 +1050,8 @@ jobs:
   #
   # Like Linux, every shard tests the one `dist/` that `build-windows` built and smoked,
   # downloaded as the `dist-windows` artifact, instead of building its own: on run 37522217862
-  # each shard's `Build` took 85 to 212 s. A build or smoke failure uploads nothing, so the
-  # download fails as this job's allowed failure and the tests are skipped, rather than run
-  # against a bundle that does not boot.
+  # each shard's `Build` took 85 to 212 s. A build failure uploads nothing, so the download
+  # fails as this job's allowed failure and the tests are skipped.
   e2e-windows:
     name: e2e (windows, shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: [changes, dependencies-windows, build-windows]

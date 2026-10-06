@@ -1394,7 +1394,7 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   request), with npm's `script-shell` set to Git Bash. Their product
   steps are allowed to fail until M2.12, and stay out of `CI result`. Each job turns off
   Defender real-time scanning first, and the e2e shards test the `dist-windows` artifact that
-  `build and smoke (windows)` built and smoked rather than building their own. Every test or
+  `build and smoke (windows)` built rather than building their own. Every test or
   spec that skips on win32 goes through `skipOnWin32` or `skipSpecOnWin32` in `test/helpers/win32-skip.ts`,
   with a stated reason (D37).
 - **Makefile** (D31): run from Git Bash with a separately installed GNU make. On Windows

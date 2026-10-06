@@ -161,13 +161,13 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
   assert.deepEqual(shards(WINDOWS.get("e2e-windows")!), shards(ALL.get("e2e")!));
 });
 
-test("e2e tests the dist build-windows smoked instead of building its own", () => {
+test("e2e tests the dist build-windows built instead of building its own", () => {
   const build = WINDOWS.get("build-windows")!;
   const e2e = WINDOWS.get("e2e-windows")!;
   assert.ok(!e2e.includes("npm run build"), "no e2e shard builds dist itself");
   assert.ok(needs(e2e).includes("build-windows"));
 
-  // Each link of smoke -> pack -> upload -> download -> unpack -> e2e, by name and in order. A
+  // Each link of build -> pack -> upload -> download -> unpack -> e2e, by name and in order. A
   // `steps.<id>` that names no step is empty, so a broken link would skip every shard's tests,
   // and these jobs are allowed to fail, so nothing else would notice.
   const chain = (body: string, names: string[]) => {
@@ -177,10 +177,11 @@ test("e2e tests the dist build-windows smoked instead of building its own", () =
     assert.deepEqual([...found].sort((x, y) => x - y), found, `${names.join(", ")} run in that order`);
     return found.map((index) => all[index]!);
   };
-  const [smoke, pack, upload] = chain(build, ["Smoke the built bundles", "Pack dist for E2E", "Upload dist for E2E"]);
-  assert.match(smoke!, /^ {8}id: smoke$/m);
+  const [built, , pack, upload] = chain(build, ["Build", "Smoke the built bundles", "Pack dist for E2E", "Upload dist for E2E"]);
+  assert.match(built!, /^ {8}id: build$/m);
+  // Not smoke, which still fails on win32: gating on it skipped every shard on run 37541228166.
   for (const step of [pack!, upload!]) {
-    assert.match(step, /^ {8}if: steps\.smoke\.outcome == 'success'$/m, "only a bundle that booted is shared");
+    assert.match(step, /^ {8}if: steps\.build\.outcome == 'success'$/m, "only a dist that built is shared");
   }
   assert.match(pack!, /^ {8}run: tar -cf dist\.tar dist$/m);
   assert.match(upload!, /^ {8}uses: actions\/upload-artifact@v4$/m);
