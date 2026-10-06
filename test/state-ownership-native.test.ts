@@ -21,10 +21,14 @@ test("the state ownership addon builds for the shipped daemon platforms", () => 
     platform: "linux",
     arch: "x64",
   });
+  assert.deepEqual(stateLockBuildTarget("win32", "x64"), {
+    platform: "win32",
+    arch: "x64",
+  });
 });
 
 test("unsupported state ownership addon targets fail at build time", () => {
-  assert.throws(() => stateLockBuildTarget("win32", "x64"), /does not support win32 x64/);
+  assert.throws(() => stateLockBuildTarget("freebsd", "x64"), /does not support freebsd x64/);
   assert.throws(() => stateLockBuildTarget("darwin", "riscv64"), /does not support darwin riscv64/);
 });
 

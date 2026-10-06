@@ -29,8 +29,12 @@ test("linux builds the POSIX state lock and still skips Keep Awake", () => {
   assert.deepEqual(nativeBuildTarget("linux", "x64"), { kind: "skip", platform: "linux" });
 });
 
+test("win32 builds the LockFileEx state lock, not the POSIX one", () => {
+  assert.deepEqual(nativeAddonSources("state-lock", "win32"), ["state_lock_win.cc"]);
+});
+
 test("a platform without its own sources never borrows another platform's", () => {
-  for (const platform of ["win32", "freebsd"]) {
+  for (const platform of ["aix", "freebsd"]) {
     for (const addon of ADDONS) {
       assert.throws(
         () => nativeAddonSources(addon, platform),
