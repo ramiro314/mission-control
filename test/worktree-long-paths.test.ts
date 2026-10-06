@@ -45,7 +45,7 @@ test("core.longpaths is set only on win32", async () => {
   }
   assert.deepEqual(calls, [], "macOS and Linux run nothing");
 
-  assert.equal((await enableWorktreeLongPaths("C:\\repo", execute, "win32"))?.code, 0);
+  assert.deepEqual(await enableWorktreeLongPaths("C:\\repo", execute, "win32"), { ok: true });
   assert.deepEqual(calls, [
     ["git", "-C", "C:\\repo", "config", "--bool", "--get", "core.longpaths"],
     ["git", "-C", "C:\\repo", "config", "core.longpaths", "true"],
@@ -166,7 +166,7 @@ test("a repository already set to core.longpaths=true is read, never rewritten",
     steps.push(args.slice(2, 4).join(" "));
     return run(bin, args, opts);
   };
-  assert.equal((await enableWorktreeLongPaths(clone, recorded, "win32"))?.code, 0);
+  assert.deepEqual(await enableWorktreeLongPaths(clone, recorded, "win32"), { ok: true });
   assert.deepEqual(steps, ["config --bool"], "steady state takes no config.lock");
 });
 
@@ -176,7 +176,7 @@ test("a write that loses config.lock to another add retries once the lock clears
   const released = delay(80).then(() => rmSync(join(clone, ".git", "config.lock"), { recursive: true }));
   const result = await enableWorktreeLongPaths(clone, run, "win32");
   await released;
-  assert.equal(result?.code, 0);
+  assert.deepEqual(result, { ok: true });
   assert.equal(git(clone, "config", "core.longpaths"), "true");
 });
 
@@ -190,4 +190,16 @@ test("concurrent managed worktree adds to one repository on win32 all succeed", 
   assert.deepEqual(adds, Array.from({ length: 6 }, () => ({ ok: true, value: undefined })));
   assert.equal(git(clone, "config", "core.longpaths"), "true");
   assert.equal(worktreeCount(clone), 7);
+});
+
+test("a write whose outcome is unknown is a failure, the same verdict for every caller", async () => {
+  // Exit 0 with the child gone is not proof the value landed; a read that still says no decides.
+  const execute: typeof run = async (_bin, args) => args.includes("--get")
+    ? stubRun({ stdout: "", stderr: "", code: 1 })
+    : { stdout: "", stderr: "", code: 0, outcomeUnknown: true, overflowed: false };
+  assert.deepEqual(await enableWorktreeLongPaths("C:\\repo", execute, "win32"), {
+    ok: false,
+    reason: "git config core.longpaths failed: exit 0",
+    outcomeUnknown: true,
+  });
 });

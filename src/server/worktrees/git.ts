@@ -229,7 +229,7 @@ export class NativeWorktreeGit implements WorktreeGit {
       };
     }
     const longPaths = await enableWorktreeLongPaths(identity.mainCheckoutRoot, this.execute, this.platform);
-    if (longPaths && commandFailed(longPaths)) return failure("git config core.longpaths", longPaths);
+    if (longPaths && !longPaths.ok) return longPaths;
     const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", path, commit],

@@ -454,9 +454,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
     }
 
     const longPaths = await enableWorktreeLongPaths(input.repoRoot, run, this.platform);
-    if (longPaths && longPaths.code !== 0) {
-      throw new Error(`git config core.longpaths failed: ${longPaths.stderr.trim() || `exit ${longPaths.code}`}`);
-    }
+    if (longPaths && !longPaths.ok) throw new Error(longPaths.reason);
     const added = await run(
       "git",
       ["-C", input.repoRoot, "worktree", "add", "--detach", path, input.baseSha],

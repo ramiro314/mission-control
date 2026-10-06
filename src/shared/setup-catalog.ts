@@ -60,8 +60,9 @@ export interface SetupFamilyInfo {
   label: string;
   description: string;
   /**
-   * Only these host platforms report rows in this family. The rail leaves such a family out
-   * while it has no rows, so a host it does not apply to never shows an empty one.
+   * Only these host platforms check and report this family's rows; absent means every host.
+   * The one owner of a row's host scope (`setupDependencyIdsFor`), so a check added to the
+   * family is scoped with it. The rail leaves such a family out while it has no rows.
    */
   hosts?: readonly string[];
 }
@@ -245,8 +246,6 @@ export interface SetupDependencyInfo {
   /** What is unavailable while this row is not satisfied. */
   enables: string;
   remedy: SetupRemedy;
-  /** Only these host platforms check and report this row; absent means every host. */
-  hosts?: readonly string[];
 }
 
 /** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
@@ -438,7 +437,6 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       command: "winget install --id Git.Git -e --source winget",
       note: "Install Git for Windows with winget, then press Re-check.",
     },
-    hosts: ["win32"],
   },
   "windows-developer-mode": {
     id: "windows-developer-mode",
@@ -451,7 +449,6 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       command: "start ms-settings:developers",
       note: "Open Settings > System > For developers, turn on Developer Mode, then press Re-check.",
     },
-    hosts: ["win32"],
   },
   "windows-long-paths": {
     id: "windows-long-paths",
@@ -464,7 +461,6 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       command: "reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f",
       note: "Run this in a terminal opened as administrator, then press Re-check.",
     },
-    hosts: ["win32"],
   },
   "npm-script-shell": {
     id: "npm-script-shell",
@@ -477,7 +473,6 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       command: "npm config set script-shell \"C:\\Program Files\\Git\\bin\\bash.exe\"",
       note: "Point npm at Git Bash. If Git for Windows is installed elsewhere, use that bash.exe instead.",
     },
-    hosts: ["win32"],
   },
   "vs-build-tools": {
     id: "vs-build-tools",
@@ -490,7 +485,6 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       command: "winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override \"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"",
       note: "Install Visual Studio Build Tools with the Desktop development with C++ workload, then press Re-check.",
     },
-    hosts: ["win32"],
   },
   python3: {
     id: "python3",
@@ -503,13 +497,12 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       command: "winget install --id Python.Python.3.13 -e",
       note: "Install Python 3 with winget, then press Re-check.",
     },
-    hosts: ["win32"],
   },
 };
 
-/** The dependency ids `host` checks and reports, in catalog order. */
+/** The dependency ids `host` checks and reports, in catalog order, scoped by their family. */
 export function setupDependencyIdsFor(host: string): SetupDependencyId[] {
-  return SETUP_DEPENDENCY_IDS.filter((id) => SETUP_DEPENDENCY_INFO[id].hosts?.includes(host) ?? true);
+  return SETUP_DEPENDENCY_IDS.filter((id) => SETUP_FAMILY_INFO[SETUP_DEPENDENCY_INFO[id].family].hosts?.includes(host) ?? true);
 }
 
 export type SetupStatus =

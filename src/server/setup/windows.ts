@@ -8,7 +8,7 @@ import type { SetupDeps } from "./types.ts";
 // The Windows prerequisites Settings > Setup checks on win32 (D11, D23, D24, D30 and D33 in
 // `docs/plans/windows-support/plan.md`). Each probe reads the machine through `SetupDeps`, so
 // the tests drive every reading without a Windows host, and none of them runs anywhere else:
-// their catalog rows carry `hosts: ["win32"]`.
+// their catalog family carries `hosts: ["win32"]`.
 
 function outputOf(result: RunResult): string | null {
   return `${result.stdout}\n${result.stderr}`.trim() || null;

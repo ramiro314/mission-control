@@ -6,6 +6,7 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   TERMINAL_PAIR_INFO,
+  setupDependencyIdsFor,
 } from "../src/shared/setup-catalog.ts";
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
@@ -41,4 +42,15 @@ test("each source owns the requirement projected onto a row", () => {
   }
   assert.equal(ENVIRONMENT_ROW_METADATA["upstartclaw-core-setup"].requirement, "optional");
   assert.equal(TERMINAL_PAIR_INFO.requirement, "required");
+});
+
+test("a family's host scope covers every row in it, with no per-row copy to forget", () => {
+  const windowsFamily = SETUP_DEPENDENCY_IDS.filter((id) => SETUP_DEPENDENCY_INFO[id].family === "windows");
+  assert.equal(windowsFamily.length, 6);
+  for (const host of ["darwin", "linux"]) {
+    const reported = setupDependencyIdsFor(host);
+    assert.deepEqual(reported.filter((id) => windowsFamily.includes(id)), [], host);
+    assert.deepEqual(reported, SETUP_DEPENDENCY_IDS.filter((id) => !windowsFamily.includes(id)), host);
+  }
+  assert.deepEqual(setupDependencyIdsFor("win32"), [...SETUP_DEPENDENCY_IDS]);
 });

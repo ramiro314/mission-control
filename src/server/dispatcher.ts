@@ -2503,9 +2503,7 @@ export async function provisionWorktree(
   // provisioned branches rather than assuming a shared name.
   const branch = `harness/${slug}-${shortId}`;
   const longPaths = await enableWorktreeLongPaths(repoRoot, run, platform);
-  if (longPaths && longPaths.code !== 0) {
-    throw new Error(`git config core.longpaths failed: ${longPaths.stderr.trim() || "unknown"}`);
-  }
+  if (longPaths && !longPaths.ok) throw new Error(longPaths.reason);
   const add = await run(
     "git",
     ["-C", repoRoot, "worktree", "add", path, "-b", branch, exactBase],
