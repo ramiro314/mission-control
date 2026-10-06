@@ -4,6 +4,16 @@ Mission Control can run as a local daemon during development or as a macOS Elect
 The [Electron main process](../src/main/index.ts) starts the daemon and Foreman worker, then embeds the dashboard;
 the [preload entrypoint](../src/preload/index.ts) keeps the renderer boundary explicit.
 
+On Windows the shell runs in development only (`npm run dev:desktop`; there is no Windows
+package yet). Three things differ from macOS, all chosen in
+[`platform-shell.ts`](../src/main/platform-shell.ts) and
+[`menu-template.ts`](../src/main/menu-template.ts). The tray icon in the notification area is
+the colored `build/tray.ico`, because nothing recolors the macOS template image on the taskbar.
+The window keeps its native frame and window controls, with the menu bar hidden until Alt is
+pressed. There is no app menu: Settings… and Exit are under File, and Check for Updates… is
+under Help. The tray menu is the same on both platforms, except that the needs-you count beside
+the icon is macOS only; the tooltip carries it everywhere.
+
 The build creates separate bundles for the web dashboard, daemon, Foreman worker, Electron main
 and preload processes, MCP server, and hook bridges. The commands are defined in
 [`package.json`](../package.json). [`electron-builder.yml`](../electron-builder.yml) packages

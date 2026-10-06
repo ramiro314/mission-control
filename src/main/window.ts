@@ -13,6 +13,7 @@ import { isQuitting } from "./lifecycle.ts";
 import { daemonHealthy } from "./daemon.ts";
 import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
+import { windowChrome } from "./platform-shell.ts";
 
 let win: BrowserWindow | null = null;
 let startup: WindowStartup | null = null;
@@ -96,13 +97,8 @@ export function createWindow(preloadPath: string): BrowserWindow {
     show: false,
     title: "Mission Control",
     backgroundColor: "#0e1116",
-    // The app's own dark topbar IS the title bar: no native strip, traffic
-    // lights inset over the topbar's left padding (see .topbar in styles.css).
-    // "hiddenInset" would park them at the standard y for a 38px bar, ~15px
-    // above the centre of our taller topbar row; position them explicitly so
-    // they line up with the brand instead.
-    titleBarStyle: "hidden",
-    trafficLightPosition: { x: 20, y: 28 },
+    // On macOS the app's own dark topbar IS the title bar; win32 keeps its native frame.
+    ...windowChrome(process.platform),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
