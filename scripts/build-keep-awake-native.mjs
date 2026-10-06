@@ -13,7 +13,7 @@ import {
   nativeAddonSources,
 } from "./native-addon-sources.mjs";
 
-const PLATFORM_LABELS = { darwin: "Darwin" };
+const PLATFORM_LABELS = { darwin: "Darwin", win32: "Windows" };
 
 // Keep Awake is optional, so a platform with no declared sources skips the build instead of
 // failing it.

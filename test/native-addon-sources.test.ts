@@ -29,8 +29,13 @@ test("linux builds the POSIX state lock and still skips Keep Awake", () => {
   assert.deepEqual(nativeBuildTarget("linux", "x64"), { kind: "skip", platform: "linux" });
 });
 
+test("win32 builds power-request Keep Awake from its own source", () => {
+  assert.deepEqual(nativeAddonSources("keep-awake", "win32"), ["keep_awake_win.cc"]);
+  assert.throws(() => nativeBuildTarget("win32", "ia32"), /Windows ia32/);
+});
+
 test("a platform without its own sources never borrows another platform's", () => {
-  for (const platform of ["win32", "freebsd"]) {
+  for (const platform of ["freebsd"]) {
     for (const addon of ADDONS) {
       assert.throws(
         () => nativeAddonSources(addon, platform),
