@@ -1453,7 +1453,9 @@ stay byte-identical to <code>skills/docs-only-ci/assets/</code>.</li>
 Node 26.</li>
 <li>Every pull request run&#39;s <code>changes</code> job writes <code>{tree, docs_only}</code> (the merge ref&#39;s
 <code>HEAD^{tree}</code> and the docs-only answer) and uploads it as the <code>tested-tree</code> artifact, retention
-7 days. A recording problem warns and uploads nothing, never failing the run.</li>
+7 days. A recording problem warns and uploads nothing, and the upload step carries
+<code>continue-on-error</code>, so neither ever fails the run; the <code>main</code> push then finds no artifact and
+runs everything.</li>
 <li><code>changes</code> alone holds <code>actions: read</code> and <code>pull-requests: read</code>. Its <code>Detect reused tree</code> step
 outputs <code>tree_reused=true</code> only on a push to <code>refs/heads/main</code> whose commit maps to exactly one
 merged pull request, whose newest <code>pull_request</code> run of <code>ci.yml</code> for that pull request&#39;s head

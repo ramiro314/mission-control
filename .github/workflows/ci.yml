@@ -183,8 +183,12 @@ jobs:
           DOCS_ONLY: ${{ steps.detect.outputs.docs_only }}
         run: bash scripts/ci-tree-reuse.sh record "$RUNNER_TEMP/tested-tree.json"
 
+      # `continue-on-error` because the artifact only feeds an optimisation: a failed upload
+      # must not fail `changes` and skip the gated jobs. The `main` push then finds no artifact
+      # and runs everything.
       - name: Upload tested tree
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: tested-tree

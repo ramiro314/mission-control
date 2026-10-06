@@ -161,6 +161,7 @@ test("changes records the tested tree on pull requests and decides tree reuse wi
   assert.match(record, /^ {8}run: bash scripts\/ci-tree-reuse\.sh record "\$RUNNER_TEMP\/tested-tree\.json"$/m);
   const upload = step("Upload tested tree");
   assert.match(upload, /^ {8}if: github\.event_name == 'pull_request'$/m);
+  assert.match(upload, /^ {8}continue-on-error: true$/m, "a failed upload never fails changes");
   assert.match(upload, /^ {10}name: tested-tree$/m);
   assert.match(upload, /^ {10}path: \$\{\{ runner\.temp \}\}\/tested-tree\.json$/m);
   assert.match(upload, /^ {10}retention-days: 7$/m);

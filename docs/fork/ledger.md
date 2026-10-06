@@ -1175,7 +1175,9 @@ check that could answer differently on `main`.
   Node 26.
 - Every pull request run's `changes` job writes `{tree, docs_only}` (the merge ref's
   `HEAD^{tree}` and the docs-only answer) and uploads it as the `tested-tree` artifact, retention
-  7 days. A recording problem warns and uploads nothing, never failing the run.
+  7 days. A recording problem warns and uploads nothing, and the upload step carries
+  `continue-on-error`, so neither ever fails the run; the `main` push then finds no artifact and
+  runs everything.
 - `changes` alone holds `actions: read` and `pull-requests: read`. Its `Detect reused tree` step
   outputs `tree_reused=true` only on a push to `refs/heads/main` whose commit maps to exactly one
   merged pull request, whose newest `pull_request` run of `ci.yml` for that pull request's head
