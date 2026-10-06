@@ -23,7 +23,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
   const jobs = Object.fromEntries(
     [
       ...workflow.matchAll(
-        /^([ \t]*)(dependencies(?:-node-(?:24|26))?|gates|unit(?:-node-(?:24|26))?|e2e|package):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
+        /^([ \t]*)(dependencies(?:-node-(?:24|26))?|gates|build-smoke-node-(?:24|26)|unit(?:-node-(?:24|26))?|e2e|package):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
       ),
     ].map(([, , job, body]) => [job, body]),
   );
@@ -51,6 +51,8 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
     source,
     new RegExp(`- name: ${step}[\\s\\S]*?^[ \\t]+timeout-minutes:[ \\t]*(\\d+)`, "m"),
   );
+  const stepNames = (source: string | undefined) =>
+    [...(source ?? "").matchAll(/^[ \t]+- name:[ \t]*(.+?)[ \t]*$/gm)].map(([, name]) => name!);
   const unitCallValue = (job: string, key: string) => capture(
     jobs[job],
     new RegExp(`- name: Run unit shard[\\s\\S]*?^[ \\t]+${key}:[ \\t]*(.+?)[ \\t]*$`, "m"),
@@ -88,6 +90,8 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         dependencies24: runner("dependencies-node-24"),
         dependencies26: runner("dependencies-node-26"),
         gates: runner("gates"),
+        buildSmoke24: runner("build-smoke-node-24"),
+        buildSmoke26: runner("build-smoke-node-26"),
         unit24: runner("unit-node-24"),
         unit26: runner("unit-node-26"),
         e2e: runner("e2e"),
@@ -109,10 +113,32 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       dependencyInstallCommands: ["dependencies-node-24", "dependencies-node-26"].map((job) =>
         capture(jobs[job], /- name: Install dependencies[\s\S]*?^[ \t]+run:[ \t]*(.+?)[ \t]*$/m)
       ),
-      consumerNeeds: ["gates", "unit-node-24", "unit-node-26", "e2e"].map((job) =>
-        jobValue(job, "needs")
+      consumerNeeds: [
+        "gates",
+        "build-smoke-node-24",
+        "build-smoke-node-26",
+        "unit-node-24",
+        "unit-node-26",
+        "e2e",
+      ].map((job) => jobValue(job, "needs")),
+      // Node 26 never runs on a pull request, and its condition reads nothing else.
+      node26Conditions: ["dependencies-node-26", "build-smoke-node-26", "unit-node-26"].map((job) =>
+        jobValue(job, "if")
       ),
-      consumerRestores: [jobs.gates, unitAction, jobs.e2e].map((source) => ({
+      buildSmokeNodes: ["build-smoke-node-24", "build-smoke-node-26"].map((job) =>
+        jobValue(job, "node-version")
+      ),
+      buildSmokeSteps: ["build-smoke-node-24", "build-smoke-node-26"].map((job) =>
+        stepNames(jobs[job]).slice(-2)
+      ),
+      unitActionBuildsOrSmokes: stepNames(unitAction).some((name) => /build$|smoke/i.test(name)),
+      consumerRestores: [
+        jobs.gates,
+        jobs["build-smoke-node-24"],
+        jobs["build-smoke-node-26"],
+        unitAction,
+        jobs.e2e,
+      ].map((source) => ({
         action: capture(source, /- name: Restore node_modules[\s\S]*?uses: (actions\/cache\/restore@v\d+)/),
         failOnMiss: capture(source, /^[ \t]+fail-on-cache-miss:[ \t]*(.+?)[ \t]*$/m),
         repeatsInstall: /- name: Install dependencies/.test(source ?? ""),
@@ -160,6 +186,8 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         dependencies24: { scalar: "ubuntu-latest", group: null, label: null },
         dependencies26: { scalar: "ubuntu-latest", group: null, label: null },
         gates: { scalar: "ubuntu-latest", group: null, label: null },
+        buildSmoke24: { scalar: "ubuntu-latest", group: null, label: null },
+        buildSmoke26: { scalar: "ubuntu-latest", group: null, label: null },
         unit24: { scalar: "ubuntu-latest", group: null, label: null },
         unit26: { scalar: "ubuntu-latest", group: null, label: null },
         e2e: { scalar: "ubuntu-latest", group: null, label: null },
@@ -181,10 +209,25 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       consumerNeeds: [
         "[changes, dependencies-node-24]",
         "[changes, dependencies-node-24]",
-        "[changes, dependencies-node-26]",
+        "dependencies-node-26",
+        "[changes, dependencies-node-24]",
+        "dependencies-node-26",
         "[changes, dependencies-node-24]",
       ],
+      node26Conditions: [
+        "github.event_name != 'pull_request'",
+        "github.event_name != 'pull_request'",
+        "github.event_name != 'pull_request'",
+      ],
+      buildSmokeNodes: ["'24'", "'26'"],
+      buildSmokeSteps: [
+        ["Build", "Smoke the built bundles"],
+        ["Build", "Smoke the built bundles"],
+      ],
+      unitActionBuildsOrSmokes: false,
       consumerRestores: [
+        { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
+        { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },

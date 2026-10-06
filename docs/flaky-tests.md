@@ -90,6 +90,11 @@ skipped and upload no reports. `flake report` is deliberately not skipped with t
 Wait for CI passing, since it requires a "Flaky tests" check on every run. See the
 "Docs-only pull requests" comment at the top of `.github/workflows/ci.yml`.
 
+The Node 26 unit shards run only on pushes to `main`, tags and manual runs, so on every pull
+request they are skipped and upload no reports, and "Flaky tests" covers the Node 24 shards and
+E2E alone. `flake report` still needs them and runs after the skip the same way. A test that
+flakes only on Node 26 is reported from the `main` run, against the merged commit.
+
 ## The "Flaky tests" check
 
 Published on the commit the tests ran against: the **PR's head commit** for a pull request
