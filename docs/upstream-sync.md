@@ -168,7 +168,25 @@ The full list, with each feature's contracts and surfaces, is the
 - **Docs-only CI**: `skills/docs-only-ci/` (with its two step scripts in `assets/`),
   `test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`, the `changes`,
   `docs checks` and `CI result` jobs in `.github/workflows/ci.yml` with the docs-only condition
-  on `gates`, unit and E2E, and the `docs:links` script in `package.json`.
+  on `gates`, Node 24 unit, `build-smoke-node-24` and E2E, and the `docs:links` script in
+  `package.json`.
+- **CI time-to-green**: in `.github/workflows/ci.yml`, the Node 26 jobs' `if:` that keeps them off
+  pull requests, the `build-smoke-node-24` and `build-smoke-node-26` jobs, and the missing `Build`
+  and `Smoke the built bundles` steps in `.github/actions/run-unit-shard/action.yml`, whose files
+  come from `scripts/unit-shard.mjs` (balanced by the generated `test/shard-timings.json`) rather
+  than `--test-shard` and which uploads `unit-junit-*` artifacts for `npm run test:timings`, the
+  shard counts set by the "Shard budget" comment (three Node 24 unit and fourteen E2E shards), the
+  shared E2E `dist/` (`build-smoke-node-24`'s `Pack dist for E2E` and `Upload dist for E2E` steps,
+  and the `e2e` job's need on it and its `Download dist` and `Unpack dist` steps in place of
+  `Build`), and tree reuse on `main`: the `changes` job's `actions: read` and `pull-requests: read`,
+  its `Record tested tree`, `Upload tested tree` and `Detect reused tree` steps and `tree_reused`
+  output, the `tree_reused` clause in the gated jobs' `if:` and `CI result`'s `DOCS_ONLY` env,
+  `scripts/ci-tree-reuse.sh` and `test/ci-tree-reuse.test.ts`. An upstream change that adds build or
+  smoke back to the shard, returns it to `--test-shard`, or adds a Node 26 job, needs the same
+  treatment, and an upstream job that joins the gated four takes the `tree_reused` clause too. An
+  upstream job that runs on pull requests, or a change to either shard count, has to fit the 20-job
+  budget. An upstream change that gives the `e2e` job its own `Build` step again drops the shared
+  `dist/`.
 - **Shape tasks**: the `shape` task kind, **Shape this**, `src/server/plans/shape.ts`, and
   `skills/grill/`.
 - **Tickets**: `skills/tickets/`, ticket creation and adoption through `create_task`, and

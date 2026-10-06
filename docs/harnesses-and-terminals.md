@@ -88,6 +88,32 @@ real paste verb delivers them correctly and appends a carriage return that no pa
 suppresses. The adapter reports that the paste submitted and prompt delivery skips its own
 Enter, which is why the paste result carries the fact rather than the caller assuming it.
 
+## Windows
+
+On Windows 11 (`win32`), Mission Control runs Claude Code through the Agent SDK and nothing
+else yet. [First-run setup](setup.md#windows-11) covers the machine prerequisites. Each refusal
+below states its reason where it happens, so a refused dispatch fails on its card with that
+sentence, never as a crash.
+
+| Surface | On Windows | Why |
+| --- | --- | --- |
+| Claude Code | Available | The one harness Windows support requires. The Agent SDK spawns the `claude.exe` the executable ladder resolves, normally from `%USERPROFILE%\.local\bin`. |
+| Codex | Unavailable | Not yet brought up on Windows. Its `unsupportedHosts` entry lists `win32`, so Settings > Setup shows the reason on its row, and creating or dispatching a Codex task is refused with it before any worktree is acquired. |
+| Pi | Unavailable | Not yet brought up on Windows, and refused the same way as Codex. |
+| Agent SDK runtime | Available | Needs no terminal. SDK sessions dispatch, appear on the board, take messages, survive a daemon restart, and complete. |
+| Terminal runtime | Unavailable | None of Mission Control's terminal backends is brought up on Windows yet. WezTerm, the one that runs there natively, is a later milestone. A dispatch, a Pipeline launch or **Continue in terminal** that would land on it is refused and names the Agent SDK fix. Settings > Harnesses still offers the option. |
+| Terminal backends (tmux, Herdr, cmux, WezTerm, iTerm2, Ghostty, AppleScript) | Unavailable | They serve only the terminal runtime. |
+| Terminal discovery | Off | It exists to find terminal sessions. Each poller tick is an empty sweep with no process walk, which keeps the sweep's other duties, such as the Git refresh SDK sessions depend on, running. |
+| Process inspection | Windows PowerShell over CIM | Process listing and the port read work. Windows exposes no supported way to read another process's working directory or open files, so those reads report failure, and worktree occupancy treats that as unknown and refuses to release a native worktree rather than guess. |
+| Process trees | `taskkill /T /F` | Windows has no process groups and no graceful stop for a console tree, so a stop is always forceful. |
+| Executable ladder | The `win32` row | Described above: `%ProgramFiles%`, `%LOCALAPPDATA%\Programs`, the per-user tool directories, PATH from the registry, and PATHEXT names. |
+
+`harnessUnsupportedWhy` in
+[`harness-capabilities.ts`](../src/shared/harness-capabilities.ts) and `runtimeUnavailableWhy`
+in [`session-runtimes.ts`](../src/server/platform/session-runtimes.ts) own these sentences. When
+a harness or the terminal runtime is brought up on Windows, removing its `win32` entry is the
+change; no call site branches on the platform itself.
+
 ## Managed terminal resumes
 
 `harness/resume.ts` prepares native resume arguments through `resumeArgvFor`, then uses the

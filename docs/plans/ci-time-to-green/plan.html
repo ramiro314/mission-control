@@ -1,0 +1,450 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Cut CI time-to-green by removing redundant runs and the job queue</title><style>
+:root{color-scheme:dark;--bg:#10151d;--panel:#1a2432;--ink:#edf3fa;--muted:#b8c9dc;--line:#52647c;--link:#9bcfff;--new:#1f3a2a}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f4f7fb;--panel:#fff;--ink:#132239;--muted:#344d68;--line:#8899ad;--link:#064b8b;--new:#e3f4e8}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{max-width:1080px;margin:auto;padding:44px 24px 80px}h1{font-size:clamp(28px,3.6vw,42px);line-height:1.15;letter-spacing:-.02em;margin:0 0 25px}h2{font-size:25px;margin:42px 0 15px}h3{font-size:20px;margin:28px 0 12px}p,li{max-width:94ch;overflow-wrap:anywhere}a{color:var(--link)}code{font:.88em/1.6 ui-monospace,monospace;overflow-wrap:anywhere}pre{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.wide{overflow-x:auto;max-width:100%;border:1px solid var(--line);border-radius:10px;margin:20px 0;background:var(--panel)}table{border-collapse:collapse;min-width:660px;width:100%;font-size:15px}th,td{padding:11px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}svg{display:block;min-width:900px;width:100%;height:auto}svg rect{fill:var(--panel);stroke:var(--line)}svg rect.new{fill:var(--new);stroke:var(--link);stroke-width:2}svg text{fill:var(--ink);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted)}svg path{stroke:var(--link);fill:none;stroke-width:2}svg polygon{fill:var(--link)}li{margin:7px 0}
+</style></head><body><main>
+<h1>Cut CI time-to-green by removing redundant runs and the job queue</h1>
+<p>Status: shaped on 2026-10-05 from the shape task &quot;Plan how to reduce build time and speed it up.
+Explore different angles and propose cutting redundant runs.&quot; Decisions recorded from three
+interview rounds. Approved as written by the operator the same day, with &quot;Create tickets after
+the plan merges&quot; chosen as the follow-up. Not implemented. One phase.</p>
+<h2>Problem</h2>
+<p>A pull request waits about 12 minutes for <code>CI result</code>, and a push to <code>main</code> about 14. The longest
+single job in those runs takes about 6 minutes. The rest is waiting, not working.</p>
+<h3>What was measured (2026-10-05, GitHub API)</h3>
+<p>Full PR runs on <code>main</code> (no Windows jobs, nothing skipped), the four most recent green ones:</p>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Branch</th>
+<th>Wall clock to <code>CI result</code></th>
+<th>Longest job</th>
+<th>Jobs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>37358592349</td>
+<td>sync/upstream-2026-10-05</td>
+<td>11.8 min</td>
+<td>6.3 min</td>
+<td>35</td>
+</tr>
+<tr>
+<td>37356609183</td>
+<td>feat/executable-platform-table</td>
+<td>22.5 min</td>
+<td>6.0 min</td>
+<td>35</td>
+</tr>
+<tr>
+<td>37355842206</td>
+<td>fix/notification-prompt-merge-rollover</td>
+<td>11.4 min</td>
+<td>5.6 min</td>
+<td>35</td>
+</tr>
+<tr>
+<td>37297064313</td>
+<td>feat/docs-only-ci-gate</td>
+<td>9.9 min</td>
+<td>5.6 min</td>
+<td>35</td>
+</tr>
+</tbody></table></div>
+<p>Baseline median: <strong>11.6 min</strong> (the 22.5 min run queued behind parallel runs). The push to <code>main</code>
+37378460883 took 13.7 min with a longest job of 6.1 min.</p>
+<p>Where the time goes, from run 37378460883:</p>
+<ul>
+<li><strong>Queueing.</strong> One run fans out to 33 Linux jobs. The repository is public and owned by a
+personal account, and GitHub Free allows 20 concurrent jobs per account (GitHub&#39;s documented
+limit, confirmed by this run: all six Node 26 unit shards and five e2e shards started 2 to 5
+minutes after their dependencies were ready). Mission Control sessions push several PRs at
+once, and they share the same 20 slots.</li>
+<li><strong>Uneven unit shards.</strong> <code>node --test --test-shard</code> splits by file index, not duration. Node 24
+shard 5 took 306 s and Node 26 shard 5 took 366 s, while shard 3 took 159 s and 107 s.</li>
+<li><strong>e2e is the critical path.</strong> e2e shards take 211 to 368 s, of which 19 s is <code>npm run build</code>
+and about 45 s is setup.</li>
+</ul>
+<h3>Redundant work in every run</h3>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Redundancy</th>
+<th>Cost per run</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>R1</td>
+<td><code>npm run build</code> + <code>npm run smoke</code> runs at the end of all 12 unit shards</td>
+<td>12 x about 17 s, and every unit job stays open for it</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>The unit shard action builds the native state lock and installs the Electron runtime, then <code>pretest</code> checks or does both again</td>
+<td>about 2 s warm, duplicated logic</td>
+</tr>
+<tr>
+<td>R3</td>
+<td><code>npm test</code>&#39;s <code>posttest</code> reruns <code>test:workflow-evidence</code> in every shard, though those two files are already in the shard glob</td>
+<td>12 x about 3 s</td>
+</tr>
+<tr>
+<td>R4</td>
+<td>Node 26 runs the whole unit suite (6 jobs) on every PR</td>
+<td>6 jobs of the 20-slot budget</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>Every merged PR reruns the whole suite as a push to <code>main</code>, usually against the exact tree the PR run already tested</td>
+<td>a full 33-job run per merge</td>
+</tr>
+</tbody></table></div>
+<p>Local <code>npm run build</code> (about 14 s) and <code>tsc --noEmit</code> (about 44 s) were measured too, and are out of scope
+(decision 1).</p>
+<h2>Decisions (recorded from the interview)</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Which build time this plan is about</td>
+<td>CI time-to-green on pull requests, and CI on pushes to <code>main</code>. Local build/typecheck and Windows CI are out of scope</td>
+</tr>
+<tr>
+<td>2</td>
+<td>What the plan optimizes and is measured against</td>
+<td>PR wall clock time-to-green, target <strong>under 8 min</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Node 26 on PRs</td>
+<td>Runs only on push to <code>main</code> (and manual runs)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Where build + smoke runs</td>
+<td>One dedicated build-and-smoke job per Node version</td>
+</tr>
+<tr>
+<td>5</td>
+<td>How PR and <code>main</code> runs divide work</td>
+<td>PRs run the full suite; the <code>main</code> push skips when a green run already tested the identical tree</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Duplicate provisioning in the unit shard action</td>
+<td>Remove the action-level steps; <code>pretest</code> is the one provisioning path; the Electron cache step stays</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Critical-path levers</td>
+<td>Duration-balanced unit sharding; build <code>dist</code> once for e2e; re-tune shard counts against the 20-job cap</td>
+</tr>
+<tr>
+<td>8</td>
+<td>What a deduped <code>main</code> push still runs</td>
+<td>The Node 26 unit matrix and its build-and-smoke, always. Only the Node 24 suite, <code>gates</code> and e2e are skipped</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Which green run may stand in for the <code>main</code> push</td>
+<td>Only the latest successful CI run for the PR that produced the commit</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Build <code>dist</code> once for e2e, given it adds about 30-45 s to the critical path to save 19 s</td>
+<td>Prototype it, keep it only if measured PR wall clock does not regress</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Source of unit test durations</td>
+<td>A committed timings file, regenerated by a script from a CI run&#39;s JUnit output</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Duration-balance e2e too</td>
+<td>No. Unit only; e2e keeps Playwright&#39;s <code>--shard</code></td>
+</tr>
+<tr>
+<td>13</td>
+<td>How shard counts are set</td>
+<td>By a budget: one PR run&#39;s peak concurrent jobs at or under 20, counts picked from measured timings during implementation</td>
+</tr>
+<tr>
+<td>14</td>
+<td>How the target is proven</td>
+<td>Median of 5 consecutive full (non-docs) PR runs on a warm cache, before and after, from the GitHub API</td>
+</tr>
+<tr>
+<td>15</td>
+<td>How <code>CI result</code> accepts the new skips</td>
+<td>Keep the <code>docs-only-ci</code> skill assets verbatim: compute the step&#39;s <code>DOCS_ONLY</code> env in YAML as &quot;docs-only OR tree reused&quot;, put tree detection in its own step, leave the Node 26 jobs out of <code>CI result</code>&#39;s <code>needs</code> (as <code>package</code> already is)</td>
+</tr>
+</tbody></table></div>
+<h2>Design</h2>
+<h3>Job graph after the change</h3>
+<div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 640" role="img" aria-label="CI job graph after the change, for a pull request and for a push to main">
+  <style>svg rect{fill:var(--panel,#fff);stroke:var(--line,#8899ad)}svg rect.new{fill:var(--new,#e3f4e8);stroke:var(--link,#064b8b);stroke-width:2}svg rect.ext{stroke-dasharray:6 4}svg text{fill:var(--ink,#132239);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted,#344d68)}svg path{stroke:var(--link,#064b8b);fill:none;stroke-width:2}svg polygon{fill:var(--link,#064b8b)}svg rect.bg{fill:var(--panel,#fff);stroke:none}</style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <rect class="bg" x="0" y="0" width="1040" height="640"/>
+
+  <text x="20" y="30">Pull request: Node 24 only, one build-and-smoke job, duration-balanced unit shards</text>
+  <rect class="new" x="20" y="120" width="190" height="44" rx="8"/><text x="32" y="140">changes</text><text x="32" y="157" class="small">+ record tested tree</text>
+  <rect x="250" y="120" width="170" height="44" rx="8"/><text x="262" y="147">dependencies 24</text>
+  <rect x="470" y="50" width="220" height="36" rx="8"/><text x="482" y="74">gates</text>
+  <rect x="470" y="94" width="220" height="36" rx="8"/><text x="482" y="118">docs checks</text>
+  <rect class="new" x="470" y="138" width="220" height="36" rx="8"/><text x="482" y="162">build and smoke 24</text>
+  <rect class="new" x="470" y="182" width="220" height="36" rx="8"/><text x="482" y="206">unit 24 x N (balanced)</text>
+  <rect x="470" y="226" width="220" height="36" rx="8"/><text x="482" y="250">e2e x M</text>
+  <rect x="740" y="210" width="130" height="40" rx="8"/><text x="752" y="236">flake report</text>
+  <rect x="900" y="120" width="120" height="44" rx="8"/><text x="912" y="147">CI result</text>
+  <path d="M210 142 L250 142" marker-end="url(#a)"/>
+  <path d="M420 136 L470 68" marker-end="url(#a)"/><path d="M420 139 L470 112" marker-end="url(#a)"/><path d="M420 142 L470 156" marker-end="url(#a)"/><path d="M420 145 L470 200" marker-end="url(#a)"/><path d="M420 148 L470 244" marker-end="url(#a)"/>
+  <path d="M690 200 L740 226" marker-end="url(#a)"/><path d="M690 244 L740 234" marker-end="url(#a)"/>
+  <path d="M870 226 L920 164" marker-end="url(#a)"/><path d="M690 68 C800 68 880 100 930 120" marker-end="url(#a)"/>
+  <text x="20" y="300" class="small">Peak concurrency: 3 + N + M &lt;= 20. Node 26 jobs skip on PRs and are not in CI result's needs.</text>
+
+  <text x="20" y="350">Push to main: Node 26 always runs; the Node 24 suite skips when the tree was already tested</text>
+  <rect class="new" x="20" y="440" width="190" height="44" rx="8"/><text x="32" y="460">changes</text><text x="32" y="477" class="small">+ tree reuse lookup</text>
+  <rect class="new ext" x="20" y="550" width="230" height="56" rx="8"/><text x="32" y="572" class="small">GitHub API: merged PR's</text><text x="32" y="590" class="small">latest green run, tested-tree</text>
+  <path d="M115 484 L115 550" marker-end="url(#a)"/>
+  <rect x="250" y="380" width="170" height="40" rx="8"/><text x="262" y="406">dependencies 26</text>
+  <rect x="250" y="490" width="170" height="40" rx="8"/><text x="262" y="510">dependencies 24</text><text x="262" y="525" class="small">always runs</text>
+  <rect x="470" y="370" width="220" height="36" rx="8"/><text x="482" y="394">unit 26 x 6</text>
+  <rect class="new" x="470" y="414" width="220" height="36" rx="8"/><text x="482" y="438">build and smoke 26</text>
+  <rect x="470" y="462" width="220" height="70" rx="8"/><text x="482" y="483">gates, unit 24,</text><text x="482" y="503">build and smoke 24, e2e</text><text x="482" y="522" class="small">skipped if tree_reused</text>
+  <rect x="470" y="540" width="220" height="36" rx="8"/><text x="482" y="564">docs checks</text>
+  <rect x="740" y="440" width="130" height="40" rx="8"/><text x="752" y="466">flake report</text>
+  <rect x="900" y="440" width="120" height="44" rx="8"/><text x="912" y="467">CI result</text>
+  <path d="M210 455 L250 404" marker-end="url(#a)"/>
+  <path d="M420 396 L470 388" marker-end="url(#a)"/><path d="M420 404 L470 430" marker-end="url(#a)"/>
+  <path d="M210 470 L250 504" marker-end="url(#a)"/><path d="M420 504 L470 498" marker-end="url(#a)"/>
+  <path d="M420 516 C440 540 450 556 470 558" marker-end="url(#a)"/>
+  <path d="M690 388 C720 400 730 430 750 440" marker-end="url(#a)"/><path d="M690 498 L740 466" marker-end="url(#a)"/>
+  <path d="M870 460 L900 462" marker-end="url(#a)"/>
+  <text x="20" y="630" class="small">Any doubt (API error, no artifact, docs-only PR run, tree mismatch) runs everything. Tags and manual runs never reuse.</text>
+</svg></div>
+<p>On a pull request, Node 26 jobs skip. On a push to <code>main</code>, the Node 26 unit matrix and its
+build-and-smoke always run, and so do <code>dependencies-node-24</code> and <code>docs checks</code>. <code>gates</code>,
+<code>unit-node-24</code>, <code>build-smoke-node-24</code> and e2e run unless the tree was reused.
+Tags and <code>workflow_dispatch</code> run everything, as today. Docs-only PRs behave exactly as they do
+now.</p>
+<h3>1. Node 26 runs only on push to <code>main</code> (R4, decisions 3 and 8)</h3>
+<p><code>dependencies-node-26</code>, <code>unit-node-26</code> and the new <code>build-smoke-node-26</code> carry
+<code>if: github.event_name != &#39;pull_request&#39;</code>. They never depend on the tree-reuse result. They run
+on every push to <code>main</code>, tag and manual run. They leave <code>CI result</code>&#39;s <code>needs</code> (decision 15), so a
+skipped Node 26 job on a PR is not a failure. A Node 26 failure on <code>main</code> still turns that
+workflow run red. <code>flake report</code> keeps needing them; it already runs after skipped jobs through
+<code>!cancelled()</code>.</p>
+<h3>2. One build-and-smoke job per Node version (R1, decision 4)</h3>
+<p>New jobs <code>build-smoke-node-24</code> (gated like the other Node 24 jobs) and <code>build-smoke-node-26</code>
+(rule above): restore <code>node_modules</code>, run <code>npm run build</code>, run <code>npm run smoke</code>. The <code>Build</code> and
+<code>Smoke the built bundles</code> steps leave <code>.github/actions/run-unit-shard/action.yml</code>. Smoke still
+runs on both supported Node releases, which is the reason the ci.yml comment gives for it living
+in the matrix. That comment is rewritten to match.</p>
+<p><code>build-smoke-node-24</code> also needs the native state lock built before <code>npm run build</code>. It already
+gets that: <code>build</code> starts with <code>build:native</code>.</p>
+<h3>3. One provisioning path in the unit shard (R2, R3, decision 6)</h3>
+<ul>
+<li>Remove the action&#39;s <code>Install Electron test runtime</code> and <code>Build native state lock</code> steps. Keep
+<code>Resolve Electron version</code> and <code>Cache the Electron runtime</code>.</li>
+<li><code>pretest</code> stays the single definition of test provisioning. The cold-cache download retry
+(three attempts with backoff), which only the action has today, moves into
+<code>scripts/ensure-electron-runtime.mjs</code> so it protects local runs too.</li>
+<li>The shard runs <code>npm run pretest</code> once, then <code>npm run --silent test:run -- --test-concurrency=$MISSION_TEST_CONCURRENCY &lt;its files&gt;</code>
+(section 4). Calling <code>test:run</code> directly drops the duplicated <code>posttest</code>
+(<code>test:workflow-evidence</code>): those two files are already in the partition. Local <code>npm test</code>,
+with its <code>pretest</code> and <code>posttest</code>, is unchanged.</li>
+<li>The flake rerun command already goes through <code>test:run</code>, so the first run and the rerun still
+agree on how JUnit is produced (pinned by <code>test/flake-report-action.test.ts</code>).</li>
+</ul>
+<h3>4. Duration-balanced unit sharding (decisions 7, 11, 12)</h3>
+<ul>
+<li><strong>Timings file:</strong> <code>test/shard-timings.json</code>, a generated file mapping each test file path to
+its duration in milliseconds. Never hand-edited (AGENTS.md).</li>
+<li><strong>Generator:</strong> <code>scripts/unit-shard-timings.mjs &lt;run-id&gt;</code> (npm script <code>test:timings</code>) downloads
+the run&#39;s per-shard JUnit artifacts with <code>gh run download</code> and sums <code>testsuite</code> times per file.
+The unit shard action therefore also uploads its <code>junit.xml</code> as an artifact
+(<code>unit-junit-node-&lt;v&gt;-shard-&lt;n&gt;</code>, retention 7 days).</li>
+<li><strong>Partitioner:</strong> <code>scripts/unit-shard.mjs &lt;index&gt;/&lt;total&gt;</code> expands <code>test/**/*.test.ts</code>, weights
+each file by its recorded duration (a file missing from the timings gets the median), sorts by
+weight then path, and assigns longest-first to the lightest shard (LPT). It prints the shard&#39;s
+files. The result is deterministic for a given file set and timings file.</li>
+<li><strong>Correctness invariant</strong>, pinned by a new <code>test/unit-shard.test.ts</code>: across all shards, every
+test file appears exactly once, for any file set, any timings (including empty or stale ones)
+and any shard total. A stale timings file only worsens balance. It never drops a test.</li>
+<li><strong>Regeneration</strong> is manual: rerun <code>npm run test:timings -- &lt;run-id&gt;</code> when shard spread drifts,
+and commit the result.</li>
+<li><strong>Bootstrap order for the first timings file.</strong> No existing run uploads per-shard JUnit (today
+the action uploads only <code>flake-report-*</code>), so the implementing branch produces its own input:
+(1) land the JUnit upload and the partitioner with an empty <code>test/shard-timings.json</code>, which the
+invariant already covers (every file gets the default weight, so shards are balanced by file
+count); (2) let CI run on the branch; (3) run <code>npm run test:timings -- &lt;that run-id&gt;</code> and commit
+the generated file; (4) only then pick N and M (section 5) and take the &quot;after&quot; measurements.
+The implementing PR therefore commits the first real timings file.</li>
+<li>e2e keeps Playwright&#39;s <code>--shard</code> (decision 12).</li>
+</ul>
+<h3>5. Shard counts from a concurrency budget (decision 13)</h3>
+<p>The rule: <strong>one PR run peaks at no more than 20 concurrent jobs.</strong> At peak a PR runs <code>gates</code>,
+<code>docs checks</code>, <code>build-smoke-node-24</code>, N unit shards and M e2e shards, so <code>3 + N + M &lt;= 20</code>.
+<code>changes</code> and <code>dependencies-node-24</code> finish before the shards start.</p>
+<p>During implementation, after step 4 of the bootstrap order in section 4, N and M are picked
+from the balanced unit timings and the measured e2e
+step times so that the slowest shard of each fits the 8-minute target. A starting estimate:
+N = 4 (about 3.5 min each once balanced) and M = 13 (about 280 s average e2e test time). The
+final numbers and the arithmetic go in the ci.yml comment that already explains the current
+counts. <code>MISSION_TEST_SHARDS</code>, the shard lists and <code>test/init-script.test.ts</code> move together.</p>
+<p>The cap is per account, so parallel PRs still compete for it. Fewer jobs per run is the only
+lever this plan has on that.</p>
+<h3>6. <code>main</code> push skips a tree it already tested (R5, decisions 5, 8, 9)</h3>
+<p><strong>Recording, on every PR run.</strong> A new step in <code>changes</code>, after the verbatim docs-only step,
+writes <code>git rev-parse HEAD^{tree}</code> (the tree of the merge ref the run tests) and the run&#39;s
+<code>docs_only</code> value to <code>tested-tree.json</code>. A new <code>tested-tree</code> artifact (retention 7 days)
+uploads it.</p>
+<p><strong>Reuse decision, on every push to <code>main</code>.</strong> A second new step in <code>changes</code>, with
+<code>actions: read</code> and <code>pull-requests: read</code> added to that job only, outputs <code>tree_reused=true</code>
+only when all of these hold:</p>
+<ol>
+<li>The event is <code>push</code> to <code>refs/heads/main</code>. Tags and manual runs never reuse.</li>
+<li><code>GET /repos/{repo}/commits/{sha}/pulls</code> returns exactly one merged PR.</li>
+<li>The newest CI run of this workflow with <code>event=pull_request</code> and <code>head_sha</code> = that PR&#39;s head
+SHA has conclusion <code>success</code>. This is decision 9: only that PR&#39;s latest green run counts.</li>
+<li>That run&#39;s <code>tested-tree</code> artifact exists and says <code>docs_only=false</code>. A docs-only PR run
+skipped the suite, so it cannot stand in for one.</li>
+<li>Its recorded tree equals <code>git rev-parse HEAD^{tree}</code> of the pushed commit.</li>
+</ol>
+<p>Every API error, missing artifact or mismatch outputs <code>false</code> and logs why. Any doubt runs
+everything, which is the rule the docs-only gate already follows. A squash merge and a merge
+commit both produce the merge ref&#39;s tree when <code>main</code> has not moved since the PR run, so the merge
+method does not matter.</p>
+<p><strong>Trust.</strong> The artifact only ever comes from a successful run of this same workflow for the
+merged PR&#39;s head. That PR&#39;s code, <code>ci.yml</code> included, is in the merged tree and was reviewed.
+Reuse therefore trusts nothing the full <code>main</code> run would not have trusted.</p>
+<p><strong>What skips.</strong> <code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> gain
+<code>needs.changes.outputs.tree_reused != &#39;true&#39;</code> beside their docs-only condition. Nothing else
+skips. <code>dependencies-node-24</code> always runs on a <code>main</code> push, because <code>docs checks</code> needs it and
+<code>CI result</code> needs both, and neither is in <code>SKIPPABLE</code>. <code>docs checks</code>, <code>flake report</code>,
+<code>CI result</code> and every Node 26 job also still run.</p>
+<h3>7. <code>CI result</code> keeps the skill assets verbatim (decision 15)</h3>
+<p>The <code>Detect docs-only change</code> step body and the <code>CI result</code> step body stay byte-identical to
+<code>skills/docs-only-ci/assets/</code>, so <code>test/docs-only-ci-template.test.ts</code> keeps passing unchanged.
+Only YAML outside the bodies changes:</p>
+<ul>
+<li><code>CI result</code>&#39;s <code>DOCS_ONLY</code> env becomes
+<code>${{ (needs.changes.outputs.docs_only == &#39;true&#39; || needs.changes.outputs.tree_reused == &#39;true&#39;) &amp;&amp; &#39;true&#39; || &#39;false&#39; }}</code>,
+with a comment saying the variable now means &quot;the skippable jobs may skip&quot;.</li>
+<li><code>SKIPPABLE</code> gains <code>build-smoke-node-24</code>.</li>
+<li><code>needs</code> adds <code>build-smoke-node-24</code> and drops <code>dependencies-node-26</code> and <code>unit-node-26</code>, matching
+<code>package</code>&#39;s treatment.</li>
+</ul>
+<h3>8. Build <code>dist</code> once for e2e: prototype only (decision 10)</h3>
+<p>Variant: <code>build-smoke-node-24</code> uploads <code>dist/</code> as an artifact, and each e2e shard needs it,
+downloads it and drops its own <code>Build</code> step. It saves about 19 s per shard but delays every e2e
+start by the build job (about 30-45 s). The implementing PR measures both variants with the
+method in Verification. It keeps the variant only if the PR median does not regress, and records
+both numbers either way. Without the variant, the e2e comment (&quot;Each shard builds its own
+<code>dist/</code>&quot;) stays true.</p>
+<h2>Surfaces to change</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>.github/workflows/ci.yml</code></td>
+<td>Sections 1, 2, 5, 6, 7 (and 8 if kept); rewrite the runner, smoke, shard-count and docs-only comments to match</td>
+</tr>
+<tr>
+<td><code>.github/actions/run-unit-shard/action.yml</code></td>
+<td>Drop provisioning, build and smoke steps; run <code>pretest</code> then the partitioned <code>test:run</code>; upload JUnit</td>
+</tr>
+<tr>
+<td><code>scripts/ensure-electron-runtime.mjs</code></td>
+<td>Add the download retry</td>
+</tr>
+<tr>
+<td><code>scripts/unit-shard.mjs</code>, <code>scripts/unit-shard-timings.mjs</code>, <code>package.json</code> (<code>test:timings</code>)</td>
+<td>New</td>
+</tr>
+<tr>
+<td><code>test/shard-timings.json</code></td>
+<td>New, generated</td>
+</tr>
+<tr>
+<td><code>test/unit-shard.test.ts</code></td>
+<td>New: partition invariant, determinism, unknown-file weighting</td>
+</tr>
+<tr>
+<td><code>test/init-script.test.ts</code></td>
+<td>Update the pinned CI shape (Node 26 consumers, shard totals and lists, build-smoke jobs)</td>
+</tr>
+<tr>
+<td><code>test/oss-readiness.test.ts</code></td>
+<td>Add the new jobs&#39; <code>ubuntu-latest</code> runner assertions</td>
+</tr>
+<tr>
+<td>A new test of the tree-reuse step</td>
+<td>Table-driven, as <code>test/docs-only-ci-scripts.test.ts</code> is for the docs-only steps: each reuse condition, and every failure path resolving to <code>false</code></td>
+</tr>
+<tr>
+<td><code>AGENTS.md</code></td>
+<td>The CI paragraph: job count, Node 26 on <code>main</code> only, build-and-smoke jobs, tree reuse</td>
+</tr>
+<tr>
+<td><code>docs/flaky-tests.md</code>, <code>docs/upstream-sync.md</code></td>
+<td>Shard names and the fork&#39;s <code>ci.yml</code> changes, where they mention them</td>
+</tr>
+<tr>
+<td><code>docs/fork/ledger.md</code>, <code>docs/fork/ledger.html</code></td>
+<td>New &quot;CI time-to-green&quot; entry (intent, contracts, surfaces, status, PRs), re-rendered</td>
+</tr>
+</tbody></table></div>
+<h2>Verification</h2>
+<ul>
+<li>New and changed tests pass when run by file: <code>test/unit-shard.test.ts</code>, the tree-reuse step
+test, <code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code>,
+<code>test/docs-only-ci-template.test.ts</code>, <code>test/flake-report-action.test.ts</code>.</li>
+<li><code>npm run typecheck</code> and <code>npm run lint</code> pass.</li>
+<li><strong>Coverage is unchanged:</strong> on the implementing PR&#39;s own run, the union of the N shards&#39; JUnit
+test files equals <code>test/**/*.test.ts</code>. A CI step in each shard prints its file count, and the
+partition test pins the invariant.</li>
+<li><strong>Target (decision 14):</strong> the median wall clock from run creation to <code>CI result</code> completion,
+over 5 consecutive full (non-docs) PR runs on a warm cache, is under 8 minutes. The before
+median uses the same method (11.6 min over the 4 runs above, topped up to 5 at implementation
+time). The query and both tables go in the PR description.</li>
+<li><strong>Tree reuse works end to end:</strong> after the implementing PR merges, its own <code>main</code> push run
+shows <code>tree_reused=true</code>, Node 24/e2e skipped, Node 26 run, <code>CI result</code> green. A merge after
+<code>main</code> moved shows <code>tree_reused=false</code> and a full run. Both run links go in the PR or a
+follow-up comment.</li>
+</ul>
+<h2>Risks and known gaps</h2>
+<ul>
+<li><strong>A Node 26-only break reaches <code>main</code> before anyone sees it.</strong> It turns the <code>main</code> run red
+right after merge, and nothing blocks the PR. Accepted in decision 3.</li>
+<li><strong><code>CI result</code> on <code>main</code> no longer covers Node 26.</strong> The workflow run&#39;s overall conclusion does.
+<code>main</code> has no branch protection today, so nothing reads <code>CI result</code> there as a gate.</li>
+<li><strong>The 8-minute target may not fit the 20-job budget</strong>, because e2e needs about 60 minutes of
+shard time. If balanced counts within the budget cannot reach it, the PR reports the measured
+median and names the next lever (e2e duration balancing, declined in decision 12) rather than
+breaking the budget.</li>
+<li><strong>Parallel PRs still share 20 slots.</strong> This plan shrinks each run&#39;s share; it cannot raise the
+cap.</li>
+<li><strong>Windows.</strong> <code>release/windows</code> carries its own <code>ci.yml</code> with about 25 Windows jobs. It picks
+this change up through the weekly sync runbook, where <code>ci.yml</code> conflicts are expected. Its
+31-minute Windows unit shards are out of scope (decision 1).</li>
+<li><strong>Timings rot.</strong> Balance degrades as tests change until someone regenerates the file.
+Coverage never does.</li>
+</ul>
+<h2>Out of scope</h2>
+<p>Local <code>npm run build</code> parallelization, incremental <code>tsc</code>, Windows CI, larger paid runners, and
+affected-test selection on PRs (considered in round 1, not chosen).</p>
+</main></body></html>

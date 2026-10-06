@@ -1,8 +1,10 @@
 name: CI
 
 # Exercises the repository's quality gates - typecheck, lint, tests, build, a boot smoke,
-# and the browser end-to-end suite - on every push to main and every pull request.
-# Pushes to `release/windows` run it too, along with the Windows jobs (see "## Windows" below).
+# and the browser end-to-end suite - on every push to main and every pull request. A pull
+# request runs them on Node 24 only; see "Node 26 off pull requests" below.
+# Pushes to `release/windows` run it too, along with the Windows jobs, which never run on a
+# pull request (see "## Windows" below).
 #
 # The smoke step is not redundant with Build, and the comment it replaces claimed it was:
 # it said a production build meant "a broken bundle can't merge unnoticed", which was
@@ -23,9 +25,10 @@ name: CI
 #
 # ## Docs-only pull requests
 #
-# A pull request whose every changed path is under `docs/` skips `gates`, both unit matrices
-# and E2E. `changes` decides that; each gated job needs it and carries
-# `if: needs.changes.outputs.docs_only != 'true'`. What a docs change can break still runs:
+# A pull request whose every changed path is under `docs/` skips `gates`, the Node 24 unit
+# matrix, `build-smoke-node-24` and E2E. `changes` decides that; each gated job needs it and
+# carries `needs.changes.outputs.docs_only != 'true'` in its `if:`, beside the tree-reuse
+# condition below. What a docs change can break still runs:
 # `docs checks` (the doc-link check and every test matched by its discovery pattern,
 # `grep -l '\.\./docs/' test/*.test.ts`), and `flake report`, which reads zero reports and
 # publishes "Flaky tests: No flaky tests", the check Mission Control's Wait for CI requires.
@@ -34,9 +37,11 @@ name: CI
 # packaging do not today. A change that makes one of them read `docs/` must remove the gate or
 # add that step to `docs checks`.
 #
-# Only pull requests skip. A push to `main`, a tag or a manual run always runs everything, so a
-# doc-drift test the discovery pattern misses is still caught on `main`. Any doubt in detection
-# (a failed diff, no changed files, no base commit) also runs everything.
+# Only pull requests skip for docs. A tag or a manual run always runs everything, and so does a
+# push to `main` unless "Tree reuse on `main`" below applies, which a docs-only pull request's
+# run never satisfies; so a doc-drift test the discovery pattern misses is still caught on
+# `main`. Any doubt in detection (a failed diff, no changed files, no base commit) also runs
+# everything.
 #
 # A plain `paths-ignore` filter is not used: a filtered workflow never reports, so a required
 # check would wait forever. `CI result` always runs and reports instead, passing only when
@@ -45,6 +50,63 @@ name: CI
 #
 # The two step bodies are the `docs-only-ci` skill's assets, `skills/docs-only-ci/assets/`,
 # verbatim; `test/docs-only-ci-template.test.ts` fails when either copy drifts by one byte.
+#
+# ## Node 26 off pull requests
+#
+# `dependencies-node-26`, `unit-node-26` and `build-smoke-node-26` carry
+# `if: github.event_name != 'pull_request'` and nothing else: they run on every push to `main`,
+# tag and manual run, and never on a pull request. GitHub Free allows 20 concurrent jobs per
+# account, and a pull request's run fanned out to 33, so the Node 26 jobs were the ones left
+# queueing; the Node 26 floor is still checked on every merge. They are not in `CI result`'s
+# `needs`, as `package` is not, so their skip on a pull request fails nothing. A Node 26 failure
+# on `main` turns that workflow run red instead; `CI result` there does not cover Node 26. See
+# docs/plans/ci-time-to-green/plan.md, section 1.
+#
+# ## Shard budget
+#
+# GitHub Free runs at most 20 jobs at once per account. At its peak a pull request's run holds
+# `gates`, `docs checks`, N Node 24 unit shards and M E2E shards (`changes`,
+# `dependencies-node-24` and `build-smoke-node-24`, whose `dist/` the E2E shards download, have
+# finished; `flake report` and `CI result` have not started), so 2 + N + M <= 20. N = 3 and
+# M = 14 make 19, one slot spare: M was set to 14 while `build-smoke-node-24` still ran beside the
+# shards, and is held there so the shared `dist/` was measured as one change. The numbers come
+# from pull request run 37415279889, which ran six unit and fifteen E2E shards:
+#
+# - E2E is the critical path. Its fifteen browser-test steps took 3,686 s in all, 173 to 326 s
+#   each, the slowest 1.33 times the mean. Fourteen shards make that a 263 s mean and about
+#   350 s slowest, plus about 30 s of setup per job after about 40 s waiting for
+#   `build-smoke-node-24`: about 7 minutes.
+# - Unit time has a floor. `test/session-contracts.test.ts` alone takes 224 s, and the shard
+#   holding it took 308 s. Other shards took about 38 s plus 0.41 s per recorded second they
+#   were dealt, and `test/shard-timings.json` records 1,400 s. Three shards deal 467 s each,
+#   about 230 s, while the one holding that file stays near 300 s at three shards or at six. A
+#   fourth unit shard would shorten nothing, so its slot is a fourteenth E2E shard; two unit
+#   shards would make unit, not E2E, the slowest job.
+#
+# With about 50 s for `changes` and `dependencies-node-24` before the shards and 25 s for
+# `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
+# target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
+# `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
+# test derives the peak from this file's job graph and pins it at 19, so a new job that runs
+# beside the shards on a pull request fails it until it is counted against the 20-job cap. See
+# docs/plans/ci-time-to-green/plan.md, sections 5 and 8.
+#
+# ## Tree reuse on `main`
+#
+# Every pull request run's `changes` job uploads a `tested-tree` artifact (7 days): the tree of
+# the merge ref it tested and its `docs_only` value. On a push to `main`, `changes` sets
+# `tree_reused=true` only when the pushed commit maps to exactly one merged pull request, that
+# pull request's newest `pull_request` run of this workflow for its head commit succeeded, its
+# artifact says `docs_only=false`, and its tree is the pushed commit's tree. Then `gates`, the
+# Node 24 unit matrix, `build-smoke-node-24` and E2E skip beside their docs-only condition, and
+# nothing else does: the Node 26 jobs, `dependencies-node-24`, `docs checks` and `flake report`
+# still run. Tags and manual runs never reuse. Every API error, missing artifact or mismatch
+# answers `false`, logs why, and runs everything. `scripts/ci-tree-reuse.sh` is both steps;
+# `test/ci-tree-reuse.test.ts` holds each condition.
+#
+# The artifact only comes from a green run of this workflow on the merged pull request's head,
+# whose code, this file included, is the merged tree. Reuse trusts nothing the full run would
+# not have. See docs/plans/ci-time-to-green/plan.md, sections 6 and 7.
 
 on:
   push:
@@ -62,18 +124,25 @@ permissions:
   contents: read
 
 jobs:
-  # Decides whether this run is a docs-only pull request; see "Docs-only pull requests" above.
-  # Full history so the merge base of the pull request's base and head is reachable. The step
-  # never fails on a detection problem: it answers `false` and the full suite runs. If the job
-  # itself fails, the gated jobs skip and `CI result` fails, which is loud rather than a pass.
+  # Decides whether this run is a docs-only pull request, and whether a push to `main` reuses a
+  # tree its pull request already tested; see "Docs-only pull requests" and "Tree reuse on
+  # `main`" above. Full history so the merge base of the pull request's base and head is
+  # reachable. Neither step fails on a detection problem: each answers `false` and the full
+  # suite runs. If the job itself fails, the gated jobs skip and `CI result` fails, which is loud
+  # rather than a pass.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # `actions: read` and `pull-requests: read` are for tree reuse alone: the merged pull
+    # request, its CI runs and their `tested-tree` artifact. No other job gets them.
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
+      tree_reused: ${{ steps.reuse.outputs.tree_reused }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -137,6 +206,39 @@ jobs:
 
           decide true "Every changed path matches the docs patterns."
 
+      # What this pull request run tests: the merge ref's tree, and whether it skipped the suite.
+      # The later push to `main` reads it back; see "Tree reuse on `main`" above.
+      - name: Record tested tree
+        if: github.event_name == 'pull_request'
+        env:
+          DOCS_ONLY: ${{ steps.detect.outputs.docs_only }}
+        run: bash scripts/ci-tree-reuse.sh record "$RUNNER_TEMP/tested-tree.json"
+
+      # `continue-on-error` because the artifact only feeds an optimisation: a failed upload
+      # must not fail `changes` and skip the gated jobs. The `main` push then finds no artifact
+      # and runs everything.
+      - name: Upload tested tree
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-tree
+          path: ${{ runner.temp }}/tested-tree.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Answers `false` on every event but a push to `main`, without calling the API.
+      - name: Detect reused tree
+        id: reuse
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ci.yml
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-tree-reuse.sh decide
+
   # `setup-node` caches npm's package tarballs, not the installed dependency tree. In a
   # measured 21-job run every job restored the same warm 385 MB npm cache, but `npm ci`
   # still varied from 12 seconds to 5 minutes. Prepare one exact `node_modules` tree per
@@ -173,6 +275,7 @@ jobs:
 
   dependencies-node-26:
     name: dependencies (node 26)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -208,7 +311,7 @@ jobs:
   gates:
     name: gates (typecheck, lint)
     needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -280,32 +383,111 @@ jobs:
           # Unquoted on purpose: one argument per file. Test file names carry no whitespace.
           node --test --import ./test/setup-state.mjs --import tsx $files
 
-  # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
-  # unflagged from Node 24); this pins the supported floor and the current release. Node 25
-  # is EOL.
+  # Build and smoke, once per supported Node release. Smoke is the only step in CI that
+  # executes the built bundle, so it is exactly the step whose result can differ between
+  # Node 24 and Node 26, which is why it is not in `gates`. It used to run at the end of all
+  # twelve unit shards, building the same `dist/` twelve times and holding every shard open
+  # for it; one job per release checks the same thing once.
   #
-  # Build and smoke stay inside this matrix rather than moving to `gates`, and that is not
-  # an oversight. Smoke is the only step here that executes the built bundle, so it is
-  # exactly the step whose result can differ between Node 24 and Node 26. Build and smoke run
-  # after every test shard so each check remains self-contained and exercises its own output.
-  # Six shards leave practical headroom below the three-minute target. Four shards put the
-  # slowest partition at 179.7 seconds before its required posttest, which was too close to
-  # the target to absorb ordinary runner variance.
-  unit-node-24:
-    name: unit (node 24, shard ${{ matrix.shard }}/6)
+  # `npm run build` starts with `build:native`, which builds the native state lock the daemon
+  # bundle acquires before it serves, so smoke needs no other provisioning. Smoke runs the
+  # bundles directly and opens no window, so it needs neither the Electron runtime nor xvfb.
+  build-smoke-node-24:
+    name: build and smoke (node 24)
     needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Build
+        run: npm run build
+
+      # Executes the bundles produced by Build, not the source modules covered by unit tests.
+      - name: Smoke the built bundles
+        run: npm run smoke
+
+      # The `dist/` every E2E shard tests; see the `e2e` job. Uploaded after smoke, so E2E only
+      # ever drives a bundle that booted. A tarball, because an artifact drops file modes and
+      # `dist/satellites/*.mjs` and the native addons are executable. Kept 7 days, like the
+      # flake reports: "Re-run failed jobs" does not rerun this job once it succeeded, so a
+      # rerun E2E shard downloads this attempt's artifact, and it has to outlive a weekend.
+      - name: Pack dist for E2E
+        run: tar -cf dist.tar dist
+
+      - name: Upload dist for E2E
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-node-24
+          path: dist.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  # Off pull requests, like the rest of Node 26; see "Node 26 off pull requests" above.
+  build-smoke-node-26:
+    name: build and smoke (node 26)
+    needs: dependencies-node-26
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 26
+        uses: actions/setup-node@v5
+        with:
+          node-version: '26'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-26-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Build
+        run: npm run build
+
+      # Executes the bundles produced by Build, not the source modules covered by unit tests.
+      - name: Smoke the built bundles
+        run: npm run smoke
+
+  # The tests that DO care which Node runs them. >=24 is required (node:sqlite is used
+  # unflagged from Node 24); this pins the supported floor and the current release. Node 25
+  # is EOL. Node 26 runs off pull requests only; see "Node 26 off pull requests" above.
+  #
+  # Three shards on a pull request; see "Shard budget" above. Node 26 keeps six, since it runs
+  # only off pull requests.
+  unit-node-24:
+    name: unit (node 24, shard ${{ matrix.shard }}/3)
+    needs: [changes, dependencies-node-24]
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3]
 
     env:
       # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
+      MISSION_TEST_SHARDS: '3'
 
     steps:
       - name: Checkout
@@ -316,12 +498,12 @@ jobs:
         with:
           node-version: '24'
           shard: ${{ matrix.shard }}
-          shard-total: 6
+          shard-total: 3
 
   unit-node-26:
     name: unit (node 26, shard ${{ matrix.shard }}/6)
-    needs: [changes, dependencies-node-26]
-    if: needs.changes.outputs.docs_only != 'true'
+    needs: dependencies-node-26
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -349,16 +531,20 @@ jobs:
   # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which
   # is also why it lives in `e2e/` and not `test/`.
   #
-  # Each shard builds its own `dist/` rather than downloading one from `unit`. A build is
-  # 5 seconds; uploading and downloading an artifact is slower than that, and it would also
-  # make every shard wait on a job it otherwise has no reason to know about.
+  # Every shard tests the one `dist/` that `build-smoke-node-24` built and smoked, downloaded as
+  # the `dist-node-24` artifact, instead of building its own. That saves each shard its 19 s
+  # `Build` step and delays every shard's start by the build job (about 40 s), and a build or
+  # smoke failure skips E2E rather than running it against a bundle that does not boot. Plan
+  # section 8 (docs/plans/ci-time-to-green/plan.md) keeps it only if the pull request median does
+  # not regress #221's. Both medians and the query are in the description of the pull request
+  # that made this change, which the CI time-to-green entry in docs/fork/ledger.md lists.
   #
   # Gated to Node 24 rather than the matrix. The matrix exists to pin the `node:sqlite`
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Fifteen shards keep the 688-test browser suite bounded even when a shard contains the
-  # suite's long outlier. The target is measured rather than enforced by a timeout so a
+  # Fourteen shards, which with unit's three leave one slot of the 20-job budget spare; see
+  # "Shard budget" above. The target is measured rather than enforced by a timeout so a
   # regression leaves complete diagnostics.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
@@ -368,8 +554,8 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: [changes, dependencies-node-24]
-    if: needs.changes.outputs.docs_only != 'true'
+    needs: [changes, dependencies-node-24, build-smoke-node-24]
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -380,7 +566,7 @@ jobs:
         # `--shard=X/N` partitions purely by the N it is handed and never checks it against
         # how many jobs actually ran. Hardcoding the denominator would mean editing this
         # list alone silently runs a fraction of the suite and still reports green.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
     steps:
       - name: Checkout
@@ -442,8 +628,13 @@ jobs:
       - name: Install tmux for the terminal-runtime e2e specs
         run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
 
-      - name: Build
-        run: npm run build
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-node-24
+
+      - name: Unpack dist
+        run: tar -xf dist.tar
 
       # Playwright retries once in CI and reports a test that failed and then passed as
       # `flaky` in its JSON report; the flake report action reads that instead of rerunning.
@@ -484,8 +675,10 @@ jobs:
   # ## Windows (D15, D30, D32 in docs/plans/windows-support/plan.md)
   #
   # The jobs below run on `windows-latest`, Node 24 only, and only for a push to
-  # `release/windows` or a pull request into it. Each carries the same `if:`; the final merge
-  # into `main` (M3.1) removes its branch half so they run everywhere.
+  # `release/windows` or a manual run on it, never on a pull request: like the Node 26 jobs,
+  # they check a pull request after it merges, not before. Each carries the same `if:`, and
+  # none needs `changes`, since a push is never docs-only. The final merge into `main` (M3.1)
+  # removes its branch half so they run on every push.
   #
   # Each sets npm's `script-shell` to Git Bash through `npm_config_script_shell`, the
   # prerequisite a Windows developer sets with `npm config set script-shell`, because the
@@ -495,8 +688,8 @@ jobs:
   # the product (typecheck, tests, build, smoke, the native probes) continue on error, and the
   # last step lists those failures as warnings and in the job summary. It is step-level, not
   # `continue-on-error` on the job, on purpose: a failed job still reports a failed check run,
-  # and Mission Control's Wait for CI fails on any failed check run, so every pull request into
-  # `release/windows` would go red. For the same reason each of those steps has its own
+  # which would turn every push to `release/windows` red. For the same reason each of those
+  # steps has its own
   # `timeout-minutes`, and its job's timeout leaves room for all of them plus provisioning, so a
   # hang ends as that step's failure instead of a timed-out job. Provisioning steps (checkout,
   # install, browser download) still fail the job, because their failure says nothing about
@@ -510,8 +703,7 @@ jobs:
   # The native probes are expected to fail until M2.2 (state lock) and M2.3 (Keep Awake) land.
   dependencies-windows:
     name: dependencies (windows, node 24)
-    needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -549,8 +741,8 @@ jobs:
 
   typecheck-windows:
     name: typecheck (windows)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -592,20 +784,20 @@ jobs:
   # single test ran. Split, the shard still reports every test, and the ones that need the
   # addon fail on their own.
   unit-windows:
-    name: unit (windows, node 24, shard ${{ matrix.shard }}/6)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3]
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
+      MISSION_TEST_SHARDS: '3'
     defaults:
       run:
         shell: bash
@@ -654,11 +846,11 @@ jobs:
       # `--ignore-scripts` skips `pretest` and `posttest`, which the steps around this run.
       - name: Test
         id: test
-        timeout-minutes: 30
+        timeout-minutes: 60
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm test --ignore-scripts
         env:
-          MISSION_TEST_SHARD: ${{ matrix.shard }}/6
+          MISSION_TEST_SHARD: ${{ matrix.shard }}/3
 
       - name: Workflow evidence tests (posttest)
         id: posttest
@@ -676,8 +868,8 @@ jobs:
   # not hide whether the bundles build and boot on Windows.
   build-windows:
     name: build and smoke (windows)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -726,8 +918,8 @@ jobs:
   # M2.3 land.
   native-probes-windows:
     name: native probes (windows)
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 40
     env:
@@ -781,14 +973,14 @@ jobs:
   # is unavailable on win32 for now (M2.7).
   e2e-windows:
     name: e2e (windows, shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: [changes, dependencies-windows]
-    if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
+    needs: dependencies-windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/release/windows'
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
@@ -864,6 +1056,9 @@ jobs:
   # `!cancelled()` rather than `always()`: a run superseded by a newer push is cancelled, and
   # its commit needs no check. A red test job still gets its report published.
   #
+  # It needs the Node 26 unit jobs too, which skip on every pull request; `!cancelled()` runs
+  # after a skipped need, so that skip changes nothing here.
+  #
   # Never gated on `changes`. On a docs-only run the test jobs it needs were skipped, which
   # `!cancelled()` still runs after; it reads zero reports and publishes "Flaky tests: No flaky
   # tests", without which Mission Control's Wait for CI would block the pull request.
@@ -907,20 +1102,20 @@ jobs:
           retention-days: 30
 
   # The one check branch protection should require; see "Docs-only pull requests" above. It
-  # needs every job that runs on a pull request, so `package` (tags and manual runs only) is
-  # not among them. `always()` so it reports whatever its needs did: it passes only when each
-  # succeeded, or is listed in SKIPPABLE and was skipped on a docs-only run. SKIPPABLE is
-  # exactly the gated jobs; a skipped `docs-checks`, `flake-report` or `changes` fails it.
+  # needs every job that runs on a pull request, so `package` (tags and manual runs only) and
+  # the Node 26 jobs (see "Node 26 off pull requests") are not among them. `always()` so it
+  # reports whatever its needs did: it passes only when each succeeded, or is listed in
+  # SKIPPABLE and was skipped on a docs-only or tree-reused run. SKIPPABLE is exactly the gated
+  # jobs; a skipped `docs-checks`, `flake-report` or `changes` fails it.
   ci-result:
     name: CI result
     needs:
       - changes
       - dependencies-node-24
-      - dependencies-node-26
       - gates
       - docs-checks
+      - build-smoke-node-24
       - unit-node-24
-      - unit-node-26
       - e2e
       - flake-report
     if: always()
@@ -932,11 +1127,14 @@ jobs:
         shell: bash
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          # Now means "the skippable jobs may skip": a docs-only pull request, or a push to
+          # `main` whose tree was reused. It keeps the asset's name so the step body below stays
+          # byte-identical to the skill; its log still says "docs-only change" for both.
+          DOCS_ONLY: ${{ (needs.changes.outputs.docs_only == 'true' || needs.changes.outputs.tree_reused == 'true') && 'true' || 'false' }}
           SKIPPABLE: |
             gates
             unit-node-24
-            unit-node-26
+            build-smoke-node-24
             e2e
         run: |
           # docs-only-ci: the one check a protected branch requires.
