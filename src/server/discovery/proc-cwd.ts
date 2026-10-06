@@ -1,4 +1,4 @@
-import { processInspector } from "../process-inspection/index.ts";
+import { processInspector, type ProcessInspector } from "../process-inspection/index.ts";
 
 export interface ProcCwdSnapshot {
   cwds: Map<number, string>;
@@ -14,15 +14,21 @@ export interface ProcCwdSnapshot {
  * own cwd, it reflects where the agent process itself runs - and therefore where
  * Claude writes its transcript (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`).
  *
+ * `inspector` defaults to this platform's; a test passes another platform's to see what it
+ * reports here.
+ *
  * Never throws: lsof may exit non-zero when some pids vanish mid-call, but still prints the
  * survivors. The partial map remains available to discovery callers; destructive callers
  * independently recheck an omitted PID before treating it as gone.
  */
-export async function readProcCwdsSnapshot(pids: number[]): Promise<ProcCwdSnapshot> {
+export async function readProcCwdsSnapshot(
+  pids: number[],
+  inspector: ProcessInspector = processInspector(),
+): Promise<ProcCwdSnapshot> {
   const uniq = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
   if (uniq.length === 0) return { cwds: new Map(), unknownReason: null };
 
-  const { cwds, result: res } = await processInspector().readCwds(uniq);
+  const { cwds, result: res } = await inspector.readCwds(uniq);
   // lsof exits 1 when one PID vanishes during a batched read, while still printing the
   // survivors. A partial answer is usable evidence, but omission is not proof of exit;
   // destructive callers compare unresolved PIDs against a fresh process snapshot.

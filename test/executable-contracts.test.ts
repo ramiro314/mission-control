@@ -103,7 +103,10 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
   ],
-  "src/server/process-inspection/posix.ts": [
+  "src/server/platform/process-lifetime.ts": [
+    { operation: "execFileSync", command: "executable", contract: "fixed-os-utility", reason: "win32 tree kill runs taskkill.exe from %SystemRoot%\\System32; the leaf seam cannot reach the locator" },
+  ],
+  "src/server/process-inspection/runner.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded synchronous process-status read for check start identity and Pi generation leases" },
   ],
   "src/server/terminal/resume-guard.ts": [

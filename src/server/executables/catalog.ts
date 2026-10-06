@@ -4,7 +4,10 @@ import {
   EXECUTABLE_IDS,
   type ExecutableId,
 } from "@shared/executables.ts";
-import { executableEnvironmentFor } from "../platform/executable-environment.ts";
+import {
+  executableEnvironmentFor,
+  windowsPowerShellPath,
+} from "../platform/executable-environment.ts";
 
 export interface ExecutableCandidateContext {
   env: NodeJS.ProcessEnv;
@@ -32,8 +35,8 @@ export interface ExecutableSpec {
 
 const none = (): readonly string[] => [];
 const appCandidates = (appPath: string, executablePath: string) =>
-  ({ home, platform }: ExecutableCandidateContext): readonly string[] =>
-    executableEnvironmentFor(platform).applicationDirectories(home)
+  ({ env, home, platform }: ExecutableCandidateContext): readonly string[] =>
+    executableEnvironmentFor(platform).applicationDirectories(home, env)
       .map((directory) => join(directory, appPath, executablePath));
 
 function spec(
@@ -128,6 +131,11 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     candidates: ({ platform }) => platform === "darwin" ? ["/usr/bin/du"] : ["/usr/bin/du"],
   }),
   treehouse: spec("treehouse", "Treehouse compatibility CLI", "treehouse", "TREEHOUSE_BIN"),
+  // win32 process inspection, the counterpart of `ps` and `lsof`. Windows PowerShell ships with
+  // every Windows 11 install at this fixed path, so PATH is only consulted after it.
+  powershell: spec("powershell", "Windows PowerShell", "powershell", "POWERSHELL_BIN", {
+    candidates: ({ env, platform }) => platform === "win32" ? [windowsPowerShellPath(env)] : [],
+  }),
 };
 
 /** Truly fixed OS utilities. They are never searched and must be invoked by this path. */

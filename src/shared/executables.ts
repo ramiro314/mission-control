@@ -29,6 +29,7 @@ export const EXECUTABLE_IDS = [
   "lsof",
   "du",
   "treehouse",
+  "powershell",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

@@ -446,9 +446,14 @@ export class ExecutableLocator {
         entry: { directory: path, source: "operator-override", detail: command },
       };
     }
+    // Every name is tried in one directory before the next directory, so a rung's rank still
+    // decides the winner on a platform where one command has several file names.
+    const names = executableEnvironmentFor(this.platform).executableNames(command, this.env);
     for (const entry of entries) {
-      const path = join(entry.directory, command);
-      if (this.isExecutable(path)) return { path: normalize(path), entry };
+      for (const name of names) {
+        const path = join(entry.directory, name);
+        if (this.isExecutable(path)) return { path: normalize(path), entry };
+      }
     }
     return null;
   }
@@ -530,7 +535,7 @@ export class ExecutableLocator {
         detail: platform.loginShellPathRead(this.env).command,
       },
       {
-        values: platform.osDefaultDirectories,
+        values: platform.osDefaultDirectories(this.env),
         source: "os-default",
         detail: `${this.platform} supported defaults`,
       },

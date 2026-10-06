@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep, win32 as win32Path } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
   createPosixProcessLifetime,
+  createWin32ProcessLifetime,
   processLifetimeFor,
   type ProcessLifetimeDeps,
+  type Win32ProcessLifetimeDeps,
 } from "../src/server/platform/process-lifetime.ts";
 
 const SEAM = "src/server/platform/process-lifetime.ts";
@@ -104,9 +107,153 @@ test("POSIX killTree never throws, even when the group and the child both refuse
   assert.doesNotThrow(() => createPosixProcessLifetime(deps).killTree(child));
 });
 
-test("nothing is registered for win32 on main: every platform resolves to POSIX", () => {
-  assert.equal(processLifetimeFor("win32"), processLifetimeFor("darwin"));
-  assert.equal(processLifetimeFor("linux"), processLifetimeFor("darwin"));
+test("win32 resolves to its own lifetime, and every other platform to POSIX", () => {
+  const win32 = processLifetimeFor("win32");
+  assert.notEqual(win32, processLifetimeFor("darwin"));
+  assert.deepEqual(win32.treeRootOptions, { windowsHide: true });
+  for (const platform of ["linux", "freebsd"] as const) {
+    assert.equal(processLifetimeFor(platform), processLifetimeFor("darwin"), platform);
+  }
+  assert.deepEqual(processLifetimeFor("darwin").treeRootOptions, { detached: true });
+});
+
+function win32Recorder(taskkillError?: () => Error) {
+  const kills: Array<[number, NodeJS.Signals | 0]> = [];
+  const taskkills: string[][] = [];
+  const deps: Win32ProcessLifetimeDeps = {
+    kill: (pid, signal) => {
+      kills.push([pid, signal]);
+    },
+    taskkill: (args) => {
+      taskkills.push([...args]);
+      if (taskkillError) throw taskkillError();
+    },
+  };
+  return { deps, kills, taskkills };
+}
+
+/** What `execFileSync` throws when the command exits with `status`. */
+const exited = (status: number) => (): Error => Object.assign(new Error(`Command failed: taskkill`), { status });
+
+test("win32 tree-root spawn options hide the console and leave the child attached", () => {
+  const { treeRootOptions } = createWin32ProcessLifetime(win32Recorder().deps);
+
+  assert.deepEqual(treeRootOptions, { windowsHide: true });
+  assert.ok(Object.isFrozen(treeRootOptions));
+  assert.equal("detached" in treeRootOptions, false, "detached would leave Node's job and open console windows");
+});
+
+test("win32 signalTree ends the tree with taskkill /T /F for every signal but 0", () => {
+  const { deps, kills, taskkills } = win32Recorder();
+  const lifetime = createWin32ProcessLifetime(deps);
+
+  lifetime.signalTree(4242, "SIGTERM");
+  lifetime.signalTree(4242, "SIGKILL");
+
+  assert.deepEqual(taskkills, [
+    ["/PID", "4242", "/T", "/F"],
+    ["/PID", "4242", "/T", "/F"],
+  ]);
+  assert.deepEqual(kills, []);
+});
+
+test("win32 signalTree 0 probes the root pid itself, never a negative pid", () => {
+  const { deps, kills, taskkills } = win32Recorder();
+
+  createWin32ProcessLifetime(deps).signalTree(4242, 0);
+
+  assert.deepEqual(kills, [[4242, 0]]);
+  assert.deepEqual(taskkills, []);
+});
+
+test("win32 signalTree throws ESRCH when taskkill finds no such pid, and EPERM otherwise", () => {
+  assert.throws(
+    () => createWin32ProcessLifetime(win32Recorder(exited(128)).deps).signalTree(4242, "SIGKILL"),
+    { code: "ESRCH", syscall: "kill" },
+  );
+  assert.throws(
+    () => createWin32ProcessLifetime(win32Recorder(exited(1)).deps).signalTree(4242, "SIGKILL"),
+    { code: "EPERM", syscall: "kill" },
+    "access denied leaves the tree possibly alive",
+  );
+  const timedOut = () => Object.assign(new Error("spawnSync taskkill.exe ETIMEDOUT"), { code: "ETIMEDOUT" });
+  assert.throws(
+    () => createWin32ProcessLifetime(win32Recorder(timedOut).deps).signalTree(4242, "SIGKILL"),
+    { code: "EPERM" },
+  );
+});
+
+test("win32 killTree runs taskkill on the tree and leaves the child handle alone", () => {
+  const { deps, taskkills } = win32Recorder();
+  const { child, signals } = fakeChild(4242);
+
+  createWin32ProcessLifetime(deps).killTree(child);
+
+  assert.deepEqual(taskkills, [["/PID", "4242", "/T", "/F"]]);
+  assert.deepEqual(signals, []);
+});
+
+test("win32 killTree falls back to the child when taskkill fails, and never throws", () => {
+  const { deps } = win32Recorder(exited(1));
+  const { child, signals } = fakeChild(4242);
+  createWin32ProcessLifetime(deps).killTree(child);
+  assert.deepEqual(signals, ["SIGKILL"]);
+
+  const { child: gone } = fakeChild(4242, true);
+  assert.doesNotThrow(() => createWin32ProcessLifetime(deps).killTree(gone));
+
+  const { deps: idle, taskkills } = win32Recorder();
+  const { child: unspawned, signals: direct } = fakeChild(undefined);
+  createWin32ProcessLifetime(idle).killTree(unspawned);
+  assert.deepEqual(taskkills, [], "a child that never got a pid has no tree");
+  assert.deepEqual(direct, ["SIGKILL"]);
+});
+
+const taskkillPath = win32Path.join(process.env.SystemRoot?.trim() || "C:\\Windows", "System32", "taskkill.exe");
+const noTaskkill = existsSync(taskkillPath) ? false : "taskkill.exe is not installed";
+
+test("win32 killTree ends a real grandchild through taskkill", { skip: noTaskkill }, async () => {
+  const lifetime = createWin32ProcessLifetime();
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      [
+        "const { spawn } = require('node:child_process');",
+        // Detached, so it leaves the job Node ends a child's children with: only /T reaches it.
+        "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true });",
+        "process.stdout.write(String(grandchild.pid) + '\\n');",
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    ],
+    { ...lifetime.treeRootOptions, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const grandchild = await new Promise<number>((resolve, reject) => {
+    child.stdout.setEncoding("utf8");
+    child.stdout.once("data", (chunk: string) => resolve(Number(chunk.trim())));
+    child.once("error", reject);
+  });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+
+  lifetime.killTree(child);
+  await exited;
+
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    const deadline = Date.now() + 10_000;
+    while (alive(grandchild) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(alive(grandchild), false, "the grandchild died with its tree");
+    assert.throws(() => lifetime.signalTree(child.pid!, "SIGKILL"), { code: "ESRCH" }, "taskkill exits 128 for a gone pid");
+  } finally {
+    if (alive(grandchild)) process.kill(grandchild);
+  }
 });
 
 test("the seam imports only Node builtins, so the Electron and daemon bundles can both take it", () => {
@@ -250,7 +397,8 @@ test("no process-group spawn or signal is written outside the seam", () => {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
       else if (/\.(ts|tsx|mts)$/.test(entry.name)) {
-        const file = relative(".", path);
+        // POSIX separators, so the seam and the lists above match on a win32 host too.
+        const file = relative(".", path).split(sep).join("/");
         if (file === SEAM) continue;
         for (const site of processTreeSites(file, readFileSync(path, "utf8"), detachedHead.has(file))) {
           if (file === daemonised && site.endsWith(" detached")) continue;

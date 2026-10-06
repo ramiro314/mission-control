@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +12,19 @@ import {
   posixProcessInspector,
   type CommandRunner,
 } from "../src/server/process-inspection/posix.ts";
+import {
+  createWin32ProcessInspector,
+  WIN32_CWD_UNAVAILABLE,
+  WIN32_LIST_PROCESSES_SCRIPT,
+  WIN32_OPEN_FILES_UNAVAILABLE,
+  win32ListeningPidScript,
+  win32ProcessInspector,
+} from "../src/server/process-inspection/win32.ts";
+import { windowsPowerShellPath } from "../src/server/platform/executable-environment.ts";
+import { readProcCwdsSnapshot } from "../src/server/discovery/proc-cwd.ts";
+import { inspectWorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 interface Call {
   sync: boolean;
@@ -117,13 +131,16 @@ test("the listening pid is the first pid lsof prints, and nothing listening is n
   assert.equal(await inspector.findListeningPid(81), null);
 });
 
-test("no platform is registered on main, so every platform, win32 included, gets the POSIX inspector", () => {
-  for (const platform of ["darwin", "linux", "win32"] as const) {
+test("win32 gets the win32 inspector, and every other platform gets the POSIX one", () => {
+  assert.equal(processInspectorFor("win32"), win32ProcessInspector);
+  for (const platform of ["darwin", "linux", "freebsd"] as const) {
     assert.equal(processInspectorFor(platform), posixProcessInspector, platform);
   }
 });
 
-test("the default runner reads through the catalog's ps, and answers null when it cannot", () => {
+test("the default runner reads through the catalog's ps, and answers null when it cannot", {
+  skip: skipOnWin32("pins the POSIX inspector's live ps read; win32 reads through PowerShell, covered below"),
+}, () => {
   const live = defaultCommandRunner.runSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { timeoutMs: 5000, maxBuffer: 4096 });
   assert.match(live ?? "", /\d{4}\s*$/, "a live pid prints its start time");
 
@@ -145,5 +162,202 @@ test("the default runner reads through the catalog's ps, and answers null when i
     );
   } finally {
     if (previous === undefined) delete process.env.MISSION_PS_BIN; else process.env.MISSION_PS_BIN = previous;
+  }
+});
+
+// ---- win32 ----
+
+const POWERSHELL_FLAGS = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"];
+const PRELUDE = "$ErrorActionPreference = 'Stop'\ntry { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}\n";
+
+interface PowerShellCall {
+  sync: boolean;
+  bin: string;
+  flags: string[];
+  script: string;
+  opts: { timeoutMs: number; maxBuffer?: number };
+}
+
+/** Decode the `-EncodedCommand` payload back into the script PowerShell will run. */
+function decodeScript(args: string[]): string {
+  const script = Buffer.from(args.at(-1) ?? "", "base64").toString("utf16le");
+  assert.ok(script.startsWith(PRELUDE), "every script stops on error and writes UTF-8");
+  return script.slice(PRELUDE.length);
+}
+
+/** A runner that records each PowerShell script and answers from a table keyed by script. */
+function powerShellRunner(answers: Record<string, RunResult | string | null> = {}) {
+  const calls: PowerShellCall[] = [];
+  const record = (sync: boolean, bin: string, args: string[], opts: PowerShellCall["opts"]): string => {
+    const script = decodeScript(args);
+    calls.push({ sync, bin, flags: args.slice(0, -1), script, opts });
+    return script;
+  };
+  const runner: CommandRunner = {
+    async run(bin, args, opts) {
+      const answer = answers[record(false, bin, args, opts)];
+      return typeof answer === "object" && answer !== null ? answer : stubRun({ stdout: "", stderr: "", code: 0 });
+    },
+    runSync(bin, args, opts) {
+      const answer = answers[record(true, bin, args, opts)];
+      return typeof answer === "string" ? answer : null;
+    },
+  };
+  return { runner, calls };
+}
+
+test("the win32 inspector issues one encoded PowerShell script per asynchronous read, and none otherwise", async () => {
+  const { runner, calls } = powerShellRunner();
+  const inspector = createWin32ProcessInspector(runner);
+  await inspector.listProcesses();
+  await inspector.readCwds([11, 12]);
+  await inspector.readOpenFiles([21, 22]);
+  inspector.readStartAndCommandSync(31);
+  inspector.readStartTimeSync(41);
+  await inspector.findListeningPid(4317);
+
+  assert.deepEqual(calls, [
+    { sync: false, bin: "powershell", flags: POWERSHELL_FLAGS, script: WIN32_LIST_PROCESSES_SCRIPT, opts: { timeoutMs: 30_000 } },
+    // No synchronous read, cwd or open-file read spawns anything.
+    { sync: false, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ListeningPidScript(4317), opts: { timeoutMs: 10_000 } },
+  ]);
+});
+
+test("the win32 scripts ask CIM and the TCP/IP module the questions ps and lsof answered", () => {
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /Get-CimInstance -ClassName Win32_Process/);
+  // `lstart`'s shape, in invariant English, so `Date.parse` and the occupancy recheck read it as they read ps.
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /\$p\.CreationDate\.ToString\('ddd MMM d HH:mm:ss yyyy', \[Globalization\.CultureInfo\]::InvariantCulture\)/);
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /ConvertTo-Json -InputObject \$rows -Compress/);
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /\$rows = @\(/, "an array even when one process answers");
+  assert.equal(
+    win32ListeningPidScript(4317),
+    "$c = Get-NetTCPConnection -State Listen -LocalPort 4317 -ErrorAction SilentlyContinue | Select-Object -First 1\n"
+      + "if ($c) { [Console]::Out.Write([string]$c.OwningProcess) }",
+  );
+});
+
+test("the win32 listing parses CIM's JSON into rows with no uid, state or terminal", async () => {
+  const listing = JSON.stringify([
+    { pid: 100, ppid: 4, start: "Fri Jul 3 15:15:37 2026", command: "\"C:\\Program Files\\nodejs\\node.exe\" server.js" },
+    { pid: 200, ppid: 100, start: "Fri Jul 31 09:00:00 2026", command: "" },
+    { pid: 0, ppid: 0, start: "", command: "" },
+    { pid: "x" },
+  ]);
+  const { runner } = powerShellRunner({
+    [WIN32_LIST_PROCESSES_SCRIPT]: { ...stubRun({ stdout: `\uFEFF${listing}`, stderr: "", code: 0 }), childPid: 901 },
+  });
+  const table = await createWin32ProcessInspector(runner).listProcesses();
+  assert.deepEqual(table.rows, [
+    { uid: -1, pid: 100, ppid: 4, state: "", tty: "?", start: "Fri Jul 3 15:15:37 2026", command: "\"C:\\Program Files\\nodejs\\node.exe\" server.js" },
+    { uid: -1, pid: 200, ppid: 100, state: "", tty: "?", start: "Fri Jul 31 09:00:00 2026", command: "" },
+  ], "the System Idle Process (pid 0) and a malformed row are dropped");
+  assert.equal(table.failure, null);
+  assert.deepEqual(table.collectorPids, [901]);
+});
+
+test("a win32 listing that failed or did not answer JSON is reported as the listing's failure", async () => {
+  const timedOut = { ...stubRun({ stdout: "", stderr: "", code: null }), outcomeUnknown: true, childPid: 902 };
+  const killed = await createWin32ProcessInspector(powerShellRunner({ [WIN32_LIST_PROCESSES_SCRIPT]: timedOut }).runner).listProcesses();
+  assert.deepEqual(killed.rows, []);
+  assert.equal(killed.failure, timedOut);
+  assert.deepEqual(killed.collectorPids, [902]);
+
+  const garbled = await createWin32ProcessInspector(
+    powerShellRunner({ [WIN32_LIST_PROCESSES_SCRIPT]: stubRun({ stdout: "Get-CimInstance : Access denied", stderr: "", code: 0 }) }).runner,
+  ).listProcesses();
+  assert.deepEqual(garbled.rows, []);
+  assert.equal(garbled.failure?.code, 1);
+  assert.equal(garbled.failure?.stderr, "the process listing did not answer with a JSON array");
+});
+
+test("win32 cwd and open-file reads answer as failed reads, never as an empty success", async () => {
+  const { runner, calls } = powerShellRunner();
+  const inspector = createWin32ProcessInspector(runner);
+  const cwd = await inspector.readCwds([7, 8]);
+  assert.deepEqual(cwd.cwds, new Map());
+  // `readProcCwdsSnapshot` reports a non-zero read with no cwds as `cwd listing failed: <stderr>`,
+  // which worktree occupancy refuses on.
+  assert.deepEqual(cwd.result, {
+    stdout: "", stderr: WIN32_CWD_UNAVAILABLE, code: 1, childPid: null, outcomeUnknown: false, overflowed: false,
+  });
+  const open = await inspector.readOpenFiles([7]);
+  assert.deepEqual(open.files, new Map());
+  assert.equal(open.result.code, 1);
+  assert.equal(open.result.stderr, WIN32_OPEN_FILES_UNAVAILABLE);
+  assert.deepEqual(calls, []);
+});
+
+test("the win32 cwd failure is readProcCwdsSnapshot's unknown reason, and worktree occupancy refuses on it", async () => {
+  const inspector = createWin32ProcessInspector(powerShellRunner().runner);
+  const reason = `cwd listing failed: ${WIN32_CWD_UNAVAILABLE}`;
+
+  assert.deepEqual(await readProcCwdsSnapshot([7, 8, 7], inspector), { cwds: new Map(), unknownReason: reason });
+  assert.deepEqual(
+    await readProcCwdsSnapshot([], inspector),
+    { cwds: new Map(), unknownReason: null },
+    "with no pid to read there is nothing to be unsure about",
+  );
+
+  // One live process in scope, listed identically both times occupancy asks: it cannot be
+  // proven gone, so its unread cwd leaves the slot's occupancy unknown rather than empty.
+  const listed = {
+    processes: [{ pid: 7, ppid: 1, tty: null, startRaw: "Fri Jul 3 15:15:37 2026", startMs: 0, command: "node.exe", agent: null, agentNative: false }],
+    unknownReason: null,
+    cwdScopePids: [7],
+    completedCollectorPids: [],
+  };
+  const slot = "/fixture/pool/1/repo";
+  const occupancy = await inspectWorktreeOccupancy([slot], {
+    listProcesses: async () => listed,
+    readCwds: (pids) => readProcCwdsSnapshot(pids, inspector),
+    ownProcesses: () => new Set(),
+  });
+  assert.deepEqual(occupancy.get(slot), { status: "unknown", reason });
+});
+
+test("win32 synchronous reads answer unreadable without blocking the daemon on PowerShell", () => {
+  const { runner, calls } = powerShellRunner();
+  const inspector = createWin32ProcessInspector(runner);
+  for (const pid of [process.pid, 1, 0, -1, 1.5]) {
+    assert.equal(inspector.readStartAndCommandSync(pid), null);
+    assert.equal(inspector.readStartTimeSync(pid), null);
+  }
+  assert.deepEqual(calls, [], "no synchronous read starts a process");
+});
+
+test("the win32 listening pid is the one PowerShell prints, and nothing listening is null", async () => {
+  const { runner, calls } = powerShellRunner({
+    [win32ListeningPidScript(80)]: stubRun({ stdout: "4242", stderr: "", code: 0 }),
+    [win32ListeningPidScript(82)]: stubRun({ stdout: "4242", stderr: "boom", code: 1 }),
+  });
+  const inspector = createWin32ProcessInspector(runner);
+  assert.equal(await inspector.findListeningPid(80), 4242);
+  assert.equal(await inspector.findListeningPid(81), null);
+  assert.equal(await inspector.findListeningPid(82), null);
+  const before = calls.length;
+  for (const port of [0, 65_536, 1.5]) assert.equal(await inspector.findListeningPid(port), null);
+  assert.equal(calls.length, before, "an impossible port never reaches a script");
+});
+
+const noPowerShell = existsSync(windowsPowerShellPath(process.env)) ? false : "Windows PowerShell is not installed";
+
+test("the win32 inspector reads this process through the real Windows PowerShell", { skip: noPowerShell }, async () => {
+  const inspector = createWin32ProcessInspector();
+  const table = await inspector.listProcesses();
+  assert.equal(table.failure, null, table.failure?.stderr);
+  const own = table.rows.find((row) => row.pid === process.pid);
+  assert.ok(own, "this test's own process is listed");
+  assert.equal(own.ppid, process.ppid);
+  assert.ok(!Number.isNaN(Date.parse(own.start)), `discovery can parse ${own.start}`);
+  assert.match(own.command, /node/i);
+
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    assert.equal(await inspector.findListeningPid(address.port), process.pid);
+  } finally {
+    server.close();
   }
 });
