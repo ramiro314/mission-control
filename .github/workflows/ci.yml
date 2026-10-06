@@ -60,6 +60,31 @@ name: CI
 # on `main` turns that workflow run red instead; `CI result` there does not cover Node 26. See
 # docs/plans/ci-time-to-green/plan.md, section 1.
 #
+# ## Shard budget
+#
+# GitHub Free runs at most 20 jobs at once per account. At its peak a pull request's run holds
+# `gates`, `docs checks`, `build-smoke-node-24`, N Node 24 unit shards and M E2E shards
+# (`changes` and `dependencies-node-24` have finished; `flake report` and `CI result` have not
+# started), so 3 + N + M <= 20. N = 3 and M = 14 fill it exactly. The numbers come from pull
+# request run 37415279889, which ran six unit and fifteen E2E shards:
+#
+# - E2E is the critical path. Its fifteen browser-test steps took 3,686 s in all, 173 to 326 s
+#   each, the slowest 1.33 times the mean. Fourteen shards make that a 263 s mean and about
+#   350 s slowest, plus about 45 s of setup and build per job: about 6.6 minutes.
+# - Unit time has a floor. `test/session-contracts.test.ts` alone takes 224 s, and the shard
+#   holding it took 308 s. Other shards took about 38 s plus 0.41 s per recorded second they
+#   were dealt, and `test/shard-timings.json` records 1,400 s. Three shards deal 467 s each,
+#   about 230 s, while the one holding that file stays near 300 s at three shards or at six. A
+#   fourth unit shard would shorten nothing, so its slot is a fourteenth E2E shard; two unit
+#   shards would make unit, not E2E, the slowest job.
+#
+# With about 50 s for `changes` and `dependencies-node-24` before the shards and 25 s for
+# `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
+# target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
+# `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
+# test derives the peak from this file's job graph and pins it at 20, so a new job that runs
+# beside the shards on a pull request fails it until a shard makes room. See docs/plans/ci-time-to-green/plan.md, section 5.
+#
 # ## Tree reuse on `main`
 #
 # Every pull request run's `changes` job uploads a `tested-tree` artifact (7 days): the tree of
@@ -424,11 +449,10 @@ jobs:
   # unflagged from Node 24); this pins the supported floor and the current release. Node 25
   # is EOL. Node 26 runs off pull requests only; see "Node 26 off pull requests" above.
   #
-  # Six shards leave practical headroom below the three-minute target. Four shards put the
-  # slowest partition at 179.7 seconds, which was too close to the target to absorb ordinary
-  # runner variance.
+  # Three shards on a pull request; see "Shard budget" above. Node 26 keeps six, since it runs
+  # only off pull requests.
   unit-node-24:
-    name: unit (node 24, shard ${{ matrix.shard }}/6)
+    name: unit (node 24, shard ${{ matrix.shard }}/3)
     needs: [changes, dependencies-node-24]
     if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
@@ -436,12 +460,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3]
 
     env:
       # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
+      MISSION_TEST_SHARDS: '3'
 
     steps:
       - name: Checkout
@@ -452,7 +476,7 @@ jobs:
         with:
           node-version: '24'
           shard: ${{ matrix.shard }}
-          shard-total: 6
+          shard-total: 3
 
   unit-node-26:
     name: unit (node 26, shard ${{ matrix.shard }}/6)
@@ -493,9 +517,9 @@ jobs:
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Fifteen shards keep the 688-test browser suite bounded even when a shard contains the
-  # suite's long outlier. The target is measured rather than enforced by a timeout so a
-  # regression leaves complete diagnostics.
+  # Fourteen shards, the rest of the 20-job budget once unit has its three; see "Shard budget"
+  # above. The target is measured rather than enforced by a timeout so a regression leaves
+  # complete diagnostics.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -516,7 +540,7 @@ jobs:
         # `--shard=X/N` partitions purely by the N it is handed and never checks it against
         # how many jobs actually ran. Hardcoding the denominator would mean editing this
         # list alone silently runs a fraction of the suite and still reports green.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
     steps:
       - name: Checkout

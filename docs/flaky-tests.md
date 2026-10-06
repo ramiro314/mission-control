@@ -115,6 +115,12 @@ empty timings file can make one shard slower than the rest but never drops a tes
 one twice. `test/unit-shard.test.ts` holds that invariant. E2E shards are unaffected: they keep
 Playwright's `--shard`.
 
+A pull request runs three Node 24 unit shards and fourteen E2E shards, and a push to `main` runs
+six Node 26 unit shards. The pull request counts fill GitHub Free's 20 concurrent jobs with
+`gates`, `docs checks` and `build-smoke-node-24`; the "Shard budget" comment in
+`.github/workflows/ci.yml` holds the arithmetic. The timings are per file, so changing a count
+needs no regeneration.
+
 `test/shard-timings.json` is generated; never edit it by hand. Each unit shard uploads its first
 run's JUnit results as the `unit-junit-node-<v>-shard-<n>` artifact (kept 7 days). When the
 slowest unit shard drifts well above the others, pick a recent green run and regenerate:

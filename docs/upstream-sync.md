@@ -175,13 +175,15 @@ The full list, with each feature's contracts and surfaces, is the
   `Build` and `Smoke the built bundles` steps in `.github/actions/run-unit-shard/action.yml`,
   whose files come from `scripts/unit-shard.mjs` (balanced by the generated
   `test/shard-timings.json`) rather than `--test-shard` and which uploads `unit-junit-*`
-  artifacts for `npm run test:timings`, and tree reuse on `main`: the `changes` job's
+  artifacts for `npm run test:timings`, the shard counts set by the "Shard budget" comment
+  (three Node 24 unit and fourteen E2E shards), and tree reuse on `main`: the `changes` job's
   `actions: read` and `pull-requests: read`, its `Record tested tree`, `Upload tested tree` and
   `Detect reused tree` steps and `tree_reused` output, the `tree_reused` clause in the gated
   jobs' `if:` and `CI result`'s `DOCS_ONLY` env, `scripts/ci-tree-reuse.sh` and
   `test/ci-tree-reuse.test.ts`. An upstream change that adds build or smoke back to the shard,
   returns it to `--test-shard`, or adds a Node 26 job, needs the same treatment, and an upstream
-  job that joins the gated four takes the `tree_reused` clause too.
+  job that joins the gated four takes the `tree_reused` clause too. An upstream job that runs on
+  pull requests, or a change to either shard count, has to fit the 20-job budget.
 - **Shape tasks**: the `shape` task kind, **Shape this**, `src/server/plans/shape.ts`, and
   `skills/grill/`.
 - **Tickets**: `skills/tickets/`, ticket creation and adoption through `create_task`, and

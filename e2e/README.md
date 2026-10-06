@@ -112,9 +112,11 @@ npm run test:e2e -- --workers=1
 ```
 
 The CI shards remain concurrent because each job runs on its own machine. The lease coordinates
-processes sharing one host; it does not serialize separate runners. CI currently uses fifteen
-shards with a target of three minutes or less for every browser-test step. That target is measured,
-not enforced with a timeout, so a slow run retains its complete failure diagnostics.
+processes sharing one host; it does not serialize separate runners. CI currently uses fourteen
+shards, the share of a pull request's 20-job budget left once unit has its three (the "Shard
+budget" comment in `.github/workflows/ci.yml`), with a target of about six minutes for the
+slowest browser-test step. That target is measured, not enforced with a timeout, so a slow run
+retains its complete failure diagnostics.
 
 Useful flags:
 

@@ -57,6 +57,73 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
     jobs[job],
     new RegExp(`- name: Run unit shard[\\s\\S]*?^[ \\t]+${key}:[ \\t]*(.+?)[ \\t]*$`, "m"),
   );
+  // ci.yml's "Shard budget": every job a full pull request runs at once with the shards, matrix
+  // legs counted, derived from the job graph rather than a literal, so a new job that runs beside
+  // the shards on a pull request raises the count. A job the shards wait for, or one that waits
+  // for a shard, is not concurrent with them. Every job is parsed, not just the ones named above. A job's `if:` is evaluated as a full (non-docs, untagged) pull request
+  // would see it; an expression this cannot read throws, which fails the test until it can.
+  const allJobs = new Map(
+    [...workflow.slice(workflow.indexOf("\njobs:\n")).matchAll(
+      /^ {2}([\w-]+):[ \t]*\r?\n([\s\S]*?)(?=^ {2}[\w-]+:|(?![\s\S]))/gm,
+    )].map(([, id, body]) => [id!, body!]),
+  );
+  const needsOf = (body: string) => {
+    const inline = capture(body, /^ {4}needs:[ \t]*(.*?)[ \t]*$/m);
+    if (inline === null) return [];
+    if (inline) return inline.replace(/^\[|\]$/g, "").split(",").map((id) => id.trim());
+    return [...(body.split(/^ {4}needs:.*$/m)[1]!.match(/^(?: {6}- [\w-]+\r?\n)+/m)?.[0] ?? "")
+      .matchAll(/- ([\w-]+)/g)].map(([, id]) => id!);
+  };
+  const runsOnFullPullRequest = (body: string) => {
+    const condition = capture(body, /^ {4}if:[ \t]*(.+?)[ \t]*$/m);
+    if (condition === null) return true;
+    const expression = condition
+      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+      .replaceAll("github.event_name", "'pull_request'")
+      .replaceAll("github.ref", "'refs/pull/1/merge'")
+      .replace(/needs\.changes\.outputs\.\w+/g, "'false'");
+    return Boolean(new Function("startsWith", "always", "cancelled", `return (${expression});`)(
+      (value: string, prefix: string) => value.startsWith(prefix),
+      () => true,
+      () => false,
+    ));
+  };
+  const transitiveNeeds = (id: string, found = new Set<string>()): Set<string> => {
+    for (const need of needsOf(allJobs.get(id) ?? "")) {
+      if (found.has(need)) continue;
+      found.add(need);
+      transitiveNeeds(need, found);
+    }
+    return found;
+  };
+  const shardJobs = ["unit-node-24", "e2e"];
+  const beforeShards = new Set(shardJobs.flatMap((id) => [...transitiveNeeds(id)]));
+  const afterShards = (id: string) => shardJobs.some((shard) => transitiveNeeds(id).has(shard));
+  // A matrix runs the product of its lists at once. A shape this cannot count (`include:`,
+  // `exclude:`, a block list, an inline map, an expression) throws, like an unreadable `if:`.
+  const matrixLegs = (id: string, body: string) => {
+    const matrix = /^( +)matrix:[ \t]*(.*)$/m.exec(body);
+    if (!matrix) return 1;
+    if (matrix[2]!.trim()) throw new Error(`${id}: cannot count matrix legs from: ${matrix[2]!.trim()}`);
+    const nested = body.slice(matrix.index + matrix[0].length).split(/\r?\n/).slice(1);
+    const end = nested.findIndex((line) => line.trim() && !line.startsWith(`${matrix[1]} `));
+    return nested
+      .slice(0, end < 0 ? undefined : end)
+      .filter((line) => line.trim() && !line.trim().startsWith("#"))
+      .reduce((legs, line) => {
+        const list = /^\s+[\w-]+:[ \t]*\[([^\]]+)\][ \t]*$/.exec(line);
+        if (!list) throw new Error(`${id}: cannot count matrix legs from: ${line.trim()}`);
+        return legs * list[1]!.split(",").length;
+      }, 1);
+  };
+  const peakJobs = [...allJobs]
+    .filter(([id, body]) =>
+      runsOnFullPullRequest(body) && !beforeShards.has(id) && !afterShards(id)
+    )
+    .map(([id, body]) => ({
+      id,
+      legs: matrixLegs(id, body),
+    }));
   const e2eConfigUrl = pathToFileURL(join(repo, "e2e", "playwright.config.ts")).href;
   const previousCi = process.env.CI;
   const previousWorkers = process.env.MISSION_E2E_WORKERS;
@@ -169,6 +236,9 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       unitTestTimeout: stepTimeout(unitAction, "Test"),
       e2eWorkerVariable: jobValue("e2e", "MISSION_E2E_WORKERS"),
       e2eShards: shardList("e2e"),
+      // GitHub Free runs at most 20 jobs at once per account; see ci.yml's "Shard budget".
+      pullRequestPeakJobIds: peakJobs.map(({ id }) => id),
+      pullRequestPeakJobs: peakJobs.reduce((total, { legs }) => total + legs, 0),
       e2eTestTimeout: stepTimeout(jobs.e2e, "End-to-end tests"),
       localUnitWorkers:
         testCommand.match(
@@ -234,9 +304,9 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       ],
       cacheActionVersions: ["v5", "v5", "v5", "v5"],
       unitWorkers: ["'4'", "'4'"],
-      unitShardTotals: ["'6'", "'6'"],
+      unitShardTotals: ["'3'", "'6'"],
       unitShards: [
-        [1, 2, 3, 4, 5, 6],
+        [1, 2, 3],
         [1, 2, 3, 4, 5, 6],
       ],
       unitActionUses: [
@@ -244,11 +314,13 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         "./.github/actions/run-unit-shard",
       ],
       unitActionNodes: ["'24'", "'26'"],
-      unitActionTotals: ["6", "6"],
+      unitActionTotals: ["3", "6"],
       unitShardEnv: "${{ inputs.shard }}/${{ inputs.shard-total }}",
       unitTestTimeout: null,
       e2eWorkerVariable: null,
-      e2eShards: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      e2eShards: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      pullRequestPeakJobIds: ["gates", "docs-checks", "build-smoke-node-24", "unit-node-24", "e2e"],
+      pullRequestPeakJobs: 20,
       e2eTestTimeout: null,
       localUnitWorkers: "6",
       unitShardOption: "${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}",
