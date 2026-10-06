@@ -49,7 +49,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>12</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
+<td><strong>13</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -130,6 +130,11 @@ or issues.</p>
 <td>Docs-only CI</td>
 <td>Active (the <code>docs checks</code> job, the <code>docs-only-ci</code> skill, and the docs-only skip with <code>CI result</code> in this repository)</td>
 <td>#164, #168, #171</td>
+</tr>
+<tr>
+<td>Windows support</td>
+<td>In progress on <code>release/windows</code> (plan, <code>.gitattributes</code>, the four platform seams and the weekly sync runbook on <code>main</code>; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch)</td>
+<td>#128 (plan), #147, #152, #154, #158, #176, #184, #185, #187, #191, #192, #196, #197, #209, #210, #220, pending (branch <code>docs/windows-support-docs</code>)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1391,6 +1396,165 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 <p><strong>Fork-only files.</strong> <code>skills/docs-only-ci/SKILL.md</code>,
 <code>skills/docs-only-ci/assets/detect-docs-only.sh</code>, <code>skills/docs-only-ci/assets/ci-result.sh</code>,
 <code>test/docs-only-ci-scripts.test.ts</code>, <code>test/docs-only-ci-template.test.ts</code>.</p>
+<h3>Windows support</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, and the Windows docs (plan M2.1, M2.3 to M2.9 and M2.11). Still to land there: the win32 state lock (M2.2, open as #201), the Makefile under Git Bash (M2.10) and gate readiness (M2.12). The branch reaches <code>main</code> in one merge.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #187 (Windows CI and the skip guard, M2.1), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), pending (branch <code>docs/windows-support-docs</code>, the Windows docs and this entry&#39;s update, M2.11). The per-task base branch it depends on (M0.1) has its own entry.</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/windows-support/plan.md">docs/plans/windows-support/plan.md</a>, &quot;Decisions&quot;, &quot;Branch model&quot; and &quot;Milestones&quot;; the sync runbook <code>docs/windows-branch-sync.md</code> (on <code>main</code>); the M2.0 SDK spike result on issue #186; the Windows section of <a href="../setup.md#windows-11">docs/setup.md</a> and of <a href="../harnesses-and-terminals.md#windows">docs/harnesses-and-terminals.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Not now (D18: fork-only). The four seams, and the neutral seams M2 built on the branch (D38), are platform-neutral and could be offered on their own.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Mission Control runs natively on Windows 11 x64: the daemon, the Foreman worker,
+the dashboard and the Electron shell in dev mode, with Claude Code SDK sessions dispatched,
+shown on the board and completed. Until that is complete and validated, every Windows-specific
+change lives on the long-lived <code>release/windows</code> branch, and <code>main</code> stays a macOS product that
+behaves exactly as it did. When the plan&#39;s merge gate (D8) passes, <code>release/windows</code> merges into
+<code>main</code> once; WezTerm terminal sessions and an NSIS installer follow on <code>main</code>.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>main</code> carries no Windows-specific behavior until the final merge. Only platform-neutral
+changes that leave macOS byte-for-byte unchanged land on <code>main</code> directly (D6). A seam an M2
+ticket discovers is built on <code>release/windows</code> instead, kept platform-neutral, and listed in
+the merge PR (D38).</li>
+<li><code>release/windows</code> was cut from <code>origin/main</code> only after the per-task base branch,
+<code>.gitattributes</code> and all four seams had merged (D36), so it starts with every one of them.
+<code>main</code> reaches it only through merges (the weekly &quot;Sync main into release/windows&quot; mission,
+D5 and D26, following <code>docs/windows-branch-sync.md</code> on <code>main</code>): never a rebase, never a
+force-push. On a sync conflict <code>main</code> wins on shared code and the Windows change is
+re-applied on top; dropping a Windows change needs the human (D27).</li>
+<li>Windows tickets are tasks with <code>base_branch = release/windows</code>, so their worktrees, PRs,
+checks and merge watcher follow the branch (see &quot;Per-task base branch&quot;). They carry the
+<code>windows-support</code> label.</li>
+<li>The branch merges into <code>main</code> once, as one merge commit titled <code>feat: Windows support</code>
+(D16), after the unit suite and Playwright e2e are green on <code>windows-latest</code> under the single
+win32 skip guard (D37), the human&#39;s manual smoke passes, and Linux CI and the macOS <code>package</code>
+run are green. Nothing on either branch cuts a release.</li>
+<li><code>.gitattributes</code> stores and checks out every text file as LF (<code>* text=auto eol=lf</code>, D25).</li>
+<li><strong>Process inspection</strong> (<code>src/server/process-inspection/</code>): every <code>ps</code> and <code>lsof</code> read the
+daemon makes goes through <code>processInspector()</code>. Its POSIX implementation issues the same
+commands the call sites did, and each read returns its <code>RunResult</code> so the caller, not the
+seam, decides whether a partial answer is usable.</li>
+<li><strong>Process lifetime</strong> (<code>src/server/platform/process-lifetime.ts</code>): starting a child as a tree
+root (<code>treeRootOptions</code>) and signalling or killing that tree (<code>signalTree</code>, <code>killTree</code>) go
+through <code>processLifetime</code>. Callers keep their own <code>spawn</code> call, so the executable contract
+tests still see each executable. The module is a leaf (Node builtins only), because the
+Electron main process imports it too.</li>
+<li><strong>Executable environment</strong> (<code>src/server/platform/executable-environment.ts</code>): the
+resolver&#39;s application, per-user tool and OS default directories, and the login-shell PATH
+read, come from one per-platform row. The locator keeps the ladder&#39;s order and provenance.</li>
+<li><strong>Native addon sources</strong> (<code>scripts/native-addon-sources.mjs</code>): the one table of each addon&#39;s
+sources per platform. Each <code>binding.gyp</code> reads <code>&lt;@(addon_sources)</code>. A platform without sources
+gets none, never another platform&#39;s: the required state lock refuses it and the optional Keep
+Awake skips it. Both builders still publish through <code>publishNativeAddon</code>.</li>
+<li>On <code>main</code>, each seam&#39;s platform-selection map is empty, so every platform, win32 included,
+resolves to the POSIX implementation. <code>release/windows</code> registers <code>win32</code> in those maps:
+process inspection through Windows PowerShell over CIM, tree kill through <code>taskkill /T /F</code>,
+and the executable ladder&#39;s <code>win32</code> row (<code>%ProgramFiles%</code>, <code>%LOCALAPPDATA%\Programs</code>,
+<code>%USERPROFILE%\.local\bin</code>, the npm, mise and Volta locations, PATH from the registry, and
+PATHEXT names, so <code>claude</code> resolves to the real <code>claude.exe</code>). A win32 working-directory or
+open-files read reports failure rather than an empty answer, and worktree occupancy refuses
+on it.</li>
+<li>On <code>release/windows</code>, the state home resolves through <code>os.homedir()</code> to
+<code>%USERPROFILE%\.mission-control</code> with the macOS layout (D22), and paths spelled the win32 way
+are compared case-insensitively (<code>src/shared/native-path.ts</code>). POSIX answers stay
+byte-identical.</li>
+<li><strong>Harness availability</strong> (D20): a harness&#39;s <code>unsupportedHosts</code> capability lists the platforms
+it cannot run on; Codex and Pi list <code>win32</code>. <code>harnessUnsupportedWhy</code> is the one sentence
+Settings &gt; Setup, task creation and the dispatcher give, and dispatch refuses before any
+worktree is acquired.</li>
+<li><strong>Runtime availability</strong> (D9): <code>runtimeUnavailableWhy</code> in
+<code>src/server/platform/session-runtimes.ts</code> marks the terminal runtime unavailable on win32. A
+dispatch, a Pipeline launch and Continue in terminal are refused with it, and the discovery
+poller runs an empty sweep there, keeping the Git refresh SDK sessions need.</li>
+<li><strong>Keep Awake</strong> (D13): win32 holds one power request set to <code>PowerRequestSystemRequired</code>
+(<code>native/keep-awake/keep_awake_win.cc</code>), the same idle-system-sleep guarantee as the macOS
+IOKit assertion, released by the kernel with the process. This deviates from D13&#39;s
+<code>SetThreadExecutionState</code>, which is one flag per thread and carries no reason string.</li>
+<li><strong>Setup</strong> (D11, D23, D24, D30, D33): a <strong>Windows</strong> family scoped to <code>win32</code> (<code>hosts</code> on the
+family) checks Git for Windows, Developer Mode, <code>LongPathsEnabled</code>, npm&#39;s <code>script-shell</code>,
+Visual Studio Build Tools (C++) and Python 3. Its fixes are <code>manual-command</code> remedies shown to
+copy, never run by Mission Control. On win32, <code>core.longpaths=true</code> is set in a repository&#39;s
+git config before a managed worktree is added. No Windows row is probed on another host.</li>
+<li><strong>Electron dev shell</strong>: <code>src/main/platform-shell.ts</code> gives win32 the colored <code>build/tray.ico</code>
+and the native window frame with an auto-hidden menu bar, and <code>menu-template.ts</code> drops the
+macOS app menu there. Every other platform keeps the macOS answers.</li>
+<li><strong>Windows CI</strong> (D15, D30, D32): <code>windows-latest</code> jobs on Node 24 run on pushes to
+<code>release/windows</code> and PRs into it, with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
+steps are allowed to fail until M2.12, and stay out of <code>CI result</code>. Every test or spec that
+skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</code> in <code>test/helpers/win32-skip.ts</code>,
+with a stated reason (D37).</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>Upstream reads processes, signals process groups and searches for executables only at the
+call sites the seams replaced. An upstream commit that adds a direct <code>ps</code>, <code>lsof</code>, <code>pgrep</code>,
+<code>process.kill(-pid)</code>, <code>detached: true</code> spawn, login-shell PATH read, or ladder location
+outside the seams is a conceptual conflict even when it merges cleanly: route it through the
+seam on <code>main</code>.</li>
+<li><code>process.platform</code> is how the daemon and the Electron main process tell platforms apart. The
+daemon reads it for harness and runtime availability through <code>hostPlatform()</code>, so the e2e
+suite can build a daemon that answers win32.</li>
+<li>Both native addons build with <code>node-gyp</code> from a <code>binding.gyp</code> in <code>native/&lt;addon&gt;</code>, and the
+daemon takes state ownership through <code>dist/native/state-lock.node</code> before it serves.</li>
+<li>The Claude Agent SDK spawns the executable it is given as <code>pathToClaudeCodeExecutable</code> on
+win32, and runs the CLI it bundles when it is given none (the M2.0 spike, SDK 0.3.283).</li>
+<li>Every harness reaches dispatch through the capability registry, so a new harness that does
+not run on Windows needs only an <code>unsupportedHosts</code> entry.</li>
+<li><code>ci.yml</code> runs on pushes to <code>main</code> and on every <code>pull_request</code>, so PRs into <code>release/windows</code>
+get Linux CI without a workflow change (D15).</li>
+<li>Upstream stays macOS-only for packaging. Upstream Windows support of its own would need
+reconciling with this branch before either merge.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/discovery/{processes,proc-cwd,codex-rollouts,poller}.ts</code>,
+<code>src/server/workflows/{check-identity,check-group,check-spawn,check-lease}.ts</code>,
+<code>src/pi/generation-lease.ts</code>, <code>src/server/claude-cli.ts</code>, <code>src/server/llm/codex.ts</code>,
+<code>src/server/executables/{locator,catalog}.ts</code>, <code>src/main/{update-build,updater}.ts</code>,
+<code>native/{state-lock,keep-awake}/binding.gyp</code>,
+<code>scripts/build-{state-lock,keep-awake}-native.mjs</code>, <code>test/codex-rollout-identity.test.ts</code>,
+<code>test/executable-contracts.test.ts</code>, <code>test/pi-generation-lease.test.ts</code>,
+<code>docs/agent-guides/architecture.md</code> (the seam rows) and <code>docs/harnesses-and-terminals.md</code> (the
+executable search ladder). On <code>release/windows</code> also: <code>src/server/dispatcher.ts</code>,
+<code>src/server/task-repository-preparation.ts</code>, <code>src/server/session-transfers/coordinator.ts</code>,
+<code>src/server/sdk/handoff.ts</code>, <code>src/server/setup/{index,install,types}.ts</code>,
+<code>src/server/keep-awake.ts</code>, <code>src/server/worktrees/git.ts</code>, <code>src/server/repos.ts</code>,
+<code>src/server/harness/claude/hooks.ts</code>, <code>src/server/agent-subprocess-env.ts</code>,
+<code>src/server/testing-setup.ts</code>, <code>src/mcp/pipeline-credential.ts</code>,
+<code>src/shared/{harness-capabilities,setup-catalog,allowlist,llm,workflow,standing-instructions,protocol,types,executables}.ts</code>,
+<code>src/shared/harness-runtime.mjs</code>,
+<code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
+<code>scripts/{gen-icons,probe-keep-awake-native}.mjs</code>, <code>package.json</code> (<code>dev:electron:app</code>),
+<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
+skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
+<code>docs/desktop-and-packaging.md</code>.</p>
+<p><strong>Fork-only files.</strong> <code>.gitattributes</code>, <code>src/server/process-inspection/</code>,
+<code>src/server/platform/process-lifetime.ts</code>, <code>src/server/platform/executable-environment.ts</code>,
+<code>scripts/native-addon-sources.mjs</code>, <code>scripts/native-addon-sources.d.mts</code>,
+<code>test/process-inspection.test.ts</code>, <code>test/process-lifetime.test.ts</code>,
+<code>test/executable-environment.test.ts</code>, <code>test/native-addon-sources.test.ts</code>,
+<code>docs/plans/windows-support/</code>, <code>docs/windows-branch-sync.md</code>. On <code>release/windows</code> also:
+<code>src/server/platform/{host,session-runtimes}.ts</code>, <code>src/server/setup/windows.ts</code>,
+<code>src/server/git/long-paths.ts</code>, <code>src/shared/native-path.ts</code>, <code>src/main/platform-shell.ts</code>,
+<code>native/keep-awake/keep_awake_win.cc</code>, <code>build/tray.ico</code>, <code>scripts/ci-allowed-failures.mjs</code>,
+<code>scripts/probe-keep-awake-native.d.mts</code>, <code>e2e/fixtures/win32-host-build.ts</code>,
+<code>e2e/specs/win32-{harness-availability,setup-checks}.spec.ts</code>, <code>test/helpers/win32-skip.ts</code>,
+<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,harness-host-availability,keep-awake-probe,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

@@ -9,6 +9,8 @@ If you are installing Mission Control to use rather than to work on, read the il
 side, with screenshots, a required-versus-optional breakdown of every row, and how updates
 arrive.
 
+On a Windows 11 machine, follow [Windows 11](#windows-11) instead of the bootstrap below.
+
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
@@ -228,3 +230,97 @@ To regenerate the committed README imagery after a dashboard change, first run
 `npx playwright install chromium` once on a new machine, then build and run
 `npm run docs:screenshots`. The capture tool uses its own disposable demo state root, fixed
 viewport, and local scenario players, so it does not use agent models or alter your normal demo.
+
+## Windows 11
+
+Mission Control runs natively on Windows 11 x64, not under WSL. The daemon, the dashboard,
+Foreman and the Electron shell all run from a checkout; there is no Windows installer yet. On
+Windows, Mission Control runs Claude Code sessions through the Agent SDK only.
+[Harnesses and terminal backends](harnesses-and-terminals.md#windows) lists what else is
+unavailable there and why.
+
+Windows support is built on the fork's `release/windows` branch until it merges into `main`,
+so clone that branch.
+
+### Install the prerequisites
+
+Run these in PowerShell. Mission Control's **Windows** family in **Settings → Setup** checks
+each one once the daemon is running (see [Prerequisites](#prerequisites)), so a step missed
+here shows up there with the same fix.
+
+1. **Node.js 24 or newer**, x64. Check it with `node --version`.
+2. **Git for Windows.** It installs Git Bash, which npm's scripts and Claude Code both need.
+
+   ```powershell
+   winget install --id Git.Git -e --source winget
+   ```
+
+3. **Claude Code**, through its native installer, which puts `claude.exe` in
+   `%USERPROFILE%\.local\bin`. Run `claude` once to sign in.
+
+   ```powershell
+   irm https://claude.ai/install.ps1 | iex
+   ```
+
+   Mission Control passes the resolved `claude.exe` to the Agent SDK. Without a real
+   executable the SDK falls back to the CLI it bundles, which can be an older version. An
+   npm-installed `claude.cmd` is not supported yet.
+4. **Developer Mode.** Turn it on in **Settings → System → For developers**. Mission Control
+   publishes skills and extensions as real symbolic links, which Windows refuses without it,
+   and the checkout's `CLAUDE.md` is a symbolic link too, so do this before you clone.
+
+   ```powershell
+   start ms-settings:developers
+   ```
+
+5. **Long paths** (recommended). Run this in a terminal opened as administrator. Mission
+   Control also sets git's `core.longpaths=true` in each repository before it adds a managed
+   worktree, so deep checkouts work in git as well.
+
+   ```powershell
+   reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+   ```
+
+6. **npm's script shell.** The package scripts use bash syntax, and npm on Windows runs
+   them through `cmd.exe` unless told otherwise. Point it at Git Bash; if Git for Windows is
+   installed elsewhere, use that `bash.exe`. Windows CI sets the same value.
+
+   ```powershell
+   npm config set script-shell "C:\Program Files\Git\bin\bash.exe"
+   ```
+
+7. **Visual Studio Build Tools with the C++ workload, and Python 3.** `node-gyp` needs both
+   to build the native addons: the state lock, which the daemon takes before it serves
+   anything, and Keep Awake. A `python.exe` that is only the Microsoft Store alias does not
+   count.
+
+   ```powershell
+   winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   winget install --id Python.Python.3.13 -e
+   ```
+
+Open a new terminal afterwards, so it sees the updated PATH.
+
+### Clone and run
+
+In Git Bash or PowerShell:
+
+```sh
+git clone -c core.symlinks=true --branch release/windows https://github.com/ramiro314/mission-control.git
+cd mission-control
+npm install
+npm run dev
+```
+
+`npm run dev` builds the native addons, then starts the daemon and the Vite dashboard. Open
+`http://127.0.0.1:5173`, go to **Settings → Setup**, and confirm every row in the **Windows**
+family reads **Ready**. `npm run dev:desktop` adds the Electron shell, and `npm run dev:start`
+adds Foreman as well; [Desktop shell and packaging](desktop-and-packaging.md) describes how
+the shell differs on Windows.
+
+The state directory is `%USERPROFILE%\.mission-control`, with the same layout as on macOS, and
+`MISSION_HOME` overrides it the same way.
+
+This replaces `make init`, because the `make` targets do not run on Windows yet. It also
+leaves out the Claude status hooks that `make init` installs: `npm run install-hooks` has not
+been validated on Windows.
