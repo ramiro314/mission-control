@@ -17,6 +17,8 @@ export interface HandoffDeps {
   settleTask: (taskId: string) => void;
   transfers?: SessionTransferCoordinator;
   backend?: SpawnedHome["homeBackend"];
+  /** The platform whose terminal runtime the handoff would land on. */
+  platform?: NodeJS.Platform;
 }
 
 export type HandoffResult =

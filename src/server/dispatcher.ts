@@ -5,6 +5,8 @@ import { readLaunchProcess } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
+import { runtimeUnavailableWhy } from "./platform/session-runtimes.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type {
   AgentType,
   PermissionMode,
@@ -305,6 +307,8 @@ export class Dispatcher {
        */
       onSessionBound?: (taskId: string) => void;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /** The platform whose runtime availability a launch is checked against. */
+      platform?: NodeJS.Platform;
       /** Exact terminal default for this harness, or null for Automatic. */
       resolveTerminalBackend?: typeof resolveDispatchTerminalBackend;
       /**
@@ -402,6 +406,13 @@ export class Dispatcher {
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.
       const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+      // A runtime this platform cannot run is refused here, ahead of every worktree, so the
+      // card says why instead of a terminal backend failing after provisioning.
+      if (runtime === "terminal") {
+        this.refuseTerminalRuntime(
+          `Set ${AGENT_IDENTITY[task.agent].label}'s runtime to Agent SDK in Settings > Harnesses, then dispatch again.`,
+        );
+      }
       const missionTools = capabilitiesFor(task.agent).missionTools;
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
       const configured = resolveAgentBin(task.agent);
@@ -1066,6 +1077,12 @@ export class Dispatcher {
     }
   }
 
+  /** Throws the platform's reason, followed by `fix`, when it has no terminal runtime. */
+  private refuseTerminalRuntime(fix: string): void {
+    const why = runtimeUnavailableWhy("terminal", this.deps.platform);
+    if (why) throw new Error(`${why} ${fix}`);
+  }
+
   /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
   private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
     if (task.extraRepos.length > 0) {
@@ -1545,6 +1562,7 @@ export class Dispatcher {
         "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
       );
     }
+    this.refuseTerminalRuntime("Switch the Pipelines launch runtime to Agent SDK, then dispatch again.");
 
     const label = sessionLabel(task.title);
     const shortId = taskId.slice(0, 6);
