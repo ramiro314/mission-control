@@ -1030,12 +1030,17 @@ jobs:
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run build
 
+      # Playwright stops itself five minutes inside the step's timeout. Killed by that timeout
+      # instead, a shard reports nothing, and on run 37505044919 one runner was lost as the step
+      # was torn down, which failed its job. A stop at the global timeout prints the run's totals,
+      # and the runner ends any process Playwright's cut-short teardown left behind. No retries:
+      # these runs upload no flake report, so a retry only doubles each failure's 120 s timeout.
       - name: End-to-end tests
         id: e2e
         timeout-minutes: 35
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
-        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --retries=0 --global-timeout=1800000
 
       - name: Upload e2e report
         if: ${{ !cancelled() && steps.e2e.outcome == 'failure' }}

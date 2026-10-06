@@ -145,8 +145,19 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
   assert.ok(run("build-windows").includes("npm run build"));
   assert.ok(run("build-windows").includes("npm run smoke"));
   assert.ok(run("e2e-windows").includes("npm run build"));
+  const e2e = run("e2e-windows").find((cmd) => cmd.startsWith("npm run test:e2e"));
+  assert.ok(e2e, "the e2e job runs the Playwright suite");
+  assert.ok(e2e.startsWith("npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} "));
+  assert.ok(e2e.includes(" --retries=0"), "an allowed-to-fail run has no flake report for a retry to feed");
+  // Playwright must stop on its own before the step's timeout kills it: a killed shard reports
+  // nothing, and on run 37505044919 the runner was lost as the step was torn down.
+  const globalMs = Number(e2e.match(/ --global-timeout=(\d+)(?: |$)/)?.[1]);
+  const step = steps(WINDOWS.get("e2e-windows")!).find((s) => s.includes("        id: e2e\n"))!;
+  const stepMinutes = Number(step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1]);
+  assert.ok(globalMs > 0, "the e2e run sets a global timeout");
   assert.ok(
-    run("e2e-windows").includes("npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}"),
+    globalMs <= (stepMinutes - 5) * 60_000,
+    `the ${globalMs / 60_000}-minute global timeout leaves five minutes inside the ${stepMinutes}-minute step`,
   );
   assert.deepEqual(shards(WINDOWS.get("e2e-windows")!), shards(ALL.get("e2e")!));
 });
