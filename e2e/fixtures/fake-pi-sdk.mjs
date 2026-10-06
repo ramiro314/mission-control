@@ -35,8 +35,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -66,6 +68,30 @@ function record(name, body) {
     join(dir, `${name}-${String(process.hrtime.bigint()).padStart(24, "0")}-${sequence}.json`),
     JSON.stringify(body, null, 2),
   );
+}
+
+/**
+ * What a real `gh pr create` leaves behind: a feature branch in the checkout, and a pull
+ * request GitHub reports for it. The driver adopts the url from the tool result at once, and
+ * the PR poller then asks `gh` about the checkout on its own clock. Without both of these the
+ * fake `gh` (see `writeGhPullRequests`) answers "no PR here", and a tick that lands after the
+ * tool result retracts the link the driver just set.
+ */
+function openPullRequest(cwd, url) {
+  execFileSync("git", ["switch", "-q", "-c", `pi/pr-${url.split("/").pop()}`], { cwd, stdio: "pipe" });
+  const path = required("MC_E2E_GH_PRS");
+  const prs = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : [];
+  prs.push({
+    // Compared with the `gh` child's own `process.cwd()`, which is always the real path.
+    cwd: realpathSync(cwd),
+    url,
+    number: Number(url.split("/").pop()),
+    state: "OPEN",
+    createdAt: new Date().toISOString(),
+    mergedAt: null,
+    headRefOid: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(),
+  });
+  writeFileSync(path, JSON.stringify(prs, null, 2));
 }
 
 /**
@@ -200,6 +226,7 @@ class FakeSession {
     if (!current()) return;
     if (text.includes("PI_CREATE_PR")) {
       this.emit({ type: "tool_execution_start", toolCallId: "pr", toolName: "bash", command: "gh pr create", opensPullRequest: true });
+      openPullRequest(this.cwd, "https://github.com/test/pi-fixture/pull/975");
       this.emit({ type: "tool_execution_end", toolCallId: "pr", toolName: "bash", isError: false, prUrls: ["https://github.com/test/pi-fixture/pull/975"] });
     }
     const slow = /SLOWLY/.test(text);
