@@ -144,7 +144,6 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
   assert.deepEqual(shards(WINDOWS.get("unit-windows")!), shards(ALL.get("unit-node-24")!));
   assert.ok(run("build-windows").includes("npm run build"));
   assert.ok(run("build-windows").includes("npm run smoke"));
-  assert.ok(run("e2e-windows").includes("npm run build"));
   const e2e = run("e2e-windows").find((cmd) => cmd.startsWith("npm run test:e2e"));
   assert.ok(e2e, "the e2e job runs the Playwright suite");
   assert.ok(e2e.startsWith("npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} "));
@@ -160,6 +159,33 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
     `the ${globalMs / 60_000}-minute global timeout leaves five minutes inside the ${stepMinutes}-minute step`,
   );
   assert.deepEqual(shards(WINDOWS.get("e2e-windows")!), shards(ALL.get("e2e")!));
+});
+
+test("e2e tests the dist build-windows smoked instead of building its own", () => {
+  const build = WINDOWS.get("build-windows")!;
+  const e2e = WINDOWS.get("e2e-windows")!;
+  assert.ok(!e2e.includes("npm run build"), "no e2e shard builds dist itself");
+  assert.ok(needs(e2e).includes("build-windows"));
+  const upload = steps(build).find((s) => s.includes("uses: actions/upload-artifact@"))!;
+  assert.ok(upload, "build-windows uploads dist");
+  assert.match(upload, /^ {10}name: dist-windows$/m);
+  for (const step of steps(build).filter((s) => /^ {6}- name: (Pack|Upload) dist for E2E$/m.test(s))) {
+    assert.match(step, /^ {8}if: steps\.smoke\.outcome == 'success'$/m, "only a bundle that booted is shared");
+  }
+  const download = steps(e2e).find((s) => s.includes("uses: actions/download-artifact@"))!;
+  assert.match(download, /^ {10}name: dist-windows$/m);
+  const tests = steps(e2e).find((s) => s.includes("        id: e2e\n"))!;
+  assert.match(tests, /^ {8}if: steps\.unpack\.outcome == 'success'$/m, "e2e runs only on the unpacked dist");
+});
+
+test("every Windows job turns off Defender real-time scanning before checkout", () => {
+  for (const [id, body] of WINDOWS) {
+    const first = steps(body)[0]!;
+    assert.match(first, /^ {6}- name: Turn off Defender real-time scanning$/m, `${id} starts with it`);
+    assert.match(first, /^ {8}shell: pwsh$/m);
+    assert.match(first, /Set-MpPreference -DisableRealtimeMonitoring \$true -ErrorAction Continue$/m);
+    assert.doesNotMatch(first, /continue-on-error/, "a Defender error warns rather than fails");
+  }
 });
 
 test("the native probes run the state-lock specs and the Keep Awake verification", () => {
