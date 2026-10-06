@@ -12,6 +12,8 @@ export interface NativeAddonPublishFs {
 
 export const RETIRED_ADDON_PREFIX: string;
 
+export const WIN32_PUBLISH_ATTEMPTS: number;
+
 export function publishNativeAddon(
   built: string,
   output: string,

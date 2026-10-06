@@ -2,6 +2,7 @@
 
 import { copyFile, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { platform as processPlatform } from "node:process";
@@ -92,6 +93,9 @@ export const RETIRED_ADDON_PREFIX = ".retired-";
 
 const WIN32_IN_USE = new Set(["EPERM", "EACCES", "EBUSY"]);
 
+/** How many times a win32 publish tries the rename before it gives up. */
+export const WIN32_PUBLISH_ATTEMPTS = 5;
+
 /**
  * The rename itself, plus the one thing Windows needs on top of it.
  *
@@ -103,21 +107,35 @@ const WIN32_IN_USE = new Set(["EPERM", "EACCES", "EBUSY"]);
  * two renames the published name is briefly absent, so a process loading it at that instant
  * fails to load rather than loading a half-written file. Every other platform, and every other
  * error, takes the plain rename and its error unchanged.
+ *
+ * A publish that still fails after moving the addon aside puts it back before it throws, so a
+ * failed publish leaves the previous addon at the published name on win32 too.
  */
 async function replaceAddon(staged, output, platform, fs) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await fs.rename(staged, output);
-      break;
-    } catch (error) {
-      if (platform !== "win32" || attempt >= 5 || !WIN32_IN_USE.has(error?.code)) throw error;
+  let retired = null;
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await fs.rename(staged, output);
+        break;
+      } catch (error) {
+        if (platform !== "win32" || attempt >= WIN32_PUBLISH_ATTEMPTS || !WIN32_IN_USE.has(error?.code)) {
+          throw error;
+        }
+      }
+      const aside = join(dirname(output), `${RETIRED_ADDON_PREFIX}${randomUUID()}.node`);
+      try {
+        await fs.rename(output, aside);
+        retired = aside;
+      } catch (error) {
+        // A concurrent publisher already moved it aside.
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
-    try {
-      await fs.rename(output, join(dirname(output), `${RETIRED_ADDON_PREFIX}${randomUUID()}.node`));
-    } catch (error) {
-      // A concurrent publisher already moved it aside.
-      if (error?.code !== "ENOENT") throw error;
-    }
+  } catch (error) {
+    // Only into an empty name: a concurrent publisher's newer addon is never replaced by ours.
+    if (retired && !existsSync(output)) await fs.rename(retired, output).catch(() => {});
+    throw error;
   }
   if (platform === "win32") await sweepRetiredAddons(dirname(output), fs);
 }

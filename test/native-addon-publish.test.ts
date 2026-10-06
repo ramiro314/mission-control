@@ -11,6 +11,7 @@ import {
   type NativeAddonPublishFs,
   publishNativeAddon,
   RETIRED_ADDON_PREFIX,
+  WIN32_PUBLISH_ATTEMPTS,
 } from "../scripts/native-addon-publish.mjs";
 
 /**
@@ -128,6 +129,51 @@ test("on win32 a loaded addon is moved aside, kept while loaded, and swept after
   writeFileSync(built, "the next build");
   await publishNativeAddon(built, output, "win32", windowsWithLoaded(loaded));
   assert.equal(readFileSync(output, "utf8"), "the next build");
+  assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
+});
+
+/** A win32 filesystem that refuses every rename of the built addon onto `output` with `code`. */
+function refusingPublish(output: string, code: string): { fs: NativeAddonPublishFs; refused: () => number } {
+  let refused = 0;
+  return {
+    refused: () => refused,
+    fs: {
+      rename: async (from, to) => {
+        if (String(to) === output && String(from).includes(".publish-")) {
+          refused++;
+          throw Object.assign(new Error(`${code}: ${output}`), { code });
+        }
+        await rename(from, to);
+      },
+      readdir: (path) => readdir(path),
+      rm: (path, options) => rm(path, options),
+    },
+  };
+}
+
+test("on win32 an error other than in-use is thrown at once, and nothing is moved aside", async () => {
+  const { dir, output } = published("the addon that still works");
+  const built = join(dir, "built.node");
+  writeFileSync(built, "never published");
+  const { fs, refused } = refusingPublish(output, "ENOSPC");
+
+  await assert.rejects(publishNativeAddon(built, output, "win32", fs), { code: "ENOSPC" });
+  assert.equal(refused(), 1);
+  assert.equal(readFileSync(output, "utf8"), "the addon that still works");
+  assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
+});
+
+test("on win32 a publish that stays refused gives up and puts the previous addon back", async () => {
+  const { dir, output } = published("the addon that still works");
+  const built = join(dir, "built.node");
+  writeFileSync(built, "never published");
+  // The first refusal moves the addon aside; every later move-aside finds the name already
+  // empty (ENOENT) and carries on, until the attempts run out.
+  const { fs, refused } = refusingPublish(output, "EPERM");
+
+  await assert.rejects(publishNativeAddon(built, output, "win32", fs), { code: "EPERM" });
+  assert.equal(refused(), WIN32_PUBLISH_ATTEMPTS);
+  assert.equal(readFileSync(output, "utf8"), "the addon that still works");
   assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
 });
 
