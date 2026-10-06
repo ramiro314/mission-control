@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 640" role="img" aria-label="CI job graph after the change, for a pull request and for a push to main">
+  <style>svg rect{fill:var(--panel,#fff);stroke:var(--line,#8899ad)}svg rect.new{fill:var(--new,#e3f4e8);stroke:var(--link,#064b8b);stroke-width:2}svg rect.ext{stroke-dasharray:6 4}svg text{fill:var(--ink,#132239);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted,#344d68)}svg path{stroke:var(--link,#064b8b);fill:none;stroke-width:2}svg polygon{fill:var(--link,#064b8b)}svg rect.bg{fill:var(--panel,#fff);stroke:none}</style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <rect class="bg" x="0" y="0" width="1040" height="640"/>
+
+  <text x="20" y="30">Pull request: Node 24 only, one build-and-smoke job, duration-balanced unit shards</text>
+  <rect class="new" x="20" y="120" width="190" height="44" rx="8"/><text x="32" y="140">changes</text><text x="32" y="157" class="small">+ record tested tree</text>
+  <rect x="250" y="120" width="170" height="44" rx="8"/><text x="262" y="147">dependencies 24</text>
+  <rect x="470" y="50" width="220" height="36" rx="8"/><text x="482" y="74">gates</text>
+  <rect x="470" y="94" width="220" height="36" rx="8"/><text x="482" y="118">docs checks</text>
+  <rect class="new" x="470" y="138" width="220" height="36" rx="8"/><text x="482" y="162">build and smoke 24</text>
+  <rect class="new" x="470" y="182" width="220" height="36" rx="8"/><text x="482" y="206">unit 24 x N (balanced)</text>
+  <rect x="470" y="226" width="220" height="36" rx="8"/><text x="482" y="250">e2e x M</text>
+  <rect x="740" y="210" width="130" height="40" rx="8"/><text x="752" y="236">flake report</text>
+  <rect x="900" y="120" width="120" height="44" rx="8"/><text x="912" y="147">CI result</text>
+  <path d="M210 142 L250 142" marker-end="url(#a)"/>
+  <path d="M420 136 L470 68" marker-end="url(#a)"/><path d="M420 139 L470 112" marker-end="url(#a)"/><path d="M420 142 L470 156" marker-end="url(#a)"/><path d="M420 145 L470 200" marker-end="url(#a)"/><path d="M420 148 L470 244" marker-end="url(#a)"/>
+  <path d="M690 200 L740 226" marker-end="url(#a)"/><path d="M690 244 L740 234" marker-end="url(#a)"/>
+  <path d="M870 226 L920 164" marker-end="url(#a)"/><path d="M690 68 C800 68 880 100 930 120" marker-end="url(#a)"/>
+  <text x="20" y="300" class="small">Peak concurrency: 3 + N + M &lt;= 20. Node 26 jobs skip on PRs and are not in CI result's needs.</text>
+
+  <text x="20" y="350">Push to main: Node 26 always runs; the Node 24 suite skips when the tree was already tested</text>
+  <rect class="new" x="20" y="440" width="190" height="44" rx="8"/><text x="32" y="460">changes</text><text x="32" y="477" class="small">+ tree reuse lookup</text>
+  <rect class="new ext" x="20" y="550" width="230" height="56" rx="8"/><text x="32" y="572" class="small">GitHub API: merged PR's</text><text x="32" y="590" class="small">latest green run, tested-tree</text>
+  <path d="M115 484 L115 550" marker-end="url(#a)"/>
+  <rect x="250" y="380" width="170" height="40" rx="8"/><text x="262" y="406">dependencies 26</text>
+  <rect x="250" y="490" width="170" height="40" rx="8"/><text x="262" y="510">dependencies 24</text><text x="262" y="525" class="small">always runs</text>
+  <rect x="470" y="370" width="220" height="36" rx="8"/><text x="482" y="394">unit 26 x 6</text>
+  <rect class="new" x="470" y="414" width="220" height="36" rx="8"/><text x="482" y="438">build and smoke 26</text>
+  <rect x="470" y="462" width="220" height="70" rx="8"/><text x="482" y="483">gates, unit 24,</text><text x="482" y="503">build and smoke 24, e2e</text><text x="482" y="522" class="small">skipped if tree_reused</text>
+  <rect x="470" y="540" width="220" height="36" rx="8"/><text x="482" y="564">docs checks</text>
+  <rect x="740" y="440" width="130" height="40" rx="8"/><text x="752" y="466">flake report</text>
+  <rect x="900" y="440" width="120" height="44" rx="8"/><text x="912" y="467">CI result</text>
+  <path d="M210 455 L250 404" marker-end="url(#a)"/>
+  <path d="M420 396 L470 388" marker-end="url(#a)"/><path d="M420 404 L470 430" marker-end="url(#a)"/>
+  <path d="M210 470 L250 504" marker-end="url(#a)"/><path d="M420 504 L470 498" marker-end="url(#a)"/>
+  <path d="M420 516 C440 540 450 556 470 558" marker-end="url(#a)"/>
+  <path d="M690 388 C720 400 730 430 750 440" marker-end="url(#a)"/><path d="M690 498 L740 466" marker-end="url(#a)"/>
+  <path d="M870 460 L900 462" marker-end="url(#a)"/>
+  <text x="20" y="630" class="small">Any doubt (API error, no artifact, docs-only PR run, tree mismatch) runs everything. Tags and manual runs never reuse.</text>
+</svg>

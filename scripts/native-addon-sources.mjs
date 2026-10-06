@@ -17,9 +17,11 @@ export const NATIVE_ADDON_SOURCES = {
   "state-lock": {
     darwin: ["state_lock.cc"],
     linux: ["state_lock.cc"],
+    win32: ["state_lock_win.cc"],
   },
   "keep-awake": {
     darwin: ["keep_awake.mm"],
+    win32: ["keep_awake_win.cc"],
   },
 };
 

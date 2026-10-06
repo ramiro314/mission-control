@@ -3228,7 +3228,7 @@ export interface KeepAwakeStatus {
   /** Observed lifecycle of the OS assertion. Exhaustive - reducers must switch it. */
   state: "off" | "starting" | "on" | "stopping" | "error";
   /** Which inhibitor implementation this daemon would run; null when unsupported. */
-  provider: "caffeinate" | "iokit" | null;
+  provider: "caffeinate" | "iokit" | "power-request" | null;
   /** Epoch ms at which the active assertion was confirmed; else null. */
   since: number | null;
   /** Bounded runtime failure from the last transition or an unexpected exit; else null. */

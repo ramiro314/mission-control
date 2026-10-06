@@ -3,27 +3,74 @@
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-if (process.platform !== "darwin") {
-  throw new Error(`native Keep Awake verification requires macOS, not ${process.platform}`);
-}
+/**
+ * How each platform's OS lists the idle-system-sleep assertions it holds. `held` answers
+ * whether the listing shows an assertion with this exact reason of the idle-system-sleep kind,
+ * and nothing broader.
+ */
+const OBSERVERS = {
+  darwin: {
+    command: "/usr/bin/pmset",
+    args: ["-g", "assertions"],
+    held: (listing, reason) =>
+      listing.includes(reason) && listing.includes("PreventUserIdleSystemSleep"),
+  },
+  // `powercfg /requests` needs an elevated shell, which GitHub's Windows runners provide. It
+  // prints one block per request type, and a power request lists its reason under its caller.
+  win32: {
+    command: "powercfg",
+    args: ["/requests"],
+    held: (listing, reason) => (powercfgSections(listing).get("SYSTEM") ?? "").includes(reason),
+  },
+};
 
-const binding = createRequire(import.meta.url)(resolve("dist/native/keep-awake.node"));
-const reason = `Mission Control native Keep Awake verification ${process.pid}`;
-let handle;
-try {
-  handle = binding.create(reason);
-  const active = execFileSync("/usr/bin/pmset", ["-g", "assertions"], { encoding: "utf8" });
-  if (!active.includes(reason) || !active.includes("PreventUserIdleSystemSleep")) {
-    throw new Error("pmset did not report the native idle-system-sleep assertion");
+/** Split `powercfg /requests` output into its `TYPE:` blocks. */
+export function powercfgSections(listing) {
+  const sections = new Map();
+  let current = null;
+  for (const line of listing.split(/\r?\n/)) {
+    const heading = /^([A-Z]+):\s*$/.exec(line);
+    if (heading) {
+      current = heading[1];
+      sections.set(current, "");
+    } else if (current !== null) {
+      sections.set(current, `${sections.get(current)}${line}\n`);
+    }
   }
-  console.log(`[keep-awake-native] assertion observed for pid ${process.pid}`);
-} finally {
-  if (handle !== undefined) binding.release(handle);
+  return sections;
 }
 
-const released = execFileSync("/usr/bin/pmset", ["-g", "assertions"], { encoding: "utf8" });
-if (released.includes(reason)) {
-  throw new Error("native Keep Awake assertion remained after release");
+export function keepAwakeObserver(platform) {
+  if (!Object.hasOwn(OBSERVERS, platform)) {
+    throw new Error(`native Keep Awake verification requires macOS or Windows, not ${platform}`);
+  }
+  return OBSERVERS[platform];
 }
-console.log("[keep-awake-native] assertion released");
+
+function main() {
+  const observer = keepAwakeObserver(process.platform);
+  const list = () => execFileSync(observer.command, observer.args, { encoding: "utf8" });
+  const binding = createRequire(import.meta.url)(resolve("dist/native/keep-awake.node"));
+  const reason = `Mission Control native Keep Awake verification ${process.pid}`;
+  let handle;
+  try {
+    handle = binding.create(reason);
+    if (!observer.held(list(), reason)) {
+      throw new Error(`${observer.command} did not report the native idle-system-sleep assertion`);
+    }
+    console.log(`[keep-awake-native] assertion observed for pid ${process.pid}`);
+  } finally {
+    if (handle !== undefined) binding.release(handle);
+  }
+
+  if (list().includes(reason)) {
+    throw new Error("native Keep Awake assertion remained after release");
+  }
+  console.log("[keep-awake-native] assertion released");
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

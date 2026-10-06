@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
-import { closeSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-import { publishNativeAddon } from "../scripts/native-addon-publish.mjs";
+import {
+  type NativeAddonPublishFs,
+  publishNativeAddon,
+  RETIRED_ADDON_PREFIX,
+  WIN32_PUBLISH_ATTEMPTS,
+} from "../scripts/native-addon-publish.mjs";
 
 /**
  * Publishing a native addon, and the one property that keeps a daemon startable.
@@ -83,6 +89,105 @@ test("a failed publish leaves the previous addon in place and no staging behind"
     ["addon.node"],
     "a staging directory left in dist/native would ship as a half-built addon",
   );
+});
+
+/**
+ * The filesystem as Windows presents it to a publisher: a loaded addon cannot be replaced or
+ * deleted, because both remove a mapped image, but it can be renamed, and its mapping follows it.
+ */
+function windowsWithLoaded(loaded: Set<string>): NativeAddonPublishFs {
+  const inUse = (path: string) => Object.assign(new Error(`EPERM: ${path}`), { code: "EPERM" });
+  return {
+    rename: async (from, to) => {
+      if (loaded.has(String(to)) && existsSync(String(to))) throw inUse(String(to));
+      await rename(from, to);
+      if (loaded.delete(String(from))) loaded.add(String(to));
+    },
+    readdir: (path) => readdir(path),
+    rm: async (path, options) => {
+      if (loaded.has(String(path))) throw inUse(String(path));
+      await rm(path, options);
+    },
+  };
+}
+
+test("on win32 a loaded addon is moved aside, kept while loaded, and swept afterwards", async () => {
+  const { dir, output } = published("loaded by the running daemon");
+  const loaded = new Set([output]);
+  const built = join(dir, "built.node");
+  writeFileSync(built, "rebuilt while the daemon was up");
+
+  await publishNativeAddon(built, output, "win32", windowsWithLoaded(loaded));
+
+  assert.equal(readFileSync(output, "utf8"), "rebuilt while the daemon was up");
+  const [retired, ...others] = readdirSync(dir).filter((name) => name.startsWith(RETIRED_ADDON_PREFIX));
+  assert.ok(retired && others.length === 0, "the loaded addon is retired once, beside the published one");
+  assert.equal(readFileSync(join(dir, retired), "utf8"), "loaded by the running daemon");
+
+  // The daemon exits, and the next publish clears what it left behind.
+  loaded.clear();
+  writeFileSync(built, "the next build");
+  await publishNativeAddon(built, output, "win32", windowsWithLoaded(loaded));
+  assert.equal(readFileSync(output, "utf8"), "the next build");
+  assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
+});
+
+/** A win32 filesystem that refuses every rename of the built addon onto `output` with `code`. */
+function refusingPublish(output: string, code: string): { fs: NativeAddonPublishFs; refused: () => number } {
+  let refused = 0;
+  return {
+    refused: () => refused,
+    fs: {
+      rename: async (from, to) => {
+        if (String(to) === output && String(from).includes(".publish-")) {
+          refused++;
+          throw Object.assign(new Error(`${code}: ${output}`), { code });
+        }
+        await rename(from, to);
+      },
+      readdir: (path) => readdir(path),
+      rm: (path, options) => rm(path, options),
+    },
+  };
+}
+
+test("on win32 an error other than in-use is thrown at once, and nothing is moved aside", async () => {
+  const { dir, output } = published("the addon that still works");
+  const built = join(dir, "built.node");
+  writeFileSync(built, "never published");
+  const { fs, refused } = refusingPublish(output, "ENOSPC");
+
+  await assert.rejects(publishNativeAddon(built, output, "win32", fs), { code: "ENOSPC" });
+  assert.equal(refused(), 1);
+  assert.equal(readFileSync(output, "utf8"), "the addon that still works");
+  assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
+});
+
+test("on win32 a publish that stays refused gives up and puts the previous addon back", async () => {
+  const { dir, output } = published("the addon that still works");
+  const built = join(dir, "built.node");
+  writeFileSync(built, "never published");
+  // The first refusal moves the addon aside; every later move-aside finds the name already
+  // empty (ENOENT) and carries on, until the attempts run out.
+  const { fs, refused } = refusingPublish(output, "EPERM");
+
+  await assert.rejects(publishNativeAddon(built, output, "win32", fs), { code: "EPERM" });
+  assert.equal(refused(), WIN32_PUBLISH_ATTEMPTS);
+  assert.equal(readFileSync(output, "utf8"), "the addon that still works");
+  assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
+});
+
+test("off win32 a refused rename is an error, and the published addon stays", async () => {
+  const { dir, output } = published("the addon that still works");
+  const built = join(dir, "built.node");
+  writeFileSync(built, "never published");
+
+  await assert.rejects(
+    publishNativeAddon(built, output, "darwin", windowsWithLoaded(new Set([output]))),
+    { code: "EPERM" },
+  );
+  assert.equal(readFileSync(output, "utf8"), "the addon that still works");
+  assert.deepEqual(readdirSync(dir).sort(), ["addon.node", "built.node"]);
 });
 
 /** Does this build script hand its artifact to the shared publisher, and copy nothing itself? */

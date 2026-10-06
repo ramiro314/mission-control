@@ -49,7 +49,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>12</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
+<td><strong>14</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -130,6 +130,16 @@ or issues.</p>
 <td>Docs-only CI</td>
 <td>Active (the <code>docs checks</code> job, the <code>docs-only-ci</code> skill, and the docs-only skip with <code>CI result</code> in this repository)</td>
 <td>#164, #168, #171</td>
+</tr>
+<tr>
+<td>CI time-to-green</td>
+<td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, <code>main</code>-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E <code>dist/</code> built by <code>build-smoke-node-24</code>; the measured median is pending)</td>
+<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), #222 (shared E2E <code>dist/</code>)</td>
+</tr>
+<tr>
+<td>Windows support</td>
+<td>In progress on <code>release/windows</code> (plan, <code>.gitattributes</code>, the four platform seams and the weekly sync runbook on <code>main</code>; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch)</td>
+<td>#128 (plan), #147, #152, #154, #158, #176, #184, #185, #224, #187, #191, #192, #196, #197, #209, #210, #220, pending (branch <code>docs/windows-support-docs</code>)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1321,15 +1331,17 @@ through a bundled skill.</p>
 <code>run:</code> body is <code>skills/docs-only-ci/assets/detect-docs-only.sh</code> verbatim with
 <code>DOCS_ONLY_PATHS</code> set to <code>docs/*</code>. Only a <code>pull_request</code> event can be docs-only; every doubt
 is <code>false</code>, which runs the full suite.</li>
-<li><code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code> and <code>e2e</code> need <code>changes</code> and carry
-<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. Nothing else is gated: both <code>dependencies</code>
-jobs, <code>docs checks</code> and <code>flake report</code> run on docs-only pull requests, and <code>package</code> is
-unchanged (tags and manual runs only).</li>
+<li><code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> need <code>changes</code> and carry
+<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. Nothing else is gated: <code>dependencies-node-24</code>,
+<code>docs checks</code> and <code>flake report</code> run on docs-only pull requests, the Node 26 jobs run on no
+pull request at all (see CI time-to-green), and <code>package</code> is unchanged (tags and manual runs
+only).</li>
 <li><code>flake report</code> keeps <code>if: ${{ !cancelled() }}</code>, so on a docs-only run it reads zero reports
 and publishes &quot;Flaky tests: No flaky tests&quot;, which Wait for CI requires (decision 20).</li>
 <li><code>CI result</code> (job id <code>ci-result</code>, <code>ubuntu-latest</code>, <code>if: always()</code>) needs every job except
-<code>package</code>. Its step body is <code>skills/docs-only-ci/assets/ci-result.sh</code> verbatim, with
-<code>SKIPPABLE</code> listing exactly the four gated job ids. It is the one check branch protection
+<code>package</code> and the Node 26 jobs, the jobs that never run on a pull request. Its step body is
+<code>skills/docs-only-ci/assets/ci-result.sh</code> verbatim, with <code>SKIPPABLE</code> listing exactly the four
+gated job ids. It is the one check branch protection
 should require; nothing is required on <code>main</code> today.</li>
 <li><code>test/docs-only-ci-template.test.ts</code> fails <code>npm test</code> when either <code>ci.yml</code> step body differs
 from its asset by one byte, and holds the <code>changes</code> and <code>ci-result</code> jobs, the gated jobs&#39;
@@ -1377,12 +1389,13 @@ a catalog row and links as <code>mission-&lt;id&gt;</code>.</li>
 passing, which is what lets a docs-only run through Wait for CI.</li>
 <li>Nothing outside <code>test/</code> reads <code>docs/</code>: typecheck, lint, build, smoke, E2E and packaging do
 not. An upstream change that makes one of them read <code>docs/</code> breaks the gate&#39;s premise.</li>
-<li><code>ci.yml</code>&#39;s job ids <code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code>, <code>e2e</code> and <code>flake-report</code>. An
+<li><code>ci.yml</code>&#39;s job ids <code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code>, <code>e2e</code> and <code>flake-report</code>. An
 upstream job added to <code>ci.yml</code> must also be added to <code>CI result</code>&#39;s <code>needs</code> (the template test
 fails until it is), and to <code>SKIPPABLE</code> only if it is gated.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the <code>changes</code>, <code>docs-checks</code> and
-<code>ci-result</code> jobs, the header comment, and <code>needs</code> and <code>if:</code> on <code>gates</code>, both unit jobs and <code>e2e</code>),
+<code>ci-result</code> jobs, the header comment, and <code>needs</code> and <code>if:</code> on <code>gates</code>, <code>unit-node-24</code>,
+<code>build-smoke-node-24</code> and <code>e2e</code>),
 <code>package.json</code> (<code>docs:links</code>), <code>AGENTS.md</code> (the CI paragraph&#39;s job count and the docs-only skip),
 <code>docs/flaky-tests.md</code> (<code>flake report</code> on a docs-only run), <code>test/init-script.test.ts</code> (the
 consumer jobs&#39; <code>needs</code>),
@@ -1391,6 +1404,341 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 <p><strong>Fork-only files.</strong> <code>skills/docs-only-ci/SKILL.md</code>,
 <code>skills/docs-only-ci/assets/detect-docs-only.sh</code>, <code>skills/docs-only-ci/assets/ci-result.sh</code>,
 <code>test/docs-only-ci-scripts.test.ts</code>, <code>test/docs-only-ci-template.test.ts</code>.</p>
+<h3>CI time-to-green</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>In progress</strong>. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through <code>pretest</code>, unit shards are balanced by recorded file duration, and a push to <code>main</code> skips the Node 24 suite, <code>gates</code> and E2E when its pull request&#39;s green run already tested the same tree. A pull request&#39;s run peaks at 19 concurrent jobs, with three Node 24 unit shards and fourteen E2E shards, and every E2E shard tests the one <code>dist/</code> that <code>build-smoke-node-24</code> built and smoked instead of building its own. The median wall clock against the 8-minute target is measured on #221; the shared <code>dist/</code> stays only if its pull request median does not regress #221&#39;s (plan section 8).</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5), #222 (plan section 8)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/ci-time-to-green/plan.md">ci-time-to-green/plan.md</a>, sections 1 to 8 and decisions 1 to 15</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork&#39;s 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A pull request waited about 12 minutes for <code>CI result</code>, though its longest job took
+about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
+Free&#39;s 20 concurrent jobs per account, and every unit shard built and smoked the same <code>dist/</code>.
+Each shard also provisioned its environment twice, in the action and again through <code>pretest</code>,
+and its <code>posttest</code> reran two test files its own glob already held. Unit shards split by file
+index, so the slowest took up to about twice as long as the fastest. Every merge then reran the
+whole suite on <code>main</code> against the tree its pull request had just tested. The fork cuts the
+redundant runs so a pull request is green sooner, and keeps every check that could answer
+differently on <code>main</code>.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>dependencies-node-26</code>, <code>unit-node-26</code> and <code>build-smoke-node-26</code> carry
+<code>if: github.event_name != &#39;pull_request&#39;</code> and no other condition, and need only Node 26 jobs.
+They run on every push to <code>main</code>, tag and manual run, and never on a pull request.</li>
+<li><code>build-smoke-node-24</code> (<code>needs: [changes, dependencies-node-24]</code>, the docs-only condition) and
+<code>build-smoke-node-26</code> (<code>needs: dependencies-node-26</code>) run on <code>ubuntu-latest</code>, restore
+<code>node_modules</code> with <code>fail-on-cache-miss</code>, then run <code>npm run build</code> and <code>npm run smoke</code>.</li>
+<li>After smoke, <code>build-smoke-node-24</code> packs <code>dist/</code> into <code>dist.tar</code> (a tarball, because an artifact
+drops file modes) and uploads it as the <code>dist-node-24</code> artifact, retained 7 days so a later rerun
+of a failed E2E shard, which reuses the original attempt&#39;s artifact, still finds it. <code>e2e</code> needs
+<code>build-smoke-node-24</code>, has no <code>Build</code> step, and downloads and unpacks that artifact instead, so
+every shard tests the bundle that smoked, and a build or smoke failure skips E2E. Plan section 8
+keeps this only if the pull request median does not regress #221&#39;s; both medians and the query are
+in its pull request description.</li>
+<li><code>.github/actions/run-unit-shard/action.yml</code> has no <code>Build</code> or <code>Smoke the built bundles</code> step,
+and its description says build and smoke run in the build-smoke jobs.</li>
+<li><code>CI result</code> needs <code>build-smoke-node-24</code> and none of the Node 26 jobs, matching <code>package</code>, and
+<code>SKIPPABLE</code> lists <code>build-smoke-node-24</code>. Its step body and the <code>Detect docs-only change</code> body
+stay byte-identical to <code>skills/docs-only-ci/assets/</code>.</li>
+<li><code>flake report</code> still needs <code>unit-node-26</code>, and its <code>!cancelled()</code> runs it after the skip.</li>
+<li>A Node 26 failure on <code>main</code> turns that workflow run red; <code>CI result</code> there does not cover
+Node 26.</li>
+<li>Every pull request run&#39;s <code>changes</code> job writes <code>{tree, docs_only}</code> (the merge ref&#39;s
+<code>HEAD^{tree}</code> and the docs-only answer) and uploads it as the <code>tested-tree</code> artifact, retention
+7 days. A recording problem warns and uploads nothing, and the upload step carries
+<code>continue-on-error</code>, so neither ever fails the run; the <code>main</code> push then finds no artifact and
+runs everything.</li>
+<li><code>changes</code> alone holds <code>actions: read</code> and <code>pull-requests: read</code>. Its <code>Detect reused tree</code> step
+outputs <code>tree_reused=true</code> only on a push to <code>refs/heads/main</code> whose commit maps to exactly one
+merged pull request, whose newest <code>pull_request</code> run of <code>ci.yml</code> for that pull request&#39;s head
+is a completed success, whose <code>tested-tree</code> artifact says <code>docs_only</code> is <code>false</code>, and whose
+recorded tree equals the pushed commit&#39;s tree. Every other event, API error, missing or
+unreadable artifact and mismatch outputs <code>false</code>, logs why, and exits 0.</li>
+<li><code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> carry
+<code>needs.changes.outputs.tree_reused != &#39;true&#39;</code> beside the docs-only condition, and no other job
+reads <code>tree_reused</code> except <code>CI result</code>, whose <code>DOCS_ONLY</code> env is &quot;docs-only OR tree reused&quot;
+(it now means &quot;the skippable jobs may skip&quot;). Its step body stays the skill asset, so its log
+says &quot;docs-only change&quot; for a reused tree too.</li>
+<li><code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code> and
+<code>test/docs-only-ci-template.test.ts</code> hold the job graph above, and
+<code>test/ci-tree-reuse.test.ts</code> holds each reuse condition and failure path.</li>
+<li><code>pretest</code> is the one definition of test provisioning, locally and in CI. The unit shard
+action runs <code>npm run pretest</code> once and has no step of its own that installs Electron or
+builds the native state lock. <code>Resolve Electron version</code> and <code>Cache the Electron runtime</code>
+stay, so the runtime <code>pretest</code> probes is normally restored rather than downloaded.</li>
+<li><code>scripts/ensure-electron-runtime.mjs</code> retries a failed runtime install three times, waiting
+10 s and then 20 s between attempts, and fails with the last attempt&#39;s detail. This protects
+a cold cache locally as well as in CI.</li>
+<li>The shard&#39;s Test step runs <code>npm run --silent test:run</code> with <code>--test-concurrency</code> and the
+shard&#39;s files, not <code>npm test</code>, so <code>posttest</code> (<code>test:workflow-evidence</code>) does not run in CI.
+JUnit output and the flake rerun both go through <code>test:run</code>. Local <code>npm test</code>, with its
+<code>pretest</code> and <code>posttest</code> and its index-based <code>MISSION_TEST_SHARD</code>, is unchanged.</li>
+<li>A unit shard&#39;s files come from <code>node scripts/unit-shard.mjs &lt;index&gt;/&lt;total&gt;</code> (its &quot;Select shard
+files&quot; step, which prints the file count), not <code>--test-shard</code>. The partitioner expands
+<code>test/**/*.test.ts</code>, the glob <code>npm test</code> names, weights each file by its milliseconds in
+<code>test/shard-timings.json</code> (a missing file weighs the median of the recorded ones, every file
+the same when none are recorded), and deals longest first to the lightest shard, ties broken
+by path and then by shard index. The result is deterministic for a file set and timings file,
+and every file lands in exactly one shard whatever the timings say; it refuses to print an
+empty shard, which <code>node --test</code> would read as &quot;discover your own files&quot;.</li>
+<li>Each unit shard uploads its first run&#39;s <code>junit.xml</code> as <code>unit-junit-node-&lt;v&gt;-shard-&lt;n&gt;</code>,
+retained 7 days, whatever the test outcome (<code>!cancelled()</code>).</li>
+<li><code>test/shard-timings.json</code> is generated and never hand-edited. <code>npm run test:timings -- &lt;run-id&gt;</code> (<code>scripts/unit-shard-timings.ts</code>) downloads that run&#39;s <code>unit-junit-*</code> artifacts
+with <code>gh run download</code>, sums each file&#39;s top-level <code>testsuite</code> and <code>testcase</code> times per Node
+release (through <code>junitFileTimes</code> in <code>src/shared/junit.ts</code>), averages the releases, keeps only files that
+exist in the checkout and rewrites the file. Regeneration is manual, when shard spread drifts.</li>
+<li>E2E keeps Playwright&#39;s <code>--shard</code>.</li>
+<li>A pull request&#39;s run peaks at no more than 20 concurrent jobs, GitHub Free&#39;s per-account cap:
+<code>gates</code>, <code>docs checks</code>, N Node 24 unit shards and M E2E shards, with 2 + N + M &lt;= 20, since
+<code>build-smoke-node-24</code> finishes before E2E starts. N = 3 and M = 14, from the step times of pull
+request run 37415279889: the shard holding <code>test/session-contracts.test.ts</code> (224 s alone) stays
+near 300 s at any N of three or more, so the remaining slots go to E2E, the critical path. M was
+set while <code>build-smoke-node-24</code> still ran beside the shards and is held at 14, leaving one slot
+spare, so the shared <code>dist/</code> was measured as one change. Node 26 keeps six unit shards, outside
+the budget. The arithmetic is the &quot;Shard budget&quot; comment in <code>ci.yml</code>; <code>MISSION_TEST_SHARDS</code>, the
+matrix lists and <code>test/init-script.test.ts</code> change together. That test pins the shard lists, the
+shared <code>dist/</code> steps and artifact name, and derives the peak from the job graph (every job a
+full pull request runs at once with the shards, matrix legs counted) and pins it at 19, so a new
+job beside the shards fails it.</li>
+<li><code>test/shard-timings.json</code> holds real timings, generated by <code>npm run test:timings</code> from run
+37415279889 (1,039 files, the whole unit glob). The timings are per file, so a shard count
+change needs no regeneration.</li>
+<li><code>test/flake-report-action.test.ts</code> holds the shard&#39;s single <code>npm run pretest</code>, the absence of
+<code>npm test</code> and <code>--test-shard</code>, and a Test command equal to <code>package.json</code>&#39;s <code>test</code> script with
+CI&#39;s concurrency and the partitioner&#39;s files in place of the shard option and glob;
+<code>test/unit-shard.test.ts</code> holds the partition invariant, determinism, median weighting, the
+JUnit upload and the generator&#39;s arithmetic; <code>test/electron-runtime-preflight.test.ts</code> holds
+the retry.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>The <code>.github/workflows/ci.yml</code> layout: per-release <code>dependencies-node-&lt;v&gt;</code> jobs producing
+lockfile-keyed <code>node_modules</code> caches, unit shards through
+<code>.github/actions/run-unit-shard/action.yml</code>, and <code>npm run build</code> starting with <code>build:native</code>,
+which builds the native state lock the daemon bundle needs before smoke runs it.</li>
+<li><code>scripts/smoke-bundles.mjs</code> runs the bundles directly, with neither the Electron runtime nor a
+display.</li>
+<li>Node 24 and Node 26 are the supported releases. An upstream Node 26-only job must take the
+same <code>if:</code> and stay out of <code>CI result</code>&#39;s <code>needs</code>.</li>
+<li><code>package.json</code>&#39;s <code>pretest</code> provisions everything the unit suite needs (Electron runtime,
+native state lock), and <code>posttest</code> adds only tests already inside <code>test/**/*.test.ts</code>.</li>
+<li><code>node --test</code>&#39;s JUnit reporter writes a <code>time</code> in seconds and an absolute <code>file</code> on every
+<code>testcase</code>, and a <code>describe</code> block becomes a <code>testsuite</code> with no <code>file</code> whose time is its wall
+time, hooks included. Summing a suite&#39;s cases instead would miss hook time and over-count a
+suite that runs its cases concurrently.</li>
+<li>Unit test files do not depend on which other files share their shard (the native state lock
+paragraph in <code>AGENTS.md</code>), so moving a file between shards is safe.</li>
+<li>Electron&#39;s <code>install.js</code> downloads the runtime on first use (Electron 42+) and exits non-zero
+when the download fails.</li>
+<li>The workflow file is <code>.github/workflows/ci.yml</code> (tree reuse looks its runs up by that name),
+<code>actions/checkout</code> checks out the pull request&#39;s merge ref on <code>pull_request</code>, and a squash or
+merge commit made while <code>main</code> has not moved has that merge ref&#39;s tree.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the header comment, the Node 26 jobs&#39;
+<code>if:</code> and <code>needs</code>, the two build-smoke jobs, <code>flake-report</code>&#39;s and <code>ci-result</code>&#39;s comments,
+<code>ci-result</code>&#39;s <code>needs</code>, <code>SKIPPABLE</code> and <code>DOCS_ONLY</code> env, the <code>changes</code> job&#39;s permissions,
+outputs and three tree-reuse steps, the gated jobs&#39; <code>if:</code>, the &quot;Shard budget&quot; header section,
+the <code>unit-node-24</code> and <code>e2e</code> shard counts, <code>build-smoke-node-24</code>&#39;s <code>dist/</code> upload steps, and the
+<code>e2e</code> job&#39;s <code>needs</code>, its comment and its download steps in place of <code>Build</code>), <code>.github/actions/run-unit-shard/action.yml</code> (the
+description, the removed build and smoke steps, the single <code>pretest</code> step and the direct
+<code>test:run</code> Test step over the partitioner&#39;s files, the &quot;Select shard files&quot; and
+&quot;Upload JUnit results&quot; steps), <code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>,
+<code>src/shared/junit.ts</code> (the added <code>junitFileTimes</code>, which the bundled flake report action does not
+import), <code>package.json</code> (<code>test:timings</code>), <code>AGENTS.md</code> (the CI paragraph and the native state lock
+paragraph), <code>docs/flaky-tests.md</code> (Node 26 on pull requests, the unit shard bullet, &quot;How unit
+shards pick their files&quot;, and a reused <code>main</code> push), <code>test/init-script.test.ts</code>,
+<code>test/oss-readiness.test.ts</code>, <code>test/flake-report-action.test.ts</code>, <code>e2e/README.md</code> (the CI shard
+count and the shared <code>dist/</code>).</p>
+<p><strong>Fork-only files.</strong> <code>docs/plans/ci-time-to-green/plan.md</code>, <code>scripts/ci-tree-reuse.sh</code>,
+<code>test/ci-tree-reuse.test.ts</code>, <code>scripts/unit-shard.mjs</code> and its <code>.d.mts</code>,
+<code>scripts/unit-shard-timings.ts</code>, <code>test/shard-timings.json</code>, <code>test/unit-shard.test.ts</code>.
+<code>test/docs-only-ci-template.test.ts</code> (fork-only through Docs-only CI) now also holds the Node 26
+jobs&#39; condition and the tree-reuse wiring.</p>
+<h3>Windows support</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, and the Windows docs (plan M2.1 to M2.9 and M2.11). Still to land there: the Makefile under Git Bash (M2.10) and gate readiness (M2.12). The branch reaches <code>main</code> in one merge.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), pending (branch <code>docs/windows-support-docs</code>, the Windows docs and this entry&#39;s update, M2.11). The per-task base branch it depends on (M0.1) has its own entry.</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/windows-support/plan.md">docs/plans/windows-support/plan.md</a>, &quot;Decisions&quot;, &quot;Branch model&quot; and &quot;Milestones&quot;; the sync runbook <a href="../windows-branch-sync.md">docs/windows-branch-sync.md</a>; the M2.0 SDK spike result on issue #186; the Windows section of <a href="../setup.md#windows-11">docs/setup.md</a> and of <a href="../harnesses-and-terminals.md#windows">docs/harnesses-and-terminals.md</a></td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Not now (D18: fork-only). The four seams, and the neutral seams M2 built on the branch (D38), are platform-neutral and could be offered on their own.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Mission Control runs natively on Windows 11 x64: the daemon, the Foreman worker,
+the dashboard and the Electron shell in dev mode, with Claude Code SDK sessions dispatched,
+shown on the board and completed. Until that is complete and validated, every Windows-specific
+change lives on the long-lived <code>release/windows</code> branch, and <code>main</code> stays a macOS product that
+behaves exactly as it did. When the plan&#39;s merge gate (D8) passes, <code>release/windows</code> merges into
+<code>main</code> once; WezTerm terminal sessions and an NSIS installer follow on <code>main</code>.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>main</code> carries no Windows-specific behavior until the final merge. Only platform-neutral
+changes that leave macOS byte-for-byte unchanged land on <code>main</code> directly (D6). A seam an M2
+ticket discovers is built on <code>release/windows</code> instead, kept platform-neutral, and listed in
+the merge PR (D38).</li>
+<li><code>release/windows</code> was cut from <code>origin/main</code> only after the per-task base branch,
+<code>.gitattributes</code> and all four seams had merged (D36), so it starts with every one of them.
+<code>main</code> reaches it only through merges (the weekly &quot;Sync main into release/windows&quot; mission,
+D5 and D26, following <a href="../windows-branch-sync.md">docs/windows-branch-sync.md</a>): never a rebase,
+never a force-push. On a sync conflict <code>main</code> wins on shared code
+and the Windows change is re-applied on top; dropping a Windows change needs the human (D27).</li>
+<li>Windows tickets are tasks with <code>base_branch = release/windows</code>, so their worktrees, PRs,
+checks and merge watcher follow the branch (see &quot;Per-task base branch&quot;). They carry the
+<code>windows-support</code> label.</li>
+<li>The branch merges into <code>main</code> once, as one merge commit titled <code>feat: Windows support</code>
+(D16), after the unit suite and Playwright e2e are green on <code>windows-latest</code> under the single
+win32 skip guard (D37), the human&#39;s manual smoke passes, and Linux CI and the macOS <code>package</code>
+run are green. Nothing on either branch cuts a release.</li>
+<li><code>.gitattributes</code> stores and checks out every text file as LF (<code>* text=auto eol=lf</code>, D25).</li>
+<li><strong>Process inspection</strong> (<code>src/server/process-inspection/</code>): every <code>ps</code> and <code>lsof</code> read the
+daemon makes goes through <code>processInspector()</code>. Its POSIX implementation issues the same
+commands the call sites did, and each read returns its <code>RunResult</code> so the caller, not the
+seam, decides whether a partial answer is usable.</li>
+<li><strong>Process lifetime</strong> (<code>src/server/platform/process-lifetime.ts</code>): starting a child as a tree
+root (<code>treeRootOptions</code>) and signalling or killing that tree (<code>signalTree</code>, <code>killTree</code>) go
+through <code>processLifetime</code>. Callers keep their own <code>spawn</code> call, so the executable contract
+tests still see each executable. The module is a leaf (Node builtins only), because the
+Electron main process imports it too.</li>
+<li><strong>Executable environment</strong> (<code>src/server/platform/executable-environment.ts</code>): the
+resolver&#39;s application, per-user tool and OS default directories, and the login-shell PATH
+read, come from one per-platform row. The locator keeps the ladder&#39;s order and provenance.</li>
+<li><strong>Native addon sources</strong> (<code>scripts/native-addon-sources.mjs</code>): the one table of each addon&#39;s
+sources per platform. Each <code>binding.gyp</code> reads <code>&lt;@(addon_sources)</code>. A platform without sources
+gets none, never another platform&#39;s: the required state lock refuses it and the optional Keep
+Awake skips it. Both builders still publish through <code>publishNativeAddon</code>.</li>
+<li>On <code>main</code>, each seam&#39;s platform-selection map is empty, so every platform, win32 included,
+resolves to the POSIX implementation. <code>release/windows</code> registers <code>win32</code> in those maps:
+process inspection through Windows PowerShell over CIM, tree kill through <code>taskkill /T /F</code>,
+and the executable ladder&#39;s <code>win32</code> row (<code>%ProgramFiles%</code>, <code>%LOCALAPPDATA%\Programs</code>,
+<code>%USERPROFILE%\.local\bin</code>, the npm, mise and Volta locations, PATH from the registry, and
+PATHEXT names, so <code>claude</code> resolves to the real <code>claude.exe</code>). A win32 working-directory or
+open-files read reports failure rather than an empty answer, and worktree occupancy refuses
+on it.</li>
+<li>On <code>release/windows</code>, the state home resolves through <code>os.homedir()</code> to
+<code>%USERPROFILE%\.mission-control</code> with the macOS layout (D22), and paths spelled the win32 way
+are compared case-insensitively (<code>src/shared/native-path.ts</code>). POSIX answers stay
+byte-identical.</li>
+<li><strong>Harness availability</strong> (D20): a harness&#39;s <code>unsupportedHosts</code> capability lists the platforms
+it cannot run on; Codex and Pi list <code>win32</code>. <code>harnessUnsupportedWhy</code> is the one sentence
+Settings &gt; Setup, task creation and the dispatcher give, and dispatch refuses before any
+worktree is acquired.</li>
+<li><strong>Runtime availability</strong> (D9): <code>runtimeUnavailableWhy</code> in
+<code>src/server/platform/session-runtimes.ts</code> marks the terminal runtime unavailable on win32. A
+dispatch, a Pipeline launch and Continue in terminal are refused with it, and the discovery
+poller runs an empty sweep there, keeping the Git refresh SDK sessions need.</li>
+<li><strong>State lock</strong>: win32 builds <code>native/state-lock/state_lock_win.cc</code>, which takes state
+ownership with <code>LockFileEx</code> under the same handle contract and error codes as the POSIX
+<code>flock</code>. The lock covers one byte at 1 GiB rather than the owner metadata, because a
+<code>LockFileEx</code> region is mandatory and a contender must still read who owns the state home. The
+three symlink-publication exports serve only Pi and refuse with <code>ENOTSUP</code> there. On win32,
+<code>publishNativeAddon</code> moves an addon a live process has loaded aside to a <code>.retired-</code> name
+before renaming the new one in, puts it back if the publish still fails, and sweeps retired
+files once nothing has them loaded; every other platform keeps the plain rename (D38).</li>
+<li><strong>Keep Awake</strong> (D13): win32 holds one power request set to <code>PowerRequestSystemRequired</code>
+(<code>native/keep-awake/keep_awake_win.cc</code>), the same idle-system-sleep guarantee as the macOS
+IOKit assertion, released by the kernel with the process. This deviates from D13&#39;s
+<code>SetThreadExecutionState</code>, which is one flag per thread and carries no reason string.</li>
+<li><strong>Setup</strong> (D11, D23, D24, D30, D33): a <strong>Windows</strong> family scoped to <code>win32</code> (<code>hosts</code> on the
+family) checks Git for Windows, Developer Mode, <code>LongPathsEnabled</code>, npm&#39;s <code>script-shell</code>,
+Visual Studio Build Tools (C++) and Python 3. Its fixes are <code>manual-command</code> remedies shown to
+copy, never run by Mission Control. On win32, <code>core.longpaths=true</code> is set in a repository&#39;s
+git config before a managed worktree is added. No Windows row is probed on another host.</li>
+<li><strong>Electron dev shell</strong>: <code>src/main/platform-shell.ts</code> gives win32 the colored <code>build/tray.ico</code>
+and the native window frame with an auto-hidden menu bar, and <code>menu-template.ts</code> drops the
+macOS app menu there. Every other platform keeps the macOS answers.</li>
+<li><strong>Windows CI</strong> (D15, D30, D32): <code>windows-latest</code> jobs on Node 24 run on pushes to
+<code>release/windows</code> and PRs into it, with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
+steps are allowed to fail until M2.12, and stay out of <code>CI result</code>. Every test or spec that
+skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</code> in <code>test/helpers/win32-skip.ts</code>,
+with a stated reason (D37).</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>Upstream reads processes, signals process groups and searches for executables only at the
+call sites the seams replaced. An upstream commit that adds a direct <code>ps</code>, <code>lsof</code>, <code>pgrep</code>,
+<code>process.kill(-pid)</code>, <code>detached: true</code> spawn, login-shell PATH read, or ladder location
+outside the seams is a conceptual conflict even when it merges cleanly: route it through the
+seam on <code>main</code>.</li>
+<li><code>process.platform</code> is how the daemon and the Electron main process tell platforms apart. The
+daemon reads it for harness and runtime availability through <code>hostPlatform()</code>, so the e2e
+suite can build a daemon that answers win32.</li>
+<li>Both native addons build with <code>node-gyp</code> from a <code>binding.gyp</code> in <code>native/&lt;addon&gt;</code>, and the
+daemon takes state ownership through <code>dist/native/state-lock.node</code> before it serves.</li>
+<li>The Claude Agent SDK spawns the executable it is given as <code>pathToClaudeCodeExecutable</code> on
+win32, and runs the CLI it bundles when it is given none (the M2.0 spike, SDK 0.3.283).</li>
+<li>Every harness reaches dispatch through the capability registry, so a new harness that does
+not run on Windows needs only an <code>unsupportedHosts</code> entry.</li>
+<li><code>ci.yml</code> runs on pushes to <code>main</code> and on every <code>pull_request</code>, so PRs into <code>release/windows</code>
+get Linux CI without a workflow change (D15).</li>
+<li>Upstream stays macOS-only for packaging. Upstream Windows support of its own would need
+reconciling with this branch before either merge.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>src/server/discovery/{processes,proc-cwd,codex-rollouts,poller}.ts</code>,
+<code>src/server/workflows/{check-identity,check-group,check-spawn,check-lease}.ts</code>,
+<code>src/pi/generation-lease.ts</code>, <code>src/server/claude-cli.ts</code>, <code>src/server/llm/codex.ts</code>,
+<code>src/server/executables/{locator,catalog}.ts</code>, <code>src/main/{update-build,updater}.ts</code>,
+<code>native/{state-lock,keep-awake}/binding.gyp</code>,
+<code>scripts/build-{state-lock,keep-awake}-native.mjs</code>, <code>test/codex-rollout-identity.test.ts</code>,
+<code>test/executable-contracts.test.ts</code>, <code>test/pi-generation-lease.test.ts</code>,
+<code>docs/agent-guides/architecture.md</code> (the seam rows) and <code>docs/harnesses-and-terminals.md</code> (the
+executable search ladder). On <code>release/windows</code> also: <code>src/server/dispatcher.ts</code>,
+<code>src/server/task-repository-preparation.ts</code>, <code>src/server/session-transfers/coordinator.ts</code>,
+<code>src/server/sdk/handoff.ts</code>, <code>src/server/setup/{index,install,types}.ts</code>,
+<code>src/server/keep-awake.ts</code>, <code>src/server/worktrees/git.ts</code>, <code>src/server/repos.ts</code>,
+<code>src/server/harness/claude/hooks.ts</code>, <code>src/server/agent-subprocess-env.ts</code>,
+<code>src/server/testing-setup.ts</code>, <code>src/mcp/pipeline-credential.ts</code>,
+<code>src/shared/{harness-capabilities,setup-catalog,allowlist,llm,workflow,standing-instructions,protocol,types,executables}.ts</code>,
+<code>src/shared/harness-runtime.mjs</code>,
+<code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
+<code>scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs</code>, <code>package.json</code> (<code>dev:electron:app</code>),
+<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
+skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
+<code>docs/desktop-and-packaging.md</code>.</p>
+<p><strong>Fork-only files.</strong> <code>.gitattributes</code>, <code>src/server/process-inspection/</code>,
+<code>src/server/platform/process-lifetime.ts</code>, <code>src/server/platform/executable-environment.ts</code>,
+<code>scripts/native-addon-sources.mjs</code>, <code>scripts/native-addon-sources.d.mts</code>,
+<code>test/process-inspection.test.ts</code>, <code>test/process-lifetime.test.ts</code>,
+<code>test/executable-environment.test.ts</code>, <code>test/native-addon-sources.test.ts</code>,
+<code>docs/plans/windows-support/</code>, <code>docs/windows-branch-sync.md</code>. On <code>release/windows</code> also:
+<code>src/server/platform/{host,session-runtimes}.ts</code>, <code>src/server/setup/windows.ts</code>,
+<code>src/server/git/long-paths.ts</code>, <code>src/shared/native-path.ts</code>, <code>src/main/platform-shell.ts</code>,
+<code>native/state-lock/state_lock_win.cc</code>, <code>native/keep-awake/keep_awake_win.cc</code>, <code>build/tray.ico</code>, <code>scripts/ci-allowed-failures.mjs</code>,
+<code>scripts/probe-keep-awake-native.d.mts</code>, <code>e2e/fixtures/win32-host-build.ts</code>,
+<code>e2e/specs/win32-{harness-availability,setup-checks}.spec.ts</code>, <code>test/helpers/win32-skip.ts</code>,
+<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,harness-host-availability,keep-awake-probe,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

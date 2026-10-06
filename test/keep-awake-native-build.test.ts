@@ -8,7 +8,12 @@ test("native Keep Awake builds for both macOS host architectures", () => {
   assert.deepEqual(nativeBuildTarget("darwin", "x64"), { kind: "build", arch: "x64" });
 });
 
-test("native Keep Awake remains a successful no-op away from macOS", () => {
+test("native Keep Awake builds for both Windows host architectures", () => {
+  assert.deepEqual(nativeBuildTarget("win32", "x64"), { kind: "build", arch: "x64" });
+  assert.deepEqual(nativeBuildTarget("win32", "arm64"), { kind: "build", arch: "arm64" });
+});
+
+test("native Keep Awake remains a successful no-op away from macOS and Windows", () => {
   assert.deepEqual(nativeBuildTarget("linux", "x64"), { kind: "skip", platform: "linux" });
 });
 
