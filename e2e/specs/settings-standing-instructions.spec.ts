@@ -57,6 +57,24 @@ async function shoot(
 }
 
 /**
+ * GET a daemon route on a socket of its own.
+ *
+ * `connection: close` because every `page.request` shares Playwright's keep-alive pool, and
+ * the daemon closes an idle socket at six seconds (Node's 5s keep-alive plus its 1s buffer).
+ * The rule saved by `writeRule` leaves its poll's socket idle through a dispatch, a modal and
+ * a reload, and on a loaded runner that is about six seconds: a read reusing it as the daemon
+ * closes it fails with `read ECONNRESET` or `socket hang up`, which is how this spec flaked.
+ */
+async function daemonGet(page: Page, daemon: DaemonHandle, path: string) {
+  return await page.request.get(`${daemon.baseURL}${path}`, { headers: { connection: "close" } });
+}
+
+/** The daemon's stored instructions, as `GET /api/instructions` reports them. */
+async function instructionsView(page: Page, daemon: DaemonHandle) {
+  return await (await daemonGet(page, daemon, "/api/instructions")).json();
+}
+
+/**
  * Open the category and wait for the daemon's first answer.
  *
  * `reload` is not optional decoration on the second visit. `page.goto` to a URL that differs
@@ -118,7 +136,7 @@ async function writeRule(page: Page, daemon: DaemonHandle, repo: string, rule: s
 
   await expect
     .poll(async () => {
-      const view = await (await page.request.get(`${daemon.baseURL}/api/instructions`)).json();
+      const view = await instructionsView(page, daemon);
       return view.repositories[repo] ?? null;
     }, { message: "the daemon should hold the rule the operator just saved" })
     .toBe(rule);
@@ -128,7 +146,7 @@ async function writeDefault(page: Page, daemon: DaemonHandle) {
   await page.getByLabel("Standing instructions for every repository").fill(DEFAULT_RULE);
   await page.locator(".si-default").getByRole("button", { name: "Save" }).click();
   await expect.poll(async () => {
-    const view = await (await page.request.get(`${daemon.baseURL}/api/instructions`)).json();
+    const view = await instructionsView(page, daemon);
     return view.default;
   }).toBe(DEFAULT_RULE);
 }
@@ -200,7 +218,7 @@ async function dispatch(page: Page, repo: string, task: string): Promise<void> {
 
 /** The sessions the daemon currently holds. */
 async function sessions(page: Page, daemon: DaemonHandle): Promise<{ id: string; cwd: string }[]> {
-  return await (await page.request.get(`${daemon.baseURL}/api/sessions`)).json();
+  return await (await daemonGet(page, daemon, "/api/sessions")).json();
 }
 
 /**
@@ -219,8 +237,10 @@ async function launchSnapshot(
   daemon: DaemonHandle,
   id: string,
 ): Promise<{ text: string; mechanism: string; sources: { repoPath: string }[] } | null> {
-  const res = await page.request.get(
-    `${daemon.baseURL}/api/sessions/${encodeURIComponent(id)}/standing-instructions`,
+  const res = await daemonGet(
+    page,
+    daemon,
+    `/api/sessions/${encodeURIComponent(id)}/standing-instructions`,
   );
   return res.ok() ? await res.json() : null;
 }
@@ -404,7 +424,7 @@ test("the session chip shows what that session received, and does not change whe
     .click();
   await expect
     .poll(async () => {
-      const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
+      const view = await instructionsView(dashboard, daemon);
       return view.repositories[daemon.repo] ?? null;
     })
     .toBe(EDITED);
@@ -518,14 +538,16 @@ test("clearing and removing repository instructions both preserve the default", 
   await card.getByRole("button", { name: "Save", exact: true }).click();
   await expect
     .poll(async () => {
-      const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
+      const view = await instructionsView(dashboard, daemon);
       return Object.hasOwn(view.repositories, daemon.repo) ? view.repositories[daemon.repo] : "ABSENT";
     }, { message: "clearing the box stores an empty entry" })
     .toBe("");
   await expect(card.getByText("default", { exact: true })).toBeVisible();
   await expect(card.getByText(/Leave this empty to keep only the default/)).toBeVisible();
-  const resolved = async () => (await dashboard.request.get(
-    `${daemon.baseURL}/api/instructions/resolved?repoPath=${encodeURIComponent(daemon.repo)}&agent=claude&runtime=sdk`,
+  const resolved = async () => (await daemonGet(
+    dashboard,
+    daemon,
+    `/api/instructions/resolved?repoPath=${encodeURIComponent(daemon.repo)}&agent=claude&runtime=sdk`,
   )).json();
   expect((await resolved()).text).toBe(`## Standing instructions for this repository\n\n${DEFAULT_RULE}`);
   await shoot(dashboard, "empty-repository-keeps-default");
@@ -533,7 +555,7 @@ test("clearing and removing repository instructions both preserve the default", 
   await card.getByRole("button", { name: "Remove repository instructions" }).click();
   await expect
     .poll(async () => {
-      const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
+      const view = await instructionsView(dashboard, daemon);
       return Object.hasOwn(view.repositories, daemon.repo);
     }, { message: "removing repository instructions sends null, which removes the key" })
     .toBe(false);
@@ -607,12 +629,12 @@ test("saving one repository does not persist a neighbour's unsaved draft", async
 
   await expect
     .poll(async () => {
-      const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
+      const view = await instructionsView(dashboard, daemon);
       return view.repositories[daemon.repo];
     })
     .toBe("The first repository's new rule.");
 
-  const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
+  const view = await instructionsView(dashboard, daemon);
   expect(
     view.repositories[daemon.secondRepo],
     "saving one repository must not persist another's unsaved draft",
