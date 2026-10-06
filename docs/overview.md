@@ -277,3 +277,11 @@ development Foreman worker to the group; `make restart`
 tears the whole stack down and brings it back up. The plain `make dev` browser workflow is
 unchanged. See [docs/plans/migrate-electron.md](plans/migrate-electron.md) for the full
 design.
+
+On Windows, run `make` from Git Bash, with GNU make installed separately because Git for
+Windows does not include it. `make start`, `make dev`, `make desktop` and the build and check
+targets work as on macOS. `make app`, `make install` and `make install-app` package or install
+the macOS app, so they print that and exit with an error. `make up`, `make down`,
+`make status`, `make stop-all`, `make restart` and `make claude` do the same, because they find
+processes with `lsof`, `pgrep` and `pkill`, which Git Bash does not provide. Run the stack in
+the foreground instead.
