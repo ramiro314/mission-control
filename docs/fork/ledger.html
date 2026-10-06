@@ -10,8 +10,7 @@ table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{
 .diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
 figcaption{color:var(--muted);font-size:13px}
 .b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
-</style></head><body><main>
-<h1>Fork ledger</h1>
+</style></head><body><main><h1>Fork ledger</h1>
 <p><code>ramiro314/mission-control</code> is a fork of
 <a href="https://github.com/teamupstart/mission-control"><code>teamupstart/mission-control</code></a>. This ledger
 records everything the fork changes against upstream, one entry per fork <strong>feature</strong>, with the
@@ -49,7 +48,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>14</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
+<td><strong>15</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -95,6 +94,11 @@ or issues.</p>
 <td>Per-task-kind default workflows</td>
 <td>Active</td>
 <td>#12</td>
+</tr>
+<tr>
+<td>Task-source workflow default</td>
+<td>Active</td>
+<td>Pending (branch <code>feat/task-source-workflow</code>, issue #234)</td>
 </tr>
 <tr>
 <td>MCP backlog listing and adoption across repositories</td>
@@ -575,6 +579,68 @@ and <code>POST /api/workflows/:id/delete</code> (the guard), <code>POST /api/tas
 <code>schedules/ScheduleEditor.tsx</code>.</li>
 </ul>
 <p><strong>Fork-only files.</strong> None outside tests and specs; everything edits upstream files.</p>
+<h3>Task-source workflow default</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>Active</strong></td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>Pending (branch <code>feat/task-source-workflow</code>, issue #234)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. Generic, but it builds on the fork&#39;s per-kind Dispatch defaults and the archive guard&#39;s wording.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Every swept task took its kind&#39;s Dispatch default, so the flake source&#39;s tasks bound
+No-Mistakes Review and the operator rebound a lighter Deflake Review by hand on each. A task
+source can now name the workflow its swept tasks bind.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>TaskSourceDefaults.workflowId</code> has a task&#39;s three <code>workflowId</code> states: absent inherits the
+kind&#39;s Dispatch default as each row is filed, <code>null</code> is None, a string is a workflow id. A
+source stored before the field reads as inherit, with no migration.</li>
+<li><code>ingest.ts</code> passes it to <code>DispatchSchema</code> as it passes <code>agent</code>: a candidate&#39;s own
+<code>workflowId</code>, None included, wins; an unset source still asks the kind.</li>
+<li><code>PUT /api/task-sources/config</code> refuses (409) a new or changed <code>workflowId</code> that is not an
+active published workflow, through the same <code>isBindableWorkflow</code> check as
+<code>PUT /api/workflows/config</code>. A source&#39;s unchanged stored choice passes, so one stale source
+cannot block edits to its siblings.</li>
+<li>Archiving or deleting a workflow a source names is refused (409), naming the source, as for a
+kind&#39;s Dispatch default.</li>
+<li>The source editor&#39;s <strong>Workflow</strong> picker beside <strong>Kind</strong> offers <strong>Kind default</strong>, labelled with
+the workflow it resolves to, <strong>None</strong>, and every bindable published workflow.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>DispatchSchema.workflowId</code> and <code>resolveTaskWorkflowId</code> keep omitted, <code>null</code> and string
+meaning default, None and a workflow.</li>
+<li>The task-sources config stays a whole-list PUT over the <code>app_config</code> <code>taskSources</code> entry.</li>
+<li>The workflow archive and delete routes, and <code>WorkflowManager.get</code> reporting <code>archivedAt</code> and
+<code>currentVersionId</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong></p>
+<ul>
+<li>Modules: <code>src/shared/task-source.ts</code> (<code>TaskSourceDefaultsSchema</code>, <code>TaskCandidate</code>),
+<code>src/server/task-sources/ingest.ts</code>, <code>src/server/routes.ts</code>.</li>
+<li>Routes: <code>PUT /api/task-sources/config</code>, <code>PUT /api/workflows/config</code>, <code>DELETE /api/workflows/:id</code>,
+<code>POST /api/workflows/:id/delete</code>.</li>
+<li>DB: none; stored in the existing <code>app_config</code> <code>taskSources</code> entry.</li>
+<li>UI: <code>TaskSourcesPanel.tsx</code> (Workflow picker), <code>SettingsPage.tsx</code>.</li>
+</ul>
+<p><strong>Fork-only files.</strong> <code>e2e/specs/settings-task-source-workflow.spec.ts</code>.</p>
 <h3>MCP backlog listing and adoption across repositories</h3>
 <table>
 <thead>

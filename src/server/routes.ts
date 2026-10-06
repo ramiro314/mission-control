@@ -2341,6 +2341,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
   };
   /**
+   * Why this workflow cannot be retired, or null: a kind's Dispatch default or a task source
+   * still names it, and either would go on binding a version nobody can see.
+   */
+  const workflowRetireRefusal = (workflowId: string, verb: "archiving" | "deleting"): string | null => {
+    const kinds = kindDefaultsNaming(workflowId);
+    if (kinds) {
+      return `Used as the dispatch default for ${kinds}. Choose another dispatch default before ${verb} this workflow`;
+    }
+    const sources = getTaskSourcesConfig().sources.filter((s) => s.defaults.workflowId === workflowId);
+    if (sources.length > 0) {
+      return `Used by the task source ${sources.map(sourceName).join(", ")}. Choose another workflow for it before ${verb} this workflow`;
+    }
+    return null;
+  };
+  /**
+   * Whether a workflow id can be stored as a default that binds future tasks: known, not
+   * archived, and holding a published version. The Dispatch defaults route and the task
+   * source route ask the same question, so neither can store what the other refuses.
+   */
+  const isBindableWorkflow = (workflowId: string): boolean => {
+    const detail = workflowManager()?.get(workflowId) ?? null;
+    return detail !== null
+      && detail.workflow.archivedAt === null
+      && detail.workflow.currentVersionId !== null;
+  };
+  /**
    * The legacy config shape, COMPOSED rather than stored.
    *
    * `checkCommands` is a projection of the Command catalog's overrides, so an old caller sees
@@ -2379,12 +2405,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
       const workflowId = parsed.data.kindWorkflowDefaults[kind];
       if (!workflowId) continue;
-      const detail = workflowManager()?.get(workflowId) ?? null;
-      if (
-        !detail
-        || detail.workflow.archivedAt !== null
-        || detail.workflow.currentVersionId === null
-      ) {
+      if (!isBindableWorkflow(workflowId)) {
         return c.json({
           error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
         }, 409);
@@ -2517,12 +2538,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
-    if (defaultFor) {
-      return c.json({
-        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before archiving this workflow`,
-      }, 409);
-    }
+    const refusal = selected && !selected.builtin ? workflowRetireRefusal(id, "archiving") : null;
+    if (refusal) return c.json({ error: refusal }, 409);
     const result = manager.archive(id, parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
@@ -2545,12 +2562,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
-    if (defaultFor) {
-      return c.json({
-        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before deleting this workflow`,
-      }, 409);
-    }
+    const refusal = selected && !selected.builtin ? workflowRetireRefusal(id, "deleting") : null;
+    if (refusal) return c.json({ error: refusal }, 409);
     const result = manager.remove(id, parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ ok: true, id: result.id }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
@@ -7203,6 +7216,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const before = getTaskSourcesConfig();
     const beforeById = new Map(before.sources.map((source) => [source.id, source]));
+    for (const s of parsed.data.sources) {
+      const workflowId = s.defaults.workflowId;
+      // The Dispatch defaults route's check. A source's stored choice passes unchanged, for
+      // the stale-path reason below: the whole-list PUT must not let one source whose
+      // workflow went away block every edit to its siblings.
+      if (!workflowId || beforeById.get(s.id)?.defaults.workflowId === workflowId) continue;
+      if (!isBindableWorkflow(workflowId)) {
+        return c.json({
+          error: `The workflow for task source ${sourceName(s)} must be an active published workflow`,
+        }, 409);
+      }
+    }
     const sources = [];
     for (const s of parsed.data.sources) {
       const repoRoot = await resolveRepoRoot(s.repoRoot);

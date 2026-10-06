@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-10-05, fork PR #175 (merge commit `fdf3e845`) |
 | Fork commits ahead of upstream | **341** (247 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **14** (plus 3 superseded or removed, and 12 standalone fixes) |
+| Active fork features | **15** (plus 3 superseded or removed, and 12 standalone fixes) |
 | Measured at | `sync/upstream-2026-10-05` `3cc1b233`, 2026-10-05 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -47,6 +47,7 @@ or issues.
 | Task-source relations and dependency sync | Active | #5, #8, #16, #20 |
 | Decision forms | Active | #2, #6, #28, #30 |
 | Per-task-kind default workflows | Active | #12 |
+| Task-source workflow default | Active | Pending (branch `feat/task-source-workflow`, issue #234) |
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR, #175 (2026-10-05 sync) |
@@ -416,6 +417,54 @@ duplicated workflow can become any kind's default.
   `schedules/ScheduleEditor.tsx`.
 
 **Fork-only files.** None outside tests and specs; everything edits upstream files.
+
+### Task-source workflow default
+
+| Field | Value |
+| --- | --- |
+| Status | **Active** |
+| PRs | Pending (branch `feat/task-source-workflow`, issue #234) |
+| Plan docs | None |
+| Upstream candidate | Maybe. Generic, but it builds on the fork's per-kind Dispatch defaults and the archive guard's wording. |
+
+**Intent.** Every swept task took its kind's Dispatch default, so the flake source's tasks bound
+No-Mistakes Review and the operator rebound a lighter Deflake Review by hand on each. A task
+source can now name the workflow its swept tasks bind.
+
+**Behavior contracts.**
+
+- `TaskSourceDefaults.workflowId` has a task's three `workflowId` states: absent inherits the
+  kind's Dispatch default as each row is filed, `null` is None, a string is a workflow id. A
+  source stored before the field reads as inherit, with no migration.
+- `ingest.ts` passes it to `DispatchSchema` as it passes `agent`: a candidate's own
+  `workflowId`, None included, wins; an unset source still asks the kind.
+- `PUT /api/task-sources/config` refuses (409) a new or changed `workflowId` that is not an
+  active published workflow, through the same `isBindableWorkflow` check as
+  `PUT /api/workflows/config`. A source's unchanged stored choice passes, so one stale source
+  cannot block edits to its siblings.
+- Archiving or deleting a workflow a source names is refused (409), naming the source, as for a
+  kind's Dispatch default.
+- The source editor's **Workflow** picker beside **Kind** offers **Kind default**, labelled with
+  the workflow it resolves to, **None**, and every bindable published workflow.
+
+**Upstream behavior it assumes.**
+
+- `DispatchSchema.workflowId` and `resolveTaskWorkflowId` keep omitted, `null` and string
+  meaning default, None and a workflow.
+- The task-sources config stays a whole-list PUT over the `app_config` `taskSources` entry.
+- The workflow archive and delete routes, and `WorkflowManager.get` reporting `archivedAt` and
+  `currentVersionId`.
+
+**Upstream surfaces touched.**
+
+- Modules: `src/shared/task-source.ts` (`TaskSourceDefaultsSchema`, `TaskCandidate`),
+  `src/server/task-sources/ingest.ts`, `src/server/routes.ts`.
+- Routes: `PUT /api/task-sources/config`, `PUT /api/workflows/config`, `DELETE /api/workflows/:id`,
+  `POST /api/workflows/:id/delete`.
+- DB: none; stored in the existing `app_config` `taskSources` entry.
+- UI: `TaskSourcesPanel.tsx` (Workflow picker), `SettingsPage.tsx`.
+
+**Fork-only files.** `e2e/specs/settings-task-source-workflow.spec.ts`.
 
 ### MCP backlog listing and adoption across repositories
 

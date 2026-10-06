@@ -129,6 +129,42 @@ test("task-source defaults offer backlog-compatible kinds and omit chat", () => 
   assert.doesNotMatch(html, /<option value="chat"/);
 });
 
+test("the workflow picker offers the kind default by name, None and every bindable workflow", () => {
+  const workflow = (id: string, name: string, over: Record<string, unknown> = {}) =>
+    ({ id, name, archivedAt: null, currentVersionId: `${id}-v1`, publishedVersion: 1, ...over }) as never;
+  const workflows = [
+    workflow("wf-review", "No-Mistakes Review"),
+    workflow("wf-deflake", "Deflake Review"),
+    workflow("wf-old", "Archived Review", { archivedAt: 1 }),
+    workflow("wf-draft", "Draft Review", { currentVersionId: null, publishedVersion: null }),
+  ];
+  const card = (source: TaskSourceInstance) => renderToStaticMarkup(createElement(SourceCard, {
+    src: source,
+    kindLabel: "GitHub issues",
+    status: undefined,
+    repos: [],
+    now: Date.now(),
+    onChange: () => {},
+    onRemove: () => {},
+    state: mkState(viewOf([source])),
+    workflows,
+    kindWorkflowDefaults: { ship: "wf-review" },
+  }));
+
+  const inherited = card(mkSource());
+  assert.match(inherited, /aria-label="Workflow for tasks this source files"/);
+  assert.match(inherited, /<option value="" selected="">Kind default \(No-Mistakes Review\)<\/option>/);
+  assert.match(inherited, /<option value="__none">None<\/option>/);
+  assert.match(inherited, /<option value="wf-deflake">Deflake Review · v1<\/option>/);
+  assert.doesNotMatch(inherited, /Archived Review|Draft Review/, "only bindable workflows are offered");
+
+  const base = mkSource();
+  const named = card({ ...base, defaults: { ...base.defaults, workflowId: "wf-deflake" } });
+  assert.match(named, /<option value="wf-deflake" selected="">Deflake Review · v1<\/option>/);
+  const none = card({ ...base, defaults: { ...base.defaults, workflowId: null } });
+  assert.match(none, /<option value="__none" selected="">None<\/option>/);
+});
+
 test("a source can make swept tasks arrive parked for review", () => {
   const source = mkSource({
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: false },

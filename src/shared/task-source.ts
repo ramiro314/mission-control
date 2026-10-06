@@ -99,6 +99,8 @@ export interface TaskCandidate {
   repoRoot: string;
   kind?: TaskKind;
   agent?: AgentType;
+  /** Wins over the source's workflow default, with `DispatchSchema.workflowId`'s meanings. */
+  workflowId?: string | null;
   priority?: TaskPriority | null;
   labels?: string[];
   /**
@@ -745,6 +747,16 @@ export const TaskSourceDefaultsSchema = z.object({
    * it - only a source left unset follows the kind.
    */
   agent: z.enum(AGENT_TYPES).nullable().default(null),
+  /**
+   * The Workflow a swept task arms, in the three states a task's own `workflowId` has.
+   * Absent inherits the task kind's Dispatch default, resolved as each row is filed; `null`
+   * is None; a string names a published Workflow. Absent rather than a sentinel because a
+   * stored source written before this field reads as inherit with no migration, and JSON
+   * drops an `undefined` on the way back, so inherit round-trips through the whole-list PUT.
+   * The save route refuses a name that is not an active published Workflow, and archiving
+   * one a source names is refused while it does.
+   */
+  workflowId: z.string().min(1).max(500).nullable().optional(),
   priority: z.enum(TASK_PRIORITIES).nullable().default(null),
   labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
   /**
