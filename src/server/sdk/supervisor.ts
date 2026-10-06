@@ -148,6 +148,12 @@ export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
   /**
+   * The handle last adopted for each session id, kept past teardown while its process scans
+   * finish. A scan may record a lifetime only for its own handle, so a later adoption under
+   * the same id never inherits a predecessor's absence proof.
+   */
+  private lifetimeOwners = new Map<string, SdkSessionHandle>();
+  /**
    * The tail of each session's delivery chain.
    *
    * This is the pane lock's job without the pane: two turns delivered concurrently to one
@@ -572,6 +578,7 @@ export class SdkSupervisor {
       agentSessionId: durable.agentSessionId ?? null,
     });
     this.handles.set(registration.id, handle);
+    this.lifetimeOwners.set(registration.id, handle);
     if (input.stateHome) this.stateHomes.set(registration.id, input.stateHome);
     this.unfinishedTurns.set(
       registration.id,
@@ -1407,7 +1414,7 @@ export class SdkSupervisor {
         try {
           const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
           const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
-          if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+          if (!snapshot.unknownReason && process && this.lifetimeOwners.get(id) === handle && handle.recoveryProcessId === pid) {
             recordSdkSessionProcess(id, { pid, startMs: process.startMs });
           }
         } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
@@ -1469,9 +1476,6 @@ export class SdkSupervisor {
       outcome = "failed";
     } finally {
       if ((handle.recoveryProcessId ?? null) !== observedPid) captureProcess(handle.recoveryProcessId ?? null);
-      // Settled before the handle is released, which its guard checks: a stream that ends
-      // right after binding still leaves its observed lifetime behind.
-      await lifetime;
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);
@@ -1500,6 +1504,12 @@ export class SdkSupervisor {
           console.error(`[sdk] final eviction for ${id} failed:`, err);
         }
       }
+      // Detached, so neither teardown nor a `stop()` awaiting this pump waits on a fleet scan.
+      // A stream that ends right after binding still records its lifetime once the scan
+      // answers, because ownership is released only after the last scan has.
+      void lifetime.then(() => {
+        if (this.lifetimeOwners.get(id) === handle) this.lifetimeOwners.delete(id);
+      });
     }
   }
 

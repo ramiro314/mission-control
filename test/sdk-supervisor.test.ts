@@ -277,13 +277,55 @@ test("a slow process scan never holds the agent's identity back from the registr
     "the binding is published while the scan is still running");
   assert.equal(getSdkSessionProcess(session.id), null, "no lifetime is claimed before the scan answers");
 
-  // A stream that ends while its scan is outstanding still leaves the observed lifetime.
+  // Teardown does not wait on the scan, and the scan still records the observed lifetime.
   handle.end();
   await drain();
+  assert.equal(supervisor.handleFor(session.id), null, "the handle is released while the scan runs");
+  assert.equal(getSdkSession(session.id)?.status, "exited");
   releaseScan();
   await drain();
-  assert.equal(supervisor.handleFor(session.id), null);
   assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41101, startMs: 4110100 });
+});
+
+test("a session adopted under the same id never inherits its predecessor's late scan", async (t) => {
+  // Teardown no longer waits on a scan, so once the old card's linger evicts it, a new handle
+  // can be adopted under that id while the old driver's scan is still outstanding.
+  const first = fakeHandle();
+  let firstPid: number | null = null;
+  Object.defineProperty(first, "recoveryProcessId", { get: () => firstPid });
+  const fake = withFakeDriver(async () => first);
+  t.after(fake.restore);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const registry = new Registry();
+  let releaseScan!: () => void;
+  const scanHeld = new Promise<void>((resolve) => { releaseScan = resolve; });
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    await scanHeld;
+    return { processes: [{ pid: 41401, ppid: 1, tty: null, startRaw: "fixture", startMs: 4140100,
+      command: "fixture", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  firstPid = 41401;
+  first.push({ kind: "bound", agentSessionId: "agent-first", transcriptPath: null, modelId: null, pid: firstPid });
+  await drain();
+  first.push({ kind: "exited", reason: "done", resumable: false });
+  first.end();
+  await drain();
+  t.mock.timers.tick(9_000);
+  assert.equal(registry.getSession(session.id), undefined, "the old card has been evicted");
+
+  const second = fakeHandle();
+  supervisor.adopt({
+    registration: { id: session.id, agent: "claude", name: "replacement", cwd: START.cwd },
+    handle: second,
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
+  });
+  releaseScan();
+  await drain();
+  assert.ok(supervisor.handleFor(session.id), "the old pump did not tear the replacement down");
+  assert.equal(getSdkSessionProcess(session.id), null, "the replacement establishes its own lifetime");
+  second.end();
+  await drain();
 });
 
 test("a predecessor's scan that answers after a replacement never becomes the replacement's absence proof", async (t) => {
@@ -322,7 +364,7 @@ test("a predecessor's scan that answers after a replacement never becomes the re
   await drain();
 });
 
-test("a scan that fails or cannot answer after the stream ends leaves the lifetime unknown and still releases the handle", async (t) => {
+test("a scan that fails or cannot answer after the stream ends leaves the lifetime unknown and never holds teardown", async (t) => {
   for (const failure of ["throws", "unknown"] as const) {
     const handle = fakeHandle();
     let pid: number | null = null;
@@ -345,12 +387,11 @@ test("a scan that fails or cannot answer after the stream ends leaves the lifeti
     await drain();
     handle.end();
     await drain();
-    assert.ok(supervisor.handleFor(session.id), `${failure}: the handle waits for its scan`);
+    assert.equal(supervisor.handleFor(session.id), null, `${failure}: the handle does not wait for its scan`);
+    assert.equal(getSdkSession(session.id)?.status, "exited", `${failure}: the session settles`);
     releaseScan();
     await drain();
-    assert.equal(supervisor.handleFor(session.id), null, `${failure}: the handle is released`);
     assert.equal(getSdkSessionProcess(session.id), null, `${failure}: the lifetime stays unknown`);
-    assert.equal(getSdkSession(session.id)?.status, "exited", `${failure}: the session still settles`);
     fake.restore();
   }
 });
