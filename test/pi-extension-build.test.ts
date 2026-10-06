@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildPiExtension } from "../scripts/build-pi-extension.ts";
+import { buildPiExtension, buildPiExtensionForHost } from "../scripts/build-pi-extension.ts";
+import { harnessUnsupportedWhy } from "../src/shared/harness-capabilities.ts";
 import { piExtensionPath } from "../src/server/config.ts";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -233,4 +234,10 @@ test("different process builds cannot interleave integration publication", { tim
     for (const run of [first, second]) if (run) { run.child.kill(); await run.completed; run.outputLines.close(); }
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("a host where Pi is unsupported skips the build and says why", async () => {
+  const lines: string[] = [];
+  await buildPiExtensionForHost("win32", line => lines.push(line));
+  assert.deepEqual(lines, [`Skipping the Pi integration build. ${harnessUnsupportedWhy("pi", "win32")}`]);
 });
