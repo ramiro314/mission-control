@@ -216,22 +216,24 @@ and about 45 s is setup.</li>
   <rect class="new ext" x="20" y="550" width="230" height="56" rx="8"/><text x="32" y="572" class="small">GitHub API: merged PR's</text><text x="32" y="590" class="small">latest green run, tested-tree</text>
   <path d="M115 484 L115 550" marker-end="url(#a)"/>
   <rect x="250" y="380" width="170" height="40" rx="8"/><text x="262" y="406">dependencies 26</text>
+  <rect x="250" y="490" width="170" height="40" rx="8"/><text x="262" y="510">dependencies 24</text><text x="262" y="525" class="small">always runs</text>
   <rect x="470" y="370" width="220" height="36" rx="8"/><text x="482" y="394">unit 26 x 6</text>
   <rect class="new" x="470" y="414" width="220" height="36" rx="8"/><text x="482" y="438">build and smoke 26</text>
-  <rect x="470" y="462" width="220" height="70" rx="8"/><text x="482" y="483">dependencies 24, gates,</text><text x="482" y="503">unit 24, build 24, e2e</text><text x="482" y="522" class="small">skipped if tree_reused</text>
+  <rect x="470" y="462" width="220" height="70" rx="8"/><text x="482" y="483">gates, unit 24,</text><text x="482" y="503">build and smoke 24, e2e</text><text x="482" y="522" class="small">skipped if tree_reused</text>
   <rect x="470" y="540" width="220" height="36" rx="8"/><text x="482" y="564">docs checks</text>
   <rect x="740" y="440" width="130" height="40" rx="8"/><text x="752" y="466">flake report</text>
   <rect x="900" y="440" width="120" height="44" rx="8"/><text x="912" y="467">CI result</text>
   <path d="M210 455 L250 404" marker-end="url(#a)"/>
   <path d="M420 396 L470 388" marker-end="url(#a)"/><path d="M420 404 L470 430" marker-end="url(#a)"/>
-  <path d="M210 466 L470 496" marker-end="url(#a)"/>
-  <path d="M210 474 C320 520 400 556 470 558" marker-end="url(#a)"/>
+  <path d="M210 470 L250 504" marker-end="url(#a)"/><path d="M420 504 L470 498" marker-end="url(#a)"/>
+  <path d="M420 516 C440 540 450 556 470 558" marker-end="url(#a)"/>
   <path d="M690 388 C720 400 730 430 750 440" marker-end="url(#a)"/><path d="M690 498 L740 466" marker-end="url(#a)"/>
   <path d="M870 460 L900 462" marker-end="url(#a)"/>
   <text x="20" y="630" class="small">Any doubt (API error, no artifact, docs-only PR run, tree mismatch) runs everything. Tags and manual runs never reuse.</text>
 </svg></div>
 <p>On a pull request, Node 26 jobs skip. On a push to <code>main</code>, the Node 26 unit matrix and its
-build-and-smoke always run. The Node 24 suite, <code>gates</code> and e2e run unless the tree was reused.
+build-and-smoke always run, and so do <code>dependencies-node-24</code> and <code>docs checks</code>. <code>gates</code>,
+<code>unit-node-24</code>, <code>build-smoke-node-24</code> and e2e run unless the tree was reused.
 Tags and <code>workflow_dispatch</code> run everything, as today. Docs-only PRs behave exactly as they do
 now.</p>
 <h3>1. Node 26 runs only on push to <code>main</code> (R4, decisions 3 and 8)</h3>
@@ -279,14 +281,22 @@ files. The result is deterministic for a given file set and timings file.</li>
 test file appears exactly once, for any file set, any timings (including empty or stale ones)
 and any shard total. A stale timings file only worsens balance. It never drops a test.</li>
 <li><strong>Regeneration</strong> is manual: rerun <code>npm run test:timings -- &lt;run-id&gt;</code> when shard spread drifts,
-and commit the result. The implementing PR commits the first file.</li>
+and commit the result.</li>
+<li><strong>Bootstrap order for the first timings file.</strong> No existing run uploads per-shard JUnit (today
+the action uploads only <code>flake-report-*</code>), so the implementing branch produces its own input:
+(1) land the JUnit upload and the partitioner with an empty <code>test/shard-timings.json</code>, which the
+invariant already covers (every file gets the default weight, so shards are balanced by file
+count); (2) let CI run on the branch; (3) run <code>npm run test:timings -- &lt;that run-id&gt;</code> and commit
+the generated file; (4) only then pick N and M (section 5) and take the &quot;after&quot; measurements.
+The implementing PR therefore commits the first real timings file.</li>
 <li>e2e keeps Playwright&#39;s <code>--shard</code> (decision 12).</li>
 </ul>
 <h3>5. Shard counts from a concurrency budget (decision 13)</h3>
 <p>The rule: <strong>one PR run peaks at no more than 20 concurrent jobs.</strong> At peak a PR runs <code>gates</code>,
 <code>docs checks</code>, <code>build-smoke-node-24</code>, N unit shards and M e2e shards, so <code>3 + N + M &lt;= 20</code>.
 <code>changes</code> and <code>dependencies-node-24</code> finish before the shards start.</p>
-<p>During implementation, N and M are picked from the balanced unit timings and the measured e2e
+<p>During implementation, after step 4 of the bootstrap order in section 4, N and M are picked
+from the balanced unit timings and the measured e2e
 step times so that the slowest shard of each fits the 8-minute target. A starting estimate:
 N = 4 (about 3.5 min each once balanced) and M = 13 (about 280 s average e2e test time). The
 final numbers and the arithmetic go in the ci.yml comment that already explains the current
@@ -318,8 +328,10 @@ method does not matter.</p>
 merged PR&#39;s head. That PR&#39;s code, <code>ci.yml</code> included, is in the merged tree and was reviewed.
 Reuse therefore trusts nothing the full <code>main</code> run would not have trusted.</p>
 <p><strong>What skips.</strong> <code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> gain
-<code>needs.changes.outputs.tree_reused != &#39;true&#39;</code> beside their docs-only condition. <code>docs checks</code>,
-<code>flake report</code>, <code>CI result</code> and every Node 26 job still run.</p>
+<code>needs.changes.outputs.tree_reused != &#39;true&#39;</code> beside their docs-only condition. Nothing else
+skips. <code>dependencies-node-24</code> always runs on a <code>main</code> push, because <code>docs checks</code> needs it and
+<code>CI result</code> needs both, and neither is in <code>SKIPPABLE</code>. <code>docs checks</code>, <code>flake report</code>,
+<code>CI result</code> and every Node 26 job also still run.</p>
 <h3>7. <code>CI result</code> keeps the skill assets verbatim (decision 15)</h3>
 <p>The <code>Detect docs-only change</code> step body and the <code>CI result</code> step body stay byte-identical to
 <code>skills/docs-only-ci/assets/</code>, so <code>test/docs-only-ci-template.test.ts</code> keeps passing unchanged.

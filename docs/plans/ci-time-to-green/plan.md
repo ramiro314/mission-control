@@ -91,13 +91,16 @@ flowchart LR
     c2 --> d26[dependencies node 26]
     d26 --> u26[unit node 26 x 6]
     d26 --> bs26[build and smoke node 26]
-    c2 -->|tree differs or any doubt| full[Node 24 suite, gates, e2e]
-    c2 -->|tree reused| skip[Node 24 suite, gates, e2e skipped]
+    c2 --> d24m[dependencies node 24, always runs]
+    d24m --> dcm[docs checks]
+    d24m -->|tree differs or any doubt| full[gates, unit node 24, build and smoke node 24, e2e]
+    d24m -->|tree reused| skip[gates, unit node 24, build and smoke node 24, e2e: skipped]
   end
 ```
 
 On a pull request, Node 26 jobs skip. On a push to `main`, the Node 26 unit matrix and its
-build-and-smoke always run. The Node 24 suite, `gates` and e2e run unless the tree was reused.
+build-and-smoke always run, and so do `dependencies-node-24` and `docs checks`. `gates`,
+`unit-node-24`, `build-smoke-node-24` and e2e run unless the tree was reused.
 Tags and `workflow_dispatch` run everything, as today. Docs-only PRs behave exactly as they do
 now.
 
@@ -151,7 +154,14 @@ gets that: `build` starts with `build:native`.
   test file appears exactly once, for any file set, any timings (including empty or stale ones)
   and any shard total. A stale timings file only worsens balance. It never drops a test.
 - **Regeneration** is manual: rerun `npm run test:timings -- <run-id>` when shard spread drifts,
-  and commit the result. The implementing PR commits the first file.
+  and commit the result.
+- **Bootstrap order for the first timings file.** No existing run uploads per-shard JUnit (today
+  the action uploads only `flake-report-*`), so the implementing branch produces its own input:
+  (1) land the JUnit upload and the partitioner with an empty `test/shard-timings.json`, which the
+  invariant already covers (every file gets the default weight, so shards are balanced by file
+  count); (2) let CI run on the branch; (3) run `npm run test:timings -- <that run-id>` and commit
+  the generated file; (4) only then pick N and M (section 5) and take the "after" measurements.
+  The implementing PR therefore commits the first real timings file.
 - e2e keeps Playwright's `--shard` (decision 12).
 
 ### 5. Shard counts from a concurrency budget (decision 13)
@@ -160,7 +170,8 @@ The rule: **one PR run peaks at no more than 20 concurrent jobs.** At peak a PR 
 `docs checks`, `build-smoke-node-24`, N unit shards and M e2e shards, so `3 + N + M <= 20`.
 `changes` and `dependencies-node-24` finish before the shards start.
 
-During implementation, N and M are picked from the balanced unit timings and the measured e2e
+During implementation, after step 4 of the bootstrap order in section 4, N and M are picked
+from the balanced unit timings and the measured e2e
 step times so that the slowest shard of each fits the 8-minute target. A starting estimate:
 N = 4 (about 3.5 min each once balanced) and M = 13 (about 280 s average e2e test time). The
 final numbers and the arithmetic go in the ci.yml comment that already explains the current
@@ -198,8 +209,10 @@ merged PR's head. That PR's code, `ci.yml` included, is in the merged tree and w
 Reuse therefore trusts nothing the full `main` run would not have trusted.
 
 **What skips.** `gates`, `unit-node-24`, `build-smoke-node-24` and `e2e` gain
-`needs.changes.outputs.tree_reused != 'true'` beside their docs-only condition. `docs checks`,
-`flake report`, `CI result` and every Node 26 job still run.
+`needs.changes.outputs.tree_reused != 'true'` beside their docs-only condition. Nothing else
+skips. `dependencies-node-24` always runs on a `main` push, because `docs checks` needs it and
+`CI result` needs both, and neither is in `SKIPPABLE`. `docs checks`, `flake report`,
+`CI result` and every Node 26 job also still run.
 
 ### 7. `CI result` keeps the skill assets verbatim (decision 15)
 
