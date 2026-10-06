@@ -24,6 +24,7 @@ import {
   skillCommand,
 } from "@shared/harness-capabilities.ts";
 import { hostPlatform } from "./platform/host.ts";
+import { enableWorktreeLongPaths } from "./git/long-paths.ts";
 import {
   PIPELINE_ENGINEER_SKILL,
   pipelineRunKeyOf,
@@ -2444,6 +2445,8 @@ export async function provisionWorktree(
    */
   slot = 0,
   manager?: WorktreeManager,
+  /** The host whose worktree git config applies (`core.longpaths` on win32). Injected so a test can ask about win32. */
+  platform: NodeJS.Platform = hostPlatform(),
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -2499,6 +2502,8 @@ export async function provisionWorktree(
   // mixing the two can hold a branch only for its Git fallback repos. The manifest reads the
   // provisioned branches rather than assuming a shared name.
   const branch = `harness/${slug}-${shortId}`;
+  const longPaths = await enableWorktreeLongPaths(repoRoot, run, platform);
+  if (longPaths && !longPaths.ok) throw new Error(longPaths.reason);
   const add = await run(
     "git",
     ["-C", repoRoot, "worktree", "add", path, "-b", branch, exactBase],

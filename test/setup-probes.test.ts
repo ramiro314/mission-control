@@ -13,6 +13,7 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupDependencyIdsFor,
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/setup/index.ts";
@@ -36,6 +37,9 @@ function conductor(found = true): PipelineProbe {
 
 function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
   return {
+    // Pinned, so a win32 runner reads the same rows as every other host. The win32-only rows
+    // have their own fixture in `setup-windows-probes.test.ts`.
+    hostPlatform: () => "darwin",
     environment: {
       homeDir: "/home/operator",
       readText: async () => ({ ok: false, missing: true, reason: "missing" }),
@@ -74,7 +78,8 @@ async function probe(id: SetupDependencyId, overrides: Partial<SetupDeps> = {}) 
 }
 
 test("every dependency probe can report satisfied evidence", async () => {
-  for (const id of SETUP_DEPENDENCY_IDS) {
+  // The win32-only probes prove this against a Windows fixture in `setup-windows-probes.test.ts`.
+  for (const id of setupDependencyIdsFor("darwin")) {
     const status = await probe(id);
     assert.equal(status.state, "satisfied", id);
     assert.ok("evidence" in status && status.evidence.length > 0, id);
@@ -369,7 +374,7 @@ test("one thrown probe becomes its own unknown row", async () => {
   const view = await setupChecksView(deps({
     conductorProbe: async () => { throw new Error("broken probe"); },
   }));
-  assert.equal(view.rows.length, SETUP_DEPENDENCY_IDS.length + 1);
+  assert.equal(view.rows.length, setupDependencyIdsFor("darwin").length + 1);
   const row = view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "ai-conductor");
   assert.equal(row?.status.state, "unknown");
   assert.match(row?.status.state === "unknown" ? row.status.why : "", /broken probe/);
@@ -390,7 +395,7 @@ test("dependency rows project their catalog requirement without adding a second 
   const view = await setupChecksView(deps());
   const familyIndexes = view.rows.map((row) => SETUP_FAMILY_IDS.indexOf(row.family));
   assert.deepEqual(familyIndexes, [...familyIndexes].sort((a, b) => a - b), "rendered rows remain family-grouped even though stable ids append");
-  for (const id of SETUP_DEPENDENCY_IDS) {
+  for (const id of setupDependencyIdsFor("darwin")) {
     const row = view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === id);
     assert.equal(row?.requirement, SETUP_DEPENDENCY_INFO[id].requirement, id);
   }

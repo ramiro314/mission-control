@@ -32,6 +32,12 @@ export const SETUP_DEPENDENCY_IDS = [
   "iterm",
   "herdr",
   "node-runtime",
+  "git-for-windows",
+  "windows-developer-mode",
+  "windows-long-paths",
+  "npm-script-shell",
+  "vs-build-tools",
+  "python3",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -44,6 +50,7 @@ export const SETUP_FAMILY_IDS = [
   "extensions",
   "pipelines",
   "runtime",
+  "windows",
 ] as const;
 
 export type SetupFamilyId = (typeof SETUP_FAMILY_IDS)[number];
@@ -52,6 +59,12 @@ export interface SetupFamilyInfo {
   id: SetupFamilyId;
   label: string;
   description: string;
+  /**
+   * Only these host platforms check and report this family's rows; absent means every host.
+   * The one owner of a row's host scope (`setupDependencyIdsFor`), so a check added to the
+   * family is scoped with it. The rail leaves such a family out while it has no rows.
+   */
+  hosts?: readonly string[];
 }
 
 export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
@@ -84,6 +97,12 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     id: "runtime",
     label: "Runtime",
     description: "The system Node.js runtime used by app updates and Node-based tools.",
+  },
+  windows: {
+    id: "windows",
+    label: "Windows",
+    description: "Windows prerequisites: Git Bash, symlinks, long paths, npm scripts, and the toolchain that builds native addons.",
+    hosts: ["win32"],
   },
 };
 
@@ -160,6 +179,10 @@ export type SetupRemedy =
   | { kind: "command"; argv: readonly string[]; note: string }
   | { kind: "provider-installer"; provider: PipelineProviderId }
   | { kind: "skill"; command: string }
+  // A command the operator runs themselves, shown to copy and never opened by Mission
+  // Control. The Windows fixes need an administrator shell or a GUI, and their programs are
+  // outside the closed install grammar in `server/setup/install.ts`.
+  | { kind: "manual-command"; command: string; note: string }
   // The one remedy that is not an installation. It carries no argv for the same reason
   // `provider-installer` does not: the browser names the service, and the daemon owns how
   // that service is started.
@@ -403,7 +426,84 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
     },
   },
+  "git-for-windows": {
+    id: "git-for-windows",
+    label: "Git for Windows",
+    family: "windows",
+    requirement: "required",
+    enables: "Without it, Mission Control cannot manage repositories, and Claude Code has no Git Bash to run commands in.",
+    remedy: {
+      kind: "manual-command",
+      command: "winget install --id Git.Git -e --source winget",
+      note: "Install Git for Windows with winget, then press Re-check.",
+    },
+  },
+  "windows-developer-mode": {
+    id: "windows-developer-mode",
+    label: "Developer Mode",
+    family: "windows",
+    requirement: "required",
+    enables: "Without it, Windows refuses the symbolic links Mission Control uses to publish skills and extensions.",
+    remedy: {
+      kind: "manual-command",
+      command: "start ms-settings:developers",
+      note: "Open Settings > System > For developers, turn on Developer Mode, then press Re-check.",
+    },
+  },
+  "windows-long-paths": {
+    id: "windows-long-paths",
+    label: "Long paths",
+    family: "windows",
+    requirement: "recommended",
+    enables: "Without it, files deeper than 260 characters fail to check out or build inside managed worktrees.",
+    remedy: {
+      kind: "manual-command",
+      command: "reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f",
+      note: "Run this in a terminal opened as administrator, then press Re-check.",
+    },
+  },
+  "npm-script-shell": {
+    id: "npm-script-shell",
+    label: "npm script shell",
+    family: "windows",
+    requirement: "required",
+    enables: "Without it, npm runs package scripts through cmd.exe, and Mission Control's build, dev, and test scripts fail.",
+    remedy: {
+      kind: "manual-command",
+      command: "npm config set script-shell \"C:\\Program Files\\Git\\bin\\bash.exe\"",
+      note: "Point npm at Git Bash. If Git for Windows is installed elsewhere, use that bash.exe instead.",
+    },
+  },
+  "vs-build-tools": {
+    id: "vs-build-tools",
+    label: "Visual Studio Build Tools (C++)",
+    family: "windows",
+    requirement: "required",
+    enables: "Without the C++ workload, node-gyp cannot build Mission Control's native addons, and the daemon cannot take state ownership.",
+    remedy: {
+      kind: "manual-command",
+      command: "winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override \"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"",
+      note: "Install Visual Studio Build Tools with the Desktop development with C++ workload, then press Re-check.",
+    },
+  },
+  python3: {
+    id: "python3",
+    label: "Python 3",
+    family: "windows",
+    requirement: "required",
+    enables: "Without it, node-gyp cannot build Mission Control's native addons.",
+    remedy: {
+      kind: "manual-command",
+      command: "winget install --id Python.Python.3.13 -e",
+      note: "Install Python 3 with winget, then press Re-check.",
+    },
+  },
 };
+
+/** The dependency ids `host` checks and reports, in catalog order, scoped by their family. */
+export function setupDependencyIdsFor(host: string): SetupDependencyId[] {
+  return SETUP_DEPENDENCY_IDS.filter((id) => SETUP_FAMILY_INFO[SETUP_DEPENDENCY_INFO[id].family].hosts?.includes(host) ?? true);
+}
 
 export type SetupStatus =
   | { state: "satisfied"; evidence: string; source?: string }

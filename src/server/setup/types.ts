@@ -40,6 +40,8 @@ export interface SetupDeps {
   refreshPath?(): Promise<void>;
   executableDiagnostic?(id: ExecutableId): Promise<{ path: string; source: string } | null>;
   environment: EnvironmentDeps;
+  /** The host whose rows are checked (`platform/host.ts`); absent reads the real host. */
+  hostPlatform?(): NodeJS.Platform;
   agentBin(agent: AgentType): string;
   /** The harness's host refusal (`harnessUnsupportedWhy`), which must win before installation probing. */
   agentUnsupported?(agent: AgentType): string | null;
