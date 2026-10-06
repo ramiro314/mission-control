@@ -169,6 +169,9 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       unitTestTimeout: stepTimeout(unitAction, "Test"),
       e2eWorkerVariable: jobValue("e2e", "MISSION_E2E_WORKERS"),
       e2eShards: shardList("e2e"),
+      // ci.yml's "Shard budget": `gates`, `docs checks` and `build-smoke-node-24` beside every
+      // Node 24 unit and E2E shard, against GitHub Free's 20 concurrent jobs per account.
+      pullRequestPeakJobs: 3 + (shardList("unit-node-24")?.length ?? 0) + (shardList("e2e")?.length ?? 0),
       e2eTestTimeout: stepTimeout(jobs.e2e, "End-to-end tests"),
       localUnitWorkers:
         testCommand.match(
@@ -234,9 +237,9 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       ],
       cacheActionVersions: ["v5", "v5", "v5", "v5"],
       unitWorkers: ["'4'", "'4'"],
-      unitShardTotals: ["'6'", "'6'"],
+      unitShardTotals: ["'3'", "'6'"],
       unitShards: [
-        [1, 2, 3, 4, 5, 6],
+        [1, 2, 3],
         [1, 2, 3, 4, 5, 6],
       ],
       unitActionUses: [
@@ -244,11 +247,12 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         "./.github/actions/run-unit-shard",
       ],
       unitActionNodes: ["'24'", "'26'"],
-      unitActionTotals: ["6", "6"],
+      unitActionTotals: ["3", "6"],
       unitShardEnv: "${{ inputs.shard }}/${{ inputs.shard-total }}",
       unitTestTimeout: null,
       e2eWorkerVariable: null,
-      e2eShards: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      e2eShards: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      pullRequestPeakJobs: 20,
       e2eTestTimeout: null,
       localUnitWorkers: "6",
       unitShardOption: "${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}",

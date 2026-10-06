@@ -136,8 +136,8 @@ MISSION_TEST_CONCURRENCY=4 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI reports thirty-six non-package jobs on a push to `main`, a tag or a manual run, plus the
-"Flaky tests" check run that `flake report` publishes. A pull request runs twenty-eight of them:
+CI reports thirty-two non-package jobs on a push to `main`, a tag or a manual run, plus the
+"Flaky tests" check run that `flake report` publishes. A pull request runs twenty-four of them:
 the eight Node.js 26 jobs (`dependencies-node-26`, six `unit-node-26` shards and
 `build-smoke-node-26`) run only when the event is not `pull_request`, so Node.js 26 is checked on
 every merge to `main` rather than on every pull request. `changes` decides whether a pull request
@@ -159,8 +159,11 @@ Node.js 24 unit shards, `build-smoke-node-24` and E2E depend only on the Node.js
 Node.js 26 unit shards and `build-smoke-node-26` depend only on the Node.js 26 producer, so a
 failure in one release does not hide checks for the other. `npm run build` and `npm run smoke`
 run once per release, in its `build-smoke` job, not in the unit shards. Unit tests, build and
-smoke, and fifteen E2E shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request
-jobs remain isolated from shared self-hosted infrastructure. The shared unit steps live
+smoke, and E2E shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request
+jobs remain isolated from shared self-hosted infrastructure. A pull request's run peaks at twenty
+concurrent jobs, GitHub Free's per-account cap: `gates`, `docs checks`, `build-smoke-node-24`,
+three Node.js 24 unit shards and fourteen E2E shards. The "Shard budget" comment in `ci.yml`
+holds the arithmetic, and `test/init-script.test.ts` pins it. The shared unit steps live
 in `.github/actions/run-unit-shard/action.yml`, and each unit shard takes its files from
 `scripts/unit-shard.mjs`, balanced by the generated `test/shard-timings.json` (regenerate it with
 `npm run test:timings -- <run-id>`; see [flaky tests in CI](docs/flaky-tests.md)). Unit and E2E shards rerun or read retries for
