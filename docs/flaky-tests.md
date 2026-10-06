@@ -63,9 +63,10 @@ The report action, `.github/actions/mission-flake-report/`, runs in two modes.
 
 **`mode: rerun`**, a step in each test job:
 
-- **Unit shards** (`.github/actions/run-unit-shard/action.yml`). `npm test` runs the
-  `test:run` script, which writes JUnit XML when `MISSION_TEST_JUNIT` names a path, and the shard
-  records its exit code instead of failing. The action reads the results, reruns only the failed
+- **Unit shards** (`.github/actions/run-unit-shard/action.yml`). The shard provisions once
+  with `npm run pretest`, then calls the `test:run` script directly (so `posttest` does not
+  repeat files the shard already ran). `test:run` writes JUnit XML when `MISSION_TEST_JUNIT`
+  names a path, and the shard records its exit code instead of failing. The action reads the results, reruns only the failed
   files once with its `rerun-command` template (`test:run` again, over the failed files), and
   compares. `test:run` is the one owner of how this repository gets JUnit out of `node --test`. `{files}` becomes one argument per failed file and
   `{junit}` the rerun's results path, the same template contract as the
