@@ -166,16 +166,36 @@ test("e2e tests the dist build-windows smoked instead of building its own", () =
   const e2e = WINDOWS.get("e2e-windows")!;
   assert.ok(!e2e.includes("npm run build"), "no e2e shard builds dist itself");
   assert.ok(needs(e2e).includes("build-windows"));
-  const upload = steps(build).find((s) => s.includes("uses: actions/upload-artifact@"))!;
-  assert.ok(upload, "build-windows uploads dist");
-  assert.match(upload, /^ {10}name: dist-windows$/m);
-  for (const step of steps(build).filter((s) => /^ {6}- name: (Pack|Upload) dist for E2E$/m.test(s))) {
+
+  // Each link of smoke -> pack -> upload -> download -> unpack -> e2e, by name and in order. A
+  // `steps.<id>` that names no step is empty, so a broken link would skip every shard's tests,
+  // and these jobs are allowed to fail, so nothing else would notice.
+  const chain = (body: string, names: string[]) => {
+    const all = steps(body);
+    const found = names.map((name) => all.findIndex((s) => s.startsWith(`      - name: ${name}\n`)));
+    found.forEach((index, i) => assert.ok(index >= 0, `the job has a "${names[i]}" step`));
+    assert.deepEqual([...found].sort((x, y) => x - y), found, `${names.join(", ")} run in that order`);
+    return found.map((index) => all[index]!);
+  };
+  const [smoke, pack, upload] = chain(build, ["Smoke the built bundles", "Pack dist for E2E", "Upload dist for E2E"]);
+  assert.match(smoke!, /^ {8}id: smoke$/m);
+  for (const step of [pack!, upload!]) {
     assert.match(step, /^ {8}if: steps\.smoke\.outcome == 'success'$/m, "only a bundle that booted is shared");
   }
-  const download = steps(e2e).find((s) => s.includes("uses: actions/download-artifact@"))!;
-  assert.match(download, /^ {10}name: dist-windows$/m);
-  const tests = steps(e2e).find((s) => s.includes("        id: e2e\n"))!;
-  assert.match(tests, /^ {8}if: steps\.unpack\.outcome == 'success'$/m, "e2e runs only on the unpacked dist");
+  assert.match(pack!, /^ {8}run: tar -cf dist\.tar dist$/m);
+  assert.match(upload!, /^ {8}uses: actions\/upload-artifact@v4$/m);
+  assert.match(upload!, /^ {10}name: dist-windows$/m);
+  assert.match(upload!, /^ {10}path: dist\.tar$/m);
+
+  const [download, unpack, tests] = chain(e2e, ["Download dist", "Unpack dist", "End-to-end tests"]);
+  assert.match(download!, /^ {8}id: download$/m);
+  assert.match(download!, /^ {8}uses: actions\/download-artifact@v4$/m);
+  assert.match(download!, /^ {10}name: dist-windows$/m);
+  assert.match(unpack!, /^ {8}id: unpack$/m);
+  assert.match(unpack!, /^ {8}if: steps\.download\.outcome == 'success'$/m, "no artifact, nothing to unpack");
+  assert.match(unpack!, /^ {8}run: tar -xf dist\.tar$/m, "unpacks the tarball the pack step made");
+  assert.match(tests!, /^ {8}id: e2e$/m);
+  assert.match(tests!, /^ {8}if: steps\.unpack\.outcome == 'success'$/m, "e2e runs only on the unpacked dist");
 });
 
 test("every Windows job turns off Defender real-time scanning before checkout", () => {
