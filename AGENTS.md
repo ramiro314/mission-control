@@ -142,7 +142,12 @@ every merge to `main` rather than on every pull request. `changes` decides wheth
 touched only `docs/`; on such a pull request `gates`, the Node.js 24 unit matrix,
 `build-smoke-node-24` and E2E skip, while `docs checks` and `flake report` still run, and
 `CI result` (job id `ci-result`, the one check branch protection should require) passes only
-when every job it needs succeeded or was one of those four skipped. It needs every job that runs
+when every job it needs succeeded or was one of those four skipped. The same four skip on a push
+to `main` whose tree was already tested: every pull request run uploads a `tested-tree` artifact,
+and `changes` sets `tree_reused=true` only when the pushed commit maps to exactly one merged pull
+request whose newest CI run for its head succeeded, was not docs-only, and tested the pushed
+commit's tree (`scripts/ci-tree-reuse.sh`; any doubt runs everything, and tags and manual runs
+never reuse). It needs every job that runs
 on a pull request, so neither `package` nor the Node.js 26 jobs are among them; a Node.js 26
 failure on `main` turns that workflow run red instead. Two independent `dependencies` checks use
 GitHub-hosted `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js

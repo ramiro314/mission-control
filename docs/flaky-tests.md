@@ -93,7 +93,9 @@ Wait for CI passing, since it requires a "Flaky tests" check on every run. See t
 The Node 26 unit shards run only on pushes to `main`, tags and manual runs, so on every pull
 request they are skipped and upload no reports, and "Flaky tests" covers the Node 24 shards and
 E2E alone. `flake report` still needs them and runs after the skip the same way. A test that
-flakes only on Node 26 is reported from the `main` run, against the merged commit.
+flakes only on Node 26 is reported from the `main` run, against the merged commit. When that
+push reuses the tree its pull request already tested, the Node 24 shards and E2E skip there
+too, and "Flaky tests" on the merged commit covers the Node 26 shards alone.
 
 ## The "Flaky tests" check
 

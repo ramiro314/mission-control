@@ -172,9 +172,13 @@ The full list, with each feature's contracts and surfaces, is the
   `package.json`.
 - **CI time-to-green**: in `.github/workflows/ci.yml`, the Node 26 jobs' `if:` that keeps them
   off pull requests, the `build-smoke-node-24` and `build-smoke-node-26` jobs, and the missing
-  `Build` and `Smoke the built bundles` steps in `.github/actions/run-unit-shard/action.yml`. An
-  upstream change that adds build or smoke back to the shard, or adds a Node 26 job, needs the
-  same treatment.
+  `Build` and `Smoke the built bundles` steps in `.github/actions/run-unit-shard/action.yml`,
+  and tree reuse on `main`: the `changes` job's `actions: read` and `pull-requests: read`, its
+  `Record tested tree`, `Upload tested tree` and `Detect reused tree` steps and `tree_reused`
+  output, the `tree_reused` clause in the gated jobs' `if:` and `CI result`'s `DOCS_ONLY` env,
+  `scripts/ci-tree-reuse.sh` and `test/ci-tree-reuse.test.ts`. An upstream change that adds
+  build or smoke back to the shard, or adds a Node 26 job, needs the same treatment, and an
+  upstream job that joins the gated four takes the `tree_reused` clause too.
 - **Shape tasks**: the `shape` task kind, **Shape this**, `src/server/plans/shape.ts`, and
   `skills/grill/`.
 - **Tickets**: `skills/tickets/`, ticket creation and adoption through `create_task`, and
