@@ -286,6 +286,75 @@ test("a slow process scan never holds the agent's identity back from the registr
   assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41101, startMs: 4110100 });
 });
 
+test("a predecessor's scan that answers after a replacement never becomes the replacement's absence proof", async (t) => {
+  // Scans run off the event path, so one for pid A can still be outstanding when the driver
+  // reports pid B. A's answer must be discarded rather than recorded under B.
+  const handle = fakeHandle();
+  let pid: number | null = null;
+  Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const held: Array<() => void> = [];
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    await new Promise<void>((resolve) => held.push(resolve));
+    return { processes: [41201, 41202].map((p) => ({ pid: p, ppid: 1, tty: null, startRaw: "fixture",
+      startMs: p * 100, command: "fixture", agent: null, agentNative: false })),
+    unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  pid = 41201;
+  handle.push({ kind: "bound", agentSessionId: "agent-a", transcriptPath: null, modelId: null, pid });
+  await drain();
+  assert.equal(held.length, 1, "pid A's scan is outstanding");
+  pid = 41202;
+  handle.push({ kind: "state", state: "working", activity: null });
+  await drain();
+
+  held[0]!();
+  await drain();
+  assert.equal(getSdkSessionProcess(session.id), null, "A's lifetime is never recorded for B");
+  assert.equal(held.length, 2, "B's own scan runs after A's");
+  held[1]!();
+  await drain();
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41202, startMs: 4120200 });
+  handle.end();
+  await drain();
+});
+
+test("a scan that fails or cannot answer after the stream ends leaves the lifetime unknown and still releases the handle", async (t) => {
+  for (const failure of ["throws", "unknown"] as const) {
+    const handle = fakeHandle();
+    let pid: number | null = null;
+    Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+    const fake = withFakeDriver(async () => handle);
+    t.after(fake.restore);
+    const registry = new Registry();
+    let releaseScan!: () => void;
+    const scanHeld = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+      await scanHeld;
+      if (failure === "throws") throw new Error("process inventory unavailable");
+      return { processes: [{ pid: 41301, ppid: 1, tty: null, startRaw: "fixture", startMs: 4130100,
+        command: "fixture", agent: null, agentNative: false }], unknownReason: "fixture inventory incomplete",
+      cwdScopePids: [], completedCollectorPids: [] };
+    } });
+    const session = await supervisor.start(START);
+    pid = 41301;
+    handle.push({ kind: "bound", agentSessionId: `agent-${failure}`, transcriptPath: null, modelId: null, pid });
+    await drain();
+    handle.end();
+    await drain();
+    assert.ok(supervisor.handleFor(session.id), `${failure}: the handle waits for its scan`);
+    releaseScan();
+    await drain();
+    assert.equal(supervisor.handleFor(session.id), null, `${failure}: the handle is released`);
+    assert.equal(getSdkSessionProcess(session.id), null, `${failure}: the lifetime stays unknown`);
+    assert.equal(getSdkSession(session.id)?.status, "exited", `${failure}: the session still settles`);
+    fake.restore();
+  }
+});
+
 test("Codex SDK sessions carry their synthetic identity into Mission MCP", async () => {
   const firstHandle = fakeHandle();
   const secondHandle = fakeHandle();
