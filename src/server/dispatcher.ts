@@ -1077,13 +1077,13 @@ export class Dispatcher {
     }
   }
 
-  /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
   /** Throws the platform's reason, followed by `fix`, when it has no terminal runtime. */
   private refuseTerminalRuntime(fix: string): void {
     const why = runtimeUnavailableWhy("terminal", this.deps.platform);
     if (why) throw new Error(`${why} ${fix}`);
   }
 
+  /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
   private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
     if (task.extraRepos.length > 0) {
       throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");

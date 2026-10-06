@@ -22,9 +22,17 @@ const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { discover } = await import("../src/server/discovery/correlate.ts");
 const { discoveryFor, startPoller } = await import("../src/server/discovery/poller.ts");
 const { runtimeUnavailableWhy } = await import("../src/server/platform/session-runtimes.ts");
+const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
+const { startDiscoveryAfterSdkRestore } = await import("../src/server/sdk/startup.ts");
+const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
+const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
+type SdkEvent = import("../src/server/harness/types.ts").SdkEvent;
+type SdkHandle = import("../src/server/harness/types.ts").SdkSessionHandle;
+type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
 
 after(() => {
   rmSync(home, { recursive: true, force: true });
@@ -185,4 +193,101 @@ test("a terminal-hosted Pipeline dispatch on win32 is refused with a reason befo
   assert.match(task?.error ?? "", /Switch the Pipelines launch runtime to Agent SDK/);
   assert.equal(spawned, false);
   assert.equal(task?.homeName ?? null, null);
+});
+
+/** An embedded driver that stays open until `end`, so a restored session stays live. */
+function idleDriver() {
+  let finish: () => void = () => {};
+  const ended = new Promise<void>((resolve) => (finish = resolve));
+  const handle = {
+    events: {
+      [Symbol.asyncIterator]: () => ({
+        next: async (): Promise<IteratorResult<SdkEvent>> => {
+          await ended;
+          return { value: undefined, done: true };
+        },
+      }),
+    },
+    async send() {
+      return "started" as const;
+    },
+    async sendIfIdle() {
+      return "started" as const;
+    },
+    async interrupt() {},
+    async answer() {},
+    setPermissionMode: null,
+    setEffort: null,
+    setModel: null,
+    clearContext: null,
+    async stop() {
+      finish();
+    },
+  };
+  return { handle: handle as unknown as SdkHandle, end: finish };
+}
+
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(check(), "condition never held");
+}
+
+test("on win32 a restarted daemon restores its SDK session, rebinds the task, and completes it", async (t) => {
+  // The previous daemon's state: a running SDK conversation bound to a running task.
+  upsertSdkSession({
+    id: "sdk:win32-restart",
+    agent: "claude",
+    agentSessionId: "agent-win32",
+    cwd: home,
+    taskId: "task-win32-restart",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const driver = idleDriver();
+  const launches: LaunchOptions[] = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = { answersRequests: true, launch: async (opts) => (launches.push(opts), driver.handle) };
+  t.after(() => (HARNESSES.claude.sdk = real));
+
+  // The new daemon, wired in the order `src/server/index.ts` uses: SDK restore first, then
+  // discovery, here on win32 where the poller never walks processes.
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-win32-restart", status: "running", agent: "claude", repoRoot: home, sessionId: "sdk:win32-restart" }),
+  );
+  const supervisor = new SdkSupervisor(registry);
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  t.after(() => tasks.stopMissionSessionClosures());
+  t.after(() => supervisor.stopAll());
+  const { counter, sweep } = countingSweep();
+  const observed = new Promise<void>((resolve) => registry.onSessionsObserved(resolve));
+  const stop = await startDiscoveryAfterSdkRestore(
+    supervisor.restore(),
+    () => startPoller(registry, "win32", sweep),
+    () => false,
+    (error) => assert.fail(`restore failed: ${String(error)}`),
+  );
+  t.after(() => stop?.());
+  await observed;
+
+  // Restored as a continuation of the same conversation, not a new one.
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0]!.resume, "agent-win32");
+  assert.equal(launches[0]!.prompt, "");
+  const session = registry.getSession("sdk:win32-restart");
+  assert.equal(session?.runtime, "sdk");
+  assert.notEqual(session?.state, "exited", "the empty win32 sweep must not evict a restored SDK session");
+  assert.equal(counter.calls, 0, "terminal discovery stays off through the restart");
+  // The task is still bound to the restored session after first-sweep reconciliation.
+  const task = registry.getTask("task-win32-restart");
+  assert.equal(task?.status, "running");
+  assert.equal(task?.sessionId, "sdk:win32-restart");
+
+  // And it completes.
+  await tasks.complete("task-win32-restart", "done");
+  await waitFor(() => registry.getTask("task-win32-restart")?.status === "done");
+  driver.end();
 });
