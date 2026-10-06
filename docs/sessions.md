@@ -86,6 +86,12 @@ all still win - this is an idle-sleep inhibitor, not a wake scheduler, and it ne
 the display awake or simulates activity. It does use more battery than letting the machine
 sleep, and the dropdown says so.
 
+On Windows the daemon holds the same guarantee through a power request set to
+`PowerRequestSystemRequired`, the counterpart of the macOS assertion: idle system sleep is
+prevented, and the display still turns off and the session still locks. An elevated
+`powercfg /requests` lists it under `SYSTEM` with Mission Control's reason, and the kernel
+drops it when the daemon process exits.
+
 While it is on, the indicator reads **`live · awake`** with a purple dot - the word
 carries the mode, so color is never the only signal. A native load failure makes the control
 unavailable for that daemon run. If assertion creation or release fails, the indicator reads
