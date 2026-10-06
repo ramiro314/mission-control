@@ -99,12 +99,14 @@ run reproduces the suite's concurrency when it cannot.
 
 A test that spawns the real daemon needs one build artifact the suite does not otherwise
 produce. `src/server/index.ts` acquires state ownership through `dist/native/state-lock.node`
-before it serves anything, and CI runs `npm test` before `npm run build`, so `pretest` builds
-that addon once and a warm suite compiles nothing. A spec that spawns a daemon still calls
+before it serves anything, and a CI unit shard never runs `npm run build`, so `pretest` builds
+that addon once and a warm suite compiles nothing. A CI unit shard runs `npm run pretest` itself
+and then `test:run`, so it provisions through the same path as a local `npm test`. A spec that spawns a daemon still calls
 `ensureNativeStateLockAddon` from `test/helpers/native-state-lock.ts` at module scope, because
 the single-file command above runs no npm lifecycle; the helper rebuilds only when the addon
 does not load. Do not let a spec inherit that artifact from whatever else its shard was dealt -
-`--test-shard` splits by file, so adding an unrelated test file elsewhere in `test/` silently
+CI deals whole files to shards by recorded duration (`scripts/unit-shard.mjs`), so adding an
+unrelated test file elsewhere in `test/`, or regenerating `test/shard-timings.json`, silently
 reassigns which files keep each other working, and that is exactly how shard 6 went red on
 `main` while every other shard stayed green.
 
@@ -134,23 +136,42 @@ MISSION_TEST_CONCURRENCY=4 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI reports thirty-four non-package jobs, plus the "Flaky tests" check run that `flake report`
-publishes. `changes` decides whether a pull request touched only `docs/`; on such a pull request
-`gates`, both unit matrices and E2E skip, while `docs checks` and `flake report` still run, and
+CI reports thirty-two non-package jobs on a push to `main`, a tag or a manual run, plus the
+"Flaky tests" check run that `flake report` publishes. A pull request runs twenty-four of them:
+the eight Node.js 26 jobs (`dependencies-node-26`, six `unit-node-26` shards and
+`build-smoke-node-26`) run only when the event is not `pull_request`, so Node.js 26 is checked on
+every merge to `main` rather than on every pull request. `changes` decides whether a pull request
+touched only `docs/`; on such a pull request `gates`, the Node.js 24 unit matrix,
+`build-smoke-node-24` and E2E skip, while `docs checks` and `flake report` still run, and
 `CI result` (job id `ci-result`, the one check branch protection should require) passes only
-when every other non-package, non-Windows job succeeded or was one of those four skipped. Pushes
-to `main`, tags and manual runs always run everything. Pushes to `release/windows` and pull
+when every job it needs succeeded or was one of those four skipped. The same four skip on a push
+to `main` whose tree was already tested: every pull request run uploads a `tested-tree` artifact,
+and `changes` sets `tree_reused=true` only when the pushed commit maps to exactly one merged pull
+request whose newest CI run for its head succeeded, was not docs-only, and tested the pushed
+commit's tree (`scripts/ci-tree-reuse.sh`; any doubt runs everything, and tags and manual runs
+never reuse). It needs every job that runs
+on a pull request, so neither `package` nor the Node.js 26 jobs are among them; a Node.js 26
+failure on `main` turns that workflow run red instead. Pushes to `release/windows` and pull
 requests into it also run twenty-five Windows jobs on `windows-latest`, which stay out of
 `CI result` and are allowed to fail until the Windows support plan's M2 is green (see the
-"Windows" comment in `ci.yml`). Two independent `dependencies` checks use GitHub-hosted
-`ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
-`gates` (typecheck and lint), `docs checks` (`npm run docs:links` plus every unit test that
-reads the repository's real docs, discovered by the pattern its workflow comment names), Node.js
-24 unit shards, and E2E depend only on the Node.js 24 producer; Node.js 26 unit shards depend
-only on the Node.js 26 producer, so a failure in one release does not hide checks for the other. Unit tests, builds, bundle smoke, and fifteen E2E
-shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated
-from shared self-hosted infrastructure. The shared unit steps live
-in `.github/actions/run-unit-shard/action.yml`. Unit and E2E shards rerun or read retries for
+"Windows" comment in `ci.yml`). Two independent `dependencies` checks use
+GitHub-hosted `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js
+24 and 26. `gates` (typecheck and lint), `docs checks` (`npm run docs:links` plus every unit test
+that reads the repository's real docs, discovered by the pattern its workflow comment names),
+Node.js 24 unit shards, `build-smoke-node-24` and E2E depend only on the Node.js 24 producer;
+Node.js 26 unit shards and `build-smoke-node-26` depend only on the Node.js 26 producer, so a
+failure in one release does not hide checks for the other. `npm run build` and `npm run smoke`
+run once per release, in its `build-smoke` job, not in the unit or E2E shards:
+`build-smoke-node-24` uploads the `dist/` it built and smoked as the `dist-node-24` artifact, and
+every E2E shard needs that job and downloads it. Unit tests, build and smoke, and E2E shards use
+ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated from shared
+self-hosted infrastructure. A pull request's run peaks at nineteen concurrent jobs, one under
+GitHub Free's per-account cap of twenty: `gates`, `docs checks`, three Node.js 24 unit shards and
+fourteen E2E shards, with `build-smoke-node-24` finished before E2E starts. The "Shard budget"
+comment in `ci.yml` holds the arithmetic, and `test/init-script.test.ts` pins it. The shared unit
+steps live in `.github/actions/run-unit-shard/action.yml`, and each unit shard takes its files from
+`scripts/unit-shard.mjs`, balanced by the generated `test/shard-timings.json` (regenerate it with
+`npm run test:timings -- <run-id>`; see [flaky tests in CI](docs/flaky-tests.md)). Unit and E2E shards rerun or read retries for
 their failed tests, and the `flake report` job, the only one granted `checks: write` and
 `issues: write`, publishes "Flaky tests" and the flake issues (see
 [flaky tests in CI](docs/flaky-tests.md)); its action under `.github/actions/mission-flake-report/`

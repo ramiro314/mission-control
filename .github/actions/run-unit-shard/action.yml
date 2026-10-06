@@ -1,5 +1,5 @@
 name: Run unit shard
-description: Restore one Node dependency tree and run one complete unit shard, rerun its failed test files once, then build and smoke check.
+description: Restore one Node dependency tree and run one complete unit shard, then rerun its failed test files once. Build and smoke run once per Node release in the build-smoke jobs, not here.
 
 inputs:
   node-version:
@@ -44,42 +44,45 @@ runs:
         path: ~/.cache/electron
         key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
 
-    # Electron 42+ downloads its runtime on first use instead of during npm install.
-    # Provision it explicitly so GUI fixtures only exercise the application under test.
-    # The cache removes the normal network dependency; retries protect its cold path.
-    - name: Install Electron test runtime
+    # `pretest` is the one definition of test provisioning, the same path a local `npm test`
+    # takes: it fetches the Electron runtime the cache above restores (retrying a cold-cache
+    # download) and builds the native state lock every source-loaded daemon test acquires.
+    - name: Provision the test environment
+      shell: bash
+      run: npm run pretest
+
+    # Shards are balanced by each file's recorded duration in `test/shard-timings.json`, not by
+    # file index (`--test-shard`). The partitioner expands the unit glob itself, so stale or
+    # missing timings only unbalance the shards: every file still runs in exactly one of them.
+    # Regenerate the timings with `npm run test:timings -- <run-id>`. See docs/flaky-tests.md.
+    - name: Select shard files
       shell: bash
       run: |
-        for attempt in 1 2 3; do
-          if npm exec -- install-electron --no; then exit 0; fi
-          echo "::warning::Electron runtime download failed (attempt ${attempt}/3)"
-          sleep $((attempt * 10))
-        done
-        exit 1
-
-    # Source-loaded daemon tests acquire the same native state lock as the shipped daemon.
-    # Build it before each shard runs so no test depends on another shard's module-load side effect.
-    - name: Build native state lock
-      shell: bash
-      run: npm run build:state-lock-native
+        node scripts/unit-shard.mjs "$MISSION_TEST_SHARD" > "$RUNNER_TEMP/unit-shard-files.txt"
+        echo "Unit shard $MISSION_TEST_SHARD runs $(wc -l < "$RUNNER_TEMP/unit-shard-files.txt") test files"
+      env:
+        MISSION_TEST_SHARD: ${{ inputs.shard }}/${{ inputs.shard-total }}
 
     # The shard records its exit code instead of failing here: the flake report step below
     # decides. It reruns only the failed files once, so a test that fails and then passes is a
     # flake (reported, job stays green) and one that fails twice fails the job. See
     # docs/flaky-tests.md.
+    #
+    # `test:run` directly rather than `npm test`: provisioning already ran above, and `posttest`
+    # would rerun `test:workflow-evidence`, whose two files are already in the unit glob.
     - name: Test
       id: test
       shell: bash
       run: |
         mkdir -p "$RUNNER_TEMP/flake"
+        mapfile -t files < "$RUNNER_TEMP/unit-shard-files.txt"
         set +e
-        xvfb-run -a npm test
+        xvfb-run -a npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" "${files[@]}"
         echo "exit-code=$?" >> "$GITHUB_OUTPUT"
       env:
-        MISSION_TEST_SHARD: ${{ inputs.shard }}/${{ inputs.shard-total }}
         MISSION_TEST_JUNIT: ${{ runner.temp }}/flake/junit.xml
 
-    # The rerun goes through `test:run`, the same script `npm test` runs, with the shard's failed
+    # The rerun goes through `test:run`, the same script the Test step runs, with the shard's failed
     # files in place of the glob, so the two runs cannot disagree about how JUnit is produced.
     # `{junit}` is where the rerun writes its results.
     - name: Rerun failed test files once
@@ -92,6 +95,17 @@ runs:
         rerun-command: xvfb-run -a env MISSION_TEST_JUNIT={junit} npm run --silent test:run -- {files}
         report: ${{ runner.temp }}/flake/report.json
 
+    # The first run's results, not the rerun's: `npm run test:timings -- <run-id>` reads every
+    # `unit-junit-*` artifact of a run to regenerate `test/shard-timings.json`.
+    - name: Upload JUnit results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: unit-junit-node-${{ inputs.node-version }}-shard-${{ inputs.shard }}
+        path: ${{ runner.temp }}/flake/junit.xml
+        if-no-files-found: warn
+        retention-days: 7
+
     # Unique per leg: `upload-artifact@v4` refuses the same name twice in one run. The
     # `flake-report` job collects every `flake-report-*` artifact.
     - name: Upload flake report
@@ -102,12 +116,3 @@ runs:
         path: ${{ runner.temp }}/flake/report.json
         if-no-files-found: warn
         retention-days: 7
-
-    - name: Build
-      shell: bash
-      run: npm run build
-
-    # Executes the bundles produced by Build, not the source modules covered by unit tests.
-    - name: Smoke the built bundles
-      shell: bash
-      run: npm run smoke

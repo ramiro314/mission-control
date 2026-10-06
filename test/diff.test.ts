@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computePinnedRefDiff, computeSessionDiff } from "../src/server/diff.ts";
+import { computeCommitDiff, computePinnedRefDiff, computeSessionDiff, patchText } from "../src/server/diff.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import { parsePatch } from "../src/web/lib/diff.ts";
 
 function mkRepo(): string {
@@ -392,5 +393,82 @@ test("an unborn HEAD is confirmed positively, not inferred from a failed rev-par
   assert.throws(
     () => execFileSync("git", ["-C", repo, "symbolic-ref", "-q", "HEAD"], { stdio: "pipe" }),
     "a detached HEAD has no symbolic ref",
+  );
+});
+
+// Past `run`'s 8 MiB stdout buffer, so reading this file's diff overflows it.
+const BIG_LINES = 150_000;
+const bigText = (tag: string) =>
+  Array.from({ length: BIG_LINES }, (_, i) => `${tag} ${String(i).padStart(8, "0")} ${"x".repeat(52)}\n`).join("");
+const MAX_PATCH_BYTES = 1_200_000;
+
+test("a patch too big to buffer is clipped and truncated, not unreadable", async () => {
+  // A branch that vendors an SDK: its `git diff` printed 11.9 MB, overflowed the buffer, and
+  // came back as a non-zero exit - so the run blocked on "could not read the diff" and the
+  // 1.2 MB clip after the read was never reached.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", stdio: "pipe" }).trim();
+  git("checkout", "-qb", "feature/vendor");
+  const big = bigText("tracked");
+  assert.ok(Buffer.byteLength(big) > 8 * 1024 * 1024, "the fixture must exceed the read buffer");
+  writeFileSync(join(repo, "vendor.txt"), big);
+  writeFileSync(join(repo, "keep.txt"), "line1\nCHANGED\nline3\n");
+  git("add", "-A");
+  git("commit", "-qm", "vendor");
+  const head = git("rev-parse", "HEAD");
+
+  const session = await computeSessionDiff(repo);
+  assert.equal(session.ok, true, session.error ?? "");
+  assert.equal(session.truncated, true);
+  assert.equal(session.filesChanged, 2);
+  assert.equal(session.insertions, BIG_LINES + 1);
+  assert.equal(session.deletions, 1);
+  assert.ok(Buffer.byteLength(session.patch) <= MAX_PATCH_BYTES);
+  assert.ok(Buffer.byteLength(session.patch) > MAX_PATCH_BYTES - 64, "clipped at the cap, not emptied");
+
+  const commit = await computeCommitDiff(repo, head);
+  assert.equal(commit.ok, true, commit.error ?? "");
+  assert.equal(commit.truncated, true);
+  assert.equal(commit.filesChanged, 2);
+  assert.equal(commit.insertions, BIG_LINES + 1);
+  assert.ok(Buffer.byteLength(commit.patch) <= MAX_PATCH_BYTES);
+
+  const pinned = await computePinnedRefDiff(repo, head, "feature/vendor");
+  assert.equal(pinned.ok, true, pinned.error ?? "");
+  assert.equal(pinned.truncated, true);
+  assert.equal(pinned.filesChanged, 2);
+  assert.equal(pinned.insertions, BIG_LINES + 1);
+  assert.ok(Buffer.byteLength(pinned.patch) <= MAX_PATCH_BYTES);
+});
+
+test("an untracked file too big to buffer is clipped and counted in full", async () => {
+  const repo = mkRepo();
+  writeFileSync(join(repo, "untracked-vendor.txt"), bigText("untracked"));
+  writeFileSync(join(repo, "small.txt"), "one\ntwo\n");
+
+  const d = await computeSessionDiff(repo);
+
+  assert.equal(d.ok, true, d.error ?? "");
+  assert.equal(d.truncated, true);
+  assert.equal(d.filesChanged, 2);
+  assert.equal(d.insertions, BIG_LINES + 2);
+  assert.ok(Buffer.byteLength(d.patch) <= MAX_PATCH_BYTES);
+});
+
+test("patchText accepts an overflow but still fails a timeout, a crash, or a short overflow", () => {
+  const big = "x".repeat(MAX_PATCH_BYTES + 10);
+  assert.deepEqual(patchText(stubRun({ stdout: "diff", stderr: "", code: 0 })), { text: "diff", overflowed: false });
+  assert.deepEqual(
+    patchText({ stdout: big, stderr: "stdout maxBuffer length exceeded", code: 1, outcomeUnknown: false, overflowed: true }),
+    { text: big, overflowed: true },
+  );
+  // `run`'s timeout kills git and reports whatever stdout was flushed - however much of it.
+  assert.equal(patchText({ stdout: big, stderr: "", code: null, outcomeUnknown: true, overflowed: false }), null);
+  // A crash or any other non-zero exit.
+  assert.equal(patchText(stubRun({ stdout: big, stderr: "fatal", code: 128 })), null);
+  // An overflow that delivered less than a full clip was cut somewhere unknown (stderr overflowed).
+  assert.equal(
+    patchText({ stdout: "partial", stderr: "stderr maxBuffer length exceeded", code: 1, outcomeUnknown: false, overflowed: true }),
+    null,
   );
 });
