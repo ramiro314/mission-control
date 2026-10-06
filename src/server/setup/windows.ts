@@ -135,11 +135,22 @@ const PYTHON_CANDIDATES: ReadonlyArray<{ bin: string; args: string[] }> = [
   { bin: "py", args: ["-3", "--version"] },
 ];
 
+/**
+ * Windows' App Execution Alias for `python`/`python3`, which opens the Microsoft Store instead
+ * of running. Never started, so Setup does not open the Store on every check; node-gyp skips
+ * it the same way.
+ */
+const STORE_ALIAS = /[\\/]Microsoft[\\/]WindowsApps[\\/]/i;
+
 export async function python3Status(deps: SetupDeps): Promise<SetupStatus> {
   const answered: string[] = [];
   for (const candidate of PYTHON_CANDIDATES) {
     const path = await deps.resolveBinPath(candidate.bin);
     if (!path) continue;
+    if (STORE_ALIAS.test(path)) {
+      answered.push(`${path}: the Microsoft Store alias, not run`);
+      continue;
+    }
     const result = await deps.runCommand(path, candidate.args);
     // Python 2 printed its version to stderr, so read both streams.
     const version = /Python (3\.\d+(?:\.\d+)?)/.exec(`${result.stdout} ${result.stderr}`)?.[1];
@@ -149,6 +160,5 @@ export async function python3Status(deps: SetupDeps): Promise<SetupStatus> {
     answered.push(`${path}: ${outputOf(result) ?? `exit ${result.code}`}`);
   }
   if (answered.length === 0) return { state: "missing" };
-  // Windows ships a `python.exe` alias that opens the Microsoft Store instead of running.
-  return { state: "needs-setup", why: "No Python 3 interpreter answered.", evidence: answered.join("\n") };
+  return { state: "needs-setup", why: "No Python 3 interpreter was found.", evidence: answered.join("\n") };
 }

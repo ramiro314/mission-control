@@ -203,23 +203,30 @@ test("Visual Studio Build Tools: no installer, no C++ workload, and a failed que
 test("Python 3 follows node-gyp's order and skips the Store alias", async () => {
   assert.deepEqual(await probe("python3", { resolveBinPath: async () => null }), { state: "missing" });
 
-  // The Store alias resolves as `python` and exits without printing a version.
-  const paths: Record<string, string> = {
-    python: "C:\\Users\\operator\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe",
-    py: "C:\\Windows\\py.exe",
-  };
+  // Windows' Store alias resolves as `python3` and `python` on a machine with no Python, and
+  // starting it opens the Microsoft Store. It is never run; the `py` launcher still is.
+  const alias = (name: string) => `C:\\Users\\operator\\AppData\\Local\\Microsoft\\WindowsApps\\${name}.exe`;
+  const paths: Record<string, string> = { python3: alias("python3"), python: alias("python"), py: "C:\\Windows\\py.exe" };
   const asked: string[] = [];
-  const launcher = await probe("python3", {
-    resolveBinPath: async (bin) => paths[bin] ?? null,
-    runCommand: async (bin, args) => {
-      asked.push([bin, ...args].join(" "));
-      return bin === paths.py
-        ? stubRun({ stdout: "Python 3.12.4\r\n", stderr: "", code: 0 })
-        : stubRun({ stdout: "", stderr: "", code: 9009 });
-    },
-  });
+  const answer = async (bin: string, args: string[]) => {
+    asked.push([bin, ...args].join(" "));
+    return stubRun({ stdout: "Python 3.12.4\r\n", stderr: "", code: 0 });
+  };
+  const launcher = await probe("python3", { resolveBinPath: async (bin) => paths[bin] ?? null, runCommand: answer });
   assert.deepEqual(launcher, { state: "satisfied", evidence: "C:\\Windows\\py.exe (Python 3.12.4)" });
-  assert.deepEqual(asked, [`${paths.python} --version`, `${paths.py} -3 --version`]);
+  assert.deepEqual(asked, [`${paths.py} -3 --version`], "only the launcher ran; the Store alias never started");
+
+  asked.length = 0;
+  const onlyAlias = await probe("python3", {
+    resolveBinPath: async (bin) => bin === "py" ? null : paths[bin] ?? null,
+    runCommand: answer,
+  });
+  assert.deepEqual(onlyAlias, {
+    state: "needs-setup",
+    why: "No Python 3 interpreter was found.",
+    evidence: `${paths.python3}: the Microsoft Store alias, not run\n${paths.python}: the Microsoft Store alias, not run`,
+  });
+  assert.deepEqual(asked, []);
 
   const onlyTwo = await probe("python3", {
     resolveBinPath: async (bin) => bin === "python" ? "C:\\Python27\\python.exe" : null,

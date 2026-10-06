@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { CHECK_WORKTREES_DIR } from "../src/server/config.ts";
 import { provisionWorktree } from "../src/server/dispatcher.ts";
@@ -45,7 +46,10 @@ test("core.longpaths is set only on win32", async () => {
   assert.deepEqual(calls, [], "macOS and Linux run nothing");
 
   assert.equal((await enableWorktreeLongPaths("C:\\repo", execute, "win32"))?.code, 0);
-  assert.deepEqual(calls, [["git", "-C", "C:\\repo", "config", "core.longpaths", "true"]]);
+  assert.deepEqual(calls, [
+    ["git", "-C", "C:\\repo", "config", "--bool", "--get", "core.longpaths"],
+    ["git", "-C", "C:\\repo", "config", "core.longpaths", "true"],
+  ]);
 });
 
 test("a managed worktree added on win32 reads core.longpaths=true; on macOS nothing changes", async () => {
@@ -65,7 +69,7 @@ test("a managed worktree added on win32 reads core.longpaths=true; on macOS noth
     assert.deepEqual(added, { ok: true, value: undefined }, platform);
 
     if (platform === "win32") {
-      assert.deepEqual(steps, ["config core.longpaths", "worktree add"], "set before the checkout that needs it");
+      assert.deepEqual(steps, ["config --bool", "config core.longpaths", "worktree add"], "set before the checkout that needs it");
       assert.equal(git(path, "config", "core.longpaths"), "true");
     } else {
       assert.deepEqual(steps, ["worktree add"]);
@@ -90,7 +94,8 @@ test("a failed core.longpaths write stops the add before git worktree add runs",
     reason: "git config core.longpaths failed: error: could not lock config file",
     outcomeUnknown: false,
   });
-  assert.deepEqual(steps, ["config core.longpaths"]);
+  assert.ok(!steps.includes("worktree add"), "the add never ran");
+  assert.equal(steps.filter((step) => step === "config core.longpaths").length, 5, "a lost lock is retried, then reported");
 });
 
 /**
@@ -151,4 +156,38 @@ test("a failed core.longpaths write stops a check worktree before it is added", 
   );
   assert.equal(worktreeCount(clone), 1);
   assert.equal(existsSync(join(CHECK_WORKTREES_DIR, "check-locked")), false);
+});
+
+test("a repository already set to core.longpaths=true is read, never rewritten", async () => {
+  const { clone } = repository();
+  git(clone, "config", "core.longpaths", "true");
+  const steps: string[] = [];
+  const recorded: typeof run = (bin, args, opts) => {
+    steps.push(args.slice(2, 4).join(" "));
+    return run(bin, args, opts);
+  };
+  assert.equal((await enableWorktreeLongPaths(clone, recorded, "win32"))?.code, 0);
+  assert.deepEqual(steps, ["config --bool"], "steady state takes no config.lock");
+});
+
+test("a write that loses config.lock to another add retries once the lock clears", async () => {
+  const { clone } = repository();
+  lockConfig(clone);
+  const released = delay(80).then(() => rmSync(join(clone, ".git", "config.lock"), { recursive: true }));
+  const result = await enableWorktreeLongPaths(clone, run, "win32");
+  await released;
+  assert.equal(result?.code, 0);
+  assert.equal(git(clone, "config", "core.longpaths"), "true");
+});
+
+test("concurrent managed worktree adds to one repository on win32 all succeed", async () => {
+  const { clone, sha } = repository();
+  const identity = worktreeRepositoryIdentity(clone);
+  assert.ok(identity);
+  roots.push(identity.poolPath);
+  const adds = await Promise.all(Array.from({ length: 6 }, (_, slot) =>
+    new NativeWorktreeGit(run, "win32").add(identity, join(identity.poolPath, `concurrent-${slot}`), sha)));
+  assert.deepEqual(adds, Array.from({ length: 6 }, () => ({ ok: true, value: undefined })));
+  assert.equal(git(clone, "config", "core.longpaths"), "true");
+  assert.equal(worktreeCount(clone), 7);
 });
