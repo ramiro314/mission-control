@@ -38,10 +38,18 @@ function shards(body: string): number[] | undefined {
   return body.match(/^ {8}shard: \[([^\]]+)\]/m)?.[1]?.split(",").map(Number);
 }
 
-/** Evaluates the Windows `if:` for one event, through the JavaScript operators it shares. */
-function windowsJobsRun(event: { event_name: string; ref: string }): boolean {
+/**
+ * Evaluates the Windows `if:` for one event, through the JavaScript operators it shares.
+ * `base_ref` is GitHub's empty string on every event but a pull request, and `changes` answers
+ * `docs_only=false` for every event but a pull request.
+ */
+function windowsJobsRun(
+  event: { event_name: string; ref: string; base_ref?: string },
+  docsOnly = false,
+): boolean {
   const condition = jobValue(WINDOWS.get("unit-windows")!, "if")!;
-  return new Function("github", `return (${condition});`)(event);
+  const changes = { outputs: { docs_only: String(docsOnly) } };
+  return new Function("github", "needs", `return (${condition});`)({ base_ref: "", ...event }, { changes });
 }
 
 test("pushes to main and release/windows run CI, and every pull request does", () => {
@@ -63,16 +71,27 @@ test("the Windows jobs are exactly the planned set, on windows-latest with Node 
   }
 });
 
-test("they run for a push or manual run on release/windows, never a pull request", () => {
+test("they run for a push, manual run or pull request on release/windows, and nowhere else", () => {
   const conditions = new Set([...WINDOWS.values()].map((body) => jobValue(body, "if")));
   assert.equal(conditions.size, 1, "every Windows job carries the same condition");
   for (const [id, body] of WINDOWS) {
-    assert.ok(!needs(body).includes("changes"), `${id} does not wait for changes`);
+    assert.ok(needs(body).includes("changes"), `${id} needs changes, which its condition reads`);
   }
 
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/release/windows" }), true);
   assert.equal(windowsJobsRun({ event_name: "workflow_dispatch", ref: "refs/heads/release/windows" }), true);
-  assert.equal(windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge" }), false);
+  assert.equal(
+    windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "release/windows" }),
+    true,
+    "a pull request into release/windows shows its Windows result before it merges",
+  );
+  assert.equal(windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "main" }), false);
+  assert.equal(
+    windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "release/windows" }, true),
+    false,
+    "a docs-only pull request into release/windows skips them",
+  );
+  assert.doesNotMatch(conditions.values().next().value!, /tree_reused/, "tree reuse applies only to a push to main");
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/main" }), false);
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/tags/v1.2.3" }), false);
 });
@@ -126,8 +145,19 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
   assert.ok(run("build-windows").includes("npm run build"));
   assert.ok(run("build-windows").includes("npm run smoke"));
   assert.ok(run("e2e-windows").includes("npm run build"));
+  const e2e = run("e2e-windows").find((cmd) => cmd.startsWith("npm run test:e2e"));
+  assert.ok(e2e, "the e2e job runs the Playwright suite");
+  assert.ok(e2e.startsWith("npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} "));
+  assert.ok(e2e.includes(" --retries=0"), "an allowed-to-fail run has no flake report for a retry to feed");
+  // Playwright must stop on its own before the step's timeout kills it: a killed shard reports
+  // nothing, and on run 37505044919 the runner was lost as the step was torn down.
+  const globalMs = Number(e2e.match(/ --global-timeout=(\d+)(?: |$)/)?.[1]);
+  const step = steps(WINDOWS.get("e2e-windows")!).find((s) => s.includes("        id: e2e\n"))!;
+  const stepMinutes = Number(step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1]);
+  assert.ok(globalMs > 0, "the e2e run sets a global timeout");
   assert.ok(
-    run("e2e-windows").includes("npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}"),
+    globalMs <= (stepMinutes - 5) * 60_000,
+    `the ${globalMs / 60_000}-minute global timeout leaves five minutes inside the ${stepMinutes}-minute step`,
   );
   assert.deepEqual(shards(WINDOWS.get("e2e-windows")!), shards(ALL.get("e2e")!));
 });

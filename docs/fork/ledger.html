@@ -10,8 +10,7 @@ table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}th,td{
 .diagram{margin:1em 0;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}.diagram svg{min-width:760px;width:100%;height:auto}
 figcaption{color:var(--muted);font-size:13px}
 .b{fill:var(--bg);stroke:var(--accent);stroke-width:1.5}.t{fill:var(--fg);font:600 13px system-ui,sans-serif;text-anchor:middle}.s{fill:var(--muted);font:11px system-ui,sans-serif;text-anchor:middle}.l{stroke:var(--muted);stroke-width:1.5}.ah{fill:var(--muted)}
-</style></head><body><main>
-<h1>Fork ledger</h1>
+</style></head><body><main><h1>Fork ledger</h1>
 <p><code>ramiro314/mission-control</code> is a fork of
 <a href="https://github.com/teamupstart/mission-control"><code>teamupstart/mission-control</code></a>. This ledger
 records everything the fork changes against upstream, one entry per fork <strong>feature</strong>, with the
@@ -139,7 +138,7 @@ or issues.</p>
 <tr>
 <td>Windows support</td>
 <td>In progress on <code>release/windows</code> (plan, <code>.gitattributes</code>, the four platform seams and the weekly sync runbook on <code>main</code>; Windows CI, the win32 seams, state home, harness and runtime availability, Keep Awake, Setup checks, the Electron dev shell and the Windows docs on the branch)</td>
-<td>#128 (plan), #147, #152, #154, #158, #176, #184, #185, #224, #187, #191, #192, #196, #197, #209, #210, #220, pending (branch <code>docs/windows-support-docs</code>)</td>
+<td>#128 (plan), #147, #152, #154, #158, #176, #184, #185, #224, #187, #191, #192, #196, #197, #201, #209, #210, #220, #225, #233, pending (gate readiness, M2.12)</td>
 </tr>
 <tr>
 <td>PR publication ownership</td>
@@ -1582,11 +1581,11 @@ jobs&#39; condition and the tree-reuse wiring.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Still to land there: gate readiness (M2.12). The branch reaches <code>main</code> in one merge.</td>
+<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) is in review: it runs the Windows jobs on pull requests into the branch, fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on <code>main</code>. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches <code>main</code> in one merge.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11). The per-task base branch it depends on (M0.1) has its own entry.</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), pending (gate readiness, M2.12). The per-task base branch it depends on (M0.1) has its own entry.</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1680,7 +1679,8 @@ git config before a managed worktree is added. No Windows row is probed on anoth
 and the native window frame with an auto-hidden menu bar, and <code>menu-template.ts</code> drops the
 macOS app menu there. Every other platform keeps the macOS answers.</li>
 <li><strong>Windows CI</strong> (D15, D30, D32): <code>windows-latest</code> jobs on Node 24 run on pushes to
-<code>release/windows</code> and PRs into it, with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
+<code>release/windows</code> and pull requests into it that change more than <code>docs/</code> (no other pull
+request), with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
 steps are allowed to fail until M2.12, and stay out of <code>CI result</code>. Every test or spec that
 skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</code> in <code>test/helpers/win32-skip.ts</code>,
 with a stated reason (D37).</li>
@@ -1692,6 +1692,12 @@ skips where <code>harnessUnsupportedWhy(&quot;pi&quot;, ...)</code> answers, so 
 the <code>concurrently</code> lanes behind <code>make dev</code>, <code>make desktop</code> and <code>make start</code> run <code>tsx watch</code>
 with stdin from /dev/null (<code>dev:server:lane</code>, <code>dev:foreman:lane</code>), because on win32 a daemon
 that touched <code>process.stdin</code> blocked behind the watcher&#39;s read of the shared pipe (D38).</li>
+<li><strong>Durable flushes</strong> (<code>src/server/platform/durable-sync.ts</code>, D38): the database and settings
+backups flush a file and its directory through <code>syncFile</code> and <code>syncDirectory</code>. POSIX keeps the
+read-only descriptor it always used. win32 opens the file for writing, because
+<code>FlushFileBuffers</code> refuses a read-only handle, and makes no directory flush. <code>npm run smoke</code>
+skips the Pi artifact where <code>harnessUnsupportedWhy(&quot;pi&quot;, hostPlatform())</code> answers, the same
+question <code>build:pi-extension</code> asks.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -1728,12 +1734,13 @@ executable search ladder). On <code>release/windows</code> also: <code>src/serve
 <code>src/server/keep-awake.ts</code>, <code>src/server/worktrees/git.ts</code>, <code>src/server/repos.ts</code>,
 <code>src/server/harness/claude/hooks.ts</code>, <code>src/server/agent-subprocess-env.ts</code>,
 <code>src/server/testing-setup.ts</code>, <code>src/mcp/pipeline-credential.ts</code>,
+<code>src/server/{database-backups/service,settings-backups/store}.ts</code>,
 <code>src/shared/{harness-capabilities,setup-catalog,allowlist,llm,workflow,standing-instructions,protocol,types,executables}.ts</code>,
 <code>src/shared/harness-runtime.mjs</code>,
 <code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
 <code>scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs</code>, <code>scripts/build-pi-extension.ts</code>,
-<code>Makefile</code>, <code>package.json</code> (<code>dev:electron:app</code>, the <code>dev:*:lane</code> scripts), <code>docs/overview.md</code>,
-<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
+<code>scripts/smoke-bundles.mjs</code>, <code>test/pi-extension-build.test.ts</code>, <code>Makefile</code>, <code>package.json</code> (<code>dev:electron:app</code>, the <code>dev:*:lane</code> scripts), <code>docs/overview.md</code>,
+<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>test/init-script.test.ts</code> (the shard budget models a pull request into <code>main</code>), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
 skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
 <code>docs/desktop-and-packaging.md</code>.</p>
 <p><strong>Fork-only files.</strong> <code>.gitattributes</code>, <code>src/server/process-inspection/</code>,
@@ -1742,12 +1749,12 @@ skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/se
 <code>test/process-inspection.test.ts</code>, <code>test/process-lifetime.test.ts</code>,
 <code>test/executable-environment.test.ts</code>, <code>test/native-addon-sources.test.ts</code>,
 <code>docs/plans/windows-support/</code>, <code>docs/windows-branch-sync.md</code>. On <code>release/windows</code> also:
-<code>src/server/platform/{host,session-runtimes}.ts</code>, <code>src/server/setup/windows.ts</code>,
+<code>src/server/platform/{host,session-runtimes,durable-sync}.ts</code>, <code>src/server/setup/windows.ts</code>,
 <code>src/server/git/long-paths.ts</code>, <code>src/shared/native-path.ts</code>, <code>src/main/platform-shell.ts</code>,
 <code>native/state-lock/state_lock_win.cc</code>, <code>native/keep-awake/keep_awake_win.cc</code>, <code>build/tray.ico</code>, <code>scripts/ci-allowed-failures.mjs</code>,
 <code>scripts/probe-keep-awake-native.d.mts</code>, <code>e2e/fixtures/win32-host-build.ts</code>,
 <code>e2e/specs/win32-{harness-availability,setup-checks}.spec.ts</code>, <code>test/helpers/win32-skip.ts</code>,
-<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,harness-host-availability,keep-awake-probe,makefile-windows,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
+<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,makefile-windows,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

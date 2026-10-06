@@ -35,6 +35,8 @@ import { mkdtemp, mkdir, copyFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { hostPlatform } from "../src/server/platform/host.ts";
+import { harnessUnsupportedWhy } from "../src/shared/harness-capabilities.ts";
 
 /** Long enough for a cold ESM load of a ~780KB bundle on a slow CI runner. */
 const BOOT_TIMEOUT_MS = 30_000;
@@ -48,6 +50,13 @@ const MCP_HANDSHAKE_MS = 30_000;
  * the box. The smoke never talks to a real daemon and must never be mistaken for one.
  */
 const PORT = 7519;
+
+/**
+ * Why `build:pi-extension` published nothing on this host, or null where it built the Pi
+ * integration. The same registry answer the build reads (`buildPiExtensionForHost`), so the
+ * smoke never expects an artifact the build deliberately skipped (D20).
+ */
+const PI_UNSUPPORTED = harnessUnsupportedWhy("pi", hostPlatform());
 
 function fail(msg) {
   console.error(`[smoke] FAIL: ${msg}`);
@@ -498,7 +507,7 @@ async function smokeSatellitePaths() {
     ["MCP server", "dist/mcp/server.mjs"],
     ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
     ["Managed resume guard", "dist/satellites/resume-guard.mjs"],
-    ["Pi extension", "dist/pi-integration/extension.js"],
+    ...(PI_UNSUPPORTED ? [] : [["Pi extension", "dist/pi-integration/extension.js"]]),
   ];
   for (const [label, built] of expected) {
     const m = new RegExp(String.raw`new URL\d*\("([^"]*${built.replace(/[./]/g, "\\$&")})", *import\.meta\.url\)`)
@@ -571,6 +580,10 @@ async function smokeMermaidRenderer() {
 }
 
 async function smokePiExtension() {
+  if (PI_UNSUPPORTED) {
+    console.log(`[smoke] Pi extension deliberately skipped: ${PI_UNSUPPORTED}`);
+    return;
+  }
   const extension = await import(pathToFileURL(resolve("dist/pi-integration/extension.js")).href);
   if (!/^[a-f0-9]{64}$/.test(extension.missionControlBuild?.version) ||
       !existsSync(extension.missionControlBuild?.mcpServerPath)) {

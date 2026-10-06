@@ -24,6 +24,7 @@ import {
   type SettingsBackupEnvelopeV1,
 } from "@shared/settings-backups.ts";
 import { SETTINGS_BACKUPS_DIR } from "../config.ts";
+import { syncDirectory } from "../platform/durable-sync.ts";
 import {
   settingsBackupFileText,
   validateSettingsBackupDomains,
@@ -193,8 +194,7 @@ export class SettingsBackupStore {
   }
 
   private syncRoot(): void {
-    const fd = openSync(this.root, constants.O_RDONLY);
-    try { fsyncSync(fd); } finally { closeSync(fd); }
+    syncDirectory(this.root);
   }
 
   private prune(): void {

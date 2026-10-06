@@ -1,13 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
-  closeSync,
-  constants,
   existsSync,
-  fsyncSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readdirSync,
   renameSync,
   unlinkSync,
@@ -15,6 +11,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import { DATABASE_BACKUPS_DIR } from "../config.ts";
+import { syncDirectory, syncFile } from "../platform/durable-sync.ts";
 
 export type DatabaseBackupKind = "scheduled" | "preMigration";
 
@@ -60,15 +57,6 @@ function timestampForFilename(date: Date): string {
 
 function filePrefix(kind: DatabaseBackupKind): "scheduled" | "pre-migration" {
   return kind === "scheduled" ? "scheduled" : "pre-migration";
-}
-
-function syncFile(path: string): void {
-  const fd = openSync(path, constants.O_RDONLY);
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
 }
 
 function safeUnlink(path: string): void {
@@ -197,7 +185,7 @@ export class DatabaseBackupService {
     syncFile(capture.temporary);
     validateDatabaseBackupForRestore(capture.temporary);
     renameSync(capture.temporary, capture.path);
-    syncFile(this.root);
+    syncDirectory(this.root);
     this.prune();
     const { temporary: _temporary, ...record } = capture;
     return record;
@@ -222,7 +210,7 @@ export class DatabaseBackupService {
         .slice(this.retention[kind]);
       for (const filename of expired) safeUnlink(join(this.root, filename));
     }
-    syncFile(this.root);
+    syncDirectory(this.root);
   }
 
   private async captureScheduledOnce(): Promise<DatabaseBackupRecord> {
