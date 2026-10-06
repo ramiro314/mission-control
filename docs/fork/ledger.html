@@ -49,7 +49,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>13</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
+<td><strong>14</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -130,6 +130,11 @@ or issues.</p>
 <td>Docs-only CI</td>
 <td>Active (the <code>docs checks</code> job, the <code>docs-only-ci</code> skill, and the docs-only skip with <code>CI result</code> in this repository)</td>
 <td>#164, #168, #171</td>
+</tr>
+<tr>
+<td>CI time-to-green</td>
+<td>In progress (Node 26 off pull requests and one build-and-smoke job per Node release; balanced sharding and tree reuse to follow)</td>
+<td>#200 (plan), pending (branch <code>ci/node-26-main-only-build-smoke</code>)</td>
 </tr>
 <tr>
 <td>Windows support</td>
@@ -1326,15 +1331,17 @@ through a bundled skill.</p>
 <code>run:</code> body is <code>skills/docs-only-ci/assets/detect-docs-only.sh</code> verbatim with
 <code>DOCS_ONLY_PATHS</code> set to <code>docs/*</code>. Only a <code>pull_request</code> event can be docs-only; every doubt
 is <code>false</code>, which runs the full suite.</li>
-<li><code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code> and <code>e2e</code> need <code>changes</code> and carry
-<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. Nothing else is gated: both <code>dependencies</code>
-jobs, <code>docs checks</code> and <code>flake report</code> run on docs-only pull requests, and <code>package</code> is
-unchanged (tags and manual runs only).</li>
+<li><code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code> and <code>e2e</code> need <code>changes</code> and carry
+<code>if: needs.changes.outputs.docs_only != &#39;true&#39;</code>. Nothing else is gated: <code>dependencies-node-24</code>,
+<code>docs checks</code> and <code>flake report</code> run on docs-only pull requests, the Node 26 jobs run on no
+pull request at all (see CI time-to-green), and <code>package</code> is unchanged (tags and manual runs
+only).</li>
 <li><code>flake report</code> keeps <code>if: ${{ !cancelled() }}</code>, so on a docs-only run it reads zero reports
 and publishes &quot;Flaky tests: No flaky tests&quot;, which Wait for CI requires (decision 20).</li>
 <li><code>CI result</code> (job id <code>ci-result</code>, <code>ubuntu-latest</code>, <code>if: always()</code>) needs every job except
-<code>package</code>. Its step body is <code>skills/docs-only-ci/assets/ci-result.sh</code> verbatim, with
-<code>SKIPPABLE</code> listing exactly the four gated job ids. It is the one check branch protection
+<code>package</code> and the Node 26 jobs, the jobs that never run on a pull request. Its step body is
+<code>skills/docs-only-ci/assets/ci-result.sh</code> verbatim, with <code>SKIPPABLE</code> listing exactly the four
+gated job ids. It is the one check branch protection
 should require; nothing is required on <code>main</code> today.</li>
 <li><code>test/docs-only-ci-template.test.ts</code> fails <code>npm test</code> when either <code>ci.yml</code> step body differs
 from its asset by one byte, and holds the <code>changes</code> and <code>ci-result</code> jobs, the gated jobs&#39;
@@ -1382,12 +1389,13 @@ a catalog row and links as <code>mission-&lt;id&gt;</code>.</li>
 passing, which is what lets a docs-only run through Wait for CI.</li>
 <li>Nothing outside <code>test/</code> reads <code>docs/</code>: typecheck, lint, build, smoke, E2E and packaging do
 not. An upstream change that makes one of them read <code>docs/</code> breaks the gate&#39;s premise.</li>
-<li><code>ci.yml</code>&#39;s job ids <code>gates</code>, <code>unit-node-24</code>, <code>unit-node-26</code>, <code>e2e</code> and <code>flake-report</code>. An
+<li><code>ci.yml</code>&#39;s job ids <code>gates</code>, <code>unit-node-24</code>, <code>build-smoke-node-24</code>, <code>e2e</code> and <code>flake-report</code>. An
 upstream job added to <code>ci.yml</code> must also be added to <code>CI result</code>&#39;s <code>needs</code> (the template test
 fails until it is), and to <code>SKIPPABLE</code> only if it is gated.</li>
 </ul>
 <p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the <code>changes</code>, <code>docs-checks</code> and
-<code>ci-result</code> jobs, the header comment, and <code>needs</code> and <code>if:</code> on <code>gates</code>, both unit jobs and <code>e2e</code>),
+<code>ci-result</code> jobs, the header comment, and <code>needs</code> and <code>if:</code> on <code>gates</code>, <code>unit-node-24</code>,
+<code>build-smoke-node-24</code> and <code>e2e</code>),
 <code>package.json</code> (<code>docs:links</code>), <code>AGENTS.md</code> (the CI paragraph&#39;s job count and the docs-only skip),
 <code>docs/flaky-tests.md</code> (<code>flake report</code> on a docs-only run), <code>test/init-script.test.ts</code> (the
 consumer jobs&#39; <code>needs</code>),
@@ -1396,6 +1404,74 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 <p><strong>Fork-only files.</strong> <code>skills/docs-only-ci/SKILL.md</code>,
 <code>skills/docs-only-ci/assets/detect-docs-only.sh</code>, <code>skills/docs-only-ci/assets/ci-result.sh</code>,
 <code>test/docs-only-ci-scripts.test.ts</code>, <code>test/docs-only-ci-template.test.ts</code>.</p>
+<h3>CI time-to-green</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>In progress</strong>. Node 26 runs off pull requests only, and build and smoke run once per Node release in their own jobs. Duration-balanced unit sharding, one provisioning path in the unit shard, shard counts from a concurrency budget and <code>main</code>-push tree reuse are planned and not built.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#200 (the plan), pending (branch <code>ci/node-26-main-only-build-smoke</code>, plan sections 1, 2 and 7)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/ci-time-to-green/plan.md">ci-time-to-green/plan.md</a>, sections 1 to 8 and decisions 1 to 15</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork&#39;s 20-job concurrency cap on GitHub Free.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> A pull request waited about 12 minutes for <code>CI result</code>, though its longest job took
+about 6. Most of the rest was queueing: one run fanned out to 33 Linux jobs against GitHub
+Free&#39;s 20 concurrent jobs per account, and every unit shard built and smoked the same <code>dist/</code>.
+The fork cuts the redundant runs so a pull request is green sooner, and keeps every check on
+<code>main</code>.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>dependencies-node-26</code>, <code>unit-node-26</code> and <code>build-smoke-node-26</code> carry
+<code>if: github.event_name != &#39;pull_request&#39;</code> and no other condition, and need only Node 26 jobs.
+They run on every push to <code>main</code>, tag and manual run, and never on a pull request.</li>
+<li><code>build-smoke-node-24</code> (<code>needs: [changes, dependencies-node-24]</code>, the docs-only condition) and
+<code>build-smoke-node-26</code> (<code>needs: dependencies-node-26</code>) run on <code>ubuntu-latest</code>, restore
+<code>node_modules</code> with <code>fail-on-cache-miss</code>, then run <code>npm run build</code> and <code>npm run smoke</code>.</li>
+<li><code>.github/actions/run-unit-shard/action.yml</code> has no <code>Build</code> or <code>Smoke the built bundles</code> step,
+and its description says build and smoke run in the build-smoke jobs.</li>
+<li><code>CI result</code> needs <code>build-smoke-node-24</code> and none of the Node 26 jobs, matching <code>package</code>, and
+<code>SKIPPABLE</code> lists <code>build-smoke-node-24</code>. Its step body and the <code>Detect docs-only change</code> body
+stay byte-identical to <code>skills/docs-only-ci/assets/</code>.</li>
+<li><code>flake report</code> still needs <code>unit-node-26</code>, and its <code>!cancelled()</code> runs it after the skip.</li>
+<li>A Node 26 failure on <code>main</code> turns that workflow run red; <code>CI result</code> there does not cover
+Node 26.</li>
+<li><code>test/init-script.test.ts</code>, <code>test/oss-readiness.test.ts</code> and
+<code>test/docs-only-ci-template.test.ts</code> hold the job graph above.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li>The <code>.github/workflows/ci.yml</code> layout: per-release <code>dependencies-node-&lt;v&gt;</code> jobs producing
+lockfile-keyed <code>node_modules</code> caches, unit shards through
+<code>.github/actions/run-unit-shard/action.yml</code>, and <code>npm run build</code> starting with <code>build:native</code>,
+which builds the native state lock the daemon bundle needs before smoke runs it.</li>
+<li><code>scripts/smoke-bundles.mjs</code> runs the bundles directly, with neither the Electron runtime nor a
+display.</li>
+<li>Node 24 and Node 26 are the supported releases. An upstream Node 26-only job must take the
+same <code>if:</code> and stay out of <code>CI result</code>&#39;s <code>needs</code>.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>.github/workflows/ci.yml</code> (the header comment, the Node 26 jobs&#39;
+<code>if:</code> and <code>needs</code>, the two build-smoke jobs, <code>flake-report</code>&#39;s and <code>ci-result</code>&#39;s comments,
+<code>ci-result</code>&#39;s <code>needs</code> and <code>SKIPPABLE</code>), <code>.github/actions/run-unit-shard/action.yml</code> (the
+description and the removed build and smoke steps), <code>AGENTS.md</code> (the CI paragraph),
+<code>docs/flaky-tests.md</code> (Node 26 on pull requests), <code>test/init-script.test.ts</code>,
+<code>test/oss-readiness.test.ts</code>.</p>
+<p><strong>Fork-only files.</strong> <code>docs/plans/ci-time-to-green/plan.md</code>. <code>test/docs-only-ci-template.test.ts</code>
+(fork-only through Docs-only CI) now also holds the Node 26 jobs&#39; condition.</p>
 <h3>Windows support</h3>
 <table>
 <thead>

@@ -1,7 +1,8 @@
 name: CI
 
 # Exercises the repository's quality gates - typecheck, lint, tests, build, a boot smoke,
-# and the browser end-to-end suite - on every push to main and every pull request.
+# and the browser end-to-end suite - on every push to main and every pull request. A pull
+# request runs them on Node 24 only; see "Node 26 off pull requests" below.
 #
 # The smoke step is not redundant with Build, and the comment it replaces claimed it was:
 # it said a production build meant "a broken bundle can't merge unnoticed", which was
@@ -22,9 +23,9 @@ name: CI
 #
 # ## Docs-only pull requests
 #
-# A pull request whose every changed path is under `docs/` skips `gates`, both unit matrices
-# and E2E. `changes` decides that; each gated job needs it and carries
-# `if: needs.changes.outputs.docs_only != 'true'`. What a docs change can break still runs:
+# A pull request whose every changed path is under `docs/` skips `gates`, the Node 24 unit
+# matrix, `build-smoke-node-24` and E2E. `changes` decides that; each gated job needs it and
+# carries `if: needs.changes.outputs.docs_only != 'true'`. What a docs change can break still runs:
 # `docs checks` (the doc-link check and every test matched by its discovery pattern,
 # `grep -l '\.\./docs/' test/*.test.ts`), and `flake report`, which reads zero reports and
 # publishes "Flaky tests: No flaky tests", the check Mission Control's Wait for CI requires.
@@ -44,6 +45,17 @@ name: CI
 #
 # The two step bodies are the `docs-only-ci` skill's assets, `skills/docs-only-ci/assets/`,
 # verbatim; `test/docs-only-ci-template.test.ts` fails when either copy drifts by one byte.
+#
+# ## Node 26 off pull requests
+#
+# `dependencies-node-26`, `unit-node-26` and `build-smoke-node-26` carry
+# `if: github.event_name != 'pull_request'` and nothing else: they run on every push to `main`,
+# tag and manual run, and never on a pull request. GitHub Free allows 20 concurrent jobs per
+# account, and a pull request's run fanned out to 33, so the Node 26 jobs were the ones left
+# queueing; the Node 26 floor is still checked on every merge. They are not in `CI result`'s
+# `needs`, as `package` is not, so their skip on a pull request fails nothing. A Node 26 failure
+# on `main` turns that workflow run red instead; `CI result` there does not cover Node 26. See
+# docs/plans/ci-time-to-green/plan.md, section 1.
 
 on:
   push:
@@ -172,6 +184,7 @@ jobs:
 
   dependencies-node-26:
     name: dependencies (node 26)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -279,14 +292,78 @@ jobs:
           # Unquoted on purpose: one argument per file. Test file names carry no whitespace.
           node --test --import ./test/setup-state.mjs --import tsx $files
 
-  # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
-  # unflagged from Node 24); this pins the supported floor and the current release. Node 25
-  # is EOL.
+  # Build and smoke, once per supported Node release. Smoke is the only step in CI that
+  # executes the built bundle, so it is exactly the step whose result can differ between
+  # Node 24 and Node 26, which is why it is not in `gates`. It used to run at the end of all
+  # twelve unit shards, building the same `dist/` twelve times and holding every shard open
+  # for it; one job per release checks the same thing once.
   #
-  # Build and smoke stay inside this matrix rather than moving to `gates`, and that is not
-  # an oversight. Smoke is the only step here that executes the built bundle, so it is
-  # exactly the step whose result can differ between Node 24 and Node 26. Build and smoke run
-  # after every test shard so each check remains self-contained and exercises its own output.
+  # `npm run build` starts with `build:native`, which builds the native state lock the daemon
+  # bundle acquires before it serves, so smoke needs no other provisioning. Smoke runs the
+  # bundles directly and opens no window, so it needs neither the Electron runtime nor xvfb.
+  build-smoke-node-24:
+    name: build and smoke (node 24)
+    needs: [changes, dependencies-node-24]
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Build
+        run: npm run build
+
+      # Executes the bundles produced by Build, not the source modules covered by unit tests.
+      - name: Smoke the built bundles
+        run: npm run smoke
+
+  # Off pull requests, like the rest of Node 26; see "Node 26 off pull requests" above.
+  build-smoke-node-26:
+    name: build and smoke (node 26)
+    needs: dependencies-node-26
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 26
+        uses: actions/setup-node@v5
+        with:
+          node-version: '26'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-26-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - name: Build
+        run: npm run build
+
+      # Executes the bundles produced by Build, not the source modules covered by unit tests.
+      - name: Smoke the built bundles
+        run: npm run smoke
+
+  # The tests that DO care which Node runs them. >=24 is required (node:sqlite is used
+  # unflagged from Node 24); this pins the supported floor and the current release. Node 25
+  # is EOL. Node 26 runs off pull requests only; see "Node 26 off pull requests" above.
+  #
   # Six shards leave practical headroom below the three-minute target. Four shards put the
   # slowest partition at 179.7 seconds before its required posttest, which was too close to
   # the target to absorb ordinary runner variance.
@@ -319,8 +396,8 @@ jobs:
 
   unit-node-26:
     name: unit (node 26, shard ${{ matrix.shard }}/6)
-    needs: [changes, dependencies-node-26]
-    if: needs.changes.outputs.docs_only != 'true'
+    needs: dependencies-node-26
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -348,9 +425,9 @@ jobs:
   # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which
   # is also why it lives in `e2e/` and not `test/`.
   #
-  # Each shard builds its own `dist/` rather than downloading one from `unit`. A build is
-  # 5 seconds; uploading and downloading an artifact is slower than that, and it would also
-  # make every shard wait on a job it otherwise has no reason to know about.
+  # Each shard builds its own `dist/` rather than downloading one from `build-smoke-node-24`.
+  # A build is 5 seconds; uploading and downloading an artifact is slower than that, and it
+  # would also make every shard wait on a job it otherwise has no reason to know about.
   #
   # Gated to Node 24 rather than the matrix. The matrix exists to pin the `node:sqlite`
   # floor and the current release for the DAEMON; the browser layer gains nothing from
@@ -491,6 +568,9 @@ jobs:
   # `!cancelled()` rather than `always()`: a run superseded by a newer push is cancelled, and
   # its commit needs no check. A red test job still gets its report published.
   #
+  # It needs the Node 26 unit jobs too, which skip on every pull request; `!cancelled()` runs
+  # after a skipped need, so that skip changes nothing here.
+  #
   # Never gated on `changes`. On a docs-only run the test jobs it needs were skipped, which
   # `!cancelled()` still runs after; it reads zero reports and publishes "Flaky tests: No flaky
   # tests", without which Mission Control's Wait for CI would block the pull request.
@@ -534,20 +614,20 @@ jobs:
           retention-days: 30
 
   # The one check branch protection should require; see "Docs-only pull requests" above. It
-  # needs every job that runs on a pull request, so `package` (tags and manual runs only) is
-  # not among them. `always()` so it reports whatever its needs did: it passes only when each
-  # succeeded, or is listed in SKIPPABLE and was skipped on a docs-only run. SKIPPABLE is
-  # exactly the gated jobs; a skipped `docs-checks`, `flake-report` or `changes` fails it.
+  # needs every job that runs on a pull request, so `package` (tags and manual runs only) and
+  # the Node 26 jobs (see "Node 26 off pull requests") are not among them. `always()` so it
+  # reports whatever its needs did: it passes only when each succeeded, or is listed in
+  # SKIPPABLE and was skipped on a docs-only run. SKIPPABLE is exactly the gated jobs; a
+  # skipped `docs-checks`, `flake-report` or `changes` fails it.
   ci-result:
     name: CI result
     needs:
       - changes
       - dependencies-node-24
-      - dependencies-node-26
       - gates
       - docs-checks
+      - build-smoke-node-24
       - unit-node-24
-      - unit-node-26
       - e2e
       - flake-report
     if: always()
@@ -563,7 +643,7 @@ jobs:
           SKIPPABLE: |
             gates
             unit-node-24
-            unit-node-26
+            build-smoke-node-24
             e2e
         run: |
           # docs-only-ci: the one check a protected branch requires.
