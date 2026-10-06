@@ -204,6 +204,13 @@ test("every unit shard finishes inside its step, so it prints its summary and JU
   assert.ok(glob && command.endsWith(` ${glob}`), "the shard runs npm test's glob");
   assert.ok(command.includes(' --test-shard="$MISSION_TEST_SHARD" '));
   assert.ok(command.includes(' --test-concurrency="$MISSION_TEST_CONCURRENCY" '));
+  // The step expands those itself, no longer inside npm's script-shell, so it must run in bash
+  // (pwsh, the windows-latest default, would pass `--test-shard=`) and both must be set.
+  const stepShell = step.match(/^ {8}shell: (\S+)$/m)?.[1];
+  const jobShell = body.match(/^ {4}defaults:\n {6}run:\n {8}shell: (\S+)$/m)?.[1];
+  assert.equal(stepShell ?? jobShell, "bash", "the Test step runs in bash");
+  assert.match(step, /^ {10}MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/3$/m);
+  assert.match(body, /^ {6}MISSION_TEST_CONCURRENCY: '\d+'$/m, "the job sets the concurrency the step expands");
 
   // A hung test fails sooner than test:run's own bound, and so names itself sooner.
   const linuxMs = Number(scripts["test:run"].match(/--test-timeout=(\d+)/)?.[1]);
