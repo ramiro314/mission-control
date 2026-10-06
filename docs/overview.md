@@ -270,8 +270,8 @@ make restart        # stop any running stack and start it fresh
 ```
 
 The window loads the Vite dev server, so React Fast Refresh works inside it exactly as in
-the browser; the Electron shell restarts on main-process edits. In this mode `dev:server`
-alone owns the daemon and its restart loop; Electron supervises both the daemon and
+the browser; the Electron shell restarts on main-process edits. In this mode `dev:server:lane`
+(`dev:server` reading stdin from /dev/null) alone owns the daemon and its restart loop; Electron supervises both the daemon and
 [Foreman](foreman.md#foreman-auto-responder) only in the packaged app. `make start` adds the
 development Foreman worker to the group; `make restart`
 tears the whole stack down and brings it back up. The plain `make dev` browser workflow is
