@@ -1391,26 +1391,35 @@ export class SdkSupervisor {
     // stream ending must not leave a row claiming the session is still resumable.
     let outcome: SdkSessionStatus = "exited";
     let observedPid: number | null = null;
-    const captureProcess = async (pid: number | null) => {
+    // The scans behind the recorded lifetime, in the order they were asked for. Never awaited
+    // ahead of an event: a fleet scan takes seconds on a loaded machine, and holding `bound`
+    // behind one left the registry without the agent's identity while that agent was already
+    // calling Mission Control - a scout's report was then attributed to no work episode, and
+    // its completion refused it as never submitted. Unknown is already the safe answer here.
+    let lifetime = Promise.resolve();
+    const captureProcess = (pid: number | null): void => {
       // A replacement must never inherit its predecessor's absence proof. Null is unknown.
+      // Synchronous, so it still lands before the event that revealed the new pid.
       if (pid !== observedPid) recordSdkSessionProcess(id, null);
       observedPid = pid;
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
-      try {
-        const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-        const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
-        if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
-          recordSdkSessionProcess(id, { pid, startMs: process.startMs });
-        }
-      } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
+      lifetime = lifetime.then(async () => {
+        try {
+          const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
+          const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+          if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+            recordSdkSessionProcess(id, { pid, startMs: process.startMs });
+          }
+        } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
+      });
     };
     try {
-      if (handle.recoveryProcessId) await captureProcess(handle.recoveryProcessId);
+      if (handle.recoveryProcessId) captureProcess(handle.recoveryProcessId);
       for await (const evt of handle.events) {
         const pid = handle.recoveryProcessId ?? null;
         // No process scan per token. Binding retries a startup observation, and a changed
         // driver PID invalidates the saved lifetime before that driver's event is published.
-        if (pid !== observedPid || (evt.kind === "bound" && pid)) await captureProcess(pid);
+        if (pid !== observedPid || (evt.kind === "bound" && pid)) captureProcess(pid);
         let deferIdle = false;
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
@@ -1459,7 +1468,10 @@ export class SdkSupervisor {
       console.error(`[sdk] event stream for ${id} failed:`, err);
       outcome = "failed";
     } finally {
-      if ((handle.recoveryProcessId ?? null) !== observedPid) await captureProcess(handle.recoveryProcessId ?? null);
+      if ((handle.recoveryProcessId ?? null) !== observedPid) captureProcess(handle.recoveryProcessId ?? null);
+      // Settled before the handle is released, which its guard checks: a stream that ends
+      // right after binding still leaves its observed lifetime behind.
+      await lifetime;
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);

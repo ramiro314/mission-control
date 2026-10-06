@@ -252,6 +252,40 @@ test("the supervisor persists the observed child lifetime after the stream ends 
   assert.equal(getSdkSessionProcess(session.id), null, "a restored handle must establish its own lifetime");
 });
 
+test("a slow process scan never holds the agent's identity back from the registry", async (t) => {
+  // The scan records crash-recovery absence proof and takes seconds on a loaded machine. An
+  // agent can call Mission Control in that window, and a scout report attributed before its
+  // session bound belonged to no work episode, so completing the scout refused it.
+  const handle = fakeHandle();
+  let pid: number | null = null;
+  Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  let releaseScan!: () => void;
+  const scanHeld = new Promise<void>((resolve) => { releaseScan = resolve; });
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    await scanHeld;
+    return { processes: [{ pid: 41101, ppid: 1, tty: null, startRaw: "fixture", startMs: 4110100,
+      command: "fixture", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  pid = 41101;
+  handle.push({ kind: "bound", agentSessionId: "agent-bound-early", transcriptPath: null, modelId: null, pid });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-bound-early",
+    "the binding is published while the scan is still running");
+  assert.equal(getSdkSessionProcess(session.id), null, "no lifetime is claimed before the scan answers");
+
+  // A stream that ends while its scan is outstanding still leaves the observed lifetime.
+  handle.end();
+  await drain();
+  releaseScan();
+  await drain();
+  assert.equal(supervisor.handleFor(session.id), null);
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41101, startMs: 4110100 });
+});
+
 test("Codex SDK sessions carry their synthetic identity into Mission MCP", async () => {
   const firstHandle = fakeHandle();
   const secondHandle = fakeHandle();
