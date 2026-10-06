@@ -61,7 +61,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
   // legs counted, derived from the job graph rather than a literal, so a new job that runs beside
   // the shards on a pull request raises the count. A job the shards wait for, or one that waits
   // for a shard, is not concurrent with them. Every job is parsed, not just the ones named above. A job's `if:` is evaluated as a full (non-docs, untagged) pull request
-  // would see it; an expression this cannot read throws, which fails the test until it can.
+  // into `main` would see it; an expression this cannot read throws, which fails the test until it can.
   const allJobs = new Map(
     [...workflow.slice(workflow.indexOf("\njobs:\n")).matchAll(
       /^ {2}([\w-]+):[ \t]*\r?\n([\s\S]*?)(?=^ {2}[\w-]+:|(?![\s\S]))/gm,
@@ -80,6 +80,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
     const expression = condition
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
       .replaceAll("github.event_name", "'pull_request'")
+      .replaceAll("github.base_ref", "'main'")
       .replaceAll("github.ref", "'refs/pull/1/merge'")
       .replace(/needs\.changes\.outputs\.\w+/g, "'false'");
     return Boolean(new Function("startsWith", "always", "cancelled", `return (${expression});`)(

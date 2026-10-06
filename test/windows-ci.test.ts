@@ -38,10 +38,13 @@ function shards(body: string): number[] | undefined {
   return body.match(/^ {8}shard: \[([^\]]+)\]/m)?.[1]?.split(",").map(Number);
 }
 
-/** Evaluates the Windows `if:` for one event, through the JavaScript operators it shares. */
-function windowsJobsRun(event: { event_name: string; ref: string }): boolean {
+/**
+ * Evaluates the Windows `if:` for one event, through the JavaScript operators it shares.
+ * `base_ref` is GitHub's empty string on every event but a pull request.
+ */
+function windowsJobsRun(event: { event_name: string; ref: string; base_ref?: string }): boolean {
   const condition = jobValue(WINDOWS.get("unit-windows")!, "if")!;
-  return new Function("github", `return (${condition});`)(event);
+  return new Function("github", `return (${condition});`)({ base_ref: "", ...event });
 }
 
 test("pushes to main and release/windows run CI, and every pull request does", () => {
@@ -63,7 +66,7 @@ test("the Windows jobs are exactly the planned set, on windows-latest with Node 
   }
 });
 
-test("they run for a push or manual run on release/windows, never a pull request", () => {
+test("they run for a push, manual run or pull request on release/windows, and nowhere else", () => {
   const conditions = new Set([...WINDOWS.values()].map((body) => jobValue(body, "if")));
   assert.equal(conditions.size, 1, "every Windows job carries the same condition");
   for (const [id, body] of WINDOWS) {
@@ -72,7 +75,12 @@ test("they run for a push or manual run on release/windows, never a pull request
 
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/release/windows" }), true);
   assert.equal(windowsJobsRun({ event_name: "workflow_dispatch", ref: "refs/heads/release/windows" }), true);
-  assert.equal(windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge" }), false);
+  assert.equal(
+    windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "release/windows" }),
+    true,
+    "a pull request into release/windows shows its Windows result before it merges",
+  );
+  assert.equal(windowsJobsRun({ event_name: "pull_request", ref: "refs/pull/7/merge", base_ref: "main" }), false);
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/heads/main" }), false);
   assert.equal(windowsJobsRun({ event_name: "push", ref: "refs/tags/v1.2.3" }), false);
 });

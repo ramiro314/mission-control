@@ -1581,7 +1581,7 @@ jobs&#39; condition and the tree-reuse wiring.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) is in review: it fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on <code>main</code>. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches <code>main</code> in one merge.</td>
+<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) is in review: it runs the Windows jobs on pull requests into the branch, fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on <code>main</code>. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches <code>main</code> in one merge.</td>
 </tr>
 <tr>
 <td>PRs</td>
@@ -1679,7 +1679,8 @@ git config before a managed worktree is added. No Windows row is probed on anoth
 and the native window frame with an auto-hidden menu bar, and <code>menu-template.ts</code> drops the
 macOS app menu there. Every other platform keeps the macOS answers.</li>
 <li><strong>Windows CI</strong> (D15, D30, D32): <code>windows-latest</code> jobs on Node 24 run on pushes to
-<code>release/windows</code>, never on a pull request, with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
+<code>release/windows</code> and pull requests into it (no other pull request), with npm&#39;s <code>script-shell</code>
+set to Git Bash. Their product
 steps are allowed to fail until M2.12, and stay out of <code>CI result</code>. Every test or spec that
 skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</code> in <code>test/helpers/win32-skip.ts</code>,
 with a stated reason (D37).</li>
@@ -1739,7 +1740,7 @@ executable search ladder). On <code>release/windows</code> also: <code>src/serve
 <code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
 <code>scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs</code>, <code>scripts/build-pi-extension.ts</code>,
 <code>scripts/smoke-bundles.mjs</code>, <code>test/pi-extension-build.test.ts</code>, <code>Makefile</code>, <code>package.json</code> (<code>dev:electron:app</code>, the <code>dev:*:lane</code> scripts), <code>docs/overview.md</code>,
-<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
+<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>test/init-script.test.ts</code> (the shard budget models a pull request into <code>main</code>), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
 skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
 <code>docs/desktop-and-packaging.md</code>.</p>
 <p><strong>Fork-only files.</strong> <code>.gitattributes</code>, <code>src/server/process-inspection/</code>,
