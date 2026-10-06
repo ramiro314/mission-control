@@ -49,7 +49,7 @@ assumptions and surfaces to find conceptual conflicts that merge cleanly as text
 </tr>
 <tr>
 <td>Active fork features</td>
-<td><strong>13</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
+<td><strong>14</strong> (plus 3 superseded or removed, and 12 standalone fixes)</td>
 </tr>
 <tr>
 <td>Measured at</td>
@@ -130,6 +130,11 @@ or issues.</p>
 <td>Docs-only CI</td>
 <td>Active (the <code>docs checks</code> job, the <code>docs-only-ci</code> skill, and the docs-only skip with <code>CI result</code> in this repository)</td>
 <td>#164, #168, #171</td>
+</tr>
+<tr>
+<td>CI time-to-green</td>
+<td>In progress (one provisioning path in the unit shard; the rest of the plan is ticketed)</td>
+<td>#200 (plan), pending (one provisioning path)</td>
 </tr>
 <tr>
 <td>Windows support</td>
@@ -1396,6 +1401,63 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 <p><strong>Fork-only files.</strong> <code>skills/docs-only-ci/SKILL.md</code>,
 <code>skills/docs-only-ci/assets/detect-docs-only.sh</code>, <code>skills/docs-only-ci/assets/ci-result.sh</code>,
 <code>test/docs-only-ci-scripts.test.ts</code>, <code>test/docs-only-ci-template.test.ts</code>.</p>
+<h3>CI time-to-green</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Status</td>
+<td><strong>In progress</strong>. Section 3 of the plan (one provisioning path in the unit shard) is built; sections 1, 2 and 4 to 8 are separate tickets.</td>
+</tr>
+<tr>
+<td>PRs</td>
+<td>#200 (plan), pending (one provisioning path in the unit shard)</td>
+</tr>
+<tr>
+<td>Plan docs</td>
+<td><a href="../plans/ci-time-to-green/plan.md">ci-time-to-green/plan.md</a>, &quot;Design&quot; section 3 and decision 6</td>
+</tr>
+<tr>
+<td>Upstream candidate</td>
+<td>Maybe. The download retry and the single provisioning path are generic; the shard action is shaped around the fork&#39;s flake-aware testing.</td>
+</tr>
+</tbody></table>
+<p><strong>Intent.</strong> Cut CI wall clock to green by removing work every run repeats. A unit shard
+provisioned its environment twice, once in the action and again through <code>pretest</code>, and its
+<code>posttest</code> reran the two workflow-evidence test files its own glob already held.</p>
+<p><strong>Behavior contracts.</strong></p>
+<ul>
+<li><code>pretest</code> is the one definition of test provisioning, locally and in CI. The unit shard
+action runs <code>npm run pretest</code> once and has no step of its own that installs Electron or
+builds the native state lock. <code>Resolve Electron version</code> and <code>Cache the Electron runtime</code>
+stay, so the runtime <code>pretest</code> probes is normally restored rather than downloaded.</li>
+<li><code>scripts/ensure-electron-runtime.mjs</code> retries a failed runtime install three times, waiting
+10 s and then 20 s between attempts, and fails with the last attempt&#39;s detail. This protects
+a cold cache locally as well as in CI.</li>
+<li>The shard&#39;s Test step runs <code>npm run --silent test:run</code> with <code>--test-concurrency</code>,
+<code>--test-shard</code> and the unit glob, not <code>npm test</code>, so <code>posttest</code> (<code>test:workflow-evidence</code>)
+does not run in CI. JUnit output and the flake rerun both go through <code>test:run</code>.</li>
+<li>Local <code>npm test</code>, with its <code>pretest</code> and <code>posttest</code>, is unchanged.</li>
+<li><code>test/flake-report-action.test.ts</code> holds the shard&#39;s single <code>npm run pretest</code>, its direct
+<code>test:run</code> call and the absence of <code>npm test</code>; <code>test/electron-runtime-preflight.test.ts</code>
+holds the retry.</li>
+</ul>
+<p><strong>Upstream behavior it assumes.</strong></p>
+<ul>
+<li><code>package.json</code>&#39;s <code>pretest</code> provisions everything the unit suite needs (Electron runtime,
+native state lock), and <code>posttest</code> adds only tests already inside <code>test/**/*.test.ts</code>.</li>
+<li>Electron&#39;s <code>install.js</code> downloads the runtime on first use (Electron 42+) and exits non-zero
+when the download fails.</li>
+</ul>
+<p><strong>Upstream surfaces touched.</strong> <code>.github/actions/run-unit-shard/action.yml</code> (provisioning and
+Test steps), <code>.github/workflows/ci.yml</code> (the unit matrix comment),
+<code>scripts/ensure-electron-runtime.mjs</code> and its <code>.d.mts</code>, <code>AGENTS.md</code> (the native state lock
+paragraph), <code>docs/flaky-tests.md</code> (the unit shard bullet).</p>
+<p><strong>Fork-only files.</strong> None.</p>
 <h3>Windows support</h3>
 <table>
 <thead>

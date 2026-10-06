@@ -288,8 +288,8 @@ jobs:
   # exactly the step whose result can differ between Node 24 and Node 26. Build and smoke run
   # after every test shard so each check remains self-contained and exercises its own output.
   # Six shards leave practical headroom below the three-minute target. Four shards put the
-  # slowest partition at 179.7 seconds before its required posttest, which was too close to
-  # the target to absorb ordinary runner variance.
+  # slowest partition at 179.7 seconds, which was too close to the target to absorb ordinary
+  # runner variance.
   unit-node-24:
     name: unit (node 24, shard ${{ matrix.shard }}/6)
     needs: [changes, dependencies-node-24]

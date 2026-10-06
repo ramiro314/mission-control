@@ -44,42 +44,33 @@ runs:
         path: ~/.cache/electron
         key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
 
-    # Electron 42+ downloads its runtime on first use instead of during npm install.
-    # Provision it explicitly so GUI fixtures only exercise the application under test.
-    # The cache removes the normal network dependency; retries protect its cold path.
-    - name: Install Electron test runtime
+    # `pretest` is the one definition of test provisioning, the same path a local `npm test`
+    # takes: it fetches the Electron runtime the cache above restores (retrying a cold-cache
+    # download) and builds the native state lock every source-loaded daemon test acquires.
+    - name: Provision the test environment
       shell: bash
-      run: |
-        for attempt in 1 2 3; do
-          if npm exec -- install-electron --no; then exit 0; fi
-          echo "::warning::Electron runtime download failed (attempt ${attempt}/3)"
-          sleep $((attempt * 10))
-        done
-        exit 1
-
-    # Source-loaded daemon tests acquire the same native state lock as the shipped daemon.
-    # Build it before each shard runs so no test depends on another shard's module-load side effect.
-    - name: Build native state lock
-      shell: bash
-      run: npm run build:state-lock-native
+      run: npm run pretest
 
     # The shard records its exit code instead of failing here: the flake report step below
     # decides. It reruns only the failed files once, so a test that fails and then passes is a
     # flake (reported, job stays green) and one that fails twice fails the job. See
     # docs/flaky-tests.md.
+    #
+    # `test:run` directly rather than `npm test`: provisioning already ran above, and `posttest`
+    # would rerun `test:workflow-evidence`, whose two files are already in this shard's glob.
     - name: Test
       id: test
       shell: bash
       run: |
         mkdir -p "$RUNNER_TEMP/flake"
         set +e
-        xvfb-run -a npm test
+        xvfb-run -a npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" --test-shard="$MISSION_TEST_SHARD" 'test/**/*.test.ts'
         echo "exit-code=$?" >> "$GITHUB_OUTPUT"
       env:
         MISSION_TEST_SHARD: ${{ inputs.shard }}/${{ inputs.shard-total }}
         MISSION_TEST_JUNIT: ${{ runner.temp }}/flake/junit.xml
 
-    # The rerun goes through `test:run`, the same script `npm test` runs, with the shard's failed
+    # The rerun goes through `test:run`, the same script the Test step runs, with the shard's failed
     # files in place of the glob, so the two runs cannot disagree about how JUnit is produced.
     # `{junit}` is where the rerun writes its results.
     - name: Rerun failed test files once

@@ -20,7 +20,7 @@ Rendered page: [ledger.html](ledger.html). Rules for keeping it current are at t
 | Sync date | 2026-10-05, fork PR #175 (merge commit `fdf3e845`) |
 | Fork commits ahead of upstream | **341** (247 excluding merge commits) |
 | Upstream commits behind | **0** |
-| Active fork features | **13** (plus 3 superseded or removed, and 12 standalone fixes) |
+| Active fork features | **14** (plus 3 superseded or removed, and 12 standalone fixes) |
 | Measured at | `sync/upstream-2026-10-05` `3cc1b233`, 2026-10-05 |
 
 How the numbers are measured, from the fork checkout with both remotes fetched:
@@ -54,6 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
+| CI time-to-green | In progress (one provisioning path in the unit shard; the rest of the plan is ticketed) | #200 (plan), pending (one provisioning path) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1136,6 +1137,50 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 **Fork-only files.** `skills/docs-only-ci/SKILL.md`,
 `skills/docs-only-ci/assets/detect-docs-only.sh`, `skills/docs-only-ci/assets/ci-result.sh`,
 `test/docs-only-ci-scripts.test.ts`, `test/docs-only-ci-template.test.ts`.
+
+### CI time-to-green
+
+| Field | Value |
+| --- | --- |
+| Status | **In progress**. Section 3 of the plan (one provisioning path in the unit shard) is built; sections 1, 2 and 4 to 8 are separate tickets. |
+| PRs | #200 (plan), pending (one provisioning path in the unit shard) |
+| Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), "Design" section 3 and decision 6 |
+| Upstream candidate | Maybe. The download retry and the single provisioning path are generic; the shard action is shaped around the fork's flake-aware testing. |
+
+**Intent.** Cut CI wall clock to green by removing work every run repeats. A unit shard
+provisioned its environment twice, once in the action and again through `pretest`, and its
+`posttest` reran the two workflow-evidence test files its own glob already held.
+
+**Behavior contracts.**
+
+- `pretest` is the one definition of test provisioning, locally and in CI. The unit shard
+  action runs `npm run pretest` once and has no step of its own that installs Electron or
+  builds the native state lock. `Resolve Electron version` and `Cache the Electron runtime`
+  stay, so the runtime `pretest` probes is normally restored rather than downloaded.
+- `scripts/ensure-electron-runtime.mjs` retries a failed runtime install three times, waiting
+  10 s and then 20 s between attempts, and fails with the last attempt's detail. This protects
+  a cold cache locally as well as in CI.
+- The shard's Test step runs `npm run --silent test:run` with `--test-concurrency`,
+  `--test-shard` and the unit glob, not `npm test`, so `posttest` (`test:workflow-evidence`)
+  does not run in CI. JUnit output and the flake rerun both go through `test:run`.
+- Local `npm test`, with its `pretest` and `posttest`, is unchanged.
+- `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, its direct
+  `test:run` call and the absence of `npm test`; `test/electron-runtime-preflight.test.ts`
+  holds the retry.
+
+**Upstream behavior it assumes.**
+
+- `package.json`'s `pretest` provisions everything the unit suite needs (Electron runtime,
+  native state lock), and `posttest` adds only tests already inside `test/**/*.test.ts`.
+- Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
+  when the download fails.
+
+**Upstream surfaces touched.** `.github/actions/run-unit-shard/action.yml` (provisioning and
+Test steps), `.github/workflows/ci.yml` (the unit matrix comment),
+`scripts/ensure-electron-runtime.mjs` and its `.d.mts`, `AGENTS.md` (the native state lock
+paragraph), `docs/flaky-tests.md` (the unit shard bullet).
+
+**Fork-only files.** None.
 
 ### Windows support
 

@@ -8,6 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const PROBE_SOURCE = 'process.stdout.write(process.versions.electron || "")';
 const MAX_FAILURE_DETAIL = 2_000;
+const INSTALL_ATTEMPTS = 3;
+const INSTALL_BACKOFF_MS = 10_000;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 function defaultElectronPackageDir() {
   const require = createRequire(import.meta.url);
@@ -83,10 +89,14 @@ export function probeElectronRuntime(
 
 /**
  * Ensure Electron's generated runtime is executable, repairing only a broken package runtime.
+ *
+ * Electron 42+ downloads its runtime on first use rather than during npm install, so a cold
+ * CI cache reaches the network here. A failed download is retried with a growing backoff
+ * before the preflight gives up.
  */
 export function ensureElectronRuntime(
   electronPackageDir = defaultElectronPackageDir(),
-  { env = process.env, logger = console } = {},
+  { env = process.env, logger = console, sleep = sleepSync } = {},
 ) {
   const first = probeElectronRuntime(electronPackageDir, { env });
   if (first.ok) {
@@ -103,19 +113,26 @@ export function ensureElectronRuntime(
   logger.warn(`[electron-preflight] ${first.reason}; reinstalling the generated runtime`);
   const distDir = join(electronPackageDir, "dist");
   const pathFile = join(electronPackageDir, "path.txt");
-  rmSync(distDir, { recursive: true, force: true });
-  rmSync(pathFile, { force: true });
+  for (let attempt = 1; ; attempt++) {
+    rmSync(distDir, { recursive: true, force: true });
+    rmSync(pathFile, { force: true });
 
-  const installed = spawnSync(process.execPath, [join(electronPackageDir, "install.js")], {
-    cwd: electronPackageDir,
-    env,
-    encoding: "utf8",
-    stdio: "inherit",
-  });
-  if (installed.status !== 0) {
-    throw new Error(
-      `[electron-preflight] Electron runtime reinstall failed: ${failureDetail(installed)}`,
+    const installed = spawnSync(process.execPath, [join(electronPackageDir, "install.js")], {
+      cwd: electronPackageDir,
+      env,
+      encoding: "utf8",
+      stdio: "inherit",
+    });
+    if (installed.status === 0) break;
+    if (attempt === INSTALL_ATTEMPTS) {
+      throw new Error(
+        `[electron-preflight] Electron runtime reinstall failed after ${INSTALL_ATTEMPTS} attempts: ${failureDetail(installed)}`,
+      );
+    }
+    logger.warn(
+      `[electron-preflight] Electron runtime download failed (attempt ${attempt}/${INSTALL_ATTEMPTS}): ${failureDetail(installed)}`,
     );
+    sleep(attempt * INSTALL_BACKOFF_MS);
   }
 
   const repaired = probeElectronRuntime(electronPackageDir, { env });
