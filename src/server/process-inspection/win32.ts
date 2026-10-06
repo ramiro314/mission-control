@@ -24,10 +24,21 @@ import { defaultCommandRunner, type CommandRunner } from "./runner.ts";
 /** The system-wide listing, sized like the POSIX `ps` it replaces: see `PS_TIMEOUT_MS`. */
 const LIST_TIMEOUT_MS = 30_000;
 /**
- * A single-pid read. Windows PowerShell takes most of a second to start before CIM answers,
- * so the POSIX budgets (one to five seconds) would turn a slow start into an unreadable pid.
+ * The port read. Windows PowerShell takes most of a second to start before the TCP/IP module
+ * answers, so the four seconds POSIX gives `lsof` would turn a slow start into "nothing listens".
  */
-const SINGLE_READ_TIMEOUT_MS = 10_000;
+const PORT_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * A synchronous single-pid read, which BLOCKS the daemon's event loop for as long as it runs:
+ * most of a second on win32, where POSIX's `ps` takes milliseconds. Its two callers do not
+ * reach it on win32 today. `processStartIdentity` (`workflows/check-identity.ts`) answers null
+ * on every platform but Linux and macOS before reading anything, and Pi generation leases
+ * (`pi/generation-lease.ts`) exist only where Pi runs, which win32 refuses (plan D20). A new
+ * win32 caller on a hot path needs an asynchronous read instead. The budget is POSIX's largest
+ * synchronous one, so even a stalled CIM freezes the daemon for no longer than `ps` could.
+ */
+const SYNC_READ_TIMEOUT_MS = 5_000;
 
 export const WIN32_CWD_UNAVAILABLE =
   "Windows exposes no supported way to read another process's working directory";
@@ -114,7 +125,7 @@ export function createWin32ProcessInspector(runner: CommandRunner = defaultComma
   const readRow = (pid: number): Win32Row | null => {
     if (!positiveInteger(pid)) return null;
     const raw = runner.runSync("powershell", powerShellArgs(win32ProcessScript(pid)), {
-      timeoutMs: SINGLE_READ_TIMEOUT_MS,
+      timeoutMs: SYNC_READ_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
     });
     if (raw === null) return null;
@@ -172,7 +183,7 @@ export function createWin32ProcessInspector(runner: CommandRunner = defaultComma
     async findListeningPid(port) {
       if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null;
       const result = await runner.run("powershell", powerShellArgs(win32ListeningPidScript(port)), {
-        timeoutMs: SINGLE_READ_TIMEOUT_MS,
+        timeoutMs: PORT_READ_TIMEOUT_MS,
       });
       if (result.code !== 0) return null;
       const pid = Number(result.stdout.trim());

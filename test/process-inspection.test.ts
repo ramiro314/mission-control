@@ -219,8 +219,8 @@ test("the win32 inspector issues one encoded PowerShell script per read, and non
 
   assert.deepEqual(calls, [
     { sync: false, bin: "powershell", flags: POWERSHELL_FLAGS, script: WIN32_LIST_PROCESSES_SCRIPT, opts: { timeoutMs: 30_000 } },
-    { sync: true, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ProcessScript(31), opts: { timeoutMs: 10_000, maxBuffer: 1024 * 1024 } },
-    { sync: true, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ProcessScript(41), opts: { timeoutMs: 10_000, maxBuffer: 1024 * 1024 } },
+    { sync: true, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ProcessScript(31), opts: { timeoutMs: 5_000, maxBuffer: 1024 * 1024 } },
+    { sync: true, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ProcessScript(41), opts: { timeoutMs: 5_000, maxBuffer: 1024 * 1024 } },
     { sync: false, bin: "powershell", flags: POWERSHELL_FLAGS, script: win32ListeningPidScript(4317), opts: { timeoutMs: 10_000 } },
   ]);
 });
