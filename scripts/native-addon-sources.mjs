@@ -21,6 +21,7 @@ export const NATIVE_ADDON_SOURCES = {
   },
   "keep-awake": {
     darwin: ["keep_awake.mm"],
+    win32: ["keep_awake_win.cc"],
   },
 };
 

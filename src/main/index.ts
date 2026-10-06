@@ -26,6 +26,7 @@ import { startForeman, type ForemanController } from "./foreman.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
+import { trayIcon } from "./platform-shell.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
@@ -103,7 +104,7 @@ const paths = {
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
   webDir: join(appRoot, "dist", "web"),
   preload: join(appRoot, "dist", "preload", "index.cjs"),
-  trayIcon: join(appRoot, "build", "trayTemplate.png"),
+  trayIcon: trayIcon(process.platform, join(appRoot, "build")),
 };
 
 let backgroundStart: BackgroundStartOwnership<DaemonController, ForemanController> | null = null;

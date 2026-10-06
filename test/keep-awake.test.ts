@@ -219,6 +219,110 @@ test("macOS native provider owns the complete transient keep-awake lifecycle", a
   );
 });
 
+/** A native binding that records each reason it was asked for and each handle released. */
+function recordingBinding() {
+  const reasons: string[] = [];
+  const released: unknown[] = [];
+  const binding: NativeKeepAwakeBinding = {
+    create: (reason) => {
+      reasons.push(reason);
+      return { assertion: reasons.length };
+    },
+    release: (handle) => released.push(handle),
+  };
+  return { binding, reasons, released };
+}
+
+test("Windows runs the same native lifecycle through a power request", async () => {
+  const native = recordingBinding();
+  const { manager, spawns, statuses } = setup({
+    platform: "win32",
+    override: null,
+    loadNativeBinding: () => native.binding,
+  });
+
+  const initial = manager.status();
+  const enabled = await manager.setEnabled(true);
+  const disabled = await manager.setEnabled(false);
+
+  assert.deepEqual(initial, {
+    supported: true,
+    unavailableReason: null,
+    state: "off",
+    provider: "power-request",
+    since: null,
+    error: null,
+  });
+  assert.equal(enabled.state, "on");
+  assert.equal(enabled.since, 1_700_000_000_000);
+  assert.equal(disabled.state, "off");
+  assert.deepEqual(
+    statuses.map((s) => s.state),
+    ["starting", "on", "stopping", "off"],
+  );
+  assert.deepEqual(native.reasons, [
+    "Mission Control is keeping this PC awake while agent work is active",
+  ]);
+  assert.deepEqual(native.released, [{ assertion: 1 }]);
+  assert.equal(spawns.length, 0);
+});
+
+test("macOS keeps its IOKit provider and its exact assertion reason", async () => {
+  const native = recordingBinding();
+  const { manager } = setup({ override: null, loadNativeBinding: () => native.binding });
+
+  await manager.setEnabled(true);
+
+  assert.equal(manager.status().provider, "iokit");
+  assert.deepEqual(native.reasons, [
+    "Mission Control is keeping this Mac awake while agent work is active",
+  ]);
+});
+
+test("Windows native failures name the power-request provider", async () => {
+  const { manager } = setup({
+    platform: "win32",
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => ({ assertion: 1 }),
+      release: () => {
+        throw new Error("Windows power request clear failed with code 6");
+      },
+    }),
+  });
+  await manager.setEnabled(true);
+  const failedRelease = await manager.setEnabled(false);
+  assert.match(failedRelease.error ?? "", /could not release power-request: .*code 6/);
+
+  const { manager: refused } = setup({
+    platform: "win32",
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => {
+        throw new Error("Windows power request set failed with code 5");
+      },
+      release: () => assert.fail("a failed create has no handle to release"),
+    }),
+  });
+  const failedCreate = await refused.setEnabled(true);
+  assert.match(failedCreate.error ?? "", /could not start power-request: .*code 5/);
+});
+
+test("Windows native load failure is unsupported and never falls back to the command provider", () => {
+  const { manager, spawns } = setup({
+    platform: "win32",
+    override: null,
+    loadNativeBinding: () => {
+      throw new Error("keep-awake.node was not built");
+    },
+  });
+  const status = manager.status();
+  assert.equal(status.supported, false);
+  assert.equal(status.provider, null);
+  assert.match(status.unavailableReason ?? "", /native binding is unavailable: keep-awake\.node/);
+  assert.equal(spawns.length, 0);
+});
+
 test("native create failure is bounded, truthful, and retryable without a command fallback", async () => {
   let creates = 0;
   const { manager, spawns } = setup({

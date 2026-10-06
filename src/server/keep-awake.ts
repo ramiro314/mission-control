@@ -14,12 +14,14 @@ export type { NativeKeepAwakeBinding } from "./keep-awake-native.ts";
  * On macOS the daemon itself owns one IOKit
  * `kIOPMAssertionTypePreventUserIdleSystemSleep` assertion. It prevents user-idle
  * SYSTEM sleep and nothing else, so the display still dims and locks. The OS removes
- * the process-owned assertion after a crash or SIGKILL. Display-sleep and synthetic
+ * the process-owned assertion after a crash or SIGKILL. On Windows it owns one power
+ * request set to `PowerRequestSystemRequired`, the same idle-system-sleep-only guarantee,
+ * and the kernel closes it with the process. Display-sleep and synthetic
  * user-activity assertions are deliberately absent because either would break the UI's
  * promise that "the screen can dim and lock normally".
  *
  * `MISSION_KEEP_AWAKE_BIN` selects the legacy command mechanics only as an explicit
- * test seam. It is never a production fallback after native loading or IOKit fails.
+ * test seam. It is never a production fallback after native loading or the OS call fails.
  *
  * There is intentionally NOTHING durable here. Keep Awake applies only to the current
  * daemon run by an approved human decision: every new manager starts `off`, no config
@@ -40,7 +42,7 @@ export interface KeepAwakeChild {
 }
 
 export interface KeepAwakeDeps {
-  /** Host platform. Defaults to `process.platform`; only `darwin` ships a provider. */
+  /** Host platform. Defaults to `process.platform`; `darwin` and `win32` ship a provider. */
   platform?: NodeJS.Platform;
   /**
    * Inhibitor executable override. `undefined` reads `MISSION_KEEP_AWAKE_BIN` through
@@ -70,7 +72,23 @@ export interface KeepAwakeDeps {
  */
 const ERROR_MAX_CHARS = 200;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2000;
-const NATIVE_ASSERTION_REASON = "Mission Control is keeping this Mac awake while agent work is active";
+
+/** The native provider each platform ships, and the reason the OS lists for its assertion. */
+const NATIVE_PROVIDERS: Partial<Record<NodeJS.Platform, NativeProvider>> = {
+  darwin: {
+    name: "iokit",
+    reason: "Mission Control is keeping this Mac awake while agent work is active",
+  },
+  win32: {
+    name: "power-request",
+    reason: "Mission Control is keeping this PC awake while agent work is active",
+  },
+};
+
+interface NativeProvider {
+  name: "iokit" | "power-request";
+  reason: string;
+}
 
 function bounded(text: string): string {
   return text.length > ERROR_MAX_CHARS ? `${text.slice(0, ERROR_MAX_CHARS - 1)}…` : text;
@@ -78,7 +96,7 @@ function bounded(text: string): string {
 
 type KeepAwakeProvider =
   | { kind: "command"; bin: string }
-  | { kind: "native"; binding: NativeKeepAwakeBinding }
+  | { kind: "native"; binding: NativeKeepAwakeBinding; native: NativeProvider }
   | { kind: "unavailable"; reason: string };
 
 export class KeepAwakeManager {
@@ -108,20 +126,21 @@ export class KeepAwakeManager {
   constructor(deps: KeepAwakeDeps = {}) {
     const platform = deps.platform ?? process.platform;
     const override = deps.override === undefined ? envVar("KEEP_AWAKE_BIN") ?? null : deps.override;
+    const native = NATIVE_PROVIDERS[platform];
     if (override) {
       this.provider = { kind: "command", bin: override };
-    } else if (platform !== "darwin") {
+    } else if (!native) {
       this.provider = {
         kind: "unavailable",
         reason: bounded(
           `Keep awake is unavailable on this system (${platform}) - ` +
-            "the native provider only supports macOS",
+            "the native provider only supports macOS and Windows",
         ),
       };
     } else {
       try {
         const loadNativeBinding = deps.loadNativeBinding ?? loadNativeKeepAwakeBinding;
-        this.provider = { kind: "native", binding: loadNativeBinding() };
+        this.provider = { kind: "native", binding: loadNativeBinding(), native };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.provider = {
@@ -147,7 +166,7 @@ export class KeepAwakeManager {
       unavailableReason: this.provider.kind === "unavailable" ? this.provider.reason : null,
       state: "off",
       provider: this.provider.kind === "native"
-        ? "iokit"
+        ? this.provider.native.name
         : this.provider.kind === "command"
           ? "caffeinate"
           : null,
@@ -174,7 +193,7 @@ export class KeepAwakeManager {
 
   /**
    * The daemon-shutdown half: the disable path, and nothing more. There is no durable
-   * state to write because none exists. IOKit drops a native assertion with its owning
+   * state to write because none exists. The OS drops a native assertion with its owning
    * process, while the explicit command fixture's `-w <daemon PID>` covers exits that
    * never reach this method.
    */
@@ -190,14 +209,14 @@ export class KeepAwakeManager {
       // `error`. Its next switch action asks for `on`; reconcile the retained handle
       // first, then acquire a fresh assertion. Returning the error again would wedge
       // the only operator control, while treating the old handle as `on` would guess
-      // whether IOKit had released it despite reporting failure.
-      const reconciled = this.disableNative(this.provider.binding);
+      // whether the OS had released it despite reporting failure.
+      const reconciled = this.disableNative(this.provider);
       if (reconciled.state === "error") return reconciled;
     }
     this.publish({ state: "starting", since: null, error: null });
     if (this.provider.kind === "native") {
       try {
-        this.nativeHandle = this.provider.binding.create(NATIVE_ASSERTION_REASON);
+        this.nativeHandle = this.provider.binding.create(this.provider.native.reason);
         this.hasNativeHandle = true;
       } catch (err) {
         this.nativeHandle = undefined;
@@ -206,7 +225,7 @@ export class KeepAwakeManager {
         this.publish({
           state: "error",
           since: null,
-          error: bounded(`could not start iokit: ${message}`),
+          error: bounded(`could not start ${this.provider.native.name}: ${message}`),
         });
         return this.current;
       }
@@ -237,7 +256,7 @@ export class KeepAwakeManager {
   }
 
   private async disable(): Promise<KeepAwakeStatus> {
-    if (this.provider.kind === "native") return this.disableNative(this.provider.binding);
+    if (this.provider.kind === "native") return this.disableNative(this.provider);
     const child = this.child;
     if (!child) {
       // Nothing is running: converge to off, which also clears a standing error - the
@@ -280,20 +299,22 @@ export class KeepAwakeManager {
     return this.current;
   }
 
-  private disableNative(binding: NativeKeepAwakeBinding): KeepAwakeStatus {
+  private disableNative(
+    provider: Extract<KeepAwakeProvider, { kind: "native" }>,
+  ): KeepAwakeStatus {
     if (!this.hasNativeHandle) {
       if (this.current.state !== "off") this.publish({ state: "off", since: null, error: null });
       return this.current;
     }
     this.publish({ state: "stopping", error: null });
     try {
-      binding.release(this.nativeHandle);
+      provider.binding.release(this.nativeHandle);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.publish({
         state: "error",
         since: null,
-        error: bounded(`could not release iokit: ${message}`),
+        error: bounded(`could not release ${provider.native.name}: ${message}`),
       });
       return this.current;
     }
