@@ -203,6 +203,11 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       distArtifact: [["build-smoke-node-24", "upload"], ["e2e", "download"]].map(([job, verb]) =>
         capture(jobs[job!], new RegExp(`uses: actions/${verb}-artifact@v\\d+\\s+with:\\s+name:[ \\t]*(.+?)[ \\t]*$`, "m"))
       ),
+      // A rerun of a failed E2E shard downloads the original attempt's `dist/`.
+      distRetentionDays: capture(
+        jobs["build-smoke-node-24"],
+        /name: dist-node-24[\s\S]*?retention-days:[ \t]*(\d+)/,
+      ),
       unitActionBuildsOrSmokes: stepNames(unitAction).some((name) => /build$|smoke/i.test(name)),
       consumerRestores: [
         jobs.gates,
@@ -301,6 +306,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       ],
       e2eDistSteps: ["Download dist", "Unpack dist"],
       distArtifact: ["dist-node-24", "dist-node-24"],
+      distRetentionDays: "7",
       unitActionBuildsOrSmokes: false,
       consumerRestores: [
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },

@@ -421,7 +421,9 @@ jobs:
 
       # The `dist/` every E2E shard tests; see the `e2e` job. Uploaded after smoke, so E2E only
       # ever drives a bundle that booted. A tarball, because an artifact drops file modes and
-      # `dist/satellites/*.mjs` and the native addons are executable.
+      # `dist/satellites/*.mjs` and the native addons are executable. Kept 7 days, like the
+      # flake reports: "Re-run failed jobs" does not rerun this job once it succeeded, so a
+      # rerun E2E shard downloads this attempt's artifact, and it has to outlive a weekend.
       - name: Pack dist for E2E
         run: tar -cf dist.tar dist
 
@@ -431,7 +433,7 @@ jobs:
           name: dist-node-24
           path: dist.tar
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # Off pull requests, like the rest of Node 26; see "Node 26 off pull requests" above.
   build-smoke-node-26:

@@ -134,7 +134,7 @@ or issues.</p>
 <tr>
 <td>CI time-to-green</td>
 <td>In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, <code>main</code>-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E <code>dist/</code> built by <code>build-smoke-node-24</code>; the measured median is pending)</td>
-<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), the shared E2E <code>dist/</code> PR</td>
+<td>#200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), #222 (shared E2E <code>dist/</code>)</td>
 </tr>
 <tr>
 <td>Windows support</td>
@@ -1418,7 +1418,7 @@ cases), <code>test/fixtures/route-surface.json</code> (the skill&#39;s row in <c
 </tr>
 <tr>
 <td>PRs</td>
-<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5), the shared E2E <code>dist/</code> PR (plan section 8)</td>
+<td>#200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5), #222 (plan section 8)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1447,11 +1447,12 @@ They run on every push to <code>main</code>, tag and manual run, and never on a 
 <code>build-smoke-node-26</code> (<code>needs: dependencies-node-26</code>) run on <code>ubuntu-latest</code>, restore
 <code>node_modules</code> with <code>fail-on-cache-miss</code>, then run <code>npm run build</code> and <code>npm run smoke</code>.</li>
 <li>After smoke, <code>build-smoke-node-24</code> packs <code>dist/</code> into <code>dist.tar</code> (a tarball, because an artifact
-drops file modes) and uploads it as the <code>dist-node-24</code> artifact, retained 1 day. <code>e2e</code> needs
+drops file modes) and uploads it as the <code>dist-node-24</code> artifact, retained 7 days so a later rerun
+of a failed E2E shard, which reuses the original attempt&#39;s artifact, still finds it. <code>e2e</code> needs
 <code>build-smoke-node-24</code>, has no <code>Build</code> step, and downloads and unpacks that artifact instead, so
 every shard tests the bundle that smoked, and a build or smoke failure skips E2E. Plan section 8
-keeps this only if the pull request median does not regress #221&#39;s; both medians and the query
-are in its pull request description.</li>
+keeps this only if the pull request median does not regress #221&#39;s; both medians and the query are
+in its pull request description.</li>
 <li><code>.github/actions/run-unit-shard/action.yml</code> has no <code>Build</code> or <code>Smoke the built bundles</code> step,
 and its description says build and smoke run in the build-smoke jobs.</li>
 <li><code>CI result</code> needs <code>build-smoke-node-24</code> and none of the Node 26 jobs, matching <code>package</code>, and

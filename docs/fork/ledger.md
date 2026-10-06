@@ -54,7 +54,7 @@ or issues.
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
-| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E `dist/` built by `build-smoke-node-24`; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), the shared E2E `dist/` PR |
+| CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E `dist/` built by `build-smoke-node-24`; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), #222 (shared E2E `dist/`) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
 | PR publication ownership | Active | #110 (plan), #119 (deferred publication), #120 (completion latch), #122 (unbound plan and shape), pending (branch `feat/pr-grant-authorization`) |
 | Complete frees the worktree | Superseded by upstream #1148 (2026-09-29, #62) | #11, #17 |
@@ -1146,7 +1146,7 @@ cases), `test/fixtures/route-surface.json` (the skill's row in `GET /api/skills`
 | Field | Value |
 | --- | --- |
 | Status | **In progress**. Node 26 runs off pull requests only, build and smoke run once per Node release in their own jobs, a unit shard provisions once through `pretest`, unit shards are balanced by recorded file duration, and a push to `main` skips the Node 24 suite, `gates` and E2E when its pull request's green run already tested the same tree. A pull request's run peaks at 19 concurrent jobs, with three Node 24 unit shards and fourteen E2E shards, and every E2E shard tests the one `dist/` that `build-smoke-node-24` built and smoked instead of building its own. The median wall clock against the 8-minute target is measured on #221; the shared `dist/` stays only if its pull request median does not regress #221's (plan section 8). |
-| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5), the shared E2E `dist/` PR (plan section 8) |
+| PRs | #200 (the plan), #215 (plan sections 1, 2 and 7), #214 (plan section 3), #218 (plan sections 6 and 7), #219 (plan section 4), #221 (plan section 5), #222 (plan section 8) |
 | Plan docs | [ci-time-to-green/plan.md](../plans/ci-time-to-green/plan.md), sections 1 to 8 and decisions 1 to 15 |
 | Upstream candidate | Maybe. Running build and smoke once per release instead of in every shard is generic; keeping Node 26 off pull requests answers this fork's 20-job concurrency cap on GitHub Free. The Electron download retry and the single provisioning path are generic. |
 
@@ -1169,11 +1169,12 @@ differently on `main`.
   `build-smoke-node-26` (`needs: dependencies-node-26`) run on `ubuntu-latest`, restore
   `node_modules` with `fail-on-cache-miss`, then run `npm run build` and `npm run smoke`.
 - After smoke, `build-smoke-node-24` packs `dist/` into `dist.tar` (a tarball, because an artifact
-  drops file modes) and uploads it as the `dist-node-24` artifact, retained 1 day. `e2e` needs
+  drops file modes) and uploads it as the `dist-node-24` artifact, retained 7 days so a later rerun
+  of a failed E2E shard, which reuses the original attempt's artifact, still finds it. `e2e` needs
   `build-smoke-node-24`, has no `Build` step, and downloads and unpacks that artifact instead, so
   every shard tests the bundle that smoked, and a build or smoke failure skips E2E. Plan section 8
-  keeps this only if the pull request median does not regress #221's; both medians and the query
-  are in its pull request description.
+  keeps this only if the pull request median does not regress #221's; both medians and the query are
+  in its pull request description.
 - `.github/actions/run-unit-shard/action.yml` has no `Build` or `Smoke the built bundles` step,
   and its description says build and smoke run in the build-smoke jobs.
 - `CI result` needs `build-smoke-node-24` and none of the Node 26 jobs, matching `package`, and
