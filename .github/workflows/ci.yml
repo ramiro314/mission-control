@@ -81,8 +81,9 @@ name: CI
 # With about 50 s for `changes` and `dependencies-node-24` before the shards and 25 s for
 # `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
 # target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
-# `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts`, which pins 3 + N + M,
-# change together. See docs/plans/ci-time-to-green/plan.md, section 5.
+# `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
+# test derives the peak from this file's job graph and pins it at 20, so a new job that runs
+# beside the shards on a pull request fails it until a shard makes room. See docs/plans/ci-time-to-green/plan.md, section 5.
 #
 # ## Tree reuse on `main`
 #
