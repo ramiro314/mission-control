@@ -49,5 +49,7 @@ test("fork pull requests cannot execute on shared self-hosted runners", () => {
   assert.doesNotMatch(workflow, /^\s+labels:\s+/mu);
   assert.match(workflow, /unit-node-24:[\s\S]*?runs-on:\s*ubuntu-latest/u);
   assert.match(workflow, /unit-node-26:[\s\S]*?runs-on:\s*ubuntu-latest/u);
+  assert.match(workflow, /build-smoke-node-24:[\s\S]*?runs-on:\s*ubuntu-latest/u);
+  assert.match(workflow, /build-smoke-node-26:[\s\S]*?runs-on:\s*ubuntu-latest/u);
   assert.match(workflow, /e2e:[\s\S]*?runs-on:\s*ubuntu-latest/u);
 });

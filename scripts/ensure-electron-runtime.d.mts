@@ -21,6 +21,8 @@ export interface ElectronRuntimeEnvironment {
 export interface ElectronRuntimeEnsureOptions {
   env?: NodeJS.ProcessEnv;
   logger?: Pick<Console, "log" | "warn">;
+  /** Blocks between failed install attempts; defaults to a synchronous sleep. */
+  sleep?: (ms: number) => void;
 }
 
 export function probeElectronRuntime(
