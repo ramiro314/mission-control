@@ -11,7 +11,6 @@ import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-runtime-transfer-"));
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
-await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { handOffToTerminal } = await import("../src/server/sdk/handoff.ts");
@@ -23,6 +22,8 @@ const { openDb } = await import("../src/server/db.ts");
 
 // These hand off or resume into a terminal, which win32 refuses; the win32 refusal test runs everywhere.
 const TRANSFER = { skip: skipOnWin32("the terminal runtime is unavailable on win32; hands an SDK session off to a terminal") };
+// The managed resume root this builds is the terminal runtime's, and it refuses to open on win32.
+if (!TRANSFER.skip) await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

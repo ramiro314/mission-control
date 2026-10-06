@@ -172,25 +172,20 @@ test("a fresh config uses the Agent SDK for harnesses that declare an embedded d
   assert.deepEqual(config.sessionRuntime, { claude: "sdk", codex: "sdk", pi: "terminal" });
 });
 
-test("with both toggles on, Claude and Codex dispatch through the supervisor without a home", CODEX, async () => {
-  const repos = {
-    claude: seedRepo("sdk-claude-repo"),
-    codex: seedRepo("sdk-codex-repo"),
-  };
+// One test per harness, so the Claude case still runs where Codex is unavailable.
+for (const agent of ["claude", "codex"] as const) test(`with both toggles on, ${agent === "claude" ? "Claude" : "Codex"} dispatches through the supervisor without a home`, agent === "codex" ? CODEX : {}, async () => {
   setHarnessesConfig({ sessionRuntime: { claude: "sdk", codex: "sdk" } });
   const registry = new Registry();
-  for (const agent of ["claude", "codex"] as const) {
-    registry.upsertTask(
-      mkTask({
-        id: `task-sdk-${agent}`,
-        status: "dispatching",
-        repoRoot: repos[agent],
-        title: `Exercise ${agent} SDK dispatch`,
-        intent: `run ${agent} through the embedded runtime`,
-        agent,
-      }),
-    );
-  }
+  registry.upsertTask(
+    mkTask({
+      id: `task-sdk-${agent}`,
+      status: "dispatching",
+      repoRoot: seedRepo(`sdk-${agent}-repo`),
+      title: `Exercise ${agent} SDK dispatch`,
+      intent: `run ${agent} through the embedded runtime`,
+      agent,
+    }),
+  );
   const supervisor = fakeSupervisor(registry);
   const dispatcher = new Dispatcher(registry, async () => {}, {
     supervisor,
@@ -204,54 +199,51 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     },
   });
 
-  await dispatcher.dispatch("task-sdk-claude");
-  await dispatcher.dispatch("task-sdk-codex");
+  await dispatcher.dispatch(`task-sdk-${agent}`);
 
-  assert.deepEqual(supervisor.starts.map((start) => start.agent), ["claude", "codex"]);
-  for (const agent of ["claude", "codex"] as const) {
-    const start = supervisor.starts.find((candidate) => candidate.agent === agent)!;
-    const task = registry.getTask(`task-sdk-${agent}`)!;
-    // The task's own title, unsanitized: `sessionLabel` cuts a name to a terminal backend's
-    // grammar, and there is no terminal here to satisfy.
-    assert.equal(start.name, `Exercise ${agent} SDK dispatch`);
-    // The exact intent remains turn one's prefix, followed by the same server-owned kind
-    // contract that terminal dispatch receives.
-    assert.equal(
-      start.prompt,
-      withTaskKindContract(task, `run ${agent} through the embedded runtime`),
-    );
-    assert.equal(
-      start.acceptedGoalPrompt,
-      `run ${agent} through the embedded runtime`,
-      "the card Goal keeps only the human-authored part of turn one",
-    );
-    // And the dashboard's projection of turn one, which is a SEPARATE fact from the Goal:
-    // the prompt is what the runtime received, byte for byte, and the display text is what
-    // a person asked for. Composing one from the other at read time is what would let the
-    // conversation drift away from what the agent was really told.
-    assert.deepEqual(
-      start.launchPresentation,
-      {
-        prompt: start.prompt,
-        displayText: `run ${agent} through the embedded runtime`,
-      },
-      "the launch presentation carries the delivered prompt and the human request",
-    );
-    assert.equal(start.taskId, `task-sdk-${agent}`);
-    assert.ok(start.cwd.length > 0);
+  assert.deepEqual(supervisor.starts.map((start) => start.agent), [agent]);
+  const start = supervisor.starts[0]!;
+  const task = registry.getTask(`task-sdk-${agent}`)!;
+  // The task's own title, unsanitized: `sessionLabel` cuts a name to a terminal backend's
+  // grammar, and there is no terminal here to satisfy.
+  assert.equal(start.name, `Exercise ${agent} SDK dispatch`);
+  // The exact intent remains turn one's prefix, followed by the same server-owned kind
+  // contract that terminal dispatch receives.
+  assert.equal(
+    start.prompt,
+    withTaskKindContract(task, `run ${agent} through the embedded runtime`),
+  );
+  assert.equal(
+    start.acceptedGoalPrompt,
+    `run ${agent} through the embedded runtime`,
+    "the card Goal keeps only the human-authored part of turn one",
+  );
+  // And the dashboard's projection of turn one, which is a SEPARATE fact from the Goal:
+  // the prompt is what the runtime received, byte for byte, and the display text is what
+  // a person asked for. Composing one from the other at read time is what would let the
+  // conversation drift away from what the agent was really told.
+  assert.deepEqual(
+    start.launchPresentation,
+    {
+      prompt: start.prompt,
+      displayText: `run ${agent} through the embedded runtime`,
+    },
+    "the launch presentation carries the delivered prompt and the human request",
+  );
+  assert.equal(start.taskId, `task-sdk-${agent}`);
+  assert.ok(start.cwd.length > 0);
 
-    assert.equal(task.status, "running");
-    assert.match(task.sessionId ?? "", /^sdk:/);
-    // No terminal home was spawned, so there is no name or pane resource to record.
-    assert.equal(task.homeName, null);
-    assert.equal(task.terminalResourceId, null);
-    assert.ok(task.worktreePath, "provisioning is identical on both paths");
-    // An embedded dispatch stores NO Foreman-invite row: the "sdk" grant is implied by
-    // the runtime itself, and the dispatcher's terminal-path invite write is never
-    // reached (the embedded branch returns before `waitForSessionAtCwd`).
-    assert.equal(registry.getSession(task.sessionId!)?.foremanInvite, "sdk");
-    assert.equal(getForemanInvite(task.sessionId!), undefined);
-  }
+  assert.equal(task.status, "running");
+  assert.match(task.sessionId ?? "", /^sdk:/);
+  // No terminal home was spawned, so there is no name or pane resource to record.
+  assert.equal(task.homeName, null);
+  assert.equal(task.terminalResourceId, null);
+  assert.ok(task.worktreePath, "provisioning is identical on both paths");
+  // An embedded dispatch stores NO Foreman-invite row: the "sdk" grant is implied by
+  // the runtime itself, and the dispatcher's terminal-path invite write is never
+  // reached (the embedded branch returns before `waitForSessionAtCwd`).
+  assert.equal(registry.getSession(task.sessionId!)?.foremanInvite, "sdk");
+  assert.equal(getForemanInvite(task.sessionId!), undefined);
 });
 
 test("with both toggles off, Claude and Codex stay on the terminal branch", CODEX, async () => {

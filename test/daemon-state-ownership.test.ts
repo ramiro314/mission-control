@@ -206,15 +206,33 @@ test("ordinary restart works and stale ownership recovers after a crash", async 
   await stopDaemon(restarted.child);
 });
 
-test("ownership contention refuses startup before the state database is touched", {
-  skip: skipOnWin32(
-    "seeds a terminal-runtime resume lease, whose directory check pins POSIX uid and mode bits; the terminal runtime is unavailable on win32",
-  ),
-}, async () => {
+test("ownership contention refuses startup before the state database is touched", async () => {
   const home = join(root, "untouched");
   const holder = startOwnershipHolder(home, await unusedPort());
   await waitFor(holder, (output) => output.includes("ownership-held"), "ownership holder did not start");
   assert.equal(existsSync(join(home, "harness.db")), false);
+
+  try {
+    const contender = startDaemon(home, await unusedPort());
+    const [code, signal] = await contender.exit;
+
+    assert.equal(signal, null, contender.output());
+    assert.notEqual(code, 0, contender.output());
+    assert.match(contender.output(), /state home is already owned by another Mission Control daemon/i);
+    assert.equal(existsSync(join(home, "harness.db")), false, "the refused daemon created or migrated the state database");
+  } finally {
+    await stopDaemon(holder.child);
+  }
+});
+
+test("ownership contention leaves the live daemon's in-flight terminal resume alone", {
+  skip: skipOnWin32(
+    "seeds a terminal-runtime resume lease, whose directory check pins POSIX uid and mode bits; the terminal runtime is unavailable on win32",
+  ),
+}, async () => {
+  const home = join(root, "untouched-resume");
+  const holder = startOwnershipHolder(home, await unusedPort());
+  await waitFor(holder, (output) => output.includes("ownership-held"), "ownership holder did not start");
   const leaseRoot = resumeLeaseRoot(home);
   const lease = createResumeLease(leaseRoot, "live-preparation", new Set());
   const credential = join(lease.home, "loopback-token");
@@ -226,8 +244,6 @@ test("ownership contention refuses startup before the state database is touched"
 
     assert.equal(signal, null, contender.output());
     assert.notEqual(code, 0, contender.output());
-    assert.match(contender.output(), /state home is already owned by another Mission Control daemon/i);
-    assert.equal(existsSync(join(home, "harness.db")), false, "the refused daemon created or migrated the state database");
     assert.equal(resumeLeaseStatus(lease).state, "preparing", "the rejected startup must not revoke the live daemon's preparation");
     assert.ok(existsSync(credential), "the in-flight resume keeps its credentials");
   } finally {

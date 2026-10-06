@@ -5,7 +5,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * Choosing the provider and model for ONE reviewer occurrence, in the editor, and then having
@@ -400,7 +399,6 @@ test("a published override is the provider and model a run actually launches and
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   // A one-reviewer workflow, so the run is short and exactly one CLI launch is attributable.
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "E2E routed reviewer",
@@ -416,9 +414,9 @@ test("a published override is the provider and model a run actually launches and
           kind: "persona",
           personaId: persona.id,
           position: { x: 220, y: 0 },
-          // Codex, while the app default provider is Claude: a run that ignored the node
-          // would launch the wrong binary entirely, which the recorded argv can see.
-          executionOverride: { runner: "codex", model: "gpt-5.6-sol" },
+          // Not the app default model: a run that ignored the node would launch Claude on
+          // its default model instead, which the recorded argv can see.
+          executionOverride: { runner: "claude", model: "claude-opus-4-8" },
         },
         { id: "e", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
       ],
@@ -477,19 +475,17 @@ test("a published override is the provider and model a run actually launches and
 
   // The argv the fake CLI recorded. This is the claim no other layer can make: the node's
   // model reached a process, on the provider the node named.
-  const codexDir = join(daemon.recordDir, "codex");
-  expect(existsSync(codexDir), "the Codex fake should have been launched").toBeTruthy();
-  const invocations = readdirSync(codexDir)
+  const claudeDir = join(daemon.recordDir, "claude");
+  expect(existsSync(claudeDir), "the Claude fake should have been launched").toBeTruthy();
+  const invocations = readdirSync(claudeDir)
     .filter((name) => name.startsWith("invocation-"))
-    .map((name) => JSON.parse(readFileSync(join(codexDir, name), "utf8")) as { argv: string[] })
-    .map((record) => record.argv.join(" "))
-    .filter((argv) => argv.startsWith("exec"));
-  expect(invocations.length, "the reviewer should have run through Codex").toBeGreaterThan(0);
-  expect(invocations.some((argv) => argv.includes("gpt-5.6-sol"))).toBeTruthy();
+    .map((name) => JSON.parse(readFileSync(join(claudeDir, name), "utf8")) as { argv: string[] })
+    .map((record) => record.argv.join(" "));
+  expect(invocations.some((argv) => argv.includes("--model claude-opus-4-8"))).toBeTruthy();
 
   // And the run detail reports what RAN, off the attempt row rather than off today's catalog.
   await dashboard.goto(`${daemon.baseURL}/#/runs/${submitted.run.id}`);
   await expect(dashboard.locator(".wf-pipeline-reviewer").filter({ hasText: "E2E routed reviewer" }))
-    .toContainText("codex · gpt-5.6-sol", { timeout: 15_000 });
+    .toContainText("claude · claude-opus-4-8", { timeout: 15_000 });
   await shoot(dashboard, "run-detail");
 });

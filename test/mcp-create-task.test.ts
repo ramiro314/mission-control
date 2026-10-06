@@ -268,27 +268,29 @@ test("the full repository set is refused before storage on collisions, duplicate
   assert.equal(registry.snapshot().tasks.length, before);
 });
 
-test("the default ship harness is capability-checked before a multi-repo task is stored", { skip: skipOnWin32("Pi is unavailable on win32") }, async () => {
-  setHarnessesConfig({ kindDefaults: { ship: { agent: "pi" } } });
-  const repoA = gitRepo("pi-a");
-  const repoB = gitRepo("pi-b");
+test("the default ship harness is capability-checked before a multi-repo task is stored", async () => {
+  // Claude, so the check is reached on every host; its capability is withdrawn below, so the
+  // refusal can only come from asking the resolved default harness.
+  setHarnessesConfig({ kindDefaults: { ship: { agent: "claude" } } });
+  const repoA = gitRepo("default-harness-a");
+  const repoB = gitRepo("default-harness-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
-  const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
-  HARNESS_CAPABILITIES.pi.multiRepoDispatch = null;
+  const original = HARNESS_CAPABILITIES.claude.multiRepoDispatch;
+  HARNESS_CAPABILITIES.claude.multiRepoDispatch = null;
   try {
     const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
       additionalRepositories: [repoB],
     });
 
     assert.equal(response.status, 400);
-    assert.match(((await response.json()) as { error: string }).error, /pi cannot be given write access/);
+    assert.match(((await response.json()) as { error: string }).error, /claude cannot be given write access/);
     assert.equal(registry.snapshot().tasks.length, before);
   } finally {
-    HARNESS_CAPABILITIES.pi.multiRepoDispatch = original;
+    HARNESS_CAPABILITIES.claude.multiRepoDispatch = original;
   }
   const supported = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     additionalRepositories: [repoB],

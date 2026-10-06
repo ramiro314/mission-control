@@ -8,9 +8,6 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
-import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
-
-skipSpecOnWin32(test, "Codex is unavailable on win32; a Codex persona reviews the evidence");
 
 /**
  * Native image evidence, through the product rather than around it.

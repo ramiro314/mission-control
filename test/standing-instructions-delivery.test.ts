@@ -377,8 +377,9 @@ test("codex · terminal carries it in turn one, and nowhere else", CODEX, async 
   }
 });
 
-test("claude · sdk and codex · sdk carry it out of band, and not in turn one", CODEX, async () => {
-  for (const agent of ["claude", "codex"] as const) {
+// One test per pair, so the Claude pair still runs where Codex is unavailable.
+for (const agent of ["claude", "codex"] as const) {
+  test(`${agent} · sdk carries it out of band, and not in turn one`, agent === "codex" ? CODEX : {}, async () => {
     const repo = seedRepo(`${agent}-sdk`);
     setRule(repo, RULE);
     const run = await sdkDispatch({
@@ -393,8 +394,8 @@ test("claude · sdk and codex · sdk carry it out of band, and not in turn one",
       run.registry.standingInstructionsFor(run.sessionId)?.mechanism,
       agent === "claude" ? "claude-sdk-system-prompt-append" : "codex-developer-instructions",
     );
-  }
-});
+  });
+}
 
 test("an SDK dispatch with no rules passes an empty out-of-band value", async () => {
   const repo = seedRepo("sdk-none");
@@ -519,12 +520,14 @@ test("a multi-repo dispatch's row holds the WHOLE composed block and one source 
   assert.equal(supervisor.starts[0]?.standingInstructions?.delivery.text, snapshot.text);
 });
 
-test("the out-of-band fallback turn one keeps manifest -> instructions -> intent order", CODEX, async () => {
+test("the out-of-band fallback turn one keeps manifest -> instructions -> intent order", async () => {
   // A Codex SDK launch can only discover at launch that its channel is unusable, so the
   // dispatcher hands the supervisor a SECOND turn one with the block already composed in. It
   // has to be composed the same way the channel-less pairs compose theirs - by
   // `intentWithRepoManifest`, in the manifest slot - and not by wrapping the finished prompt,
   // which would put the operator's rules ABOVE the manifest naming the checkouts they govern.
+  // The dispatcher composes that fallback for every pair with a channel, Claude's SDK pair
+  // included, so Claude proves the ordering on every host.
   const primary = seedRepo("fallback-order-primary");
   const secondary = seedRepo("fallback-order-secondary");
   setRule(primary, RULE);
@@ -550,11 +553,11 @@ test("the out-of-band fallback turn one keeps manifest -> instructions -> intent
       ],
       title: "Fallback order",
       intent: "THE-OPERATOR-REQUEST",
-      agent: "codex",
+      agent: "claude",
     } as Parameters<typeof mkTask>[0]),
   );
   const supervisor = fakeSupervisor(registry);
-  setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
   await new Dispatcher(registry, async () => {}, {
     supervisor,
     missionMcpDescriptor: async () => null,

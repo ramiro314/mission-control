@@ -4,7 +4,6 @@ import type { Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
-import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -73,7 +72,6 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await useLayout(dashboard, daemon, "board");
   await dispatchCodex(dashboard, daemon);
 

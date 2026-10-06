@@ -210,7 +210,7 @@ async function assertSoon(predicate: () => boolean, timeoutMs = 2_000): Promise<
   }
 }
 
-function fakeClaudeSdk(): {
+function fakeClaudeSdk(frame: Record<string, unknown> = {}): {
   deps: ClaudeSdkOneShotDeps;
   calls(): number;
   options(): ClaudeSdkOneShotQueryOptions | null;
@@ -234,6 +234,7 @@ function fakeClaudeSdk(): {
               is_error: false,
               result: "the sdk model text",
               session_id: "sdk-run-1",
+              ...frame,
             } satisfies ClaudeSdkMessage;
           },
         };
@@ -417,16 +418,18 @@ test("Codex passes a materialized schema, cleans it up, and keeps command tools 
   assert.equal(lines(RUN_ENV)[3], "1");
 });
 
-test("a caller's effort reaches each CLI as that harness's own launch flag, and only when asked", CODEX, async () => {
-  // The flag spellings come from the harness capability table, so a headless Persona call and
-  // an interactive session can never ask the same provider for effort two different ways.
+// The flag spellings come from the harness capability table, so a headless Persona call and
+// an interactive session can never ask the same provider for effort two different ways.
+test("a caller's effort reaches the Claude CLI as that harness's own launch flag, and only when asked", async () => {
   await withPrintTransport(() =>
     claudeRunner.run("review", { model: "claude-opus-5-5", effort: "xhigh", timeoutMs: 5000 })
   );
   assert.equal(flag("--effort"), "xhigh");
   await withPrintTransport(() => claudeRunner.run("review", { model: "claude-opus-5-5", timeoutMs: 5000 }));
   assert.equal(argv().includes("--effort"), false, "an unset effort must leave the provider default alone");
+});
 
+test("a caller's effort reaches the Codex CLI as that harness's own launch flag, and only when asked", CODEX, async () => {
   await codexRunner.run("review", { model: "gpt-6-sol", effort: "high", timeoutMs: 5000 });
   assert.ok(argv().includes("model_reasoning_effort=high"));
   await codexRunner.run("review", { model: "gpt-6-sol", timeoutMs: 5000 });
@@ -745,20 +748,40 @@ test("an envelope that states no usage produces no report", () => {
   );
 });
 
-test("a run with no role reports nothing at all", CODEX, async () => {
-  clearRecording();
-  const seen: LlmSpendReport[] = [];
-  const previous = setLlmSpendSink((r) => void seen.push(r));
-  try {
-    await codexRunner.run("summarise", { model: "gpt-5.6-terra" });
-  } finally {
-    setLlmSpendSink(previous);
-  }
-  // Accounting is opt-in per call site, so a caller that has not been given a role - a
-  // workflow step, a future subsystem - stays out of the automation line rather than
-  // landing in whichever bucket happened to be last.
-  assert.equal(seen.length, 0);
-});
+// Each run states real usage, so the silence below is the role gate's doing and not an
+// envelope with nothing to report.
+const NO_ROLE_RUNS = {
+  claude: async () => {
+    const usage = { usage: { input_tokens: 9, output_tokens: 40 } };
+    assert.ok(claudeSpendReport(JSON.stringify({ ...usage, session_id: "sdk-run-1" }), "foreman:review", "", 1));
+    const restore = configureClaudeRunnerTransport(() => "sdk", fakeClaudeSdk(usage).deps);
+    try {
+      await claudeRunner.run("summarise", { model: "claude-haiku-4-5" });
+    } finally {
+      restore();
+    }
+  },
+  codex: () => codexRunner.run("summarise", { model: "gpt-5.6-terra" }),
+};
+
+for (const [runner, run] of Object.entries(NO_ROLE_RUNS)) {
+  test(`a ${runner} run with no role reports nothing at all`, {
+    skip: runner === "codex" && skipOnWin32("Codex is unavailable on win32"),
+  }, async () => {
+    clearRecording();
+    const seen: LlmSpendReport[] = [];
+    const previous = setLlmSpendSink((r) => void seen.push(r));
+    try {
+      await run();
+    } finally {
+      setLlmSpendSink(previous);
+    }
+    // Accounting is opt-in per call site, so a caller that has not been given a role - a
+    // workflow step, a future subsystem - stays out of the automation line rather than
+    // landing in whichever bucket happened to be last.
+    assert.equal(seen.length, 0);
+  });
+}
 
 test("Codex refuses Inspector-style tool grants instead of weakening their deny rules", async () => {
   clearRecording();

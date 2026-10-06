@@ -92,7 +92,6 @@ async function enablePipelines(
 test("concurrent same-intent Pipeline dispatches reserve independent Engineer runs", async ({
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
   const intent = "Keep duplicate Engineer work exclusive";
   const dispatch = (title: string) =>
@@ -101,7 +100,7 @@ test("concurrent same-intent Pipeline dispatches reserve independent Engineer ru
       intent,
       title,
       kind: "pipeline",
-      agent: "codex",
+      agent: "claude",
       backlog: false,
       workflowId: null,
     });
@@ -196,20 +195,20 @@ async function expectTerminalCommissionRefused(
     });
 }
 
-/** User prompts recorded by the cost-free Codex SDK fixture. */
-function codexPrompts(daemon: DaemonHandle): string[] {
-  const sessions = join(daemon.home, ".codex", "sessions");
+/** User prompts recorded by the cost-free Claude SDK fixture's transcripts. */
+function claudePrompts(daemon: DaemonHandle): string[] {
+  const projects = join(daemon.home, ".claude", "projects");
   try {
-    return readdirSync(sessions, { recursive: true })
+    return readdirSync(projects, { recursive: true })
       .filter((name) => name.endsWith(".jsonl"))
-      .flatMap((name) => readFileSync(join(sessions, name), "utf8").trim().split("\n"))
+      .flatMap((name) => readFileSync(join(projects, name), "utf8").trim().split("\n"))
       .filter(Boolean)
       .map((line) => JSON.parse(line) as {
         type?: string;
-        payload?: { type?: string; message?: unknown };
+        message?: { content?: unknown };
       })
-      .filter((entry) => entry.type === "event_msg" && entry.payload?.type === "user_message")
-      .map((entry) => entry.payload?.message)
+      .filter((entry) => entry.type === "user")
+      .map((entry) => entry.message?.content)
       .filter((message): message is string => typeof message === "string");
   } catch {
     return [];
@@ -217,12 +216,12 @@ function codexPrompts(daemon: DaemonHandle): string[] {
 }
 
 /** Opaque capability the daemon handed only to this fake managed host's MCP registration. */
-function codexPipelineCallerCredential(daemon: DaemonHandle): string | null {
-  const records = recordsIn<{ argv?: string[] }>(join(daemon.recordDir, "codex"));
+function claudePipelineCallerCredential(daemon: DaemonHandle): string | null {
+  const records = recordsIn<{ argv?: string[] }>(join(daemon.recordDir, "claude"));
   for (const record of records) {
     for (const arg of record.argv ?? []) {
       const match = arg.match(
-        new RegExp(`"${PIPELINE_CALLER_CREDENTIAL_FILE_ENV}"="([^"]+)"`),
+        new RegExp(`"${PIPELINE_CALLER_CREDENTIAL_FILE_ENV}"\\s*:\\s*"([^"]+)"`),
       );
       if (!match || !existsSync(match[1]!)) continue;
       const parsed = JSON.parse(readFileSync(match[1]!, "utf8")) as {
@@ -283,7 +282,6 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -309,7 +307,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
       ),
     }))
     .toEqual({ enabled: true, agents: ["claude", "codex"] });
-  await agent.selectOption("codex");
+  await agent.selectOption("claude");
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
@@ -355,7 +353,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
       { message: "the pipeline task should own a running SDK session" },
     )
     .toMatchObject({
-      agent: "codex",
+      agent: "claude",
       kind: "pipeline",
       status: "running",
       sessionId: expect.stringMatching(/^sdk:/),
@@ -378,11 +376,11 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     })
     .toMatch(/^engineer-e2e-/);
   await expect
-    .poll(() => codexPrompts(daemon)[0], {
+    .poll(() => claudePrompts(daemon)[0], {
       message: "the SDK host should receive the direct Engineer command as turn one",
     })
     .toBe(
-      `$engineer - run this skill now. ${intent}\n\n` +
+      `/engineer ${intent}\n\n` +
       `[Pipeline Engineer lifecycle context: the provider reserved Engineer run ${engineerRunId}. ` +
       "Pass that exact id as --engineer-run-id when creating the authoring worktree. " +
       "After Engineer creates or enters that worktree, call report_pipeline_workspace with " +
@@ -436,7 +434,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   let callerCredential: string | null = null;
   await expect
     .poll(() => {
-      callerCredential = codexPipelineCallerCredential(daemon);
+      callerCredential = claudePipelineCallerCredential(daemon);
       return callerCredential;
     })
     .toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -793,7 +791,6 @@ test("guided managed Agent SDK pipeline asks for an eligible harness", async ({
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -824,7 +821,6 @@ test("terminal pipeline normalizes a stale non-Claude agent and refuses before s
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "the terminal runtime is unavailable on win32; it also selects Codex");
   await enablePipelines(daemon, false, "terminal");
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -855,7 +851,6 @@ test("an open pipeline dispatch follows a live runtime change and refuses Termin
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await enablePipelines(daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -893,7 +888,6 @@ test("guided dispatch offers pipeline only in an enabled repo and refuses commis
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "the terminal runtime is unavailable on win32; it also selects Pi");
   await enablePipelines(daemon, false, "terminal");
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();

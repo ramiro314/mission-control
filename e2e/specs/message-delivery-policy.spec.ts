@@ -70,11 +70,10 @@ test(`${agent}: the send box offers no delivery choice, and interrupt-and-delive
 }
 
 test("a message nobody touched shows its wait and steers into the running turn after one minute", async ({ dashboard, daemon }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32; the session it steers is a Codex dispatch");
   // The message's own minute is only part of this: a cold dispatch, a settling session and a
   // held turn all precede it, and this spec cannot start the clock until they are done.
   test.setTimeout(180000);
-  const { card, composer, rail } = await openSession(dashboard, daemon);
+  const { card, composer, rail } = await openSession(dashboard, daemon, "claude");
   await composer.fill("send automatically after the deadline");
   await composer.press("Enter");
   const pending = card.locator(".pending-turn").filter({ hasText: "send automatically after the deadline" });

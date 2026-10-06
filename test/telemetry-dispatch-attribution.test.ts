@@ -25,8 +25,9 @@ const TERMINAL_RUNTIME = { skip: skipOnWin32("the terminal runtime is unavailabl
 //
 // Four exits: pipeline success, terminal-runtime success, the operator settling a
 // dispatch underneath it, and a failure after resolution. A real git repo and a real worktree,
-// so each branch is reached the way a dispatch reaches it; only the spawn, the pane and the
-// provider launch are faked.
+// so each branch is reached the way a dispatch reaches it; only the spawn, the pane, the SDK
+// supervisor and the provider launch are faked. Only the terminal-runtime success exit needs
+// the terminal runtime; the other three run on the Agent SDK runtime.
 
 const home = mkdtempSync(join(tmpdir(), "mission-telemetry-dispatch-"));
 // Set before importing anything that resolves the state dir.
@@ -216,7 +217,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
   });
 }
 
-test("a pipeline launch is recorded, and claims no resolution it never made", TERMINAL_RUNTIME, async () => {
+test("a pipeline launch is recorded, and claims no resolution it never made", async () => {
   const registry = new Registry();
   registry.upsertTask(
     mkTask({
@@ -230,23 +231,39 @@ test("a pipeline launch is recorded, and claims no resolution it never made", TE
     }),
   );
 
-  const launches: unknown[][] = [];
+  const launches: string[] = [];
+  const supervisor = {
+    async start(input: { sessionId?: string; agent: "claude" | "codex" | "pi"; name: string; cwd: string }) {
+      launches.push(input.cwd);
+      return registry.registerSdkSession({
+        id: input.sessionId ?? "sdk:pipeline-attribution",
+        agent: input.agent,
+        name: input.name,
+        cwd: input.cwd,
+      });
+    },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
   const dispatcher = new Dispatcher(registry, async () => assert.fail("no worktree is owned"), {
+    supervisor: supervisor as never,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
     pipelineLaunch: async () => ({
       ok: true,
-      launchRuntime: "terminal",
+      launchRuntime: "agent-sdk",
       cwd: "/repo/demo",
-      argv: ["/usr/bin/env", "/bin/conduct-ts", "engineer", "--idea", "Pipeline attribution"],
       pipelineRun: {
         provider: "ai-conductor" as const,
         repoRoot: "/repo/demo",
         slug: "pipeline-attribution",
       },
     }),
-    spawn: async (...args) => {
-      launches.push(args);
-      return { homeName: "Pipeline attribution", homeBackend: "tmux", terminalResourceId: null };
-    },
   });
 
   await dispatcher.dispatch("task-pipeline");
@@ -323,7 +340,7 @@ test("an embedded launch reports the SDK runtime, from the resolution and not th
 
 // ---- the exits that are not successes ----
 
-test("an operator settling a dispatch underneath it is superseded, not failed", TERMINAL_RUNTIME, async () => {
+test("an operator settling a dispatch underneath it is superseded, not failed", async () => {
   const repo = seedRepo("superseded");
   const registry = new Registry();
   registry.upsertTask(
@@ -339,16 +356,21 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
     }),
   );
 
-  const dispatcher = new Dispatcher(registry, async () => {}, {
-    resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
-    spawn: async () => {
+  const supervisor = {
+    async start(): Promise<never> {
       // The operator cancels while the launch is in flight. The dispatch then fails, but the
       // task's terminal state is the operator's and the dispatcher must not overwrite it.
       const current = registry.getTask("task-superseded")!;
       registry.upsertTask({ ...current, status: "cancelled", updatedAt: Date.now() });
       throw new Error("the launch was abandoned");
     },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    resolveRuntime: () => "sdk",
+    missionMcpDescriptor: async () => null,
+    supervisor: supervisor as never,
   });
 
   await dispatcher.dispatch("task-superseded");
@@ -362,7 +384,7 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
   assert.equal(facts.agent, "claude");
 });
 
-test("a failure after resolution carries the model that launch resolved", TERMINAL_RUNTIME, async () => {
+test("a failure after resolution carries the model that launch resolved", async () => {
   const repo = seedRepo("failed-after");
   const registry = new Registry();
   const detach = attachSessionTelemetry(registry);
@@ -381,16 +403,27 @@ test("a failure after resolution carries the model that launch resolved", TERMIN
     }),
   );
 
-  const dispatcher = new Dispatcher(registry, async () => {}, {
-    resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
-    // Thrown at the SPAWN, which is after the model and effort ladder has been walked. That
+  const supervisor = {
+    // Thrown at the START, which is after the model and effort ladder has been walked. That
     // ordering is the point: the facts below are the ones this launch resolved, carried
     // forward to an exit three scopes away from where they were computed.
-    spawn: async (_label, _short, cwd) => {
-      failedCwd = cwd;
-      throw new Error("no terminal backend could start a session");
+    async start(input: { cwd: string }): Promise<never> {
+      failedCwd = input.cwd;
+      throw new Error("the session driver could not start a session");
     },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    resolveRuntime: () => "sdk",
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    supervisor: supervisor as never,
   });
 
   await dispatcher.dispatch("task-failed");
@@ -398,7 +431,7 @@ test("a failure after resolution carries the model that launch resolved", TERMIN
 
   const { facts, refs } = onlyDispatch();
   assert.equal(facts.outcome, "failed");
-  assert.equal(facts.runtime, "terminal");
+  assert.equal(facts.runtime, "sdk");
   assert.equal(facts.task_kind, "scout");
   assert.equal(facts.resolved_model, "claude-opus-5");
   assert.equal(facts.resolved_effort, "low");

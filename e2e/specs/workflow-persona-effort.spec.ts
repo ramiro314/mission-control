@@ -230,14 +230,16 @@ test("a Persona's own effort is edited beside its model and survives a save and 
 
 /**
  * Dispatch a session, bind a published version to it, submit, and wait for the run to finish.
- * Returns the run id and the `codex exec` argv lines the fake recorded.
+ * Returns the run id and the argv lines the reviewer's provider fake recorded: `codex exec`
+ * launches for Codex, every launch for Claude (the dispatched session's own included).
  */
 async function runPublished(
   page: Page,
   daemon: DaemonHandle,
   versionId: string,
   requestId: string,
-): Promise<{ runId: string; codexExecs: string[] }> {
+  provider: "claude" | "codex" = "codex",
+): Promise<{ runId: string; launches: string[] }> {
   await page.goto(`${daemon.baseURL}/#/fleet`);
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -276,14 +278,14 @@ async function runPublished(
     )).run.status, { message: "the reviewer should approve", timeout: 40_000 })
     .toBe("completed");
 
-  const codexDir = join(daemon.recordDir, "codex");
-  expect(existsSync(codexDir), "the Codex fake should have been launched").toBeTruthy();
-  const codexExecs = readdirSync(codexDir)
+  const providerDir = join(daemon.recordDir, provider);
+  expect(existsSync(providerDir), `the ${provider} fake should have been launched`).toBeTruthy();
+  const launches = readdirSync(providerDir)
     .filter((name) => name.startsWith("invocation-"))
-    .map((name) => JSON.parse(readFileSync(join(codexDir, name), "utf8")) as { argv: string[] })
+    .map((name) => JSON.parse(readFileSync(join(providerDir, name), "utf8")) as { argv: string[] })
     .map((record) => record.argv.join(" "))
-    .filter((argv) => argv.startsWith("exec"));
-  return { runId: submitted.run.id, codexExecs };
+    .filter((argv) => provider !== "codex" || argv.startsWith("exec"));
+  return { runId: submitted.run.id, launches };
 }
 
 /** A one-reviewer draft whose single Persona node is `node`. */
@@ -306,7 +308,6 @@ test("a published node effort is the effort a run launches with and reports besi
   dashboard,
   daemon,
 }) => {
-  skipSpecOnWin32(test, "Codex is unavailable on win32");
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "E2E effort reviewer",
     guidanceMarkdown: "# E2E effort reviewer\n\nE2E_PASS_VERDICT",
@@ -315,7 +316,7 @@ test("a published node effort is the effort a run launches with and reports besi
     name: "E2E effort workflow",
     draft: oneReviewerDraft({
       personaId: persona.id,
-      executionOverride: { runner: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
+      executionOverride: { runner: "claude", model: "claude-opus-4-8", effort: "xhigh" },
     }),
   });
   const published = await api<{ version: { id: string } }>(
@@ -324,12 +325,15 @@ test("a published node effort is the effort a run launches with and reports besi
     { expectedDraftRevision: 1 },
   );
 
-  const { runId, codexExecs } = await runPublished(dashboard, daemon, published.version.id, "e2e-node-effort");
-  expect(codexExecs.some((argv) => argv.includes("model_reasoning_effort=xhigh"))).toBeTruthy();
+  const { runId, launches } = await runPublished(
+    dashboard, daemon, published.version.id, "e2e-node-effort", "claude",
+  );
+  expect(launches.some((argv) =>
+    argv.includes("--model claude-opus-4-8") && argv.includes("--effort xhigh"))).toBeTruthy();
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   await expect(dashboard.locator(".wf-pipeline-reviewer").filter({ hasText: "E2E effort reviewer" }))
-    .toContainText("codex · gpt-5.6-sol · xhigh effort", { timeout: 15_000 });
+    .toContainText("claude · claude-opus-4-8 · xhigh effort", { timeout: 15_000 });
   await shoot(dashboard, "run-detail-effort");
 });
 
@@ -365,7 +369,7 @@ test("an effort the run's model cannot run is not passed, and run detail says so
   );
   expect(version.graph.nodes.find((node) => node.kind === "persona")?.persona?.effort).toBe("max");
 
-  const { runId, codexExecs } = await runPublished(dashboard, daemon, published.version.id, "e2e-dropped-effort");
+  const { runId, launches: codexExecs } = await runPublished(dashboard, daemon, published.version.id, "e2e-dropped-effort");
   expect(codexExecs.some((argv) => argv.includes("gpt-5.6-luna"))).toBeTruthy();
   expect(
     codexExecs.some((argv) => argv.includes("model_reasoning_effort")),

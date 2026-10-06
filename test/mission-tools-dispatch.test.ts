@@ -152,7 +152,7 @@ test("workflow-required evidence is refused early, while one successful probe re
   assert.equal(spawned, true, registry.getTask("installed-pi")!.error!);
 });
 
-test("a tickets follow-up's launch is granted complete_shape_tickets, and another shape launch is not", { skip: skipOnWin32("the terminal runtime is unavailable on win32") }, async () => {
+test("a tickets follow-up's launch is granted complete_shape_tickets, and another shape launch is not", async () => {
   const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
   const { COMPLETE_SHAPE_TICKETS_TOOL } = await import("../src/server/plans/tools.ts");
   const clone = repo();
@@ -169,11 +169,23 @@ test("a tickets follow-up's launch is granted complete_shape_tickets, and anothe
   });
 
   // The launch's resolved tool list, read at the published-tools check, which is the last
-  // stop before the agent is spawned. Stopping there keeps the test off any real process.
+  // stop before the agent is started. Stopping there keeps the test off any real process.
+  // The Agent SDK runtime, which every host runs; the grant is the same on both runtimes.
   const launched = async (id: string): Promise<string[]> => {
     let tools: string[] | null = null;
     await new Dispatcher(registry, async () => {}, {
-      resolveRuntime: () => "terminal",
+      resolveRuntime: () => "sdk",
+      supervisor: {
+        start: async () => assert.fail("the tools check must stop the launch"),
+        stop: async () => {},
+        taskLiveness: () => null,
+      } as never,
+      missionMcpDescriptor: async () => ({
+        serverName: "mission-control",
+        command: process.execPath,
+        args: [join(home, "server.mjs")],
+        env: {},
+      }),
       planSkills: () => ({ ok: true, commands: { grill: "/grill", htmlPlans: "/html-plans", tickets: "/tickets" } }),
       verifyMissionMcpTools: async (requested) => {
         tools = [...requested];

@@ -24,8 +24,13 @@ const HARNESS = join(REPO_ROOT, "test", "helpers", "electron-entry-harness.cjs")
  *
  * `npm run build:main` rather than an esbuild command spelled out here, so the bundle under
  * test is produced by the same command that produces the shipped one and cannot drift from it.
+ *
+ * Built by the first test that runs rather than at module scope, so a file whose hand-over
+ * cases are skipped on win32 builds only for the cases that still run there.
  */
-function buildMainBundle(): void {
+let mainBundleBuilt = false;
+function mainBundle(): string {
+  if (mainBundleBuilt) return MAIN_BUNDLE;
   const built = spawnSync("npm", ["run", "build:main"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
@@ -33,10 +38,11 @@ function buildMainBundle(): void {
   });
   assert.equal(built.status, 0, `could not build the main bundle: ${built.stderr}`);
   assert.ok(existsSync(MAIN_BUNDLE), `the build did not produce ${MAIN_BUNDLE}`);
+  mainBundleBuilt = true;
+  return MAIN_BUNDLE;
 }
 // The hand-over is the macOS install migration's system-to-personal-app redirect (install-identity.ts).
 const HANDOVER = { skip: skipOnWin32("the macOS install migration is unavailable on win32; redirects a system app launch to the personal app") };
-if (!HANDOVER.skip) buildMainBundle();
 
 const COMMIT = "a".repeat(40);
 /** The one path `install-identity.ts` will ever redirect away FROM. */
@@ -102,7 +108,7 @@ function runEntry(
       ...process.env,
       HOME: paths.home,
       MISSION_HOME: paths.state,
-      HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+      HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(runningBundle, "Contents", "Resources", "app"),
       ...env,
     },
@@ -174,7 +180,7 @@ test("the entry point launches nothing when it is already the installed app", HA
       ...process.env,
       HOME: paths.home,
       MISSION_HOME: paths.state,
-      HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+      HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(paths.personal, "Contents", "Resources", "app"),
     },
   });
@@ -188,7 +194,7 @@ test("the entry point launches nothing when it is already the installed app", HA
   rmSync(paths.home, { recursive: true, force: true });
 });
 
-test("an unmanaged entry point is untouched by any of this", HANDOVER, () => {
+test("an unmanaged entry point is untouched by any of this", () => {
   // No receipt at all, which is every install made outside the managed path.
   const root = mkdtempSync(join(tmpdir(), "mission-entry-bare-"));
   const result = spawnSync(process.execPath, [HARNESS], {
@@ -198,7 +204,7 @@ test("an unmanaged entry point is untouched by any of this", HANDOVER, () => {
       ...process.env,
       HOME: join(root, "home"),
       MISSION_HOME: join(root, "state"),
-      HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+      HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(SYSTEM_BUNDLE, "Contents", "Resources", "app"),
     },
   });
@@ -222,7 +228,7 @@ test("a failed migrated background startup releases the shell so reopening can r
   plan.intendedReceipt.installedVersion = plan.targetIdentity.version!;
   writeFileSync(join(state, 'install-migration.json'), JSON.stringify({plan, owner: {pid: 1, identity: 'finished fixture owner'}, ownerRole: 'recovery', stage: 'complete', repairs: [], inventory: null, targetProcess: null}));
   const result = spawnSync(process.execPath, [HARNESS], {encoding: 'utf8', timeout: 15_000, env: {...process.env,
-    HOME: paths.home, MISSION_HOME: state, HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+    HOME: paths.home, MISSION_HOME: state, HARNESS_MAIN_BUNDLE: mainBundle(),
     HARNESS_APP_PATH: join(paths.personal, 'Contents/Resources/app'), HARNESS_BACKGROUND_FAILURE: '1',
   }});
   assert.equal(result.status, 0, result.stderr);

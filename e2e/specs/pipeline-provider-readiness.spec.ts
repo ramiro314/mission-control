@@ -9,9 +9,6 @@ import {
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import { expect, test } from "../fixtures/test.ts";
-import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
-
-skipSpecOnWin32(test, "Codex is unavailable on win32; every case dispatches a Codex pipeline");
 
 test.use({
   daemonEnv: {
@@ -53,7 +50,7 @@ test("provider readiness blocks model launch and rechecks the same attempt", asy
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
-  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
   await dialog.getByPlaceholder("What should this agent do?").fill("Prove provider readiness");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
 
@@ -136,7 +133,7 @@ test("typed failure refuses task completion and retries once on a fresh host", a
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
-  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
   await dialog.getByPlaceholder("What should this agent do?").fill(intent);
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
 
@@ -215,18 +212,18 @@ test("typed failure refuses task completion and retries once on a fresh host", a
   const recovery = dashboard.getByRole("region", { name: "Provider lifecycle" });
   await expect(recovery.getByRole("button", { name: "Retry Engineer" })).toBeVisible();
   const oldSessionId = sessionId;
-  const codexBin = join(daemon.home, "fake-bin", "fake-codex");
-  chmodSync(codexBin, 0o644);
+  const claudeBin = join(daemon.home, "fake-bin", "fake-claude");
+  chmodSync(claudeBin, 0o644);
   await recovery.getByRole("button", { name: "Retry Engineer" }).click();
   await expect(recovery.getByText("Recovery host launch failed", { exact: true })).toBeVisible();
   await expect(recovery).toContainText(
-    'agent binary "codex" not found in the executable environment',
+    'agent binary "claude" not found in the executable environment',
   );
   await expect(recovery.getByRole("button", { name: "Resume Engineer" })).toBeVisible();
   await expect(recovery.getByRole("button", { name: "Start Engineer" })).toHaveCount(0);
   await dashboard.mouse.move(0, 0);
   await dashboard.screenshot({ path: join(evidenceDir, "retry-host-launch-failed.png") });
-  chmodSync(codexBin, 0o755);
+  chmodSync(claudeBin, 0o755);
   await recovery.getByRole("button", { name: "Resume Engineer" }).click();
   await expect.poll(async () => {
     const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
@@ -271,7 +268,7 @@ test("an exact direct provider successor is reviewed and adopted without rewriti
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
-  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
   await dialog.getByPlaceholder("What should this agent do?").fill("Adopt one exact successor");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
 
@@ -380,7 +377,7 @@ test.describe("mixed-version provider", () => {
     await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
     await dashboard.keyboard.press("Escape");
     await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
-    await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+    await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
     await dialog.getByPlaceholder("What should this agent do?").fill("Keep legacy lifecycle honest");
     await dialog.getByRole("button", { name: "Dispatch now" }).click();
 
