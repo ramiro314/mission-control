@@ -244,9 +244,12 @@ so clone that branch.
 
 ### Install the prerequisites
 
-Run these in PowerShell. Mission Control's **Windows** family in **Settings → Setup** checks
-each one once the daemon is running (see [Prerequisites](#prerequisites)), so a step missed
-here shows up there with the same fix.
+Run these in PowerShell. Once the daemon is running, **Settings → Setup** (see
+[Prerequisites](#prerequisites)) checks them. Its **Windows** family covers steps 2 and 4 to 7,
+each with the same fix as here. Node.js (step 1) is the **Node.js** row under **Runtime**, and
+Claude Code (step 3) is the **Claude Code** row under **Agent CLIs**. Those two rows report
+whether the tool is found, but their fixes are written for macOS (`brew install node`, and an
+npm install that gives the unsupported `claude.cmd`), so use the steps below instead.
 
 1. **Node.js 24 or newer**, x64. Check it with `node --version`.
 2. **Git for Windows.** It installs Git Bash, which npm's scripts and Claude Code both need.
