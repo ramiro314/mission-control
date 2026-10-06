@@ -196,7 +196,17 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         jobValue(job, "node-version")
       ),
       buildSmokeSteps: ["build-smoke-node-24", "build-smoke-node-26"].map((job) =>
-        stepNames(jobs[job]).slice(-2)
+        stepNames(jobs[job]).slice(stepNames(jobs[job]).indexOf("Build"))
+      ),
+      // E2E tests the `dist/` that `build-smoke-node-24` built and smoked, never its own.
+      e2eDistSteps: stepNames(jobs.e2e).filter((name) => /dist|^Build$/.test(name)),
+      distArtifact: [["build-smoke-node-24", "upload"], ["e2e", "download"]].map(([job, verb]) =>
+        capture(jobs[job!], new RegExp(`uses: actions/${verb}-artifact@v\\d+\\s+with:\\s+name:[ \\t]*(.+?)[ \\t]*$`, "m"))
+      ),
+      // A rerun of a failed E2E shard downloads the original attempt's `dist/`.
+      distRetentionDays: capture(
+        jobs["build-smoke-node-24"],
+        /name: dist-node-24[\s\S]*?retention-days:[ \t]*(\d+)/,
       ),
       unitActionBuildsOrSmokes: stepNames(unitAction).some((name) => /build$|smoke/i.test(name)),
       consumerRestores: [
@@ -282,7 +292,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         "dependencies-node-26",
         "[changes, dependencies-node-24]",
         "dependencies-node-26",
-        "[changes, dependencies-node-24]",
+        "[changes, dependencies-node-24, build-smoke-node-24]",
       ],
       node26Conditions: [
         "github.event_name != 'pull_request'",
@@ -291,9 +301,12 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       ],
       buildSmokeNodes: ["'24'", "'26'"],
       buildSmokeSteps: [
-        ["Build", "Smoke the built bundles"],
+        ["Build", "Smoke the built bundles", "Pack dist for E2E", "Upload dist for E2E"],
         ["Build", "Smoke the built bundles"],
       ],
+      e2eDistSteps: ["Download dist", "Unpack dist"],
+      distArtifact: ["dist-node-24", "dist-node-24"],
+      distRetentionDays: "7",
       unitActionBuildsOrSmokes: false,
       consumerRestores: [
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
@@ -319,8 +332,8 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       unitTestTimeout: null,
       e2eWorkerVariable: null,
       e2eShards: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-      pullRequestPeakJobIds: ["gates", "docs-checks", "build-smoke-node-24", "unit-node-24", "e2e"],
-      pullRequestPeakJobs: 20,
+      pullRequestPeakJobIds: ["gates", "docs-checks", "unit-node-24", "e2e"],
+      pullRequestPeakJobs: 19,
       e2eTestTimeout: null,
       localUnitWorkers: "6",
       unitShardOption: "${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}",
