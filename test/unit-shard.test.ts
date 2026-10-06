@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { junitFileTimes } from "../src/shared/junit.ts";
 import {
   parseShardSpec,
   partitionUnitTests,
@@ -101,6 +104,44 @@ test("a file without a recorded duration weighs the median of the recorded ones"
   assert.deepEqual(even.map((shard) => shard.length), [3, 2]);
 });
 
+test("a recorded value that is not a duration weighs the median, like a missing one", () => {
+  const files = ["test/a.test.ts", "test/b.test.ts", "test/c.test.ts", "test/word.test.ts", "test/neg.test.ts", "test/inf.test.ts"];
+  const weights = shardWeights(files, {
+    "test/a.test.ts": 100,
+    "test/b.test.ts": 200,
+    "test/c.test.ts": 900,
+    "test/word.test.ts": "slow",
+    "test/neg.test.ts": -5,
+    "test/inf.test.ts": Infinity,
+  });
+  for (const file of ["test/word.test.ts", "test/neg.test.ts", "test/inf.test.ts"]) {
+    assert.equal(weights.get(file), 200, file);
+  }
+});
+
+test("the CLI refuses an empty shard rather than let node --test discover its own files", () => {
+  // One more shard than there are unit test files leaves the last shard empty.
+  const total = unitTestFiles(repo).length + 1;
+  const result = spawnSync(process.execPath, [join(repo, "scripts", "unit-shard.mjs"), `${total}/${total}`], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, new RegExp(`shard ${total}/${total} has no test files`));
+});
+
+test("reading timings: an absent file is no timings, anything but an object is refused", () => {
+  const root = mkdtempSync(join(tmpdir(), "unit-shard-timings-"));
+  try {
+    assert.deepEqual(readShardTimings(root), {});
+    for (const body of ["[]", "null", "42"]) {
+      mkdirSync(join(root, "test"), { recursive: true });
+      writeFileSync(join(root, "test", "shard-timings.json"), body);
+      assert.throws(() => readShardTimings(root), /must be an object/, body);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the shard spec is one-based and bounded by its total", () => {
   assert.deepEqual(parseShardSpec("3/6"), { index: 3, total: 6 });
   for (const bad of [undefined, "", "0/6", "7/6", "1/0", "a/b", "1/2/3"]) {
@@ -155,4 +196,18 @@ test("timings sum each file's cases per Node release and average the releases", 
 test("timings refuse an artifact that is not a unit shard's JUnit, or XML that does not parse", () => {
   assert.throws(() => shardTimings([{ artifact: "flake-report-unit-node-24-shard-1", xml: junit([]) }], []), /not a unit-junit/);
   assert.throws(() => shardTimings([{ artifact: "unit-junit-node-24-shard-1", xml: "<testsuites>" }], []), /not well-formed/);
+});
+
+test("a test case with no file or no readable time adds nothing to any file", () => {
+  const parsed = junitFileTimes(`<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testcase name="no file" time="5"/>
+<testcase name="bad time" time="abc" file="/w/test/a.test.ts"/>
+<testcase name="negative" time="-1" file="/w/test/a.test.ts"/>
+<testcase name="no time" file="/w/test/a.test.ts"/>
+<testcase name="ok" time="0.25" file="/w/test/a.test.ts"/>
+</testsuites>
+`);
+  assert.ok(parsed.ok);
+  assert.deepEqual([...parsed.times], [["/w/test/a.test.ts", 250]]);
 });
