@@ -79,8 +79,13 @@ async function openDispatchedSession(page: Page): Promise<ReturnType<Page["locat
     .getByRole("navigation", { name: "Sessions" })
     .locator("button.rail-row")
     .filter({ hasText: TASK });
-  await expect(row).toBeVisible();
+  // Settled first. The row appears under "working" and moves to "idle" when the fake agent's
+  // turn ends, and each tone group is its own subtree, so the move replaces the button. A
+  // click whose mousedown and mouseup straddle that replacement reaches no button: nothing is
+  // selected, and the Terminal launcher below never renders.
+  await expect(row).toContainText("idle");
   await row.click();
+  await expect(row).toHaveAttribute("aria-current", "true");
   return page.locator(".console-detail");
 }
 

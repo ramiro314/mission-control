@@ -538,7 +538,15 @@ test("a poll that left before a write landed cannot undo the write's own confirm
   //
   // So the client tracks two things, not one: edits STARTED and writes LANDED. This spec is the
   // second of those, and it is why `writeGen` exists.
+  //
+  // `connection: close` here and on the held poll's `route.fetch`, because both share
+  // Playwright's keep-alive pool with every `page.request` below, and the daemon closes an idle
+  // socket at six seconds (Node's 5s keep-alive plus its 1s buffer). Kept alive, this seed's
+  // socket idles until the held poll - one 4s tick after the page loads, about six seconds on a
+  // loaded runner - and the poll's own socket idles until the final check. A reuse that crosses
+  // the daemon's close fails with `read ECONNRESET`, which is how this flaked in CI.
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    headers: { connection: "close" },
     data: {
       sources: [{ id: "jira-poll", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
     },
@@ -571,6 +579,22 @@ test("a poll that left before a write landed cannot undo the write's own confirm
   const pollLanded = new Promise<void>((r) => {
     pollDelivered = r;
   });
+  // The write's own confirming read is the first GET the page sends AFTER the write's response
+  // arrived - the client bumps `writeGen` before it sends that read. NOT the first GET answered
+  // once the write is released: a read that left earlier and comes back late (a slow daemon on a
+  // loaded runner) matches that too, and releasing the stale poll on its cue delivers it before
+  // the write has landed, when it is still current and correctly applied.
+  let putAnswered = false;
+  page.on("response", (r) => {
+    if (r.url().includes("/api/task-sources/config") && r.request().method() === "PUT") {
+      putAnswered = true;
+    }
+  });
+  let confirmingSent = false;
+  let confirmed: (() => void) | null = null;
+  const confirmingRead = new Promise<void>((r) => {
+    confirmed = r;
+  });
 
   await page.route("**/api/task-sources/config", async (route) => {
     const method = route.request().method();
@@ -585,13 +609,19 @@ test("a poll that left before a write landed cannot undo the write's own confirm
     // after the write's own confirming read has already applied the correct config.
     if (method === "GET" && putHeld && !pollHeld) {
       pollHeld = true;
-      const res = await route.fetch();
+      const res = await route.fetch({
+        headers: { ...route.request().headers(), connection: "close" },
+      });
       const body = await res.text();
       pollHit?.();
       await pollReleased;
       await route.fulfill({ response: res, body });
       pollDelivered?.();
       return;
+    }
+    if (method === "GET" && putAnswered && !confirmingSent) {
+      confirmingSent = true;
+      void route.request().response().then(() => confirmed?.());
     }
     return route.fallback();
   });
@@ -605,16 +635,9 @@ test("a poll that left before a write landed cannot undo the write's own confirm
   // config. This is the only slow step here, and it is the whole scenario.
   await pollIntercepted;
 
-  // Let the write land. Its confirming read follows and is the first GET the page sees answered,
-  // because the poll above is still held.
-  const confirming = page.waitForResponse(
-    (r) =>
-      r.url().includes("/api/task-sources/config") &&
-      r.request().method() === "GET" &&
-      r.status() === 200,
-  );
+  // Let the write land, and wait for its confirming read to be answered.
   releasePut?.();
-  await confirming;
+  await confirmingRead;
   await expect(jql).toHaveValue(JQL);
 
   // Now the stale poll arrives.
