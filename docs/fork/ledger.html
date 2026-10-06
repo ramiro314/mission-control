@@ -1495,8 +1495,8 @@ empty shard, which <code>node --test</code> would read as &quot;discover your ow
 <li>Each unit shard uploads its first run&#39;s <code>junit.xml</code> as <code>unit-junit-node-&lt;v&gt;-shard-&lt;n&gt;</code>,
 retained 7 days, whatever the test outcome (<code>!cancelled()</code>).</li>
 <li><code>test/shard-timings.json</code> is generated and never hand-edited. <code>npm run test:timings -- &lt;run-id&gt;</code> (<code>scripts/unit-shard-timings.ts</code>) downloads that run&#39;s <code>unit-junit-*</code> artifacts
-with <code>gh run download</code>, sums <code>testcase</code> times per file per Node release (through
-<code>junitFileTimes</code> in <code>src/shared/junit.ts</code>), averages the releases, keeps only files that
+with <code>gh run download</code>, sums each file&#39;s top-level <code>testsuite</code> and <code>testcase</code> times per Node
+release (through <code>junitFileTimes</code> in <code>src/shared/junit.ts</code>), averages the releases, keeps only files that
 exist in the checkout and rewrites the file. Regeneration is manual, when shard spread drifts.</li>
 <li>E2E keeps Playwright&#39;s <code>--shard</code>, and shard counts are unchanged.</li>
 <li><code>test/flake-report-action.test.ts</code> holds the shard&#39;s single <code>npm run pretest</code>, the absence of
@@ -1519,7 +1519,9 @@ same <code>if:</code> and stay out of <code>CI result</code>&#39;s <code>needs</
 <li><code>package.json</code>&#39;s <code>pretest</code> provisions everything the unit suite needs (Electron runtime,
 native state lock), and <code>posttest</code> adds only tests already inside <code>test/**/*.test.ts</code>.</li>
 <li><code>node --test</code>&#39;s JUnit reporter writes a <code>time</code> in seconds and an absolute <code>file</code> on every
-<code>testcase</code>, and a <code>testsuite</code>&#39;s time already includes its cases&#39;.</li>
+<code>testcase</code>, and a <code>describe</code> block becomes a <code>testsuite</code> with no <code>file</code> whose time is its wall
+time, hooks included. Summing a suite&#39;s cases instead would miss hook time and over-count a
+suite that runs its cases concurrently.</li>
 <li>Unit test files do not depend on which other files share their shard (the native state lock
 paragraph in <code>AGENTS.md</code>), so moving a file between shards is safe.</li>
 <li>Electron&#39;s <code>install.js</code> downloads the runtime on first use (Electron 42+) and exits non-zero

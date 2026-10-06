@@ -1,9 +1,9 @@
 // Regenerate `test/shard-timings.json` from one CI run: `npm run test:timings -- <run-id>`.
 //
 // Each unit shard uploads its JUnit results as `unit-junit-node-<v>-shard-<n>`. This downloads
-// every one of them with `gh run download`, sums each test file's case times per Node release,
-// and averages the releases the run covered (a pull request runs Node 24 only, a push to `main`
-// both). Only files that exist in this checkout are written, so a deleted test drops out and a
+// every one of them with `gh run download`, sums each test file's top-level suite and case times
+// per Node release (`junitFileTimes`), and averages the releases the run covered (a pull request
+// runs Node 24 only, a push to `main` both). Only files that exist in this checkout are written, so a deleted test drops out and a
 // new one is weighted by `scripts/unit-shard.mjs` until the next regeneration. `GH_REPO`
 // selects another repository, as it does for every `gh` command.
 

@@ -167,20 +167,22 @@ test("each unit shard uploads its JUnit results for the timings generator", () =
   assert.match(upload, /^\s+retention-days: 7$/m);
 });
 
-function junit(cases: { file: string; seconds: number }[], suite = false): string {
+/** Node's reporter shape; `suiteSeconds` wraps the cases in a `describe` suite that took that long. */
+function junit(cases: { file: string; seconds: number }[], suiteSeconds?: number): string {
   const body = cases.map((c) => `<testcase name="t" classname="test" time="${c.seconds}" file="${c.file}"/>`).join("\n");
-  const wrapped = suite ? `<testsuite name="s" time="99">\n${body}\n</testsuite>` : body;
+  const wrapped = suiteSeconds === undefined ? body : `<testsuite name="s" time="${suiteSeconds}">\n${body}\n</testsuite>`;
   return `<?xml version="1.0" encoding="utf-8"?>\n<testsuites>\n${wrapped}\n</testsuites>\n`;
 }
 
-test("timings sum each file's cases per Node release and average the releases", () => {
+test("timings sum each file's top-level suites and cases per Node release and average the releases", () => {
   const files = ["test/a.test.ts", "test/b.test.ts", "test/never-ran.test.ts"];
   const runner = "/home/runner/work/mission-control/mission-control";
   const timings = shardTimings(
     [
       {
         artifact: "unit-junit-node-24-shard-1",
-        xml: junit([{ file: `${runner}/test/a.test.ts`, seconds: 1 }, { file: `${runner}/test/a.test.ts`, seconds: 0.5 }], true),
+        // The suite's 2 s includes 0.5 s of hooks around its cases' 1.5 s.
+        xml: junit([{ file: `${runner}/test/a.test.ts`, seconds: 1 }, { file: `${runner}/test/a.test.ts`, seconds: 0.5 }], 2),
       },
       { artifact: "unit-junit-node-24-shard-2", xml: junit([{ file: `${runner}/test/b.test.ts`, seconds: 0.25 }]) },
       { artifact: "unit-junit-node-26-shard-1", xml: junit([{ file: `${runner}/test/a.test.ts`, seconds: 2.5 }]) },
@@ -189,8 +191,8 @@ test("timings sum each file's cases per Node release and average the releases", 
     ],
     files,
   );
-  // a: 1500 ms on 24 and 2500 ms on 26; the suite's own time is not added on top of its cases.
-  assert.deepEqual(timings, { "test/a.test.ts": 2000, "test/b.test.ts": 250 });
+  // a: the suite's 2000 ms on 24 (not its cases' 1500 ms) and 2500 ms on 26.
+  assert.deepEqual(timings, { "test/a.test.ts": 2250, "test/b.test.ts": 250 });
 });
 
 test("timings refuse an artifact that is not a unit shard's JUnit, or XML that does not parse", () => {
@@ -198,7 +200,7 @@ test("timings refuse an artifact that is not a unit shard's JUnit, or XML that d
   assert.throws(() => shardTimings([{ artifact: "unit-junit-node-24-shard-1", xml: "<testsuites>" }], []), /not well-formed/);
 });
 
-test("a test case with no file or no readable time adds nothing to any file", () => {
+test("a test case or suite with no file or no readable time adds nothing to any file", () => {
   const parsed = junitFileTimes(`<?xml version="1.0" encoding="utf-8"?>
 <testsuites>
 <testcase name="no file" time="5"/>
@@ -206,8 +208,35 @@ test("a test case with no file or no readable time adds nothing to any file", ()
 <testcase name="negative" time="-1" file="/w/test/a.test.ts"/>
 <testcase name="no time" file="/w/test/a.test.ts"/>
 <testcase name="ok" time="0.25" file="/w/test/a.test.ts"/>
+<testsuite name="no file under it" time="7"><testcase name="x" time="7"/></testsuite>
 </testsuites>
 `);
   assert.ok(parsed.ok);
   assert.deepEqual([...parsed.times], [["/w/test/a.test.ts", 250]]);
+});
+
+test("a suite counts once at its own time: hooks are included, concurrent cases are not summed", () => {
+  const parsed = junitFileTimes(`<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="hooks" time="3">
+<testcase name="cheap" time="0.1" file="/w/test/hooked.test.ts"/>
+</testsuite>
+<testsuite name="concurrency 4" time="2">
+<testsuite name="nested" time="1.5">
+<testcase name="a" time="1.5" file="/w/test/parallel.test.ts"/>
+</testsuite>
+<testcase name="b" time="1.9" file="/w/test/parallel.test.ts"/>
+<testcase name="c" time="1.9" file="/w/test/parallel.test.ts"/>
+</testsuite>
+<testcase name="bare" time="0.5" file="/w/test/parallel.test.ts"/>
+</testsuites>
+`);
+  assert.ok(parsed.ok);
+  assert.deepEqual(Object.fromEntries(parsed.times), {
+    // A slow before() hook around a cheap case is the suite's 3 s, not the case's 0.1 s.
+    "/w/test/hooked.test.ts": 3000,
+    // The concurrent suite's wall time (2 s) plus a bare top-level case, never the 5.3 s its
+    // cases add up to, and the nested suite is not counted again.
+    "/w/test/parallel.test.ts": 2500,
+  });
 });

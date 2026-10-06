@@ -124,7 +124,8 @@ npm run test:timings -- <run-id>
 ```
 
 It downloads that run's `unit-junit-*` artifacts with `gh run download` (set `GH_REPO` to read
-another repository), sums each file's test case times per Node release, averages the releases
+another repository), sums each file's top-level suite and test times per Node release (a
+`describe` suite counts at its own time, so its hooks are included), averages the releases
 the run covered, keeps only files that exist in the checkout, and rewrites the file. Commit the
 result on its own.
 

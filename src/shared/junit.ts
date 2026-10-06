@@ -176,22 +176,35 @@ export function parseJUnit(xml: string): JUnitParse {
 
 export type JUnitFileTimes = { ok: true; times: Map<string, number> } | { ok: false; error: string };
 
-function sumCaseTimes(element: XmlElement, into: Map<string, number>): void {
+/** The first `file` a test case at or under `element` reports. */
+function firstCaseFile(element: XmlElement): string | null {
+  if (element.name === "testcase") return element.attrs.file ?? null;
   for (const child of element.children) {
-    if (child.name === "testcase") {
+    const file = firstCaseFile(child);
+    if (file) return file;
+  }
+  return null;
+}
+
+function sumTopLevelTimes(element: XmlElement, into: Map<string, number>): void {
+  for (const child of element.children) {
+    if (child.name === "testsuites") {
+      sumTopLevelTimes(child, into);
+    } else if (child.name === "testsuite" || child.name === "testcase") {
+      const file = firstCaseFile(child);
       const seconds = Number(child.attrs.time);
-      if (!child.attrs.file || !Number.isFinite(seconds) || seconds < 0) continue;
-      into.set(child.attrs.file, (into.get(child.attrs.file) ?? 0) + seconds * 1000);
-    } else if (child.name === "testsuite" || child.name === "testsuites") {
-      sumCaseTimes(child, into);
+      if (!file || !Number.isFinite(seconds) || seconds < 0) continue;
+      into.set(file, (into.get(file) ?? 0) + seconds * 1000);
     }
   }
 }
 
 /**
- * The milliseconds each test file's cases took, keyed by the `file` the runner reported. Only
- * `testcase` times are summed: a `testsuite`'s time already contains its cases'. Cases with no
- * `file` or no readable `time` add nothing.
+ * The milliseconds each test file took, keyed by the `file` the runner reported. Each top-level
+ * `testsuite` or `testcase` counts once, at its own time: a suite's time covers its `before` and
+ * `after` hooks as well as its cases, so summing the cases alone would miss a file whose cost is
+ * in a suite hook. A suite belongs to the file its first case reports. An element with no such
+ * file, or no readable `time`, adds nothing.
  */
 export function junitFileTimes(xml: string): JUnitFileTimes {
   let doc: XmlElement;
@@ -201,7 +214,7 @@ export function junitFileTimes(xml: string): JUnitFileTimes {
     return { ok: false, error: `The JUnit results are not well-formed XML: ${err instanceof Error ? err.message : String(err)}` };
   }
   const times = new Map<string, number>();
-  sumCaseTimes(doc, times);
+  sumTopLevelTimes(doc, times);
   return { ok: true, times };
 }
 

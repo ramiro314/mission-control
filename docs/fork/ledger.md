@@ -1218,8 +1218,8 @@ differently on `main`.
   retained 7 days, whatever the test outcome (`!cancelled()`).
 - `test/shard-timings.json` is generated and never hand-edited. `npm run test:timings --
   <run-id>` (`scripts/unit-shard-timings.ts`) downloads that run's `unit-junit-*` artifacts
-  with `gh run download`, sums `testcase` times per file per Node release (through
-  `junitFileTimes` in `src/shared/junit.ts`), averages the releases, keeps only files that
+  with `gh run download`, sums each file's top-level `testsuite` and `testcase` times per Node
+  release (through `junitFileTimes` in `src/shared/junit.ts`), averages the releases, keeps only files that
   exist in the checkout and rewrites the file. Regeneration is manual, when shard spread drifts.
 - E2E keeps Playwright's `--shard`, and shard counts are unchanged.
 - `test/flake-report-action.test.ts` holds the shard's single `npm run pretest`, the absence of
@@ -1242,7 +1242,9 @@ differently on `main`.
 - `package.json`'s `pretest` provisions everything the unit suite needs (Electron runtime,
   native state lock), and `posttest` adds only tests already inside `test/**/*.test.ts`.
 - `node --test`'s JUnit reporter writes a `time` in seconds and an absolute `file` on every
-  `testcase`, and a `testsuite`'s time already includes its cases'.
+  `testcase`, and a `describe` block becomes a `testsuite` with no `file` whose time is its wall
+  time, hooks included. Summing a suite's cases instead would miss hook time and over-count a
+  suite that runs its cases concurrently.
 - Unit test files do not depend on which other files share their shard (the native state lock
   paragraph in `AGENTS.md`), so moving a file between shards is safe.
 - Electron's `install.js` downloads the runtime on first use (Electron 42+) and exits non-zero
