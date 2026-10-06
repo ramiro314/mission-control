@@ -315,11 +315,6 @@ npm install
 npm run dev
 ```
 
-Until the win32 state lock (plan M2.2, pull request #201) merges into `release/windows`,
-`npm run dev` stops at the state-lock build on Windows with `state ownership lock does not
-support win32 x64`: the addon has no Windows source yet, and the daemon cannot start without
-it. That pull request removes this paragraph.
-
 `npm run dev` builds the native addons, then starts the daemon and the Vite dashboard. Open
 `http://127.0.0.1:5173`, go to **Settings → Setup**, and confirm every row in the **Windows**
 family reads **Ready**. `npm run dev:desktop` adds the Electron shell, and `npm run dev:start`

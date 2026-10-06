@@ -1582,11 +1582,11 @@ jobs&#39; condition and the tree-reuse wiring.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, and the Windows docs (plan M2.1, M2.3 to M2.9 and M2.11). Still to land there: the win32 state lock (M2.2, open as #201), the Makefile under Git Bash (M2.10) and gate readiness (M2.12). The branch reaches <code>main</code> in one merge.</td>
+<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, and the Windows docs (plan M2.1 to M2.9 and M2.11). Still to land there: the Makefile under Git Bash (M2.10) and gate readiness (M2.12). The branch reaches <code>main</code> in one merge.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), pending (branch <code>docs/windows-support-docs</code>, the Windows docs and this entry&#39;s update, M2.11). The per-task base branch it depends on (M0.1) has its own entry.</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), pending (branch <code>docs/windows-support-docs</code>, the Windows docs and this entry&#39;s update, M2.11). The per-task base branch it depends on (M0.1) has its own entry.</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1659,6 +1659,14 @@ worktree is acquired.</li>
 <code>src/server/platform/session-runtimes.ts</code> marks the terminal runtime unavailable on win32. A
 dispatch, a Pipeline launch and Continue in terminal are refused with it, and the discovery
 poller runs an empty sweep there, keeping the Git refresh SDK sessions need.</li>
+<li><strong>State lock</strong>: win32 builds <code>native/state-lock/state_lock_win.cc</code>, which takes state
+ownership with <code>LockFileEx</code> under the same handle contract and error codes as the POSIX
+<code>flock</code>. The lock covers one byte at 1 GiB rather than the owner metadata, because a
+<code>LockFileEx</code> region is mandatory and a contender must still read who owns the state home. The
+three symlink-publication exports serve only Pi and refuse with <code>ENOTSUP</code> there. On win32,
+<code>publishNativeAddon</code> moves an addon a live process has loaded aside to a <code>.retired-</code> name
+before renaming the new one in, puts it back if the publish still fails, and sweeps retired
+files once nothing has them loaded; every other platform keeps the plain rename (D38).</li>
 <li><strong>Keep Awake</strong> (D13): win32 holds one power request set to <code>PowerRequestSystemRequired</code>
 (<code>native/keep-awake/keep_awake_win.cc</code>), the same idle-system-sleep guarantee as the macOS
 IOKit assertion, released by the kernel with the process. This deviates from D13&#39;s
@@ -1715,7 +1723,7 @@ executable search ladder). On <code>release/windows</code> also: <code>src/serve
 <code>src/shared/{harness-capabilities,setup-catalog,allowlist,llm,workflow,standing-instructions,protocol,types,executables}.ts</code>,
 <code>src/shared/harness-runtime.mjs</code>,
 <code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
-<code>scripts/{gen-icons,probe-keep-awake-native}.mjs</code>, <code>package.json</code> (<code>dev:electron:app</code>),
+<code>scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs</code>, <code>package.json</code> (<code>dev:electron:app</code>),
 <code>.github/workflows/ci.yml</code> (the Windows jobs), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
 skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
 <code>docs/desktop-and-packaging.md</code>.</p>
@@ -1727,7 +1735,7 @@ skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/se
 <code>docs/plans/windows-support/</code>, <code>docs/windows-branch-sync.md</code>. On <code>release/windows</code> also:
 <code>src/server/platform/{host,session-runtimes}.ts</code>, <code>src/server/setup/windows.ts</code>,
 <code>src/server/git/long-paths.ts</code>, <code>src/shared/native-path.ts</code>, <code>src/main/platform-shell.ts</code>,
-<code>native/keep-awake/keep_awake_win.cc</code>, <code>build/tray.ico</code>, <code>scripts/ci-allowed-failures.mjs</code>,
+<code>native/state-lock/state_lock_win.cc</code>, <code>native/keep-awake/keep_awake_win.cc</code>, <code>build/tray.ico</code>, <code>scripts/ci-allowed-failures.mjs</code>,
 <code>scripts/probe-keep-awake-native.d.mts</code>, <code>e2e/fixtures/win32-host-build.ts</code>,
 <code>e2e/specs/win32-{harness-availability,setup-checks}.spec.ts</code>, <code>test/helpers/win32-skip.ts</code>,
 <code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,harness-host-availability,keep-awake-probe,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
