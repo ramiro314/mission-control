@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const CODEX = { skip: skipOnWin32("Codex is unavailable on win32") };
 
 // A fake `codex` that replays the provider's exact failure text. The mode comes from a file
 // because `MISSION_CODEX_BIN` is read once; every invocation appends to a call log so the
@@ -175,7 +178,7 @@ async function review(mode: "model" | "quota" | "transient") {
   return { rows, spawns, attempts, run: store.getRun(`run-${mode}`)! };
 }
 
-test("an unavailable model is recorded as model_unavailable and costs one call", async () => {
+test("an unavailable model is recorded as model_unavailable and costs one call", CODEX, async () => {
   const { rows, spawns, attempts } = await review("model");
   assert.equal(spawns, 1);
   assert.deepEqual(rows, [{ state: "failed", error_code: "model_unavailable" }]);
@@ -185,7 +188,7 @@ test("an unavailable model is recorded as model_unavailable and costs one call",
   assert.ok(attempts[0]!.error?.includes(`codex exited 1: ${MODEL_UNAVAILABLE}`));
 });
 
-test("an exhausted quota is recorded as quota_exhausted, keeps its reset time, and costs one call", async () => {
+test("an exhausted quota is recorded as quota_exhausted, keeps its reset time, and costs one call", CODEX, async () => {
   const { rows, spawns, attempts, run } = await review("quota");
   assert.equal(spawns, 1);
   assert.deepEqual(rows, [{ state: "failed", error_code: "quota_exhausted" }]);
@@ -195,7 +198,7 @@ test("an exhausted quota is recorded as quota_exhausted, keeps its reset time, a
   assert.equal(run.currentPhase, "infrastructure_error");
 });
 
-test("an unrecognised non-zero exit stays persona_infrastructure and is retried as before", async () => {
+test("an unrecognised non-zero exit stays persona_infrastructure and is retried as before", CODEX, async () => {
   const { rows, spawns, attempts } = await review("transient");
   assert.equal(spawns, 2);
   assert.deepEqual(rows, [
@@ -215,7 +218,7 @@ test("classifyCodexFailure reads the reset time when present and declines unknow
   assert.equal(classifyCodexFailure("codex exited 1: connection reset by peer"), null);
 });
 
-test("a JSON error event on stdout is read from its nested message and classified", async () => {
+test("a JSON error event on stdout is read from its nested message and classified", CODEX, async () => {
   writeFileSync(modePath, "model-stdout");
   const error = await codexRunner.run("review", { model: "gpt-5.6-sol" }).then(
     () => assert.fail("the run should reject"),

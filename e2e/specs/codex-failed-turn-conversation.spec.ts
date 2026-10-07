@@ -5,6 +5,9 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { settled } from "../fixtures/settle.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Codex is unavailable on win32");
 
 /**
  * A failed Codex turn reaches the conversation: rollout file to daemon to SSE to DOM. The

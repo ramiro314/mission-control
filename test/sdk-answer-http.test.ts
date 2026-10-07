@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 // What is at stake: an answer landing on a question nobody was asked.
 //
@@ -54,6 +55,9 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+
+/** Every handoff opens a terminal, which win32 refuses before anything is prepared or stopped. */
+const HANDOFF = { skip: skipOnWin32("the terminal runtime is unavailable on win32; hands an SDK session off to a terminal") };
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 /** Capture the actual route output locally, with no exporter or synthetic observer call. */
@@ -388,7 +392,7 @@ test("parallel driver requests stay ordered and promote the next unanswered ask"
   assert.equal(registry.getSession("sdk:one")?.paneDialog, null);
 });
 
-test("the handoff clears the task binding and marks telemetry BEFORE stopping the driver", async (t) => {
+test("the handoff clears the task binding and marks telemetry BEFORE stopping the driver", HANDOFF, async (t) => {
   const registry = new Registry();
   captureSessionTelemetry(t, registry);
   const session = seed(registry, null, "sdk:hand");
@@ -467,7 +471,7 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
   assert.deepEqual(sessionEndingReasons("sdk:hand"), ["handoff"]);
 });
 
-test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async () => {
+test("the embedded agent launcher delegates to handoff instead of launching beside the driver", HANDOFF, async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:launch");
   const supervisor = fakeSupervisor();
@@ -520,7 +524,7 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
 });
 
 for (const status of [200, 504]) {
-  test(`selected-terminal handoff persists captured identity before discovery after a ${status} launch`, async () => {
+  test(`selected-terminal handoff persists captured identity before discovery after a ${status} launch`, HANDOFF, async () => {
     const registry = new Registry();
     const id = `sdk:captured-${status}`;
     const taskId = `captured-${status}`;
@@ -550,7 +554,7 @@ for (const status of [200, 504]) {
   });
 }
 
-test("a Codex SDK handoff gives Ghostty an absolute executable", async () => {
+test("a Codex SDK handoff gives Ghostty an absolute executable", HANDOFF, async () => {
   const previous = process.env.MISSION_CODEX_BIN;
   process.env.MISSION_CODEX_BIN = process.execPath;
   try {
@@ -604,7 +608,7 @@ test("a Codex SDK handoff gives Ghostty an absolute executable", async () => {
   }
 });
 
-test("an uncertain embedded-agent launch keeps the terminal resource name", async () => {
+test("an uncertain embedded-agent launch keeps the terminal resource name", HANDOFF, async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:uncertain");
   registry.upsertTask(
@@ -1133,7 +1137,7 @@ test("a handoff with no identity to resume from is refused before anything is st
   assert.deepEqual(sessionEndingReasons("sdk:new"), ["unknown"], "a refusal cannot mark a later departure");
 });
 
-test("managed resume refuses a missing Mission bundle before stopping or unbinding", async () => {
+test("managed resume refuses a missing Mission bundle before stopping or unbinding", HANDOFF, async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:missing-mission");
   const task = mkTask({ id: "missing-mission-task", status: "running", sessionId: "sdk:missing-mission" });
@@ -1159,7 +1163,7 @@ test("managed resume refuses a missing Mission bundle before stopping or unbindi
   }
 });
 
-test("a missing resume executable is refused before the embedded driver is stopped", async () => {
+test("a missing resume executable is refused before the embedded driver is stopped", HANDOFF, async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:missing-bin");
   const supervisor = fakeSupervisor();
@@ -1274,7 +1278,7 @@ test("a delivered turn is verified, because the harness said so", async () => {
   });
 });
 
-test("a handoff that stops the driver and cannot open a terminal settles its task", async () => {
+test("a handoff that stops the driver and cannot open a terminal settles its task", HANDOFF, async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:noterm");
   registry.upsertTask(
@@ -1313,7 +1317,7 @@ test("a handoff that stops the driver and cannot open a terminal settles its tas
 });
 
 for (const failure of ["task unbind", "launch intent"] as const) {
-  test(`a failed ${failure} releases preparation without calling the terminal backend`, async (t) => {
+  test(`a failed ${failure} releases preparation without calling the terminal backend`, HANDOFF, async (t) => {
     const registry = new Registry();
     const id = `sdk:failed-${failure}`;
     seed(registry, null, id);
@@ -1380,7 +1384,7 @@ test("settling after a failed handoff keeps the worktree and reads a merge as do
   tasks.settleAfterFailedHandoff("no-such-task");
 });
 
-test("a stop that fails with the driver still alive puts the binding back", async (t) => {
+test("a stop that fails with the driver still alive puts the binding back", HANDOFF, async (t) => {
   const registry = new Registry();
   captureSessionTelemetry(t, registry);
   seed(registry, null, "sdk:stopfail");
@@ -1436,7 +1440,7 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
   assert.deepEqual(sessionEndingReasons("sdk:stopfail"), ["unknown"], "a failed stop must undo handoff attribution");
 });
 
-test("a stop that fails with the source process proven gone settles instead", async (t) => {
+test("a stop that fails with the source process proven gone settles instead", HANDOFF, async (t) => {
   const { spawn } = await import("node:child_process");
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   t.after(() => { child.kill("SIGKILL"); });
@@ -1553,7 +1557,7 @@ test("a question answered twice is refused, not last-write-wins", async () => {
   assert.equal(supervisor.answered.length, 0);
 });
 
-test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing", async () => {
+test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing", HANDOFF, async () => {
   const registry = new Registry();
   const session = seed(registry, null, "sdk:race");
   registry.upsertTask(
@@ -1600,7 +1604,7 @@ test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing"
   assert.deepEqual(supervisor.stopped, ["sdk:race"], "the driver was stopped once");
 });
 
-test("a repeat handoff after a successful one is refused too", async () => {
+test("a repeat handoff after a successful one is refused too", HANDOFF, async () => {
   const registry = new Registry();
   const session = seed(registry, null, "sdk:again");
   const supervisor = fakeSupervisor();

@@ -7,8 +7,11 @@ import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import type { startDaemon } from '../src/main/daemon.ts';
+import { skipOnWin32 } from './helpers/win32-skip.ts';
 
-test('fresh migration startup rejects an occupied unhealthy port and starts only after it is absent', async (t) => {
+const MIGRATION = { skip: skipOnWin32('the macOS install migration is unavailable on win32') };
+
+test('fresh migration startup rejects an occupied unhealthy port and starts only after it is absent', MIGRATION, async (t) => {
   let mode = 'http-error';
   const server = createServer((_request, response) => {
     if (mode === 'timeout') return;

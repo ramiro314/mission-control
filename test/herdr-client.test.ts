@@ -14,6 +14,9 @@ import { HERDR_BIN } from "../src/server/terminal/herdr.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { fakeHerdrSocket, refuse, reply } from "./helpers/herdr-socket.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const HERDR = { skip: skipOnWin32("Herdr and the terminal runtime are unavailable on win32") };
 
 function run(stdout: string, code = 0, outcomeUnknown = false): RunResult {
   return { stdout, stderr: "", code, outcomeUnknown, overflowed: false };
@@ -55,7 +58,7 @@ const SNAPSHOT = {
   },
 };
 
-test("snapshot and pane process info use stable one-request connections and correlate out-of-order responses", async () => {
+test("snapshot and pane process info use stable one-request connections and correlate out-of-order responses", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") {
       const line = `${JSON.stringify({ id: request.id, result: SNAPSHOT })}\n`;
@@ -89,7 +92,7 @@ test("snapshot and pane process info use stable one-request connections and corr
   }
 });
 
-test("application refusals are confirmed while malformed post-write mutation responses are unknown", async () => {
+test("application refusals are confirmed while malformed post-write mutation responses are unknown", HERDR, async () => {
   let mode: "refuse" | "malformed" = "refuse";
   const fake = await fakeHerdrSocket((request, socket) => {
     if (mode === "refuse") refuse(socket, request.id, "pane is not writable");
@@ -112,7 +115,7 @@ test("application refusals are confirmed while malformed post-write mutation res
   }
 });
 
-test("agent focus rejects a successful response for a different pane", async () => {
+test("agent focus rejects a successful response for a different pane", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     reply(socket, request.id, {
       type: "agent_info",
@@ -129,7 +132,7 @@ test("agent focus rejects a successful response for a different pane", async () 
   }
 });
 
-test("workspace rename rejects a successful response for a different identity", async () => {
+test("workspace rename rejects a successful response for a different identity", HERDR, async () => {
   for (const workspace of [
     { workspace_id: "w2", label: "Renamed" },
     { workspace_id: "w1", label: "Another name" },
@@ -149,7 +152,7 @@ test("workspace rename rejects a successful response for a different identity", 
   }
 });
 
-test("workspace creation rejects a successful response for a different label or cwd", async () => {
+test("workspace creation rejects a successful response for a different label or cwd", HERDR, async () => {
   for (const created of [
     { label: "Another task", cwd: "/repo" },
     { label: "Feature work", cwd: "/another-repo" },
@@ -177,7 +180,7 @@ test("workspace creation rejects a successful response for a different label or 
   }
 });
 
-test("workspace creation verifies local cwd identity without guessing or retrying", async (t) => {
+test("workspace creation verifies local cwd identity without guessing or retrying", HERDR, async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "herdr-create-cwd-")));
   const target = join(dir, "target"), alias = join(dir, "alias"), other = join(dir, "other");
   const missing = join(dir, "missing"), dangling = join(dir, "dangling"), loop = join(dir, "loop");
@@ -244,7 +247,7 @@ test("workspace creation verifies local cwd identity without guessing or retryin
   }
 });
 
-test("duplicate, unknown, and schema-mismatched response ids terminally fail a written mutation", async () => {
+test("duplicate, unknown, and schema-mismatched response ids terminally fail a written mutation", HERDR, async () => {
   for (const kind of ["duplicate", "unknown", "schema"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {
       if (kind === "duplicate") {
@@ -268,7 +271,7 @@ test("duplicate, unknown, and schema-mismatched response ids terminally fail a w
   }
 });
 
-test("a non-responsive socket settles at the deadline and a pre-connect failure is known not delivered", async () => {
+test("a non-responsive socket settles at the deadline and a pre-connect failure is known not delivered", HERDR, async () => {
   const fake = await fakeHerdrSocket(() => {});
   try {
     const client = createHerdrClient(execStatus(fake.path), HERDR_BIN, {
@@ -292,7 +295,7 @@ test("a non-responsive socket settles at the deadline and a pre-connect failure 
   assert.match(refused.error ?? "", /could not connect/);
 });
 
-test("an unterminated final line fails reads without leaking a partial result", async () => {
+test("an unterminated final line fails reads without leaking a partial result", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     socket.end(JSON.stringify({ id: request.id, result: { type: "pane_read" } }));
   });
@@ -307,7 +310,7 @@ test("an unterminated final line fails reads without leaking a partial result", 
   }
 });
 
-test("UTF-8 response characters may cross socket chunks", async () => {
+test("UTF-8 response characters may cross socket chunks", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     const response = Buffer.from(`${JSON.stringify({
       id: request.id,
@@ -550,7 +553,7 @@ test("a stale running server asks for a restart rather than an update", async ()
   }
 });
 
-test("the session snapshot accepts a newer protocol generation and still refuses an older one", async () => {
+test("the session snapshot accepts a newer protocol generation and still refuses an older one", HERDR, async () => {
   for (const protocol of [HERDR_MIN_PROTOCOL, 22, HERDR_MIN_PROTOCOL - 1]) {
     const supported = protocol >= HERDR_MIN_PROTOCOL;
     const fake = await fakeHerdrSocket((request, socket) => {
@@ -574,7 +577,7 @@ test("the session snapshot accepts a newer protocol generation and still refuses
   }
 });
 
-test("a side split is read from both the 0.8.2 and the 0.9.0 response type", async () => {
+test("a side split is read from both the 0.8.2 and the 0.9.0 response type", HERDR, async () => {
   // 0.8.2 answers `pane_created`; 0.9.0 answers `pane_info` with the identical pane payload.
   // `sessions.spawnDetached` deliberately swallows a split failure so it cannot fail a launch,
   // so the parsed pane is asserted here, where it is actually observable - otherwise a Herdr
@@ -621,7 +624,7 @@ test("a side split is read from both the 0.8.2 and the 0.9.0 response type", asy
 // dashboard for that tick while the other 92 panes had answered perfectly well. Measured at 47
 // workspaces / 93 panes, `list()` costs 427ms against a 1500ms discovery tick and a 1000ms
 // per-call read timeout, so which pane loses that race is a matter of load.
-test("any per-pane process failure costs that pane's details, not the whole snapshot", async () => {
+test("any per-pane process failure costs that pane's details, not the whole snapshot", HERDR, async () => {
   for (const code of ["pane_not_found", "permission_denied", "internal"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {
       if (request.method === "session.snapshot") {
@@ -652,7 +655,7 @@ test("any per-pane process failure costs that pane's details, not the whole snap
 
 // What still fails the whole call: an answer whose identity cannot be trusted. Degrading per
 // pane must not turn a server talking about the wrong pane into a pane with no details.
-test("a process answer about a different pane still fails the whole snapshot", async () => {
+test("a process answer about a different pane still fails the whole snapshot", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
     else {
@@ -674,7 +677,7 @@ test("a process answer about a different pane still fails the whole snapshot", a
 // The single-pane lookup a launch uses to confirm its agent actually started. Same request and
 // same reading as the enumeration above - `pane.process_info` is spelled once - and a pane the
 // server does not have is null rather than an error, because that is a fact about the pane.
-test("a single pane's process details answer for that pane, and a missing pane answers null", async () => {
+test("a single pane's process details answer for that pane, and a missing pane answers null", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.params.pane_id === "w1:gone") {
       socket.write(`${JSON.stringify({
@@ -721,7 +724,7 @@ test("a single pane's process details answer for that pane, and a missing pane a
   }
 });
 
-test("a resolved server answers many pane requests on one status probe", async () => {
+test("a resolved server answers many pane requests on one status probe", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "pane.read") {
       reply(socket, request.id, { type: "pane_read", read: { pane_id: request.params.pane_id, text: "on the pane" } });

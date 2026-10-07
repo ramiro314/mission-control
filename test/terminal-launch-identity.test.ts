@@ -12,6 +12,9 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { TerminalEnumeration } from "../src/server/terminal/enumerate.ts";
 import { canWriteTo, emulatorHandle } from "../src/shared/pane.ts";
 import { mkTask, mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TERMINAL_RUNTIME = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 const home = mkdtempSync(join(tmpdir(), "mission-launch-identity-"));
 process.env.MISSION_HOME = home;
@@ -26,7 +29,7 @@ const proc = (pid: number, ppid: number, startMs = 1000): Proc => ({
   agent: null, agentNative: false,
 });
 
-test("the recorded wrapper is recognized with ordinary and login-shell argv0", async () => {
+test("the recorded wrapper is recognized with ordinary and login-shell argv0", TERMINAL_RUNTIME, async () => {
   for (const argv0 of ["/bin/sh", "-/bin/sh"]) {
     const stateHome = mkdtempSync(join(home, "wrapper-"));
     const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
@@ -44,7 +47,7 @@ test("the recorded wrapper is recognized with ordinary and login-shell argv0", a
   }
 });
 
-test("adoption can verify a wrapper that starts after the initial launch lookup expires", async () => {
+test("adoption can verify a wrapper that starts after the initial launch lookup expires", TERMINAL_RUNTIME, async () => {
   const { launchAgentTerminal } = await import("../src/server/terminal/targets.ts");
   const { listProcesses } = await import("../src/server/discovery/processes.ts");
   const { verifiesEmulatorLaunch } = await import("../src/server/terminal/launch-process.ts");

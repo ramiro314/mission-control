@@ -144,7 +144,6 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
   assert.deepEqual(shards(WINDOWS.get("unit-windows")!), shards(ALL.get("unit-node-24")!));
   assert.ok(run("build-windows").includes("npm run build"));
   assert.ok(run("build-windows").includes("npm run smoke"));
-  assert.ok(run("e2e-windows").includes("npm run build"));
   const e2e = run("e2e-windows").find((cmd) => cmd.startsWith("npm run test:e2e"));
   assert.ok(e2e, "the e2e job runs the Playwright suite");
   assert.ok(e2e.startsWith("npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} "));
@@ -160,6 +159,54 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
     `the ${globalMs / 60_000}-minute global timeout leaves five minutes inside the ${stepMinutes}-minute step`,
   );
   assert.deepEqual(shards(WINDOWS.get("e2e-windows")!), shards(ALL.get("e2e")!));
+});
+
+test("e2e tests the dist build-windows built instead of building its own", () => {
+  const build = WINDOWS.get("build-windows")!;
+  const e2e = WINDOWS.get("e2e-windows")!;
+  assert.ok(!e2e.includes("npm run build"), "no e2e shard builds dist itself");
+  assert.ok(needs(e2e).includes("build-windows"));
+
+  // Each link of build -> pack -> upload -> download -> unpack -> e2e, by name and in order. A
+  // `steps.<id>` that names no step is empty, so a broken link would skip every shard's tests,
+  // and these jobs are allowed to fail, so nothing else would notice.
+  const chain = (body: string, names: string[]) => {
+    const all = steps(body);
+    const found = names.map((name) => all.findIndex((s) => s.startsWith(`      - name: ${name}\n`)));
+    found.forEach((index, i) => assert.ok(index >= 0, `the job has a "${names[i]}" step`));
+    assert.deepEqual([...found].sort((x, y) => x - y), found, `${names.join(", ")} run in that order`);
+    return found.map((index) => all[index]!);
+  };
+  const [built, , pack, upload] = chain(build, ["Build", "Smoke the built bundles", "Pack dist for E2E", "Upload dist for E2E"]);
+  assert.match(built!, /^ {8}id: build$/m);
+  // Not smoke: it failed on win32 on run 37541228166, and gating on it skipped every shard.
+  for (const step of [pack!, upload!]) {
+    assert.match(step, /^ {8}if: steps\.build\.outcome == 'success'$/m, "only a dist that built is shared");
+  }
+  assert.match(pack!, /^ {8}run: tar -cf dist\.tar dist$/m);
+  assert.match(upload!, /^ {8}uses: actions\/upload-artifact@v4$/m);
+  assert.match(upload!, /^ {10}name: dist-windows$/m);
+  assert.match(upload!, /^ {10}path: dist\.tar$/m);
+
+  const [download, unpack, tests] = chain(e2e, ["Download dist", "Unpack dist", "End-to-end tests"]);
+  assert.match(download!, /^ {8}id: download$/m);
+  assert.match(download!, /^ {8}uses: actions\/download-artifact@v4$/m);
+  assert.match(download!, /^ {10}name: dist-windows$/m);
+  assert.match(unpack!, /^ {8}id: unpack$/m);
+  assert.match(unpack!, /^ {8}if: steps\.download\.outcome == 'success'$/m, "no artifact, nothing to unpack");
+  assert.match(unpack!, /^ {8}run: tar -xf dist\.tar$/m, "unpacks the tarball the pack step made");
+  assert.match(tests!, /^ {8}id: e2e$/m);
+  assert.match(tests!, /^ {8}if: steps\.unpack\.outcome == 'success'$/m, "e2e runs only on the unpacked dist");
+});
+
+test("every Windows job turns off Defender real-time scanning before checkout", () => {
+  for (const [id, body] of WINDOWS) {
+    const first = steps(body)[0]!;
+    assert.match(first, /^ {6}- name: Turn off Defender real-time scanning$/m, `${id} starts with it`);
+    assert.match(first, /^ {8}shell: pwsh$/m);
+    assert.match(first, /Set-MpPreference -DisableRealtimeMonitoring \$true -ErrorAction Continue$/m);
+    assert.doesNotMatch(first, /continue-on-error/, "a Defender error warns rather than fails");
+  }
 });
 
 test("the native probes run the state-lock specs and the Keep Awake verification", () => {

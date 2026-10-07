@@ -11,10 +11,14 @@ import type { QueueManager } from "../src/server/queue.ts";
 import { mkSession, mkMuxHandle, mkEmuHandle, mkTask } from "./helpers/session-fixture.ts";
 import { launchedArgv } from "./helpers/isolated-launch.ts";
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import { STATE_DIR } from "../src/server/config.ts";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
 import { TerminalLaunchError } from "../src/server/terminal/launch-error.ts";
 await managedResumeFixture(STATE_DIR);
+
+// A resume with task continuity hands off through the transfer coordinator, which win32 refuses.
+const HANDOFF = { skip: skipOnWin32("the terminal runtime is unavailable on win32; hands a session with continuity off to a terminal") };
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
 // question is what a request is allowed to influence. The answer has to be "which of two
@@ -306,7 +310,7 @@ async function exitedTransfer(t: TestContext, result: { ok: boolean; label: stri
   }
 }
 
-test("an uncertain exited-session resume keeps its resource and a durable reservation", async (t) => {
+test("an uncertain exited-session resume keeps its resource and a durable reservation", HANDOFF, async (t) => {
   const { f, response, argv, app } = await exitedTransfer(t, { ok: false, label: "Ghostty", homeName: "Uncertain resume-abc123", status: 504, error: "Window may still open" });
   assert.equal(response.status, 200, "accepted observation is pending, not a failed task");
   assert.ok(launchedArgv(argv).includes("--mcp-config"));
@@ -431,7 +435,7 @@ test("a resume claim is released when the session is actually removed", () => {
   })();
 });
 
-test("resuming through an emulator replaces the dead home and retains an unknown resource", async (t) => {
+test("resuming through an emulator replaces the dead home and retains an unknown resource", HANDOFF, async (t) => {
   const { f, response } = await exitedTransfer(t, { ok: true, label: "Ghostty", homeName: null, status: 200 });
   assert.equal(response.status, 200);
   const task = f.registry.getTask(f.task!.id)!;
@@ -441,7 +445,7 @@ test("resuming through an emulator replaces the dead home and retains an unknown
   assert.equal(task.status, "running");
 });
 
-test("resume retains the spawned UUID and binds only a positively discovered recipient", async (t) => {
+test("resume retains the spawned UUID and binds only a positively discovered recipient", HANDOFF, async (t) => {
   for (const matches of [true, false]) {
     const { f, response, argv } = await exitedTransfer(t, { ok: true, label: "Ghostty", homeName: null,
       terminalResourceId: "emulator:ghostty:resumed-uuid", status: 200 }, matches);

@@ -5,6 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TMUX = { skip: skipOnWin32("tmux and the terminal runtime are unavailable on win32") };
+const TERMINAL = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
 process.env.HARNESS_HOME = home;
@@ -85,7 +89,7 @@ test("a pinned base this repo does not have fails the task and provisions nothin
   assert.equal(existsSync(join(WORKTREES_DIR, "pinned-missing-base")), false);
 });
 
-test("cancellation before discovery retains the identity captured by terminal launch", async () => {
+test("cancellation before discovery retains the identity captured by terminal launch", TERMINAL, async () => {
   const repo = join(home, "capture-before-discovery");
   mkdirSync(repo);
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
@@ -120,7 +124,7 @@ test("cancellation before discovery retains the identity captured by terminal la
 });
 
 for (const state of ["absent", "live", "unknown"] as const) {
-  test(`failed close with a verified ${state} multiplexer home ${state === "absent" ? "releases" : "preserves"} the worktree`, async () => {
+  test(`failed close with a verified ${state} multiplexer home ${state === "absent" ? "releases" : "preserves"} the worktree`, TMUX, async () => {
     const repo = join(home, `home-${state}`);
     const worktree = join(home, `worktree-${state}`);
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
@@ -158,7 +162,7 @@ for (const state of ["absent", "live", "unknown"] as const) {
 }
 
 for (const blocker of ["primary", "secondary", "after-home", "none"] as const) {
-  test(`automatic return guards terminal-home cleanup and repeats provider checks: ${blocker}`, async () => {
+  test(`automatic return guards terminal-home cleanup and repeats provider checks: ${blocker}`, blocker === "after-home" || blocker === "none" ? TMUX : {}, async () => {
     const repo = join(home, `guarded-home-${blocker}`);
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
     execFileSync("git", ["-C", repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]);

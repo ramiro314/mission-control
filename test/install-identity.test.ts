@@ -11,6 +11,9 @@ import {
 } from "../src/main/install-identity.ts";
 import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
 
 const HOME = "/Users/someone";
 const SYSTEM_APP = systemAppPath();
@@ -45,7 +48,7 @@ function classify(over: Partial<IdentityInputs> = {}) {
   });
 }
 
-test("the app this receipt describes runs, and updates, exactly as before", () => {
+test("the app this receipt describes runs, and updates, exactly as before", INSTALLER, () => {
   const identity = classify();
   assert.equal(identity.state, "managed");
   assert.equal(identityUpdateBlock(identity), null);
@@ -91,7 +94,7 @@ test("a build swapped in at the receipt's own path runs without the updater", ()
   assert.match(identityUpdateBlock(identity) ?? "", /managed install command/);
 });
 
-test("the retained system copy hands a launch over to this account's personal app", () => {
+test("the retained system copy hands a launch over to this account's personal app", INSTALLER, () => {
   const identity = classify({ runningBundle: SYSTEM_APP });
   assert.equal(identity.state, "redirect");
   assert.equal(identity.state === "redirect" ? identity.target : null, USER_APP);

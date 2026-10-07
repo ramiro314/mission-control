@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { recordsIn } from "../fixtures/records.ts";
@@ -119,6 +120,9 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     dashboard,
     daemon,
   }) => {
+    skipSpecOnWin32(test, agent === "codex"
+      ? "Codex is unavailable on win32"
+      : "cmux and the terminal runtime are unavailable on win32");
     await dispatch(dashboard, daemon, agent);
 
     await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();

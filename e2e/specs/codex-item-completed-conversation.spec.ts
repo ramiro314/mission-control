@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { settled } from "../fixtures/settle.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -66,6 +67,7 @@ test.use({
     MC_E2E_CODEX_ITEM_EVENTS: "1",
   },
 });
+skipSpecOnWin32(test, "Codex is unavailable on win32");
 
 async function dispatchCodex(page: Page, daemon: DaemonHandle, goal: string): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();

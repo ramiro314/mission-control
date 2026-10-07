@@ -5,12 +5,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-runtime-transfer-"));
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
-await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { handOffToTerminal } = await import("../src/server/sdk/handoff.ts");
@@ -19,10 +19,16 @@ const { transferFixture } = await import("./helpers/session-transfer-fixture.ts"
 const { getSessionTransfer, updateSessionTransfer, transferForSource } = await import("../src/server/session-transfers/store.ts");
 const { SessionTransferCoordinator } = await import("../src/server/session-transfers/coordinator.ts");
 const { openDb } = await import("../src/server/db.ts");
+
+// These hand off or resume into a terminal, which win32 refuses; the win32 refusal test runs everywhere.
+const TRANSFER = { skip: skipOnWin32("the terminal runtime is unavailable on win32; hands an SDK session off to a terminal") };
+// The managed resume root this builds is the terminal runtime's, and it refuses to open on win32.
+if (!TRANSFER.skip) await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
+
 after(() => rmSync(home, { recursive: true, force: true }));
 
 for (const stopStarted of [false, true]) for (const leaseState of ["revoked", "completed"] as const) {
-  test(`resolution refuses future transfer states despite canEnd: stop ${stopStarted}, lease ${leaseState}`, async (t) => {
+  test(`resolution refuses future transfer states despite canEnd: stop ${stopStarted}, lease ${leaseState}`, TRANSFER, async (t) => {
     const f = transferFixture(t, { workflows: 2 });
     const question = f.reviews.create(f.source.id, "input", "Held question", "Keep this request");
     const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
@@ -74,7 +80,7 @@ test("on win32 a handoff to the terminal is refused before the driver is stopped
   await f.supervisor.stop(f.source.id);
 });
 
-test("resolution revalidates the transfer vocabulary after asynchronous observation", async (t) => {
+test("resolution revalidates the transfer vocabulary after asynchronous observation", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -89,7 +95,7 @@ test("resolution revalidates the transfer vocabulary after asynchronous observat
   assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
 });
 
-test("source lookup returns the durable adoption without adding resolved history to fleet pages", async (t) => {
+test("source lookup returns the durable adoption without adding resolved history to fleet pages", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -139,7 +145,7 @@ for (const newerEpisode of [false, true]) test(`restart settles taskless reviews
   assert.equal(registry.getReview(question.id)?.status, newerEpisode ? "pending" : "orphaned");
 });
 
-test("an exited SDK row without lifetime proof cannot launch a replacement", async (t) => {
+test("an exited SDK row without lifetime proof cannot launch a replacement", TRANSFER, async (t) => {
   const f = transferFixture(t, { workflows: 2 });
   await f.supervisor.stop(f.source.id);
   const result = await f.transfers.resumeExited(f.registry.getSession(f.source.id)!, f.supervisor, f.deps);
@@ -150,7 +156,7 @@ test("an exited SDK row without lifetime proof cannot launch a replacement", asy
 });
 
 for (const observation of ["live", "unavailable", "unreadable", "throws", "gone"] as const) {
-  test(`exited SDK resume requires absence of its captured child lifetime: ${observation}`, async (t) => {
+  test(`exited SDK resume requires absence of its captured child lifetime: ${observation}`, TRANSFER, async (t) => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     t.after(() => { child.kill("SIGKILL"); });
     await once(child, "spawn");
@@ -196,7 +202,7 @@ for (const observation of ["live", "unavailable", "unreadable", "throws", "gone"
 }
 
 for (const observation of ["gone", "unavailable", "unreadable"] as const) {
-  test(`a rejected stop cannot restore ownership from a stale handle: ${observation}`, async (t) => {
+  test(`a rejected stop cannot restore ownership from a stale handle: ${observation}`, TRANSFER, async (t) => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     t.after(() => { child.kill("SIGKILL"); });
     await once(child, "spawn");
@@ -236,7 +242,7 @@ for (const observation of ["gone", "unavailable", "unreadable"] as const) {
   });
 }
 
-test("detachment preserves task edits made while terminal preparation is pending", async (t) => {
+test("detachment preserves task edits made while terminal preparation is pending", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const prepare = f.deps.prepare!;
   f.deps.prepare = async (...args) => {
@@ -250,7 +256,7 @@ test("detachment preserves task edits made while terminal preparation is pending
   assert.deepEqual(f.registry.getTask(f.task!.id)?.labels, ["keep"]);
 });
 
-test("unrelated session activity does not rescan held transfers", async (t) => {
+test("unrelated session activity does not rescan held transfers", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -265,7 +271,7 @@ test("unrelated session activity does not rescan held transfers", async (t) => {
   assert.equal(recheck.mock.callCount(), 1, "the held source still triggers observation");
 });
 
-test("completion during transfer reports a conflict without settling the task", async (t) => {
+test("completion during transfer reports a conflict without settling the task", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -273,7 +279,7 @@ test("completion during transfer reports a conflict without settling the task", 
   assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
 });
 
-test("evidence intake reports the same retryable transfer hold for native and SDK source IDs", async (t) => {
+test("evidence intake reports the same retryable transfer hold for native and SDK source IDs", TRANSFER, async (t) => {
   const f = transferFixture(t, { workflows: 1 });
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -294,7 +300,7 @@ test("evidence intake reports the same retryable transfer hold for native and SD
   }
 });
 
-test("an early resume hook cannot revive the retiring SDK or rebind its reserved task", async (t) => {
+test("an early resume hook cannot revive the retiring SDK or rebind its reserved task", TRANSFER, async (t) => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   registry.registerSdkSession({ id: "sdk:early", agent: "claude", name: "Transfer", cwd: "/fixture/checkout" });
@@ -327,7 +333,7 @@ test("an early resume hook cannot revive the retiring SDK or rebind its reserved
 });
 
 for (const evictFirst of [false, true]) {
-  test(`exact discovery adopts once ${evictFirst ? "after source removal" : "while the source lingers"}, with no transient task failure`, async (t) => {
+  test(`exact discovery adopts once ${evictFirst ? "after source removal" : "while the source lingers"}, with no transient task failure`, TRANSFER, async (t) => {
     const f = transferFixture(t);
     const states: string[] = [];
     f.registry.subscribe((event) => { if (event.type === "task_upsert" && event.task.id === f.task!.id) states.push(event.task.status); });
@@ -354,7 +360,7 @@ for (const evictFirst of [false, true]) {
 }
 
 for (const mismatch of ["agent", "native", "cwd", "repo", "pane"] as const) {
-  test(`a successor with the wrong ${mismatch} cannot acquire a reserved task`, async (t) => {
+  test(`a successor with the wrong ${mismatch} cannot acquire a reserved task`, TRANSFER, async (t) => {
     const f = transferFixture(t);
     const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
     assert.ok(result.ok);
@@ -370,7 +376,7 @@ for (const mismatch of ["agent", "native", "cwd", "repo", "pane"] as const) {
   });
 }
 
-test("a target's other active task, a changed episode and a changed task attempt each fail closed", async (t) => {
+test("a target's other active task, a changed episode and a changed task attempt each fail closed", TRANSFER, async (t) => {
   for (const conflict of ["task", "episode", "attempt"] as const) {
     const f = transferFixture(t);
     const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
@@ -386,7 +392,7 @@ test("a target's other active task, a changed episode and a changed task attempt
   }
 });
 
-test("pending transfers fence reset, cleanup and another request without creating a return obligation", async (t) => {
+test("pending transfers fence reset, cleanup and another request without creating a return obligation", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -401,7 +407,7 @@ test("pending transfers fence reset, cleanup and another request without creatin
   await assert.rejects(f.transfers.resolve(result.transfer.id, result.transfer.revision), /may still be running|changed/);
 });
 
-test("restart after a lost launch acknowledgement adopts the claimed wrapper, never launches twice", async (t) => {
+test("restart after a lost launch acknowledgement adopts the claimed wrapper, never launches twice", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -426,7 +432,7 @@ test("restart after a lost launch acknowledgement adopts the claimed wrapper, ne
   assert.equal(f.counts().launches, 1);
 });
 
-test("a recycled wrapper PID cannot prove a launch, and a late correct lifetime can", async (t) => {
+test("a recycled wrapper PID cannot prove a launch, and a late correct lifetime can", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -446,7 +452,7 @@ test("a recycled wrapper PID cannot prove a launch, and a late correct lifetime 
   assert.equal((await transfers.recheck(saved.id)).state, "adopted");
 });
 
-test("a revoked never-started launch settles through TaskManager and retains its checkout", async (t) => {
+test("a revoked never-started launch settles through TaskManager and retains its checkout", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
   assert.ok(result.ok);
@@ -459,7 +465,7 @@ test("a revoked never-started launch settles through TaskManager and retains its
   assert.equal(f.counts().launches, 1);
 });
 
-test("a keyless early hook is retained durably and requires exact launch identity", async (t) => {
+test("a keyless early hook is retained durably and requires exact launch identity", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps); assert.ok(result.ok);
   f.registry.applyHook({ agent: "claude", event: "SessionStart", source: "resume", sessionId: f.source.agentSessionId,
@@ -478,7 +484,7 @@ test("a keyless early hook is retained durably and requires exact launch identit
   assert.equal(registry.getTask(f.task!.id)?.sessionId, f.candidate.syntheticId);
 });
 
-test("queued human turns and an uncertain delivery remain intact through removal and adoption", async (t) => {
+test("queued human turns and an uncertain delivery remain intact through removal and adoption", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const { createPendingTurn, claimNextPendingTurn, markPendingTurnUncertain, listPendingTurns } = await import("../src/server/db.ts");
   const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
@@ -508,7 +514,7 @@ test("queued human turns and an uncertain delivery remain intact through removal
   assert.equal(sends, 0, "handoff cannot retry an uncertain delivery or let queued work overtake it");
 });
 
-test("pending questions and answers made during the gap survive without duplicate continuation", async (t) => {
+test("pending questions and answers made during the gap survive without duplicate continuation", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const pending = f.reviews.create(f.source.id, "input", "Which approach?", "Choose when ready");
   const answered = f.reviews.create(f.source.id, "input", "Which name?", "Name it");
@@ -538,7 +544,7 @@ test("pending questions and answers made during the gap survive without duplicat
 });
 
 for (const failure of ["unavailable", "missing", "unreadable", "replaced"] as const) {
-  test(`handoff leaves the source usable when its process lifetime is ${failure}`, async (t) => {
+  test(`handoff leaves the source usable when its process lifetime is ${failure}`, TRANSFER, async (t) => {
     let pid: number | null = failure === "missing" ? null : process.pid;
     const f = transferFixture(t, { workflows: 2, processSnapshot: async () => {
       const process = { pid: pid!, ppid: 1, tty: null, startRaw: "fixture", startMs: failure === "unreadable" ? 0 : 100,
@@ -561,7 +567,7 @@ for (const failure of ["unavailable", "missing", "unreadable", "replaced"] as co
 
 for (const [inventory, sdkStatus] of [["live", "failed"], ["live", "exited"], ["unavailable", "failed"],
   ["unreadable", "failed"], ["throws", "failed"]] as const) {
-  test(`a failed stop with a missing handle holds ownership until source exit: ${inventory} inventory, ${sdkStatus} SDK row`, async (t) => {
+  test(`a failed stop with a missing handle holds ownership until source exit: ${inventory} inventory, ${sdkStatus} SDK row`, TRANSFER, async (t) => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     t.after(() => { child.kill("SIGKILL"); });
     await once(child, "spawn");
@@ -633,7 +639,7 @@ for (const [inventory, sdkStatus] of [["live", "failed"], ["live", "exited"], ["
 }
 
 for (const point of ["prepared-persisted", "stopping-persisted", "sdk-detached", "task-detached", "taskless-stopping-persisted", "stop-intent-persisted", "stop-entered", "taskless-stop-entered", "ownership-changed"] as const) {
-  test(`restart from the actual prelaunch boundary: ${point}`, async (t) => {
+  test(`restart from the actual prelaunch boundary: ${point}`, TRANSFER, async (t) => {
     const manifest = join(home, `crash-${point}.json`);
     const child = spawnSync(process.execPath, ["--import", "tsx", "test/helpers/prelaunch-transfer-crash.ts",
       point === "ownership-changed" ? "task-detached" : point, manifest], {
@@ -744,7 +750,7 @@ for (const point of ["prepared-persisted", "stopping-persisted", "sdk-detached",
 }
 
 for (const state of ["launching", "awaiting_successor", "recovery_required"] as const) {
-  test(`restart at ${state} never replays stop or spawn`, async (t) => {
+  test(`restart at ${state} never replays stop or spawn`, TRANSFER, async (t) => {
     const f = transferFixture(t);
     const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps); assert.ok(result.ok);
     await f.transfers.stop();
@@ -764,7 +770,7 @@ for (const state of ["launching", "awaiting_successor", "recovery_required"] as 
   });
 }
 
-test("outgoing PR provenance survives adoption and a later source merge settles the same task", async (t) => {
+test("outgoing PR provenance survives adoption and a later source merge settles the same task", TRANSFER, async (t) => {
   const f = transferFixture(t);
   const db = await import("../src/server/db.ts");
   const binding = f.registry.workEpisodeForTask(f.task!.id)!;

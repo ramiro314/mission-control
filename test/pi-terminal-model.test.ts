@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 // What is at stake: a Bedrock model id that reaches Pi as something else.
 //
@@ -32,6 +33,9 @@ const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
+
+// The dispatcher refuses a Pi task on win32 before it reaches the spawn seam.
+const WIN32 = { skip: skipOnWin32("Pi is unavailable on win32; dispatches a Pi task on the terminal runtime") };
 
 function seedRepo(name: string): string {
   const repo = join(home, name);
@@ -75,7 +79,7 @@ async function terminalArgv(taskId: string, model: string): Promise<string[]> {
   return captured;
 }
 
-test("a Bedrock model id reaches Pi's --model flag byte-for-byte", async () => {
+test("a Bedrock model id reaches Pi's --model flag byte-for-byte", WIN32, async () => {
   const argv = await terminalArgv("pi-bedrock", "amazon-bedrock/deepseek.v3.2");
   const at = argv.indexOf("--model");
   assert.notEqual(at, -1, `no --model in ${JSON.stringify(argv)}`);
@@ -88,7 +92,7 @@ test("a Bedrock model id reaches Pi's --model flag byte-for-byte", async () => {
   assert.equal(argv.at(-1)?.includes("summarize this repository"), true);
 });
 
-test("a model id whose model half carries slashes is not re-split on the way to Pi", async () => {
+test("a model id whose model half carries slashes is not re-split on the way to Pi", WIN32, async () => {
   const argv = await terminalArgv("pi-nested", "amazon-bedrock/us/meta.llama4-maverick-17b");
   assert.equal(argv[argv.indexOf("--model") + 1], "amazon-bedrock/us/meta.llama4-maverick-17b");
 });

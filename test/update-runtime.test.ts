@@ -5,6 +5,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { checkUpdateRuntime, inspectUpdateRuntime, updateNodeProblem } from "../src/main/update-runtime.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const MACOS_UPDATER = { skip: skipOnWin32("the macOS updater is unavailable on win32") };
 
 test("Node runtime policy shares the installer's minimum and gives actionable copy", () => {
   for (const version of ["18.20.0", "22.0.0", "23.11.0", "unknown"]) {
@@ -16,7 +19,7 @@ test("Node runtime policy shares the installer's minimum and gives actionable co
   for (const version of ["24.0.0", "26.7.0"]) assert.equal(updateNodeProblem(version), null);
 });
 
-test("runtime probes reject old, missing and malformed Node before npm runs, then recover", async () => {
+test("runtime probes reject old, missing and malformed Node before npm runs, then recover", MACOS_UPDATER, async () => {
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-preflight-"));
   try {
     const selected = join(cwd, "selected-node");
@@ -50,7 +53,7 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
   }
 });
 
-test("an npm failure or mismatched child Node refuses preparation", async () => {
+test("an npm failure or mismatched child Node refuses preparation", MACOS_UPDATER, async () => {
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-mismatch-"));
   try {
     const npm = join(cwd, "npm");
@@ -78,7 +81,7 @@ test("an npm failure or mismatched child Node refuses preparation", async () => 
   }
 });
 
-test("checking again forces discovery refresh and uses its replacement runtime", async (t) => {
+test("checking again forces discovery refresh and uses its replacement runtime", MACOS_UPDATER, async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-refresh-"));
   const node = join(cwd, "selected-node");
   const npm = join(cwd, "selected-npm");

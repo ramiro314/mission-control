@@ -19,6 +19,9 @@ import { piGenerationPath, piIntegrationRoot, isManagedPiExtensionTarget } from 
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
 import { prunePiGenerations } from "../src/server/extensions/pi-retention.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 ensureNativeStateLockAddon();
 
@@ -38,7 +41,7 @@ after(() => { process.env = previous; rmSync(root, { recursive: true, force: tru
 const enable = async () => { const r = await applyPiExtensionConfig({ enabled: true }); assert.deepEqual(r.problems, []); return readlinkSync(link); };
 
 for (const location of ["generation", "damaged backup"] as const) {
-  test(`retention retries interrupted ${location} tombstone cleanup without touching unknown entries`, t => {
+  test(`retention retries interrupted ${location} tombstone cleanup without touching unknown entries`, PI, t => {
     const current = "c".repeat(64), prior = "b".repeat(64), old = "a".repeat(64);
     for (const id of [current, prior, old]) {
       mkdirSync(piGenerationPath(id), { recursive: true });
@@ -83,7 +86,7 @@ for (const location of ["generation", "damaged backup"] as const) {
   });
 }
 
-test("successful updates bound idle generations to the current and previous publication", async () => {
+test("successful updates bound idle generations to the current and previous publication", PI, async () => {
   const targets: string[] = [];
   for (let release = 0; release < 5; release++) {
     writePiIntegration(source, piMetadataSource + `\n// release ${release}`);
@@ -97,7 +100,7 @@ test("successful updates bound idle generations to the current and previous publ
   assert.equal(existsSync(targets.at(-2)!), true, "an idempotent publication preserves the previous generation");
 });
 
-test("a loaded real extension pins its bridge across updates and a crashed process is reclaimed", { timeout: 30_000 }, async () => {
+test("a loaded real extension pins its bridge across updates and a crashed process is reclaimed", { ...PI, timeout: 30_000 }, async () => {
   await buildPiExtension(join(source, "extension.js"));
   const old = await enable();
   // The child loads the shipped extension, then opens a new bridge on demand from its
@@ -138,7 +141,7 @@ test("a loaded real extension pins its bridge across updates and a crashed proce
   } finally { child.kill("SIGKILL"); await exited; output.close(); }
 });
 
-test("publication and ownership use the same managed namespace under a custom state home", async () => {
+test("publication and ownership use the same managed namespace under a custom state home", PI, async () => {
   const target = await enable();
   const manifest = verifyPiIntegration(dirname(target));
   assert.equal(dirname(target), piGenerationPath(manifest.buildId));
@@ -152,7 +155,7 @@ test("publication and ownership use the same managed namespace under a custom st
   assert.equal(existsSync(link), false);
 });
 
-test("startup upgrades enabled integration atomically, retaining the previous bridge and idempotent link", async () => {
+test("startup upgrades enabled integration atomically, retaining the previous bridge and idempotent link", PI, async () => {
   const old = await enable(); const oldBytes = readFileSync(old);
   writePiIntegration(source, piMetadataSource + "\n// next release");
   const samples: string[] = [];
@@ -170,7 +173,7 @@ test("startup upgrades enabled integration atomically, retaining the previous br
 });
 
 for (const operation of ["copyFileSync", "exchangePaths", "symlinkSync"] as const) {
-  test(`failed ${operation} preserves the previous link, generation and intent`, async (t) => {
+  test(`failed ${operation} preserves the previous link, generation and intent`, PI, async (t) => {
     const old = await enable(); const inode = lstatSync(link).ino;
     writePiIntegration(source, piMetadataSource + "\n// next release");
     const fail = () => { throw new Error("injected publication fault"); };
@@ -190,7 +193,7 @@ for (const operation of ["copyFileSync", "exchangePaths", "symlinkSync"] as cons
     assert.equal((await reconcilePiExtension()).changed, true);
   });
 }
-test("hash, protocol and copied-byte refusal preserve the healthy generation", async (t) => {
+test("hash, protocol and copied-byte refusal preserve the healthy generation", PI, async (t) => {
   const old = await enable(); const inode = lstatSync(link).ino;
   for (const damage of [
     () => writeFileSync(join(source, "extension.js"), "damaged"),
@@ -221,7 +224,7 @@ test("first link publication failure never persists enabled intent", async (t) =
 for (const installation of ["fresh", "disabled", "replacement", "unchanged"] as const) {
   for (const timing of ["before", "after"] as const) {
     for (const replacement of ["file", "directory", "same-target-link"] as const) {
-      test(`${installation} publication restores prior intent when a ${replacement} arrives ${timing} intent rename`, async (t) => {
+      test(`${installation} publication restores prior intent when a ${replacement} arrives ${timing} intent rename`, PI, async (t) => {
         const wasEnabled = installation === "replacement" || installation === "unchanged";
         if (wasEnabled) await enable();
         const owned = installation === "replacement" ? { entry: lstatSync(link), target: readlinkSync(link) } : undefined;
@@ -272,7 +275,7 @@ for (const installation of ["fresh", "disabled", "replacement", "unchanged"] as 
   }
 }
 
-test("intent commit failure restores the previous link without deleting either generation", async (t) => {
+test("intent commit failure restores the previous link without deleting either generation", PI, async (t) => {
   const old = await enable(); writePiIntegration(source, piMetadataSource + "\n// next");
   const rename = fs.renameSync;
   const fault = t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
@@ -286,7 +289,7 @@ test("intent commit failure restores the previous link without deleting either g
     assert.equal(readdirSync(join(home, "integrations", "pi")).filter(x => /^[a-f0-9]{64}$/.test(x)).length, 2);
   } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });
-test("legacy missing build is adopted, foreign entries and a foreign arrival during verification are untouched", async () => {
+test("legacy missing build is adopted, foreign entries and a foreign arrival during verification are untouched", PI, async () => {
   mkdirSync(dirname(link), { recursive: true });
   symlinkSync(join(root, "deleted/dist/pi-extension/index.js"), link);
   await enable(); rmSync(link);
@@ -305,7 +308,7 @@ test("legacy missing build is adopted, foreign entries and a foreign arrival dur
   assert.equal(readFileSync(link, "utf8"), "arrived during child probe");
   assert.equal(getPiExtensionConfig().enabled, false);
 });
-test("repair replaces damaged owned files, retaining the damaged directory for recovery", async () => {
+test("repair replaces damaged owned files, retaining the damaged directory for recovery", PI, async () => {
   const target = await enable(); writeFileSync(target, "damaged");
   assert.equal((await inspectPiExtension()).healthy, false);
   assert.equal(await enable(), target);
@@ -315,7 +318,7 @@ test("repair replaces damaged owned files, retaining the damaged directory for r
 });
 
 for (const failure of ["backup", "replacement", "restoration"] as const) {
-  test(`failed damaged-generation ${failure} removes empty backup containers and retains recovery data`, async (t) => {
+  test(`failed damaged-generation ${failure} removes empty backup containers and retains recovery data`, PI, async (t) => {
     const target = await enable();
     const generation = dirname(target);
     const buildId = verifyPiIntegration(generation).buildId;
@@ -351,7 +354,7 @@ for (const failure of ["backup", "replacement", "restoration"] as const) {
   });
 }
 
-test("repeated repair retains only the newest idle damaged backup", async () => {
+test("repeated repair retains only the newest idle damaged backup", PI, async () => {
   const target = await enable();
   for (let repair = 0; repair < 4; repair++) {
     writeFileSync(target, `damage ${repair}`);
@@ -369,7 +372,7 @@ test("preflight probes the copied bridge even when a healthy runtime override ex
   assert.equal(getPiExtensionConfig().enabled, false);
   assert.equal(existsSync(link), false);
 });
-test("concurrent enable and disable serialize publication and leave durable off", async () => {
+test("concurrent enable and disable serialize publication and leave durable off", PI, async () => {
   const [on, off] = await Promise.all([applyPiExtensionConfig({ enabled: true }), applyPiExtensionConfig({ enabled: false })]);
   assert.equal(on.blocked.length, 0); assert.equal(off.blocked.length, 0);
   assert.equal(getPiExtensionConfig().enabled, false); assert.equal(existsSync(link), false);

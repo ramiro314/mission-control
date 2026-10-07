@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { Session } from "../../src/shared/types.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Codex is unavailable on win32; the priced session is a Codex dispatch");
 
 // A real fake-agent rollout, real ingestion and SSE, and the card from the bug report.
 // Only the fixture's disposable home is written; no provider call or live state is used.

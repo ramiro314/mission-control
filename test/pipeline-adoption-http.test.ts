@@ -180,7 +180,7 @@ test("the authenticated adoption route accepts its preallocated managed host bef
   registry.initializePipelineRuns([target]);
   const task = mkTask({
     id: "pipeline-adoption-preallocated",
-    agent: "codex",
+    agent: "claude",
     kind: "pipeline",
     repoRoot,
     intent: "Resume the observed Pipeline run",

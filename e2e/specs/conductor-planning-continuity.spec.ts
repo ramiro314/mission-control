@@ -475,7 +475,7 @@ test("commission disclosures reset to their feature defaults when rail selection
       intent: `Prepare ${planSlug}`,
       title,
       kind: "pipeline",
-      agent: "codex",
+      agent: "claude",
       backlog: false,
       workflowId: null,
     });
@@ -596,7 +596,7 @@ test("a recoverable Engineer land refusal is visible everywhere until provider r
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
-  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
   await dialog.getByPlaceholder("What should this agent do?").fill(title);
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
 

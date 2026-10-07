@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { migrationPlanFixture } from "./helpers/migration-plan.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const MAIN_BUNDLE = join(REPO_ROOT, "dist", "main", "index.cjs");
@@ -23,8 +24,13 @@ const HARNESS = join(REPO_ROOT, "test", "helpers", "electron-entry-harness.cjs")
  *
  * `npm run build:main` rather than an esbuild command spelled out here, so the bundle under
  * test is produced by the same command that produces the shipped one and cannot drift from it.
+ *
+ * Built by the first test that runs rather than at module scope, so a file whose hand-over
+ * cases are skipped on win32 builds only for the cases that still run there.
  */
-function buildMainBundle(): void {
+let mainBundleBuilt = false;
+function mainBundle(): string {
+  if (mainBundleBuilt) return MAIN_BUNDLE;
   const built = spawnSync("npm", ["run", "build:main"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
@@ -32,8 +38,11 @@ function buildMainBundle(): void {
   });
   assert.equal(built.status, 0, `could not build the main bundle: ${built.stderr}`);
   assert.ok(existsSync(MAIN_BUNDLE), `the build did not produce ${MAIN_BUNDLE}`);
+  mainBundleBuilt = true;
+  return MAIN_BUNDLE;
 }
-buildMainBundle();
+// The hand-over is the macOS install migration's system-to-personal-app redirect (install-identity.ts).
+const HANDOVER = { skip: skipOnWin32("the macOS install migration is unavailable on win32; redirects a system app launch to the personal app") };
 
 const COMMIT = "a".repeat(40);
 /** The one path `install-identity.ts` will ever redirect away FROM. */
@@ -99,7 +108,7 @@ function runEntry(
       ...process.env,
       HOME: paths.home,
       MISSION_HOME: paths.state,
-      HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+      HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(runningBundle, "Contents", "Resources", "app"),
       ...env,
     },
@@ -111,7 +120,7 @@ function runEntry(
   return { observed, fixture: paths };
 }
 
-test("the entry point hands a system launch to the personal app before taking any lock", () => {
+test("the entry point hands a system launch to the personal app before taking any lock", HANDOVER, () => {
   // The real `src/main/index.ts`, loaded as the built bundle, with only Electron and the child
   // process replaced. Everything between - reading the receipt, classifying the running bundle,
   // choosing the executable, building the argv, and the ordering against the single-instance
@@ -126,7 +135,7 @@ test("the entry point hands a system launch to the personal app before taking an
   assert.deepEqual(observed.app, ["exit(0)", "quit"]);
 });
 
-test("login cleanup with no matching transaction exits before redirect or runtime startup", () => {
+test("login cleanup with no matching transaction exits before redirect or runtime startup", HANDOVER, () => {
   const { observed } = runEntry(SYSTEM_BUNDLE, {}, ['--mission-migration-remove-login', 'stale']);
   assert.deepEqual(observed.app, ['exit(1)']);
   assert.deepEqual(observed.spawn, []);
@@ -134,7 +143,7 @@ test("login cleanup with no matching transaction exits before redirect or runtim
   assert.match(observed.logged[0]!, /Migration login cleanup failed/);
 });
 
-test("a failed hand-over leaves the entry point running and asking for the lock", () => {
+test("a failed hand-over leaves the entry point running and asking for the lock", HANDOVER, () => {
   // Not fatal, on purpose: the alternative is leaving somebody with no Mission Control at all.
   const { observed, fixture: paths } = runEntry(SYSTEM_BUNDLE, {
     HARNESS_OPEN_STATUS: "1",
@@ -149,7 +158,7 @@ test("a failed hand-over leaves the entry point running and asking for the lock"
   assert.match(observed.logged[0]!, /The application cannot be opened\./);
 });
 
-test("a hand-over the subprocess could not even start is survived the same way", () => {
+test("a hand-over the subprocess could not even start is survived the same way", HANDOVER, () => {
   // `spawnSync` reports a missing binary or a timeout through `error`, never through `status`.
   const { observed } = runEntry(SYSTEM_BUNDLE, {
     HARNESS_OPEN_ERROR: "spawnSync /usr/bin/open ETIMEDOUT",
@@ -160,7 +169,7 @@ test("a hand-over the subprocess could not even start is survived the same way",
   assert.match(observed.logged[0]!, /ETIMEDOUT/);
 });
 
-test("the entry point launches nothing when it is already the installed app", () => {
+test("the entry point launches nothing when it is already the installed app", HANDOVER, () => {
   // Running FROM the personal bundle the receipt names. An ordinary managed launch, and the one
   // that must never invoke Launch Services: doing so would reopen itself on every start.
   const paths = fixture();
@@ -171,7 +180,7 @@ test("the entry point launches nothing when it is already the installed app", ()
       ...process.env,
       HOME: paths.home,
       MISSION_HOME: paths.state,
-      HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+      HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(paths.personal, "Contents", "Resources", "app"),
     },
   });
@@ -195,7 +204,7 @@ test("an unmanaged entry point is untouched by any of this", () => {
       ...process.env,
       HOME: join(root, "home"),
       MISSION_HOME: join(root, "state"),
-      HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+      HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(SYSTEM_BUNDLE, "Contents", "Resources", "app"),
     },
   });
@@ -208,7 +217,7 @@ test("an unmanaged entry point is untouched by any of this", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("a failed migrated background startup releases the shell so reopening can retry", (t) => {
+test("a failed migrated background startup releases the shell so reopening can retry", HANDOVER, (t) => {
   const paths = fixture();
   t.after(() => rmSync(join(paths.home, '..'), {recursive: true, force: true}));
   const state = realpathSync(paths.state);
@@ -219,7 +228,7 @@ test("a failed migrated background startup releases the shell so reopening can r
   plan.intendedReceipt.installedVersion = plan.targetIdentity.version!;
   writeFileSync(join(state, 'install-migration.json'), JSON.stringify({plan, owner: {pid: 1, identity: 'finished fixture owner'}, ownerRole: 'recovery', stage: 'complete', repairs: [], inventory: null, targetProcess: null}));
   const result = spawnSync(process.execPath, [HARNESS], {encoding: 'utf8', timeout: 15_000, env: {...process.env,
-    HOME: paths.home, MISSION_HOME: state, HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+    HOME: paths.home, MISSION_HOME: state, HARNESS_MAIN_BUNDLE: mainBundle(),
     HARNESS_APP_PATH: join(paths.personal, 'Contents/Resources/app'), HARNESS_BACKGROUND_FAILURE: '1',
   }});
   assert.equal(result.status, 0, result.stderr);

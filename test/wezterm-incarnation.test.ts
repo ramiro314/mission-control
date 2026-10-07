@@ -7,6 +7,9 @@ import test from "node:test";
 import { weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const WEZTERM = { skip: skipOnWin32("WezTerm and the terminal runtime are unavailable on win32") };
 
 // Real Unix sockets, with only WezTerm's CLI protocol faked. In particular a restart
 // unlinks and rebinds the SAME pathname between discovery, validation and delivery.
@@ -63,7 +66,7 @@ async function fixture(t: test.TestContext) {
     hideEndpoint: () => { diagnostic = false; } };
 }
 
-test("WezTerm refuses a stale pane after native socket replacement and accepts fresh discovery", async (t) => {
+test("WezTerm refuses a stale pane after native socket replacement and accepts fresh discovery", WEZTERM, async (t) => {
   const f = await fixture(t);
   const old = (await f.adapter.list!())![0]!;
   assert.equal((await f.adapter.write!.text(old, "current")).ok, true);
@@ -77,7 +80,7 @@ test("WezTerm refuses a stale pane after native socket replacement and accepts f
   assert.deepEqual(f.received(), ["fresh"]);
 });
 
-test("WezTerm cannot redirect a write when the socket is replaced at the final exec boundary", async (t) => {
+test("WezTerm cannot redirect a write when the socket is replaced at the final exec boundary", WEZTERM, async (t) => {
   const f = await fixture(t);
   const old = (await f.adapter.list!())![0]!;
   f.race(f.restart);
@@ -85,7 +88,7 @@ test("WezTerm cannot redirect a write when the socket is replaced at the final e
   assert.deepEqual(f.received(), []);
 });
 
-test("WezTerm refuses legacy handles without incarnation evidence", async (t) => {
+test("WezTerm refuses legacy handles without incarnation evidence", WEZTERM, async (t) => {
   const f = await fixture(t);
   const legacy = { paneId: "1", tabId: "1" };
   assert.equal((await f.adapter.write!.text(legacy, "unknown")).ok, false);
@@ -94,7 +97,7 @@ test("WezTerm refuses legacy handles without incarnation evidence", async (t) =>
   assert.deepEqual(f.received(), []);
 });
 
-test("WezTerm keeps unknown endpoint observations unavailable and refuses all stale input forms", async (t) => {
+test("WezTerm keeps unknown endpoint observations unavailable and refuses all stale input forms", WEZTERM, async (t) => {
   const f = await fixture(t);
   const old = (await f.adapter.list!())![0]!;
   await f.restart();

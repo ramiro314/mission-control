@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 // What is at stake: whether the Pi driver actually COMPOSES with the daemon that owns
 // session lifecycle, rather than merely satisfying its interface.
@@ -352,7 +353,7 @@ test("a shutdown suspends a managed Pi session rather than exiting it", async ()
   }
 });
 
-test("the terminal handoff reopens the same Pi conversation the driver created", async () => {
+test("the terminal handoff reopens the same Pi conversation the driver created", { skip: skipOnWin32("Pi is unavailable on win32") }, async () => {
   // The one thing a managed session genuinely takes away is a place to type. Pi keeps ONE
   // session store behind its SDK and its CLI, so `pi --session <id>` reopens the exact
   // conversation this driver has been writing - which is what stops the managed runtime

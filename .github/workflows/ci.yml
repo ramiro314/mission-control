@@ -690,6 +690,13 @@ jobs:
   # prerequisite a Windows developer sets with `npm config set script-shell`, because the
   # `test` scripts use bash syntax and npm on Windows runs scripts through `cmd.exe`.
   #
+  # Defender: each job turns off Microsoft Defender's real-time scanning as its first step,
+  # before checkout, so it does not scan every file that checkout, the `node_modules` restore,
+  # the build and the tests write. The runners are ephemeral and run only this repository's
+  # code, so nothing outlives the job to be protected. If the setting does not take, the step
+  # warns rather than fails: scanning costs time, not correctness. A Dev Drive is the next thing
+  # to measure if this falls short; it means moving the workspace and every cache path onto it.
+  #
   # Allowed to fail, for now. `MISSION_WINDOWS_CI_ALLOWED_TO_FAIL` makes each step that runs
   # the product (typecheck, tests, build, smoke, the native probes) continue on error, and the
   # last step lists those failures as warnings and in the job summary. It is step-level, not
@@ -718,6 +725,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # See "Defender" in the "## Windows" comment above.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Continue
+          $on = (Get-MpComputerStatus -ErrorAction Continue).RealTimeProtectionEnabled
+          "RealTimeProtectionEnabled: $on"
+          if ($on -ne $false) { "::warning::Defender real-time scanning may still be on" }
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -758,6 +774,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # See "Defender" in the "## Windows" comment above.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Continue
+          $on = (Get-MpComputerStatus -ErrorAction Continue).RealTimeProtectionEnabled
+          "RealTimeProtectionEnabled: $on"
+          if ($on -ne $false) { "::warning::Defender real-time scanning may still be on" }
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -819,6 +844,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # See "Defender" in the "## Windows" comment above.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Continue
+          $on = (Get-MpComputerStatus -ErrorAction Continue).RealTimeProtectionEnabled
+          "RealTimeProtectionEnabled: $on"
+          if ($on -ne $false) { "::warning::Defender real-time scanning may still be on" }
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -906,6 +940,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # See "Defender" in the "## Windows" comment above.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Continue
+          $on = (Get-MpComputerStatus -ErrorAction Continue).RealTimeProtectionEnabled
+          "RealTimeProtectionEnabled: $on"
+          if ($on -ne $false) { "::warning::Defender real-time scanning may still be on" }
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -934,6 +977,24 @@ jobs:
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run smoke
 
+      # The `dist/` every Windows E2E shard tests, as `dist-node-24` is for Linux; see
+      # `build-smoke-node-24`. Gated on Build, not on smoke as on Linux: smoke failed on win32
+      # on run 37541228166 (its Pi SDK bundle check spawned `node_modules/.bin/esbuild`, ENOENT),
+      # and gating on it skipped every Windows e2e shard. #249 skips that check where Pi is
+      # unsupported; gate on smoke once a Windows run shows smoke passing.
+      - name: Pack dist for E2E
+        if: steps.build.outcome == 'success'
+        run: tar -cf dist.tar dist
+
+      - name: Upload dist for E2E
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist.tar
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Report allowed failures
         if: ${{ !cancelled() }}
         env:
@@ -956,6 +1017,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # See "Defender" in the "## Windows" comment above.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Continue
+          $on = (Get-MpComputerStatus -ErrorAction Continue).RealTimeProtectionEnabled
+          "RealTimeProtectionEnabled: $on"
+          if ($on -ne $false) { "::warning::Defender real-time scanning may still be on" }
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -998,9 +1068,14 @@ jobs:
 
   # The same suite and shard count as the Linux `e2e` job. No tmux step: the terminal runtime
   # is unavailable on win32 for now (M2.7).
+  #
+  # Like Linux, every shard tests the one `dist/` that `build-windows` built and smoked,
+  # downloaded as the `dist-windows` artifact, instead of building its own: on run 37522217862
+  # each shard's `Build` took 85 to 212 s. A build failure uploads nothing, so the download
+  # fails as this job's allowed failure and the tests are skipped.
   e2e-windows:
     name: e2e (windows, shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: [changes, dependencies-windows]
+    needs: [changes, dependencies-windows, build-windows]
     if: needs.changes.outputs.docs_only != 'true' && (github.ref == 'refs/heads/release/windows' || github.base_ref == 'release/windows')
     runs-on: windows-latest
     timeout-minutes: 60
@@ -1015,6 +1090,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # See "Defender" in the "## Windows" comment above.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Continue
+          $on = (Get-MpComputerStatus -ErrorAction Continue).RealTimeProtectionEnabled
+          "RealTimeProtectionEnabled: $on"
+          if ($on -ne $false) { "::warning::Defender real-time scanning may still be on" }
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -1045,11 +1129,20 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit != 'true'
         run: npx playwright install chromium
 
-      - name: Build
-        id: build
-        timeout-minutes: 10
+      - name: Download dist
+        id: download
+        timeout-minutes: 5
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
-        run: npm run build
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-windows
+
+      - name: Unpack dist
+        id: unpack
+        timeout-minutes: 5
+        if: steps.download.outcome == 'success'
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: tar -xf dist.tar
 
       # Playwright stops itself five minutes inside the step's timeout. Killed by that timeout
       # instead, a shard reports nothing, and on run 37505044919 one runner was lost as the step
@@ -1059,7 +1152,7 @@ jobs:
       - name: End-to-end tests
         id: e2e
         timeout-minutes: 35
-        if: steps.build.outcome == 'success'
+        if: steps.unpack.outcome == 'success'
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --retries=0 --global-timeout=1800000
         env:

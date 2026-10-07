@@ -6,10 +6,16 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import type { Task } from "../src/shared/types.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TERMINAL_HANDOFF = skipOnWin32("the terminal runtime is unavailable on win32; these cases hand an SDK session off to it");
+const HANDOFF = { skip: TERMINAL_HANDOFF };
+
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-transfer-"));
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
-await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
+// The managed resume root this builds is the terminal runtime's, and it refuses to open on win32.
+if (!TERMINAL_HANDOFF) await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
 after(() => rmSync(home, { recursive: true, force: true }));
 const { transferFixture } = await import("./helpers/session-transfer-fixture.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -19,7 +25,7 @@ const { fallbackWorkflowContext } = await import("../src/server/workflows/contex
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { getForemanConfig, setForemanConfig } = await import("../src/server/foreman/config.ts");
 
-for (const boundary of ["timeout", "shutdown"] as const) test(`a transfer-held capture survives ${boundary} as a retryable reservation`, async (t) => {
+for (const boundary of ["timeout", "shutdown"] as const) test(`a transfer-held capture survives ${boundary} as a retryable reservation`, HANDOFF, async (t) => {
   const readers: string[] = [];
   const f = transferFixture(t, { workflows: 1, workflowOptions: {
     readContextRaw: async (_registry, binding) => {
@@ -64,7 +70,7 @@ for (const boundary of ["timeout", "shutdown"] as const) test(`a transfer-held c
   assert.deepEqual(readers, [f.candidate.syntheticId]);
 });
 
-test("delivered anchors apply their limit only to the connected transfer chain", async (t) => {
+test("delivered anchors apply their limit only to the connected transfer chain", HANDOFF, async (t) => {
   const f = transferFixture(t, { workflows: 1 });
   const run = f.store.activeRunForBinding(f.bindings[0]!)!;
   const submission = f.store.listSubmissions(run.id)[0]!;
@@ -86,7 +92,7 @@ test("delivered anchors apply their limit only to the connected transfer chain",
   ]);
 });
 
-test("injected workflow stores observe uncommitted transfer holds on their own connection", async (t) => {
+test("injected workflow stores observe uncommitted transfer holds on their own connection", HANDOFF, async (t) => {
   const f = transferFixture(t, { workflows: 1 });
   const run = f.store.activeRunForBinding(f.bindings[0]!)!;
   const submission = f.store.listSubmissions(run.id)[0]!;
@@ -122,7 +128,7 @@ test("a coordinator refuses split database ownership before starting a transfer"
   } finally { await workflows.stop(); db.close(); }
 });
 
-test("a capture already reading source evidence finishes before stop; no capture reads the ownership gap", { timeout: 10000 }, async (t) => {
+test("a capture already reading source evidence finishes before stop; no capture reads the ownership gap", { skip: TERMINAL_HANDOFF, timeout: 10000 }, async (t) => {
   let entered!: () => void, release!: () => void;
   const reading = new Promise<void>((resolve) => { entered = resolve; });
   const mayFinish = new Promise<void>((resolve) => { release = resolve; });
@@ -165,7 +171,7 @@ for (const change of [
   { name: "after a branch update", before: {}, after: { branch: "renamed-after-transfer" } },
   { name: "after dispatch finishes", before: { status: "dispatching" }, after: { status: "running" } },
 ] satisfies Array<{ name: string; before: Partial<Task>; after: Partial<Task> }>) {
-test(`a transferred task preserves its paused workflow decision ${change.name}`, async (t) => {
+test(`a transferred task preserves its paused workflow decision ${change.name}`, HANDOFF, async (t) => {
   const enabled = getForemanConfig().enabled;
   setForemanConfig({ enabled: true });
   t.after(() => setForemanConfig({ enabled }));
@@ -206,7 +212,7 @@ test(`a transferred task preserves its paused workflow decision ${change.name}`,
 });
 }
 
-for (const task of [true, false]) test(`all old pins, repository siblings and evidence survive a ${task ? "task" : "manual taskless"} transfer`, async (t) => {
+for (const task of [true, false]) test(`all old pins, repository siblings and evidence survive a ${task ? "task" : "manual taskless"} transfer`, HANDOFF, async (t) => {
   const f = transferFixture(t, { task, workflows: 2 });
   const db = openDb();
   const note = f.source.agentSessionId!;
@@ -251,7 +257,7 @@ for (const task of [true, false]) test(`all old pins, repository siblings and ev
   assert.deepEqual(frozen(), expectedFrozen);
 });
 
-test("only unsent delivery targets move; uncertain and historical packets never replay", async (t) => {
+test("only unsent delivery targets move; uncertain and historical packets never replay", HANDOFF, async (t) => {
   const f = transferFixture(t, { workflows: 1 });
   const run = f.store.activeRunForBinding(f.bindings[0]!)!;
   const submission = f.store.listSubmissions(run.id)[0]!;
@@ -275,7 +281,7 @@ test("only unsent delivery targets move; uncertain and historical packets never 
   assert.equal(f.counts().injections, 0);
 });
 
-test("a conflicting sibling leaves all ownership unchanged, and transactional adoption rolls back on an owner failure", async (t) => {
+test("a conflicting sibling leaves all ownership unchanged, and transactional adoption rolls back on an owner failure", HANDOFF, async (t) => {
   const f = transferFixture(t, { workflows: 2 });
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps); assert.ok(result.ok);
   const db = openDb();
@@ -295,7 +301,7 @@ test("a conflicting sibling leaves all ownership unchanged, and transactional ad
   assert.equal((await f.transfers.recheck(result.transfer.id)).state, "adopted");
 });
 
-test("feedback prepared by an evaluator after adoption targets the committed successor", async (t) => {
+test("feedback prepared by an evaluator after adoption targets the committed successor", HANDOFF, async (t) => {
   const f = transferFixture(t, { workflows: 1 });
   const run = f.store.activeRunForBinding(f.bindings[0]!)!;
   const submission = f.store.listSubmissions(run.id)[0]!;
@@ -308,7 +314,7 @@ test("feedback prepared by an evaluator after adoption targets the committed suc
   assert.equal(f.counts().injections, 0, "preview stays preview");
 });
 
-for (const authorized of [true, false]) test(`an unsent live packet resumes through current consent gates: authorized=${authorized}`, async (t) => {
+for (const authorized of [true, false]) test(`an unsent live packet resumes through current consent gates: authorized=${authorized}`, HANDOFF, async (t) => {
   const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
   const priorPolicy = getWorkflowPolicy(); t.after(() => setWorkflowPolicy(priorPolicy));
   const f = transferFixture(t, { workflows: 1 });
@@ -332,7 +338,7 @@ for (const authorized of [true, false]) test(`an unsent live packet resumes thro
   assert.equal(f.counts().injections, authorized ? 1 : 0);
 });
 
-test("restart completes failure settlement interrupted after the durable decision", async (t) => {
+test("restart completes failure settlement interrupted after the durable decision", HANDOFF, async (t) => {
   const f = transferFixture(t, { workflows: 2 });
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps); assert.ok(result.ok);
   await f.transfers.stop();

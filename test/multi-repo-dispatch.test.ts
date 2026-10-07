@@ -9,6 +9,11 @@ import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
+// win32 refuses the terminal runtime (`runtimeUnavailableWhy`) before the multi-repo guard runs.
+const TERMINAL = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 // Dispatching a task that attaches secondary repositories, and the two rules that make it
 // safe rather than merely working:
@@ -209,43 +214,48 @@ test("the unwind is provider-aware in every ordering", async () => {
 // ---- the embedded-runtime guard --------------------------------------------------------
 
 test("a driver that cannot carry the grant refuses the dispatch instead of dropping repos", async () => {
-  // `MultiRepoDispatchSpec.sdk` enforced rather than merely declared. Both shipped harnesses
-  // answer true, so this drives the guard through the injectable runtime resolver against a
-  // harness whose spec says false - the state a future driver would arrive in.
+  // `MultiRepoDispatchSpec.sdk` enforced rather than merely declared. This drives the guard
+  // through the injectable runtime resolver against a harness whose spec says false - the
+  // state a future driver would arrive in. Claude's spec is withdrawn to that state here,
+  // so the guard is reached on every host.
   //
   // What must NOT happen is the silent version: an embedded session that starts healthily
   // holding an intent naming repositories it cannot write to. And it must not quietly fall
   // back to the terminal runtime either; the operator chose that runtime.
-  const api = mkRepo("sdkguard-api");
-  const web = mkRepo("sdkguard-web");
-  const registry = new Registry();
-  registry.upsertTask(
-    mkTask({
-      id: "sdkguard",
-      status: "dispatching",
-      // Pi needs no terminal grant but has no embedded driver carrying multi-repo access.
-      agent: "pi",
-      repoRoot: api,
-      extraRepos: [entry(web)],
-    }),
-  );
-  const dispatcher = new Dispatcher(registry, undefined, {
-    resolveRuntime: () => "sdk",
-    piExtensionInstalled: async () => true,
-  });
+  const original = HARNESS_CAPABILITIES.claude.multiRepoDispatch;
+  HARNESS_CAPABILITIES.claude.multiRepoDispatch = { ...original!, sdk: false };
+  try {
+    const api = mkRepo("sdkguard-api");
+    const web = mkRepo("sdkguard-web");
+    const registry = new Registry();
+    registry.upsertTask(
+      mkTask({
+        id: "sdkguard",
+        status: "dispatching",
+        agent: "claude",
+        repoRoot: api,
+        extraRepos: [entry(web)],
+      }),
+    );
+    const dispatcher = new Dispatcher(registry, undefined, {
+      resolveRuntime: () => "sdk",
+    });
 
-  await dispatcher.dispatch("sdkguard");
+    await dispatcher.dispatch("sdkguard");
 
-  const failed = registry.getTask("sdkguard");
-  assert.equal(failed?.status, "failed");
-  assert.match(failed?.error ?? "", /embedded driver/);
-  // Refused BEFORE provisioning, which is the whole reason the runtime is resolved early:
-  // the guard costs an error message rather than two worktrees that have to be unwound.
-  assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard")), false);
-  assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard-1")), false);
+    const failed = registry.getTask("sdkguard");
+    assert.equal(failed?.status, "failed");
+    assert.match(failed?.error ?? "", /embedded driver/);
+    // Refused BEFORE provisioning, which is the whole reason the runtime is resolved early:
+    // the guard costs an error message rather than two worktrees that have to be unwound.
+    assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard")), false);
+    assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard-1")), false);
+  } finally {
+    HARNESS_CAPABILITIES.claude.multiRepoDispatch = original;
+  }
 });
 
-test("the TERMINAL runtime refuses the same task rather than launching without the flags", async () => {
+test("the TERMINAL runtime refuses the same task rather than launching without the flags", TERMINAL, async () => {
   // The guard is runtime-agnostic, and this is the half that would otherwise fail silently:
   // rendering no flags and launching anyway leaves an agent holding a manifest that says
   // "You have write access to all of them" over worktrees it cannot write to.
@@ -253,8 +263,8 @@ test("the TERMINAL runtime refuses the same task rather than launching without t
   // Enforced in the dispatcher rather than only at the routes because `TaskManager.create`
   // does not check - its contract is that the caller validated - so a future producer of a
   // multi-repo task (an MCP tool, a schedule, an ensemble) would reintroduce the drop.
-  const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
-  HARNESS_CAPABILITIES.pi.multiRepoDispatch = null;
+  const original = HARNESS_CAPABILITIES.claude.multiRepoDispatch;
+  HARNESS_CAPABILITIES.claude.multiRepoDispatch = null;
   try {
     const api = mkRepo("terminalguard-api");
     const web = mkRepo("terminalguard-web");
@@ -263,7 +273,7 @@ test("the TERMINAL runtime refuses the same task rather than launching without t
       mkTask({
         id: "terminalguard",
         status: "dispatching",
-        agent: "pi",
+        agent: "claude",
         repoRoot: api,
         extraRepos: [entry(web)],
       }),
@@ -279,11 +289,11 @@ test("the TERMINAL runtime refuses the same task rather than launching without t
     assert.equal(existsSync(join(WORKTREES_DIR, "terminalguard")), false, "nothing provisioned");
     assert.equal(existsSync(join(WORKTREES_DIR, "terminalguard-1")), false);
   } finally {
-    HARNESS_CAPABILITIES.pi.multiRepoDispatch = original;
+    HARNESS_CAPABILITIES.claude.multiRepoDispatch = original;
   }
 });
 
-test("Pi dispatches both worktrees without directory grant flags", async () => {
+test("Pi dispatches both worktrees without directory grant flags", PI, async () => {
   const api = mkRepo("pi-supported-api");
   const web = mkRepo("pi-supported-web");
   const registry = new Registry();
@@ -322,32 +332,38 @@ test("Pi dispatches both worktrees without directory grant flags", async () => {
 
 test("a single-repo task on a harness with no capability still dispatches normally", async () => {
   // The guard is scoped to tasks that actually attach repos. Without this, declaring no
-  // capability would become a general ban on dispatching that harness at all.
-  const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
-  HARNESS_CAPABILITIES.pi.multiRepoDispatch = null;
+  // capability would become a general ban on dispatching that harness at all. Claude on the
+  // Agent SDK runtime, with its capability withdrawn, so the launch is reachable on every host.
+  const original = HARNESS_CAPABILITIES.claude.multiRepoDispatch;
+  HARNESS_CAPABILITIES.claude.multiRepoDispatch = null;
   try {
     const api = mkRepo("soloharness-api");
     const registry = new Registry();
     registry.upsertTask(
-      mkTask({ id: "soloharness", status: "dispatching", agent: "pi", repoRoot: api }),
+      mkTask({ id: "soloharness", status: "dispatching", agent: "claude", repoRoot: api }),
     );
-    // Stub the actual launch: an uninstrumented real pane would escape the test and leak
-    // a Herdr workspace or tmux session every run. Keep main's isolation alongside the
-    // explicit null capability fixture now that Pi supports multi-repo dispatch.
+    // Stub the actual launch: a real driver would escape the test and start an agent.
     const launched: string[] = [];
-    const dispatcher = new Dispatcher(registry, undefined, {
-      spawn: async (baseName) => {
-        launched.push(baseName);
-        return { homeName: baseName, homeBackend: "tmux", terminalResourceId: null };
+    const supervisor = {
+      async start(input: { agent: "claude"; name: string; cwd: string }) {
+        launched.push(input.name);
+        return registry.registerSdkSession({ id: "sdk:soloharness", agent: input.agent, name: input.name, cwd: input.cwd });
       },
+      async stop(): Promise<void> {},
+      taskLiveness: () => null,
+    };
+    const dispatcher = new Dispatcher(registry, undefined, {
+      resolveRuntime: () => "sdk",
+      missionMcpDescriptor: async () => null,
+      supervisor: supervisor as never,
     });
     await dispatcher.dispatch("soloharness");
 
     assert.doesNotMatch(registry.getTask("soloharness")?.error ?? "", /write access/);
-    assert.equal(capabilitiesFor("pi").multiRepoDispatch, null);
-    assert.deepEqual(launched, ["T"], "the launch went to the seam, not the real multiplexer");
+    assert.equal(capabilitiesFor("claude").multiRepoDispatch, null);
+    assert.deepEqual(launched, ["T"], "the launch went to the seam, not a real driver");
   } finally {
-    HARNESS_CAPABILITIES.pi.multiRepoDispatch = original;
+    HARNESS_CAPABILITIES.claude.multiRepoDispatch = original;
   }
 });
 

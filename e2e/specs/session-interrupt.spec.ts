@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * What is at stake: the gap between "wait" and "kill".
@@ -74,6 +75,7 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await dispatch(dashboard, daemon, "codex");
 
   await dashboard

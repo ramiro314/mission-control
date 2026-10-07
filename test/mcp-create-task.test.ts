@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-create-task-home-"));
 const repos = mkdtempSync(join(tmpdir(), "mission-mcp-create-task-repos-"));
@@ -131,7 +132,7 @@ test("MCP task creation combines phase prerequisites with the calling session", 
   );
 });
 
-test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", async () => {
+test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", { skip: skipOnWin32("Codex is unavailable on win32") }, async () => {
   // An agent filing work through MCP has no opinion about which harness runs it - the tool
   // has no `agent` field at all - so it must take whatever `ship` is configured to run on.
   // The route used to say `agent: "claude"` here, which was an opinion expressed by accident
@@ -268,26 +269,28 @@ test("the full repository set is refused before storage on collisions, duplicate
 });
 
 test("the default ship harness is capability-checked before a multi-repo task is stored", async () => {
-  setHarnessesConfig({ kindDefaults: { ship: { agent: "pi" } } });
-  const repoA = gitRepo("pi-a");
-  const repoB = gitRepo("pi-b");
+  // Claude, so the check is reached on every host; its capability is withdrawn below, so the
+  // refusal can only come from asking the resolved default harness.
+  setHarnessesConfig({ kindDefaults: { ship: { agent: "claude" } } });
+  const repoA = gitRepo("default-harness-a");
+  const repoB = gitRepo("default-harness-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
-  const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
-  HARNESS_CAPABILITIES.pi.multiRepoDispatch = null;
+  const original = HARNESS_CAPABILITIES.claude.multiRepoDispatch;
+  HARNESS_CAPABILITIES.claude.multiRepoDispatch = null;
   try {
     const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
       additionalRepositories: [repoB],
     });
 
     assert.equal(response.status, 400);
-    assert.match(((await response.json()) as { error: string }).error, /pi cannot be given write access/);
+    assert.match(((await response.json()) as { error: string }).error, /claude cannot be given write access/);
     assert.equal(registry.snapshot().tasks.length, before);
   } finally {
-    HARNESS_CAPABILITIES.pi.multiRepoDispatch = original;
+    HARNESS_CAPABILITIES.claude.multiRepoDispatch = original;
   }
   const supported = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     additionalRepositories: [repoB],

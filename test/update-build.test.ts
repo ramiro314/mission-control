@@ -28,6 +28,7 @@ import {
   updateChildEnvironment,
 } from "../src/main/update-build.ts";
 import { createRotatingUpdateLogger } from "../src/main/update-log.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import {
   UPDATE_PROGRESS_MARKER,
   UPDATE_STAGED_MARKER,
@@ -73,7 +74,7 @@ function fakeClone(script: string): string {
 
 const BUNDLE = "release/mac-arm64/Mission Control.app";
 
-test("the staged build asks the clone's own install script for the build alone", () => {
+test("the staged build asks the clone's own install script for the build alone", { skip: skipOnWin32("the macOS updater is unavailable on win32") }, () => {
   const script = stageScriptPath("/state/app-src");
   assert.equal(script, "/state/app-src/scripts/install-app.mjs");
   assert.deepEqual(stageInstallArgs(script, "v1.2.4"), [
@@ -167,7 +168,7 @@ process.stdout.write("${UPDATE_STAGED_MARKER} 1.7.0 4242-1700000000000 " + bundl
   }
 });
 
-test("cancelling a staged build takes the script's own children with it", async () => {
+test("cancelling a staged build takes the script's own children with it", { skip: skipOnWin32("the macOS updater is unavailable on win32; cancellation relies on POSIX process groups") }, async () => {
   // The child writes a pid file for a grandchild that would outlive a plain `child.kill()`,
   // which is exactly what npm and electron-builder are in the real run.
   const clone = fakeClone(`
@@ -211,7 +212,7 @@ setInterval(() => {}, 1000);
   }
 });
 
-test("a cancelled build is not reported cancelled until its process group is gone", async () => {
+test("a cancelled build is not reported cancelled until its process group is gone", { skip: skipOnWin32("the macOS updater is unavailable on win32; cancellation relies on POSIX process groups") }, async () => {
   // The offer used to come back the instant SIGKILL was sent, so one click on Update Now
   // could start a fresh `git checkout --force` and `npm ci` in the clone that the dying npm
   // and electron-builder were still writing to. The grandchild here stands in for them: it
@@ -487,7 +488,7 @@ process.stdout.write("${UPDATE_PROGRESS_MARKER} verify\\n");
   }
 });
 
-test("a hung build settles anyway when something escapes the kill and holds the pipes", async (t) => {
+test("a hung build settles anyway when something escapes the kill and holds the pipes", { skip: skipOnWin32("the macOS updater is unavailable on win32; cancellation relies on POSIX process groups") }, async (t) => {
   // The bound exists for the case that actually breaks the promise: a descendant in its OWN
   // process group, which the group kill cannot reach, still holding the output pipes open. The
   // child's `close` then never arrives, and waiting on it unconditionally would leave the
@@ -546,7 +547,7 @@ setInterval(() => {}, 1000);
   );
 });
 
-test("a cancelled build settles anyway when something escapes the kill", async (t) => {
+test("a cancelled build settles anyway when something escapes the kill", { skip: skipOnWin32("the macOS updater is unavailable on win32; cancellation relies on POSIX process groups") }, async (t) => {
   const clone = fakeClone(`
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -593,7 +594,7 @@ setInterval(() => {}, 1000);
   }
 });
 
-test("a clone whose killed build never exited is refused to the next build", async (t) => {
+test("a clone whose killed build never exited is refused to the next build", { skip: skipOnWin32("the macOS updater is unavailable on win32; cancellation relies on POSIX process groups") }, async (t) => {
   // Settling on a bound instead of on `close` is what makes this necessary: `close` is the only
   // proof every descendant let go of the output pipes, and so of the clone. Until it arrives,
   // starting another build would run `git checkout --force` and `npm ci` in a directory the

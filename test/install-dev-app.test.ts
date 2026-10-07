@@ -4,6 +4,9 @@ import test from "node:test";
 import { replaceAppBundle } from "../scripts/app-bundle-swap.mjs";
 import { installDevApp, parseArgs } from "../scripts/install-dev-app.mjs";
 import { PACKAGED_APP_RELATIVE_PATH } from "../scripts/install-app.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const MACOS_INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
 
 const HOME = "/Users/someone";
 const REPO = "/work/mission-control";
@@ -49,7 +52,7 @@ function run(over: Parameters<typeof installDevApp>[0] extends infer T ? Partial
   return { result, log, swaps, created, present };
 }
 
-test("the developer install goes to this account's own Applications folder", () => {
+test("the developer install goes to this account's own Applications folder", MACOS_INSTALLER, () => {
   const { result, swaps } = run();
   assert.equal(result.problem, null);
   assert.equal(result.appPath, "/Users/someone/Applications/Mission Control.app");
@@ -63,7 +66,7 @@ test("the developer install goes to this account's own Applications folder", () 
   ]);
 });
 
-test("the developer install creates the personal folder but never an arbitrary one", () => {
+test("the developer install creates the personal folder but never an arbitrary one", MACOS_INSTALLER, () => {
   const missing = run({
     exists: (path: string) => path === BUNDLE,
     inspect: (appsDir: string, home = HOME) => ({ ...goodDirectory(appsDir, home), exists: false }),
@@ -85,7 +88,7 @@ test("the developer install creates the personal folder but never an arbitrary o
   assert.deepEqual(typo.created, []);
 });
 
-test("the developer install never removes a working app before a replacement is staged", () => {
+test("the developer install never removes a working app before a replacement is staged", MACOS_INSTALLER, () => {
   // The regression this pins: `make install-app` used to `rm -rf` the installed bundle and only
   // then `cp -R` the new one, so a full disk or an interrupted copy left the account with no
   // Mission Control at all. Routing through the real sibling-staging swap is what removes that
@@ -159,7 +162,7 @@ test("the developer install writes no receipt, so the updater stays off for a WI
   assert.ok(!source.includes("install-receipt"));
 });
 
-test("developer install arguments parse, and an unknown one stops it", () => {
+test("developer install arguments parse, and an unknown one stops it", MACOS_INSTALLER, () => {
   assert.deepEqual(parseArgs([]), { options: { appsDir: null }, help: false, problem: null });
   assert.equal(parseArgs(["--apps-dir", "/opt/apps"]).options.appsDir, "/opt/apps");
   assert.equal(parseArgs(["--apps-dir"]).problem, "--apps-dir needs a value");

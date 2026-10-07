@@ -7,6 +7,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writePiCatalogMode } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const PI_DEFAULT = "Default model for dispatched Pi sessions";
 const SAVED_MODEL = "anthropic/claude-sonnet-5";
@@ -228,6 +229,7 @@ test.describe("version-manager Pi installation", () => {
     page,
     daemon,
   }) => {
+    skipSpecOnWin32(test, "Pi is unavailable on win32");
     await openHarnesses(page, daemon.baseURL);
 
     const settingsModel = page.getByRole("combobox", { name: PI_DEFAULT });
