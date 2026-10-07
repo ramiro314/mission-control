@@ -3,6 +3,7 @@ import {
   accessSync,
   chmodSync,
   constants,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -413,19 +414,27 @@ test("dead login shells degrade to manager and OS defaults", async () => {
 
 test("a login-shell grandchild holding output cannot outlive the discovery deadline", async () => {
   const f = fixture();
+  // Written once the grandchild holds stdout and the PATH is printed, so the case cannot pass
+  // on a shell that was simply still starting when the deadline fired.
+  const reached = join(f.root, "grandchild-started");
   Object.assign(f.env, writeFakeLoginShell(f.root, [
     // A grandchild that shares the probe's stdout and outlives the shell.
     `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }).unref();`,
     `process.stdout.write("__MISSION_PATH__/grandchild/bin__MISSION_PATH__");`,
+    `require("node:fs").writeFileSync(${JSON.stringify(reached)}, "");`,
     "",
   ].join("\n")));
+  // Above a cold start of the fake (Node on POSIX; the launcher and then Node on win32) on a
+  // loaded runner, and far below the grandchild's 30 s, so only the deadline can end the read.
+  const deadlineMs = 3_000;
   const started = Date.now();
   try {
-    assert.deepEqual(await probeLoginShellPath(f.env, 100), {
+    assert.deepEqual(await probeLoginShellPath(f.env, deadlineMs), {
       path: null,
       problem: "login shell timed out",
     });
-    assert.ok(Date.now() - started < 2_000, "the inherited output pipe kept discovery alive");
+    assert.ok(Date.now() - started < 15_000, "the inherited output pipe kept discovery alive");
+    assert.equal(existsSync(reached), true, "the fake never started its grandchild before the deadline");
   } finally {
     f.clean();
   }
