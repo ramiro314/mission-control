@@ -9,7 +9,6 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -57,6 +56,7 @@ import type {
   WorkflowSubmissionImageWrite,
   WorkflowSubmissionTextArtifactWrite,
 } from "./store.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 /** Re-exported so every caller that already knew this name keeps its import path. */
 export { WorkflowImageEvidenceError };
@@ -114,7 +114,7 @@ function assertOpenedInsideCheckout(
   if (process.platform === "linux") {
     let openedPath: string;
     try {
-      openedPath = realpathSync(`/proc/self/fd/${fd}`);
+      openedPath = physicalPathSync(`/proc/self/fd/${fd}`);
     } catch {
       throw new WorkflowImageEvidenceError(
         `${kind}_path`,
@@ -516,7 +516,7 @@ export function stageUploadedWorkflowEvidenceSync(input: {
   const roots = scoutRepoSlots(input.task, input.fallbackRoot).map((repo) => ({
     ...repo,
     realRoot: repo.root ? (() => {
-      try { return realpathSync(repo.root); } catch { return null; }
+      try { return physicalPathSync(repo.root); } catch { return null; }
     })() : null,
   }));
   const writes: WorkflowStagedEvidenceWrite[] = [];
@@ -565,7 +565,7 @@ export function stageRetainedWorkflowEvidence(input: {
   const roots = scoutRepoSlots(input.task, input.fallbackRoot).map((repo) => ({
     ...repo,
     realRoot: repo.root ? (() => {
-      try { return realpathSync(repo.root); } catch { return null; }
+      try { return physicalPathSync(repo.root); } catch { return null; }
     })() : null,
   }));
   const selected = rootForScope(roots, input.locator.repositoryScope);

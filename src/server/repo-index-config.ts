@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -9,6 +8,7 @@ import {
   type RepoIndexConfig,
 } from "@shared/repo-index.ts";
 import { getAppConfig } from "./db.ts";
+import { physicalPathSync } from "./util/physical-path.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.repoIndex;
 
@@ -54,7 +54,7 @@ export function environmentDirectories(): string[] {
 export function canonicalize(path: string): string {
   const normalized = resolve(expandHome(path.trim()));
   try {
-    return realpathSync(normalized);
+    return physicalPathSync(normalized);
   } catch {
     return normalized;
   }

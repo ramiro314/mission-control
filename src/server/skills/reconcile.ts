@@ -5,7 +5,6 @@ import {
   readdirSync,
   readlinkSync,
   readFileSync,
-  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -24,6 +23,7 @@ import { isManagedPiExtensionTarget } from "../extensions/pi-paths.ts";
 import { commitExtensionIntent, publishExtensionLink, removeExtensionLink, type ExtensionIntentCommit } from "../extensions/pi-link-publication.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 // Sync `~/.claude/skills/mission-<id>` against the enabled set.
 //
@@ -157,7 +157,7 @@ function canonical(path: string): string {
   const tail: string[] = [];
   for (;;) {
     try {
-      return join(realpathSync(head), ...tail);
+      return join(physicalPathSync(head), ...tail);
     } catch {
       const parent = dirname(head);
       // The root, and nothing along the way existed. Every symlink that could have been

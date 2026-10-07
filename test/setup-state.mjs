@@ -63,6 +63,23 @@ export function releaseBeforeRemoval(target = fs) {
 // child they spawn - `test/db-isolation.test.ts` does, to simulate a worker from the
 // outside - so "the runner set it" is the normal case rather than the only one.
 if (process.env.NODE_TEST_CONTEXT) {
+  // On win32 `%TEMP%` is often an 8.3 short spelling (`C:\Users\RUNNER~1\...` on the CI
+  // runner) of a directory whose physical name is long. The daemon physicalizes the paths it
+  // compares to the long spelling (`src/server/util/physical-path.ts`), while a fixture
+  // canonicalized with `realpathSync` keeps the short one, so the two name one directory two
+  // ways and every comparison between them fails. Fixtures derive from `tmpdir()`, so it is
+  // pointed at the long spelling here, before this file or any test file reads it, and every
+  // child a test spawns inherits that. The short spelling stays a temp root below.
+  const shortTemp = resolve(tmpdir());
+  if (process.platform === "win32") {
+    try {
+      const longTemp = realpathSync.native(shortTemp);
+      if (longTemp !== shortTemp) process.env.TEMP = process.env.TMP = longTemp;
+    } catch {
+      // An unreadable temp dir keeps the spelling it had.
+    }
+  }
+
   const root = mkdtempSync(join(tmpdir(), "mission-test-state-"));
 
   // A marker `db.ts` can trust for the life of this process, because the environment cannot
@@ -90,7 +107,7 @@ if (process.env.NODE_TEST_CONTEXT) {
   // Captured at preload, these describe the machine as it was before any test module ran,
   // which is the only moment the answer is trustworthy.
   const temp = resolve(tmpdir());
-  const tempRoots = new Set([temp]);
+  const tempRoots = new Set([shortTemp, temp]);
   try {
     tempRoots.add(resolve(realpathSync(temp)));
   } catch {

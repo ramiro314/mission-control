@@ -2,7 +2,7 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess } from "./terminal/launch-process.ts";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import { runtimeUnavailableWhy } from "./platform/session-runtimes.ts";
@@ -112,6 +112,7 @@ import type {
 } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
+import { physicalPathSync } from "./util/physical-path.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -2510,7 +2511,7 @@ export async function provisionWorktree(
     { timeoutMs: 60000 },
   );
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
-  const real = realpathSync(path);
+  const real = physicalPathSync(path);
   if (baseSha) {
     try {
       await verifyHeadIs(real, baseSha);

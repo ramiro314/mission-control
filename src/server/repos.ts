@@ -1,10 +1,11 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
 import path, { join } from "node:path";
 import { envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
 import { bareRepositoryStatus, isBareRepository, mainRepoRoot } from "./util/git.ts";
 import { indexedDirectories } from "./repo-index-config.ts";
+import { physicalPathSync } from "./util/physical-path.ts";
 
 /**
  * Index the git repositories a dispatch can target. The dispatch form needs the
@@ -154,12 +155,12 @@ export async function resolveRepoRoot(p: string): Promise<string | null> {
     const bare = await run("git", ["-C", p, "rev-parse", "--is-bare-repository", "--absolute-git-dir"]);
     if (bare.code !== 0 || bare.outcomeUnknown || bare.overflowed) return null;
     const [kind, dir] = bare.stdout.trim().split("\n");
-    return kind === "true" && dir && isBareRepository(dir) ? realpathSync(dir) : null;
+    return kind === "true" && dir && isBareRepository(dir) ? physicalPathSync(dir) : null;
   }
   const owner = mainRepoRoot(top);
   if (owner) return owner;
   try {
-    return realpathSync(top);
+    return physicalPathSync(top);
   } catch {
     return top;
   }
@@ -196,7 +197,7 @@ export async function resolveRepoPath(
   const toplevel = top.code === 0 ? top.stdout.trim() : "";
   const canonical = (dir: string): string => {
     try {
-      return realpathSync(dir);
+      return physicalPathSync(dir);
     } catch {
       return dir;
     }

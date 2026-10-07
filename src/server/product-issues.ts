@@ -7,7 +7,6 @@ import {
   openSync,
   readFileSync,
   readSync,
-  realpathSync,
 } from "node:fs";
 import { arch as hostArch, platform as hostPlatform } from "node:os";
 import { isAbsolute, relative } from "node:path";
@@ -51,6 +50,7 @@ import {
   type SavedUpload,
 } from "./uploads.ts";
 import { run, type RunResult } from "./util/exec.ts";
+import { physicalPathSync } from "./util/physical-path.ts";
 
 const ISSUE_CREATE_TIMEOUT_MS = 20_000;
 const PREFLIGHT_TIMEOUT_MS = 5_000;
@@ -248,7 +248,7 @@ export function productIssueAttachmentArgs(
 ): { ok: true; args: string[] } | { ok: false; error: string } {
   let root: string;
   try {
-    root = realpathSync(capability.uploadRoot);
+    root = physicalPathSync(capability.uploadRoot);
   } catch {
     return { ok: false, error: "Product issue upload storage is unavailable" };
   }
@@ -266,7 +266,7 @@ export function productIssueAttachmentArgs(
       if (lstatSync(upload.path).isSymbolicLink()) {
         return { ok: false, error: "A screenshot upload cannot be a symbolic link" };
       }
-      resolved = realpathSync(upload.path);
+      resolved = physicalPathSync(upload.path);
     } catch {
       return { ok: false, error: "A screenshot upload can no longer be read" };
     }

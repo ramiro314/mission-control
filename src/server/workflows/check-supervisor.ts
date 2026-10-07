@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import type { CheckExecutionResult } from "./checks.ts";
@@ -12,6 +11,7 @@ import {
 } from "./check-group.ts";
 import { spawnCheckProcess, type CheckSpawnOutcome } from "./check-spawn.ts";
 import type { CheckGroupRecovery, CheckProcessRegistry } from "./check-lease.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 // The composition: a platform preflight, a scrubbed environment, a leased directory, and the
 // gate that persists a supervisor's identity before branch code is permitted to run.
@@ -248,7 +248,7 @@ function workingDirectory(leasePath: string, workingSubpath: string): WorkingDir
   }
   let root: string;
   try {
-    root = realpathSync(resolve(leasePath));
+    root = physicalPathSync(resolve(leasePath));
   } catch (err) {
     return {
       ok: false,
@@ -257,7 +257,7 @@ function workingDirectory(leasePath: string, workingSubpath: string): WorkingDir
   }
   let candidate: string;
   try {
-    candidate = realpathSync(resolve(join(root, workingSubpath)));
+    candidate = physicalPathSync(resolve(join(root, workingSubpath)));
   } catch (err) {
     return {
       ok: false,

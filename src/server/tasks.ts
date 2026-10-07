@@ -9,7 +9,6 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
@@ -210,6 +209,7 @@ import { noteTaskDeparture } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
+import { physicalPathSync } from "./util/physical-path.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -1404,9 +1404,9 @@ export class TaskManager {
     let repoRoot: string;
     let worktreesRoot: string;
     try {
-      workspace = realpathSync(requestedPath);
-      repoRoot = realpathSync(task.repoRoot);
-      worktreesRoot = realpathSync(join(repoRoot, ".worktrees"));
+      workspace = physicalPathSync(requestedPath);
+      repoRoot = physicalPathSync(task.repoRoot);
+      worktreesRoot = physicalPathSync(join(repoRoot, ".worktrees"));
     } catch {
       return { ok: false, status: 409, error: "the Pipeline workspace path does not exist" };
     }

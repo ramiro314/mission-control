@@ -1,5 +1,20 @@
 import { defineConfig, devices } from "@playwright/test";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+
+// On win32 `%TEMP%` is often an 8.3 short spelling (`C:\Users\RUNNER~1\...` on the CI runner).
+// The daemon reports the long physical spelling for every path it canonicalizes, so a fixture
+// home or repository minted under the short one never matches what the dashboard shows. This
+// file is evaluated before any worker starts, and workers and the daemons they boot inherit it.
+if (process.platform === "win32") {
+  try {
+    const longTemp = realpathSync.native(tmpdir());
+    if (longTemp !== tmpdir()) process.env.TEMP = process.env.TMP = longTemp;
+  } catch {
+    // An unreadable temp dir keeps the spelling it had.
+  }
+}
 
 /**
  * Browser-level end-to-end tests, run separately from `npm test`.
