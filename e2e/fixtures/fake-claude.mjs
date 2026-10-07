@@ -782,7 +782,7 @@ function runSession() {
 
 // --- the transcript file the dashboard actually renders -------------------------------
 
-const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[/.]/g, "-"));
+const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
 mkdirSync(projectDir, { recursive: true });
 const transcriptPath = join(projectDir, `${SESSION_ID}.jsonl`);
 // Created eagerly: `resolveTranscriptPath` returns null for a path that does not exist yet,

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   PaneOption,
@@ -37,6 +36,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
+import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
@@ -120,9 +120,6 @@ export function claudeSdkRateLimits(
   return { fiveHour, sevenDay, updatedAt: now };
 }
 
-/** Root of Claude's per-project transcript store, mirrored from `transcript.ts`. */
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
-
 /**
  * The permission modes this driver can ask the SDK for.
  *
@@ -160,9 +157,9 @@ export function sdkPermissionMode(mode: PermissionMode | null): ClaudeSdkPermiss
 export function claudeSdkTranscriptPath(
   cwd: string,
   agentSessionId: string,
-  projectsDir: string = PROJECTS_DIR,
+  projectsDir: string = CLAUDE_PROJECTS_DIR,
 ): string | null {
-  const path = join(projectsDir, cwd.replace(/[/.]/g, "-"), `${agentSessionId}.jsonl`);
+  const path = join(claudeProjectDir(cwd, projectsDir), `${agentSessionId}.jsonl`);
   return existsSync(path) ? path : null;
 }
 

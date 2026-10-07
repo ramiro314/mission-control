@@ -498,7 +498,7 @@ test("computeRuntimeMeta keeps the model when usage has only output tokens", () 
 // ---- transcript path resolution ----
 
 const UUID = "4aa3d50a-9232-49cf-9ad9-67b8a9e8b51a";
-const encode = (cwd: string): string => cwd.replace(/[/.]/g, "-");
+const encode = (cwd: string): string => cwd.replace(/[^a-zA-Z0-9]/g, "-");
 const session = (p: Partial<Session>): Session =>
   ({ agent: "claude", agentSessionId: UUID, cwd: "/Users/me/work/app", transcriptPath: null, ...p }) as Session;
 

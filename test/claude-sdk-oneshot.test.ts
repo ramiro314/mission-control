@@ -20,6 +20,7 @@ import { claudeSdkTranscriptPath } from "../src/server/harness/claude/sdk.ts";
 import { DENY_PATHS, DENY_SETTINGS, REVIEW_TOOLS } from "../src/server/inspector/worker.ts";
 import { HEADLESS_CWD } from "../src/server/claude-cli.ts";
 import { headlessTranscriptDir } from "../src/server/goal/prune.ts";
+import { physicalPathSync } from "../src/server/util/physical-path.ts";
 import { CLAUDE_GRANTABLE_TOOLS, claudeSpendReport } from "../src/server/llm/claude.ts";
 import {
   claudeOneShotSettings,
@@ -629,8 +630,9 @@ test("the persisted SDK transcript path lands inside the existing pruner directo
   mkdirSync(sweptDir, { recursive: true });
   writeFileSync(join(sweptDir, `${sessionId}.jsonl`), '{"type":"user"}\n');
 
+  // The cwd `runClaudeSdkOneShot` spawns with, spelled the way it spells it.
   const reported = claudeSdkTranscriptPath(
-    realpathSync(HEADLESS_CWD),
+    physicalPathSync(HEADLESS_CWD),
     sessionId,
     projectsDir,
   );
