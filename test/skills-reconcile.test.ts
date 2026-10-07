@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 // The reconciler writes into ~/.claude/skills - the operator's own directory, next to
 // hand-authored skills the harness must never touch. So these run against a REAL
@@ -377,7 +378,7 @@ test("a daemon on an isolated home never touches another home's skill links", ()
   mkdirSync(isolated, { recursive: true });
   symlinkSync(source, join(shared, "mission-html-plans"), "dir");
 
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome, MISSION_HOME: isolated };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...osHomeEnv(fakeHome), MISSION_HOME: isolated };
   // The reason the bug reached production: the isolated daemon inherits no skills dir of
   // its own, so it fell through to the shared one. Leave it that way here.
   delete env.CLAUDE_SKILLS_DIR;
@@ -426,7 +427,7 @@ test("an ordinary daemon - no home override - still installs into ~/.claude/skil
   const fakeHome = join(home, "default-install", "operator-home");
   mkdirSync(fakeHome, { recursive: true });
 
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...osHomeEnv(fakeHome) };
   delete env.CLAUDE_SKILLS_DIR;
   for (const prefix of ["MISSION", "FLEET", "HARNESS"]) delete env[`${prefix}_HOME`];
 

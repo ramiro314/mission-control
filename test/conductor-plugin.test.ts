@@ -30,6 +30,8 @@ import {
   engineerEnvelope,
   resolveRun,
 } from "../integrations/ai-conductor/mission-control/index.mjs";
+import { osHomeEnv } from "./helpers/os-home.ts";
+import { withProcessEnv } from "./helpers/process-env.ts";
 
 const REPO = "/w/demo";
 const WORKTREE = "/w/demo/.worktrees/a-feature";
@@ -633,50 +635,48 @@ test("a rotated daemon token is picked up by the attempt after the 401", async (
   const home = mkdtempSync(join(tmpdir(), "mission-plugin-home-"));
   mkdirSync(join(home, ".mission-control"), { recursive: true });
   writeFileSync(join(home, ".mission-control", "token"), "the-old-secret\n");
-  const realHome = process.env.HOME;
-  // `os.homedir()` reads HOME on POSIX, which is the only seam the plugin's own discovery
-  // offers - and using it means this test drives the real `readToken`, file and all.
-  process.env.HOME = home;
+  // `os.homedir()` is the only seam the plugin's own discovery offers - and using it means
+  // this test drives the real `readToken`, file and all.
   try {
-    const sent: string[] = [];
-    const fetchImpl = (async (_url: unknown, init: unknown) => {
-      const token = (init as { headers: Record<string, string> }).headers["x-harness-token"];
-      sent.push(token ?? "");
-      // The daemon refuses the secret it no longer knows, then accepts the one it minted.
-      return token === "the-new-secret"
-        ? ({ ok: true, status: 200 } as Response)
-        : ({ ok: false, status: 401 } as Response);
-    }) as unknown as typeof fetch;
+    await withProcessEnv(osHomeEnv(home), async () => {
+      const sent: string[] = [];
+      const fetchImpl = (async (_url: unknown, init: unknown) => {
+        const token = (init as { headers: Record<string, string> }).headers["x-harness-token"];
+        sent.push(token ?? "");
+        // The daemon refuses the secret it no longer knows, then accepts the one it minted.
+        return token === "the-new-secret"
+          ? ({ ok: true, status: 200 } as Response)
+          : ({ ok: false, status: 401 } as Response);
+      }) as unknown as typeof fetch;
 
-    const bus = stubBus();
-    const plugin = createMissionControlVisualizer({ worktree: WORKTREE, fetchImpl, warn: () => {} });
-    plugin.start(bus);
-    bus.emit({ type: "gate_verdict", step: "build" });
+      const bus = stubBus();
+      const plugin = createMissionControlVisualizer({ worktree: WORKTREE, fetchImpl, warn: () => {} });
+      plugin.start(bus);
+      bus.emit({ type: "gate_verdict", step: "build" });
 
-    // Rotated between the first attempt and its retry, which is the sequence an operator
-    // restarting the daemon actually produces.
-    const until = async (predicate: () => boolean, why: string): Promise<void> => {
-      for (let waited = 0; waited < 5000; waited += 25) {
-        if (predicate()) return;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      assert.fail(why);
-    };
-    await until(() => sent.length >= 1, "the plugin never made a first attempt");
-    writeFileSync(join(home, ".mission-control", "token"), "the-new-secret\n");
-    await until(() => sent.length >= 2, "the plugin never retried after the 401");
+      // Rotated between the first attempt and its retry, which is the sequence an operator
+      // restarting the daemon actually produces.
+      const until = async (predicate: () => boolean, why: string): Promise<void> => {
+        for (let waited = 0; waited < 5000; waited += 25) {
+          if (predicate()) return;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        assert.fail(why);
+      };
+      await until(() => sent.length >= 1, "the plugin never made a first attempt");
+      writeFileSync(join(home, ".mission-control", "token"), "the-new-secret\n");
+      await until(() => sent.length >= 2, "the plugin never retried after the 401");
 
-    assert.deepEqual(
-      sent.slice(0, 2),
-      ["the-old-secret", "the-new-secret"],
-      "the retry must read the token again rather than resend the one that was refused",
-    );
-    await plugin.stop();
-    assert.equal(plugin.stats().buffered, 0, "and the events it was holding are delivered");
-    assert.equal(plugin.stats().dropped, 0);
+      assert.deepEqual(
+        sent.slice(0, 2),
+        ["the-old-secret", "the-new-secret"],
+        "the retry must read the token again rather than resend the one that was refused",
+      );
+      await plugin.stop();
+      assert.equal(plugin.stats().buffered, 0, "and the events it was holding are delivered");
+      assert.equal(plugin.stats().dropped, 0);
+    });
   } finally {
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
     rmSync(home, { recursive: true, force: true });
   }
 });

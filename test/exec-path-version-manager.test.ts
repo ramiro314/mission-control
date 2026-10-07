@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-version-manager-path-"));
 process.env.HARNESS_HOME = join(home, "state");
@@ -32,7 +33,7 @@ test("configured mise, relocated asdf, and relocated Volta shims survive login-s
   try {
     await withProcessEnv(
       {
-        HOME: home,
+        ...osHomeEnv(home),
         PATH: "/usr/bin:/bin",
         SHELL: join(home, "missing-login-shell"),
         XDG_DATA_HOME: xdgDataHome,

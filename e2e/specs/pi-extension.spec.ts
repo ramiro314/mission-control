@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
+import { osHomeEnv } from "../../test/helpers/os-home.ts";
 
 // A shared tmux server can restart between concurrent fixtures and reuse its pane ids.
 // Give discovery and this test the same private socket so another fixture's retired pane
@@ -58,7 +59,7 @@ test("hand-run Pi loads the extension, blocks on a dashboard answer and reports 
     models: [{ id: "pi-probe", name: "Pi Probe", reasoning: true, input: ["text"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }]
   }); }`);
   const env: Record<string, string> = {
-    HOME: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
+    ...osHomeEnv(dir), PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
     MISSION_PORT: new URL(daemon.baseURL).port, MISSION_API_TOKEN: readFileSync(join(daemon.home, "token"), "utf8").trim(),
     MISSION_MCP_SERVER: resolve("dist/mcp/server.mjs"), MC_E2E_PI_EXTENSION: extensionPath,
     MC_E2E_PI_SESSION_FIXTURE: resolve("e2e/fixtures/fake-pi-session.mjs"),

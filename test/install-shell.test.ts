@@ -8,6 +8,7 @@ import { parseArgs } from "../scripts/install-app.mjs";
 import { CANONICAL_REPO, validateReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { inspectUpdateRuntime } from "../src/main/update-runtime.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
 
@@ -89,7 +90,7 @@ else if (tool === "node") {
   }
   const env = {
     ...process.env,
-    HOME: home,
+    ...osHomeEnv(home),
     PATH: `${bin}:/usr/bin:/bin`,
     TMPDIR: scratch,
     MISSION_HOME: state,

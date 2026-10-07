@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 // What is at stake: the operator's real settings database.
 //
@@ -56,13 +57,13 @@ type ChildResult = { status: number; stdout: string; stderr: string };
 /**
  * Run `script` in a child that believes it is a test worker.
  *
- * `HOME` is jailed into the temp dir so that if either layer regresses, the child scribbles
- * on a scratch home rather than the real one - a test must never rely on the very guard it
- * is checking. Every home alias is stripped from the inherited environment first, because
- * this file's own worker has a bootstrap home of its own and inheriting it would hide
- * exactly the omission most of these cases are about. `NODE_TEST_CONTEXT` is what
- * `node --test` sets in every test child; stating it explicitly keeps the child honest
- * about what it simulates.
+ * The OS home is jailed into the temp dir (`HOME` and `USERPROFILE`, through `osHomeEnv`) so
+ * that if either layer regresses, the child scribbles on a scratch home rather than the real
+ * one - a test must never rely on the very guard it is checking. Every home alias is stripped
+ * from the inherited environment first, because this file's own worker has a bootstrap home
+ * of its own and inheriting it would hide exactly the omission most of these cases are about.
+ * `NODE_TEST_CONTEXT` is what `node --test` sets in every test child; stating it explicitly
+ * keeps the child honest about what it simulates.
  *
  * `bootstrap` decides which of the two layers is under test: with it, the child is a worker
  * launched by the repo's commands; without it, a worker launched some other way, where only
@@ -77,7 +78,7 @@ function runChild(
   extraEnv: Record<string, string> = {},
   opts: { bootstrap?: boolean; spec?: string } = {},
 ): ChildResult {
-  const env: Record<string, string | undefined> = { ...process.env, HOME: home };
+  const env: Record<string, string | undefined> = { ...process.env, ...osHomeEnv(home) };
   delete env.MISSION_HOME;
   delete env.FLEET_HOME;
   delete env.HARNESS_HOME;
@@ -205,7 +206,7 @@ test("a temp-looking symlink into the operator's state dir is refused", () => {
   const disguised = join(jail, "looks-disposable");
   symlinkSync(operator, disguised, "dir");
 
-  const res = runChild(OPEN_AND_REPORT, { HOME: jail, MISSION_HOME: disguised });
+  const res = runChild(OPEN_AND_REPORT, { ...osHomeEnv(jail), MISSION_HOME: disguised });
   assert.notEqual(res.status, 0, "a symlink into the operator's state dir was opened");
   assert.match(res.stderr, /real\s+state dir/i);
   assert.equal(
@@ -236,7 +237,7 @@ test("a state home reached through a broken symlink is refused", () => {
   symlinkSync(operator, join(jail, "looks-disposable"), "dir");
 
   const res = runChild(OPEN_AND_REPORT, {
-    HOME: jail,
+    ...osHomeEnv(jail),
     MISSION_HOME: join(jail, "looks-disposable", "nested"),
   });
 
@@ -273,7 +274,7 @@ test("deleting NODE_TEST_CONTEXT does not disarm the guard without the preload e
   );
 
   // No `--import ./test/setup-state.mjs`: that omission IS the case.
-  const res = runChild("", { HOME: jail }, { spec });
+  const res = runChild("", osHomeEnv(jail), { spec });
   assert.notEqual(res.status, 0, "the operator db was opened by a worker with no preload");
   assert.match(res.stdout + res.stderr, /real\s+state dir/i);
   assert.equal(
@@ -309,7 +310,7 @@ test("emptying execArgv as well does not disarm the guard", () => {
      });`,
   );
 
-  const res = runChild("", { HOME: jail }, { spec });
+  const res = runChild("", osHomeEnv(jail), { spec });
   assert.notEqual(res.status, 0, "a worker that scrubbed both signals opened the operator db");
   assert.match(res.stdout + res.stderr, /real\s+state dir/i);
   assert.equal(existsSync(operator), false, "the operator's state dir was created");
@@ -336,7 +337,7 @@ test("deleting NODE_TEST_CONTEXT does not disarm the guard", () => {
       const { openDb } = await import("./src/server/db.ts");
       try { openDb(); console.log("opened"); } catch (err) { console.log("refused:" + err.message); }
     `,
-    { HOME: jail },
+    osHomeEnv(jail),
     { bootstrap: true },
   );
 
@@ -369,11 +370,11 @@ test("moving HOME and TMPDIR after the preload cannot launder the operator's sta
   mkdirSync(decoy, { recursive: true });
 
   const res = runChild(
-    `process.env.HOME = ${JSON.stringify(decoy)};
+    `process.env.HOME = process.env.USERPROFILE = ${JSON.stringify(decoy)};
      process.env.TMPDIR = ${JSON.stringify(jail)};
      process.env.MISSION_HOME = ${JSON.stringify(operator)};
      ${OPEN_AND_REPORT}`,
-    { HOME: jail },
+    osHomeEnv(jail),
     { bootstrap: true },
   );
 
@@ -420,7 +421,7 @@ test("a no-preload worker cannot move HOME to drop the real state dir from the d
      test("tries to open under the operator's state dir", async () => {
        delete process.env.NODE_TEST_CONTEXT;
        process.execArgv = process.execArgv.filter((f) => !f.startsWith("--test-"));
-       process.env.HOME = ${JSON.stringify(decoy)};
+       process.env.HOME = process.env.USERPROFILE = ${JSON.stringify(decoy)};
        process.env.TMPDIR = ${JSON.stringify(join(userInfo().homedir, ".ai-harness"))};
        process.env.MISSION_HOME = ${JSON.stringify(probe)};
        const { openDb } = await import(${JSON.stringify(dbUrl)});
@@ -428,7 +429,7 @@ test("a no-preload worker cannot move HOME to drop the real state dir from the d
      });`,
   );
 
-  const res = runChild("", { HOME: jail }, { spec });
+  const res = runChild("", osHomeEnv(jail), { spec });
   assert.notEqual(res.status, 0, "a decoy HOME dropped the real state dir from the denylist");
   assert.match(res.stdout + res.stderr, /real\s+state dir/i);
   assert.equal(
@@ -592,7 +593,7 @@ test("a plain-node child of an isolated worker inherits that isolation", () => {
   // children exactly like this.
   const jail = join(home, "plain-child-jail");
   mkdirSync(jail, { recursive: true });
-  const env: Record<string, string | undefined> = { ...process.env, HOME: jail };
+  const env: Record<string, string | undefined> = { ...process.env, ...osHomeEnv(jail) };
   delete env.NODE_TEST_CONTEXT;
 
   const res = runPlainNode(env, REPORT_STATE_DIR);
@@ -625,7 +626,7 @@ test("a child scrubbed of every test signal is the daemon, by construction", () 
   const jail = join(home, "scrubbed-jail");
   mkdirSync(jail, { recursive: true });
 
-  const scrubbed: Record<string, string | undefined> = { ...process.env, HOME: jail };
+  const scrubbed: Record<string, string | undefined> = { ...process.env, ...osHomeEnv(jail) };
   for (const name of ["NODE_TEST_CONTEXT", "MISSION_TEST_STATE", "MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"]) {
     delete scrubbed[name];
   }

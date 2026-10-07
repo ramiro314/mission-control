@@ -6,6 +6,7 @@ import test from "node:test";
 import { refreshProcessPathFromLoginShell, run } from "../src/server/util/exec.ts";
 import { removeFakeExecutable, writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 function script(path: string, body: string): string {
   mkdirSync(dirname(path), { recursive: true });
@@ -42,7 +43,7 @@ test("run passes manager precedence through to child hooks with env shebangs", a
   writeFileSync(hook, `#!/usr/bin/env ${interpreter}\n`);
   try {
     await withProcessEnv({
-      HOME: root,
+      ...osHomeEnv(root),
       // Node's own directory last, after every directory the test is about, so the Node.js
       // fakes can start under their own `#!/usr/bin/env node`.
       PATH: [inherited, "/usr/bin", "/bin", "/usr/sbin", "/sbin", dirname(process.execPath)].join(delimiter),

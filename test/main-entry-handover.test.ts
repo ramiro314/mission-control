@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { migrationPlanFixture } from "./helpers/migration-plan.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const MAIN_BUNDLE = join(REPO_ROOT, "dist", "main", "index.cjs");
@@ -106,7 +107,7 @@ function runEntry(
     timeout: 120_000,
     env: {
       ...process.env,
-      HOME: paths.home,
+      ...osHomeEnv(paths.home),
       MISSION_HOME: paths.state,
       HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(runningBundle, "Contents", "Resources", "app"),
@@ -178,7 +179,7 @@ test("the entry point launches nothing when it is already the installed app", HA
     timeout: 120_000,
     env: {
       ...process.env,
-      HOME: paths.home,
+      ...osHomeEnv(paths.home),
       MISSION_HOME: paths.state,
       HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(paths.personal, "Contents", "Resources", "app"),
@@ -202,7 +203,7 @@ test("an unmanaged entry point is untouched by any of this", () => {
     timeout: 120_000,
     env: {
       ...process.env,
-      HOME: join(root, "home"),
+      ...osHomeEnv(join(root, "home")),
       MISSION_HOME: join(root, "state"),
       HARNESS_MAIN_BUNDLE: mainBundle(),
       HARNESS_APP_PATH: join(SYSTEM_BUNDLE, "Contents", "Resources", "app"),
@@ -228,7 +229,7 @@ test("a failed migrated background startup releases the shell so reopening can r
   plan.intendedReceipt.installedVersion = plan.targetIdentity.version!;
   writeFileSync(join(state, 'install-migration.json'), JSON.stringify({plan, owner: {pid: 1, identity: 'finished fixture owner'}, ownerRole: 'recovery', stage: 'complete', repairs: [], inventory: null, targetProcess: null}));
   const result = spawnSync(process.execPath, [HARNESS], {encoding: 'utf8', timeout: 15_000, env: {...process.env,
-    HOME: paths.home, MISSION_HOME: state, HARNESS_MAIN_BUNDLE: mainBundle(),
+    ...osHomeEnv(paths.home), MISSION_HOME: state, HARNESS_MAIN_BUNDLE: mainBundle(),
     HARNESS_APP_PATH: join(paths.personal, 'Contents/Resources/app'), HARNESS_BACKGROUND_FAILURE: '1',
   }});
   assert.equal(result.status, 0, result.stderr);

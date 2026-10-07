@@ -19,6 +19,7 @@ import {
 } from "../src/server/util/exec.ts";
 import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 /**
  * A command name no machine can already have, which is what makes this test about the
@@ -64,7 +65,7 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
   try {
     await withProcessEnv(
       {
-        HOME: root,
+        ...osHomeEnv(root),
         PATH: "/usr/bin:/bin",
         SHELL: shell,
         XDG_DATA_HOME: undefined,
