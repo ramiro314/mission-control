@@ -154,6 +154,8 @@ export interface DaemonHandle {
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const BOOT_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
+/** How long `stop` waits on win32 for a tree root `taskkill` ended to report its exit. */
+const TREE_EXIT_TIMEOUT_MS = 5_000;
 
 /**
  * A terminal identity for the daemon to leak, seeded so that "it did not leak" can fail.
@@ -693,10 +695,18 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
    * So there the whole tree goes at once, through the same seam the daemon uses for its own
    * children, while its root is still alive for `taskkill /T` to walk. A grace period would
    * buy nothing: `kill("SIGTERM")` is already a forced termination on win32.
+   *
+   * `taskkill` returns once it has asked, not once the root is gone, so this then waits for the
+   * root's `exit`, bounded, before anyone tries to remove `home` under it. A root still running
+   * at the bound is left to the removal's retries below, which report it.
    */
   const end = async (proc: ChildProcess, hasExited: () => boolean): Promise<void> => {
     if (process.platform === "win32") {
       processLifetime.killTree(proc);
+      const deadline = Date.now() + TREE_EXIT_TIMEOUT_MS;
+      while (!hasExited() && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+      }
     } else {
       proc.kill("SIGTERM");
       await new Promise((r) => setTimeout(r, 200));
@@ -718,18 +728,25 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
      * not die with the daemon that spawned them: SIGKILL above returns as soon as the daemon is
      * gone, so a recursive delete can walk a directory a grandchild is still creating files in
      * and fail with `ENOTEMPTY`. Observed once in a full-suite run on `multi-repo-dispatch`,
-     * which is the spec that spawns the most of them. On win32 the processes `end` just
-     * terminated also release their handles a moment after `taskkill` returns. `maxRetries` is
-     * exactly what Node documents this for - it backs off on `ENOTEMPTY`, `EBUSY` and `EPERM`.
+     * which is the spec that spawns the most of them. On win32 the descendants `end` just
+     * terminated also release their handles a moment after their root has exited. `maxRetries`
+     * is exactly what Node documents this for - it backs off on `ENOTEMPTY`, `EBUSY` and `EPERM`.
      *
-     * A removal that still fails is reported and left in the temp dir, never thrown. A throw
-     * here fails a test after its every assertion passed, for a directory nothing reads again.
+     * On macOS and Linux a teardown that cannot clean up after five attempts over ~1.5s is a real
+     * leak, a spec leaving a live process in its home, and it fails the test. On win32 it is
+     * reported and left in the temp dir instead: `taskkill` cannot reach a descendant whose root
+     * already exited (`crash()` leaves exactly those), so there it is expected timing, not a
+     * finding worth failing a test whose every assertion passed.
      */
     try {
       rmSync(home, { force: true, recursive: true, maxRetries: 5, retryDelay: 300 });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`e2e daemon fixture: left ${home} behind: ${reason}\n`);
+      if (process.platform === "win32") {
+        const reason = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`e2e daemon fixture: left ${home} behind: ${reason}\n`);
+      } else {
+        throw error;
+      }
     }
   };
 

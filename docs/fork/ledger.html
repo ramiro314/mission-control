@@ -1744,9 +1744,11 @@ the absolute path first. <code>openDb</code> in <code>src/server/db.ts</code> cl
 test runner when that path holds the database, so the <code>after(() =&gt; rmSync(home, ...))</code> in each
 test file needs no change. The preload&#39;s own exit cleanup reports a directory it cannot remove
 and does not throw. <code>e2e/fixtures/daemon.ts</code> ends the daemon&#39;s and the Foreman worker&#39;s whole
-process tree through <code>processLifetime.killTree</code> on win32, and then removes the home with
-retries. On every platform it reports a home it cannot remove instead of failing the test.
-macOS and Linux keep the <code>SIGTERM</code> then <code>SIGKILL</code> stop and the unwrapped <code>rmSync</code>.</li>
+process tree through <code>processLifetime.killTree</code> on win32, waits a bounded time for the root to
+exit, and then removes the home with retries. On win32 a home it still cannot remove is
+reported, not failed, because <code>taskkill</code> cannot reach a descendant whose root already exited.
+macOS and Linux keep the <code>SIGTERM</code> then <code>SIGKILL</code> stop, the unwrapped <code>rmSync</code>, and a failing
+test for a home that cannot be removed.</li>
 <li><strong>Makefile</strong> (D31): run from Git Bash with a separately installed GNU make. On Windows
 (<code>OS=Windows_NT</code>), <code>make app</code>, <code>make install</code> and <code>make install-app</code> say they are macOS only
 and exit, and so do <code>make claude</code>, <code>up</code>, <code>down</code>, <code>restart</code>, <code>stop-all</code> and <code>status</code>, which

@@ -1455,9 +1455,11 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   test runner when that path holds the database, so the `after(() => rmSync(home, ...))` in each
   test file needs no change. The preload's own exit cleanup reports a directory it cannot remove
   and does not throw. `e2e/fixtures/daemon.ts` ends the daemon's and the Foreman worker's whole
-  process tree through `processLifetime.killTree` on win32, and then removes the home with
-  retries. On every platform it reports a home it cannot remove instead of failing the test.
-  macOS and Linux keep the `SIGTERM` then `SIGKILL` stop and the unwrapped `rmSync`.
+  process tree through `processLifetime.killTree` on win32, waits a bounded time for the root to
+  exit, and then removes the home with retries. On win32 a home it still cannot remove is
+  reported, not failed, because `taskkill` cannot reach a descendant whose root already exited.
+  macOS and Linux keep the `SIGTERM` then `SIGKILL` stop, the unwrapped `rmSync`, and a failing
+  test for a home that cannot be removed.
 - **Makefile** (D31): run from Git Bash with a separately installed GNU make. On Windows
   (`OS=Windows_NT`), `make app`, `make install` and `make install-app` say they are macOS only
   and exit, and so do `make claude`, `up`, `down`, `restart`, `stop-all` and `status`, which
