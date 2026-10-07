@@ -538,9 +538,9 @@ Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans the directories
 listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
-`~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
-override. Select the repo to base the task on rather than typing a path. Type to filter;
-arrow/enter to pick.
+`~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the launch-time override,
+separated like PATH (`:` on macOS and Linux, `;` on Windows). Select the repo to base the task
+on rather than typing a path. Type to filter; arrow/enter to pick.
 
 The Settings panel is also where the index is maintained. Any directory can be removed, including
 a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
