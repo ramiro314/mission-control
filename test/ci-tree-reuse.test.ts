@@ -1,7 +1,6 @@
 /**
  * `scripts/ci-tree-reuse.sh`, run the way the `changes` job runs it: `bash -eo pipefail`, every
- * input through `env`. `/bin/bash` is bash 3.2 on macOS, so a local run also proves the script
- * never reaches for a newer bash.
+ * input through `env`, under the bash `test/helpers/script-bash.ts` picks for this platform.
  *
  * `git` and `gh` are stubs first on `PATH`, each logging its arguments. `gh` answers the three
  * calls the script makes (the commit's pull requests, the workflow's pull_request runs for a head,
@@ -14,11 +13,11 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runBashScript } from "./helpers/script-bash.ts";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/ci-tree-reuse.sh", import.meta.url));
 
@@ -63,10 +62,7 @@ function run(args: string[], env: Record<string, string>) {
   rmSync(log, { force: true });
   const output = join(dir, "github-output");
   writeFileSync(output, "");
-  const r = spawnSync("/bin/bash", ["-eo", "pipefail", SCRIPT, ...args], {
-    encoding: "utf8",
-    env: { PATH: `${dir}:${process.env.PATH ?? ""}`, STUB_LOG: log, GITHUB_OUTPUT: output, ...env },
-  });
+  const r = runBashScript(SCRIPT, args, dir, { STUB_LOG: log, GITHUB_OUTPUT: output, ...env });
   const calls = existsSync(log) ? readFileSync(log, "utf8").trimEnd().split("\n") : [];
   return { code: r.status, stdout: r.stdout, stderr: r.stderr, output: readFileSync(output, "utf8"), calls };
 }
