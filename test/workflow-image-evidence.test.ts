@@ -16,9 +16,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScoutRepoTask } from "../src/server/scouts/repos.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+
+// win32 proves an opened file is inside its checkout through the state-lock addon.
+if (process.platform === "win32") ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-images-"));
 process.env.MISSION_HOME = join(home, "state");
@@ -837,6 +841,13 @@ test("parent-directory swaps cannot escape the issued checkout during staging or
   const targetPath = join(evidenceDirectory, "focused.log");
   const imageTargetPath = join(evidenceDirectory, "screen.png");
   const outsideContent = "outside checkout evidence\n";
+  // darwin refuses the swapped-in link at the open itself (O_NOFOLLOW_ANY). linux and win32
+  // open through it and then read the descriptor's real path, which is outside the checkout.
+  const escapeRefusal = process.platform === "darwin"
+    ? /could not be opened safely/
+    : /escaped its issued checkout while it was opened/;
+  const refusedEscape = (error: unknown) =>
+    error instanceof WorkflowImageEvidenceError && escapeRefusal.test(error.message);
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");
@@ -868,7 +879,7 @@ test("parent-directory swaps cannot escape the issued checkout during staging or
           now: 1,
         }),
       }),
-      WorkflowImageEvidenceError,
+      refusedEscape,
     );
     assert.deepEqual(store.listWorkflowEvidence("parent-race-stage").artifacts, []);
 
@@ -892,7 +903,7 @@ test("parent-directory swaps cannot escape the issued checkout during staging or
           now: 1,
         }),
       }),
-      WorkflowImageEvidenceError,
+      refusedEscape,
     );
     assert.deepEqual(store.listWorkflowEvidence("parent-race-image-stage").images, []);
 
@@ -946,7 +957,7 @@ test("parent-directory swaps cannot escape the issued checkout during staging or
         outsidePath: outside,
         action: () => captureSubmissionTextArtifacts(store, created.submission.id, 5),
       }),
-      WorkflowImageEvidenceError,
+      refusedEscape,
     );
     assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
   } finally {
