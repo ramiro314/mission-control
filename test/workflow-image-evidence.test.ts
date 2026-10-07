@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { physicalPathSync } from "../src/server/util/physical-path.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScoutRepoTask } from "../src/server/scouts/repos.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
@@ -1024,6 +1025,92 @@ test("secure agent staging accepts only contained gitignored raster files", asyn
     await assert.rejects(refused("not-ignored.png"), /gitignored/);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a reserved source resolves under the physical root staging stored, never another spelling of it", async () => {
+  // A link-spelled root stands in for every non-physical spelling of one directory: an 8.3
+  // short name or different case on win32, `/var` for `/private/var` on macOS. Staging stores
+  // the physical spelling, the reserved-path check accepts only that, and a row carrying any
+  // other spelling is refused rather than compared loosely.
+  const checkout = physicalPathSync(mkdtempSync(join(tmpdir(), "mission-workflow-reserved-root-")));
+  const linked = `${checkout}-linked`;
+  // Bytes of its own, so its retained body is never shared with another test's digest.
+  const screen = Buffer.concat([PNG, Buffer.from("reserved-root", "utf8")]);
+  try {
+    execFileSync("git", ["init", "-q", checkout]);
+    writeFileSync(join(checkout, ".gitignore"), "evidence/\n");
+    mkdirSync(join(checkout, "evidence"));
+    writeFileSync(join(checkout, "evidence", "screen.png"), screen);
+    // A junction on win32, which needs no symlink privilege; POSIX ignores the type.
+    symlinkSync(checkout, linked, "junction");
+    const store = new WorkflowStore();
+    const submit = (noteKey: string) => {
+      const binding = store.insertBinding({
+        id: `${noteKey}-binding`,
+        workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+        noteKey,
+        sessionId: `${noteKey}-session`,
+        sessionAgent: "codex",
+        sessionName: noteKey,
+        sessionCwd: linked,
+        sessionRepoRoot: linked,
+        triggerMode: "manual",
+        deliveryMode: "preview",
+        maxRepairRounds: 5,
+        now: 2,
+      });
+      return store.createInitialSubmission(
+        { id: `${noteKey}-run`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: noteKey, now: 3 },
+        { id: `${noteKey}-submission`, triggerSource: "manual", triggerKey: noteKey, context: {}, evidence: {}, now: 3 },
+      ).submission.id;
+    };
+
+    await stageAgentWorkflowEvidence({
+      store,
+      noteKey: "reserved-root-staged",
+      task: taskAt(linked),
+      fallbackRoot: linked,
+      images: [{
+        kind: "agent",
+        clientItemId: "screen",
+        path: "evidence/screen.png",
+        caption: "The result is visible",
+        repositoryScope: "all",
+      }],
+      now: 1,
+    });
+    const staged = submit("reserved-root-staged");
+    const reserved = store.listReservedWorkflowEvidence(staged);
+    assert.equal(reserved.length, 1);
+    assert.equal(reserved[0]?.sourceRoot, checkout);
+    assert.equal((await captureSubmissionImages(store, staged, 4)).length, 1);
+
+    const { createHash } = await import("node:crypto");
+    store.stageWorkflowEvidence("reserved-root-linked", [{
+      id: "reserved-root-linked-image",
+      clientItemId: "screen",
+      sourceKind: "agent",
+      sourceRoot: linked,
+      sourceLocator: "evidence/screen.png",
+      displayName: "screen.png",
+      caption: "The result is visible",
+      repositoryScope: "all",
+      mimeType: "image/png",
+      bytes: screen.byteLength,
+      sha256: createHash("sha256").update(screen).digest("hex"),
+    }], 1);
+    const linkedSubmission = submit("reserved-root-linked");
+    await assert.rejects(
+      () => captureSubmissionImages(store, linkedSubmission, 4),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && /^Reserved evidence path resolves outside the checkout$/.test(error.message),
+    );
+    assert.deepEqual(store.listSubmissionImages(linkedSubmission), []);
+  } finally {
+    // unlink, as `withParentDirectorySwap` does: it removes the link and never its target.
+    if (existsSync(linked)) unlinkSync(linked);
+    rmSync(checkout, { recursive: true, force: true });
   }
 });
 
