@@ -233,7 +233,7 @@ ahead/behind header afterwards (section 7).</li>
 <tr>
 <td>30</td>
 <td>(GitHub Inspector round 2, refines 18) What stops two PRs that edit the same section from silently overwriting each other</td>
-<td>Every replacement block keeps decision 18&#39;s full text and adds a first line <code>base: &lt;hash&gt;</code>. That is the first 12 hex characters of the SHA-256 of the issue section the PR edited against, or <code>base: new</code>. Before applying a PR, the refresh compares each base with the issue&#39;s current section. On a mismatch it writes nothing for that PR, or for any later PR touching <strong>any</strong> feature the held PR names (a later PR&#39;s base overlaid all of the held PR&#39;s blocks), and reports it. <code>#### Status</code> blocks carry a base too, taken over the issue&#39;s state and <code>fork-status:*</code> label. A person, or a session asked to, then rewrites the block in the merged PR&#39;s body against the current text, keeping both changes, and updates its base. The next refresh applies it. This is the git conflict the ledger had, kept visible but moved to the one place it can still occur.</td>
+<td>Every replacement block keeps decision 18&#39;s full text and adds a first line <code>base: &lt;hash&gt;</code>. That is the first 12 hex characters of the SHA-256 of the issue section the PR edited against, or <code>base: new</code>. Before applying a PR, the refresh compares each base with the issue&#39;s current section. On a mismatch it writes nothing for that PR, or for any later PR touching <strong>any</strong> feature the held PR names (a later PR&#39;s base overlaid all of the held PR&#39;s blocks), and reports it. <code>#### Status</code> blocks carry a base too, taken over the issue&#39;s state and <code>fork-status:*</code> label. A person, or a session asked to, then rewrites the block in the merged PR&#39;s body against the current text, keeping both changes, and updates its base with <code>fork-delta.mjs base --pr &lt;n&gt;</code>, which overlays only the PRs merged before it. The next refresh applies it. This is the git conflict the ledger had, kept visible but moved to the one place it can still occur.</td>
 </tr>
 </tbody></table></div>
 <h2>Design</h2>
@@ -342,6 +342,16 @@ overlays, in merge order, every merged PR&#39;s block for that section that stil
 <code>fork-delta:applied</code>, the same overlay the upstream-sync agent reads. <code>fork-delta.mjs show &lt;slug&gt;</code> prints the overlaid issue, so the author edits the text the refresh will see. Same-day
 changes to one feature therefore chain cleanly, and a stale base means a real concurrent edit
 between PRs that were open at the same time. <code>base: new</code> means the section or the issue does not exist yet.</p>
+<p>The overlay stops at the PR being written. <code>base</code> and <code>show</code> take <code>--pr &lt;n&gt;</code>. With it, they
+overlay only the unapplied PRs merged <strong>before</strong> PR <code>n</code>, and never PR <code>n</code> itself or anything
+merged after it. That is exactly the state the refresh checks PR <code>n</code> against, because the
+refresh applies in merge order, and a held earlier PR on the same feature holds <code>n</code> too.
+Without <code>--pr</code>, for a PR not yet merged, they overlay every merged unapplied PR, since this
+PR will merge after all of them. <strong>Repairing a held PR</strong> always uses <code>--pr &lt;its number&gt;</code>:
+rewrite the block against <code>show --pr &lt;n&gt;</code>, set its base from <code>base --pr &lt;n&gt;</code>, and edit the
+merged PR&#39;s body. The next refresh then applies it, and so do the PRs held behind it, in
+order. A later held PR whose base included the old, stale version of the repaired block is
+reported stale in turn, and is repaired the same way.</p>
 <p>A <code>#### Status</code> block carries a base too, so two concurrent status changes are caught rather
 than resolved by whichever applies last. Its hash is taken over the feature&#39;s status as one
 canonical line, the issue&#39;s open or closed state plus its <code>fork-status:*</code> label or <code>none</code> (for
@@ -538,7 +548,7 @@ feature changes&quot; section in the PR body, and add the feature&#39;s label (d
 </tr>
 <tr>
 <td><code>test/fork-delta.test.ts</code></td>
-<td>New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), stale-base detection for section and Status blocks, and hold-back across every feature a held PR names from fixture issue and PR bodies</td>
+<td>New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), stale-base detection for section and Status blocks, hold-back across every feature a held PR names, the <code>--pr</code> cutoff (the held PR and the PRs after it are excluded from the overlay), and a held PR repaired with <code>base --pr &lt;n&gt;</code> that the next refresh applies, followed by the PRs held behind it from fixture issue and PR bodies</td>
 </tr>
 <tr>
 <td><code>test/fork-report.test.ts</code></td>

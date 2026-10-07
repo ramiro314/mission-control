@@ -85,7 +85,7 @@ No test reads `docs/fork/`, so deleting it turns no test red.
 | 27 | (Repair round 1, refines 20 and 24) How ledger edits that merge into `main` after the migration first runs reach the issues | `fork-migrate.mjs` is a **reconciling upsert**, not create-only: it rewrites each migrated issue's sections and status from the ledger and adds any missing PR label. The implementing session reruns it as the **last step before the merge**, after its final update from `main`, so the issues match the ledger as it stands at the merge. |
 | 28 | (Repair round 1, refines 23) When the recurring mission starts | The implementing session creates "Refresh fork status" **paused** through `POST /api/schedules`. Its tasks run against `main`, where `scripts/fork-report.mjs` and `docs/fork/README.md` exist only after this PR merges. The PR's hand-off tells the human to press **Resume** on the mission after merging, and optionally **Run now**. |
 | 29 | (Repair round 1, refines 10) How the pull-request step is authorized to create labels and issues | The approved decision 10 is recorded as a standing grant in the `AGENTS.md` "Fork" section: in this repository only, a session may create a `fork:<slug>` label, create its `fork-feature` tracking issue, and add `fork:*` labels to its own PR. When a session's authorization still refuses those writes, it writes the full issue body into its PR's "Fork feature changes" section instead, and the refresh creates the label and issue after the merge. |
-| 30 | (GitHub Inspector round 2, refines 18) What stops two PRs that edit the same section from silently overwriting each other | Every replacement block keeps decision 18's full text and adds a first line `base: <hash>`. That is the first 12 hex characters of the SHA-256 of the issue section the PR edited against, or `base: new`. Before applying a PR, the refresh compares each base with the issue's current section. On a mismatch it writes nothing for that PR, or for any later PR touching **any** feature the held PR names (a later PR's base overlaid all of the held PR's blocks), and reports it. `#### Status` blocks carry a base too, taken over the issue's state and `fork-status:*` label. A person, or a session asked to, then rewrites the block in the merged PR's body against the current text, keeping both changes, and updates its base. The next refresh applies it. This is the git conflict the ledger had, kept visible but moved to the one place it can still occur. |
+| 30 | (GitHub Inspector round 2, refines 18) What stops two PRs that edit the same section from silently overwriting each other | Every replacement block keeps decision 18's full text and adds a first line `base: <hash>`. That is the first 12 hex characters of the SHA-256 of the issue section the PR edited against, or `base: new`. Before applying a PR, the refresh compares each base with the issue's current section. On a mismatch it writes nothing for that PR, or for any later PR touching **any** feature the held PR names (a later PR's base overlaid all of the held PR's blocks), and reports it. `#### Status` blocks carry a base too, taken over the issue's state and `fork-status:*` label. A person, or a session asked to, then rewrites the block in the merged PR's body against the current text, keeping both changes, and updates its base with `fork-delta.mjs base --pr <n>`, which overlays only the PRs merged before it. The next refresh applies it. This is the git conflict the ledger had, kept visible but moved to the one place it can still occur. |
 
 ## Design
 
@@ -180,6 +180,17 @@ overlays, in merge order, every merged PR's block for that section that still la
 <slug>` prints the overlaid issue, so the author edits the text the refresh will see. Same-day
 changes to one feature therefore chain cleanly, and a stale base means a real concurrent edit
 between PRs that were open at the same time. `base: new` means the section or the issue does not exist yet.
+
+The overlay stops at the PR being written. `base` and `show` take `--pr <n>`. With it, they
+overlay only the unapplied PRs merged **before** PR `n`, and never PR `n` itself or anything
+merged after it. That is exactly the state the refresh checks PR `n` against, because the
+refresh applies in merge order, and a held earlier PR on the same feature holds `n` too.
+Without `--pr`, for a PR not yet merged, they overlay every merged unapplied PR, since this
+PR will merge after all of them. **Repairing a held PR** always uses `--pr <its number>`:
+rewrite the block against `show --pr <n>`, set its base from `base --pr <n>`, and edit the
+merged PR's body. The next refresh then applies it, and so do the PRs held behind it, in
+order. A later held PR whose base included the old, stale version of the repaired block is
+reported stale in turn, and is repaired the same way.
 
 A `#### Status` block carries a base too, so two concurrent status changes are caught rather
 than resolved by whichever applies last. Its hash is taken over the feature's status as one
@@ -367,7 +378,7 @@ feature changes" section in the PR body, and add the feature's label (decision 2
 | `scripts/fork-report.mjs` | New: renderer plus fetcher, as above |
 | `scripts/fork-migrate.mjs` | New: one-off idempotent migration, as above |
 | `scripts/fork-delta.mjs` | New: `base` prints a section's hash after overlaying merged, unapplied deltas, `show` prints the overlaid issue, and `check <pr>` parses and validates a PR's "Fork feature changes" section and reports stale bases (decision 30). |
-| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), stale-base detection for section and Status blocks, and hold-back across every feature a held PR names from fixture issue and PR bodies |
+| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), stale-base detection for section and Status blocks, hold-back across every feature a held PR names, the `--pr` cutoff (the held PR and the PRs after it are excluded from the overlay), and a held PR repaired with `base --pr <n>` that the next refresh applies, followed by the PRs held behind it from fixture issue and PR bodies |
 | `test/fork-report.test.ts` | New: renderer cases from fixture JSON |
 | `test/fork-migrate.test.ts` | New: ledger parsing and slug derivation against a fixture ledger excerpt |
 | `docs/fork/ledger.md`, `docs/fork/ledger.html` | Deleted |
