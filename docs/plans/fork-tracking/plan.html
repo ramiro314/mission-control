@@ -332,6 +332,7 @@ base: 9d02e6a4c1f8
 
 ### fork:windows-support
 #### Status
+base: 51c0e8d2a7b3
 active
 </code></pre>
 <p>Each <code>####</code> block replaces the issue section of the same name in full. Its first line,
@@ -340,9 +341,11 @@ the author copies it into the block when writing it. It starts from the issue&#3
 overlays, in merge order, every merged PR&#39;s block for that section that still lacks
 <code>fork-delta:applied</code>, the same overlay the upstream-sync agent reads. <code>fork-delta.mjs show &lt;slug&gt;</code> prints the overlaid issue, so the author edits the text the refresh will see. Same-day
 changes to one feature therefore chain cleanly, and a stale base means a real concurrent edit
-between PRs that were open at the same time. <code>base: new</code> means the section or the issue does not exist yet. A
-<code>#### Status</code> block
-takes one of <code>active</code>, <code>in-progress</code>, <code>superseded</code>, <code>removed</code> or <code>upstreamed</code>, plus an optional
+between PRs that were open at the same time. <code>base: new</code> means the section or the issue does not exist yet.</p>
+<p>A <code>#### Status</code> block carries a base too, so two concurrent status changes are caught rather
+than resolved by whichever applies last. Its hash is taken over the feature&#39;s status as one
+canonical line, the issue&#39;s open or closed state plus its <code>fork-status:*</code> label or <code>none</code> (for
+example <code>open none</code>), with the same overlay of unapplied blocks. <code>fork-delta.mjs base &lt;slug&gt; Status</code> prints it. The block takes one of <code>active</code>, <code>in-progress</code>, <code>superseded</code>, <code>removed</code> or <code>upstreamed</code>, plus an optional
 note. The refresh turns it into labels, closes or reopens the issue, and posts the closing
 comment with the date and the PR number. A PR that creates a new feature already wrote the full
 body when it created the issue (decision 10), so its section is <code>none</code> unless the PR changed the
@@ -431,9 +434,12 @@ the cut-over.</p>
 </li>
 <li><p>For each one, run <code>node scripts/fork-delta.mjs check &lt;pr&gt;</code> first. It parses the section,
 validates its format, and compares every block&#39;s <code>base</code> with the issue&#39;s current section
-text. When any block is stale, the refresh writes nothing for that PR. It holds back every
-later PR that touches the same feature until the stale one is fixed, and lists them in the
-run&#39;s summary and through <code>report_status</code> (decision 30). PRs for other features continue.
+text, or its status line for a Status block. When any block is stale, the refresh writes
+nothing for that PR. It holds back every later PR that touches <strong>any</strong> feature the held PR
+names, not only the feature whose block was stale. That matters because a later PR&#39;s base
+overlaid all of the held PR&#39;s blocks, including the ones that were not stale. The held PR
+and every PR held behind it are listed in the run&#39;s summary and through <code>report_status</code>
+(decision 30). PRs that touch none of those features continue.
 Otherwise, apply its &quot;Fork feature changes&quot; section to each named issue: replace the
 named sections, and apply any Status block. When a section names a <code>fork:&lt;slug&gt;</code> whose
 label or tracking issue does not exist, create them from the section, which then carries
@@ -532,7 +538,7 @@ feature changes&quot; section in the PR body, and add the feature&#39;s label (d
 </tr>
 <tr>
 <td><code>test/fork-delta.test.ts</code></td>
-<td>New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), and stale-base detection from fixture issue and PR bodies</td>
+<td>New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), stale-base detection for section and Status blocks, and hold-back across every feature a held PR names from fixture issue and PR bodies</td>
 </tr>
 <tr>
 <td><code>test/fork-report.test.ts</code></td>

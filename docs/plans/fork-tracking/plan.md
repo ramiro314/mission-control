@@ -167,6 +167,7 @@ base: 9d02e6a4c1f8
 
 ### fork:windows-support
 #### Status
+base: 51c0e8d2a7b3
 active
 ```
 
@@ -178,9 +179,13 @@ overlays, in merge order, every merged PR's block for that section that still la
 `fork-delta:applied`, the same overlay the upstream-sync agent reads. `fork-delta.mjs show
 <slug>` prints the overlaid issue, so the author edits the text the refresh will see. Same-day
 changes to one feature therefore chain cleanly, and a stale base means a real concurrent edit
-between PRs that were open at the same time. `base: new` means the section or the issue does not exist yet. A
-`#### Status` block
-takes one of `active`, `in-progress`, `superseded`, `removed` or `upstreamed`, plus an optional
+between PRs that were open at the same time. `base: new` means the section or the issue does not exist yet.
+
+A `#### Status` block carries a base too, so two concurrent status changes are caught rather
+than resolved by whichever applies last. Its hash is taken over the feature's status as one
+canonical line, the issue's open or closed state plus its `fork-status:*` label or `none` (for
+example `open none`), with the same overlay of unapplied blocks. `fork-delta.mjs base <slug>
+Status` prints it. The block takes one of `active`, `in-progress`, `superseded`, `removed` or `upstreamed`, plus an optional
 note. The refresh turns it into labels, closes or reopens the issue, and posts the closing
 comment with the date and the PR number. A PR that creates a new feature already wrote the full
 body when it created the issue (decision 10), so its section is `none` unless the PR changed the
@@ -269,9 +274,12 @@ be deleted in a later PR. It is not needed afterwards.
    the cut-over.
 2. For each one, run `node scripts/fork-delta.mjs check <pr>` first. It parses the section,
    validates its format, and compares every block's `base` with the issue's current section
-   text. When any block is stale, the refresh writes nothing for that PR. It holds back every
-   later PR that touches the same feature until the stale one is fixed, and lists them in the
-   run's summary and through `report_status` (decision 30). PRs for other features continue.
+   text, or its status line for a Status block. When any block is stale, the refresh writes
+   nothing for that PR. It holds back every later PR that touches **any** feature the held PR
+   names, not only the feature whose block was stale. That matters because a later PR's base
+   overlaid all of the held PR's blocks, including the ones that were not stale. The held PR
+   and every PR held behind it are listed in the run's summary and through `report_status`
+   (decision 30). PRs that touch none of those features continue.
    Otherwise, apply its "Fork feature changes" section to each named issue: replace the
    named sections, and apply any Status block. When a section names a `fork:<slug>` whose
    label or tracking issue does not exist, create them from the section, which then carries
@@ -359,7 +367,7 @@ feature changes" section in the PR body, and add the feature's label (decision 2
 | `scripts/fork-report.mjs` | New: renderer plus fetcher, as above |
 | `scripts/fork-migrate.mjs` | New: one-off idempotent migration, as above |
 | `scripts/fork-delta.mjs` | New: `base` prints a section's hash after overlaying merged, unapplied deltas, `show` prints the overlaid issue, and `check <pr>` parses and validates a PR's "Fork feature changes" section and reports stale bases (decision 30). |
-| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), and stale-base detection from fixture issue and PR bodies |
+| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), stale-base detection for section and Status blocks, and hold-back across every feature a held PR names from fixture issue and PR bodies |
 | `test/fork-report.test.ts` | New: renderer cases from fixture JSON |
 | `test/fork-migrate.test.ts` | New: ledger parsing and slug derivation against a fixture ledger excerpt |
 | `docs/fork/ledger.md`, `docs/fork/ledger.html` | Deleted |
