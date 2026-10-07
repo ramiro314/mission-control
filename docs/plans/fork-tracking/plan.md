@@ -216,7 +216,13 @@ because nothing else writes issue bodies until the refresh mission is enabled (d
 **The window between the first run and the merge.** Other fork PRs keep editing the ledger on
 `main` until this PR merges. The implementing session therefore:
 
-1. runs `--dry-run`, then the real migration, early, so the human can review the issues;
+1. runs `--dry-run`, then the real migration, early, so the human can review the issues.
+   Review corrections never go onto the issues, because step 3 would silently revert them. A
+   mapping or parsing mistake is fixed in `fork-migrate.mjs` on the branch and picked up by the
+   rerun. A correction to an entry's content waits until after the merge and arrives the
+   ordinary way, through a PR's "Fork feature changes" section. Every real run prints each
+   issue section it rewrites before writing it, so a stray hand edit shows up in the run's
+   output rather than disappearing unseen;
 2. updates its branch from `main` as usual. Each modify/delete conflict on the ledger is
    resolved by keeping the deletion, as decision 21 says;
 3. as its **last step before the merge**, runs the migration again against `main`'s current
@@ -230,9 +236,12 @@ be deleted in a later PR. It is not needed afterwards.
 
 ### Refresh procedure (the daily mission's task body, and `docs/fork/README.md`)
 
-1. List PRs merged into `main` after this plan's PR merged that have no `fork-delta:applied`
-   label and either carry a `fork:*` label or have a "Fork feature changes" section. Order them
-   oldest merge first. The cut-over date is recorded in `docs/fork/README.md`.
+1. List PRs merged into `main` after this plan's implementation merged (the PR that deletes the
+   ledger, not this plan's PR) that have no `fork-delta:applied` label and either carry a
+   `fork:*` label or have a "Fork feature changes" section. Order them oldest merge first. PRs
+   merged before that point edited the ledger, and the pre-merge migration rerun carries their
+   changes (decision 27). `docs/fork/README.md` records the implementation PR's merge date as
+   the cut-over.
 2. For each one, apply its "Fork feature changes" section to each named issue: replace the
    named sections, and apply any Status block. When a section names a `fork:<slug>` whose
    label or tracking issue does not exist, create them from the section, which then carries
@@ -240,6 +249,13 @@ be deleted in a later PR. It is not needed afterwards.
    `fork-delta:applied`. A labeled PR with `none`, or with no section at all, gets
    `fork-delta:applied` too. A missing section is reported in the run's summary so the human
    can backfill it.
+
+   Because `fork-delta:applied` is added last, a run that fails partway through a PR repeats
+   that PR on the next run, so every write in this step must be safe to repeat. Section
+   replacement and label adds already are. A Status block closes or reopens the issue, and
+   posts its comment, only when the issue is not already in the target state and labels, so
+   the comment is posted once, as the migration's step 3 guarantees. Creating a missing label
+   or tracking issue first checks that it does not already exist.
 3. Run `node scripts/fork-report.mjs`.
 4. Replace the Claude doc's whole content with the output through the Claude Docs connector.
    If the connector is unavailable, call `report_status` with the failure and leave
