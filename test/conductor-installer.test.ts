@@ -20,6 +20,7 @@ import { stubRun } from "../src/server/util/exec.ts";
 import { MAX_PIPELINE_INSTALLER_CANDIDATES } from "../src/shared/pipeline.ts";
 import {
   conductorInstallerCandidates,
+  conductorInstallerModeIsExecutable,
   conductorInstallerRuntimePreparation,
   conductorInstallerRuntimeReading,
   conductorInstallerTerminalArgv,
@@ -284,14 +285,28 @@ test("symlink escapes and missing, non-regular, or non-executable installers are
   symlinkSync(outside, join(escaped, "bin/install"));
   assert.equal((await verifyConductorInstallerCheckout(escaped)).ok, false);
 
+  // win32 has no execute bit to clear, so there the mode cannot refuse an installer.
   const nonExecutable = checkout("non-executable");
   chmodSync(join(nonExecutable, "bin/install"), 0o644);
-  assert.equal((await verifyConductorInstallerCheckout(nonExecutable)).ok, false);
+  assert.equal(
+    (await verifyConductorInstallerCheckout(nonExecutable)).ok,
+    conductorInstallerModeIsExecutable(0o644),
+  );
 
   const directory = checkout("directory-installer");
   rmSync(join(directory, "bin/install"));
   mkdirSync(join(directory, "bin/install"));
   assert.equal((await verifyConductorInstallerCheckout(directory)).ok, false);
+});
+
+test("the execute bit decides on POSIX, and win32, which has none, never refuses on it", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    assert.equal(conductorInstallerModeIsExecutable(0o100755, platform), true, platform);
+    assert.equal(conductorInstallerModeIsExecutable(0o100744, platform), true, platform);
+    assert.equal(conductorInstallerModeIsExecutable(0o100644, platform), false, platform);
+  }
+  // What Node reports on win32 for every writable file, executable or not.
+  assert.equal(conductorInstallerModeIsExecutable(0o100666, "win32"), true);
 });
 
 test("package and VERSION markers are bounded, regular, and exact", async () => {

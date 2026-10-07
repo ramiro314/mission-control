@@ -65,7 +65,8 @@ following are true at the time it is listed:
   not a linked worktree;
 - one of its configured Git remotes is exactly the recognized
   `github.com/mancej/ai-conductor` upstream through HTTPS, SCP-style SSH, or `ssh://`;
-- `bin/install` is a regular executable file physically contained by that checkout;
+- `bin/install` is a regular executable file physically contained by that checkout (on
+  Windows, which has no execute bit, a regular contained file);
 - `src/conductor/package.json` is a regular contained file whose package name is exactly
   `@james-stoup-agents/conductor`;
 - `VERSION` is a regular contained file and, when readable, contains one bounded version

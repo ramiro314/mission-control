@@ -10,6 +10,7 @@ import {
   openPrivateUtilityLog,
   utilityProcessStdio,
 } from "../src/main/utility-log.ts";
+import { expectedMode } from "./helpers/posix-mode.ts";
 
 test("utility logs and their directory are private", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
@@ -18,8 +19,8 @@ test("utility logs and their directory are private", async () => {
   log.end("[mission-control] mission-control-foreman stopped\n");
   await once(log, "close");
 
-  assert.equal(statSync(join(root, "state")).mode & 0o777, 0o700);
-  assert.equal(statSync(logPath).mode & 0o777, 0o600);
+  assert.equal(statSync(join(root, "state")).mode & 0o777, expectedMode(0o700));
+  assert.equal(statSync(logPath).mode & 0o777, expectedMode(0o600));
 });
 
 test("disabled child output cannot reach the lifecycle log", async () => {

@@ -255,7 +255,9 @@ test("an unreadable nearest plugin manifest yields no version, not the outer plu
   );
   const plugin = join(outer, "plugins", "role-pack");
   mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
-  execFileSync("mkfifo", [join(plugin, ".claude-plugin", "plugin.json")]);
+  // win32 has no FIFOs, so a directory stands in there: it exists and cannot be read as a file.
+  if (process.platform === "win32") mkdirSync(join(plugin, ".claude-plugin", "plugin.json"));
+  else execFileSync("mkfifo", [join(plugin, ".claude-plugin", "plugin.json")]);
 
   const path = writeRole("fifo-plugin/plugins/role-pack/references/roles/reviewer.md");
   const persona = (await (await importRole(request, path)).json()) as ImportedPersona;

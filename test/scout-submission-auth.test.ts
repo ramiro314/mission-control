@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { after } from "node:test";
+import { expectedMode } from "./helpers/posix-mode.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-scout-submission-auth-"));
 process.env.MISSION_HOME = home;
@@ -40,12 +41,12 @@ test("a provisioned scout credential authenticates exactly one task and checkout
   assert.equal(readScoutSubmissionCredential(cwd), token);
   assert.deepEqual(verifyScoutSubmissionCredential(token), { taskId: "task-a", cwd });
   assert.equal(readScoutSubmissionCredential(resolve(home, "checkout-b")), "");
-  assert.equal(statSync(join(home, "scout-submission.key")).mode & 0o777, 0o600);
-  assert.equal(statSync(scoutSubmissionCredentialPath(cwd)).mode & 0o777, 0o600);
+  assert.equal(statSync(join(home, "scout-submission.key")).mode & 0o777, expectedMode(0o600));
+  assert.equal(statSync(scoutSubmissionCredentialPath(cwd)).mode & 0o777, expectedMode(0o600));
   const isolatedPath = isolatedScoutSubmissionCredentialPath(cwd);
   isolatedCredentialPaths.push(isolatedPath);
   assert.equal(readFileSync(isolatedPath, "utf8").trim(), token);
-  assert.equal(statSync(isolatedPath).mode & 0o777, 0o600);
+  assert.equal(statSync(isolatedPath).mode & 0o777, expectedMode(0o600));
 });
 
 test("an isolated MCP process reads a credential rotated after it launched", () => {

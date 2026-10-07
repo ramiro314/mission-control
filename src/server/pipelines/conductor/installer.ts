@@ -249,6 +249,19 @@ async function readBounded(
   return Buffer.byteLength(text, "utf8") <= maxBytes ? text : null;
 }
 
+/**
+ * Whether `bin/install`'s mode lets it run.
+ *
+ * win32 has no execute bit: Node reports every writable file as `0o666`, so the bit would refuse
+ * every installer there. A regular file inside the checkout is as executable as win32 can say.
+ */
+export function conductorInstallerModeIsExecutable(
+  mode: number,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" || (mode & 0o111) !== 0;
+}
+
 /** Verify one checkout entirely through filesystem reads and a fixed git-config query. */
 export async function verifyConductorInstallerCheckout(
   checkout: string,
@@ -269,7 +282,7 @@ export async function verifyConductorInstallerCheckout(
   if (!remote) return { ok: false, reason: "checkout has no recognized upstream remote" };
 
   const installer = await regularFileInside(physical, "bin/install", deps);
-  if (!installer || (installer.stat.mode & 0o111) === 0) {
+  if (!installer || !conductorInstallerModeIsExecutable(installer.stat.mode)) {
     return { ok: false, reason: "bin/install is missing, outside the checkout, or not executable" };
   }
 
