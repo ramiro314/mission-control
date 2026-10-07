@@ -56,14 +56,16 @@ test("capture records honest observed evidence and a ref that resolves to the sn
 });
 
 test("the fingerprint is the same whatever the operator's core.autocrlf says", async () => {
-  // A comparison across members trusts the fingerprint alone, and Windows runners default to
-  // `core.autocrlf=true`. Git stores LF blobs either way, so the digest must not move with it.
+  // A comparison across members trusts the fingerprint alone. A Windows member under
+  // `core.autocrlf=true` holds CRLF on disk where a Linux member holds LF, and git stores both
+  // as the same LF blobs - so equal digests here prove the fingerprint is git objects, not the
+  // working-tree bytes, which differ between the two iterations.
   const fingerprints = [];
-  for (const autocrlf of ["false", "true"]) {
+  for (const [autocrlf, eol] of [["false", "\n"], ["true", "\r\n"]] as const) {
     const { path, baseSha } = gitRepo();
     git(path, "config", "core.autocrlf", autocrlf);
-    writeFileSync(join(path, "README.md"), "base\nmore\n");
-    writeFileSync(join(path, "new.txt"), "added\n");
+    writeFileSync(join(path, "README.md"), `base${eol}more${eol}`);
+    writeFileSync(join(path, "new.txt"), `added${eol}`);
     const captured = await gitSnapshotAdapter.capture({ runId: UUID_A, artifactId: UUID_B, worktreePath: path, baseSha });
     fingerprints.push(captured.fingerprint);
   }
