@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { delimiter, isAbsolute, relative, resolve, sep } from "node:path";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   MAX_INDEXED_DIRECTORIES,
@@ -43,11 +43,14 @@ export function repositoryIndexEnvironmentOverride(): { variable: string; value:
   return null;
 }
 
-/** PATH-style entries named by the launch environment, with empty segments discarded. */
+/**
+ * PATH-style entries named by the launch environment, with empty segments discarded. The
+ * separator is PATH's own (`:` on POSIX, `;` on win32), so a drive letter stays in its path.
+ */
 export function environmentDirectories(): string[] {
   const override = repositoryIndexEnvironmentOverride();
   if (!override) return [];
-  return override.value.split(":").map((entry) => entry.trim()).filter(Boolean);
+  return override.value.split(delimiter).map((entry) => entry.trim()).filter(Boolean);
 }
 
 /** Expand, normalize, and resolve symlinks where the target already exists. */

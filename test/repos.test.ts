@@ -2,7 +2,7 @@ import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { realpathSync } from "node:fs";
 import {
   invalidateReposCache,
@@ -164,6 +164,21 @@ test("MISSION_WORKSPACE_DIRS wins over the configured list", async () => {
   } finally {
     rmSync(configured, { recursive: true, force: true });
     rmSync(overridden, { recursive: true, force: true });
+  }
+});
+
+test("MISSION_WORKSPACE_DIRS separates roots with the platform PATH delimiter", async () => {
+  // On win32 the delimiter is `;`, so a `C:\...` root must survive whole rather than split
+  // at its drive letter; on POSIX this is the same `:` list it always was.
+  const first = makeWorkspace((r) => makeRepo(join(r, "first")));
+  const second = makeWorkspace((r) => makeRepo(join(r, "second")));
+  try {
+    process.env.MISSION_WORKSPACE_DIRS = ["", first, " ", second, ""].join(delimiter);
+    assert.deepEqual(workspaceRoots(), [first, second]);
+    assert.deepEqual((await listRepos()).sort(), [join(first, "first"), join(second, "second")].sort());
+  } finally {
+    rmSync(first, { recursive: true, force: true });
+    rmSync(second, { recursive: true, force: true });
   }
 });
 

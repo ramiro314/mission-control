@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { readStandards, readStandardsFromGitTree } from "../src/server/standards.ts";
 import { MEMORY_DIR, MEMORY_INDEX_PATH } from "../src/shared/memory.ts";
 import { StandardsRequestSchema } from "../src/shared/protocol.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What the queue verifier is handed as "this repo's bar". Getting the file set wrong
 // isn't cosmetic in either direction: too few and it misses the repo's contract, too
@@ -19,10 +20,8 @@ function mkRepo(): string {
   return root;
 }
 
-const gitBin = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-
 function git(repo: string, ...args: string[]): string {
-  return execFileSync(gitBin, ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
 const paths = (r: { docs: Array<{ path: string }> }): string[] => r.docs.map((d) => d.path).sort();
@@ -210,12 +209,22 @@ test("immutable Git standards reads yield and retain an oversized document's cap
   const commit = git(root, "rev-parse", "HEAD");
   const bin = join(root, "slow-bin");
   mkdirSync(bin);
-  const slowGit = join(bin, "git");
-  writeFileSync(slowGit, `#!/bin/sh\nsleep 0.1\nexec ${JSON.stringify(gitBin)} "$@"\n`);
-  chmodSync(slowGit, 0o700);
-
   const previousPath = process.env.PATH;
-  process.env.PATH = `${bin}:${previousPath ?? ""}`;
+  // The real git is whichever one the PATH ahead of this fake finds.
+  writeFakeExecutable(
+    join(bin, "git"),
+    `const { spawnSync } = require("node:child_process");
+setTimeout(() => {
+  const r = spawnSync("git", process.argv.slice(2), {
+    stdio: "inherit",
+    env: { ...process.env, PATH: ${JSON.stringify(previousPath ?? "")} },
+  });
+  process.exit(r.status ?? 1);
+}, 100);
+`,
+  );
+
+  process.env.PATH = `${bin}${delimiter}${previousPath ?? ""}`;
   let settled = false;
   try {
     const reading = readStandardsFromGitTree(root, commit, ["packages/app/src/a.ts"])
