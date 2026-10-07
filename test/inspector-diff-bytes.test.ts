@@ -1,8 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // `fetchDiff` is the public path the byte cap actually has to hold on: the Inspector's
 // prompt is built from what this returns, and `MISSION_INSPECTOR_MAX_DIFF_BYTES` promises
@@ -30,9 +31,8 @@ process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 
 // The fake serves the payload file verbatim as bytes, so the test and the subprocess
 // cannot drift about what the diff "is".
-const ghPath = join(binDir, "gh");
-writeFileSync(
-  ghPath,
+writeFakeExecutable(
+  join(binDir, "gh"),
   `#!/usr/bin/env node
 const fs = require("node:fs");
 if (process.argv[2] === "api") {
@@ -43,7 +43,6 @@ if (process.argv[2] === "api") {
 }
 `,
 );
-chmodSync(ghPath, 0o755);
 
 const { fetchDiff } = await import("../src/server/inspector/github.ts");
 

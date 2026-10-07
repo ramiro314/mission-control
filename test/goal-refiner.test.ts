@@ -1,10 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Drives the REAL refiner loop against a fake `claude` binary: a real spawn, a real envelope,
@@ -30,53 +31,127 @@ const modeFile = join(bin, "mode");
  */
 const runLog = join(bin, "runs");
 const RUN_DELIM = "##MISSION-RUN-END##";
-const fake = join(bin, "claude.sh");
-writeFileSync(
-  fake,
-  `#!/bin/sh
-request=$(cat)
-{ printf '%s\\n' "$request"; printf '%s\\n' '${RUN_DELIM}'; } >> ${runLog}
-# Every reply is printed as a %s ARGUMENT, never as the printf format. A format string
-# processes escapes, and POSIX leaves \\" undefined: bash (macOS /bin/sh) drops the
-# backslash while dash (Ubuntu /bin/sh) keeps it, so a formatted reply is valid JSON on
-# one CI runner and \\"goal\\" - which parses nowhere - on the other. As an argument the
-# payload reaches stdout byte for byte, so the fixture below IS the envelope under test.
-case "$(cat ${modeFile} 2>/dev/null)" in
-  broken) echo "not json at all" ;;
-  crash)  echo "boom" >&2; exit 1 ;;
-  crash-once) printf %s good > ${modeFile}; echo "boom" >&2; exit 1 ;;
-  # A non-zero exit that lands AFTER the caller has had time to stop, so a test can put a
-  # run in flight across a shutdown. Same failure as \`crash\` at the provider boundary.
-  slow-crash) sleep 0.4; echo "boom" >&2; exit 1 ;;
-  # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
-  # Same fenced shape as the good reply below, so it reaches the schema the same way - a
-  # malformed fixture here would "pass" the test on a parse error instead of the rejection.
-  blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
-  amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
-  shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
-  negate) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
-  rapid)
-    case "$request" in
-      *"also expose the current intent in the Foreman drawer"*)
-        printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Expose current intent in the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
-      *)
-        # Cross the debounce floor while this exact revision remains unresolved. The refiner
-        # must hold one in-flight call per session instead of paying for the same prompt twice.
-        sleep 0.4
-        printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
-    esac
-    ;;
-  replace) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"replace\\",\\"objective\\":\\"Replace the session database with a remote service\\",\\"goal\\":\\"Replace the session database with a remote service\\",\\"focus\\":\\"Design the remote persistence layer\\",\\"reason\\":\\"The user explicitly changed the desired end state.\\"}\\n\`\`\`"}' ;;
-  # A genuine schema-valid model verdict of "unclear" - distinct from a parse or transport
-  # failure, which never reach the schema at all.
-  model-unclear) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"unclear\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The latest instruction could not be reconciled with the existing objective.\\"}\\n\`\`\`"}' ;;
-  # The model fences its JSON even when told not to (observed on a real probe), so the fake
-  # does too - that keeps the parse ladder inside what this test covers rather than mocked.
-  *) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
-esac
+/**
+ * A reply exactly as `claude -p` prints it: an envelope whose `result` is the model's JSON.
+ * The model fences its JSON even when told not to (observed on a real probe), so the fake
+ * does too - that keeps the parse ladder inside what this test covers rather than mocked.
+ */
+const fenced = (verdict: Record<string, string>): string =>
+  JSON.stringify({ result: `\`\`\`json\n${JSON.stringify(verdict)}\n\`\`\`` });
+const steer = fenced({
+  relationship: "steer",
+  objective: "Ship the Goal feature end to end",
+  goal: "Ship the Goal feature end to end",
+  focus: "Finish the current instruction",
+  reason: "The instruction refines the existing work.",
+});
+const replies: Record<string, string> = {
+  // Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
+  // Same fenced shape as the good reply, so it reaches the schema the same way - a
+  // malformed fixture here would "pass" the test on a parse error instead of the rejection.
+  blank: fenced({
+    relationship: "steer",
+    objective: "Ship the Goal feature end to end",
+    goal: "   ",
+    focus: "Finish the current instruction",
+    reason: "The instruction refines the existing work.",
+  }),
+  amend: fenced({
+    relationship: "amend",
+    objective: "Ship the Goal feature end to end. Also expose its intent in the Foreman drawer",
+    goal: "Ship the Goal feature and expose intent in the Foreman drawer",
+    focus: "Add the intent section to the drawer",
+    reason: "The instruction adds a required surface to the existing outcome.",
+  }),
+  shrink: fenced({
+    relationship: "amend",
+    objective: "Only expose current intent in the Foreman drawer",
+    goal: "Expose current intent in the Foreman drawer",
+    focus: "Add the intent section to the drawer",
+    reason: "The instruction adds a required surface to the existing outcome.",
+  }),
+  negate: fenced({
+    relationship: "amend",
+    objective: "Ship the Goal feature end to end, but drop its existing test requirement",
+    goal: "Ship the Goal feature without its existing test requirement",
+    focus: "Drop the existing test requirement",
+    reason: "The instruction changes the existing acceptance criteria.",
+  }),
+  replace: fenced({
+    relationship: "replace",
+    objective: "Replace the session database with a remote service",
+    goal: "Replace the session database with a remote service",
+    focus: "Design the remote persistence layer",
+    reason: "The user explicitly changed the desired end state.",
+  }),
+  // A genuine schema-valid model verdict of "unclear" - distinct from a parse or transport
+  // failure, which never reach the schema at all.
+  "model-unclear": fenced({
+    relationship: "unclear",
+    objective: "Ship the Goal feature end to end",
+    goal: "Ship the Goal feature end to end",
+    focus: "Finish the current instruction",
+    reason: "The latest instruction could not be reconciled with the existing objective.",
+  }),
+};
+const rapidAmend = fenced({
+  relationship: "amend",
+  objective: "Ship the Goal feature end to end. Also expose its intent in the Foreman drawer",
+  goal: "Ship the Goal feature and expose intent in the Foreman drawer",
+  focus: "Expose current intent in the drawer",
+  reason: "The instruction adds a required surface to the existing outcome.",
+});
+// Every reply is built above and embedded as a JSON string literal, so it reaches stdout
+// byte for byte: the fixture IS the envelope under test. A failure sets the exit code rather
+// than calling `process.exit`, so a pipe write still in flight is not cut short.
+const fake = writeFakeExecutable(
+  join(bin, "claude"),
+  `const fs = require("node:fs");
+const replies = ${JSON.stringify(replies)};
+const chunks = [];
+process.stdin.on("data", (chunk) => chunks.push(chunk));
+process.stdin.on("end", () => {
+  const request = Buffer.concat(chunks).toString("utf8").replace(/\\n+$/, "");
+  fs.appendFileSync(${JSON.stringify(runLog)}, request + "\\n" + ${JSON.stringify(RUN_DELIM)} + "\\n");
+  let mode = "";
+  try {
+    mode = fs.readFileSync(${JSON.stringify(modeFile)}, "utf8").replace(/\\n+$/, "");
+  } catch {}
+  const crash = () => {
+    process.stderr.write("boom\\n");
+    process.exitCode = 1;
+  };
+  switch (mode) {
+    case "broken":
+      process.stdout.write("not json at all\\n");
+      break;
+    case "crash":
+      crash();
+      break;
+    case "crash-once":
+      fs.writeFileSync(${JSON.stringify(modeFile)}, "good");
+      crash();
+      break;
+    // A non-zero exit that lands AFTER the caller has had time to stop, so a test can put a
+    // run in flight across a shutdown. Same failure as "crash" at the provider boundary.
+    case "slow-crash":
+      setTimeout(crash, 400);
+      break;
+    case "rapid":
+      if (request.includes("also expose the current intent in the Foreman drawer")) {
+        process.stdout.write(${JSON.stringify(rapidAmend)});
+      } else {
+        // Cross the debounce floor while this exact revision remains unresolved. The refiner
+        // must hold one in-flight call per session instead of paying for the same prompt twice.
+        setTimeout(() => process.stdout.write(${JSON.stringify(steer)}), 400);
+      }
+      break;
+    default:
+      process.stdout.write(Object.hasOwn(replies, mode) ? replies[mode] : ${JSON.stringify(steer)});
+  }
+});
 `,
 );
-chmodSync(fake, 0o755);
 const setMode = (
   m:
     | "good"

@@ -1,12 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JiraConfigSchema, type SweepContext } from "../src/shared/task-source.ts";
 import { jira } from "../src/server/task-sources/jira.ts";
 import { TASK_SOURCES } from "../src/server/task-sources/index.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What is at stake: the promise the whole kind is built on - a missing or misconfigured Jira
 // credential surfaces as a PREFLIGHT SENTENCE NAMING THE FIX, never a silent empty sweep.
@@ -39,50 +40,58 @@ after(() => rmSync(home, { recursive: true, force: true }));
 // what makes the PAGING walk drivable here rather than only in a unit test over the decision
 // function: `FAKE_JIRA_CALLS` records the window each invocation asked for, so a test can
 // assert the sequence of requests and that a probe spends exactly one.
-writeFileSync(
+const JIRA = writeFakeExecutable(
   join(withJira, "jira"),
-  `#!/bin/sh
-paginate=""
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "--paginate" ]; then paginate="$a"; fi
-  prev="$a"
-done
-start=\${paginate%%:*}
-limit=\${paginate##*:}
-if [ -n "$FAKE_JIRA_CALLS" ]; then echo "$paginate" >> "$FAKE_JIRA_CALLS"; fi
-if [ -n "$FAKE_JIRA_ARGS" ]; then printf '%s\\n' "$@" >> "$FAKE_JIRA_ARGS"; fi
+  `const fs = require("node:fs");
+const args = process.argv.slice(2);
+let paginate = "";
+for (let i = 1; i < args.length; i++) if (args[i - 1] === "--paginate") paginate = args[i];
+const start = Number(paginate.split(":")[0]);
+const limit = Number(paginate.split(":").at(-1));
+if (process.env.FAKE_JIRA_CALLS) fs.appendFileSync(process.env.FAKE_JIRA_CALLS, paginate + "\\n");
+if (process.env.FAKE_JIRA_ARGS) {
+  fs.appendFileSync(process.env.FAKE_JIRA_ARGS, (args.length ? args : [""]).map((a) => a + "\\n").join(""));
+}
 
-case "$FAKE_JIRA_MODE" in
-  unauthorized)
-    echo "Received unexpected response '401 Unauthorized' from Jira" 1>&2; exit 1 ;;
-  unconfigured)
-    echo "Error: config file not found. Run 'jira init' to configure the tool" 1>&2; exit 1 ;;
-  badjql)
-    echo "Error: jql: Field 'nope' does not exist" 1>&2; exit 1 ;;
-  sensitive)
-    echo "fake-jira-token /private/operator/path account@example.test" 1>&2; exit 1 ;;
-  empty)
-    echo "No result found for given query in project \\"MC\\"" 1>&2; exit 1 ;;
-  oldcli)
-    echo "unknown flag: --paginate" 1>&2; exit 1 ;;
-  pages)
-    total=\${FAKE_JIRA_TOTAL:-7}
-    out=""
-    i=\$start
-    end=\$((start + limit))
-    while [ \$i -lt \$end ] && [ \$i -lt \$total ]; do
-      if [ -n "\$out" ]; then out="\$out,"; fi
-      out="\$out{\\"key\\":\\"MC-\$i\\",\\"fields\\":{\\"summary\\":\\"Issue \$i\\"}}"
-      i=\$((i + 1))
-    done
-    printf '{"issues":[%s]}' "\$out" ;;
-  *)
-    printf '{"issues":[{"key":"MC-1","self":"https://acme.atlassian.net/rest/api/3/issue/1","fields":{"summary":"Fix the thing","description":"Do it.","priority":{"name":"Highest"}}}]}' ;;
-esac
+const fail = (message) => {
+  process.stderr.write(message + "\\n");
+  process.exitCode = 1;
+};
+switch (process.env.FAKE_JIRA_MODE) {
+  case "unauthorized":
+    fail("Received unexpected response '401 Unauthorized' from Jira");
+    break;
+  case "unconfigured":
+    fail("Error: config file not found. Run 'jira init' to configure the tool");
+    break;
+  case "badjql":
+    fail("Error: jql: Field 'nope' does not exist");
+    break;
+  case "sensitive":
+    fail("fake-jira-token /private/operator/path account@example.test");
+    break;
+  case "empty":
+    fail('No result found for given query in project "MC"');
+    break;
+  case "oldcli":
+    fail("unknown flag: --paginate");
+    break;
+  case "pages": {
+    const total = Number(process.env.FAKE_JIRA_TOTAL || 7);
+    const issues = [];
+    for (let i = start; i < start + limit && i < total; i++) {
+      issues.push({ key: "MC-" + i, fields: { summary: "Issue " + i } });
+    }
+    process.stdout.write(JSON.stringify({ issues }));
+    break;
+  }
+  default:
+    process.stdout.write(
+      '{"issues":[{"key":"MC-1","self":"https://acme.atlassian.net/rest/api/3/issue/1","fields":{"summary":"Fix the thing","description":"Do it.","priority":{"name":"Highest"}}}]}',
+    );
+}
 `,
 );
-chmodSync(join(withJira, "jira"), 0o755);
 
 /** A port the OS has just confirmed free, so a connection to it is refused rather than answered. */
 async function deadPort(): Promise<number> {
@@ -130,7 +139,7 @@ function machine(opts: {
 }): void {
   process.env.PATH = `${opts.cli ? withJira : noJira}:/usr/bin:/bin`;
   for (const [key, value] of [
-    ["MISSION_JIRA_BIN", opts.cli ? join(withJira, "jira") : undefined],
+    ["MISSION_JIRA_BIN", opts.cli ? JIRA : undefined],
     ["JIRA_EMAIL", opts.email],
     ["JIRA_API_TOKEN", opts.token],
     ["FAKE_JIRA_MODE", opts.mode],

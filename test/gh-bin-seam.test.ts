@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ghBin } from "../src/server/config.ts";
 import { TASK_SOURCES, pushToSource } from "../src/server/task-sources/index.ts";
 import { TaskSourceInstanceSchema } from "../src/shared/task-source.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 /**
  * What is at stake: three subsystems shell out to `gh` - the PR poller, the Inspector, and
@@ -84,16 +85,13 @@ test("no server module names the gh binary itself - every spawn goes through ghB
 test("a gh on the seam is the binary the GitHub source actually runs", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gh-seam-"));
   const argvFile = join(dir, "argv.txt");
-  const fake = join(dir, "fake-gh");
-  writeFileSync(
-    fake,
+  const fake = writeFakeExecutable(
+    join(dir, "fake-gh"),
     [
-      "#!/bin/sh",
-      `printf '%s\\n' "$@" > ${JSON.stringify(argvFile)}`,
-      "printf 'Creating issue in acme/widgets\\n'",
-      "printf 'https://github.com/acme/widgets/issues/7\\n'",
+      `require("node:fs").writeFileSync(${JSON.stringify(argvFile)}, process.argv.slice(2).map((a) => a + "\\n").join(""));`,
+      `process.stdout.write("Creating issue in acme/widgets\\n");`,
+      `process.stdout.write("https://github.com/acme/widgets/issues/7\\n");`,
     ].join("\n"),
-    { mode: 0o755 },
   );
 
   const inst = TaskSourceInstanceSchema.parse({

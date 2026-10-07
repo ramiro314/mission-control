@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +25,7 @@ import {
 } from "../src/server/task-sources/jira.ts";
 import { TASK_SOURCES } from "../src/server/task-sources/index.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What is at stake: this is the direction that CHANGES somebody's ticket. A sweep's worst
 // failure is silence; these two verbs can post a comment twice, or move an issue a person
@@ -68,37 +69,49 @@ after(() => rmSync(home, { recursive: true, force: true }));
 // `jiraBin()` - which is the seam that keeps a suite run off a real ticket - and that a
 // refused `issue move` keeps the CLI's OWN list of valid statuses, which is the CLI rung's
 // version of the refusal `transitionFor` builds.
-writeFileSync(
+const JIRA = writeFakeExecutable(
   join(withJira, "jira"),
-  `#!/bin/sh
-# Delimited rather than newline-separated: a comment body is multi-line by construction, so
-# one arg per line would split it and the recording would not be the argv.
-if [ -n "$FAKE_JIRA_ARGV" ]; then
-  for a in "$@"; do printf '%s<ARG>' "$a" >> "$FAKE_JIRA_ARGV"; done
-  printf '<RUN>' >> "$FAKE_JIRA_ARGV"
-fi
+  `const fs = require("node:fs");
+// Delimited rather than newline-separated: a comment body is multi-line by construction, so
+// one arg per line would split it and the recording would not be the argv.
+if (process.env.FAKE_JIRA_ARGV) {
+  const argv = process.argv.slice(2).map((a) => a + "<ARG>").join("");
+  fs.appendFileSync(process.env.FAKE_JIRA_ARGV, argv + "<RUN>");
+}
 
-case "$FAKE_JIRA_MODE" in
-  hang)
-    # Dies by SIGNAL rather than reporting an exit, which is what run() reads as an
-    # unreadable outcome. A real one is a 20s timeout; this reaches the same state at once.
-    kill -9 $$ ;;
-  badtransition)
-    echo "✗ Unable to transition issue: invalid transition state \\"Done\\"" 1>&2
-    echo "Available transitions for issue MC-431:" 1>&2
-    echo "  Ready for QA" 1>&2
-    echo "  Reject" 1>&2
-    exit 1 ;;
-  unconfigured)
-    echo "Error: config file not found. Run 'jira init' to configure the tool" 1>&2; exit 1 ;;
-  refused)
-    echo "Error: you do not have permission to comment on this issue" 1>&2; exit 1 ;;
-  *)
-    echo "✓ done" ;;
-esac
+const fail = (lines) => {
+  process.stderr.write(lines.map((line) => line + "\\n").join(""));
+  process.exitCode = 1;
+};
+switch (process.env.FAKE_JIRA_MODE) {
+  case "hang":
+    // Dies by SIGNAL rather than reporting an exit, which is what run() reads as an
+    // unreadable outcome. A real one is a 20s timeout; this reaches the same state at once.
+    // Windows has no death by signal: a process killed there just exits with a code, which
+    // reads as a refusal. The one death run() can see on win32 is its own timeout, so there
+    // the fake hangs until that 20s timeout reaps it.
+    if (process.platform === "win32") setInterval(() => {}, 1 << 30);
+    else process.kill(process.pid, "SIGKILL");
+    break;
+  case "badtransition":
+    fail([
+      '✗ Unable to transition issue: invalid transition state "Done"',
+      "Available transitions for issue MC-431:",
+      "  Ready for QA",
+      "  Reject",
+    ]);
+    break;
+  case "unconfigured":
+    fail(["Error: config file not found. Run 'jira init' to configure the tool"]);
+    break;
+  case "refused":
+    fail(["Error: you do not have permission to comment on this issue"]);
+    break;
+  default:
+    process.stdout.write("✓ done\\n");
+}
 `,
 );
-chmodSync(join(withJira, "jira"), 0o755);
 
 /** A loopback port with nothing listening, so a REST attempt really fails to connect. */
 async function deadPort(): Promise<number> {
@@ -132,7 +145,7 @@ function machine(opts: {
   for (const [key, value] of [
     // The seam under test. Absent, `jiraBin()` falls back to a bare `jira` which the PATH
     // above cannot resolve either - so a mistake here is a missing rung, never a real one.
-    ["MISSION_JIRA_BIN", opts.cli ? join(withJira, "jira") : join(noJira, "absent-jira")],
+    ["MISSION_JIRA_BIN", opts.cli ? JIRA : join(noJira, "absent-jira")],
     ["JIRA_EMAIL", opts.email],
     ["JIRA_API_TOKEN", opts.token],
     ["FAKE_JIRA_MODE", opts.mode],

@@ -1,8 +1,9 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-treehouse-")));
@@ -133,10 +134,11 @@ test("capabilities distinguish missing, diagnostic-only, and conditional JSON bi
 });
 
 test("default detection and execution share the configured absolute Treehouse binary", async () => {
-  const binary = join(home, "custom-treehouse");
   const marker = join(home, "custom-treehouse-invoked");
-  writeFileSync(binary, `#!/bin/sh\nprintf 'invoked' > '${marker}'\nprintf 'treehouse version v2.1.1\\n'\n`);
-  chmodSync(binary, 0o755);
+  const binary = writeFakeExecutable(
+    join(home, "custom-treehouse"),
+    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "invoked");\nprocess.stdout.write("treehouse version v2.1.1\\n");\n`,
+  );
   const previous = process.env.MISSION_TREEHOUSE_BIN;
   process.env.MISSION_TREEHOUSE_BIN = binary;
   try {

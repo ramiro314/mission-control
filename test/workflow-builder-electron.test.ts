@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 const require = createRequire(import.meta.url);
@@ -240,13 +241,13 @@ test("editable workflow canvas remains mounted with default node statuses", () =
   const htmlPath = join(fixtureDir, "index.html");
   let output: string;
   try {
-    execFileSync(require.resolve("esbuild/bin/esbuild"), [
-      fileURLToPath(new URL("fixtures/workflow-canvas-mount.tsx", import.meta.url)),
-      "--bundle",
-      "--platform=browser",
-      "--format=iife",
-      `--outfile=${bundlePath}`,
-    ], { encoding: "utf8" });
+    buildSync({
+      entryPoints: [fileURLToPath(new URL("fixtures/workflow-canvas-mount.tsx", import.meta.url))],
+      bundle: true,
+      platform: "browser",
+      format: "iife",
+      outfile: bundlePath,
+    });
     writeFileSync(htmlPath, '<!doctype html><div id="root" style="width:800px;height:600px"></div><script src="./canvas.js"></script>');
     output = runElectronFixture([
       fileURLToPath(new URL("fixtures/workflow-canvas-mount-browser.cjs", import.meta.url)),

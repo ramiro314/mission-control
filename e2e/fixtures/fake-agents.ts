@@ -1,10 +1,11 @@
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
 } from "../../src/shared/product-issues.ts";
+import { fakeExecutablePath, writeFakeExecutable } from "../../test/helpers/fake-executable.ts";
 
 /**
  * Stand-in `claude`, `codex` and `pi` binaries, so this suite spends nothing.
@@ -168,8 +169,9 @@ export function productAuthorizationScriptPath(home: string): string {
   return join(home, "product-authorization-script.json");
 }
 
+/** The path the daemon starts the authorization fake by (see `test/helpers/fake-executable.ts`). */
 export function productAuthorizationBinPath(home: string): string {
-  return join(home, "bin", "product-authorization");
+  return fakeExecutablePath(join(home, "bin", "product-authorization"));
 }
 
 /**
@@ -181,12 +183,11 @@ export function productAuthorizationBinPath(home: string): string {
  * replaced the daemon, just as with the MISSION_GH_BIN blast dam below.
  */
 export function writeProductAuthorizationBin(home: string): string {
-  const bin = productAuthorizationBinPath(home);
+  const bin = join(home, "bin", "product-authorization");
   mkdirSync(dirname(bin), { recursive: true });
-  writeFileSync(
+  const invoked = writeFakeExecutable(
     bin,
     [
-      "#!/usr/bin/env node",
       "const { readFileSync, appendFileSync } = require('node:fs');",
       `const script = ${JSON.stringify(productAuthorizationScriptPath(home))};`,
       `const log = ${JSON.stringify(join(home, "product-authorization-asked.jsonl"))};`,
@@ -196,10 +197,9 @@ export function writeProductAuthorizationBin(home: string): string {
       "try { answer = JSON.parse(readFileSync(script, 'utf8')).answer; } catch {}",
       "process.exit(answer === 'grant' ? 0 : 1);",
     ].join("\n") + "\n",
-    { mode: 0o755 },
   );
   writeProductAuthorizationScript(home, { answer: "grant" });
-  return bin;
+  return invoked;
 }
 
 export interface FakeProductAuthorizationScript {
@@ -830,7 +830,9 @@ if (command.startsWith("issue list")) {
  * shows up exactly or provably does not) and an exit record when it goes, then behaves
  * like the real thing: it stays alive until SIGTERM, and it honours `-w <pid>` by
  * exiting when the watched process disappears - which is what keeps a SIGKILLed test
- * daemon from leaking an immortal fake into the operator's process table.
+ * daemon from leaking an immortal fake into the operator's process table. On win32, where
+ * a stop terminates it without running any handler, a detached watcher writes the exit
+ * record instead (`test/e2e-fixture-programs.test.ts` drives that path on every platform).
  *
  * CommonJS `require` for the reason FAKE_CMUX gives: the file is extension-less, which
  * Node treats as CJS.
@@ -847,6 +849,29 @@ const record = (kind, body) => {
     JSON.stringify(body, null, 2),
   );
 };
+// win32 ends a process without running its SIGTERM handler, so there a detached watcher
+// writes the exit record once this process is gone. "wx" keeps a record leave() wrote.
+// MC_E2E_KEEP_AWAKE_EXIT_WATCHER turns it on elsewhere, so a unit test can watch it work.
+// Started before the start record, so a stop that follows that record always finds it.
+if ((process.platform === "win32" || process.env.MC_E2E_KEEP_AWAKE_EXIT_WATCHER === "1") && dir) {
+  const watcher = [
+    "const { writeFileSync } = require('node:fs');",
+    "const [pid, path] = process.argv.slice(1);",
+    "setInterval(() => {",
+    "  try { process.kill(Number(pid), 0); return; } catch {}",
+    "  try { writeFileSync(path, JSON.stringify({ reason: 'terminated' }, null, 2), { flag: 'wx' }); } catch {}",
+    "  process.exit(0);",
+    "}, 100);",
+  ].join("\\n");
+  const exitPath = join(dir, "keep-awake-" + process.pid + "-exit.json");
+  require("node:child_process")
+    .spawn(process.execPath, ["-e", watcher, String(process.pid), exitPath], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    })
+    .unref();
+}
 record("start", { argv: process.argv.slice(2), pid: process.pid });
 const leave = (reason) => {
   record("exit", { reason });
@@ -871,7 +896,9 @@ setInterval(() => {
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
  * place, because the vendored Agent SDK spawns `node <path>` for anything ending in
  * `.js`/`.mjs`/`.ts`/`.jsx`/`.tsx` and executes everything else directly. Extension-less
- * plus the file's own shebang is the combination that survives that branch.
+ * plus the file's own shebang is the combination that survives that branch. On win32,
+ * where no shebang starts anything, `writeFakeExecutable` returns the `.exe` launcher
+ * beside it instead, which the SDK executes directly too.
  */
 export function writeFakeAgents(home: string): FakeAgents {
   const binDir = join(home, "fake-bin");
@@ -879,9 +906,10 @@ export function writeFakeAgents(home: string): FakeAgents {
   mkdirSync(binDir, { recursive: true });
   mkdirSync(recordDir, { recursive: true });
 
-  const claude = join(binDir, "fake-claude");
-  copyFileSync(fileURLToPath(new URL("./fake-claude.mjs", import.meta.url)), claude);
-  chmodSync(claude, 0o755);
+  const claude = writeFakeExecutable(
+    join(binDir, "fake-claude"),
+    readFileSync(fileURLToPath(new URL("./fake-claude.mjs", import.meta.url)), "utf8"),
+  );
 
   // Copied to an extension-less path for the same reason as its sibling above, though only
   // Claude's vendored SDK actually sniffs the extension: `spawnAppServer` execs the resolved
@@ -911,17 +939,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(wezterm, FAKE_WEZTERM);
   chmodSync(wezterm, 0o755);
 
-  const keepAwake = join(binDir, "fake-caffeinate");
-  writeFileSync(keepAwake, FAKE_KEEP_AWAKE);
-  chmodSync(keepAwake, 0o755);
-
-  const gh = join(binDir, "fake-gh");
-  writeFileSync(gh, FAKE_GH);
-  chmodSync(gh, 0o755);
-
-  const jira = join(binDir, "fake-jira");
-  writeFileSync(jira, FAKE_JIRA);
-  chmodSync(jira, 0o755);
+  const keepAwake = writeFakeExecutable(join(binDir, "fake-caffeinate"), FAKE_KEEP_AWAKE);
+  const gh = writeFakeExecutable(join(binDir, "fake-gh"), FAKE_GH);
+  const jira = writeFakeExecutable(join(binDir, "fake-jira"), FAKE_JIRA);
 
   return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
 }

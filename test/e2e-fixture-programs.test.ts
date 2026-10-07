@@ -1,10 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
+import { fakeExecutablePath } from "./helpers/fake-executable.ts";
 
 // What is at stake: a fixture PROGRAM this change delivers as executable code, which no other
 // layer can see.
@@ -77,5 +78,33 @@ test("the fake jira answers a version probe, and is silent about anything else",
 
 test("the fake jira exists and is executable, which is what MISSION_JIRA_BIN points at", () => {
   assert.ok(existsSync(agents.bins.jira));
-  assert.ok(agents.bins.jira.endsWith("fake-jira"));
+  assert.equal(agents.bins.jira, fakeExecutablePath(join(home, "agents", "fake-bin", "fake-jira")));
+});
+
+// ---- 2. the fake keep-awake command, and the exit it must record ----
+
+test("a fake keep-awake ended without its SIGTERM handler still records its exit", async () => {
+  // How win32 stops every process: no handler runs. SIGKILL is the same thing here, and the
+  // switch turns on the watcher that win32 always runs, so this is the path that spec meets.
+  const recordDir = join(home, "keep-awake-records");
+  const child = spawn(agents.bins.keepAwake, ["-i"], {
+    stdio: "ignore",
+    env: { ...process.env, MC_E2E_RECORD_DIR: recordDir, MC_E2E_KEEP_AWAKE_EXIT_WATCHER: "1" },
+  });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const named = (kind: string) =>
+    existsSync(recordDir) ? readdirSync(recordDir).filter((name) => name.endsWith(`-${kind}.json`)) : [];
+  const deadline = Date.now() + 15_000;
+  while (named("start").length === 0) {
+    assert.ok(Date.now() < deadline, "the fake never started");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  child.kill("SIGKILL");
+  await exited;
+  while (named("exit").length === 0) {
+    assert.ok(Date.now() < deadline, "no exit record after the fake was ended");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(named("exit"), [named("start")[0]!.replace(/-start\.json$/, "-exit.json")]);
+  assert.deepEqual(JSON.parse(readFileSync(join(recordDir, named("exit")[0]!), "utf8")), { reason: "terminated" });
 });

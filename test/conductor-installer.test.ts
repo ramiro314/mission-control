@@ -26,6 +26,7 @@ import {
   recognizedConductorRemote,
   verifyConductorInstallerCheckout,
 } from "../src/server/pipelines/conductor/installer.ts";
+import { fakeExecutablePath, writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-conductor-installer-")));
@@ -130,20 +131,39 @@ test("installer runtime preflight probes the Node selected by its exact PATH", a
   const node = join(binDir, "node");
   const pathLog = join(root, "exact-node-path.log");
   mkdirSync(binDir);
-  writeFileSync(
-    node,
-    [
-      "#!/bin/sh",
-      'if [ "$1" = "-p" ]; then',
-      '  printf "%s\\n" "$0"',
-      '  printf "%s" "$PATH" > "$MC_TEST_NODE_PATH_LOG"',
-      "else",
-      '  printf "v26.7.0\\n"',
-      "fi",
-      "",
-    ].join("\n"),
-  );
-  chmodSync(node, 0o755);
+  if (process.platform === "win32") {
+    // `-p process.execPath` answers with the path to start this Node by, which the probe
+    // then runs for `--version`: the launcher, since win32 starts nothing by shebang.
+    writeFakeExecutable(
+      node,
+      [
+        'if (process.argv[2] === "-p") {',
+        `  process.stdout.write(${JSON.stringify(`${fakeExecutablePath(node)}\n`)});`,
+        '  require("node:fs").writeFileSync(process.env.MC_TEST_NODE_PATH_LOG, process.env.PATH);',
+        "} else {",
+        '  process.stdout.write("v26.7.0\\n");',
+        "}",
+        "",
+      ].join("\n"),
+    );
+  } else {
+    // A Node.js fake cannot stand in for `node` itself here: its `#!/usr/bin/env node` would
+    // find this very file first on the PATH the probe hands it and start itself forever.
+    writeFileSync(
+      node,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "-p" ]; then',
+        '  printf "%s\\n" "$0"',
+        '  printf "%s" "$PATH" > "$MC_TEST_NODE_PATH_LOG"',
+        "else",
+        '  printf "v26.7.0\\n"',
+        "fi",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(node, 0o755);
+  }
 
   await withProcessEnv(
     {

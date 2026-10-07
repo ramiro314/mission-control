@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
@@ -287,16 +288,25 @@ test("the poller asks gh for mergeable, baseRefName and headRefOid on both paths
   const listOut = join(home, "gh-list.json");
   const viewOut = join(home, "gh-view.json");
   const argsLog = join(home, "gh-args.log");
-  writeFileSync(
+  const gh = writeFakeExecutable(
     join(bin, "gh"),
-    `#!/bin/sh\necho "$*" >> "${argsLog}"\nif [ "$2" = list ]; then cat "${listOut}"; else cat "${viewOut}"; fi\n`,
+    `const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(argsLog)}, args.join(" ") + "\\n");
+const out = args[1] === "list" ? ${JSON.stringify(listOut)} : ${JSON.stringify(viewOut)};
+try {
+  process.stdout.write(fs.readFileSync(out));
+} catch (error) {
+  process.stderr.write(String(error));
+  process.exitCode = 1;
+}
+`,
   );
-  chmodSync(join(bin, "gh"), 0o755);
   const repo = mkdtempSync(join(tmpdir(), "harness-pr-repo-"));
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
   git("init", "-q");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
-  process.env.HARNESS_GH_BIN = join(bin, "gh");
+  process.env.HARNESS_GH_BIN = gh;
   try {
     // Branch path: a live session on a feature branch whose PR conflicts.
     writeFileSync(

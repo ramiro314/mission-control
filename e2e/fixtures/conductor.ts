@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import { fakeExecutablePath, writeFakeExecutable } from "../../test/helpers/fake-executable.ts";
+
 /**
  * A stand-in ai-conductor installation, and the canned state trees it would have written.
  *
@@ -195,12 +197,30 @@ export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
  * A wrapping child is what a caller's timeout SIGTERMs, and the real process underneath it
  * was orphaned: `fake-cmux` in its hanging mode then outlived the test for good, in the
  * worktree that ran the suite.
+ *
+ * win32 has neither shebangs nor `exec`, so there the shim is a Node.js fake (see
+ * `test/helpers/fake-executable.ts`) that runs the real Node as a child. No fixture script
+ * reaches it there: a fake's launcher names the real Node itself, so only the daemon's own
+ * `node` probes find this one, and it answers both without a child.
  */
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
   const nextBin = join(home, "bin", ".node-next");
   const sh = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   mkdirSync(join(home, "bin"), { recursive: true });
+  if (process.platform === "win32") {
+    return writeFakeExecutable(
+      bin,
+      [
+        "const args = process.argv.slice(2);",
+        `if (args.length === 1 && args[0] === "--version") { process.stdout.write(${JSON.stringify(`v${version}\n`)}); process.exit(0); }`,
+        `if (args.length === 2 && args[0] === "-p" && args[1] === "process.execPath") { process.stdout.write(${JSON.stringify(`${fakeExecutablePath(bin)}\n`)}); process.exit(0); }`,
+        `const result = require("node:child_process").spawnSync(${JSON.stringify(process.execPath)}, args, { stdio: "inherit" });`,
+        "process.exit(result.status ?? 1);",
+        "",
+      ].join("\n"),
+    );
+  }
   writeFileSync(
     nextBin,
     [
@@ -870,9 +890,7 @@ export function writeFakeConductor(home: string): FakeConductor {
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(root, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
-  const bin = join(binDir, "conduct-ts");
-  writeFileSync(bin, FAKE_CONDUCT_TS);
-  chmodSync(bin, 0o755);
+  const bin = writeFakeExecutable(join(binDir, "conduct-ts"), FAKE_CONDUCT_TS);
   const projectsPath = conductorProjectsPath(home);
   writeConductorProjects(home, []);
   return {

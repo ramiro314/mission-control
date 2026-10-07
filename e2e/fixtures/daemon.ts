@@ -38,6 +38,12 @@ import {
   writeFakeConductor,
   type FakeConductor,
 } from "./conductor.ts";
+import {
+  copyFakeExecutable,
+  fakeExecutablePath,
+  removeFakeExecutable,
+  writeFakeExecutable,
+} from "../../test/helpers/fake-executable.ts";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -285,10 +291,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   if (gitFetchRefRace) {
     const fakeGit = join(home, "bin", "git");
     mkdirSync(dirname(fakeGit), { recursive: true });
-    writeFileSync(
+    writeFakeExecutable(
       fakeGit,
       [
-        "#!/usr/bin/env node",
         "const { existsSync, unlinkSync } = require('node:fs');",
         "const { spawnSync } = require('node:child_process');",
         `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
@@ -305,7 +310,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
         "",
       ].join("\n"),
     );
-    chmodSync(fakeGit, 0o755);
   }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
@@ -375,21 +379,19 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const installFakeConductor = (): void => {
     if (!startsMissing) return;
     mkdirSync(join(installRoot, "bin"), { recursive: true });
-    copyFileSync(conductor.bin, installBin);
-    chmodSync(installBin, 0o755);
+    copyFakeExecutable(conductor.bin, installBin);
     writeFileSync(join(installRoot, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
   };
 
   const installFakeGh = (): void => {
     if (!ghStartsMissing) return;
     mkdirSync(dirname(ghInstallBin), { recursive: true });
-    copyFileSync(bins.gh, ghInstallBin);
-    chmodSync(ghInstallBin, 0o755);
+    copyFakeExecutable(bins.gh, ghInstallBin);
   };
 
   const removeFakeGh = (): void => {
     if (!ghStartsMissing) return;
-    rmSync(ghInstallBin, { force: true });
+    removeFakeExecutable(ghInstallBin);
   };
 
   const failNextGitFetchWithRefRace = (): void => {
@@ -473,7 +475,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is the
     // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
     // are covered by this one variable rather than each needing its own.
-    MISSION_GH_BIN: ghStartsMissing ? ghInstallBin : bins.gh,
+    MISSION_GH_BIN: ghStartsMissing ? fakeExecutablePath(ghInstallBin) : bins.gh,
     // The same door, on the source that can do worse. A Jira write-back MOVES an issue -
     // `jira issue move MC-431 "Done"` transitions a ticket on somebody's board - and on a
     // machine where the operator ran `jira init` an unfaked binary would do it for real on
@@ -487,7 +489,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // observation of somebody's real work. `AI_CONDUCTOR_REGISTRY` closes the other door:
     // the probe falls back to the registry FILE when the CLI cannot answer, and that file
     // lives in the operator's home unless it is pointed somewhere throwaway.
-    MISSION_CONDUCTOR_BIN: startsMissing ? installBin : conductor.bin,
+    MISSION_CONDUCTOR_BIN: startsMissing ? fakeExecutablePath(installBin) : conductor.bin,
     AI_CONDUCTOR_REGISTRY: conductor.registryPath,
     MC_E2E_CONDUCTOR_PROJECTS: conductor.projectsPath,
     MC_E2E_CONDUCTOR_ENGINEER_STATE: conductorEngineerStatePath(home),

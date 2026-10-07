@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
+
 const home = mkdtempSync(join(tmpdir(), "mission-conductor-engineer-provider-"));
 process.env.HARNESS_HOME = join(home, "state");
-const fake = join(home, "conduct-ts");
-
-writeFileSync(
-  fake,
+const fake = writeFakeExecutable(
+  join(home, "conduct-ts"),
   `#!/usr/bin/env node
 const args = process.argv.slice(2);
 const mode = process.env.FAKE_CONDUCTOR_MODE || "ok";
@@ -88,9 +88,7 @@ else {
   } else process.exitCode = 2;
 }
 `,
-  "utf8",
 );
-chmodSync(fake, 0o755);
 process.env.MISSION_CONDUCTOR_BIN = fake;
 
 const {

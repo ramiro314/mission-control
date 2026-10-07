@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -17,6 +17,7 @@ import {
   resolveBinPath,
   run,
 } from "../src/server/util/exec.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
 
 /**
@@ -99,16 +100,10 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
 
 test("run uses the catalog child environment for terminal-specific scrubbing", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-run-drop-env-"));
-  const cmux = join(root, "cmux");
-  writeFileSync(
-    cmux,
-    [
-      "#!/bin/sh",
-      'printf "%s|%s|%s" "$CMUX_WORKSPACE_ID" "$CMUX_SURFACE_ID" "$CMUX_TAB_ID"',
-      "",
-    ].join("\n"),
+  const cmux = writeFakeExecutable(
+    join(root, "cmux"),
+    'const env = process.env;\nprocess.stdout.write(`${env.CMUX_WORKSPACE_ID ?? ""}|${env.CMUX_SURFACE_ID ?? ""}|${env.CMUX_TAB_ID ?? ""}`);\n',
   );
-  chmodSync(cmux, 0o755);
 
   try {
     await withProcessEnv(
@@ -134,8 +129,15 @@ test("run resolves and launches a bare command from the explicit child PATH", as
   const binDir = join(root, "bin");
   const node = join(binDir, "node");
   mkdirSync(binDir);
-  writeFileSync(node, "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PATH\"\n");
-  chmodSync(node, 0o755);
+  if (process.platform === "win32") {
+    writeFakeExecutable(node, 'process.stdout.write(`${process.argv[1]}\\n${process.env.PATH}\\n`);\n');
+  } else {
+    // A Node.js fake cannot stand in for `node` itself here: its `#!/usr/bin/env node` would
+    // find this very file first on the PATH below and start itself forever. win32 starts
+    // nothing by shebang, so there the fake goes through the helper's launcher instead.
+    writeFileSync(node, "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PATH\"\n");
+    chmodSync(node, 0o755);
+  }
 
   try {
     await withProcessEnv(
@@ -164,15 +166,20 @@ test("relative command paths resolve absolutely and execute from the requested c
   const tool = join(binDir, "local-tool");
   const previousCwd = process.cwd();
   mkdirSync(binDir);
-  writeFileSync(tool, "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PWD\"\n");
-  chmodSync(tool, 0o755);
+  // The product adds no `.exe` to an explicit path, so the relative path names the file the
+  // helper says to start the fake by.
+  const invoked = basename(
+    writeFakeExecutable(tool, "process.stdout.write(`${process.argv[1]}\\n${process.cwd()}\\n`);\n"),
+  );
 
   try {
     process.chdir(canonicalRoot);
-    assert.equal(await resolveBinPath("./bin/local-tool"), tool);
+    assert.equal(await resolveBinPath(`./bin/${invoked}`), join(binDir, invoked));
     process.chdir(previousCwd);
 
-    const result = await run("bin/local-tool", [], { cwd: canonicalRoot });
+    // This process's own environment, so the fake's `#!/usr/bin/env node` finds Node rather
+    // than depending on the login-shell PATH an earlier test left cached.
+    const result = await run(`bin/${invoked}`, [], { cwd: canonicalRoot, env: { ...process.env } });
     assert.equal(result.code, 0);
     assert.deepEqual(result.stdout.trim().split("\n"), [tool, canonicalRoot]);
   } finally {

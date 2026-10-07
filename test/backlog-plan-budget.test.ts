@@ -1,8 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What stands between a growing backlog and an autopilot that silently stops scheduling.
 //
@@ -26,19 +27,18 @@ process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 
 const bin = mkdtempSync(join(tmpdir(), "fake-claude-budget-"));
-const fake = join(bin, "claude.sh");
 // Sleeps, then answers a valid plan for the two ids the case below asks about. The sleep
 // is what makes the budget observable: under it the run returns a plan, over it the run
 // is killed and reported as a failure.
-writeFileSync(
-  fake,
-  `#!/bin/sh
-cat > /dev/null
-sleep 2
-printf %s '{"result":"{\\"tasks\\":[{\\"id\\":\\"a\\",\\"dependsOn\\":[]},{\\"id\\":\\"b\\",\\"dependsOn\\":[\\"a\\"]}]}"}'
+const reply = JSON.stringify({
+  result: JSON.stringify({ tasks: [{ id: "a", dependsOn: [] }, { id: "b", dependsOn: ["a"] }] }),
+});
+const fake = writeFakeExecutable(
+  join(bin, "claude"),
+  `process.stdin.resume();
+process.stdin.on("end", () => setTimeout(() => process.stdout.write(${JSON.stringify(reply)}), 2000));
 `,
 );
-chmodSync(fake, 0o755);
 process.env.MISSION_CLAUDE_BIN = fake;
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restoreTransport = configureClaudeRunnerTransport(() => "print");

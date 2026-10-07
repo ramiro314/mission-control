@@ -1,21 +1,25 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { IntentRelationship } from "../src/shared/types.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-steering-"));
 process.env.MISSION_HOME = home;
 process.env.MISSION_GOAL_POLL_MS = "10";
 process.env.MISSION_GOAL_REFRESH_MS = "10";
-const fake = join(home, "claude");
 const reply = join(home, "reply.json");
-writeFileSync(fake, `#!/bin/sh\ncat >/dev/null\ncat '${reply}'\n`);
-chmodSync(fake, 0o755);
+const fake = writeFakeExecutable(
+  join(home, "claude"),
+  `process.stdin.resume();
+process.stdin.on("end", () => process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(reply)})));
+`,
+);
 process.env.MISSION_CLAUDE_BIN = fake;
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restore = configureClaudeRunnerTransport(() => "print");
