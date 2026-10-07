@@ -17,7 +17,9 @@ a recorded standing grant and a refresh fallback (decision 29). These refine the
 decisions 10, 20, 23 and 24 and do not change any answer the operator gave. Revised again for
 GitHub Inspector round 2 on #275: each replacement block records the section text it was
 written against, and the refresh stops on a mismatch instead of overwriting (decision 30,
-refines 18). Bot-authored PRs are also excluded from the standalone fixes. Not implemented.</p>
+refines 18). Bot-authored PRs are also excluded from the standalone fixes. Round 3: the base hash is taken
+over the issue with merged but unapplied deltas overlaid, and the status header reports the
+merge-base with upstream as the last synced commit. Not implemented.</p>
 <h2>Problem</h2>
 <p><code>docs/fork/ledger.md</code> (1,535 lines) and its hand-rendered <code>docs/fork/ledger.html</code> (1,979 lines)
 record every fork feature against upstream. <code>AGENTS.md</code> makes every fork PR that adds or changes
@@ -333,8 +335,12 @@ base: 9d02e6a4c1f8
 active
 </code></pre>
 <p>Each <code>####</code> block replaces the issue section of the same name in full. Its first line,
-<code>base: &lt;hash&gt;</code>, records which text it replaces (decision 30). <code>node scripts/fork-delta.mjs base &lt;slug&gt; &quot;&lt;section&gt;&quot;</code> prints the hash of the issue&#39;s current section, and the author copies it into
-the block when writing it. <code>base: new</code> means the section or the issue does not exist yet. A
+<code>base: &lt;hash&gt;</code>, records which text it replaces (decision 30). <code>node scripts/fork-delta.mjs base &lt;slug&gt; &quot;&lt;section&gt;&quot;</code> prints the hash of the section as it <strong>will</strong> stand when this PR applies, and
+the author copies it into the block when writing it. It starts from the issue&#39;s current text and
+overlays, in merge order, every merged PR&#39;s block for that section that still lacks
+<code>fork-delta:applied</code>, the same overlay the upstream-sync agent reads. <code>fork-delta.mjs show &lt;slug&gt;</code> prints the overlaid issue, so the author edits the text the refresh will see. Same-day
+changes to one feature therefore chain cleanly, and a stale base means a real concurrent edit
+between PRs that were open at the same time. <code>base: new</code> means the section or the issue does not exist yet. A
 <code>#### Status</code> block
 takes one of <code>active</code>, <code>in-progress</code>, <code>superseded</code>, <code>removed</code> or <code>upstreamed</code>, plus an optional
 note. The refresh turns it into labels, closes or reopens the issue, and posts the closing
@@ -343,16 +349,21 @@ body when it created the issue (decision 10), so its section is <code>none</code
 issue body afterwards.</p>
 <h3><code>scripts/fork-report.mjs</code></h3>
 <p>It is split into a pure <code>renderForkReport(data)</code> and a thin fetcher, so the renderer is
-unit-tested without the network.</p>
+unit-tested without the network. One renderer case has an <code>upstream/main</code> tip that differs
+from the merge-base. The header must name the merge-base&#39;s version and SHA, and count the
+difference as behind.</p>
 <ul>
 <li><strong>Inputs</strong>, fetched with <code>gh</code> and <code>git</code> from a checkout with <code>origin</code> and <code>upstream</code> fetched:<ul>
 <li>every <code>fork-feature</code> issue, open and closed (number, title, state, labels, body, URL)</li>
 <li>every PR merged into <code>main</code> (number, title, labels, head branch, merge date, URL)</li>
 <li>for <code>fork:windows-support</code> only: the count of PRs merged into <code>release/windows</code> that carry
 the label, used for the &quot;includes N release/windows PRs&quot; note on the merge PR&#39;s row</li>
-<li>the same <code>git</code> measurements the ledger&#39;s status header uses today: the upstream
-<code>package.json</code> version, the <code>upstream/main</code> SHA, and the ahead (with and without merges) and
-behind counts between <code>upstream/main</code> and <code>origin/main</code></li>
+<li>the <code>git</code> measurements for the status header. The <strong>last synced</strong> upstream commit is
+<code>git merge-base upstream/main origin/main</code>, because every sync merges upstream into <code>main</code>.
+Its SHA and the version in that commit&#39;s <code>package.json</code> are what the header reports as
+synced. <code>upstream/main</code> itself is used only for the behind count, because the daily
+refresh runs between syncs while upstream keeps moving. Ahead (with and without merges)
+and behind are counted between <code>upstream/main</code> and <code>origin/main</code>, as the ledger counted them</li>
 </ul>
 </li>
 <li><strong>Output</strong>, written to <code>--out</code> (default <code>.tmp/fork-report.md</code>):<ul>
@@ -366,8 +377,7 @@ Closed features follow the active ones.</li>
 sync PRs and bot-authored PRs (any <code>app/*</code> author, such as Dependabot). The fork&#39;s release
 workflow is disabled, so it opens no release PRs. The three historic Dependabot PRs (#40,
 #41, #43) are labeled <code>fork:dependabot</code> by the migration, so they stay under that removed
-feature rather than counting as fixes.
-sync PRs.</li>
+feature rather than counting as fixes.</li>
 </ul>
 </li>
 <li>It never shows open PRs or anything only on <code>release/windows</code> (decisions 15 and 25).</li>
@@ -518,11 +528,11 @@ feature changes&quot; section in the PR body, and add the feature&#39;s label (d
 </tr>
 <tr>
 <td><code>scripts/fork-delta.mjs</code></td>
-<td>New: <code>base</code> prints a section&#39;s hash. <code>check &lt;pr&gt;</code> parses and validates a PR&#39;s &quot;Fork feature changes&quot; section and reports stale bases (decision 30).</td>
+<td>New: <code>base</code> prints a section&#39;s hash after overlaying merged, unapplied deltas, <code>show</code> prints the overlaid issue, and <code>check &lt;pr&gt;</code> parses and validates a PR&#39;s &quot;Fork feature changes&quot; section and reports stale bases (decision 30).</td>
 </tr>
 <tr>
 <td><code>test/fork-delta.test.ts</code></td>
-<td>New: parsing, format errors, hash stability, and stale-base detection from fixture issue and PR bodies</td>
+<td>New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), and stale-base detection from fixture issue and PR bodies</td>
 </tr>
 <tr>
 <td><code>test/fork-report.test.ts</code></td>

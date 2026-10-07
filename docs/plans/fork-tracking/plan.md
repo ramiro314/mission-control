@@ -13,7 +13,9 @@ a recorded standing grant and a refresh fallback (decision 29). These refine the
 decisions 10, 20, 23 and 24 and do not change any answer the operator gave. Revised again for
 GitHub Inspector round 2 on #275: each replacement block records the section text it was
 written against, and the refresh stops on a mismatch instead of overwriting (decision 30,
-refines 18). Bot-authored PRs are also excluded from the standalone fixes. Not implemented.
+refines 18). Bot-authored PRs are also excluded from the standalone fixes. Round 3: the base hash is taken
+over the issue with merged but unapplied deltas overlaid, and the status header reports the
+merge-base with upstream as the last synced commit. Not implemented.
 
 ## Problem
 
@@ -170,8 +172,13 @@ active
 
 Each `####` block replaces the issue section of the same name in full. Its first line,
 `base: <hash>`, records which text it replaces (decision 30). `node scripts/fork-delta.mjs base
-<slug> "<section>"` prints the hash of the issue's current section, and the author copies it into
-the block when writing it. `base: new` means the section or the issue does not exist yet. A
+<slug> "<section>"` prints the hash of the section as it **will** stand when this PR applies, and
+the author copies it into the block when writing it. It starts from the issue's current text and
+overlays, in merge order, every merged PR's block for that section that still lacks
+`fork-delta:applied`, the same overlay the upstream-sync agent reads. `fork-delta.mjs show
+<slug>` prints the overlaid issue, so the author edits the text the refresh will see. Same-day
+changes to one feature therefore chain cleanly, and a stale base means a real concurrent edit
+between PRs that were open at the same time. `base: new` means the section or the issue does not exist yet. A
 `#### Status` block
 takes one of `active`, `in-progress`, `superseded`, `removed` or `upstreamed`, plus an optional
 note. The refresh turns it into labels, closes or reopens the issue, and posts the closing
@@ -182,16 +189,21 @@ issue body afterwards.
 ### `scripts/fork-report.mjs`
 
 It is split into a pure `renderForkReport(data)` and a thin fetcher, so the renderer is
-unit-tested without the network.
+unit-tested without the network. One renderer case has an `upstream/main` tip that differs
+from the merge-base. The header must name the merge-base's version and SHA, and count the
+difference as behind.
 
 - **Inputs**, fetched with `gh` and `git` from a checkout with `origin` and `upstream` fetched:
   - every `fork-feature` issue, open and closed (number, title, state, labels, body, URL)
   - every PR merged into `main` (number, title, labels, head branch, merge date, URL)
   - for `fork:windows-support` only: the count of PRs merged into `release/windows` that carry
     the label, used for the "includes N release/windows PRs" note on the merge PR's row
-  - the same `git` measurements the ledger's status header uses today: the upstream
-    `package.json` version, the `upstream/main` SHA, and the ahead (with and without merges) and
-    behind counts between `upstream/main` and `origin/main`
+  - the `git` measurements for the status header. The **last synced** upstream commit is
+    `git merge-base upstream/main origin/main`, because every sync merges upstream into `main`.
+    Its SHA and the version in that commit's `package.json` are what the header reports as
+    synced. `upstream/main` itself is used only for the behind count, because the daily
+    refresh runs between syncs while upstream keeps moving. Ahead (with and without merges)
+    and behind are counted between `upstream/main` and `origin/main`, as the ledger counted them
 - **Output**, written to `--out` (default `.tmp/fork-report.md`):
   - **Status header**: last synced upstream version and SHA, the last sync PR (the newest
     merged PR whose head branch matches `sync/upstream-*`) and its date, the commit counts
@@ -204,7 +216,6 @@ unit-tested without the network.
     workflow is disabled, so it opens no release PRs. The three historic Dependabot PRs (#40,
     #41, #43) are labeled `fork:dependabot` by the migration, so they stay under that removed
     feature rather than counting as fixes.
-    sync PRs.
 - It never shows open PRs or anything only on `release/windows` (decisions 15 and 25).
 
 ### `scripts/fork-migrate.mjs`
@@ -347,8 +358,8 @@ feature changes" section in the PR body, and add the feature's label (decision 2
 | --- | --- |
 | `scripts/fork-report.mjs` | New: renderer plus fetcher, as above |
 | `scripts/fork-migrate.mjs` | New: one-off idempotent migration, as above |
-| `scripts/fork-delta.mjs` | New: `base` prints a section's hash. `check <pr>` parses and validates a PR's "Fork feature changes" section and reports stale bases (decision 30). |
-| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, and stale-base detection from fixture issue and PR bodies |
+| `scripts/fork-delta.mjs` | New: `base` prints a section's hash after overlaying merged, unapplied deltas, `show` prints the overlaid issue, and `check <pr>` parses and validates a PR's "Fork feature changes" section and reports stale bases (decision 30). |
+| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, the unapplied-delta overlay (a PR written while another for the same feature is merged but unapplied is not stale), and stale-base detection from fixture issue and PR bodies |
 | `test/fork-report.test.ts` | New: renderer cases from fixture JSON |
 | `test/fork-migrate.test.ts` | New: ledger parsing and slug derivation against a fixture ledger excerpt |
 | `docs/fork/ledger.md`, `docs/fork/ledger.html` | Deleted |
