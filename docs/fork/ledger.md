@@ -1302,7 +1302,7 @@ jobs' condition and the tree-reuse wiring.
 | Field | Value |
 | --- | --- |
 | Status | **In progress on `release/windows`**. On `main`: the plan, `.gitattributes`, and the four platform seams (plan M1), each with only its POSIX implementation registered. On `release/windows`: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) runs the Windows jobs on pull requests into the branch, fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on `main`. Every unit test, e2e spec and smoke check that exercises a surface win32 does not support now skips there through the D37 guard; the failures left are supported surfaces, which other tickets own. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches `main` in one merge. |
-| PRs | On `main`: #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On `release/windows`: #224 (the first weekly sync of `main`, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry's update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces), pending (Windows CI wall time: Defender off, shared e2e `dist/`), pending (fake CLIs that start on win32). The per-task base branch it depends on (M0.1) has its own entry. |
+| PRs | On `main`: #128 (plan), #147 (`.gitattributes`, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On `release/windows`: #224 (the first weekly sync of `main`, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry's update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces), pending (Windows CI wall time: Defender off, shared e2e `dist/`), pending (fake CLIs that start on win32), pending (one physical spelling for 8.3 short paths). The per-task base branch it depends on (M0.1) has its own entry. |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Decisions", "Branch model" and "Milestones"; the sync runbook [docs/windows-branch-sync.md](../windows-branch-sync.md); the M2.0 SDK spike result on issue #186; the Windows section of [docs/setup.md](../setup.md#windows-11) and of [docs/harnesses-and-terminals.md](../harnesses-and-terminals.md#windows) |
 | Upstream candidate | Not now (D18: fork-only). The four seams, and the neutral seams M2 built on the branch (D38), are platform-neutral and could be offered on their own. |
 
@@ -1415,6 +1415,19 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   product resolves and spawns that `.exe` like a Windows user's own tool, with no test-only
   path. Codex, Pi and terminal-backend fakes stay as they were, because those surfaces skip on
   win32.
+- **Physical paths** (`src/server/util/physical-path.ts`, D38): every synchronous realpath in
+  `src/server` goes through `physicalPathSync`, so it spells a path the way
+  `fs.promises.realpath` does. On win32 that is the native call, which expands
+  8.3 short names (`C:\Users\RUNNER~1`) and restores on-disk case. That long spelling is what
+  an exact physical path means on win32, and the `realpath(p) === resolve(p)` guards stay byte
+  for byte. Junctions and symlinks are still resolved, so a linked path is still refused. Node's
+  JS `realpathSync` keeps the short spelling, so it had named one directory two ways, and every
+  worktree pool under it was refused as "not an exact physical directory". POSIX keeps the JS
+  call. `state/isolation.ts` keeps it too, because it judges a test home against roots
+  `test/setup-state.mjs` captured the same way. On win32 the test preload and
+  `e2e/playwright.config.ts` point `%TEMP%` at its long spelling, so fixtures and the daemon
+  agree on every path derived from it. `test/physical-path.test.ts` refuses a new
+  `realpathSync` import in `src/server`.
 - **Makefile** (D31): run from Git Bash with a separately installed GNU make. On Windows
   (`OS=Windows_NT`), `make app`, `make install` and `make install-app` say they are macOS only
   and exit, and so do `make claude`, `up`, `down`, `restart`, `stop-all` and `status`, which
@@ -1437,6 +1450,9 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   `process.kill(-pid)`, `detached: true` spawn, login-shell PATH read, or ladder location
   outside the seams is a conceptual conflict even when it merges cleanly: route it through the
   seam on `main`.
+- Upstream physicalizes paths synchronously only where this branch now calls
+  `physicalPathSync`. A new `realpathSync` in `src/server` is a conceptual conflict even when it
+  merges cleanly. Route it through the seam, which `test/physical-path.test.ts` enforces.
 - `process.platform` is how the daemon and the Electron main process tell platforms apart. The
   daemon reads it for harness and runtime availability through `hostPlatform()`, so the e2e
   suite can build a daemon that answers win32.
@@ -1470,7 +1486,9 @@ executable search ladder). On `release/windows` also: `src/server/dispatcher.ts`
 `src/shared/harness-runtime.mjs`,
 `src/main/{index,menu,menu-template,tray,window}.ts`, `src/web/components/SetupPanel.tsx`,
 `scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs`, `scripts/build-pi-extension.ts`,
-`scripts/smoke-bundles.mjs`, `test/pi-extension-build.test.ts`, `Makefile`, `package.json` (`dev:electron:app`, the `dev:*:lane` scripts), `docs/overview.md`,
+`scripts/smoke-bundles.mjs`, `test/pi-extension-build.test.ts`, every `src/server` module that
+called `realpathSync` (now `physicalPathSync`), `test/setup-state.mjs`,
+`e2e/playwright.config.ts`, `Makefile`, `package.json` (`dev:electron:app`, the `dev:*:lane` scripts), `docs/overview.md`,
 `.github/workflows/ci.yml` (the Windows jobs), `test/init-script.test.ts` (the shard budget models a pull request into `main`), `e2e/fixtures/{daemon,fake-agents,conductor}.ts`, the unit tests and e2e specs that
 skip on win32 or write a fake CLI, `AGENTS.md`, `e2e/README.md`, `docs/setup.md`, `docs/sessions.md` and
 `docs/desktop-and-packaging.md`.
@@ -1482,12 +1500,12 @@ skip on win32 or write a fake CLI, `AGENTS.md`, `e2e/README.md`, `docs/setup.md`
 `test/executable-environment.test.ts`, `test/native-addon-sources.test.ts`,
 `docs/plans/windows-support/`, `docs/windows-branch-sync.md`. On `release/windows` also:
 `src/server/platform/{host,session-runtimes,durable-sync}.ts`, `src/server/setup/windows.ts`,
-`src/server/git/long-paths.ts`, `src/shared/native-path.ts`, `src/main/platform-shell.ts`,
+`src/server/git/long-paths.ts`, `src/server/util/physical-path.ts`, `src/shared/native-path.ts`, `src/main/platform-shell.ts`,
 `native/state-lock/state_lock_win.cc`, `native/keep-awake/keep_awake_win.cc`, `build/tray.ico`, `scripts/ci-allowed-failures.mjs`,
 `scripts/probe-keep-awake-native.d.mts`, `e2e/fixtures/win32-host-build.ts`,
 `e2e/specs/win32-{harness-availability,setup-checks}.spec.ts`, `test/helpers/win32-skip.ts`,
 `test/helpers/fake-executable.ts`, `test/helpers/fake-executable-launcher.cs`,
-`test/helpers/ci-workflow.ts`, and the tests `test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts`.
+`test/helpers/ci-workflow.ts`, and the tests `test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,physical-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts`.
 
 ## Superseded and removed
 

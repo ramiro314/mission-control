@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { grantRefusal, type LlmRunOptions, type LlmToolGrant } from "@shared/llm.ts";
 import { defaultClaudeSdkOneShotDeps } from "../harness/claude/sdk-deps.ts";
 import type {
@@ -11,6 +10,7 @@ import { CLAUDE_SANDBOX, claudeGrantDenyRules } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
 // `harness/claude/sdk.ts`: that adapter owns a long-lived, human-reachable conversation,
@@ -183,7 +183,7 @@ export async function runClaudeSdkOneShot(
   let stderr = "";
   let subprocessEnv: NodeJS.ProcessEnv | undefined;
   const execute = async (): Promise<ClaudeSdkOneShotResult> => {
-    const cwd = realpathSync(grant?.cwd ?? HEADLESS_CWD);
+    const cwd = physicalPathSync(grant?.cwd ?? HEADLESS_CWD);
     const executable = await deps.executable();
     if (controller.signal.aborted) {
       throw cancelError ?? new Error("Claude Agent SDK run aborted");

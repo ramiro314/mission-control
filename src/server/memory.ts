@@ -1,7 +1,8 @@
-import { realpathSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MEMORY_INDEX_PATH, withMemoryPointer } from "@shared/memory.ts";
 import { realpathOr, withinRoot } from "./util/repo-doc.ts";
+import { physicalPathSync } from "./util/physical-path.ts";
 
 // Finding a repository's committed agent memory on disk.
 //
@@ -27,7 +28,7 @@ export function hasRepoMemory(repoRoot: string | null): boolean {
   const root = resolve(repoRoot);
   const realRoot = realpathOr(root);
   try {
-    const real = realpathSync(join(root, MEMORY_INDEX_PATH));
+    const real = physicalPathSync(join(root, MEMORY_INDEX_PATH));
     if (!withinRoot(realRoot, real)) return false;
     return statSync(real).isFile();
   } catch {

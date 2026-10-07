@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeProvider } from "@shared/types.ts";
 import { CHECK_WORKTREES_DIR } from "../config.ts";
@@ -12,6 +12,7 @@ import { run, stubRun, type RunResult } from "../util/exec.ts";
 import { LegacyTreehouseService } from "../worktrees/legacy-treehouse.ts";
 import { WorktreeManager } from "../worktrees/manager.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 function checkHolderToken(attemptId: string): string {
   return `mission-control-check-${attemptId}`;
@@ -466,7 +467,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
 
     try {
       return {
-        path: realpathSync(path),
+        path: physicalPathSync(path),
         // Git has no holder label. The manager still records its normal per-attempt token so
         // the lifecycle row keeps one shape across providers; `ownership` returns that same
         // token only after proving the unique attempt path is still registered.

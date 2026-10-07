@@ -1,6 +1,7 @@
-import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { isAbsolute, normalize, relative } from "node:path";
 import { decodeUtf8Whole } from "./utf8.ts";
+import { physicalPathSync } from "./physical-path.ts";
 
 // Reading a markdown doc OUT of a repo and INTO a model prompt, safely.
 //
@@ -18,7 +19,7 @@ export function withinRoot(root: string, abs: string): boolean {
 /** The resolved path, or the input when it can't be resolved (a root that's gone). */
 export function realpathOr(p: string): string {
   try {
-    return realpathSync(p);
+    return physicalPathSync(p);
   } catch {
     return p;
   }
@@ -105,7 +106,7 @@ export function readRepoDoc(
 ): RepoDoc | null {
   try {
     // Resolve first: a link's own path tells us nothing about what we'd read.
-    const real = realpathSync(abs);
+    const real = physicalPathSync(abs);
     if (!withinRoot(realRoot, real)) return null;
     const stat = statSync(real);
     if (!stat.isFile()) return null;

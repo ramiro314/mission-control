@@ -1,7 +1,8 @@
-import { realpathSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import type { DiscoveredSession } from "./correlate.ts";
 import { processInspector } from "../process-inspection/index.ts";
 import { parseSessionMeta, readHeadLine } from "../harness/codex/rollout.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 /** Keep only the Codex rollout transcripts among each process's open files. */
 export function rolloutFilesByPid(files: Map<number, string[]>): Map<number, string[]> {
@@ -35,7 +36,7 @@ export function selectRolloutIdentity(
   const candidates: { path: string; sessionId: string; mtimeMs: number }[] = [];
   for (const candidate of paths) {
     let path: string;
-    try { path = realpathSync(candidate); } catch { continue; }
+    try { path = physicalPathSync(candidate); } catch { continue; }
     const meta = parseSessionMeta(readHeadLine(path));
     if (!meta?.sessionId || meta.subagent) continue;
     if (sessionCwd && meta.cwd && sessionCwd !== meta.cwd) continue;

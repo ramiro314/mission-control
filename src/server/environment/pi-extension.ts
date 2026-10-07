@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readlinkSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { ENVIRONMENT_CHECK_INFO } from "@shared/environment-checks.ts";
@@ -9,6 +9,7 @@ import { getPiExtensionConfig } from "../extensions/config.ts";
 import { inspectPiCandidate } from "../extensions/pi-candidate.ts";
 import { canReconcileExtensionLink, extensionsDirFor } from "../skills/reconcile.ts";
 import type { EnvironmentCheckImpl, EnvironmentCheckResult } from "./types.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 const MAX_PATH = 512;
 const short = (path: string) => path.length > MAX_PATH ? `${path.slice(0, MAX_PATH)}…` : path;
@@ -46,7 +47,7 @@ export function invalidatePiExtensionAvailability(): void { cached = undefined; 
 function pathIdentity(path: string): string {
   try {
     const entry = lstatSync(path);
-    const target = realpathSync(path);
+    const target = physicalPathSync(path);
     const file = statSync(target);
     return JSON.stringify([target, ...[entry, file].map(s => [s.dev, s.ino, s.mode, s.size, s.mtimeMs, s.ctimeMs])]);
   } catch (error) { return String((error as NodeJS.ErrnoException).code); }
@@ -94,7 +95,7 @@ async function inspect(bundleToInstall?: string, observe: (path: string) => void
         : silent;
     }
     let target: string;
-    try { target = realpathSync(link); }
+    try { target = physicalPathSync(link); }
     catch (error) {
       if (!missing(error)) return warn(`The Pi extension at ${short(link)} cannot be resolved; its Mission Control integration is unavailable. Check for a symlink cycle or inaccessible target and inspect its permissions.`, link);
       const intended = entry.isSymbolicLink() ? resolve(dirname(link), readlinkSync(link)) : link;
