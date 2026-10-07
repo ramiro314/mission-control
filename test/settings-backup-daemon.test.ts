@@ -16,6 +16,7 @@ import {
   verifySettingsBackupDigest,
 } from "../src/server/settings-backups/format.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BOOT_TIMEOUT_MS = 30_000;
@@ -98,7 +99,7 @@ test("daemon startup creates and verifies today's v1 logical settings snapshot",
     "MISSION_HOME",
   ]) delete env[key];
   Object.assign(env, {
-    HOME: fixtureRoot,
+    ...osHomeEnv(fixtureRoot),
     CODEX_HOME: join(fixtureRoot, ".codex"),
     MISSION_HOME: stateHome,
     MISSION_PORT: String(port),

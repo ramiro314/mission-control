@@ -11,7 +11,7 @@ if (args.includes("--mode")) {
   // Catalog discovery retains the suite's fixed fake and its exact invocation contract.
   await import("./fake-pi.mjs");
 } else {
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home;
   process.env.PI_CODING_AGENT_DIR = join(home, "pi-agent");
   process.env.PI_OFFLINE = "1";
   const provider = createServer(async (req, res) => {

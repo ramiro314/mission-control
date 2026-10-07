@@ -59,9 +59,9 @@ const EVENTS = [
 
 /** Claude Code's user settings, inside the daemon's isolated home. */
 function settingsPath(daemon: DaemonHandle): string {
-  // `startDaemon` sets `HOME` to this directory, and the check resolves the path from
-  // `homedir()`, which follows `$HOME` on POSIX. So this is the file the daemon under test
-  // reads, and the operator's real one is never touched.
+  // `startDaemon` sets the OS home to this directory, and the check resolves the path from
+  // `homedir()`, which follows `HOME`, or `USERPROFILE` on win32. So this is the file the
+  // daemon under test reads, and the operator's real one is never touched.
   return join(daemon.home, ".claude", "settings.json");
 }
 

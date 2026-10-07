@@ -7,6 +7,7 @@ import type { Session } from "../../src/shared/types.ts";
 import { expect, test as base } from "../fixtures/test.ts";
 import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { osHomeEnv } from "../../test/helpers/os-home.ts";
 
 // Opt in with an installed binary. The server and its panes are real; only the model
 // provider is local and deterministic. A separate config root isolates every Herdr call.
@@ -24,7 +25,7 @@ const test = base.extend<{ realHerdr: HerdrFixture }>({
     };
     mkdirSync(env.XDG_CONFIG_HOME, { recursive: true });
     writeFileSync(env.HERDR_CONFIG_PATH, 'onboarding = false\n[terminal]\ndefault_shell = "/bin/sh"\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n');
-    const childEnv = { ...process.env, ...env, HOME: home };
+    const childEnv = { ...process.env, ...env, ...osHomeEnv(home) };
     for (const key of ["HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID", "TMUX", "TMUX_PANE"]) delete childEnv[key];
     const cli = (...args: string[]) => execFileSync(herdrBin, args, { env: childEnv, encoding: "utf8", timeout: 10_000 });
     const before = JSON.parse(cli("status", "server", "--json")) as { running: boolean; socket: string };
@@ -82,7 +83,7 @@ test(`real Pi through Herdr receives a dashboard follow-up after interrupt${rest
   const bin = join(dir, "pi");
   symlinkSync(process.execPath, bin);
   const env = {
-    HOME: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
+    ...osHomeEnv(dir), PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
     MISSION_PORT: new URL(daemon.baseURL).port,
     MISSION_API_TOKEN: readFileSync(join(daemon.home, "token"), "utf8").trim(),
     MISSION_MCP_SERVER: resolve("dist/mcp/server.mjs"),

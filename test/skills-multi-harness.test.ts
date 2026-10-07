@@ -10,6 +10,7 @@ import { AGENT_TYPES } from "../src/shared/types.ts";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 // What is at stake: a harness can DECLARE skills and still never receive one.
 //
@@ -296,7 +297,7 @@ test("no spelling of a live skills directory gets past the guard", () => {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
       // MISSION_SKILLS_DIR so the child's own catalog is what a permitted pass would link
       // FROM, rather than this repo's real `skills/`.
-      env: { ...process.env, HOME: fakeHome, MISSION_SKILLS_DIR: probeCatalog },
+      env: { ...process.env, ...osHomeEnv(fakeHome), MISSION_SKILLS_DIR: probeCatalog },
       encoding: "utf8",
     },
   );
@@ -332,7 +333,7 @@ test("an isolated home keeps EVERY harness's directory inside itself", () => {
   mkdirSync(fakeHome, { recursive: true });
   mkdirSync(isolated, { recursive: true });
 
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome, MISSION_HOME: isolated };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...osHomeEnv(fakeHome), MISSION_HOME: isolated };
   delete env.CLAUDE_SKILLS_DIR;
   delete env.CODEX_SKILLS_DIR;
   delete env.PI_SKILLS_DIR;
