@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -224,6 +225,7 @@ test("Pi required tools are refused before dispatch with the integration reason"
   dashboard,
   daemon,
 }, testInfo) => {
+  skipSpecOnWin32(test, "Pi is unavailable on win32");
   await enablePlanningSkills(daemon);
   const dialog = await openDispatch(dashboard, daemon, "Inspect the Pi integration");
   await dialog.getByLabel("Agent").selectOption("pi");

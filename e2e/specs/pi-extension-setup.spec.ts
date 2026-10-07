@@ -26,6 +26,7 @@ test.afterEach(async ({ page }, info) => {
 });
 
 test("Setup installs and repairs Pi from its bundled generation without a repository command", async ({ daemon, page }) => {
+  skipSpecOnWin32(test, "Pi is unavailable on win32");
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(page, "extensions");
   const install = page.getByRole("button", { name: "Install Pi integration" });
@@ -98,6 +99,7 @@ test("Setup reports a cyclic Pi extension link with manual guidance and no repai
 });
 
 test("Setup reports inaccessible extension entries and baked MCP bundles without repair", async ({ daemon, page }) => {
+  skipSpecOnWin32(test, "Pi is unavailable on win32");
   test.skip(process.getuid?.() === 0, "root bypasses filesystem permission denial");
   const dir = join(daemon.home, "pi-extensions"); mkdirSync(dir, { recursive: true });
   const link = join(dir, "mission-control.js"); symlinkSync(resolve("dist/pi-integration/extension.js"), link);
@@ -202,6 +204,7 @@ await import(${JSON.stringify(pathToFileURL(resolve("e2e/fixtures/fake-pi-plan.m
 
 
 test.describe("first-install preflight failure", () => {
+  skipSpecOnWin32(test, "Pi is unavailable on win32");
   const candidateDir = join(tmpdir(), `mission-pi-preflight-${process.pid}`);
   const candidate = join(candidateDir, "extension.js");
   test.use({ daemonEnv: { MISSION_PI_EXTENSION: candidate } });

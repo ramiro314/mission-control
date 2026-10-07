@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Session } from "../../src/shared/types.ts";
 import { expect, test as base } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 // Opt in with an installed binary. The server and its panes are real; only the model
@@ -46,6 +47,7 @@ const test = base.extend<{ realHerdr: HerdrFixture }>({
     await use({ ...realHerdr.env, MISSION_HERDR_BIN: herdrBin!, MISSION_POLL_MS: "1500", MISSION_TMUX_BIN: "/nonexistent/mc-herdr-test-tmux" });
   },
 });
+skipSpecOnWin32(test, "Herdr and the terminal runtime are unavailable on win32; it also drives Pi");
 test.skip(!herdrBin, "Set MC_E2E_REAL_HERDR_BIN to exercise the installed Herdr server");
 
 for (const restart of [false, true]) {

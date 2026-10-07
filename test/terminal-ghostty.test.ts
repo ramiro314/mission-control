@@ -22,6 +22,7 @@ import {
 import { binPresent } from "../src/server/terminal/bin.ts";
 import { asQuote, ghosttyEmulator, parseSurfaces } from "../src/server/terminal/ghostty.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 interface Call {
   bin: string;
@@ -71,7 +72,7 @@ test("the capabilities it declares, and the two nulls that survived a real insta
   assert.deepEqual(g.hostProcess, { commands: ["ghostty"] });
 });
 
-test("the catalog declares the detection binary and the adapter never runs it", async () => {
+test("the catalog declares the detection binary and the adapter never runs it", { skip: skipOnWin32("Ghostty and the terminal runtime are unavailable on win32") }, async () => {
   // The first backend where those are two different binaries. `+new-window` answers "not
   // supported on this platform" and the bundle is built `app runtime: .none`, so the GUI is
   // driven by Apple Events - and `binPresent` still needs a real path to test.

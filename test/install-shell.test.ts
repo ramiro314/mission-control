@@ -7,6 +7,9 @@ import test from "node:test";
 import { parseArgs } from "../scripts/install-app.mjs";
 import { CANONICAL_REPO, validateReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { inspectUpdateRuntime } from "../src/main/update-runtime.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
 
 const root = resolve(import.meta.dirname, "..");
 const shell = readFileSync(join(root, "scripts/install.sh"), "utf8");
@@ -118,7 +121,7 @@ else if (tool === "node") {
 }
 
 for (const prerequisite of ["macOS", "git", "node"]) {
-  test(`Bash refuses missing ${prerequisite} before creating bootstrap or installation state`, (t) => {
+  test(`Bash refuses missing ${prerequisite} before creating bootstrap or installation state`, INSTALLER, (t) => {
     const f = fixture(t, prerequisite === "macOS" ? "platform" : "");
     const bin = join(f.directory, "bin");
     // Keep host-installed git/node off PATH so a removed fixture is genuinely unavailable.
@@ -149,7 +152,7 @@ process.exit(90);
   });
 }
 
-test("Bash installs through the shared release, verification, swap and receipt path without retaining a checkout", async (t) => {
+test("Bash installs through the shared release, verification, swap and receipt path without retaining a checkout", INSTALLER, async (t) => {
   const f = fixture(t);
   const result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -197,7 +200,7 @@ test("Bash installs through the shared release, verification, swap and receipt p
 });
 
 for (const failure of ["bootstrap", "source", "release", "build", "version", "interrupt", "support-build"]) {
-  test(`failed ${failure} removes temporary sources and preserves the existing app and cache`, (t) => {
+  test(`failed ${failure} removes temporary sources and preserves the existing app and cache`, INSTALLER, (t) => {
     const f = fixture(t, failure);
     const existing = join(f.apps, "Mission Control.app");
     const cache = join(f.state, "app-src");
@@ -215,7 +218,7 @@ for (const failure of ["bootstrap", "source", "release", "build", "version", "in
   });
 }
 
-test("Bash forwards quoted options, and temporary dry runs do not write install state", (t) => {
+test("Bash forwards quoted options, and temporary dry runs do not write install state", INSTALLER, (t) => {
   const f = fixture(t);
   const result = f.run(["--apps-dir", f.apps, "--ref", "v2.3.4", "--dry-run", "--progress"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -226,7 +229,7 @@ test("Bash forwards quoted options, and temporary dry runs do not write install 
   assert.equal(f.commands().filter(({ tool, args }) => tool === "git" && args[0] === "clone").length, 1);
 });
 
-test("make install still uses the same installer and retains its managed build cache", (t) => {
+test("make install still uses the same installer and retains its managed build cache", INSTALLER, (t) => {
   const f = fixture(t);
   const result = spawnSync("make", ["install", `ARGS=--apps-dir '${f.apps}' --ref v1.2.3`], {
     cwd: root, env: f.env, encoding: "utf8", timeout: 30_000,
@@ -245,7 +248,7 @@ test("temporary sources cannot be requested for either half of a staged update",
   }
 });
 
-test("the first README code block creates ~/Applications and installs there without destination options", (t) => {
+test("the first README code block creates ~/Applications and installs there without destination options", INSTALLER, (t) => {
   const f = fixture(t);
   const readme = readFileSync(join(root, "README.md"), "utf8");
   const command = /```bash\n([^`]+)```/.exec(readme)?.[1]?.trim();
@@ -267,7 +270,7 @@ test("the first README code block creates ~/Applications and installs there with
 });
 
 for (const scope of [undefined, "system"] as const) {
-  test(`Bash preserves an existing ${scope ? "explicit" : "legacy"} system receipt destination`, (t) => {
+  test(`Bash preserves an existing ${scope ? "explicit" : "legacy"} system receipt destination`, INSTALLER, (t) => {
     const f = fixture(t);
     const before = f.seedReceipt("/Applications", scope);
     // Never write to the host's system Applications folder, including in the failing case.
@@ -282,7 +285,7 @@ for (const scope of [undefined, "system"] as const) {
   });
 }
 
-test("Bash reruns update the receipt's custom destination without creating a personal copy", (t) => {
+test("Bash reruns update the receipt's custom destination without creating a personal copy", INSTALLER, (t) => {
   const f = fixture(t);
   const before = f.seedReceipt(f.apps, "custom");
   mkdirSync(before.appPath);
@@ -300,7 +303,7 @@ test("Bash reruns update the receipt's custom destination without creating a per
 });
 
 for (const scope of ["user", "system"] as const) {
-  test(`Bash honors an explicit ${scope} scope`, (t) => {
+  test(`Bash honors an explicit ${scope} scope`, INSTALLER, (t) => {
     const f = fixture(t);
     const result = f.run(["--scope", scope, "--dry-run"]);
     const apps = scope === "user" ? join(f.home, "Applications") : "/Applications";
@@ -313,7 +316,7 @@ for (const scope of ["user", "system"] as const) {
   });
 }
 
-test("the README command propagates a failed download without creating install state", (t) => {
+test("the README command propagates a failed download without creating install state", INSTALLER, (t) => {
   const f = fixture(t, "download");
   const readme = readFileSync(join(root, "README.md"), "utf8");
   const command = /```bash\n([^`]+)```/.exec(readme)?.[1]?.trim();
@@ -329,7 +332,7 @@ test("the README command propagates a failed download without creating install s
   assert.equal(existsSync(f.state), false);
 });
 
-test("the retained installer includes newly imported transitive modules after both checkouts are removed", (t) => {
+test("the retained installer includes newly imported transitive modules after both checkouts are removed", INSTALLER, (t) => {
   const f = fixture(t, "graph");
   const installed = f.run();
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
@@ -343,7 +346,7 @@ test("the retained installer includes newly imported transitive modules after bo
   assert.match(retained.stdout, /Usage: node scripts\/install-app.mjs/);
 });
 
-test("repeated direct installs replace only the superseded owned installer after receipt commitment", (t) => {
+test("repeated direct installs replace only the superseded owned installer after receipt commitment", INSTALLER, (t) => {
   const f = fixture(t);
   const first = f.run();
   assert.equal(first.status, 0, first.stdout + first.stderr);

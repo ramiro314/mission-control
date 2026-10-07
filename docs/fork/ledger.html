@@ -1581,11 +1581,11 @@ jobs&#39; condition and the tree-reuse wiring.</p>
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) is in review: it runs the Windows jobs on pull requests into the branch, fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on <code>main</code>. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches <code>main</code> in one merge.</td>
+<td><strong>In progress on <code>release/windows</code></strong>. On <code>main</code>: the plan, <code>.gitattributes</code>, and the four platform seams (plan M1), each with only its POSIX implementation registered. On <code>release/windows</code>: Windows CI and the win32 skip guard, the win32 state lock, the win32 seam implementations, the Windows state home and path fixes, harness and runtime availability, Keep Awake, the Windows Setup checks, the Electron dev shell, the Makefile under Git Bash, and the Windows docs (plan M2.1 to M2.11). Gate readiness (M2.12) runs the Windows jobs on pull requests into the branch, fixes the win32 smoke and backup flushes, lists the skips and D38 seams, and files M3.1 and M3.2 on <code>main</code>. Every unit test, e2e spec and smoke check that exercises a surface win32 does not support now skips there through the D37 guard; the failures left are supported surfaces, which other tickets own. The Windows jobs are still allowed to fail, because they are not green yet. The branch reaches <code>main</code> in one merge.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), pending (gate readiness, M2.12). The per-task base branch it depends on (M0.1) has its own entry.</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces). The per-task base branch it depends on (M0.1) has its own entry.</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1683,7 +1683,10 @@ macOS app menu there. Every other platform keeps the macOS answers.</li>
 request), with npm&#39;s <code>script-shell</code> set to Git Bash. Their product
 steps are allowed to fail until M2.12, and stay out of <code>CI result</code>. Every test or spec that
 skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</code> in <code>test/helpers/win32-skip.ts</code>,
-with a stated reason (D37).</li>
+with a stated reason (D37), and only where it exercises a surface win32 does not support (Codex,
+Pi, the terminal runtime and its backends, terminal discovery, the macOS updater, and the macOS
+app installer and install migration) or pins a POSIX-only implementation. A test of a supported
+surface stays failing until it is fixed.</li>
 <li><strong>Makefile</strong> (D31): run from Git Bash with a separately installed GNU make. On Windows
 (<code>OS=Windows_NT</code>), <code>make app</code>, <code>make install</code> and <code>make install-app</code> say they are macOS only
 and exit, and so do <code>make claude</code>, <code>up</code>, <code>down</code>, <code>restart</code>, <code>stop-all</code> and <code>status</code>, which
@@ -1696,8 +1699,7 @@ that touched <code>process.stdin</code> blocked behind the watcher&#39;s read of
 backups flush a file and its directory through <code>syncFile</code> and <code>syncDirectory</code>. POSIX keeps the
 read-only descriptor it always used. win32 opens the file for writing, because
 <code>FlushFileBuffers</code> refuses a read-only handle, and makes no directory flush. <code>npm run smoke</code>
-skips the Pi artifact where <code>harnessUnsupportedWhy(&quot;pi&quot;, hostPlatform())</code> answers, the same
-question <code>build:pi-extension</code> asks.</li>
+skips the Pi artifact and the Pi SDK bundle probe where <code>harnessUnsupportedWhy(&quot;pi&quot;, hostPlatform())</code> answers, the same question <code>build:pi-extension</code> asks.</li>
 </ul>
 <p><strong>Upstream behavior it assumes.</strong></p>
 <ul>
@@ -1740,7 +1742,7 @@ executable search ladder). On <code>release/windows</code> also: <code>src/serve
 <code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
 <code>scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs</code>, <code>scripts/build-pi-extension.ts</code>,
 <code>scripts/smoke-bundles.mjs</code>, <code>test/pi-extension-build.test.ts</code>, <code>Makefile</code>, <code>package.json</code> (<code>dev:electron:app</code>, the <code>dev:*:lane</code> scripts), <code>docs/overview.md</code>,
-<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>test/init-script.test.ts</code> (the shard budget models a pull request into <code>main</code>), <code>e2e/fixtures/daemon.ts</code>, the e2e specs that
+<code>.github/workflows/ci.yml</code> (the Windows jobs), <code>test/init-script.test.ts</code> (the shard budget models a pull request into <code>main</code>), <code>e2e/fixtures/daemon.ts</code>, the unit tests and e2e specs that
 skip on win32, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
 <code>docs/desktop-and-packaging.md</code>.</p>
 <p><strong>Fork-only files.</strong> <code>.gitattributes</code>, <code>src/server/process-inspection/</code>,

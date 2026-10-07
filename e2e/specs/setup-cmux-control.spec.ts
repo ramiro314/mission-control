@@ -4,6 +4,9 @@ import { dirname, join } from "node:path";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
 
 /**
  * cmux installed, and unusable anyway - the reading this row used to get wrong.

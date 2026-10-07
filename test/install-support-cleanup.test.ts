@@ -6,6 +6,9 @@ import test from "node:test";
 import { markRetainedInstaller, removeSupersededInstaller } from "../scripts/install-app.mjs";
 import { writeReceipt } from "../src/shared/install-receipt.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32") };
 
 function fixture(t: test.TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "mission-installer-cleanup-"));
@@ -31,7 +34,7 @@ function fixture(t: test.TestContext) {
 }
 
 for (const receiptState of ["still referenced", "alias still referenced", "missing", "invalid", "changed"]) {
-  test(`retained installer survives when the receipt is ${receiptState}`, (t) => {
+  test(`retained installer survives when the receipt is ${receiptState}`, INSTALLER, (t) => {
     const f = fixture(t);
     let replacement = f.replacementSource;
     if (receiptState === "still referenced") f.record(f.previousSource);
@@ -48,7 +51,7 @@ for (const receiptState of ["still referenced", "alias still referenced", "missi
 }
 
 for (const sourceType of ["external", "unmarked", "copied marker", "symlink", "symlink parent", "nested"]) {
-  test(`retained installer cleanup preserves an arbitrary ${sourceType} source`, (t) => {
+  test(`retained installer cleanup preserves an arbitrary ${sourceType} source`, INSTALLER, (t) => {
     const f = fixture(t);
     let previous = f.previousSource;
     let preserved = f.previousSource;
@@ -76,7 +79,7 @@ for (const sourceType of ["external", "unmarked", "copied marker", "symlink", "s
   });
 }
 
-test("a cleanup permission failure reports a warning without undoing the new receipt", (t) => {
+test("a cleanup permission failure reports a warning without undoing the new receipt", INSTALLER, (t) => {
   if (process.getuid?.() === 0) return t.skip("root can remove a read-only directory");
   const f = fixture(t);
   const receipt = readFileSync(f.receiptPath, "utf8");

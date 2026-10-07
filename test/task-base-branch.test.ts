@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { Session, Task } from "../src/shared/types.ts";
@@ -30,7 +30,7 @@ process.env.HARNESS_HOME = home;
 process.env.HARNESS_WORKSPACE_DIRS = repos;
 process.env.HARNESS_REPOS_CACHE_MS = "0";
 // A binary that exists, so bin resolution is not what a dispatch below fails on.
-process.env.MISSION_PI_BIN = "/bin/echo";
+process.env.MISSION_CLAUDE_BIN = process.execPath;
 
 const { ensureToken } = await import("../src/server/auth.ts");
 const { openDb, getTask } = await import("../src/server/db.ts");
@@ -51,7 +51,7 @@ const bin = mkdtempSync(join(tmpdir(), "mission-base-branch-bin-"));
 
 after(() => {
   for (const dir of [home, repos, bin]) rmSync(dir, { recursive: true, force: true });
-  delete process.env.MISSION_PI_BIN;
+  delete process.env.MISSION_CLAUDE_BIN;
 });
 
 beforeEach(() => {
@@ -189,25 +189,26 @@ test("a pinned base commit outranks the task's base branch, which is then never 
 
 function dispatchingTask(id: string, repoRoot: string, baseBranch: string | null): Task {
   return mkTask({
-    id, status: "dispatching", agent: "pi", kind: "ship", repoRoot, baseBranch,
+    id, status: "dispatching", agent: "claude", kind: "ship", repoRoot, baseBranch,
     title: id, intent: "Build it",
   });
 }
 
-function piDispatcher(registry: InstanceType<typeof Registry>, launched: { cwd: string; argv: string[] }[]) {
-  return new Dispatcher(registry, undefined, {
-    resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
-    spawn: async (label, _short, cwd, _bin, args) => {
-      launched.push({ cwd, argv: [...(args ?? [])] });
-      registry.applyDiscovery([{
-        syntheticId: `${label}-session`, agent: "pi", name: label, nameSource: "process",
-        cwd, gitBranch: null, gitRoot: cwd, repoRoot: cwd, pid: 4000 + launched.length,
-        tty: `tty-${label}`, startedAt: Date.now(),
-        terminals: [mkMuxHandle({ session: label, paneId: `%${4000 + launched.length}` })],
-      }]);
-      return { homeName: label, homeBackend: "tmux", terminalResourceId: null };
+// Claude on the Agent SDK runtime: the base branch is harness- and runtime-agnostic, and this
+// pair launches on every host. The fake supervisor records turn one, which is the prompt.
+function sdkDispatcher(registry: InstanceType<typeof Registry>, launched: { cwd: string; prompt: string }[]) {
+  const supervisor = {
+    async start(input: { agent: "claude"; name: string; cwd: string; prompt: string }) {
+      launched.push({ cwd: input.cwd, prompt: input.prompt });
+      return registry.registerSdkSession({ id: `sdk:${input.name}`, agent: input.agent, name: input.name, cwd: input.cwd });
     },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
+  return new Dispatcher(registry, undefined, {
+    resolveRuntime: () => "sdk",
+    missionMcpDescriptor: async () => null,
+    supervisor: supervisor as never,
   });
 }
 
@@ -215,15 +216,15 @@ test("dispatch starts a task with a base branch from origin/<base>, and tells th
   const { repo, mainTip, releaseTip } = mkRepo("dispatch-base");
   const registry = new Registry();
   registry.upsertTask(dispatchingTask("based", repo, "release/windows"));
-  const launched: { cwd: string; argv: string[] }[] = [];
-  await piDispatcher(registry, launched).dispatch("based");
+  const launched: { cwd: string; prompt: string }[] = [];
+  await sdkDispatcher(registry, launched).dispatch("based");
 
   const task = registry.getTask("based")!;
   assert.equal(task.status, "running", task.error ?? "dispatch failed");
   assert.equal(task.baseSha, releaseTip);
   assert.equal(git(task.worktreePath!, "rev-parse", "HEAD"), releaseTip);
   assert.notEqual(releaseTip, mainTip);
-  const prompt = launched[0]!.argv.join("\n");
+  const prompt = launched[0]!.prompt;
   assert.match(prompt, /## Base branch/);
   assert.match(prompt, /gh pr create --base release\/windows/);
 });
@@ -232,8 +233,8 @@ test("dispatch refuses a base branch origin no longer has, before anything is pr
   const { repo } = mkRepo("dispatch-gone");
   const registry = new Registry();
   registry.upsertTask(dispatchingTask("gone", repo, "release/gone"));
-  const launched: { cwd: string; argv: string[] }[] = [];
-  await piDispatcher(registry, launched).dispatch("gone");
+  const launched: { cwd: string; prompt: string }[] = [];
+  await sdkDispatcher(registry, launched).dispatch("gone");
 
   const task = registry.getTask("gone")!;
   assert.equal(task.status, "backlog", "a ship task goes back to the backlog with the reason");

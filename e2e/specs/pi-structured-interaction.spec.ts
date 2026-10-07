@@ -7,6 +7,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Pi is unavailable on win32");
 
 test.use({
   daemonEnv: {

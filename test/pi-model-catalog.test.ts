@@ -20,6 +20,9 @@ import type {
   PiModelCatalogDeps,
 } from "../src/server/harness/pi/model-catalog.ts";
 import type { HarnessModelCatalogProblem } from "../src/shared/protocol.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -212,7 +215,7 @@ test("Pi catalog resolution preserves success and degrades every resolver failur
   }
 });
 
-test("Pi discovery is one prompt-free, no-session RPC command with chunk-safe correlated framing", async () => {
+test("Pi discovery is one prompt-free, no-session RPC command with chunk-safe correlated framing", PI, async () => {
   const line = response([
     model(),
     model({ provider: "anthropic", id: "claude-sonnet-5", name: " Claude   Sonnet 5 ", input: ["text"] }),
@@ -269,7 +272,7 @@ test("Pi discovery is one prompt-free, no-session RPC command with chunk-safe co
   assert.equal(existsSync(stateHome), false, "the completed probe releases its state home");
 });
 
-test("Pi discovery preserves first-seen order, deduplicates full ids, and drops unsafe rows", async () => {
+test("Pi discovery preserves first-seen order, deduplicates full ids, and drops unsafe rows", PI, async () => {
   const child = new FakeChild([
     response([
       model({ provider: "openai", id: "gpt-5.6-sol", name: "First" }),
@@ -294,7 +297,7 @@ test("Pi discovery preserves first-seen order, deduplicates full ids, and drops 
   assert.deepEqual(result.choices[1]!.inputModes, ["text"]);
 });
 
-test("an Amazon Bedrock row survives discovery with its exact id and provider group", async () => {
+test("an Amazon Bedrock row survives discovery with its exact id and provider group", PI, async () => {
   // Bedrock is a Pi PROVIDER, not a Mission Control harness: nothing here translates the id,
   // allowlists a model, or knows what an AWS region is. Its ids carry dots and hyphens that
   // no other provider's do, and the nested form is the one that makes the split rule visible
@@ -353,7 +356,7 @@ test("an Amazon Bedrock row survives discovery with its exact id and provider gr
   assert.deepEqual(result.choices[1]!.inputModes, ["text", "image"]);
 });
 
-test("Pi discovery preserves safe identities when optional presentation metadata is unknown", async () => {
+test("Pi discovery preserves safe identities when optional presentation metadata is unknown", PI, async () => {
   const child = new FakeChild([
     response([
       model({
@@ -396,7 +399,7 @@ test("Pi discovery preserves safe identities when optional presentation metadata
   });
 });
 
-test("Pi discovery normalizes and bounds display labels", async () => {
+test("Pi discovery normalizes and bounds display labels", PI, async () => {
   const child = new FakeChild([
     response([model({ id: "gpt-5.6-terra", name: `  ${"word ".repeat(80)}  ` })]),
   ]);
@@ -407,7 +410,7 @@ test("Pi discovery normalizes and bounds display labels", async () => {
   assert.equal(result.choices[0]!.label.includes("  "), false);
 });
 
-test("Pi discovery maps framing, RPC, availability, and process failures to bounded codes", async (t) => {
+test("Pi discovery maps framing, RPC, availability, and process failures to bounded codes", PI, async (t) => {
   const cases: readonly [string, () => FakeChild, HarnessModelCatalogProblem][] = [
     ["malformed JSON", () => new FakeChild(["{not-json}\n"], [], false), "invalid_response"],
     ["wrong correlation", () => new FakeChild([response([], { id: "wrong" })], [], false), "invalid_response"],
@@ -496,7 +499,7 @@ test("Pi discovery maps framing, RPC, availability, and process failures to boun
   });
 });
 
-test("Pi discovery bounds time, stdout, stderr, and model count", async (t) => {
+test("Pi discovery bounds time, stdout, stderr, and model count", PI, async (t) => {
   await t.test("timeout", async () => {
     const child = new FakeChild(new PassThrough(), new PassThrough(), false, true);
     const result = await discoverPiModels("/fake/pi", depsFor(child));
@@ -539,7 +542,7 @@ test("Pi discovery bounds time, stdout, stderr, and model count", async (t) => {
   });
 });
 
-test("a child that ignores graceful close is hard-killed after the bounded grace", async () => {
+test("a child that ignores graceful close is hard-killed after the bounded grace", PI, async () => {
   const child = new FakeChild([response([model()])], [], false, true);
   const result = await discoverPiModels("/fake/pi", depsFor(child));
   assert.equal(result.ok, true);
@@ -547,7 +550,7 @@ test("a child that ignores graceful close is hard-killed after the bounded grace
   assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
 });
 
-test("an aborted probe closes input and completes the TERM-to-KILL cleanup ladder", async () => {
+test("an aborted probe closes input and completes the TERM-to-KILL cleanup ladder", PI, async () => {
   const controller = new AbortController();
   const child = new FakeChild(new PassThrough(), new PassThrough(), false, true);
   const resultPromise = discoverPiModels("/fake/pi", {

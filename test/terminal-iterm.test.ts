@@ -12,6 +12,7 @@ import { itermEmulator, parseItermSessions } from "../src/server/terminal/iterm.
 import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
 import { itermPaneToken } from "../src/shared/pane.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 interface Call {
   bin: string;
@@ -61,7 +62,7 @@ test("declares the complete iTerm2 capability surface and passive host gate", ()
   assert.deepEqual(backend.hostProcess, { commands: ["iTerm2"] });
 });
 
-test("detects only the configured app bundle without a PATH fallback", () => {
+test("detects only the configured app bundle without a PATH fallback", { skip: skipOnWin32("iTerm and the terminal runtime are unavailable on win32") }, () => {
   const declared = executableSpec("iterm");
   assert.equal(declared.overrideEnv, "ITERM_BIN");
   assert.equal(declared.searchPath, false);

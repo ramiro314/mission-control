@@ -13,6 +13,7 @@ import { HookIngestSchema, StatusLineIngestSchema } from "../src/shared/protocol
 import { THINKING_LEVELS } from "../src/shared/types.ts";
 import extension from "../src/pi/extension.ts";
 import type { PiContext, PiEvent, PiTool } from "../src/pi/api.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-extension-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -117,7 +118,7 @@ test("Pi preserves exact submitted prompts while normalizing display prompts", (
     assert.equal(piHooks.submittedPromptText({ ...event, event: "Stop" }), null);
   }
 });
-test("Pi fixture imports filesystem paths containing URL delimiters", () => {
+test("Pi fixture imports filesystem paths containing URL delimiters", { skip: skipOnWin32("Pi is unavailable on win32") }, () => {
   const file = join(root, "session #?.mjs");
   writeFileSync(file, 'export function runExtensionSession() { console.log("fixture loaded"); process.exit(0); }');
   const result = spawnSync(process.execPath, ["e2e/fixtures/fake-pi.mjs", "--mission-extension-test"], {

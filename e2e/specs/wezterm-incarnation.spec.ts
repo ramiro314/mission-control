@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "../../src/shared/types.ts";
 import { test, expect } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "WezTerm and the terminal runtime are unavailable on win32");
 
 test.use({ daemonEnv: {
   MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_WEZTERM_BOUNDARY: "1", MISSION_POLL_MS: "100",

@@ -20,6 +20,7 @@ import {
   type UpdateStageRequest,
 } from "../src/main/updater.ts";
 import type { UpdatePrepareStage } from "../src/shared/update.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const STAGED_BUNDLE = "/tmp/mission-source/release/mac-arm64/Mission Control.app";
 
@@ -176,7 +177,7 @@ const release = (over: Partial<ReleaseInfo> = {}): ReleaseInfo => ({
   ...over,
 });
 
-test("the detached updater carries its narrowly scoped bundle-swap support module", () => {
+test("the detached updater carries its narrowly scoped bundle-swap support module", { skip: skipOnWin32("the macOS updater is unavailable on win32") }, () => {
   assert.deepEqual(
     detachedUpdateHelperSources(
       "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",

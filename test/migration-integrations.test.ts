@@ -11,6 +11,9 @@ import { inspectMigrationIntegrations, repairMigrationIntegrations, type Migrati
 import { createMigrationConfigPort } from '../src/main/migration-integration-config.ts';
 import { createRotatingUpdateLogger } from '../src/main/update-log.ts';
 import type { MigrationPlan, MigrationJournal } from '../scripts/install-migration.mjs';
+import { skipOnWin32 } from './helpers/win32-skip.ts';
+
+const MIGRATION = { skip: skipOnWin32('the macOS install migration is unavailable on win32') };
 
 function fixture(t: test.TestContext) {
   const home = mkdtempSync(join(tmpdir(), 'mission-integrations-'));
@@ -37,7 +40,7 @@ function fixture(t: test.TestContext) {
   return {home, plan, oldMcp, oldExe, hook, ports, calls, journal};
 }
 
-test('repairs existing hooks and MCP, preserves JSONC/custom values, Electron fallback and login off', async (t) => {
+test('repairs existing hooks and MCP, preserves JSONC/custom values, Electron fallback and login off', MIGRATION, async (t) => {
   const f = fixture(t);
   const journal = f.journal();
   const results = await repairMigrationIntegrations(journal, f.ports);
@@ -59,7 +62,7 @@ test('repairs existing hooks and MCP, preserves JSONC/custom values, Electron fa
   assert.deepEqual(f.calls, ['skills', 'login:false', 'skills', 'login:false'], 'every retry verifies current surfaces');
 });
 
-test('absent and custom registrations remain absent/custom and concurrent hook edits are preserved', async (t) => {
+test('absent and custom registrations remain absent/custom and concurrent hook edits are preserved', MIGRATION, async (t) => {
   const f = fixture(t);
   writeFileSync(join(f.home, '.claude.json'), '{"mcpServers":{"mission-control":{"command":"custom","args":["custom.mjs"]}}}');
   const journal = f.journal();
@@ -72,7 +75,7 @@ test('absent and custom registrations remain absent/custom and concurrent hook e
   assert.equal(JSON.parse(readFileSync(join(f.home, '.claude.json'), 'utf8')).mcpServers['mission-control'].command, 'custom');
 });
 
-test('retry revalidates completed hooks and MCP after another surface failed', async (t) => {
+test('retry revalidates completed hooks and MCP after another surface failed', MIGRATION, async (t) => {
   const f = fixture(t);
   const journal = f.journal();
   f.ports.skills = async () => ['conflict'];
@@ -92,7 +95,7 @@ test('retry revalidates completed hooks and MCP after another surface failed', a
   assert.deepEqual(JSON.parse(readFileSync(mcpPath, 'utf8')), mcp);
 });
 
-test('MCP inventory excludes credentials while repair preserves them in the original configuration', async (t) => {
+test('MCP inventory excludes credentials while repair preserves them in the original configuration', MIGRATION, async (t) => {
   const f = fixture(t);
   const path = join(f.home, '.claude.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
@@ -116,7 +119,7 @@ test('MCP inventory excludes credentials while repair preserves them in the orig
   assert.ok((await repairMigrationIntegrations({...journal, repairs: results}, f.ports)).every((r) => r.status === 'complete'));
 });
 
-test('persisted MCP comparison facts do not depend on secret values, even for low-entropy credentials', (t) => {
+test('persisted MCP comparison facts do not depend on secret values, even for low-entropy credentials', MIGRATION, (t) => {
   const f = fixture(t);
   const path = join(f.home, '.claude.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
@@ -130,7 +133,7 @@ test('persisted MCP comparison facts do not depend on secret values, even for lo
   assert.deepEqual(facts('1234'), facts('5678'));
 });
 
-test('a credential edit after inventory is preserved and blocks automatic MCP repair', async (t) => {
+test('a credential edit after inventory is preserved and blocks automatic MCP repair', MIGRATION, async (t) => {
   const f = fixture(t);
   const journal = f.journal();
   const path = join(f.home, '.claude.json');
@@ -143,7 +146,7 @@ test('a credential edit after inventory is preserved and blocks automatic MCP re
   assert.equal(readFileSync(path, 'utf8'), changed);
 });
 
-test('integration policy consumes normalized snapshots without reaching filesystem or CLI access', async (t) => {
+test('integration policy consumes normalized snapshots without reaching filesystem or CLI access', MIGRATION, async (t) => {
   const f = fixture(t);
   f.ports.home = join(f.home, 'does-not-exist');
   let entry = {command: f.oldExe, args: [f.oldMcp], env: {SECRET: 'preserve'}};
@@ -165,7 +168,7 @@ test('integration policy consumes normalized snapshots without reaching filesyst
   assert.equal(entry.env.SECRET, 'preserve');
 });
 
-test('the CLI-backed TOML adapter preserves registration options and reads back changed paths', async (t) => {
+test('the CLI-backed TOML adapter preserves registration options and reads back changed paths', MIGRATION, async (t) => {
   const f = fixture(t);
   mkdirSync(join(f.home, '.codex'));
   const path = join(f.home, '.codex/config.toml');
@@ -189,7 +192,7 @@ test('the CLI-backed TOML adapter preserves registration options and reads back 
   assert.equal(reads, 3);
 });
 
-test('a CLI snapshot cannot inventory a configuration that changed while the CLI read it', (t) => {
+test('a CLI snapshot cannot inventory a configuration that changed while the CLI read it', MIGRATION, (t) => {
   const f = fixture(t);
   mkdirSync(join(f.home, '.codex'));
   const path = join(f.home, '.codex/config.toml');
@@ -202,7 +205,7 @@ test('a CLI snapshot cannot inventory a configuration that changed while the CLI
   assert.equal(readFileSync(path, 'utf8'), '# concurrent replacement');
 });
 
-test('disabled registrations stay disabled, null CLI env is accepted, and custom TOML is preserved on repair failure', async (t) => {
+test('disabled registrations stay disabled, null CLI env is accepted, and custom TOML is preserved on repair failure', MIGRATION, async (t) => {
   const f = fixture(t);
   mkdirSync(join(f.home, '.codex'));
   const path = join(f.home, '.codex/config.toml');
@@ -217,7 +220,7 @@ test('disabled registrations stay disabled, null CLI env is accepted, and custom
   assert.equal(readFileSync(path, 'utf8'), original);
 });
 
-test('linked configuration and malformed persisted hook paths cannot overwrite custom files', async (t) => {
+test('linked configuration and malformed persisted hook paths cannot overwrite custom files', MIGRATION, async (t) => {
   const f = fixture(t);
   const journal = f.journal();
   (journal.inventory as {hooks: {path: string[]}[]}).hooks[0]!.path = ['theme'];
@@ -233,14 +236,14 @@ test('linked configuration and malformed persisted hook paths cannot overwrite c
   assert.equal(readFileSync(linked, 'utf8'), contents);
 });
 
-test('a custom CLI configuration home cannot inventory one file and write a different default file', (t) => {
+test('a custom CLI configuration home cannot inventory one file and write a different default file', MIGRATION, (t) => {
   const f = fixture(t);
   f.ports.environment = {CODEX_HOME: join(f.home, 'custom-codex')};
   assert.throws(() => f.journal(), /custom configuration home/);
   assert.deepEqual(f.calls, []);
 });
 
-test('inventory failures block before the move; skill conflicts and unverifiable login become named repair items', async (t) => {
+test('inventory failures block before the move; skill conflicts and unverifiable login become named repair items', MIGRATION, async (t) => {
   const f = fixture(t);
   writeFileSync(join(f.home, '.claude.json'), 'invalid');
   assert.throws(() => f.journal(), /JSON/);
@@ -252,7 +255,7 @@ test('inventory failures block before the move; skill conflicts and unverifiable
   assert.deepEqual(results.filter((r) => r.status === 'pending').map((r) => r.id), ['skills', 'login']);
 });
 
-test('persisted repair failures use fixed guidance while detailed diagnostics go through the redacting log', async (t) => {
+test('persisted repair failures use fixed guidance while detailed diagnostics go through the redacting log', MIGRATION, async (t) => {
   const f = fixture(t);
   const journal = f.journal();
   const path = join(f.home, 'update.log');
