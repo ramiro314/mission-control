@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { osHomeEnv } from "../../test/helpers/os-home.ts";
 
 /**
  * A real Pi session's COMMANDS reaching the conversation and the Activity rail.
@@ -85,7 +86,7 @@ test("a real Pi session's commands reach the conversation and the Activity rail"
     const bin = join(dir, "pi");
     symlinkSync(process.execPath, bin);
     const env = {
-      HOME: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
+      ...osHomeEnv(dir), PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
       MISSION_PORT: new URL(daemon.baseURL).port,
       MISSION_API_TOKEN: readFileSync(join(daemon.home, "token"), "utf8").trim(),
       MISSION_MCP_SERVER: resolve("dist/mcp/server.mjs"),

@@ -17,6 +17,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32; the LaunchAgent service is its macOS daemon entry") };
 
@@ -62,7 +63,7 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", INSTALL
       cwd: repo,
       env: {
         ...process.env,
-        HOME: home,
+        ...osHomeEnv(home),
         MISSION_HOME: state,
         PATH: `${fakeBin}:/usr/bin:/bin`,
         FAKE_LAUNCHCTL_LOG: launchctlLog,

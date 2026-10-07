@@ -1,5 +1,5 @@
 import { access, readFile, readdir } from "node:fs/promises";
-import { dirname, extname, normalize, resolve } from "node:path";
+import { dirname, extname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 
 const root = process.cwd();
 const initialFiles = ["README.md", "AGENTS.md", "e2e/README.md"];
@@ -128,7 +128,8 @@ for (const file of files) {
     if (/^(?:[a-z][a-z+.-]*:|\/\/)/i.test(destination)) continue;
     const [rawPath, fragment] = destination.split("#", 2);
     const target = rawPath ? normalize(resolve(dirname(file), rawPath.split("?", 1)[0])) : resolve(file);
-    if (!target.startsWith(`${root}/`) && target !== root) {
+    const fromRoot = relative(root, target);
+    if (isAbsolute(fromRoot) || fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) {
       failures.push(`${file}: outside repository: ${destination}`);
       continue;
     }

@@ -1,5 +1,5 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { isAbsolute, normalize, relative } from "node:path";
+import { isAbsolute, normalize, relative, sep } from "node:path";
 import { decodeUtf8Whole } from "./utf8.ts";
 import { physicalPathSync } from "./physical-path.ts";
 
@@ -46,7 +46,10 @@ export function readCapped(path: string, n: number): string {
 }
 
 export interface RepoDoc {
-  /** Repo-relative path, so a caller can cite the file the repo knows it by. */
+  /**
+   * Repo-relative path, so a caller can cite the file the repo knows it by. Spelled with `/`
+   * on every platform, the way git and the diff a prompt carries beside it spell it.
+   */
   path: string;
   /**
    * The path this doc was actually read from, after links. IDENTITY, never citation.
@@ -112,7 +115,7 @@ export function readRepoDoc(
     if (!stat.isFile()) return null;
     return {
       // Cite the path the repo asked for, not the link target.
-      path: relative(root, abs) || abs,
+      path: relative(root, abs).split(sep).join("/") || abs,
       realPath: real,
       text: readCapped(real, Math.min(stat.size, maxBytes)),
       truncated: stat.size > maxBytes,

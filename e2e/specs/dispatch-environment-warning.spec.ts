@@ -50,9 +50,10 @@ async function shoot(page: Page, name: string): Promise<void> {
 
 /** Where the plugin's setup skill records how far it got, inside the daemon's isolated home. */
 function stateFile(daemon: DaemonHandle): string {
-  // `startDaemon` sets `HOME` to this directory (see `fixtures/daemon.ts`), and the check
-  // resolves the path from `homedir()`, which follows `$HOME` on POSIX. So this is the file
-  // the daemon under test will read - and the operator's real one is never touched.
+  // `startDaemon` sets the OS home to this directory (see `fixtures/daemon.ts`), and the check
+  // resolves the path from `homedir()`, which follows `HOME`, or `USERPROFILE` on win32. So
+  // this is the file the daemon under test will read - and the operator's real one is never
+  // touched.
   return join(daemon.home, ".claude", "upstartclaw-core-setup");
 }
 

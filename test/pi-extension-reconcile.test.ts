@@ -13,6 +13,7 @@ import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 // Every test publishes, reads or guards the Pi integration link, which win32 does not support.
 const PI = { skip: skipOnWin32("Pi is unavailable on win32; publishes its integration through exchangePaths") };
@@ -739,7 +740,7 @@ test("isolation guard refuses exact, dot-dot and symlinked live paths on install
       }
     }
     console.log('all three live-path spellings refused; link unchanged');`;
-  const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...process.env, HOME: fake }, encoding: "utf8" });
+  const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...process.env, ...osHomeEnv(fake) }, encoding: "utf8" });
   assert.match(output, /link unchanged/);
 });
 

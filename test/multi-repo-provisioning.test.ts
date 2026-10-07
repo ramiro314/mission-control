@@ -367,7 +367,7 @@ test("a secondary that is not a repo is refused, naming itself", async () => {
   // The path that was actually rejected, so a caller can fix the entry rather than guess
   // which of several was the problem.
   assert.match(refused.ok === false ? refused.error : "", /not a git repository/);
-  assert.match(refused.ok === false ? refused.error : "", new RegExp(notARepo.replace(/\+/g, "\\+")));
+  assert.ok(refused.ok === false && refused.error.includes(notARepo), refused.ok === false ? refused.error : "accepted");
 });
 
 test("the wire shape defaults to no attached repos, and an edit to them is provisioning", () => {

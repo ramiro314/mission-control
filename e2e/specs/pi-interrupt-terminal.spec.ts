@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { osHomeEnv } from "../../test/helpers/os-home.ts";
 
 // Run the pinned Pi TUI with a deterministic loopback provider. Discovery only acts on our
 // uniquely named tmux pane. The provider never reaches an account or an external model.
@@ -43,7 +44,7 @@ test("Pi terminal interrupts reach the conversation from the dashboard and direc
   const bin = join(dir, "pi");
   symlinkSync(process.execPath, bin);
   const env = {
-    HOME: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
+    ...osHomeEnv(dir), PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
     MISSION_PORT: new URL(daemon.baseURL).port,
     MISSION_API_TOKEN: readFileSync(join(daemon.home, "token"), "utf8").trim(),
     MISSION_MCP_SERVER: resolve("dist/mcp/server.mjs"),

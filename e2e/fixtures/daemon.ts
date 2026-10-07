@@ -44,6 +44,7 @@ import {
   removeFakeExecutable,
   writeFakeExecutable,
 } from "../../test/helpers/fake-executable.ts";
+import { osHomeEnv } from "../../test/helpers/os-home.ts";
 import { processLifetime } from "../../src/server/platform/process-lifetime.ts";
 
 /**
@@ -406,8 +407,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     ...process.env,
     // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
-    // agent would write conversations into the operator's real ~/.claude.
-    HOME: home,
+    // agent would write conversations into the operator's real ~/.claude. `homedir()` reads
+    // `USERPROFILE` on win32, so `osHomeEnv` moves both names.
+    ...osHomeEnv(home),
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,

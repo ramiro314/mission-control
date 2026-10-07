@@ -16,11 +16,12 @@ import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { RepoIndexView } from "../src/shared/repo-index.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-repo-index-http-"));
 const operatorHome = join(root, "operator");
 const stateHome = join(root, "state");
-const previousHome = process.env.HOME;
+const previousOsHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 const previousMissionHome = process.env.MISSION_HOME;
 const WORKSPACE_ENV_NAMES = [
   "MISSION_WORKSPACE_DIRS",
@@ -38,7 +39,7 @@ mkdirSync(operatorHome, { recursive: true });
 mkdirSync(stateHome, { recursive: true });
 // Set the supported test home before importing any server module that can resolve the DB.
 process.env.MISSION_HOME = stateHome;
-process.env.HOME = operatorHome;
+Object.assign(process.env, osHomeEnv(operatorHome));
 for (const name of WORKSPACE_ENV_NAMES) delete process.env[name];
 
 const { openDb } = await import("../src/server/db.ts");
@@ -82,8 +83,10 @@ beforeEach(() => {
 
 after(() => {
   rmSync(root, { recursive: true, force: true });
-  if (previousHome === undefined) delete process.env.HOME;
-  else process.env.HOME = previousHome;
+  for (const [name, value] of Object.entries(previousOsHome)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   if (previousMissionHome === undefined) delete process.env.MISSION_HOME;
   else process.env.MISSION_HOME = previousMissionHome;
   for (const name of WORKSPACE_ENV_NAMES) {

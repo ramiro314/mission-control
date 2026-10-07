@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import type { Hono } from "hono";
 import type { ServerEvent } from "../src/shared/types.ts";
@@ -1067,7 +1067,8 @@ test("a submission cannot name its own task, destination, or archive", async () 
   });
   assert.equal(res.status, 404);
   assert.match(await res.text(), /credential's task no longer exists/);
-  assert.deepEqual(authority, { taskId: "trusted-task", cwd: "/tmp/checkout" });
+  // The credential carries the resolved directory, which win32 spells with the current drive.
+  assert.deepEqual(authority, { taskId: "trusted-task", cwd: resolve("/tmp/checkout") });
 });
 
 test("the submission route answers 503 when this build has no scout library", async () => {

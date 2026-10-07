@@ -1,4 +1,5 @@
 const { BrowserWindow } = require("electron");
+const { basename } = require("node:path");
 
 /**
  * One offscreen window, one page at a time, each measured in a viewport it has to report.
@@ -192,7 +193,7 @@ async function measurePages({ paths, viewport, measure, budgetMs }) {
   try {
     const measured = {};
     for (const htmlPath of paths) {
-      const name = htmlPath.replace(/^.*\/(.+)\.html$/, "$1");
+      const name = basename(htmlPath, ".html");
       let result = null;
       for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
         if (attempt > 1) await delay(RETRY_MS);

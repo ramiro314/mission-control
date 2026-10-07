@@ -23,6 +23,7 @@ import {
 } from "../src/server/executables/locator.ts";
 import { fakeExecutablePath } from "./helpers/fake-executable.ts";
 import { writeFakeLoginShell } from "./helpers/login-shell.ts";
+import { osHomeEnv } from "./helpers/os-home.ts";
 
 /**
  * Install a tool named `path` the way the platform names one, and return where it landed:
@@ -109,7 +110,7 @@ function fixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), "mission-executable-locator-"));
   return {
     root,
-    env: { HOME: root, PATH: "", SHELL: join(root, "shell") },
+    env: { ...osHomeEnv(root), PATH: "", SHELL: join(root, "shell") },
     executable: (path) =>
       (path === root || path.startsWith(`${root}${sep}`)) && executableFile(path),
     clean: () => rmSync(root, { recursive: true, force: true }),
@@ -225,7 +226,7 @@ test("a project-local node_modules/.bin never outranks an installed agent", asyn
   Object.assign(f.env, {
     // First on PATH, as npm writes it.
     PATH: [projectBin, join(f.root, "home", ".local", "bin")].join(delimiter),
-    HOME: join(f.root, "home"),
+    ...osHomeEnv(join(f.root, "home")),
     XDG_DATA_HOME: xdg,
   });
   try {

@@ -2016,7 +2016,7 @@ dispatch it was meant to answer never goes live.
 | Variable | Why |
 |---|---|
 | `MISSION_HOME` | SQLite DB, token, logs into a temp dir |
-| `HOME` | Claude transcripts derive from `homedir()`; without this the fake writes into the operator's real `~/.claude` |
+| `HOME` and `USERPROFILE` | Claude transcripts derive from `homedir()`, which reads `HOME` on macOS and Linux and `USERPROFILE` on win32; without both the fake writes into the operator's real `~/.claude`. Set through `osHomeEnv` in `test/helpers/os-home.ts` |
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MC_E2E_USE_REPO_INDEX_DEFAULTS=1` | opt-in fixture flag that removes every supported workspace override, so Settings repository-index specs exercise the config-backed shipped defaults |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
