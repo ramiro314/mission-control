@@ -53,7 +53,7 @@ or issues.
 | Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR, #175 (2026-10-05 sync) |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
-| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label) | #151 (plan M0.1), #161, #162, #163 |
+| Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label, session Diff view) | #151 (plan M0.1), #161, #162, #163, issue #136 (session Diff view) |
 | Docs-only CI | Active (the `docs checks` job, the `docs-only-ci` skill, and the docs-only skip with `CI result` in this repository) | #164, #168, #171 |
 | CI time-to-green | In progress (Node 26 off pull requests, one build-and-smoke job per Node release, one provisioning path in the unit shard, `main`-push tree reuse, duration-balanced unit shards, shard counts from a 20-job budget, and one E2E `dist/` built by `build-smoke-node-24`; the measured median is pending) | #200 (plan), #215 (Node 26 and build-smoke), #214 (one provisioning path), #218 (tree reuse), #219 (balanced unit shards), #221 (shard budget), #222 (shared E2E `dist/`) |
 | Windows support | In progress on `release/windows` (plan, `.gitattributes`, the four platform seams and the weekly sync runbook on `main`) | #128 (plan), #147, #152, #154, #158, #176, #184, #185 |
@@ -1006,8 +1006,8 @@ refinement), `src/server/foreman/worker.ts` (latched log line), `src/server/disp
 
 | Field | Value |
 | --- | --- |
-| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, the recurring-mission template (D35), and the task form field and card label; the session Diff view is a separate ticket. |
-| PRs | #151, #161, #162 (task form field and card label), #163 |
+| Status | **Active**. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, the recurring-mission template (D35), the task form field and card label, and the session Diff view. |
+| PRs | #151, #161, #162 (task form field and card label), #163, the session Diff view (issue #136) |
 | Plan docs | [docs/plans/windows-support/plan.md](../plans/windows-support/plan.md), "Per-task base branch" and M0 item 1; [docs/dispatch-and-backlog.md](../dispatch-and-backlog.md) "Start a task from another branch" |
 | Upstream candidate | Yes. It is a general task field with no Windows-specific behavior. |
 
@@ -1046,6 +1046,9 @@ dispatched like any other task. Without one, nothing changes.
   primary repository, null otherwise. The captured evidence diff and an affected-tests check's
   selection measure from `merge-base(HEAD, origin/<base>)` (`changeSourceRef` in `diff.ts`),
   and a base missing from the remote-tracking refs fails rather than falls back.
+- The session Diff view (`GET /api/sessions/:id/diff`, no `base` or `commit` query) measures
+  from the same `changeSourceRef`, given the base of the task the session runs (`taskBaseBranch`
+  in `routes.ts`, shared with the reset routes). An explicit `base` query still wins.
 - The Pull Request action's merge-conflict block names the binding's base. Foreman's nudge and
   the Wait for CI repair read GitHub's `baseRefName`, unchanged.
 - A merge counts for a task with a base branch only when `gh` reports it merged into that branch
@@ -1072,7 +1075,7 @@ dispatched like any other task. Without one, nothing changes.
 (`BaseBranchSchema`, `DispatchSchema`, `UpdateTaskSchema`, `McpCreateTicketSchema`,
 `McpPushTaskSchema`), `src/server/tasks.ts` (create, `prepareUpdate`, `assignReserved`),
 `src/server/routes.ts` (`POST /api/tasks`, `POST /api/tasks/:id/update`, `/mcp/v3/tasks`,
-`/mcp/push-task`, session reset and its preview), `src/server/git/remote-default.ts`,
+`/mcp/push-task`, session reset and its preview, session diff), `src/server/git/remote-default.ts`,
 `src/server/dispatcher.ts` (`resolveTaskBases`), `src/server/actions.ts` (`resetToOrigin`,
 `resetPreview`), `src/server/reset.ts`, `src/server/task-contract.ts`,
 `src/server/workflows/{feedback,manager}.ts`, the MCP `create_task` and `push_task` tools in

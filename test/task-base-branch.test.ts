@@ -495,6 +495,45 @@ test("the reset route and its preview land on the base branch of the task the se
   assert.equal(git(wt, "rev-parse", "HEAD"), releaseTip);
 });
 
+test("the Diff view measures a task's work from its base branch, and from origin's default without one", async () => {
+  const { repo, releaseTip } = mkRepo("route-diff");
+  const wt = join(repos, "route-diff-wt");
+  git(repo, "worktree", "add", "-q", "-b", "feat/port", wt, releaseTip);
+  writeFileSync(join(wt, "feature.txt"), "feature\n");
+  git(wt, "add", "-A");
+  git(wt, "commit", "-qm", "feature");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "differ", agent: "claude", name: "differ", nameSource: "process", cwd: realpathSync(wt),
+    gitBranch: null, gitRoot: realpathSync(wt), repoRoot: repo, pid: 203, tty: null, terminals: [], startedAt: Date.now(),
+  }]);
+  const session = registry.snapshot().sessions.find((s) => s.name === "differ")!;
+  const task = mkTask({
+    id: "running-diff", status: "running", repoRoot: repo, baseBranch: "release/windows",
+    sessionId: session.id, worktreePath: realpathSync(wt),
+  });
+  registry.upsertTask(task);
+  const { app } = appFor(registry);
+  const diffOf = async () => (await (await app.request(`/api/sessions/${session.id}/diff`, {
+    headers: { host: "127.0.0.1:7317" },
+  })).json()) as { ok: boolean; base: string | null; filesChanged: number; patch: string; error: string | null };
+
+  const based = await diffOf();
+  assert.equal(based.ok, true, based.error ?? "");
+  assert.equal(based.base, "release/windows");
+  assert.equal(based.filesChanged, 1);
+  assert.match(based.patch, /feature\.txt/);
+  assert.doesNotMatch(based.patch, /file\.txt/, "the base branch's own change is not this task's");
+
+  // Unchanged without a base: origin's default, which counts the release branch's commit too.
+  registry.upsertTask({ ...task, baseBranch: null });
+  const plain = await diffOf();
+  assert.equal(plain.ok, true, plain.error ?? "");
+  assert.equal(plain.base, "main");
+  assert.equal(plain.filesChanged, 2);
+  assert.match(plain.patch, /file\.txt/);
+});
+
 test("handing a shelved task with a base branch to a running agent resets its checkout onto origin/<base>", async () => {
   const { repo, mainTip, releaseTip } = mkRepo("assign-reset");
   const registry = new Registry();
