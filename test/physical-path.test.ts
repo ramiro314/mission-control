@@ -93,6 +93,47 @@ test("a pool root under an aliased pools directory passes the exact-physical gua
   }
 });
 
+/**
+ * Whether a module reaches Node's JS realpath (`realpathSync`, or the callback `realpath`) from
+ * `node:fs` by any spelling: a named import (aliased or not), a namespace or default import
+ * called as `fs.realpath`, or `realpathSync` reached as a property of anything.
+ * `fs/promises` is not matched: its `realpath` is the native call.
+ */
+function usesJsRealpath(source: string): boolean {
+  const fromFs = String.raw`from\s*["'](?:node:)?fs["']`;
+  for (const [, names] of source.matchAll(new RegExp(String.raw`import\s*\{([^}]*)\}\s*${fromFs}`, "g"))) {
+    if (/\brealpath(?:Sync)?\b/.test(names!)) return true;
+  }
+  if (/\.\s*realpathSync\b/.test(source)) return true;
+  const bindings = new RegExp(String.raw`import\s+(?:\*\s*as\s+)?(\w+)\s*(?:,\s*\{[^}]*\})?\s*${fromFs}`, "g");
+  for (const [, binding] of source.matchAll(bindings)) {
+    if (new RegExp(String.raw`\b${binding}\s*\.\s*realpath\b`).test(source)) return true;
+  }
+  return false;
+}
+
+test("the realpath guard recognises every way a module can reach the JS realpath", () => {
+  for (const source of [
+    'import { realpathSync } from "node:fs";',
+    'import { statSync, realpathSync as rp } from "fs";',
+    'import { realpath } from "node:fs";',
+    'import * as fs from "node:fs";\nfs.realpathSync(p);',
+    'import fs from "node:fs";\nfs.realpath(p, done);',
+    'import fs, { statSync } from "node:fs";\nfs.realpath(p, done);',
+    "const real = require(\"node:fs\").realpathSync(p);",
+  ]) {
+    assert.equal(usesJsRealpath(source), true, source);
+  }
+  for (const source of [
+    'import { realpath } from "node:fs/promises";\nawait realpath(p);',
+    'import * as fsp from "node:fs/promises";\nawait fsp.realpath(p);',
+    'import fs from "node:fs";\nfs.statSync(p);\nawait deps.realpath(p);',
+    'import { physicalPathSync } from "./util/physical-path.ts";\nphysicalPathSync(p);',
+  ]) {
+    assert.equal(usesJsRealpath(source), false, source);
+  }
+});
+
 test("src/server physicalizes synchronously only through physicalPathSync", () => {
   const server = join(import.meta.dirname, "..", "src", "server");
   // `state/isolation.ts` judges a test's state home against the roots `test/setup-state.mjs`
@@ -105,10 +146,7 @@ test("src/server physicalizes synchronously only through physicalPathSync", () =
       if (entry.isDirectory()) walk(path);
       else if (entry.name.endsWith(".ts")) {
         const name = relative(server, path).replaceAll("\\", "/");
-        if (allowed.has(name)) continue;
-        for (const [, names] of readFileSync(path, "utf8").matchAll(/import\s*\{([^}]*)\}\s*from\s*"(?:node:)?fs"/g)) {
-          if (/\brealpath(?:Sync)?\b/.test(names!)) offenders.push(name);
-        }
+        if (!allowed.has(name) && usesJsRealpath(readFileSync(path, "utf8"))) offenders.push(name);
       }
     }
   };

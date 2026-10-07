@@ -1715,8 +1715,8 @@ worktree pool under it was refused as &quot;not an exact physical directory&quot
 call. <code>state/isolation.ts</code> keeps it too, because it judges a test home against roots
 <code>test/setup-state.mjs</code> captured the same way. On win32 the test preload and
 <code>e2e/playwright.config.ts</code> point <code>%TEMP%</code> at its long spelling, so fixtures and the daemon
-agree on every path derived from it. <code>test/physical-path.test.ts</code> refuses a new
-<code>realpathSync</code> import in <code>src/server</code>.</li>
+agree on every path derived from it. <code>test/physical-path.test.ts</code> refuses any new use of the
+JS realpath in <code>src/server</code>, whether named, namespace or default imported.</li>
 <li><strong>Makefile</strong> (D31): run from Git Bash with a separately installed GNU make. On Windows
 (<code>OS=Windows_NT</code>), <code>make app</code>, <code>make install</code> and <code>make install-app</code> say they are macOS only
 and exit, and so do <code>make claude</code>, <code>up</code>, <code>down</code>, <code>restart</code>, <code>stop-all</code> and <code>status</code>, which

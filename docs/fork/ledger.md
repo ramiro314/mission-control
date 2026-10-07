@@ -1426,8 +1426,8 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   call. `state/isolation.ts` keeps it too, because it judges a test home against roots
   `test/setup-state.mjs` captured the same way. On win32 the test preload and
   `e2e/playwright.config.ts` point `%TEMP%` at its long spelling, so fixtures and the daemon
-  agree on every path derived from it. `test/physical-path.test.ts` refuses a new
-  `realpathSync` import in `src/server`.
+  agree on every path derived from it. `test/physical-path.test.ts` refuses any new use of the
+  JS realpath in `src/server`, whether named, namespace or default imported.
 - **Makefile** (D31): run from Git Bash with a separately installed GNU make. On Windows
   (`OS=Windows_NT`), `make app`, `make install` and `make install-app` say they are macOS only
   and exit, and so do `make claude`, `up`, `down`, `restart`, `stop-all` and `status`, which
