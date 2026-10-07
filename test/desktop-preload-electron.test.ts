@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { buildSync } from "esbuild";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 const require = createRequire(import.meta.url);
@@ -35,19 +36,15 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
   const preload = join(dir, "preload.cjs");
   const page = join(dir, "page.html");
   try {
-    execFileSync(
-      join(root, "node_modules", ".bin", "esbuild"),
-      [
-        join(root, "src", "preload", "index.ts"),
-        "--bundle",
-        "--platform=node",
-        "--format=cjs",
-        "--target=node22",
-        "--external:electron",
-        `--outfile=${preload}`,
-      ],
-      { encoding: "utf8", timeout: TIMEOUT_MS },
-    );
+    buildSync({
+      entryPoints: [join(root, "src", "preload", "index.ts")],
+      bundle: true,
+      platform: "node",
+      format: "cjs",
+      target: "node22",
+      external: ["electron"],
+      outfile: preload,
+    });
     writeFileSync(
       page,
       "<!doctype html><script>" +

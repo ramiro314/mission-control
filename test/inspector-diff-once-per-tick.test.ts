@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  chmodSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -10,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import type { Registry } from "../src/server/registry.ts";
 
 // One diff subprocess per tick, and zero on the steady-state tick.
@@ -36,7 +36,6 @@ const project = fileURLToPath(new URL("..", import.meta.url));
 
 await import("node:fs").then(({ mkdirSync }) => mkdirSync(binDir, { recursive: true }));
 process.env.MISSION_HOME = join(temp, "state");
-process.env.MISSION_CLAUDE_BIN = claudePath;
 process.env.MISSION_INSPECTOR_POLL_MS = "25";
 process.env.FAKE_GITHUB_STATE = statePath;
 process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
@@ -45,7 +44,7 @@ process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 // verdict, a follow-up returns `{reply, resolved}`. The reply prompt's output contract is
 // what tells them apart here, so this fake cannot answer a review in the reply's shape and
 // quietly stop exercising either path.
-writeFileSync(
+process.env.MISSION_CLAUDE_BIN = writeFakeExecutable(
   claudePath,
   `#!/usr/bin/env node
 const chunks = [];
@@ -59,7 +58,6 @@ process.stdin.on("end", () => {
 });
 `,
 );
-chmodSync(claudePath, 0o755);
 
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restoreTransport = configureClaudeRunnerTransport(() => "print");
@@ -70,7 +68,7 @@ const restoreTransport = configureClaudeRunnerTransport(() => "print");
 // rename prevents a torn read but not a lost update. Each writer takes an exclusive lock
 // around read-mutate-publish, and stages through a pid-scoped temp file so two stagers
 // cannot collide.
-writeFileSync(
+writeFakeExecutable(
   ghPath,
   `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -181,7 +179,6 @@ if (args[0] === "api" && args[1] === "user") {
 }
 `,
 );
-chmodSync(ghPath, 0o755);
 
 const { openDb, getInspectorPr, loadInspectorComments, upsertInspectorComment } = await import(
   "../src/server/db.ts"

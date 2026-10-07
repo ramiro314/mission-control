@@ -1,17 +1,19 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // `claude-cli.ts` reads the claude binary and the full-review budget from the env at module
 // load, so both are pinned BEFORE importing it. The fake bin never exits, which exercises the
 // real spawn + timeout + process-group-kill path rather than a stubbed promise.
 const dir = mkdtempSync(join(tmpdir(), "foreman-review-"));
-const fakeBin = join(dir, "fake-claude.sh");
 const runReady = join(dir, "run-ready");
-writeFileSync(fakeBin, `#!/bin/sh\nprintf ready > ${JSON.stringify(runReady)}\nsleep 30\n`);
-chmodSync(fakeBin, 0o755);
+const fakeBin = writeFakeExecutable(
+  join(dir, "fake-claude"),
+  `require("node:fs").writeFileSync(${JSON.stringify(runReady)}, "ready");\nsetTimeout(() => {}, 30_000);\n`,
+);
 process.env.FOREMAN_CLAUDE_BIN = fakeBin;
 
 /**

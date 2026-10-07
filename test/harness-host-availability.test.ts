@@ -3,15 +3,21 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "harness-host-availability-")));
 process.env.MISSION_HOME = home;
 process.env.MISSION_PORT = "7317";
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_CODEX_BIN = "/bin/echo";
-process.env.MISSION_PI_BIN = "/bin/echo";
+// One fake that prints its args like `echo`, so every agent binary resolves.
+const echo = writeFakeExecutable(
+  join(home, "echo"),
+  'process.stdout.write(process.argv.slice(2).join(" ") + "\\n");\n',
+);
+process.env.MISSION_CLAUDE_BIN = echo;
+process.env.MISSION_CODEX_BIN = echo;
+process.env.MISSION_PI_BIN = echo;
 process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
 writeFileSync(process.env.MISSION_MCP_SERVER, "// Only refusal is under test.\n");
 

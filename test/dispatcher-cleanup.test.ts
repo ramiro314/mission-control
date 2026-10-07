@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
@@ -12,9 +13,12 @@ const TERMINAL = { skip: skipOnWin32("the terminal runtime is unavailable on win
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
 process.env.HARNESS_HOME = home;
-// A binary that exists, so bin resolution cannot be what fails below. The dispatch under
-// test never reaches a spawn.
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
+// A binary that exists, so bin resolution cannot be what fails below: a fake that prints its
+// args like `echo`. The dispatch under test never reaches a spawn.
+process.env.MISSION_CLAUDE_BIN = writeFakeExecutable(
+  join(home, "echo"),
+  'process.stdout.write(process.argv.slice(2).join(" ") + "\\n");\n',
+);
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { MULTIPLEXERS } = await import("../src/server/terminal/registry.ts");

@@ -1,25 +1,34 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TaskSourceInstance } from "../src/shared/task-source.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-source-sweeper-"));
 const bin = join(home, "bin");
 mkdirSync(bin);
-writeFileSync(
+const gh = writeFakeExecutable(
   join(bin, "gh"),
-  "#!/bin/sh\n" +
-    "if [ -n \"$TASK_SOURCE_SWEEP_GATE\" ]; then\n" +
-    "  touch \"$TASK_SOURCE_SWEEP_GATE/started\"\n" +
-    "  while [ ! -f \"$TASK_SOURCE_SWEEP_GATE/release\" ]; do sleep 0.01; done\n" +
-    "fi\n" +
-    "printf '[]'\n",
+  `const fs = require("node:fs");
+const path = require("node:path");
+const gate = process.env.TASK_SOURCE_SWEEP_GATE;
+const answer = () => process.stdout.write("[]");
+if (gate) {
+  fs.appendFileSync(path.join(gate, "started"), "");
+  const timer = setInterval(() => {
+    if (!fs.existsSync(path.join(gate, "release"))) return;
+    clearInterval(timer);
+    answer();
+  }, 10);
+} else {
+  answer();
+}
+`,
 );
-chmodSync(join(bin, "gh"), 0o755);
 process.env.HARNESS_HOME = join(home, "state");
 process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 // Named outright as well as put first on PATH. `run` resolves a bare name through the
@@ -27,7 +36,7 @@ process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 // so under a runner whose shell finds a real `gh` first the fake never ran and the gate below
 // was never opened. An absolute path is not a lookup at all, and the highest-precedence alias
 // outranks anything the environment brought with it.
-process.env.MISSION_GH_BIN = join(bin, "gh");
+process.env.MISSION_GH_BIN = gh;
 
 const { openDb } = await import("../src/server/db.ts");
 const { sweepOnce, taskSourceStatuses } = await import(

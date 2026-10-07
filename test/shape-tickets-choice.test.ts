@@ -1,22 +1,21 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlanDecision, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { trackedTaskManagers } from "./helpers/task-manager.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-shape-tickets-choice-"));
 const migrationHome = mkdtempSync(join(tmpdir(), "mission-shape-tickets-choice-migration-"));
 const bin = mkdtempSync(join(tmpdir(), "mission-shape-tickets-choice-gh-"));
 process.env.HARNESS_HOME = home;
 // The real by-URL lookup, answered by a fake `gh` that reports every pull request CLOSED.
-const fakeGh = join(bin, "gh");
-writeFileSync(fakeGh, `#!/bin/sh\necho '{"state":"CLOSED","mergedAt":null}'\n`);
-chmodSync(fakeGh, 0o755);
+const fakeGh = writeFakeExecutable(join(bin, "gh"), `process.stdout.write('{"state":"CLOSED","mergedAt":null}\\n');\n`);
 
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

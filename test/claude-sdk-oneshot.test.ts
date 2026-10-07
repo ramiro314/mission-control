@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  chmodSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -27,6 +26,7 @@ import {
   killLiveClaudeSdkRuns,
   runClaudeSdkOneShot,
 } from "../src/server/llm/claude-sdk.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import {
   PNG_IMAGE,
   writeImageDescriptor,
@@ -482,8 +482,7 @@ test("a denied-path result is a failed SDK run, never model text", async () => {
 
 test("the vendor SDK binds inline deny settings, strict MCP, and empty setting sources at the subprocess boundary", async () => {
   const cwd = mkdtempSync(join(root, "vendor-boundary-worktree-"));
-  const fakeBin = join(root, "vendor-boundary-claude");
-  writeFileSync(fakeBin, `#!/usr/bin/env node
+  const fakeBin = writeFakeExecutable(join(root, "vendor-boundary-claude"), `#!/usr/bin/env node
 const value = (name) => {
   const at = process.argv.indexOf(name);
   return at >= 0 ? process.argv[at + 1] : undefined;
@@ -517,7 +516,6 @@ process.stdin.on("data", () => {
   process.stdout.write(JSON.stringify(frame) + "\\n", () => process.exit(0));
 });
 `);
-  chmodSync(fakeBin, 0o755);
 
   const previous = {
     bin: process.env.MISSION_CLAUDE_BIN,

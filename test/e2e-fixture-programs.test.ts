@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
+import { fakeExecutablePath } from "./helpers/fake-executable.ts";
 
 // What is at stake: a fixture PROGRAM this change delivers as executable code, which no other
 // layer can see.
@@ -77,5 +78,5 @@ test("the fake jira answers a version probe, and is silent about anything else",
 
 test("the fake jira exists and is executable, which is what MISSION_JIRA_BIN points at", () => {
   assert.ok(existsSync(agents.bins.jira));
-  assert.ok(agents.bins.jira.endsWith("fake-jira"));
+  assert.equal(agents.bins.jira, fakeExecutablePath(join(home, "agents", "fake-bin", "fake-jira")));
 });

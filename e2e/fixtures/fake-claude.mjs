@@ -11,8 +11,9 @@ import { tmpdir } from "node:os";
  *
  * A path ending in one of those is run as `node <path>`; anything else is executed
  * directly. `writeFakeAgents` therefore copies this file to an extension-less path and
- * chmods it, so the `#!/usr/bin/env node` shebang is what picks the interpreter. Keeping
- * the SOURCE named `.mjs` is what lets the repo's own tooling still read it as ESM.
+ * chmods it, so the `#!/usr/bin/env node` shebang is what picks the interpreter (on win32,
+ * the `.exe` launcher `test/helpers/fake-executable.ts` writes beside it). Keeping the
+ * SOURCE named `.mjs` is what lets the repo's own tooling still read it as ESM.
  *
  * WHAT THE DRIVER ACTUALLY READS
  * `ClaudeSdkSession.consume` reacts to exactly four things, so this only has to emit four:

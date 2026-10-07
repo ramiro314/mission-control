@@ -1,9 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+
+import { fakeExecutablePath, writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What is at stake: an operator being told a confident, false thing about their repository.
 //
@@ -45,13 +47,18 @@ after(() => {
  * same `outcomeUnknown` through the route that does NOT cost the test the full preflight
  * budget, and it is the more honest reproduction anyway - the OOM killer and an operator's
  * `pkill` reach a real dispatch far more often than our own ceiling does.
+ *
+ * Windows has no death by signal: a process killed there just exits with a code, which reads
+ * exactly like a git that answered "no". The one death `run` can see on win32 is its own
+ * timeout, so there the fake hangs until the preflight budget reaps it.
  */
 function fakeGitThatDies(): string {
   const dir = join(home, "bin-dies");
   mkdirSync(dir, { recursive: true });
-  const bin = join(dir, "git");
-  writeFileSync(bin, "#!/bin/sh\nkill -9 $$\n");
-  chmodSync(bin, 0o755);
+  writeFakeExecutable(
+    join(dir, "git"),
+    'if (process.platform === "win32") setInterval(() => {}, 1 << 30);\nelse process.kill(process.pid, "SIGKILL");\n',
+  );
   return dir;
 }
 
@@ -60,7 +67,7 @@ async function withPath<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const originalPath = process.env.PATH;
   const originalOverride = process.env.MISSION_GIT_BIN;
   process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
-  process.env.MISSION_GIT_BIN = join(dir, "git");
+  process.env.MISSION_GIT_BIN = fakeExecutablePath(join(dir, "git"));
   try {
     return await fn();
   } finally {

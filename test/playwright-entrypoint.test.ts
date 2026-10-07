@@ -25,9 +25,13 @@ test("a bare Playwright command discovers only the browser E2E suite", () => {
   delete env.MISSION_TEST_STATE;
   delete env.NODE_TEST_CONTEXT;
 
-  // This is the exact command shape an agent used during the live-state incident, with
-  // --list added so discovery is exercised without starting browsers or application daemons.
-  const result = spawnSync(join(repoRoot, "node_modules", ".bin", "playwright"), ["test", "--list"], {
+  // This is the command shape an agent used during the live-state incident (`playwright test`
+  // with no config or path), with --list added so discovery is exercised without starting
+  // browsers or application daemons. It starts the CLI's JS entry under this Node rather than
+  // through `node_modules/.bin/playwright`, which on win32 is a `.cmd` shim Node will not
+  // spawn without a shell; the arguments Playwright sees are the same.
+  const cli = join(repoRoot, "node_modules", "@playwright", "test", "cli.js");
+  const result = spawnSync(process.execPath, [cli, "test", "--list"], {
     cwd: repoRoot,
     env,
     encoding: "utf8",

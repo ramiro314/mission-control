@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
@@ -26,10 +27,15 @@ const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-runtime-"));
 process.env.HARNESS_HOME = home;
-// A binary that exists, so bin resolution can never be what fails here.
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_CODEX_BIN = "/bin/echo";
-process.env.MISSION_PI_BIN = "/bin/echo";
+// A binary that exists, so bin resolution can never be what fails here: one fake that prints
+// its args like `echo`, standing in for all three agents.
+const echo = writeFakeExecutable(
+  join(home, "echo"),
+  'process.stdout.write(process.argv.slice(2).join(" ") + "\\n");\n',
+);
+process.env.MISSION_CLAUDE_BIN = echo;
+process.env.MISSION_CODEX_BIN = echo;
+process.env.MISSION_PI_BIN = echo;
 // No MCP bundle, which is what lets the terminal case below refuse a dispatch that
 // REQUIRES our tools - and refuse it while assembling the argv, before it would open a
 // terminal home. That matters more than it looks: a test that let the terminal path reach

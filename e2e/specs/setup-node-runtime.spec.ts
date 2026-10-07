@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test as base } from "../fixtures/test.ts";
@@ -6,16 +6,21 @@ import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
+import {
+  fakeExecutablePath,
+  removeFakeExecutable,
+  writeFakeExecutable,
+} from "../../test/helpers/fake-executable.ts";
 
-const test = base.extend<{ selectedNode: { path: string; version(value: string): Promise<void> } }>({
+const test = base.extend<{ selectedNode: { path: string; version(value: string): void; remove(): void } }>({
   selectedNode: async ({}, use) => {
     const dir = await mkdtemp(join(tmpdir(), "mission-setup-node-"));
-    const path = join(dir, "node");
-    const version = async (value: string) => {
-      await writeFile(path, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(value)});\n`, { mode: 0o755 });
+    const script = join(dir, "node");
+    const version = (value: string) => {
+      writeFakeExecutable(script, `process.stdout.write(${JSON.stringify(value)});\n`);
     };
-    await version("22.0.0");
-    try { await use({ path, version }); }
+    version("22.0.0");
+    try { await use({ path: fakeExecutablePath(script), version, remove: () => removeFakeExecutable(script) }); }
     finally { await rm(dir, { recursive: true, force: true }); }
   },
   daemonEnv: async ({ selectedNode }, use) => {
@@ -52,13 +57,13 @@ test("Setup detects old, missing and invalid Node and runs the repair through th
   // Opening a terminal is not evidence of a repaired installation.
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row).toContainText("Node.js 22.0.0 is too old");
-  await rm(selectedNode.path);
+  selectedNode.remove();
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row).toContainText("Node.js could not be found");
-  await selectedNode.version("not-a-version");
+  selectedNode.version("not-a-version");
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row).toContainText("could not verify the selected Node.js version");
-  await selectedNode.version("24.0.0");
+  selectedNode.version("24.0.0");
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row.getByRole("img", { name: "Ready", exact: true })).toBeVisible();
   await expect(row).toContainText("Node.js 24.0.0");

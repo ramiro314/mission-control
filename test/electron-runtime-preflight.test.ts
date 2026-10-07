@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  chmodSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -9,23 +8,34 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   ensureElectronRuntime,
   probeElectronRuntime,
 } from "../scripts/ensure-electron-runtime.mjs";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 const VERSION = "43.1.0-test";
 
-/** A fake package whose installer fails its first `failures` runs, as a dropped download would. */
+/**
+ * A fake package whose installer fails its first `failures` runs, as a dropped download would.
+ *
+ * `path.txt` names the file the preflight starts, so it names the path the fake-executable
+ * helper says to start a fake by. The installer "downloads" a healthy runtime by copying every
+ * file of one written ahead of time beside `dist/`, which the reinstall deletes.
+ */
 function fakeElectronPackage(failures = 0): string {
   const dir = mkdtempSync(join(tmpdir(), "mission-electron-preflight-"));
   mkdirSync(join(dir, "dist"));
+  mkdirSync(join(dir, "download"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ version: VERSION }));
-  writeFileSync(join(dir, "path.txt"), "fake-electron");
-  writeFileSync(join(dir, "dist", "fake-electron"), "#!/usr/bin/env node\nprocess.exit(7);\n");
-  chmodSync(join(dir, "dist", "fake-electron"), 0o755);
+  const executable = basename(writeFakeExecutable(join(dir, "dist", "fake-electron"), "process.exit(7);\n"));
+  writeFakeExecutable(
+    join(dir, "download", "fake-electron"),
+    `process.stdout.write(${JSON.stringify(VERSION)});\n`,
+  );
+  writeFileSync(join(dir, "path.txt"), executable);
 
   writeFileSync(
     join(dir, "install.js"),
@@ -40,13 +50,8 @@ if (count <= ${failures}) {
   console.error("download failed");
   process.exit(1);
 }
-fs.mkdirSync(path.join(dir, "dist"), { recursive: true });
-fs.writeFileSync(path.join(dir, "path.txt"), "fake-electron");
-fs.writeFileSync(
-  path.join(dir, "dist", "fake-electron"),
-  ${JSON.stringify(`#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(VERSION)});\n`)},
-  { mode: 0o755 },
-);
+fs.cpSync(path.join(dir, "download"), path.join(dir, "dist"), { recursive: true });
+fs.writeFileSync(path.join(dir, "path.txt"), ${JSON.stringify(executable)});
 `,
   );
   return dir;
@@ -119,8 +124,7 @@ test("a runtime download that fails three times stops retrying and fails", () =>
 test("an invalid override fails without deleting either runtime", () => {
   const dir = fakeElectronPackage();
   const override = mkdtempSync(join(tmpdir(), "mission-electron-override-"));
-  writeFileSync(join(override, "fake-electron"), "#!/usr/bin/env node\nprocess.exit(9);\n");
-  chmodSync(join(override, "fake-electron"), 0o755);
+  writeFakeExecutable(join(override, "fake-electron"), "process.exit(9);\n");
   try {
     assert.throws(
       () =>

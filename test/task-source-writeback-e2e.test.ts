@@ -1,10 +1,11 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 // Pure and browser-safe (no `node:` imports), so a static import cannot open the DB ahead
@@ -62,20 +63,15 @@ after(() => {
 });
 
 /** A `gh` that records the cwd and one argv entry per line, then succeeds. */
-const GH = (() => {
-  const path = join(bin, "gh");
-  writeFileSync(
-    path,
-    [
-      "#!/bin/sh",
-      // Appended, so one file holds every call the queue made in order.
-      `{ pwd; for a in "$@"; do printf '%s\\n' "$a"; done; echo '--'; } >> "$MC_GH_RECORD"`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(path, 0o755);
-  return path;
-})();
+const GH = writeFakeExecutable(
+  join(bin, "gh"),
+  [
+    // Appended, so one file holds every call the queue made in order.
+    `const lines = [process.cwd(), ...process.argv.slice(2), "--"];`,
+    `require("node:fs").appendFileSync(process.env.MC_GH_RECORD, lines.map((l) => l + "\\n").join(""));`,
+    "",
+  ].join("\n"),
+);
 
 /** Every `gh` invocation so far, each as its recorded cwd followed by its argv. */
 function calls(): string[][] {

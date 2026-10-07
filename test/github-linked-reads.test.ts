@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { GithubIssuesConfigSchema } from "../src/shared/task-source.ts";
 import { githubIssues } from "../src/server/task-sources/github-issues.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 for (const abort of [false, true]) {
   test(`linked GitHub reads ${abort ? "stop scheduling after abort" : "use a bounded pool and preserve per-item results"}`, async () => {
@@ -14,7 +15,7 @@ for (const abort of [false, true]) {
     const log = join(dir, "calls");
     const release = join(dir, "release");
     const previous = process.env.MISSION_GH_BIN;
-    writeFileSync(bin, `#!/usr/bin/env node
+    const gh = writeFakeExecutable(bin, `#!/usr/bin/env node
 const fs = require("node:fs");
 const url = process.argv[4];
 const number = Number(url.split("/").at(-1));
@@ -26,8 +27,8 @@ const timer = setInterval(() => {
   if (number === 3) { process.stderr.write("private provider diagnostic"); process.exitCode = 1; }
   else process.stdout.write(JSON.stringify({ number, title: "Issue " + number, body: "Body", url, labels: [] }));
 }, 10);
-`, { mode: 0o755 });
-    process.env.MISSION_GH_BIN = bin;
+`);
+    process.env.MISSION_GH_BIN = gh;
     const controller = new AbortController();
     const refs = Array.from({ length: 9 }, (_, i) => ({
       sourceId: "source", externalId: `acme/demo#${i + 1}`,

@@ -1,15 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 
 // A headless `claude -p` runs Claude Code for real, so it fires the SAME hooks a human's
@@ -26,7 +25,6 @@ import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts
 //
 // The fake bin reports the env it was handed, which is exactly what the hook would capture.
 const dir = mkdtempSync(join(tmpdir(), "headless-env-"));
-const fakeBin = join(dir, "fake-claude.sh");
 const runArgs = join(dir, "args");
 const runStdin = join(dir, "stdin");
 const runReady = join(dir, "ready");
@@ -35,35 +33,43 @@ process.env.RUN_ARGS = runArgs;
 process.env.RUN_STDIN = runStdin;
 process.env.RUN_READY = runReady;
 process.env.RUN_PID = runPid;
-writeFileSync(
-  fakeBin,
-  `#!/bin/sh
-cat > "$RUN_STDIN"
-: > "$RUN_ARGS"
-stream_output=
-previous=
-for a in "$@"; do
-  printf '%s\\n' "$a" >> "$RUN_ARGS"
-  if [ "$previous" = "--output-format" ] && [ "$a" = "stream-json" ]; then stream_output=1; fi
-  previous="$a"
-done
-if [ "$RUN_CLAUDE_WAIT" = "1" ]; then
-  printf '%s' "$$" > "$RUN_PID"
-  : > "$RUN_READY"
-  sleep 60
-fi
-if [ "$stream_output" = "1" ]; then
-  printf '%s\\n' \\
-    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"mcp__plugin_example__search","input":{"query":"exact"}}]}}' \\
-    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"content":"model-facing text","structuredContent":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}}' \\
-    '{"type":"result","result":"model summary"}'
-else
-  printf '{"tmuxPane":"%s","weztermPane":"%s","itermSession":"%s","marker":"%s"}' \\
-    "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS"
-fi
+const fakeBin = writeFakeExecutable(
+  join(dir, "fake-claude"),
+  `const fs = require("node:fs");
+const env = process.env;
+const chunks = [];
+process.stdin.on("data", (chunk) => chunks.push(chunk));
+process.stdin.on("end", () => {
+  fs.writeFileSync(env.RUN_STDIN, Buffer.concat(chunks));
+  const args = process.argv.slice(2);
+  fs.writeFileSync(env.RUN_ARGS, args.map((a) => a + "\\n").join(""));
+  const streamOutput = args.some((a, i) => i > 0 && args[i - 1] === "--output-format" && a === "stream-json");
+  const answer = () => {
+    if (streamOutput) {
+      process.stdout.write(
+        [
+          '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"mcp__plugin_example__search","input":{"query":"exact"}}]}}',
+          '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"content":"model-facing text","structuredContent":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}}',
+          '{"type":"result","result":"model summary"}',
+        ].map((line) => line + "\\n").join(""),
+      );
+    } else {
+      process.stdout.write(
+        '{"tmuxPane":"' + (env.TMUX_PANE ?? "") + '","weztermPane":"' + (env.WEZTERM_PANE ?? "") +
+          '","itermSession":"' + (env.ITERM_SESSION_ID ?? "") + '","marker":"' + (env.MISSION_HEADLESS ?? "") + '"}',
+      );
+    }
+  };
+  if (env.RUN_CLAUDE_WAIT === "1") {
+    fs.writeFileSync(env.RUN_PID, String(process.pid));
+    fs.writeFileSync(env.RUN_READY, "");
+    setTimeout(answer, 60_000);
+  } else {
+    answer();
+  }
+});
 `,
 );
-chmodSync(fakeBin, 0o755);
 process.env.MISSION_CLAUDE_BIN = fakeBin;
 
 // Both imports stay below the override. `registry.ts` reaches the harness registry, which reaches

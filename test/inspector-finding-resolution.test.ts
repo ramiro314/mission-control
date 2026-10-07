@@ -1,9 +1,10 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
 
@@ -20,7 +21,6 @@ const project = fileURLToPath(new URL("..", import.meta.url));
 
 mkdirSync(binDir, { recursive: true });
 process.env.MISSION_HOME = join(temp, "state");
-process.env.MISSION_CLAUDE_BIN = claudePath;
 process.env.MISSION_INSPECTOR_POLL_MS = "25";
 process.env.FAKE_GITHUB_STATE = statePath;
 process.env.FAKE_REVIEW_COUNT_PATH = reviewCountPath;
@@ -28,7 +28,7 @@ process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 
 // One fake for both jobs. The reply prompt ends with a line the review prompt never
 // carries, which is what tells the two apart without the test reaching into either.
-writeFileSync(
+process.env.MISSION_CLAUDE_BIN = writeFakeExecutable(
   claudePath,
   `#!/usr/bin/env node
 const chunks = [];
@@ -56,12 +56,11 @@ process.stdin.on("end", () => {
 });
 `,
 );
-chmodSync(claudePath, 0o755);
 
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restoreTransport = configureClaudeRunnerTransport(() => "print");
 
-writeFileSync(
+writeFakeExecutable(
   ghPath,
   `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -175,7 +174,6 @@ if (args[0] === "api" && args[1] === "user") {
 }
 `,
 );
-chmodSync(ghPath, 0o755);
 
 const {
   openDb,

@@ -2002,6 +2002,13 @@ A dispatch uses **two** of them, which is worth knowing before adding a spec:
 account on every dispatch, and `dispatch-and-converse.spec.ts` asserts that both paths landed
 on the fake so that regression is caught rather than invoiced.
 
+A fixture or spec that adds a fake CLI writes it as a Node.js script through
+`writeFakeExecutable` (`test/helpers/fake-executable.ts`) and points its `*_BIN` override at
+the path that returns. Windows starts no script by its shebang, so on win32 that path is an
+`.exe` launcher beside the script, and the daemon spawns it the way it spawns a real
+`claude.exe`. A fake written any other way never starts on the Windows e2e job, and the
+dispatch it was meant to answer never goes live.
+
 ## Isolation
 
 `startDaemon()` redirects everything the daemon would otherwise reach for:
