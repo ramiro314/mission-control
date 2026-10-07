@@ -27,6 +27,10 @@ const preload = (await import(preloadPath)) as {
   TEST_STATE_REMOVAL_EVENT: string;
   releaseBeforeRemoval(target?: { rmSync(path: unknown, options?: unknown): unknown }): void;
 };
+// Installed once for the whole file, as the preload does on win32, so every case below stands
+// on its own however it is selected or ordered. On win32 this wraps a second time, which only
+// announces each removal twice.
+preload.releaseBeforeRemoval();
 
 test("the preload and db.ts name the same removal event", () => {
   assert.equal(preload.TEST_STATE_REMOVAL_EVENT, TEST_STATE_REMOVAL_EVENT);
@@ -57,7 +61,6 @@ test("the wrapped rmSync announces the absolute path before it removes anything"
 
 test("removing an unrelated directory, even one sharing the home's prefix, keeps the connection", () => {
   const db = openDb();
-  preload.releaseBeforeRemoval();
   mkdirSync(sibling);
   mkdirSync(join(home, "unrelated"));
   rmSync(sibling, { recursive: true, force: true });
@@ -75,13 +78,15 @@ test("removing the home through node:fs closes the database it holds first", () 
 
 test("a worker whose exit cleanup cannot remove its state dir still exits cleanly", (t) => {
   if (process.getuid?.() === 0) return t.skip("root removes read-only directories");
-  // Something the removal cannot get past: an open file on win32, as the database was, and a
-  // read-only directory elsewhere, because POSIX removes an open file without complaint.
+  // Something the removal cannot get past: on win32 an open SQLite database, the very handle
+  // this is about (libuv opens a plain file with delete sharing, so `openSync` would not hold),
+  // and a read-only directory elsewhere, because POSIX removes an open file without complaint.
   const hold = process.platform === "win32"
-    ? 'openSync(locked + "/held", "w");'
+    ? 'new DatabaseSync(locked + "/held").exec("CREATE TABLE held (x)");'
     : 'writeFileSync(locked + "/held", ""); chmodSync(locked, 0o555);';
   const script = [
-    'import { chmodSync, mkdirSync, openSync, writeFileSync } from "node:fs";',
+    'import { chmodSync, mkdirSync, writeFileSync } from "node:fs";',
+    'import { DatabaseSync } from "node:sqlite";',
     'const locked = process.env.HARNESS_HOME + "/locked";',
     "mkdirSync(locked);",
     hold,
@@ -98,9 +103,7 @@ test("a worker whose exit cleanup cannot remove its state dir still exits cleanl
     assert.ok(root && existsSync(join(root, "locked", "held")), "the child removed its state dir");
     assert.match(child.stderr, /test\/setup-state\.mjs: left .* behind/);
   } finally {
-    if (root) {
-      chmodSync(join(root, "locked"), 0o755);
-      rmSync(root, { recursive: true, force: true });
-    }
+    if (root && existsSync(join(root, "locked"))) chmodSync(join(root, "locked"), 0o755);
+    if (root) rmSync(root, { recursive: true, force: true });
   }
 });
