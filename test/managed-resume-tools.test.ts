@@ -17,7 +17,10 @@ process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 process.env.MISSION_CODEX_BIN = process.execPath;
 process.env.MISSION_PI_BIN = process.execPath;
-await managedResumeFixture(home);
+// Managed resume relaunches a session into a terminal, and its lease directories are guarded by
+// POSIX owner and mode bits. win32 has neither, so only the cases that never touch a lease run.
+const RESUME = { skip: skipOnWin32("the terminal runtime is unavailable on win32; managed resume launches into a terminal and its lease guard checks POSIX owner and mode bits") };
+if (!RESUME.skip) await managedResumeFixture(home);
 const { prepareTerminalResume, managedResumeRoot } = await import("../src/server/harness/resume.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");
 const { MISSION_MCP_TOOLS, verifyMissionMcpTools } = await import("../src/server/mission-mcp.ts");
@@ -34,7 +37,7 @@ const session = (id: string) => mkSession({ id, runtime: "sdk", agentSessionId: 
 const WRAPPER = { skip: skipOnWin32("the terminal runtime is unavailable on win32; runs the managed resume wrapper under /bin/sh and signals its process group") };
 const context = { managed: true, requiredTools: [], extraDirs: [] } as const;
 
-test("concurrent session aliases admit only one preparation for a native conversation", async () => {
+test("concurrent session aliases admit only one preparation for a native conversation", RESUME, async () => {
   const source = session("shared-native-conversation");
   const results = await Promise.allSettled([
     prepareTerminalResume({ ...source, id: "source-alias-one" }, context),
@@ -55,7 +58,7 @@ test("concurrent session aliases admit only one preparation for a native convers
   retry.dispose();
 });
 
-test("Claude config is private, isolated and actually serves the required MCP protocol", async () => {
+test("Claude config is private, isolated and actually serves the required MCP protocol", RESUME, async () => {
   process.env.MISSION_SESSION_ID = "stale-sdk";
   process.env.TMUX_PANE = "%unrelated";
   const attachedCheckout = join(home, "attached");
@@ -90,7 +93,7 @@ test("Claude config is private, isolated and actually serves the required MCP pr
   }
 });
 
-test("Codex resumes retain each permission posture, exact scope and coupled hooks", async () => {
+test("Codex resumes retain each permission posture, exact scope and coupled hooks", RESUME, async () => {
   const bridge = join(home, "codex-hook.mjs");
   writeFileSync(bridge, "");
   process.env.MISSION_CODEX_HOOK = bridge;
@@ -111,7 +114,7 @@ test("Codex resumes retain each permission posture, exact scope and coupled hook
   } finally { delete process.env.MISSION_CODEX_HOOK; }
 });
 
-test("Pi uses its extension capability and refuses an unavailable installation", async () => {
+test("Pi uses its extension capability and refuses an unavailable installation", RESUME, async () => {
   assert.deepEqual(await HARNESSES.pi.resumeTools({ descriptor: null, stateHome: home, requiredTools: MISSION_MCP_TOOLS }),
     { args: [], instrumented: true });
   process.env.PI_EXTENSIONS_DIR = join(home, "missing-pi-extensions");
@@ -121,7 +124,7 @@ test("Pi uses its extension capability and refuses an unavailable installation",
   } finally { delete process.env.PI_EXTENSIONS_DIR; }
 });
 
-test("Pi prepares a native resume through a verified installed extension", async () => {
+test("Pi prepares a native resume through a verified installed extension", RESUME, async () => {
   const { writePiIntegration } = await import("./helpers/pi-integration.ts");
   const previous = { ...process.env };
   const integration = join(home, "installed-pi-integration");
@@ -163,7 +166,7 @@ test("requirements union live Persona and ensemble obligations with task kind an
   assert.ok(resumeContext(source, mkTask({ kind: "scout" }), false, false).requiredTools.includes("submit_scout_artifacts"));
 });
 
-test("missing tools and renderer exceptions revoke preparation without retaining secrets", async (t) => {
+test("missing tools and renderer exceptions revoke preparation without retaining secrets", RESUME, async (t) => {
   const mcp = process.env.MISSION_MCP_SERVER;
   process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "stale.mjs"), ["request_input"]);
   try { await assert.rejects(prepareTerminalResume(session("stale"), context), /does not publish/); }
@@ -173,7 +176,7 @@ test("missing tools and renderer exceptions revoke preparation without retaining
   for (const status of reconcileResumeLeases(managedResumeRoot())) assert.equal(existsSync(status.lease.home), false);
 });
 
-test("an unusable guard fails before provisioning any lease", async () => {
+test("an unusable guard fails before provisioning any lease", RESUME, async () => {
   const prior = process.env.MISSION_RESUME_GUARD;
   process.env.MISSION_RESUME_GUARD = join(home, "invalid-guard.mjs");
   writeFileSync(process.env.MISSION_RESUME_GUARD, "process.exit(0);");
@@ -181,7 +184,7 @@ test("an unusable guard fails before provisioning any lease", async () => {
   finally { process.env.MISSION_RESUME_GUARD = prior; }
 });
 
-test("selected 504 with no wrapper expires across restart and fences every late claim", async () => {
+test("selected 504 with no wrapper expires across restart and fences every late claim", RESUME, async () => {
   const prepared = await prepareTerminalResume(session("never-launched"), context);
   // Provisioning/drain time does not consume the external launch budget.
   assert.equal(resumeLeaseStatus(prepared.lease).deadline, null);
@@ -198,7 +201,7 @@ test("selected 504 with no wrapper expires across restart and fences every late 
   assert.equal(reconcileResumeLeases(restored.root, deadline + 10).find((s) => s.lease.id === restored.id)?.state, "revoked");
 });
 
-test("a claimed or ambiguous owner retains credentials indefinitely and prevents duplicate resumes", async () => {
+test("a claimed or ambiguous owner retains credentials indefinitely and prevents duplicate resumes", RESUME, async () => {
   const prepared = await prepareTerminalResume(session("claimed"), context);
   prepared.beginLaunch();
   assert.equal(claimResumeLease(prepared.lease, 1234567, 100), true);
@@ -211,7 +214,7 @@ test("a claimed or ambiguous owner retains credentials indefinitely and prevents
   assert.equal(existsSync(prepared.stateHome), false);
 });
 
-test("definite refusal revokes an unused home but a conflicting wrapper claim becomes unknown", async () => {
+test("definite refusal revokes an unused home but a conflicting wrapper claim becomes unknown", RESUME, async () => {
   for (const claimed of [false, true]) {
     const p = await prepareTerminalResume(session(`refused-${claimed}`), context);
     const result = await launchManagedAgentTerminal("tmux", { name: "test", prepared: p }, async () => {
@@ -226,7 +229,7 @@ test("definite refusal revokes an unused home but a conflicting wrapper claim be
 
 for (const path of ["default", "selected"] as const) {
   for (const outcome of ["success", "refused", "timeout", "exception", "claimed-refusal", "intent-failure"] as const) {
-    test(`${path} managed launcher owns the prepared command and lease for ${outcome}`, async () => {
+    test(`${path} managed launcher owns the prepared command and lease for ${outcome}`, RESUME, async () => {
       const { fakeMultiplexer, fakeEmulator, fakeTerminals, muxPane, OK } = await import("./helpers/terminal-fakes.ts");
       const { PLAIN_NAMES } = await import("../src/server/terminal/names.ts");
       const prepared = await prepareTerminalResume(session(`${path}-${outcome}`), context);
@@ -285,7 +288,7 @@ for (const path of ["default", "selected"] as const) {
   }
 }
 
-test("interrupted provisioning, revocation and deletion reconcile idempotently", () => {
+test("interrupted provisioning, revocation and deletion reconcile idempotently", RESUME, () => {
   const preparing = new Set<string>();
   const lease = createResumeLease(managedResumeRoot(), "crashed-provisioning", preparing);
   writeFileSync(join(lease.home, "loopback-token"), "fixture-only");
@@ -434,7 +437,7 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
   }
 });
 
-test("symlinks, foreign locators and corrupt records cannot authorize deletion", () => {
+test("symlinks, foreign locators and corrupt records cannot authorize deletion", RESUME, () => {
   const state = join(home, "foreign-state"); mkdirSync(state);
   const root = resumeLeaseRoot(state);
   try {
@@ -453,7 +456,7 @@ test("symlinks, foreign locators and corrupt records cannot authorize deletion",
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("claim versus revoke is exclusive across processes", async () => {
+test("claim versus revoke is exclusive across processes", RESUME, async () => {
   const module = pathToFileURL(join(process.cwd(), "src/server/terminal/resume-lease.ts")).href;
   const contender = join(home, "contender.mjs");
   writeFileSync(contender, `import { readResumeLease, claimResumeLease, revokeResumeLease } from ${JSON.stringify(module)};

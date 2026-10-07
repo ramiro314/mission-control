@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/server/util/exec.ts";
 import { wasRefused } from "../src/server/inspector/github.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 // `run` is how everything in this app talks to `gh`, and the Inspector is the one caller
 // whose commands PUBLISH - a review carrying up to eight comments on a public pull
@@ -41,7 +42,11 @@ test("a command that succeeds is not an unknown either", () => {
 // `killed: false` and a signal - and under a `killed`-only test it reads as an ordinary
 // refusal. The Inspector would then revert a whole round to `drafted` believing nothing
 // was published, and post it again next round beside the review that already landed.
-test("a command killed from outside is an unknown outcome, not a refusal", () => {
+// win32 has no signals: a process terminated from outside (`TerminateProcess`, `taskkill /F`)
+// reports an ordinary exit code, so nothing distinguishes it there from a refusal.
+test("a command killed from outside is an unknown outcome, not a refusal", {
+  skip: skipOnWin32("POSIX signals: a process terminated from outside reports an ordinary exit code on win32"),
+}, () => {
   return run(process.execPath, ["-e", "process.kill(process.pid, 'SIGKILL')"]).then((res) => {
     assert.notEqual(res.code, 0);
     assert.equal(
