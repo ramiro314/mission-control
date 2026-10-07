@@ -57,6 +57,7 @@ import type {
   WorkflowSubmissionTextArtifactWrite,
 } from "./store.ts";
 import { physicalPathSync } from "../util/physical-path.ts";
+import { openedPathSync } from "../util/opened-path.ts";
 
 /** Re-exported so every caller that already knew this name keeps its import path. */
 export { WorkflowImageEvidenceError };
@@ -111,28 +112,35 @@ function assertOpenedInsideCheckout(
     // O_NOFOLLOW_ANY already made path resolution and the open one atomic operation.
     return;
   }
-  if (process.platform === "linux") {
-    let openedPath: string;
-    try {
-      openedPath = physicalPathSync(`/proc/self/fd/${fd}`);
-    } catch {
-      throw new WorkflowImageEvidenceError(
-        `${kind}_path`,
-        `${label} opened without a verifiable checkout target`,
-      );
-    }
-    if (!isInside(checkoutRoot, openedPath)) {
-      throw new WorkflowImageEvidenceError(
-        `${kind}_path`,
-        `${label} escaped its issued checkout while it was opened`,
-      );
-    }
-    return;
+  if (process.platform !== "linux" && process.platform !== "win32") {
+    throw new WorkflowImageEvidenceError(
+      `${kind}_path`,
+      `${label} cannot be opened safely on this platform`,
+    );
   }
-  throw new WorkflowImageEvidenceError(
-    `${kind}_path`,
-    `${label} cannot be opened safely on this platform`,
-  );
+  let openedPath: string;
+  try {
+    openedPath = openedPathSync(fd);
+  } catch (error) {
+    // Still refused, but the reason is logged: on win32 it can be a stale or missing addon
+    // (`ERR_OPENED_PATH_EXPORT_MISSING`, `MODULE_NOT_FOUND`) as well as a descriptor error
+    // (`EBADF`, `EOPENEDPATH`), and the refusal below reads the same for all of them.
+    const code = (error as { code?: unknown } | null)?.code;
+    workflowLog("warn", {
+      event: "evidence_opened_path_unverified",
+      error: typeof code === "string" ? code : "unclassified",
+    });
+    throw new WorkflowImageEvidenceError(
+      `${kind}_path`,
+      `${label} opened without a verifiable checkout target`,
+    );
+  }
+  if (!isInside(checkoutRoot, openedPath)) {
+    throw new WorkflowImageEvidenceError(
+      `${kind}_path`,
+      `${label} escaped its issued checkout while it was opened`,
+    );
+  }
 }
 
 function cleanDisplayName(value: string): string {
