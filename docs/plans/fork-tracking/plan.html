@@ -634,8 +634,12 @@ after the merge, so the feature is never lost. It shows as a standalone fix for 
 one refresh cycle.</li>
 <li><strong>Label discipline.</strong> A feature PR that forgets its label is listed as a standalone fix. That
 is visible in the doc and fixed by labeling the PR. No conflict round is needed.</li>
-<li><strong>Issue bodies are editable by hand.</strong> A hand edit is overwritten only in the sections a
-later delta replaces. The issue&#39;s edit history is the audit trail.</li>
+<li><strong>Issue bodies are editable by hand.</strong> A hand edit is never overwritten. It changes the
+section&#39;s hash, so any pending block whose base was computed before the edit is reported
+stale and held back (decision 30). Someone then has to rebase that block onto the edited
+text, keeping both changes, before the refresh applies it. A block whose base was computed
+after the edit already contains the hand-edited text. The issue&#39;s edit history is the
+audit trail.</li>
 </ul>
 <h2>Out of scope</h2>
 <ul>

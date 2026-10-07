@@ -430,8 +430,12 @@ section (decision 29). The daily mission gets its grant from its own task body.
   one refresh cycle.
 - **Label discipline.** A feature PR that forgets its label is listed as a standalone fix. That
   is visible in the doc and fixed by labeling the PR. No conflict round is needed.
-- **Issue bodies are editable by hand.** A hand edit is overwritten only in the sections a
-  later delta replaces. The issue's edit history is the audit trail.
+- **Issue bodies are editable by hand.** A hand edit is never overwritten. It changes the
+  section's hash, so any pending block whose base was computed before the edit is reported
+  stale and held back (decision 30). Someone then has to rebase that block onto the edited
+  text, keeping both changes, before the refresh applies it. A block whose base was computed
+  after the edit already contains the hand-edited text. The issue's edit history is the
+  audit trail.
 
 ## Out of scope
 
