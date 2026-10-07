@@ -85,11 +85,12 @@ function bundleDisplayName(bundle: string): string {
   return last.charAt(0).toUpperCase() + last.slice(1);
 }
 
+// A macOS path, so it is joined the POSIX way whatever platform the code was loaded on.
 async function macBundle(deps: OpenDeps): Promise<string> {
   const home = deps.env.HOME || homedir();
   const plist = await deps.run(
     "plutil",
-    ["-convert", "json", "-o", "-", path.join(home, LAUNCH_SERVICES_PLIST)],
+    ["-convert", "json", "-o", "-", path.posix.join(home, LAUNCH_SERVICES_PLIST)],
     { timeoutMs: 4000, env: deps.env },
   );
   // Every failure here means the same thing - nobody has overridden the default - so a

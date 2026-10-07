@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { basename } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -114,7 +115,7 @@ function cardFor(page: Page, repo: string) {
 
 /** Open a repository's disclosure. Its accessible name is its leaf plus its state chip. */
 async function openCard(page: Page, repo: string): Promise<void> {
-  const leaf = repo.split("/").pop()!;
+  const leaf = basename(repo);
   await page.getByRole("button", { name: new RegExp(`^${leaf} `) }).click();
 }
 

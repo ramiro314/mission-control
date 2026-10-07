@@ -83,7 +83,7 @@ test("the probe reports the published executable version instead of the newer ch
   const probe = await probeConductor();
   assert.equal(probe.version, "0.103.0");
   assert.match(probe.error ?? "", /bundle is 0\.103\.0, but its checkout is 0\.104\.0/);
-  assert.match(probe.error ?? "", /rerun .*bin\/install/);
+  assert.match(probe.error ?? "", /rerun .*bin[\\/]install/);
 });
 
 test("a stale published bundle is refused before an old provider can launch an agent", async () => {
@@ -94,7 +94,7 @@ test("a stale published bundle is refused before an old provider can launch an a
   if (!answer.ok) {
     assert.equal(answer.outcomeUnknown, false);
     assert.match(answer.error, /bundle is 0\.103\.0, but its checkout is 0\.104\.0/);
-    assert.match(answer.error, /rerun .*bin\/install/);
+    assert.match(answer.error, /rerun .*bin[\\/]install/);
   }
   assert.equal(existsSync(invocationMarker), false, "the incompatible provider command ran");
 });

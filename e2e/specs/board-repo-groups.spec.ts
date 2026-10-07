@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -99,7 +100,7 @@ async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void>
   await expect(page.getByRole("navigation", { name: "Sessions" })).toBeVisible();
 }
 
-const leaf = (path: string): string => path.replace(/\/+$/, "").split("/").pop()!;
+const leaf = (path: string): string => basename(path);
 
 test("the Board groups cards by repository out of the box, and a heading folds its group", async ({
   dashboard,

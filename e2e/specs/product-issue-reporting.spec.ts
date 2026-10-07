@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -637,7 +637,7 @@ test("the screenshot input uploads and publishes through one first-party attach 
   const record = productCreates(daemon)[0]!;
   const attachmentPaths = record.argv.filter((_value, index) => record.argv[index - 1] === "--attach");
   expect(attachmentPaths).toHaveLength(1);
-  expect(attachmentPaths[0]).toContain(`${daemon.home}/uploads/`);
+  expect(attachmentPaths[0]).toContain(join(daemon.home, "uploads") + sep);
   expect(attachmentPaths[0]).toContain(uploadId);
   expect(record.argv).not.toContain(uploadId);
 });

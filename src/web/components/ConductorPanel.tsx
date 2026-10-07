@@ -47,7 +47,7 @@ const LAUNCH_RUNTIME_COPY: Record<
 
 /** The last path segment, which is what an operator recognises a checkout by. */
 function repoLabel(repoRoot: string): string {
-  const parts = repoRoot.split("/").filter(Boolean);
+  const parts = repoRoot.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? repoRoot;
 }
 

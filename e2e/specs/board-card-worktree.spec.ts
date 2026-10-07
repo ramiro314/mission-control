@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -71,7 +72,7 @@ test("the worktree ships off, and switching it on puts the leaf on the card", as
   daemon,
 }) => {
   const cwd = await dispatchIdleAgent(dashboard, daemon);
-  const leaf = cwd.replace(/\/+$/, "").split("/").pop()!;
+  const leaf = basename(cwd);
   await useBoardLayout(dashboard, daemon);
 
   const tile = dashboard.locator("main.board .tile");

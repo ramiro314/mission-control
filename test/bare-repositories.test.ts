@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { basename, join } from "node:path";
+import { basename, join, sep } from "node:path";
 import { test } from "node:test";
 import { scanRepos, resolveRepoPath, resolveTaskRepoRoot } from "../src/server/repos.ts";
 import { gitInfo, isBareRepository, mainRepoRoot, worktreeRepositoryIdentity } from "../src/server/util/git.ts";
@@ -56,7 +56,9 @@ test("bare identity follows Git boolean syntax and changes in included config, r
     assert.equal(mainRepoRoot(bare), bare);
     writeFileSync(join(bare, "config"), '[core]\n bare = "yes"\n');
     assert.equal(isBareRepository(bare), true);
-    for (const section of ["include", `includeIf "gitdir:${bare}"`]) {
+    // Git reads `\` in a quoted subsection name as an escape, and matches `gitdir:` against a
+    // forward-slashed path on every platform, so the pattern is spelled with `/`.
+    for (const section of ["include", `includeIf "gitdir:${bare.split(sep).join("/")}"`]) {
       writeFileSync(join(bare, "included"), "[core]\n bare = true\n");
       writeFileSync(join(bare, "config"), `[${section}]\n path = included\n`);
       assert.equal(mainRepoRoot(bare), bare, section);
@@ -75,7 +77,8 @@ test("bare identity follows Git boolean syntax and changes in included config, r
 test("rescanning more than 256 ordinary checkouts never starts synchronous Git config processes", async (t) => {
   const { root, clone } = mkOriginAndClone("mission-bare-scan-cost-");
   const indexed = join(root, "indexed");
-  const config = readFileSync(join(clone, ".git", "config"), "utf8");
+  // Plus the remote a Windows clone of a drive path records, which Git writes escaped as `\\`.
+  const config = `${readFileSync(join(clone, ".git", "config"), "utf8")}[remote "drive"]\n\turl = C:\\\\work\\\\origin\n`;
   const repos = Array.from({ length: 257 }, (_, i) => join(indexed, `repo-${i}`)).sort();
   for (const repo of repos) {
     const metadata = join(repo, ".git");
@@ -113,6 +116,8 @@ test("bare config detection agrees with Git on literals, overrides, unsupported 
     "[core]\n bare = tr\\\nue\n",
     "[core]\n bare = true\n[broken\n", "bare = true\n",
     "[core]\n bare = invalid\n", '[core]\n bare = false\n other = "bad\\q"\n',
+    '[core]\n bare = true\n[remote "origin"]\n url = C:\\\\work\\\\origin\n',
+    "[core]\n bare = true\n other = a\\tb\\nc\\bd\n", "[core]\n bare = true\n other = C:\\work\n",
   ];
   try {
     for (const source of cases) {

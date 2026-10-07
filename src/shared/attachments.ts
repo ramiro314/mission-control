@@ -24,6 +24,13 @@ export interface Attachment {
  * space in it would otherwise paste as two half-paths.
  */
 export function formatAttachmentPath(path: string): string {
+  // A daemon on Windows stores uploads under a drive path. It is written the way a Windows
+  // terminal pastes a dropped file: bare, or quoted with its backslashes left as they are,
+  // because a separator escaped into `\\` would no longer name the file. Windows forbids `"`
+  // in a path, so the quotes need no escaping either.
+  if (/^[A-Za-z]:[\\/]/.test(path)) {
+    return /^[A-Za-z]:[A-Za-z0-9._\-\\/]+$/.test(path) ? path : `"${path}"`;
+  }
   return /^[A-Za-z0-9._\-/]+$/.test(path) ? path : `"${path.replace(/(["\\])/g, "\\$1")}"`;
 }
 
