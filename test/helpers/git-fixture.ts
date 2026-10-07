@@ -31,12 +31,15 @@ export function mkOriginAndClone(prefix: string): OriginAndClone {
   og("branch", "-M", "main");
   og("config", "user.email", "t@test");
   og("config", "user.name", "t");
+  // Checkouts write the bytes the tests compare against, so the runner's own
+  // `core.autocrlf` (true on Windows) must not turn them into CRLF.
+  og("config", "core.autocrlf", "false");
   writeFileSync(join(origin, "keep.txt"), "base\n");
   og("add", "-A");
   og("commit", "-qm", "base");
 
   const clone = join(root, "clone");
-  execFileSync("git", ["clone", "-q", origin, clone]);
+  execFileSync("git", ["clone", "-q", "-c", "core.autocrlf=false", origin, clone]);
   gitIn(clone, "config", "user.email", "t@test");
   gitIn(clone, "config", "user.name", "t");
   return { root, origin, clone };

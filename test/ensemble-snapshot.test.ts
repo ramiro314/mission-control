@@ -54,6 +54,9 @@ function mkRepoWithMember(name: string): { repo: string; member: string; baseSha
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
   git(repo, "config", "user.email", "t@test");
   git(repo, "config", "user.name", "t");
+  // The member and any restored tree share this config, so their checkouts keep the LF
+  // bytes compared below even where the runner sets `core.autocrlf` (Windows).
+  git(repo, "config", "core.autocrlf", "false");
   writeFileSync(join(repo, ".gitignore"), "cache/\n");
   writeFileSync(join(repo, "keep.txt"), "base\n");
   writeFileSync(join(repo, "staged.txt"), "before staging\n");

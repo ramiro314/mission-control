@@ -55,6 +55,21 @@ test("capture records honest observed evidence and a ref that resolves to the sn
   assert.equal(await gitSnapshotAdapter.verify(captured.locator, { repoPath: path }), true);
 });
 
+test("the fingerprint is the same whatever the operator's core.autocrlf says", async () => {
+  // A comparison across members trusts the fingerprint alone, and Windows runners default to
+  // `core.autocrlf=true`. Git stores LF blobs either way, so the digest must not move with it.
+  const fingerprints = [];
+  for (const autocrlf of ["false", "true"]) {
+    const { path, baseSha } = gitRepo();
+    git(path, "config", "core.autocrlf", autocrlf);
+    writeFileSync(join(path, "README.md"), "base\nmore\n");
+    writeFileSync(join(path, "new.txt"), "added\n");
+    const captured = await gitSnapshotAdapter.capture({ runId: UUID_A, artifactId: UUID_B, worktreePath: path, baseSha });
+    fingerprints.push(captured.fingerprint);
+  }
+  assert.equal(fingerprints[1], fingerprints[0]);
+});
+
 test("verify fails once the private ref no longer resolves to its commit", async () => {
   const { path, baseSha } = gitRepo();
   writeFileSync(join(path, "x.txt"), "x\n");
