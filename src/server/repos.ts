@@ -30,7 +30,7 @@ let cache: { at: number; repos: string[] } | null = null;
 
 /**
  * Roots to scan for repos. Settings > Repositories owns the saved list, while
- * `MISSION_WORKSPACE_DIRS` (colon-separated, like PATH) keeps launch-time precedence.
+ * `MISSION_WORKSPACE_DIRS` (delimited like PATH) keeps launch-time precedence.
  */
 export function workspaceRoots(): string[] {
   return indexedDirectories();
