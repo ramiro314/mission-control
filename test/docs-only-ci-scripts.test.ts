@@ -1,7 +1,7 @@
 /**
  * The `docs-only-ci` skill's two step scripts, run the way GitHub Actions runs a `run:` step:
- * `bash -eo pipefail <file>`, every input through `env`. `/bin/bash` is bash 3.2 on macOS, so a
- * local run also proves the scripts never reach for a newer bash.
+ * `bash -eo pipefail <file>`, every input through `env`, under the bash `test/helpers/script-bash.ts`
+ * picks for this platform.
  *
  * `git` is a stub first on `PATH`. It answers like real git: with `--no-renames` a move from
  * `src/` into `docs/` lists both paths, and without it only the new `docs/` path. Dropping the
@@ -11,13 +11,13 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ciCheckRunsFromRollup, decideWaitForCi, initialWaitForCiState } from "../src/shared/wait-for-ci.ts";
 import { FLAKY_TESTS_CHECK_NAME, parseFlakeSummary, renderFlakeSummary } from "../src/shared/flake-report.ts";
+import { runBashScript } from "./helpers/script-bash.ts";
 
 const ASSETS = fileURLToPath(new URL("../skills/docs-only-ci/assets/", import.meta.url));
 const DETECT = join(ASSETS, "detect-docs-only.sh");
@@ -44,10 +44,7 @@ function run(script: string, env: Record<string, string>) {
   rmSync(argsFile, { force: true });
   const output = join(dir, "github-output");
   writeFileSync(output, "");
-  const r = spawnSync("/bin/bash", ["-eo", "pipefail", script], {
-    encoding: "utf8",
-    env: { PATH: `${dir}:${process.env.PATH ?? ""}`, STUB_GIT_ARGS: argsFile, GITHUB_OUTPUT: output, ...env },
-  });
+  const r = runBashScript(script, [], dir, { STUB_GIT_ARGS: argsFile, GITHUB_OUTPUT: output, ...env });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr, output: readFileSync(output, "utf8") };
 }
 
