@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { junitCaseKey, parseJUnit, type JUnitCase } from "@shared/junit.ts";
 import { expandTestCommandTemplate } from "@shared/command-template.ts";
 import {
@@ -160,7 +160,9 @@ export async function runAffectedTests(
   const cwd = join(ctx.treeRoot, ctx.workingSubpath);
   const roots = [realpathOr(ctx.treeRoot), ctx.treeRoot];
   const selectedPaths = new Set(plan.files.map((file) => file.path));
-  const argFor = (path: string) => relative(cwd, join(ctx.treeRoot, path)) || ".";
+  // Forward slashes on every platform, so each argv element still names the selected file the
+  // way git and the recorded selection spell it. Every runner on win32 accepts them.
+  const argFor = (path: string) => relative(cwd, join(ctx.treeRoot, path)).split(sep).join("/") || ".";
   const ranLabel = `Ran ${plural(plan.files.length, "selected test file", "selected test files")}`;
 
   const mapFile = (reported: string | null): string | null => {

@@ -2,7 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 // What is at stake: an agent that has been gagged and given nothing to say instead.
 //
@@ -166,7 +166,7 @@ test("the mcp config names our server and points at the bundle with an absolute 
   assert.equal(server.args[0], fakeBundle);
   // Claude Code launches this as an external process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
-  assert.ok(server.command.startsWith("/"), `runtime should be absolute, got ${server.command}`);
+  assert.ok(isAbsolute(server.command), `runtime should be absolute, got ${server.command}`);
   // The tool name in the argv has to match what this server registration produces, or the
   // pre-approval silently covers nothing and the agent stops on a permission prompt.
   assert.equal(ASK_TOOL, "mcp__mission-control__request_input");

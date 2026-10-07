@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 
@@ -136,6 +136,11 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "spawn", command: "command", contract: "ci-workflow-command", reason: "the CI workflow's own rerun-command input, run once over the failed test files" },
   ],
 };
+
+/** A file's path under the repository, spelled with `/` on every platform like the tables above. */
+function repoPath(file: string): string {
+  return relative(ROOT, file).split(sep).join("/");
+}
 
 function sourceFiles(directory: string): string[] {
   const files: string[] = [];
@@ -309,12 +314,12 @@ test("literal external commands are declared or fixed absolute OS utilities", ()
   const problems: string[] = [];
   for (const file of sourceFiles(join(ROOT, "src"))) {
     const source = readFileSync(file, "utf8");
-    const calls = externalCalls(relative(ROOT, file), source);
+    const calls = externalCalls(repoPath(file), source);
     for (const call of [...calls.childProcess, ...calls.sharedRun]) {
       const command = literalCommand(call.command);
       if (!command) continue;
       if (declared.has(command) || fixed.has(command)) continue;
-      problems.push(`${relative(ROOT, file)}:${call.line} invokes undeclared ${command}`);
+      problems.push(`${repoPath(file)}:${call.line} invokes undeclared ${command}`);
     }
   }
   assert.deepEqual(problems, []);
@@ -349,7 +354,7 @@ test("the child-process scanner follows import aliases and namespace calls", () 
 test("every direct child-process call matches one structured executable boundary", () => {
   const observed: string[] = [];
   for (const file of sourceFiles(join(ROOT, "src"))) {
-    const name = relative(ROOT, file);
+    const name = repoPath(file);
     const source = readFileSync(file, "utf8");
     for (const call of externalCalls(name, source).childProcess) {
       observed.push(boundarySignature(name, call));

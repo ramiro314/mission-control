@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 // Isolate the state dir before uploads.ts reads config for UPLOADS_DIR.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-uploads-"));
@@ -142,6 +142,19 @@ test("formatAttachmentPath: quotes a path only when it would otherwise split", (
   assert.equal(formatAttachmentPath('/tmp/we"ird/a.png'), '"/tmp/we\\"ird/a.png"');
 });
 
+test("formatAttachmentPath: a Windows drive path keeps its backslashes, quoted only when it must", () => {
+  // Escaping the separators as the POSIX branch does would paste a path that names nothing.
+  assert.equal(
+    formatAttachmentPath("C:\\Users\\ada\\.mission-control\\uploads\\a-1.png"),
+    "C:\\Users\\ada\\.mission-control\\uploads\\a-1.png",
+  );
+  assert.equal(
+    formatAttachmentPath("C:\\Users\\first last\\uploads\\a-1.png"),
+    '"C:\\Users\\first last\\uploads\\a-1.png"',
+  );
+  assert.equal(formatAttachmentPath("D:/state/uploads/a-1.png"), "D:/state/uploads/a-1.png");
+});
+
 test("a saved upload's real path never needs quoting", () => {
   // The end-to-end version of the promise the two halves make each other: whatever
   // the client called it, what lands in the prompt is one bare token.
@@ -153,7 +166,7 @@ test("a saved upload's real path never needs quoting", () => {
 
 test("uploads land inside the state dir, not wherever the caller fancied", () => {
   const saved = saveImageUpload(PNG, "x.png");
-  assert.ok(saved.path.startsWith(UPLOADS_DIR + "/"), saved.path);
+  assert.ok(saved.path.startsWith(UPLOADS_DIR + sep), saved.path);
   // And the dir is the daemon's own, alongside the db - not a world-writable temp.
   assert.ok(UPLOADS_DIR.startsWith(process.env.MISSION_HOME!), UPLOADS_DIR);
 });

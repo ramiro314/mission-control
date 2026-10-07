@@ -1585,7 +1585,7 @@ jobs&#39; condition and the tree-reuse wiring.</p>
 </tr>
 <tr>
 <td>PRs</td>
-<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces), pending (Windows CI wall time: Defender off, shared e2e <code>dist/</code>), pending (fake CLIs that start on win32), pending (one physical spelling for 8.3 short paths), pending (the repository index splits <code>MISSION_WORKSPACE_DIRS</code> on the PATH delimiter), pending (tests run the repository&#39;s bash scripts under Git Bash on win32, not <code>/bin/bash</code>). The per-task base branch it depends on (M0.1) has its own entry.</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces), pending (Windows CI wall time: Defender off, shared e2e <code>dist/</code>), pending (fake CLIs that start on win32), pending (one physical spelling for 8.3 short paths), pending (the repository index splits <code>MISSION_WORKSPACE_DIRS</code> on the PATH delimiter), pending (tests run the repository&#39;s bash scripts under Git Bash on win32, not <code>/bin/bash</code>), pending (path separators and file URLs). The per-task base branch it depends on (M0.1) has its own entry.</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1720,6 +1720,17 @@ call. <code>state/isolation.ts</code> keeps it too, because it judges a test hom
 <code>e2e/playwright.config.ts</code> point <code>%TEMP%</code> at its long spelling, so fixtures and the daemon
 agree on every path derived from it. <code>test/physical-path.test.ts</code> refuses any new use of the
 JS realpath in <code>src/server</code>, whether named, namespace or default imported.</li>
+<li><strong>Path separators</strong> (D8, D22): a path the product reports beside git&#39;s, a repository-relative
+doc cited in a prompt (<code>readRepoDoc</code>) or a selected test file in the affected-tests argv, is
+spelled with <code>/</code> on every platform. A containment check compares <code>relative()</code> output, never a
+<code>${root}/</code> prefix (<code>scripts/check-doc-links.mjs</code>). A path that is only ever macOS&#39;s, such as the
+LaunchServices plist, is joined with <code>path.posix</code>. The dashboard cannot ask which platform the
+daemon runs on, so <code>repoLeaf</code>, <code>promptPath</code> and the repository pickers split a host path on
+either separator, and <code>formatAttachmentPath</code> writes a drive path bare, or quoted with its
+backslashes intact. Repository discovery reads a config value carrying Git&#39;s own escapes, such as
+the <code>\\</code> of a remote at a drive path, without starting <code>git config</code>. Tests build expected paths
+with <code>node:path</code>, turn a module URL into a path with <code>fileURLToPath</code>, never <code>URL.pathname</code>, and
+reach Vite&#39;s <code>/@fs/</code> route through a file URL&#39;s path.</li>
 <li><strong>Makefile</strong> (D31): run from Git Bash with a separately installed GNU make. On Windows
 (<code>OS=Windows_NT</code>), <code>make app</code>, <code>make install</code> and <code>make install-app</code> say they are macOS only
 and exit, and so do <code>make claude</code>, <code>up</code>, <code>down</code>, <code>restart</code>, <code>stop-all</code> and <code>status</code>, which
@@ -1744,6 +1755,10 @@ seam on <code>main</code>.</li>
 <li>Upstream physicalizes paths synchronously only where this branch now calls
 <code>physicalPathSync</code>. A new <code>realpathSync</code> in <code>src/server</code> is a conceptual conflict even when it
 merges cleanly. Route it through the seam, which <code>test/physical-path.test.ts</code> enforces.</li>
+<li>Upstream splits a host path on <code>/</code> only for labels and paths that come from git. A new
+<code>split(&quot;/&quot;)</code>, <code>${root}/</code> prefix test or <code>URL.pathname</code> read on a native path is a conceptual
+conflict even when it merges cleanly: use <code>node:path</code>, <code>fileURLToPath</code>, or the dashboard&#39;s
+<code>repoLeaf</code>.</li>
 <li><code>process.platform</code> is how the daemon and the Electron main process tell platforms apart. The
 daemon reads it for harness and runtime availability through <code>hostPlatform()</code>, so the e2e
 suite can build a daemon that answers win32.</li>

@@ -1,5 +1,4 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -287,7 +286,9 @@ test("the backlog editor offers no way into another mode, and saves the row it o
 });
 
 const EVIDENCE = artifactsDir("dispatch-modes");
-const MOUNT_MODULE = fileURLToPath(new URL("../fixtures/dispatch-mount.tsx", import.meta.url));
+// Vite's `/@fs/` route takes a file URL's path: `/@fs/Users/...` on macOS, `/@fs/D:/a/...` on
+// Windows, where pasting the native `D:\a\...` after the prefix names no file at all.
+const MOUNT_MODULE = `/@fs${new URL("../fixtures/dispatch-mount.tsx", import.meta.url).pathname}`;
 
 /**
  * The openings the old prop list could spell and the union now cannot, one per pair of jobs
@@ -349,7 +350,7 @@ test("a contradictory opening shows no form in the browser, and the same layer r
     await dashboard.goto(`${dev.origin}/#/fleet`);
     await expect(dashboard.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
     await dashboard.evaluate(async ({ modulePath, row }) => {
-      const mount = await import(/* @vite-ignore */ `/@fs${modulePath}`);
+      const mount = await import(/* @vite-ignore */ modulePath);
       const w = window as unknown as Record<string, unknown>;
       w.__dispatchMount = mount;
       w.__tourDispatches = 0;

@@ -90,3 +90,32 @@ test("heading anchors keep underscores the way GitHub renders them", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a link that leaves the repository is refused, even toward a sibling sharing its name prefix", () => {
+  const parent = mkdtempSync(join(tmpdir(), "mission-doc-links-"));
+  const root = join(parent, "repo");
+  try {
+    mkdirSync(join(root, "docs"), { recursive: true });
+    mkdirSync(join(root, "e2e"));
+    mkdirSync(join(parent, "repo-sibling"));
+    writeFileSync(join(root, "README.md"), "# Readme\n");
+    writeFileSync(join(root, "AGENTS.md"), "# Agents\n");
+    writeFileSync(join(root, "e2e", "README.md"), "# E2E\n");
+    writeFileSync(join(parent, "outside.md"), "# Outside\n");
+    writeFileSync(join(parent, "repo-sibling", "near.md"), "# Near\n");
+    writeFileSync(join(root, "docs", "escape.md"), "[Out](../../outside.md)\n\n[Near](../../repo-sibling/near.md)\n");
+
+    assert.throws(
+      () => execFileSync(process.execPath, [checker], { cwd: root, encoding: "utf8" }),
+      (error: unknown) => {
+        assert.ok(error && typeof error === "object" && "status" in error && "stderr" in error);
+        assert.equal(error.status, 1);
+        assert.match(String(error.stderr), /outside repository: \.\.\/\.\.\/outside\.md/);
+        assert.match(String(error.stderr), /outside repository: \.\.\/\.\.\/repo-sibling\/near\.md/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});

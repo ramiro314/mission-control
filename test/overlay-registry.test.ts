@@ -57,6 +57,11 @@ function tsxFiles(dir: string): string[] {
   });
 }
 
+/** A file's path under `src/web`, spelled with `/` on every platform like the lists below. */
+function webPath(file: string): string {
+  return path.relative(WEB, file).split(path.sep).join("/");
+}
+
 /**
  * Comments are stripped before any source scan below. Otherwise a comment that merely
  * MENTIONS `modal-backdrop` or `role="dialog"` fails the scan while proving nothing,
@@ -76,7 +81,7 @@ test("only the Overlay primitive renders a backdrop", () => {
   // role="dialog" scan below covers the screen-owning surfaces that escape this one.
   const offenders = tsxFiles(WEB)
     .filter((f) => code(f).includes("modal-backdrop"))
-    .map((f) => path.relative(WEB, f));
+    .map(webPath);
   assert.deepEqual(
     offenders,
     ["components/Overlay.tsx"],
@@ -156,7 +161,7 @@ test("every role=\"dialog\" surface is registered, or is a declared exception", 
       const src = code(f);
       return /role=["{]"?dialog/.test(src) && !/from "\.[./]*(components\/)?Overlay\.tsx"/.test(src);
     })
-    .map((f) => path.relative(WEB, f))
+    .map(webPath)
     .sort();
   assert.deepEqual(
     unregistered,
@@ -174,7 +179,7 @@ test("every overlay routes through the primitive", () => {
   assert.ok(overlayFiles.length >= 6, `expected the known overlays, found ${overlayFiles.length}`);
   for (const f of overlayFiles) {
     const src = code(f);
-    const rel = path.relative(WEB, f);
+    const rel = webPath(f);
     // App is the host, not an overlay - it wires the registry rather than rendering one.
     if (rel === "App.tsx") {
       assert.ok(src.includes("<OverlayHost"), "App must render the OverlayHost");

@@ -11,6 +11,8 @@ import { missionHookScriptPath } from "../src/server/harness/claude/hooks.ts";
 import { reRootPath } from "../src/server/repos.ts";
 import { repoLeafName } from "../src/server/testing-setup.ts";
 import { grantRefusal } from "../src/shared/llm.ts";
+import { repoOptionLabels } from "../src/web/components/RepoCombobox.tsx";
+import { promptPath, repoLeaf } from "../src/web/lib/format.ts";
 
 // The win32 state-home audit's fixes in server code (M2.5 of
 // `docs/plans/windows-support/plan.md`). Each one compared or split a native path on "/",
@@ -68,4 +70,17 @@ test("a tool grant's win32 cwd is absolute on win32 and relative elsewhere", () 
   assert.equal(grantRefusal(sandbox, grant, "win32"), null);
   assert.match(grantRefusal(sandbox, grant, "darwin") ?? "", /grant cwd must be absolute/);
   assert.equal(grantRefusal(sandbox, { ...grant, cwd: "/code/mono" }, "darwin"), null);
+});
+
+test("the dashboard names a win32 repository by its folder, as it does a POSIX one", () => {
+  // The browser cannot ask which platform the daemon runs on, so the labels split on both.
+  assert.equal(repoLeaf("C:\\Users\\r\\workspace\\demo-repo"), "demo-repo");
+  assert.equal(repoLeaf("C:\\Users\\r\\workspace\\demo-repo\\"), "demo-repo");
+  assert.equal(repoLeaf("/Users/r/workspace/demo-repo/"), "demo-repo");
+  assert.equal(promptPath("C:\\wt\\demo-repo-3"), "~/demo-repo-3");
+  assert.equal(promptPath("/wt/demo-repo-3"), "~/demo-repo-3");
+  assert.deepEqual(repoOptionLabels(["C:\\clients\\acme\\api", "C:\\work\\beta\\api"]), [
+    { repo: "C:\\clients\\acme\\api", name: "api", hint: "acme" },
+    { repo: "C:\\work\\beta\\api", name: "api", hint: "beta" },
+  ]);
 });

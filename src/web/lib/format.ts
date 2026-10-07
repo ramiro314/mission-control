@@ -246,8 +246,9 @@ export function fmtRunway(ms: number): string {
  */
 export function repoLeaf(repoRoot: string | null | undefined): string {
   if (!repoRoot) return "-";
-  const trimmed = repoRoot.replace(/\/+$/, "");
-  const leaf = trimmed.split("/").pop();
+  // Either separator: a daemon on Windows reports `C:\src\api`.
+  const trimmed = repoRoot.replace(/[\\/]+$/, "");
+  const leaf = trimmed.split(/[\\/]/).pop();
   return leaf && leaf.length > 0 ? leaf : trimmed;
 }
 
@@ -296,7 +297,7 @@ export function sessionTitleDetail(session: Pick<Session, "name" | "task">): str
  * bookkeeping, and the conversation's launcher strip already prints it in full.
  */
 export function promptPath(cwd: string | null): string {
-  const leaf = cwd ? (cwd.split("/").filter(Boolean).pop() ?? "") : "";
+  const leaf = cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? "") : "";
   return leaf ? `~/${leaf}` : "~";
 }
 

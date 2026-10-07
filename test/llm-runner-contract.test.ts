@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
@@ -899,7 +899,7 @@ test("the runner declares the litter its runs leave behind", () => {
   // to say where, or the sweeper learns about it when someone's disk fills.
   assert.ok(claudeRunner.litter, "the claude runner leaves transcripts and must declare them");
   assert.equal(claudeRunner.litter.ext, ".jsonl");
-  assert.ok(claudeRunner.litter.dir().startsWith("/"), "the litter directory must be absolute");
+  assert.ok(isAbsolute(claudeRunner.litter.dir()), "the litter directory must be absolute");
   assert.equal(typeof claudeRunner.killLiveRuns, "function");
   // Null rather than a throwing stub, so a caller can branch on the absence. If it is ever
   // implemented the key must be one supervised session, never a shared thread.
