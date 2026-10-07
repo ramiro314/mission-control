@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { expectedMode } from "./helpers/posix-mode.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-agent-env-test-"));
 const operatorState = join(root, "operator-state");
@@ -93,7 +94,7 @@ test("agent launch env replaces every inherited state alias and preserves loopba
   assert.equal(first.MISSION_PORT, String(daemonPort));
   assert.equal(first[MISSION_API_TOKEN_ENV], undefined);
   assert.equal(readFileSync(first[MISSION_API_TOKEN_FILE_ENV]!, "utf8").trim(), "loopback-test-token");
-  assert.equal(statSync(first[MISSION_API_TOKEN_FILE_ENV]!).mode & 0o777, 0o600);
+  assert.equal(statSync(first[MISSION_API_TOKEN_FILE_ENV]!).mode & 0o777, expectedMode(0o600));
   assert.equal(
     first[SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV],
     isolatedScoutSubmissionCredentialPath(cwd),

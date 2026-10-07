@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -83,15 +83,17 @@ test("a filesystem failure skips the channel instead of failing the dispatch", a
   // would not merely skip the ask channel - it would mark a task `failed` that had nothing
   // else wrong with it, and a session that would have launched fine never launches.
   await askChannelArgs("claude"); // create the dir and its file
-  // Make the next call actually WANT to write: `writeIfChanged` is a no-op on equal content,
-  // so an unwritable directory alone would prove nothing.
-  writeFileSync(askChannelPaths.mcpConfig, "stale, forces a rewrite");
-  chmodSync(askChannelPaths.dir, 0o500); // readable, not writable: the temp file cannot be made
+  // A directory where the config belongs fails the same way on every platform, which a
+  // read-only directory does not: win32 has no permission bits for `chmod` to clear. It also
+  // makes the next call WANT to write, since `writeIfChanged` is a no-op on equal content, and
+  // then the rename of its temp file onto that directory fails.
+  rmSync(askChannelPaths.mcpConfig);
+  mkdirSync(join(askChannelPaths.mcpConfig, "occupied"), { recursive: true });
   try {
     const args = await askChannelArgs("claude");
     assert.deepEqual(args, [], "degrade to no channel rather than throwing into dispatch");
   } finally {
-    chmodSync(askChannelPaths.dir, 0o700);
+    rmSync(askChannelPaths.mcpConfig, { recursive: true, force: true });
   }
 });
 

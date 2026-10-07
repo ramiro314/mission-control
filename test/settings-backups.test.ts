@@ -22,6 +22,7 @@ import {
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
+import { expectedMode } from "./helpers/posix-mode.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-settings-backups-"));
 process.env.HARNESS_HOME = join(home, "state");
@@ -229,8 +230,8 @@ test("the store writes owner-only files, diagnoses symlinks and bounds reads", (
   const store = new SettingsBackupStore(root);
   const snapshot = makeSnapshot();
   assert.equal(store.write(snapshot).status, "ready");
-  assert.equal(lstatSync(root).mode & 0o777, 0o700);
-  assert.equal(lstatSync(join(root, `${snapshot.id}.json`)).mode & 0o777, 0o600);
+  assert.equal(lstatSync(root).mode & 0o777, expectedMode(0o700));
+  assert.equal(lstatSync(join(root, `${snapshot.id}.json`)).mode & 0o777, expectedMode(0o600));
 
   const linkName = "daily-2026-08-25.json";
   symlinkSync(join(root, `${snapshot.id}.json`), join(root, linkName));
