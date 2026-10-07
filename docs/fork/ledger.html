@@ -1703,7 +1703,10 @@ once per machine with the .NET Framework&#39;s <code>csc.exe</code> from
 the caller&#39;s argv, stdio and exit code, and takes the script down when it is killed. The
 product resolves and spawns that <code>.exe</code> like a Windows user&#39;s own tool, with no test-only
 path. Codex, Pi and terminal-backend fakes stay as they were, because those surfaces skip on
-win32.</li>
+win32. A test that fakes the login-environment PATH read writes it through
+<code>writeFakeLoginShell</code> in <code>test/helpers/login-shell.ts</code>: <code>$SHELL</code> on macOS and Linux, and on
+win32 the Windows PowerShell under a fixture <code>%SystemRoot%</code>, which the win32 row starts by
+its fixed path.</li>
 <li><strong>Physical paths</strong> (<code>src/server/util/physical-path.ts</code>, D38): every synchronous realpath in
 <code>src/server</code> goes through <code>physicalPathSync</code>, so it spells a path the way
 <code>fs.promises.realpath</code> does. On win32 that is the native call, which expands
@@ -1792,7 +1795,7 @@ skip on win32 or write a fake CLI, <code>AGENTS.md</code>, <code>e2e/README.md</
 <code>scripts/probe-keep-awake-native.d.mts</code>, <code>e2e/fixtures/win32-host-build.ts</code>,
 <code>e2e/specs/win32-{harness-availability,setup-checks}.spec.ts</code>, <code>test/helpers/win32-skip.ts</code>,
 <code>test/helpers/fake-executable.ts</code>, <code>test/helpers/fake-executable-launcher.cs</code>,
-<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,physical-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
+<code>test/helpers/login-shell.ts</code>, <code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,physical-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

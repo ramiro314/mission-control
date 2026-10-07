@@ -3,6 +3,7 @@ import {
   accessSync,
   chmodSync,
   constants,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -20,13 +21,52 @@ import {
   probeLoginShellPath,
   type LoginShellResult,
 } from "../src/server/executables/locator.ts";
+import { fakeExecutablePath } from "./helpers/fake-executable.ts";
+import { writeFakeLoginShell } from "./helpers/login-shell.ts";
 
+/**
+ * Install a tool named `path` the way the platform names one, and return where it landed:
+ * `path` itself on POSIX, `<path>.exe` on win32, whose ladder looks a bare command up only by
+ * its PATHEXT names. Nothing here is ever started, so the file need not be a real program.
+ */
 function executable(path: string): string {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, "#!/bin/sh\nexit 0\n");
-  chmodSync(path, 0o755);
-  return path;
+  const file = fakeExecutablePath(path);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, "#!/bin/sh\nexit 0\n");
+  chmodSync(file, 0o755);
+  return file;
 }
+
+/** System directories the platform's own PATH carries, which a managed toolchain outranks. */
+const SYSTEM_PATH = process.platform === "win32"
+  ? ["C:\\Windows\\System32", "C:\\Windows"]
+  : ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+/** The first of them, which is also an OS default the ladder always keeps. */
+const SYSTEM_BIN = SYSTEM_PATH[0]!;
+
+/**
+ * Each platform row's per-user tool directories, relative to the home directory. asdf and Go
+ * have no rung on win32 (asdf ships no Windows build); npm's global prefix has one only there.
+ */
+const USER_TOOL_LOCATIONS = process.platform === "win32"
+  ? [
+    [".local", "bin"],
+    ["AppData", "Roaming", "npm"],
+    ["AppData", "Local", "mise", "shims"],
+    ["AppData", "Local", "Volta", "bin"],
+  ]
+  : [
+    [".local", "bin"],
+    [".local", "share", "mise", "shims"],
+    [".asdf", "shims"],
+    [".volta", "bin"],
+    ["go", "bin"],
+  ];
+
+/** A version manager whose data directory an environment variable relocates, on each row. */
+const RELOCATABLE_MANAGER = process.platform === "win32"
+  ? { variable: "VOLTA_HOME", bin: "bin" }
+  : { variable: "ASDF_DATA_DIR", bin: "shims" };
 
 /** The predicate the locator uses in production, restated so the fixture can bound it. */
 function executableFile(path: string): boolean {
@@ -114,7 +154,9 @@ test("the deterministic path ladder records custom, manager, inherited, login, a
   Object.assign(f.env, {
     MISSION_EXECUTABLE_PATHS: custom,
     PATH: inherited,
+    // mise's default shims sit under $XDG_DATA_HOME on POSIX and %LOCALAPPDATA% on win32.
     XDG_DATA_HOME: xdg,
+    LOCALAPPDATA: xdg,
   });
   try {
     const locator = new ExecutableLocator({
@@ -132,13 +174,7 @@ test("the deterministic path ladder records custom, manager, inherited, login, a
   }
 });
 
-for (const location of [
-  [".local", "bin"],
-  [".local", "share", "mise", "shims"],
-  [".asdf", "shims"],
-  [".volta", "bin"],
-  ["go", "bin"],
-]) {
+for (const location of USER_TOOL_LOCATIONS) {
   test(`${location.join("/")} outranks inherited and login-shell binaries across refreshes`, async () => {
     const f = fixture();
     const manager = join(f.root, ...location);
@@ -147,13 +183,13 @@ for (const location of [
     const managedNode = executable(join(manager, "node"));
     executable(join(inherited, "node"));
     executable(join(login, "node"));
-    f.env.PATH = [inherited, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(delimiter);
+    f.env.PATH = [inherited, ...SYSTEM_PATH].join(delimiter);
     try {
       const locator = new ExecutableLocator({
         env: f.env,
         executable: f.executable,
         probeLoginShell: async () => ({
-          path: [login, "/usr/bin", manager, inherited].join(delimiter),
+          path: [login, SYSTEM_BIN, manager, inherited].join(delimiter),
           problem: null,
         }),
       });
@@ -167,7 +203,7 @@ for (const location of [
         const path = locator.snapshot().path.split(delimiter);
         assert.equal(new Set(path).size, path.length, "directories are deduplicated");
         assert.ok(path.indexOf(manager) < path.indexOf(inherited));
-        assert.ok(path.indexOf(manager) < path.indexOf("/usr/bin"));
+        assert.ok(path.indexOf(manager) < path.indexOf(SYSTEM_BIN));
         if (phase !== "fallback") assert.ok(path.indexOf(manager) < path.indexOf(login));
         assert.equal(resolved?.env.PATH, locator.snapshot().path);
       }
@@ -245,7 +281,7 @@ test("PATH lookup skips executable directories and selects an executable file", 
   const f = fixture();
   const first = join(f.root, "first");
   const second = join(f.root, "second");
-  mkdirSync(join(first, "pi"), { recursive: true });
+  mkdirSync(fakeExecutablePath(join(first, "pi")), { recursive: true });
   const pi = executable(join(second, "pi"));
   f.env.PATH = [first, second].join(delimiter);
   try {
@@ -318,8 +354,13 @@ test("prefixed and legacy absolute overrides win and keep one launch environment
 test("a relative per-tool override is rejected instead of depending on daemon cwd", async () => {
   const f = fixture();
   const pi = executable(join(f.root, "custom", "pi"));
-  f.env.MISSION_PI_BIN = relative(process.cwd(), pi);
+  const previousCwd = process.cwd();
   try {
+    // Run from the fixture root, so the relative override names a real executable from the
+    // daemon's cwd: `relative()` cannot reach a temp dir on another drive, and win32 CI
+    // checks out on D: with its temp dir on C:.
+    process.chdir(f.root);
+    f.env.MISSION_PI_BIN = relative(f.root, pi);
     const locator = new ExecutableLocator({
       env: f.env,
       executable: f.executable,
@@ -327,6 +368,7 @@ test("a relative per-tool override is rejected instead of depending on daemon cw
     });
     assert.equal(await locator.resolve(executableSpec("pi")), null);
   } finally {
+    process.chdir(previousCwd);
     f.clean();
   }
 });
@@ -351,9 +393,9 @@ test("custom per-user terminal app locations are supported without a filesystem 
 
 test("dead login shells degrade to manager and OS defaults", async () => {
   const f = fixture();
-  const asdf = join(f.root, "relocated-asdf");
-  const pi = executable(join(asdf, "shims", "pi"));
-  f.env.ASDF_DATA_DIR = asdf;
+  const relocated = join(f.root, "relocated-manager");
+  const pi = executable(join(relocated, RELOCATABLE_MANAGER.bin, "pi"));
+  f.env[RELOCATABLE_MANAGER.variable] = relocated;
   try {
     const locator = new ExecutableLocator({
       env: f.env,
@@ -364,7 +406,7 @@ test("dead login shells degrade to manager and OS defaults", async () => {
     assert.equal(resolved?.path, pi);
     assert.equal(resolved?.source, "version-manager");
     assert.equal(locator.snapshot().loginShellProblem, "login shell timed out");
-    assert.equal(locator.snapshot().path.includes("/usr/bin"), true);
+    assert.equal(locator.snapshot().path.split(delimiter).includes(SYSTEM_BIN), true);
   } finally {
     f.clean();
   }
@@ -372,23 +414,27 @@ test("dead login shells degrade to manager and OS defaults", async () => {
 
 test("a login-shell grandchild holding output cannot outlive the discovery deadline", async () => {
   const f = fixture();
-  const shell = executable(f.env.SHELL!);
-  writeFileSync(
-    shell,
-    [
-      "#!/bin/sh",
-      "/bin/sleep 30 &",
-      "printf '__MISSION_PATH__/usr/bin__MISSION_PATH__'",
-      "",
-    ].join("\n"),
-  );
+  // Written once the grandchild holds stdout and the PATH is printed, so the case cannot pass
+  // on a shell that was simply still starting when the deadline fired.
+  const reached = join(f.root, "grandchild-started");
+  Object.assign(f.env, writeFakeLoginShell(f.root, [
+    // A grandchild that shares the probe's stdout and outlives the shell.
+    `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }).unref();`,
+    `process.stdout.write("__MISSION_PATH__/grandchild/bin__MISSION_PATH__");`,
+    `require("node:fs").writeFileSync(${JSON.stringify(reached)}, "");`,
+    "",
+  ].join("\n")));
+  // Above a cold start of the fake (Node on POSIX; the launcher and then Node on win32) on a
+  // loaded runner, and far below the grandchild's 30 s, so only the deadline can end the read.
+  const deadlineMs = 3_000;
   const started = Date.now();
   try {
-    assert.deepEqual(await probeLoginShellPath(f.env, 100), {
+    assert.deepEqual(await probeLoginShellPath(f.env, deadlineMs), {
       path: null,
       problem: "login shell timed out",
     });
-    assert.ok(Date.now() - started < 2_000, "the inherited output pipe kept discovery alive");
+    assert.ok(Date.now() - started < 15_000, "the inherited output pipe kept discovery alive");
+    assert.equal(existsSync(reached), true, "the fake never started its grandchild before the deadline");
   } finally {
     f.clean();
   }
@@ -396,18 +442,12 @@ test("a login-shell grandchild holding output cannot outlive the discovery deadl
 
 test("a verbose login shell cannot block PATH discovery on stderr backpressure", async () => {
   const f = fixture();
-  const shell = f.env.SHELL!;
-  writeFileSync(
-    shell,
-    [
-      `#!${process.execPath}`,
-      `process.stderr.write("x".repeat(1024 * 1024), () => {`,
-      `  process.stdout.write("__MISSION_PATH__/verbose/bin__MISSION_PATH__");`,
-      `});`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shell, 0o755);
+  Object.assign(f.env, writeFakeLoginShell(f.root, [
+    `process.stderr.write("x".repeat(1024 * 1024), () => {`,
+    `  process.stdout.write("__MISSION_PATH__/verbose/bin__MISSION_PATH__");`,
+    `});`,
+    "",
+  ].join("\n")));
   try {
     // The budget is generous on purpose: what is under test is that a full stderr pipe
     // cannot deadlock the probe, which would outlast any timeout. Two seconds only
@@ -484,6 +524,7 @@ test("a forced refresh queues behind an in-flight ordinary refresh", async () =>
   const f = fixture();
   let now = 1_000;
   let probes = 0;
+  const forcedBin = join(f.root, "forced", "bin");
   let release = (_value: LoginShellResult): void => {};
   const ordinaryProbe = new Promise<LoginShellResult>((resolve) => { release = resolve; });
   try {
@@ -495,7 +536,7 @@ test("a forced refresh queues behind an in-flight ordinary refresh", async () =>
         probes += 1;
         if (probes === 1) return { path: null, problem: null };
         if (probes === 2) return await ordinaryProbe;
-        return { path: "/forced/bin", problem: null };
+        return { path: forcedBin, problem: null };
       },
     });
     await locator.initialize();
@@ -504,11 +545,11 @@ test("a forced refresh queues behind an in-flight ordinary refresh", async () =>
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(probes, 2);
     const forced = locator.refresh({ force: true });
-    release({ path: "/ordinary/bin", problem: null });
+    release({ path: join(f.root, "ordinary", "bin"), problem: null });
     await ordinary;
     const snapshot = await forced;
     assert.equal(probes, 3);
-    assert.equal(snapshot.path.split(delimiter).includes("/forced/bin"), true);
+    assert.equal(snapshot.path.split(delimiter).includes(forcedBin), true);
   } finally {
     f.clean();
   }

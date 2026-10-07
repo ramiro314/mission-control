@@ -1414,7 +1414,10 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   the caller's argv, stdio and exit code, and takes the script down when it is killed. The
   product resolves and spawns that `.exe` like a Windows user's own tool, with no test-only
   path. Codex, Pi and terminal-backend fakes stay as they were, because those surfaces skip on
-  win32.
+  win32. A test that fakes the login-environment PATH read writes it through
+  `writeFakeLoginShell` in `test/helpers/login-shell.ts`: `$SHELL` on macOS and Linux, and on
+  win32 the Windows PowerShell under a fixture `%SystemRoot%`, which the win32 row starts by
+  its fixed path.
 - **Physical paths** (`src/server/util/physical-path.ts`, D38): every synchronous realpath in
   `src/server` goes through `physicalPathSync`, so it spells a path the way
   `fs.promises.realpath` does. On win32 that is the native call, which expands
@@ -1505,7 +1508,7 @@ skip on win32 or write a fake CLI, `AGENTS.md`, `e2e/README.md`, `docs/setup.md`
 `scripts/probe-keep-awake-native.d.mts`, `e2e/fixtures/win32-host-build.ts`,
 `e2e/specs/win32-{harness-availability,setup-checks}.spec.ts`, `test/helpers/win32-skip.ts`,
 `test/helpers/fake-executable.ts`, `test/helpers/fake-executable-launcher.cs`,
-`test/helpers/ci-workflow.ts`, and the tests `test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,physical-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts`.
+`test/helpers/login-shell.ts`, `test/helpers/ci-workflow.ts`, and the tests `test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,physical-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts`.
 
 ## Superseded and removed
 
