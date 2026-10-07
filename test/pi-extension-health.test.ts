@@ -13,6 +13,9 @@ import { applyPiExtensionConfig, getPiExtensionConfig } from "../src/server/exte
 import { installPiExtensionFromSetup } from "../src/server/setup/pi-extension.ts";
 import { piMetadataSource, piBridgeSource, sealPiIntegration, writePiIntegration } from "./helpers/pi-integration.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const PI = { skip: skipOnWin32("Pi is unavailable on win32") };
 
 ensureNativeStateLockAddon();
 
@@ -44,7 +47,7 @@ after(() => { process.env = previous; rmSync(root, { recursive: true, force: tru
 test("environment IDs preserve every earlier index and append Pi", () => {
   assert.deepEqual(ENVIRONMENT_CHECK_IDS, ["upstartclaw-core-setup", "mission-hook-script", "pi-extension"]);
 });
-test("never installed is silent but unavailable; enabled missing link warns and allows repair", async () => {
+test("never installed is silent but unavailable; enabled missing link warns and allows repair", PI, async () => {
   assert.equal((await inspectPiExtension()).warning, null);
   assert.equal((await missionToolsAvailability("pi")).available, false);
   assert.equal(canInstallPiExtension(), true);
@@ -81,7 +84,7 @@ test("timeout uses SIGKILL even for a module ignoring SIGTERM", async () => {
   assert.equal((await loadPiExtensionMetadata(realpathSync(installed), 200)).loaded, false);
   assert.ok(Date.now() - start < 3000);
 });
-test("loads canonical target and probes the MCP child with daemon secrets scrubbed", async () => {
+test("loads canonical target and probes the MCP child with daemon secrets scrubbed", PI, async () => {
   process.env.MISSION_API_TOKEN = "must-not-leak"; process.env.MISSION_API_TOKEN_FILE = "/must-not-leak";
   process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL = "must-not-leak";
   const record = (name: string) => `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(join(root, name))}, JSON.stringify({url:import.meta.url, token:process.env.MISSION_API_TOKEN, tokenFile:process.env.MISSION_API_TOKEN_FILE, scout:process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL, home:process.env.MISSION_HOME})); `;
@@ -118,7 +121,7 @@ test("stale build IDs, missing markers and stale tools warn; a correct generatio
   assert.match((await inspectPiExtension()).warning!, /stale.*tools\/list/);
   setBridge(piBridgeSource()); assert.equal((await inspectPiExtension()).healthy, true);
 });
-test("Setup installs an app-owned copy, repairs an owned dangling link and is idempotent", async () => {
+test("Setup installs an app-owned copy, repairs an owned dangling link and is idempotent", PI, async () => {
   assert.equal((await installPiExtensionFromSetup()).ok, true);
   const target = readlinkSync(link);
   assert.notEqual(realpathSync(link), realpathSync(expected));
@@ -140,7 +143,7 @@ test("Setup refuses an unhealthy copied candidate without persisting intent or a
   assert.equal(existsSync(link), false);
   assert.equal(existsSync(join(root, "state", "pi-extension.json")), false);
 });
-test("Setup can publish from a temporary pooled source because it copies the generation", async () => {
+test("Setup can publish from a temporary pooled source because it copies the generation", PI, async () => {
   writeFileSync(join(dirname(expected), ".mission-control-worktree-pool"), "");
   assert.equal((await installPiExtensionFromSetup()).ok, true);
   rmSync(dirname(expected), { recursive: true });
@@ -157,7 +160,7 @@ test("a bridge override is checked without concealing broken bundled artifacts",
   rmSync(bridge);
   assert.match((await inspectPiExtension()).warning!, /manifest or artifact hashes/);
 });
-test("permissions failures are not treated as absence and do not permit repair", { skip: process.getuid?.() === 0 }, async () => {
+test("permissions failures are not treated as absence and do not permit repair", { skip: skipOnWin32("Pi is unavailable on win32") || process.getuid?.() === 0 }, async () => {
   symlinkSync(installed, link);
   for (const restricted of [extensions, dirname(installed)]) {
     chmodSync(restricted, 0);

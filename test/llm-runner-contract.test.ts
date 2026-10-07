@@ -12,6 +12,9 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQueryOptions,
 } from "../src/server/harness/claude/sdk-types.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const CODEX = { skip: skipOnWin32("Codex is unavailable on win32") };
 
 // What is at stake here is the CONTRACT, not the call shape. `LlmRunner` exists so the
 // app's offline work - Foreman's verdicts, the goal refiner, the titler, the digest, the
@@ -207,7 +210,7 @@ async function assertSoon(predicate: () => boolean, timeoutMs = 2_000): Promise<
   }
 }
 
-function fakeClaudeSdk(): {
+function fakeClaudeSdk(frame: Record<string, unknown> = {}): {
   deps: ClaudeSdkOneShotDeps;
   calls(): number;
   options(): ClaudeSdkOneShotQueryOptions | null;
@@ -231,6 +234,7 @@ function fakeClaudeSdk(): {
               is_error: false,
               result: "the sdk model text",
               session_id: "sdk-run-1",
+              ...frame,
             } satisfies ClaudeSdkMessage;
           },
         };
@@ -372,7 +376,7 @@ test("envelope unwrapping accepts result text but never mistakes an object resul
   assert.notEqual(unwrapEnvelope(objectResult), '{"answer":"yes"}');
 });
 
-test("Codex passes a materialized schema, cleans it up, and keeps command tools disabled", async () => {
+test("Codex passes a materialized schema, cleans it up, and keeps command tools disabled", CODEX, async () => {
   const schema = {
     type: "object",
     properties: { tasks: { type: "array" } },
@@ -414,16 +418,18 @@ test("Codex passes a materialized schema, cleans it up, and keeps command tools 
   assert.equal(lines(RUN_ENV)[3], "1");
 });
 
-test("a caller's effort reaches each CLI as that harness's own launch flag, and only when asked", async () => {
-  // The flag spellings come from the harness capability table, so a headless Persona call and
-  // an interactive session can never ask the same provider for effort two different ways.
+// The flag spellings come from the harness capability table, so a headless Persona call and
+// an interactive session can never ask the same provider for effort two different ways.
+test("a caller's effort reaches the Claude CLI as that harness's own launch flag, and only when asked", async () => {
   await withPrintTransport(() =>
     claudeRunner.run("review", { model: "claude-opus-5-5", effort: "xhigh", timeoutMs: 5000 })
   );
   assert.equal(flag("--effort"), "xhigh");
   await withPrintTransport(() => claudeRunner.run("review", { model: "claude-opus-5-5", timeoutMs: 5000 }));
   assert.equal(argv().includes("--effort"), false, "an unset effort must leave the provider default alone");
+});
 
+test("a caller's effort reaches the Codex CLI as that harness's own launch flag, and only when asked", CODEX, async () => {
   await codexRunner.run("review", { model: "gpt-6-sol", effort: "high", timeoutMs: 5000 });
   assert.ok(argv().includes("model_reasoning_effort=high"));
   await codexRunner.run("review", { model: "gpt-6-sol", timeoutMs: 5000 });
@@ -440,7 +446,7 @@ test("a caller's effort reaches each CLI as that harness's own launch flag, and 
 // Rendering them in isolation is a weaker claim; this pins the file on disk at the far end of
 // `materializeSchema`, past every place the schema could have been substituted.
 for (const [label, rendered] of Object.entries(CALL_SITE_SCHEMAS)) {
-  test(`Codex receives a strict Structured Outputs schema for ${label}`, async () => {
+  test(`Codex receives a strict Structured Outputs schema for ${label}`, CODEX, async () => {
     clearRecording();
     await codexRunner.run("review this", { model: "gpt-5.6-sol", timeoutMs: 5000, schema: rendered });
     const onDisk = JSON.parse(readFileSync(RUN_SCHEMA, "utf8")) as unknown;
@@ -449,14 +455,14 @@ for (const [label, rendered] of Object.entries(CALL_SITE_SCHEMAS)) {
   });
 }
 
-test("Codex omits the schema flag when none was supplied", async () => {
+test("Codex omits the schema flag when none was supplied", CODEX, async () => {
   clearRecording();
   await codexRunner.run("answer as text", { timeoutMs: 5000 });
   assert.equal(flag("--output-schema"), null);
   assert.equal(existsSync(RUN_SCHEMA_PATH), false);
 });
 
-test("Codex text-only and empty-image calls retain the exact historical argv and stdin", async () => {
+test("Codex text-only and empty-image calls retain the exact historical argv and stdin", CODEX, async () => {
   const expected = [
     "exec",
     "--ephemeral",
@@ -484,7 +490,7 @@ test("Codex text-only and empty-image calls retain the exact historical argv and
   }
 });
 
-test("Codex appends repeated ordered image arguments before the stdin prompt", async () => {
+test("Codex appends repeated ordered image arguments before the stdin prompt", CODEX, async () => {
   const dir = mkdtempSync(join(home, "codex-images-"));
   try {
     const first = writeImageDescriptor(dir, "first.png", PNG_IMAGE, "image/png", "first");
@@ -520,7 +526,7 @@ test("Codex refuses an unreadable image before spawning", async () => {
   }
 });
 
-test("Codex keeps a bounded JSON-stream failure reason without leaking agent text", async () => {
+test("Codex keeps a bounded JSON-stream failure reason without leaking agent text", CODEX, async () => {
   clearRecording();
   process.env.RUN_CODEX_FAIL = "1";
   try {
@@ -543,7 +549,7 @@ test("Codex keeps a bounded JSON-stream failure reason without leaking agent tex
   }
 });
 
-test("Codex cleans a live schema synchronously when shutdown kills the run", async () => {
+test("Codex cleans a live schema synchronously when shutdown kills the run", CODEX, async () => {
   clearRecording();
   process.env.RUN_CODEX_WAIT = "1";
   const run = codexRunner.run("wait for shutdown", {
@@ -570,7 +576,7 @@ test("Codex cleans a live schema synchronously when shutdown kills the run", asy
   }
 });
 
-test("a killed Codex run settles when the process dies, not when its stdio does", async () => {
+test("a killed Codex run settles when the process dies, not when its stdio does", CODEX, async () => {
   // The failure this pins is a HANG, and it hid behind a wrong error message. `close` fires
   // only once nothing holds the run's stdio, so a survivor of the kill - a helper the group
   // signal could not reach - kept the promise pending until the run's own `timeoutMs` fired
@@ -653,7 +659,7 @@ test("provider validation trims only the retry, never the caller's Zod parse", a
   assert.deepEqual(transformed, { kind: "ok", value: { answer: "yes" } });
 });
 
-test("a Codex run reports what it spent, under the role that asked for it", async () => {
+test("a Codex run reports what it spent, under the role that asked for it", CODEX, async () => {
   clearRecording();
   const seen: LlmSpendReport[] = [];
   const previous = setLlmSpendSink((r) => void seen.push(r));
@@ -742,20 +748,40 @@ test("an envelope that states no usage produces no report", () => {
   );
 });
 
-test("a run with no role reports nothing at all", async () => {
-  clearRecording();
-  const seen: LlmSpendReport[] = [];
-  const previous = setLlmSpendSink((r) => void seen.push(r));
-  try {
-    await codexRunner.run("summarise", { model: "gpt-5.6-terra" });
-  } finally {
-    setLlmSpendSink(previous);
-  }
-  // Accounting is opt-in per call site, so a caller that has not been given a role - a
-  // workflow step, a future subsystem - stays out of the automation line rather than
-  // landing in whichever bucket happened to be last.
-  assert.equal(seen.length, 0);
-});
+// Each run states real usage, so the silence below is the role gate's doing and not an
+// envelope with nothing to report.
+const NO_ROLE_RUNS = {
+  claude: async () => {
+    const usage = { usage: { input_tokens: 9, output_tokens: 40 } };
+    assert.ok(claudeSpendReport(JSON.stringify({ ...usage, session_id: "sdk-run-1" }), "foreman:review", "", 1));
+    const restore = configureClaudeRunnerTransport(() => "sdk", fakeClaudeSdk(usage).deps);
+    try {
+      await claudeRunner.run("summarise", { model: "claude-haiku-4-5" });
+    } finally {
+      restore();
+    }
+  },
+  codex: () => codexRunner.run("summarise", { model: "gpt-5.6-terra" }),
+};
+
+for (const [runner, run] of Object.entries(NO_ROLE_RUNS)) {
+  test(`a ${runner} run with no role reports nothing at all`, {
+    skip: runner === "codex" && skipOnWin32("Codex is unavailable on win32"),
+  }, async () => {
+    clearRecording();
+    const seen: LlmSpendReport[] = [];
+    const previous = setLlmSpendSink((r) => void seen.push(r));
+    try {
+      await run();
+    } finally {
+      setLlmSpendSink(previous);
+    }
+    // Accounting is opt-in per call site, so a caller that has not been given a role - a
+    // workflow step, a future subsystem - stays out of the automation line rather than
+    // landing in whichever bucket happened to be last.
+    assert.equal(seen.length, 0);
+  });
+}
 
 test("Codex refuses Inspector-style tool grants instead of weakening their deny rules", async () => {
   clearRecording();

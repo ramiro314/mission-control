@@ -179,7 +179,7 @@ test("e2e tests the dist build-windows built instead of building its own", () =>
   };
   const [built, , pack, upload] = chain(build, ["Build", "Smoke the built bundles", "Pack dist for E2E", "Upload dist for E2E"]);
   assert.match(built!, /^ {8}id: build$/m);
-  // Not smoke, which still fails on win32: gating on it skipped every shard on run 37541228166.
+  // Not smoke: it failed on win32 on run 37541228166, and gating on it skipped every shard.
   for (const step of [pack!, upload!]) {
     assert.match(step, /^ {8}if: steps\.build\.outcome == 'success'$/m, "only a dist that built is shared");
   }

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Session } from "../../src/shared/types.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * The topbar's cost surface, driven the way an operator meets it: telemetry arrives on the
@@ -319,6 +320,7 @@ test("the spend popover explains when Claude has never reported utilization", as
 });
 
 test("Claude-unavailable explanation remains visible alongside a Codex runway", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   const chip = dashboard.getByRole("button", { name: /^Spend - / });
   await expect(chip).toHaveCount(0);
   await post(daemon, "/api/tasks", {

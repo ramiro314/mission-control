@@ -10,6 +10,7 @@ import { readResumeLease, revokeResumeLease, resumeLeaseRoot } from "../../src/s
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { test, expect } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 test.use({ daemonEnv: { MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_RESUME_TOOLS: "1", MISSION_POLL_MS: "100" } });
 const evidence = artifactsDir("sdk-terminal-handoff");
@@ -132,6 +133,7 @@ function evidencePacket(daemon: DaemonHandle, source: Session) {
 }
 
 test("managed resume registers mapped proof through built MCP on the same task and old pinned review", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "Ghostty and the terminal runtime are unavailable on win32");
   test.setTimeout(180000);
   const source = await dispatch(dashboard, daemon);
   const review = await bindReview(daemon, source);
@@ -228,6 +230,7 @@ test("managed resume registers mapped proof through built MCP on the same task a
 });
 
 test("default Continue keeps an uncertain transfer visible after source removal and restart, then adopts its late hook", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "the terminal runtime is unavailable on win32");
   test.setTimeout(180000);
   const source = await dispatch(dashboard, daemon);
   writeFileSync(join(daemon.recordDir, "discovery-block"), "hold discovery");
@@ -477,6 +480,7 @@ test.describe("Sitrep pagination", () => {
 test.describe("safe resolution", () => {
   test.use({ daemonEnv: { MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_RESUME_TOOLS: "0", MISSION_POLL_MS: "100" } });
   test("End transfer requires positive absence and confirmation, and keeps a changed task", async ({ dashboard, daemon }) => {
+    skipSpecOnWin32(test, "Ghostty and the terminal runtime are unavailable on win32");
     const source = await dispatch(dashboard, daemon);
     const response = await resume(dashboard, daemon, source);
     expect(response.ok(), await response.text()).toBe(true);
@@ -522,6 +526,7 @@ test.describe("safe resolution", () => {
 test.describe("preflight refusal", () => {
   test.use({ daemonEnv: { MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_RESUME_TOOLS: "1", MISSION_POLL_MS: "100", MC_E2E_RESUME_PRIVATE_MCP: "1" } });
   test("a missing bundle leaves the SDK usable and renders the remedy", async ({ dashboard, daemon }) => {
+    skipSpecOnWin32(test, "Ghostty and the terminal runtime are unavailable on win32");
     const source = await dispatch(dashboard, daemon);
     // A private copy avoids touching dist/ shared by another test or daemon.
     writeFileSync(join(daemon.home, "resume-mcp.mjs"), "throw new Error('fixture stale bundle');\n");

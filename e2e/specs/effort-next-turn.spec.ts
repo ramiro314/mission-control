@@ -4,6 +4,9 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "Codex is unavailable on win32");
 
 const EVIDENCE = artifactsDir("effort-next-turn");
 

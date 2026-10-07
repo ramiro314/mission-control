@@ -14,6 +14,9 @@ import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
 import type { InstallIdentity } from "../src/main/install-identity.ts";
 import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALL_MIGRATION = { skip: skipOnWin32("the macOS install migration is unavailable on win32") };
 
 const PERSONAL = "/Users/someone/Applications/Mission Control.app";
 
@@ -63,7 +66,7 @@ function ports(
   return { port, calls, opened, logs };
 }
 
-test("the running bundle is the app three directories above the packaged app root", () => {
+test("the running bundle is the app three directories above the packaged app root", INSTALL_MIGRATION, () => {
   // `app.getAppPath()` is `<bundle>/Contents/Resources/app` in a packaged build. Getting this
   // derivation wrong would compare the receipt against a path that is not a bundle at all, and
   // every identity answer after it would be drawn from the wrong subject.
@@ -247,7 +250,7 @@ test("the wired shell launches nothing at all for an ordinary managed app", () =
   assert.equal(decision.updateBlock, null);
 });
 
-test("the real Launch Services call reports a bundle that is not there, without launching it", () => {
+test("the real Launch Services call reports a bundle that is not there, without launching it", INSTALL_MIGRATION, () => {
   // The production default runner, against the real `/usr/bin/open`. Nothing is launched: the
   // path does not exist, which is exactly why it is safe to run here and still proves the
   // executable, the argument, and the failure mapping are what the rest of this file assumes.

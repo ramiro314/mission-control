@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
@@ -349,6 +350,7 @@ test("restart finishes a concluded SDK run without continuing its interrupted tu
 });
 
 test.describe("terminal retirement", () => {
+  skipSpecOnWin32(test, "Ghostty and the terminal runtime are unavailable on win32");
   test.use({ daemonEnv: {
     MC_E2E_TERMINAL_BOUNDARY: "1", MISSION_POLL_MS: "100",
     MISSION_DISPATCH_HOOK_READY_MS: "50", MISSION_DISPATCH_SETTLE_MS: "0",

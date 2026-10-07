@@ -23,6 +23,9 @@ import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { fakeHerdrSocket, refuse, reply, type HerdrRequest } from "./helpers/herdr-socket.ts";
 import { fakeEmulator, fakeMultiplexer, fakeTerminals } from "./helpers/terminal-fakes.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const HERDR = { skip: skipOnWin32("Herdr and the terminal runtime are unavailable on win32") };
 
 function result(stdout: string): RunResult {
   return { stdout, stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
@@ -150,7 +153,7 @@ test("Herdr is registered in exact inner-to-outer order with declared null capab
   assert.equal(MULTIPLEXERS.herdr.sessions?.names.validate("plain name"), null);
 });
 
-test("list maps workspaces, tabs, panes, shell pids, and cwd fallback to stable generic handles", async () => {
+test("list maps workspaces, tabs, panes, shell pids, and cwd fallback to stable generic handles", HERDR, async () => {
   const fake = await fakeHerdrSocket(standardReply);
   try {
     const panes = await herdrMultiplexer(execStatus(fake.path)).list();
@@ -182,7 +185,7 @@ test("list maps workspaces, tabs, panes, shell pids, and cwd fallback to stable 
   }
 });
 
-test("a stale pane process lookup keeps the pane visible with an unknown pid", async () => {
+test("a stale pane process lookup keeps the pane visible with an unknown pid", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
     else if (request.params.pane_id === "pane-api") {
@@ -213,7 +216,7 @@ test("a stale pane process lookup keeps the pane visible with an unknown pid", a
 // refused pane made every Herdr card on the dashboard disappear for that tick. Measured at 47
 // workspaces / 93 panes, one `list()` costs 427ms against a 1500ms discovery tick and a
 // 1000ms per-call read timeout, so the pane that loses that race is a matter of load.
-test("a refused pane lookup costs that pane's pid, not every other pane", async () => {
+test("a refused pane lookup costs that pane's pid, not every other pane", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
     else if (request.params.pane_id === "pane-api") {
@@ -248,7 +251,7 @@ test("a refused pane lookup costs that pane's pid, not every other pane", async 
 // `[]` still means "this backend has no panes" and nothing else. Narrowing what produces it
 // above must not have widened what it MEANS, so the case that produces it here is one where
 // the snapshot itself is untrustworthy rather than one pane inside it.
-test("a snapshot that cannot be trusted degrades to an empty pane list rather than throwing", async () => {
+test("a snapshot that cannot be trusted degrades to an empty pane list rather than throwing", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") {
       socket.write(`${JSON.stringify({
@@ -271,7 +274,7 @@ test("a snapshot that cannot be trusted degrades to an empty pane list rather th
 
 // A pane whose workspace or tab is missing from the same snapshot is skipped for the same
 // reason: it is one pane's problem, and the other panes are still real.
-test("a pane whose workspace is absent from the snapshot makes inventory unknown", async () => {
+test("a pane whose workspace is absent from the snapshot makes inventory unknown", HERDR, async () => {
   const orphaned = {
     ...SNAPSHOT,
     snapshot: {
@@ -293,7 +296,7 @@ test("a pane whose workspace is absent from the snapshot makes inventory unknown
   }
 });
 
-test("a stopped Herdr server enumerates as no panes, with no socket attempt", async () => {
+test("a stopped Herdr server enumerates as no panes, with no socket attempt", HERDR, async () => {
   const calls: Array<{ bin: string; args: string[] }> = [];
   const stopped: TerminalExec = async (bin, args) => {
     calls.push({ bin, args });
@@ -318,7 +321,7 @@ test("an unreadable Herdr status enumerates as no panes", async () => {
   assert.deepEqual(await herdrMultiplexer(broken).list(), null);
 });
 
-test("the Herdr server probe reports the same three states the transport gates on", async () => {
+test("the Herdr server probe reports the same three states the transport gates on", HERDR, async () => {
   const fake = await fakeHerdrSocket(standardReply);
   try {
     assert.deepEqual(await herdrServerProbe(execStatus(fake.path)), {
@@ -353,7 +356,7 @@ test("the Herdr server probe reports the same three states the transport gates o
   assert.equal(failed.state === "failed" ? failed.retryable : true, false);
 });
 
-test("pane control uses raw text, exhaustive key names, bracket-aware paste, visible capture, and agent focus", async () => {
+test("pane control uses raw text, exhaustive key names, bracket-aware paste, visible capture, and agent focus", HERDR, async () => {
   const fake = await fakeHerdrSocket(standardReply);
   try {
     const mux = herdrMultiplexer(execStatus(fake.path));
@@ -391,7 +394,7 @@ test("pane control uses raw text, exhaustive key names, bracket-aware paste, vis
   }
 });
 
-test("workspace lifecycle keeps exact cwd, selection intent, shell boundaries, and no-focus side split", async () => {
+test("workspace lifecycle keeps exact cwd, selection intent, shell boundaries, and no-focus side split", HERDR, async () => {
   const pane = pastedPane();
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "workspace.create") {
@@ -466,7 +469,7 @@ test("workspace lifecycle keeps exact cwd, selection intent, shell boundaries, a
   }
 });
 
-test("workspace creation refuses inconsistent workspace, tab, and root-pane identities before command delivery", async () => {
+test("workspace creation refuses inconsistent workspace, tab, and root-pane identities before command delivery", HERDR, async () => {
   for (const mismatch of ["tab-workspace", "pane-workspace", "pane-tab"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {
       if (request.method === "workspace.create") {
@@ -503,7 +506,7 @@ test("workspace creation refuses inconsistent workspace, tab, and root-pane iden
   }
 });
 
-test("confirmed command refusal rolls back only the created workspace", async () => {
+test("confirmed command refusal rolls back only the created workspace", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "workspace.create") {
       reply(socket, request.id, {
@@ -535,7 +538,7 @@ test("confirmed command refusal rolls back only the created workspace", async ()
   }
 });
 
-test("uncertain command delivery preserves the created workspace and outcome", async () => {
+test("uncertain command delivery preserves the created workspace and outcome", HERDR, async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "workspace.create") {
       reply(socket, request.id, {
@@ -603,7 +606,7 @@ function launchFake(processInfo: (paneId: string) => unknown | null) {
   });
 }
 
-test("a pane still running only its login shell is a failed launch, and its workspace is closed", async () => {
+test("a pane still running only its login shell is a failed launch, and its workspace is closed", HERDR, async () => {
   const fake = await launchFake(shellOnly);
   try {
     const launched = await herdrMultiplexer(execStatus(fake.path), instant()).sessions!.spawnDetached({
@@ -625,7 +628,7 @@ test("a pane still running only its login shell is a failed launch, and its work
   }
 });
 
-test("a pane running the agent is a success, and a failed side split cannot undo it", async () => {
+test("a pane running the agent is a success, and a failed side split cannot undo it", HERDR, async () => {
   const pane = pastedPane();
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "workspace.create") {
@@ -661,7 +664,7 @@ test("a pane running the agent is a success, and a failed side split cannot undo
   }
 });
 
-test("a pane that will not say what it is running fails at the deadline and keeps its workspace", async () => {
+test("a pane that will not say what it is running fails at the deadline and keeps its workspace", HERDR, async () => {
   // `foreground_processes` is optional in the wire schema, and its absence is "cannot tell".
   // Reading it as "not started" would close a workspace that may be holding a live agent, so
   // the failure is outcome-unknown and the workspace is left exactly where it is.
@@ -692,7 +695,7 @@ test("a pane that will not say what it is running fails at the deadline and keep
   }
 });
 
-test("a pane whose Enter is refused rolls the workspace back before anything is verified", async () => {
+test("a pane whose Enter is refused rolls the workspace back before anything is verified", HERDR, async () => {
   const pane = pastedPane();
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "workspace.create") {
@@ -729,7 +732,7 @@ test("a pane whose Enter is refused rolls the workspace back before anything is 
   }
 });
 
-test("a pane whose text cannot be read still gets its Enter, and is judged on what started", async () => {
+test("a pane whose text cannot be read still gets its Enter, and is judged on what started", HERDR, async () => {
   // The paste observation is an optimisation over a fixed delay, never a gate. A server that
   // will not answer `pane.read` must still produce a launch.
   const fake = await fakeHerdrSocket((request, socket) => {
@@ -763,7 +766,7 @@ test("a pane whose text cannot be read still gets its Enter, and is judged on wh
   }
 });
 
-test("a launch resolves the Herdr server once, however long it has to poll", async () => {
+test("a launch resolves the Herdr server once, however long it has to poll", HERDR, async () => {
   // Every ordinary client call runs `herdr status server --json` - a CLI subprocess - to find
   // the socket before the request. A launch polls twice: for the paste to settle, then for the
   // agent to start. Left per-request, a launch that has to wait out both deadlines spawns

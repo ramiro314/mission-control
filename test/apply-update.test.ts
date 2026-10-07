@@ -28,6 +28,9 @@ import {
   runApplyUpdate,
   sanitizeDiagnostic,
 } from "../scripts/apply-update.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const MACOS_UPDATER = { skip: skipOnWin32("the macOS updater is unavailable on win32") };
 
 function args(stateDirectory: string) {
   return {
@@ -179,7 +182,7 @@ function operations(
   return { ops, actions, tempDirectory, locks };
 }
 
-test("the helper waits, backs up, installs the exact tag, records success, and relaunches by path", async (t) => {
+test("the helper waits, backs up, installs the exact tag, records success, and relaunches by path", MACOS_UPDATER, async (t) => {
   const state = await mkdtemp(join(tmpdir(), "mission-apply-success-"));
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
@@ -254,7 +257,7 @@ test("alpha verifies the installed SHA and rolls back a wrong commit even at the
   assert.equal(outcome.targetVersion, "alpha bbbbbbb");
 });
 
-test("the rebuild targets the directory the receipt names, not /Applications by default", async (t) => {
+test("the rebuild targets the directory the receipt names, not /Applications by default", MACOS_UPDATER, async (t) => {
   // The backup, the rollback, and the relaunch all read `appPath` from the receipt, but the
   // rebuild used to be spawned without `--apps-dir` and so always landed in `/Applications`.
   // An install made anywhere else therefore reported success while the app that relaunched
@@ -1006,7 +1009,7 @@ test("a pid reused within the same second is still distinguished", () => {
   );
 });
 
-test("a process identity carries both the start time and the command", () => {
+test("a process identity carries both the start time and the command", MACOS_UPDATER, () => {
   // Asserted on the real query rather than a stub, because dropping `command=` from the `ps`
   // arguments is the regression this guards and a stub would not notice.
   const mine = processIdentity(process.pid);
@@ -1018,7 +1021,7 @@ test("a process identity carries both the start time and the command", () => {
   assert.doesNotMatch(mine!, /  /, "column padding is not part of the identity");
 });
 
-test("a process identity is read for a real pid and refused for an impossible one", () => {
+test("a process identity is read for a real pid and refused for an impossible one", MACOS_UPDATER, () => {
   assert.equal(processIdentity(0), null);
   assert.equal(processIdentity(-1), null);
   // Whitespace is collapsed, not just trimmed: `ps` pads its columns, and how wide it padded is
@@ -1082,7 +1085,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
 });
 
 
-test("a handoff that carries a staged bundle installs that bundle instead of rebuilding", async (t) => {
+test("a handoff that carries a staged bundle installs that bundle instead of rebuilding", MACOS_UPDATER, async (t) => {
   // The app now builds before it quits, so the work left here is the swap. What proves it is
   // the argument reaching the install script: `--from-staged` selects its swap-and-receipt
   // half, and the minutes of `npm ci` never happen in the dark.

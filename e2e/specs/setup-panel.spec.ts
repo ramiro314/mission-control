@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeGhProductScript } from "../fixtures/fake-agents.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
@@ -211,6 +212,7 @@ test.describe("login-shell binaries", () => {
   });
 
   test("Setup recognizes Pi installed by a login-shell version manager", async ({ page, daemon }) => {
+    skipSpecOnWin32(test, "Pi is unavailable on win32");
     await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
     await openSetupFamily(page, "agents");

@@ -12,6 +12,10 @@ import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server
 import { shellCommand, shellWords } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TERMINAL_RUNTIME = skipOnWin32("the terminal runtime is unavailable on win32; this file drives its tmux and WezTerm adapters over a WezTerm socket fixture that cannot listen there");
+const UNAVAILABLE = { skip: TERMINAL_RUNTIME };
 
 // What is at stake: the things the two backends disagree about, which used to be resolved at
 // ~20 call sites and must be resolved once, here.
@@ -61,12 +65,14 @@ function recorder(results: RunResult[] = []) {
 const BUF = "harness-3";
 
 const MUX = { session: "api", windowIndex: 0, paneId: "%3" };
-const socket = await weztermSocketFixture();
-after(() => socket.close());
-const EMU = { paneId: "5", tabId: "2", incarnation: socket.incarnation };
-const wezterm = (exec: TerminalExec) => weztermEmulator(socket.wrap(exec));
+// Not opened where every test below is skipped: win32 cannot listen on the socket path, and
+// the unsettled top-level await would fail the whole file before any skip is reported.
+const socket = TERMINAL_RUNTIME ? null : await weztermSocketFixture();
+after(() => socket?.close());
+const EMU = { paneId: "5", tabId: "2", incarnation: socket?.incarnation ?? "" };
+const wezterm = (exec: TerminalExec) => weztermEmulator(socket!.wrap(exec));
 
-test("a command round-trips through the shell encoding, apostrophes included", () => {
+test("a command round-trips through the shell encoding, apostrophes included", UNAVAILABLE, () => {
   // `shellWords` exists because two test layers that cannot import each other both have to
   // read a launch back out of the wrapper script a backend was handed. The apostrophe is the
   // whole reason it is a parser rather than a pattern: `shellCommand` renders one as
@@ -90,7 +96,7 @@ test("a command round-trips through the shell encoding, apostrophes included", (
   assert.deepEqual(shellWords(""), []);
 });
 
-test("every key renders into each backend's own convention", async () => {
+test("every key renders into each backend's own convention", UNAVAILABLE, async () => {
   for (const key of ALL_KEYS) {
     const tmux = recorder();
     await tmuxMultiplexer(tmux.exec).write.keys(MUX, [key]);
@@ -112,7 +118,7 @@ test("every key renders into each backend's own convention", async () => {
   }
 });
 
-test("tmux sends key names, and text literally", async () => {
+test("tmux sends key names, and text literally", UNAVAILABLE, async () => {
   const { calls, exec } = recorder();
   const tmux = tmuxMultiplexer(exec);
 
@@ -137,7 +143,7 @@ test("tmux sends key names, and text literally", async () => {
   assert.deepEqual(calls[4]!.args, ["paste-buffer", "-p", "-d", "-b", BUF, "-t", "%3"]);
 });
 
-test("a payload never rides on argv, however big it gets", async () => {
+test("a payload never rides on argv, however big it gets", UNAVAILABLE, async () => {
   // The regression guard for the bug this seam exists to close. tmux caps the total length
   // of a COMMAND far below the OS's argv limit - measured against 3.6b, 16,000 bytes as an
   // argument is accepted and 20,000 is refused with `command too long`, exit 1 - so a
@@ -183,7 +189,7 @@ test("a payload never rides on argv, however big it gets", async () => {
   }
 });
 
-test("an empty write succeeds without reaching for a buffer", async () => {
+test("an empty write succeeds without reaching for a buffer", UNAVAILABLE, async () => {
   // `load-buffer` with empty stdin exits 0 and creates NO buffer (measured, tmux 3.6b), so
   // the `paste-buffer` behind it would fail `no buffer harness-3` - turning what used to be
   // a no-op `send-keys -l -- ""` into a reported failure to reach the pane.
@@ -194,7 +200,7 @@ test("an empty write succeeds without reaching for a buffer", async () => {
   assert.equal(calls.length, 0, "an empty write should spawn nothing at all");
 });
 
-test("a body beginning with a dash is typed, not parsed as flags", async () => {
+test("a body beginning with a dash is typed, not parsed as flags", UNAVAILABLE, async () => {
   // Both CLIs parse their trailing arguments as options, so "-v is what broke it" - an
   // ordinary reply - dies in the arg parser and never reaches the pane. Verified against
   // tmux 3.6b (`unknown flag -v`, exit 1) and wezterm's clap parser (`unexpected argument
@@ -238,7 +244,7 @@ test("a body beginning with a dash is typed, not parsed as flags", async () => {
   assert.deepEqual(spawn.calls.at(-1)!.args.slice(-2), ["--", "-wip"]);
 });
 
-test("wezterm sends escape sequences, and distinguishes typing from pasting", async () => {
+test("wezterm sends escape sequences, and distinguishes typing from pasting", UNAVAILABLE, async () => {
   const { calls, exec } = recorder();
   const wez = wezterm(exec);
 
@@ -262,7 +268,7 @@ test("wezterm sends escape sequences, and distinguishes typing from pasting", as
   assert.equal(calls[1]!.input, "one\ntwo");
 });
 
-test("wezterm captures pane output with a current socket incarnation", async () => {
+test("wezterm captures pane output with a current socket incarnation", UNAVAILABLE, async () => {
   const output = "Current pane output\nReady for input\n";
   const { calls, exec } = recorder([stubRun({ stdout: output, stderr: "", code: 0 })]);
 
@@ -272,7 +278,7 @@ test("wezterm captures pane output with a current socket incarnation", async () 
   ]);
 });
 
-test("wezterm focuses the tab then pane with a current socket incarnation", async () => {
+test("wezterm focuses the tab then pane with a current socket incarnation", UNAVAILABLE, async () => {
   const { calls, exec } = recorder();
   const focus = wezterm(exec).focus;
   assert.ok(focus?.granularity === "pane");
@@ -284,7 +290,7 @@ test("wezterm focuses the tab then pane with a current socket incarnation", asyn
   ]);
 });
 
-test("wezterm retitles the pane's tab with a current socket incarnation", async () => {
+test("wezterm retitles the pane's tab with a current socket incarnation", UNAVAILABLE, async () => {
   const { calls, exec } = recorder();
 
   assert.deepEqual(await wezterm(exec).retitle!(EMU, "-current task"), { ok: true, outcomeUnknown: false });
@@ -293,7 +299,7 @@ test("wezterm retitles the pane's tab with a current socket incarnation", async 
   ]);
 });
 
-test("a tmux write stops at the buffer it could not load", async () => {
+test("a tmux write stops at the buffer it could not load", UNAVAILABLE, async () => {
   // The buffer and the paste are two commands, and the caller's whole retry decision turns
   // on whether text reached the pane. A failed load-buffer must not be followed by a paste -
   // that is what keeps "reported failure" meaning "the composer was not touched", which
@@ -310,7 +316,7 @@ test("a tmux write stops at the buffer it could not load", async () => {
   }
 });
 
-test("a write that died rather than answering says so", async () => {
+test("a write that died rather than answering says so", UNAVAILABLE, async () => {
   // `outcomeUnknown` is the difference between "it was refused" and "we never found out",
   // and they call for opposite recoveries: a timed-out paste may well be in the composer,
   // so re-pasting on it appends a second copy of the prompt.
@@ -324,7 +330,7 @@ test("a write that died rather than answering says so", async () => {
   assert.equal(res.error, "tmux load-buffer failed");
 });
 
-test("a detached session gets its shell pane, and the session survives a failed split", async () => {
+test("a detached session gets its shell pane, and the session survives a failed split", UNAVAILABLE, async () => {
   const { calls, exec } = recorder([
     stubRun({ stdout: ["/tmp/test-tmux.sock", "123", "456", "$7"].join(SEP), stderr: "", code: 0 }),
     stubRun({ stdout: "", stderr: "no room", code: 1 }),
@@ -357,7 +363,7 @@ test("a detached session gets its shell pane, and the session survives a failed 
   assert.equal(calls[1]!.args[2], "split-window");
 });
 
-test("tmux accepts either selection intent without changing detached creation argv", async () => {
+test("tmux accepts either selection intent without changing detached creation argv", UNAVAILABLE, async () => {
   const calls = [];
   for (const select of [false, true]) {
     const recorded = recorder();
@@ -374,7 +380,7 @@ test("tmux accepts either selection intent without changing detached creation ar
   assert.deepEqual(calls[0], calls[1]);
 });
 
-test("the argv that attaches a terminal honours the resolved binary", () => {
+test("the argv that attaches a terminal honours the resolved binary", UNAVAILABLE, () => {
   // This argv is handed to an emulator to spawn, so it is the one place a binary outside
   // PATH has to be spelled out rather than assumed - a bare "tmux" here would ignore the
   // spec the adapter already carries.
@@ -386,7 +392,7 @@ test("the argv that attaches a terminal honours the resolved binary", () => {
   ]);
 });
 
-test("tmux rejects the names its own target grammar cannot express", () => {
+test("tmux rejects the names its own target grammar cannot express", UNAVAILABLE, () => {
   // The other direction, and the agreement between them, is `terminal-name-rules.test.ts`.
   const names = tmuxMultiplexer().sessions!.names.validate;
   // Separators in `session:window.pane`.
@@ -398,7 +404,7 @@ test("tmux rejects the names its own target grammar cannot express", () => {
   assert.equal(names("api-v2"), null);
 });
 
-test("each backend enumerates through its own adapter, and normalizes at that boundary", async () => {
+test("each backend enumerates through its own adapter, and normalizes at that boundary", UNAVAILABLE, async () => {
   // Enumeration moved off `discovery/*` and onto the adapters, so this is where the format
   // strings and the JSON shape are now pinned - against verbatim backend output, which is
   // the only way it asserts anything on a machine with neither installed.
@@ -438,7 +444,7 @@ test("each backend enumerates through its own adapter, and normalizes at that bo
   assert.equal(emuPane?.cwd, "/Users/me/w ork");
 });
 
-test("an unreadable or unparseable backend enumerates as unknown, never as a throw", async () => {
+test("an unreadable or unparseable backend enumerates as unknown, never as a throw", UNAVAILABLE, async () => {
   // The silent-degradation contract discovery is built on: the product works fine on a
   // machine with neither backend installed, and a sweep that threw would take every card on
   // the machine down with it.
@@ -454,7 +460,7 @@ test("an unreadable or unparseable backend enumerates as unknown, never as a thr
   assert.deepEqual(parseEmulatorPanes('{"panes":[]}'), null, "an object is not the array we asked for");
 });
 
-test("tmux inventory distinguishes an empty server from an unreadable query", async () => {
+test("tmux inventory distinguishes an empty server from an unreadable query", UNAVAILABLE, async () => {
   const empty = ["no sessions", "no current target", "no server running",
     "no server running on /tmp/owned.sock", "error connecting to /tmp/owned.sock (No such file or directory)"];
   for (const stderr of empty) {
@@ -470,12 +476,12 @@ test("tmux inventory distinguishes an empty server from an unreadable query", as
   }
 });
 
-test("a client with no tty is dropped rather than joined against every pane that has none", () => {
+test("a client with no tty is dropped rather than joined against every pane that has none", UNAVAILABLE, () => {
   assert.deepEqual(parseClients(`/dev/ttys028${SEP}api`), [{ tty: "ttys028", session: "api" }]);
   assert.deepEqual(parseClients(`${SEP}api`), []);
 });
 
-test("the pane format separator is printable, or tmux enumerates nothing at all", () => {
+test("the pane format separator is printable, or tmux enumerates nothing at all", UNAVAILABLE, () => {
   // A regression guard on a bug that produced no error and no partial read - zero panes, on
   // two of the three tmux versions measured, which meant every tmux session on the machine
   // went uncarded and every agent on a tty was discovered with no pane to write to.
@@ -501,7 +507,7 @@ test("the pane format separator is printable, or tmux enumerates nothing at all"
   }
 });
 
-test("a field containing the separator drops its pane rather than misaddressing a write", () => {
+test("a field containing the separator drops its pane rather than misaddressing a write", UNAVAILABLE, () => {
   // The cost of a printable separator: it is no longer a byte a field cannot contain. A
   // window name is whatever the shell reports, so `~|~` in one would shift every field after
   // it - and field 3 is `paneId`, which is what every keystroke is addressed to. A shifted
@@ -520,7 +526,7 @@ test("a field containing the separator drops its pane rather than misaddressing 
   assert.equal(parsePanes(clean)![0]!.paneId, "%3");
 });
 
-test("a backend drops its own environment pin, and only its own", async () => {
+test("a backend drops its own environment pin, and only its own", UNAVAILABLE, async () => {
   const base = {
     PATH: "/usr/bin",
     TMUX: "/private/tmp/tmux-501/work,123,0",
@@ -548,7 +554,7 @@ test("a backend drops its own environment pin, and only its own", async () => {
   });
 });
 
-test("the env rule reaches every command, not just the spec", async () => {
+test("the env rule reaches every command, not just the spec", UNAVAILABLE, async () => {
   // Enumeration and writes have to hit the SAME server, or a pane id from one is addressed
   // against another - so a per-command `env` that any one method forgets is the whole bug.
   const seen: (NodeJS.ProcessEnv | undefined)[] = [];
@@ -567,7 +573,7 @@ test("the env rule reaches every command, not just the spec", async () => {
   }
 });
 
-test("a binary is the env override, then the first path that exists, then PATH", () => {
+test("a binary is the env override, then the first path that exists, then PATH", UNAVAILABLE, () => {
   const spec = { env: "MISSION_TEST_BIN", candidates: ["/definitely/not/here", "widget"], dropEnv: [] };
   // The bare name is never probed on disk - it is resolved by the OS at spawn time, which
   // is what makes it the fallback rather than a match.
@@ -581,7 +587,7 @@ test("a binary is the env override, then the first path that exists, then PATH",
   }
 });
 
-test("a bound backend whose catalog binary disappeared fails under its command name", async () => {
+test("a bound backend whose catalog binary disappeared fails under its command name", UNAVAILABLE, async () => {
   await withProcessEnv(
     { MISSION_TMUX_BIN: "/definitely/not/a/real/tmux" },
     async () => {
@@ -595,7 +601,7 @@ test("a bound backend whose catalog binary disappeared fails under its command n
   );
 });
 
-test("the wezterm endpoint locator keeps its 1s production budget unless a caller raises it", async () => {
+test("the wezterm endpoint locator keeps its 1s production budget unless a caller raises it", UNAVAILABLE, async () => {
   const budgets: (number | undefined)[] = [];
   const dead: TerminalExec = async (_bin, _args, opts) => {
     budgets.push(opts?.timeoutMs);

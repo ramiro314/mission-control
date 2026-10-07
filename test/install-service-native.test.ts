@@ -16,6 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALLER = { skip: skipOnWin32("the macOS app installer, which the updater and install migration run, is unavailable on win32; the LaunchAgent service is its macOS daemon entry") };
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installer = join(repo, "scripts", "install-service.mjs");
@@ -34,7 +37,7 @@ function plistProgramArguments(plist: string): string[] {
   return [...block.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
 }
 
-test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
+test("a fresh LaunchAgent enters through the native-build daemon entry", INSTALLER, () => {
   const root = mkdtempSync(join(tmpdir(), "mission-install-service-native-"));
   const home = join(root, "home");
   const state = join(root, "state");
@@ -86,7 +89,7 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
   }
 });
 
-test("the LaunchAgent entry builds first and runs the daemon at its exact PID", async () => {
+test("the LaunchAgent entry builds first and runs the daemon at its exact PID", INSTALLER, async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-start-service-native-"));
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
@@ -285,7 +288,7 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
   if (cleanupError) throw cleanupError;
 }
 
-test("the LaunchAgent entry stops cleanly on every supported signal during the build", async (t) => {
+test("the LaunchAgent entry stops cleanly on every supported signal during the build", INSTALLER, async (t) => {
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"] as const) {
     await t.test(signal, () => assertBuildStopSignal(signal));
   }

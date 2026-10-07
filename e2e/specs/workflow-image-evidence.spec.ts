@@ -8,17 +8,22 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * Native image evidence, through the product rather than around it.
  *
  * The browser uploads the first PNG from WorkflowBindingDialog, captions and scopes it, and
- * submits it through a real built daemon. A parallel Claude and Codex stage then receives the
- * same bytes through each provider's native image transport; the fakes reject metadata-only
- * delivery and write their observed digests for this spec to compare. The failing Claude
- * reviewer parks the run so the browser can add a replacement GIF without changing the repo,
- * proving that fresh image evidence creates a fresh submission. Finally, history lazy-loads
- * the retained body, explicitly restages it, and renders an honest pruned ledger fixture.
+ * submits it through a real built daemon. The reviewers then receive the same bytes through each
+ * provider's native image transport; the fakes reject metadata-only delivery and write their
+ * observed digests for this spec to compare. The failing Claude reviewer parks the run so the
+ * browser can add a replacement GIF without changing the repo, proving that fresh image evidence
+ * creates a fresh submission. Finally, history lazy-loads the retained body, explicitly restages
+ * it, and renders an honest pruned ledger fixture.
+ *
+ * Each case runs twice: with a Claude reviewer alone, and with a parallel Claude and Codex stage.
+ * The Claude-only case keeps running on win32; the Codex case, whose transport win32 does not
+ * support, skips there through the D37 guard.
  *
  * No model tokens: both providers are the extension-less fakes installed by the daemon fixture.
  */
@@ -28,7 +33,7 @@ const PNG = Buffer.from(
   "base64",
 );
 const GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
-const INITIAL_CAPTION = "Initial dashboard evidence reaches both native provider transports";
+const INITIAL_CAPTION = "Initial dashboard evidence reaches the native provider transports";
 const PREBINDING_CAPTION = "Session-staged proof visible before the first binding";
 const REPLACEMENT_CAPTION = "Replacement visual evidence without a repository change";
 const SWITCHED_BINDING_CAPTION = "This unsent draft belongs only to the first binding";
@@ -108,38 +113,76 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   return sessionId;
 }
 
-async function createWorkflow(daemon: DaemonHandle): Promise<{ workflowId: string; versionId: string }> {
-  const claude = await api<{ id: string }>(daemon, "/api/personas", {
-    name: "Claude image boundary",
-    guidanceMarkdown: "# Claude image boundary\n\nE2E_FAIL_VERDICT",
-    runner: "claude",
-    model: null,
-  });
-  const codex = await api<{ id: string }>(daemon, "/api/personas", {
-    name: "Codex image boundary",
-    guidanceMarkdown: "# Codex image boundary\n\nE2E_PASS_VERDICT",
-    runner: "codex",
-    model: null,
-  });
+type Provider = "claude" | "codex";
+
+/**
+ * Who reviews in each case. Claude's scripted objection parks round one in both, and Codex
+ * only ever approves beside it, as it did before the cases were split. The Claude-only case runs
+ * everywhere; the case with Codex skips on win32, whose Codex transport is unsupported.
+ */
+const VARIANTS: readonly { name: string; reviewers: readonly Provider[] }[] = [
+  { name: "Claude's native transport", reviewers: ["claude"] },
+  { name: "Claude's and Codex's native transports", reviewers: ["claude", "codex"] },
+];
+type Variant = (typeof VARIANTS)[number];
+
+function skipUnsupportedReviewers(variant: Variant): void {
+  if (variant.reviewers.includes("codex")) {
+    skipSpecOnWin32(test, "Codex is unavailable on win32; this case proves Codex's native image transport beside Claude's");
+  }
+}
+
+const PERSONAS: Record<Provider, { name: string; guidanceMarkdown: string }> = {
+  claude: { name: "Claude image boundary", guidanceMarkdown: "# Claude image boundary\n\nE2E_FAIL_VERDICT" },
+  codex: { name: "Codex image boundary", guidanceMarkdown: "# Codex image boundary\n\nE2E_PASS_VERDICT" },
+};
+
+async function createWorkflow(
+  daemon: DaemonHandle,
+  variant: Variant,
+): Promise<{ workflowId: string; versionId: string }> {
+  const reviewers = variant.reviewers;
+  const personaIds: Partial<Record<Provider, string>> = {};
+  for (const provider of reviewers) {
+    personaIds[provider] = (await api<{ id: string }>(daemon, "/api/personas", {
+      ...PERSONAS[provider],
+      runner: provider,
+      model: null,
+    })).id;
+  }
+  // An all-pass Join needs two predecessors, so one reviewer routes straight to the end.
+  const joined = reviewers.length > 1;
+  const verdictTarget = joined ? "gate" : null;
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E native image evidence",
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 80 } },
-        { id: "claude", kind: "persona", personaId: claude.id, position: { x: 220, y: 0 } },
-        { id: "codex", kind: "persona", personaId: codex.id, position: { x: 220, y: 160 } },
-        { id: "gate", kind: "all_pass", position: { x: 440, y: 80 } },
+        ...reviewers.map((provider, index) => ({
+          id: provider, kind: "persona", personaId: personaIds[provider], position: { x: 220, y: index * 160 },
+        })),
+        ...(joined ? [{ id: "gate", kind: "all_pass", position: { x: 440, y: 80 } }] : []),
         { id: "end", kind: "end", outcome: "Approved", position: { x: 660, y: 80 } },
       ],
       edges: [
-        { id: "submit-claude", source: "session", sourcePort: "submitted", target: "claude", targetPort: "activate" },
-        { id: "submit-codex", source: "session", sourcePort: "submitted", target: "codex", targetPort: "activate" },
-        { id: "claude-pass", source: "claude", sourcePort: "pass", target: "gate", targetPort: "result" },
-        { id: "claude-fail", source: "claude", sourcePort: "fail", target: "gate", targetPort: "result" },
-        { id: "codex-pass", source: "codex", sourcePort: "pass", target: "gate", targetPort: "result" },
-        { id: "codex-fail", source: "codex", sourcePort: "fail", target: "gate", targetPort: "result" },
-        { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
-        { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+        ...reviewers.flatMap((provider) => [
+          { id: `submit-${provider}`, source: "session", sourcePort: "submitted", target: provider, targetPort: "activate" },
+          ...(verdictTarget
+            ? [
+              { id: `${provider}-pass`, source: provider, sourcePort: "pass", target: verdictTarget, targetPort: "result" },
+              { id: `${provider}-fail`, source: provider, sourcePort: "fail", target: verdictTarget, targetPort: "result" },
+            ]
+            : [
+              { id: `${provider}-pass`, source: provider, sourcePort: "pass", target: "end", targetPort: "terminal" },
+              { id: `${provider}-fail`, source: provider, sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+            ]),
+        ]),
+        ...(joined
+          ? [
+            { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+            { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+          ]
+          : []),
       ],
     },
   });
@@ -151,7 +194,7 @@ async function createWorkflow(daemon: DaemonHandle): Promise<{ workflowId: strin
   return { workflowId: workflow.workflow.id, versionId: published.version.id };
 }
 
-function providerBoundary(daemon: DaemonHandle, provider: "claude" | "codex") {
+function providerBoundary(daemon: DaemonHandle, provider: Provider) {
   const dir = join(daemon.recordDir, provider);
   if (!existsSync(dir)) return null;
   const name = readdirSync(dir).find((file) => file.startsWith("workflow-image-boundary-"));
@@ -192,10 +235,11 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   console.log(`CAPTURED e2e/.artifacts/workflow-image-evidence/${name}.png`);
 }
 
-test("48 dashboard images reach both native providers and a 49th blocks submission", async ({ dashboard, daemon }) => {
+for (const variant of VARIANTS) test(`48 dashboard images reach ${variant.name} and a 49th blocks submission`, async ({ dashboard, daemon }) => {
+  skipUnsupportedReviewers(variant);
   test.setTimeout(180_000);
   const sessionId = await dispatch(dashboard, daemon);
-  const published = await createWorkflow(daemon);
+  const published = await createWorkflow(daemon, variant);
   await dashboard.goto(`${daemon.baseURL}/#/runs`);
   await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
   const bind = dashboard.getByRole("dialog", { name: "Bind workflow" });
@@ -230,7 +274,7 @@ test("48 dashboard images reach both native providers and a 49th blocks submissi
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.id}`)
   ).run.status, { timeout: 90_000 }).toBe("waiting_for_session");
-  for (const provider of ["claude", "codex"] as const) {
+  for (const provider of variant.reviewers) {
     const proof = providerBoundary(daemon, provider);
     expect(proof?.valid).toBe(true);
     expect(proof?.manifest).toHaveLength(48);
@@ -248,16 +292,17 @@ test("48 dashboard images reach both native providers and a 49th blocks submissi
   await expect.poll(() => cards.locator("img").evaluateAll((images: HTMLImageElement[]) =>
     images.every((image) => image.complete && image.naturalWidth > 0))).toBe(true);
   await cards.first().scrollIntoViewIfNeeded();
-  await shoot(dashboard, "48-images-retained");
+  await shoot(dashboard, `48-images-retained-${variant.reviewers.join("-")}`);
 });
 
-test("dashboard evidence reaches both native providers and remains auditable per submission", async ({
+for (const variant of VARIANTS) test(`dashboard evidence reaches ${variant.name} and remains auditable per submission`, async ({
   dashboard,
   daemon,
 }) => {
+  skipUnsupportedReviewers(variant);
   test.setTimeout(360_000);
   const sessionId = await dispatch(dashboard, daemon);
-  const published = await createWorkflow(daemon);
+  const published = await createWorkflow(daemon, variant);
   const evidenceSession = (await api<Array<{ id: string; agentSessionId?: string }>>(
     daemon,
     "/api/sessions",
@@ -339,7 +384,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
     .toBe("waiting_for_session");
 
   const pngDigest = createHash("sha256").update(PNG).digest("hex");
-  for (const provider of ["claude", "codex"] as const) {
+  for (const provider of variant.reviewers) {
     await expect.poll(() => providerBoundary(daemon, provider)?.valid ?? false, {
       message: `${provider} should receive real native image bytes`,
       timeout: 40_000,
@@ -359,7 +404,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
   // that names it rather than by an accessible name of its own.
   await expect(card(initialLedger, "initial-proof").locator("img"))
     .toBeVisible({ timeout: 40_000 });
-  await shoot(dashboard, "01-retained-history");
+  await shoot(dashboard, `01-retained-history-${variant.reviewers.join("-")}`);
 
   // The repository stays untouched. Only the replacement image changes, and it must still
   // produce a fresh immutable submission rather than the unchanged-evidence refusal.
@@ -398,7 +443,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
   // two cards: the one it captured and the one it inherited. The strip says which round each
   // came from; the carry's full notice and every other audit field are in the preview.
   await expect(ledger).toContainText("from round 1");
-  await shoot(dashboard, "02-carried-forward-ledger", ledger);
+  await shoot(dashboard, `02-carried-forward-ledger-${variant.reviewers.join("-")}`, ledger);
 
   // The carried record offers no restage of its own - the same digest is already offered by the
   // submission that captured it, and a second button would imply this submission captured it.
@@ -513,7 +558,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
   );
   await expect(prunedPreview).toContainText(newestImage.sha256);
   await expect(prunedPreview.getByRole("button", { name: "Use in next review" })).toHaveCount(0);
-  await shoot(dashboard, "02-pruned-history");
+  await shoot(dashboard, `02-pruned-history-${variant.reviewers.join("-")}`);
   await prunedPreview.getByRole("button", { name: "Close" }).click();
   await expect(prunedPreview).toBeHidden();
 

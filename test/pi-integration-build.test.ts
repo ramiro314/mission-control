@@ -7,10 +7,11 @@ import { join, resolve } from "node:path";
 import { inspectMissionMcpTools } from "../src/server/mission-mcp.ts";
 import { execFileSync } from "node:child_process";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const nativeAddon = ensureNativeStateLockAddon();
 
-test("two absolute source roots produce identical integration bytes that load after source removal", async () => {
+test("two absolute source roots produce identical integration bytes that load after source removal", { skip: skipOnWin32("Pi is unavailable on win32") }, async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-relocation-"));
   try {
     const builds: string[] = [];

@@ -4,6 +4,7 @@ import type { Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * Settings → Models: Foreman's four roles and the GitHub Inspector's review, on one page.
@@ -99,6 +100,7 @@ test("two Foreman roles run on different providers, and only those roles move", 
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await openModels(dashboard, daemon.baseURL);
 
   // Every role starts inheriting, and the option says what it inherits FROM - which for a

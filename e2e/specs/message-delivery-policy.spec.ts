@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 // The fake stays busy long enough to prove that steering reaches it before completion.
 test.use({ daemonEnv: { MC_E2E_CODEX_HELD_TURN_MS: "180000", MC_E2E_CLAUDE_HELD_TURN_MS: "180000" } });
@@ -29,6 +30,7 @@ async function openSession(dashboard: import("@playwright/test").Page, daemon: i
 
 for (const agent of ["claude", "codex"]) {
 test(`${agent}: the send box offers no delivery choice, and interrupt-and-deliver preserves other queued messages`, async ({ dashboard, daemon }) => {
+  if (agent === "codex") skipSpecOnWin32(test, "Codex is unavailable on win32");
   const { card, composer, rail } = await openSession(dashboard, daemon, agent);
   // There is nothing to pick before sending. Every message carries the same policy, so a
   // selector here would only be a way to get it wrong.
@@ -71,7 +73,7 @@ test("a message nobody touched shows its wait and steers into the running turn a
   // The message's own minute is only part of this: a cold dispatch, a settling session and a
   // held turn all precede it, and this spec cannot start the clock until they are done.
   test.setTimeout(180000);
-  const { card, composer, rail } = await openSession(dashboard, daemon);
+  const { card, composer, rail } = await openSession(dashboard, daemon, "claude");
   await composer.fill("send automatically after the deadline");
   await composer.press("Enter");
   const pending = card.locator(".pending-turn").filter({ hasText: "send automatically after the deadline" });

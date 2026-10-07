@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-agent-env-test-"));
 const operatorState = join(root, "operator-state");
@@ -130,7 +131,7 @@ test("an isolated client reads the restrictive token file without a direct beare
   }
 });
 
-test("terminal argv applies isolation after the terminal server's inherited environment", () => {
+test("terminal argv applies isolation after the terminal server's inherited environment", { skip: skipOnWin32("the terminal runtime is unavailable on win32") }, () => {
   const argv = isolatedAgentArgv([
     process.execPath,
     "-e",

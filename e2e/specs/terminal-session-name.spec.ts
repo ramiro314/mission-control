@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Session, Task } from "../../src/shared/types.ts";
 import type { TerminalBoundaryState } from "../fixtures/terminal-boundary.ts";
 import { test, expect } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { resumeLeaseRoot } from "../../src/server/terminal/resume-lease.ts";
 
@@ -12,6 +13,7 @@ test.use({ daemonEnv: {
   MC_E2E_TERMINAL_BOUNDARY: "1", MISSION_POLL_MS: "100",
   MISSION_DISPATCH_HOOK_READY_MS: "50", MISSION_DISPATCH_SETTLE_MS: "0",
 } });
+skipSpecOnWin32(test, "Ghostty and the terminal runtime are unavailable on win32");
 
 test("a Ghostty dispatch keeps its task name through tab rewrites and daemon restart", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings`);

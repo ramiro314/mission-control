@@ -4,6 +4,9 @@ import { UpdateController } from "../../src/main/updater.ts";
 import { inspectUpdateRuntime } from "../../src/main/update-runtime.ts";
 import type { UpdateSnapshot } from "../../src/shared/update.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "the macOS updater is unavailable on win32");
 
 test("Node incompatibility blocks preparation and Check again recovers after remediation", async ({ dashboard, daemon }) => {
   let compatible = false;

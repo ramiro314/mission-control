@@ -624,8 +624,15 @@ await smokePiExtension();
  *
  * It resolves a path and loads a module. It reads no credential, opens no session file, and
  * contacts nothing.
+ *
+ * Skipped where Pi is unsupported, for the reason `smokePiExtension` is: no Pi session can be
+ * dispatched there, so nothing on that host ever loads this module.
  */
 async function smokePiSdkBundle() {
+  if (PI_UNSUPPORTED) {
+    console.log(`[smoke] Pi SDK bundle deliberately skipped: ${PI_UNSUPPORTED}`);
+    return;
+  }
   const bundle = resolve("dist/server/index.mjs");
   const source = await readFile(bundle, "utf8");
   if (!source.startsWith("import{createRequire as __mcCreateRequire}")) {

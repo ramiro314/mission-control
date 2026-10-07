@@ -18,10 +18,12 @@ import { teardownWorktree } from "../src/server/dispatcher.ts";
 assert.ok(process.env.NODE_TEST_CONTEXT && process.env.MISSION_TEST_STATE, "Use the repository test preload");
 const tmuxBin = resolveBin(TMUX_BIN);
 const sleepBin = ["/bin/sleep", "/usr/bin/sleep"].find(p => spawnSync(p, ["0"]).status === 0)!;
-assert.ok(sleepBin);
 const originalTmux = process.env.TMUX;
 const unavailable = skipOnWin32("tmux and the terminal runtime are unavailable on win32")
   || spawnSync(tmuxBin, ["-V"], {stdio: "ignore"}).status !== 0;
+// Only where the cases run: win32 has no `sleep` binary, and a module-scope failure there
+// would fail the file instead of skipping it.
+assert.ok(unavailable || sleepBin);
 
 class Fixture {
   dir = mkdtempSync(join(tmpdir(), "mc-tmux-kill-"));

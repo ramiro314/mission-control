@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { expect, test } from "../fixtures/test.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -230,6 +231,7 @@ test("an attached repo can be read and detached before dispatching", async ({
 });
 
 test("Pi offers secondary repositories and submits the complete task", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, "Pi is unavailable on win32");
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);

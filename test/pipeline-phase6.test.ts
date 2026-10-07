@@ -44,6 +44,9 @@ import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const TERMINAL = { skip: skipOnWin32("the terminal runtime is unavailable on win32") };
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -257,7 +260,7 @@ test("conductor idea dispatch scrubs nesting and preserves the intent as one arg
   ]);
 });
 
-test("a pipeline task launches the provider in its repository without an agent binding", async () => {
+test("a pipeline task launches the provider in its repository without an agent binding", TERMINAL, async () => {
   const registry = new Registry();
   registry.upsertTask(
     mkTask({
@@ -378,7 +381,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   registry.upsertTask(
     mkTask({
       id: "pipeline-sdk",
-      agent: "codex",
+      agent: "claude",
       kind: "pipeline",
       repoRoot: "/repo/sdk",
       intent: "Build the SDK path\nwithout changing the daemon",
@@ -428,10 +431,10 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   assert.equal(registry.managedPipelineLaunch(launchedSessionId!), null);
   assert.deepEqual(supervisor.starts, [{
     sessionId: launchedSessionId,
-    agent: "codex",
+    agent: "claude",
     name: "Build the SDK path",
     cwd: "/repo/sdk",
-    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
+    prompt: "/engineer Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
     acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
     // A pipeline task on this arm launches a directly streamable agent conversation, so it
     // presents its launch turn exactly as an ordinary embedded dispatch does: the host's
@@ -443,12 +446,12 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     // referenced so this stays a literal assertion: fingerprinting a recomposed copy of turn
     // one is the exact defect that would make every pipeline launch render in full.
     launchPresentation: {
-      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
+      prompt: "/engineer Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
       displayText: "Build the SDK path\nwithout changing the daemon",
     },
     model: null,
     effort: null,
-    permissionMode: "approveForMe",
+    permissionMode: "auto",
     mcp: {
       ...mcp,
       env: {
@@ -658,7 +661,7 @@ test("rejected managed Pipeline launch clears its preallocated nonexistent sessi
   const registry = new Registry();
   registry.upsertTask(mkTask({
     id: "pipeline-sdk-rejected-stale-liveness",
-    agent: "codex",
+    agent: "claude",
     kind: "pipeline",
     repoRoot: "/repo/rejected-stale-liveness",
     intent: "Keep no phantom managed session",
@@ -677,7 +680,7 @@ test("rejected managed Pipeline launch clears its preallocated nonexistent sessi
         registry.getTask("pipeline-sdk-rejected-stale-liveness")?.sessionId === input.sessionId;
       registrySessionMissing =
         typeof input.sessionId === "string" && registry.getSession(input.sessionId) === undefined;
-      throw new Error("Codex SDK launch refused by fixture");
+      throw new Error("Claude SDK launch refused by fixture");
     },
     taskLiveness: () => true,
     stop: async () => {
@@ -2382,24 +2385,27 @@ test("different repository and slug identities may launch beside active pipeline
       title: "Target run",
     }),
   );
-  let spawned = 0;
+  const supervisor = fakeSupervisor(registry);
   const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
     pipelineLaunch: async () => ({
       ok: true,
-      launchRuntime: "terminal",
+      launchRuntime: "agent-sdk",
       cwd: repoRoot,
-      argv: ["/bin/conduct-ts", "engineer", "--idea", "Target run"],
       pipelineRun: link,
     }),
-    spawn: async () => {
-      spawned += 1;
-      return { homeName: "Target run", homeBackend: "tmux", terminalResourceId: null };
-    },
   });
 
   await dispatcher.dispatch("pipeline-distinct-target");
 
-  assert.equal(spawned, 1);
+  assert.equal(supervisor.starts.length, 1);
   assert.equal(registry.getTask("pipeline-distinct-target")?.status, "running");
   assert.deepEqual(registry.getTask("pipeline-distinct-target")?.pipelineRun, link);
 });

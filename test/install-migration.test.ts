@@ -16,6 +16,9 @@ import {
   readMigrationJournal, migrationReceipt, recoverMigration, repairMigration,
   MIGRATION_JOURNAL, type MigrationPorts,
 } from '../scripts/install-migration.mjs';
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const INSTALL_MIGRATION = { skip: skipOnWin32("the macOS install migration is unavailable on win32") };
 
 function fixture(t: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'mission-migration-'));
@@ -60,7 +63,7 @@ function fixture(t: test.TestContext) {
   return {root, home, stateDirectory, source, stagedBundle, receipt, plan, policy, ports, events, args, bundle};
 }
 
-test('relocation stages beside the personal destination, retains the system app, then commits and repairs forward', async (t) => {
+test('relocation stages beside the personal destination, retains the system app, then commits and repairs forward', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   const before = readFileSync(join(f.source, 'Contents/Resources/app/package.json'));
   const result = await runMigration(f.plan, f.ports, {policy: f.policy});
@@ -83,7 +86,7 @@ test('relocation stages beside the personal destination, retains the system app,
   assert.equal(repeats, 0);
 });
 
-test('ownership refuses a replaced source even when its commit and version still match', async (t) => {
+test('ownership refuses a replaced source even when its commit and version still match', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   renameSync(f.source, `${f.source}.recorded`);
   f.bundle(f.source, f.plan.sourceIdentity.commit!);
@@ -99,7 +102,7 @@ test('ownership refuses a replaced source even when its commit and version still
 });
 
 for (const when of ['before recovery', 'while stopping the target'] as const) {
-  test(`recovery refuses a source revision changed ${when}`, async (t) => {
+  test(`recovery refuses a source revision changed ${when}`, INSTALL_MIGRATION, async (t) => {
     const f = fixture(t);
     f.ports.checkpoint = (stage) => {if (stage === 'target-staged') throw Object.assign(new Error('crash'), {migrationCrash: true});};
     await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /crash/);
@@ -119,7 +122,7 @@ for (const when of ['before recovery', 'while stopping the target'] as const) {
   });
 }
 
-test('migration cannot take ownership without a recorded source revision', async (t) => {
+test('migration cannot take ownership without a recorded source revision', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   f.plan.sourceIdentity.revision = null;
   await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /source.*revision/);
@@ -128,7 +131,7 @@ test('migration cannot take ownership without a recorded source revision', async
 
 for (const boundary of ['before commit', 'after commit'] as const) {
   for (const damage of ['missing', 'truncated', 'directory'] as const) {
-    test(`an unreadable ${damage} receipt ${boundary} records manual recovery without relaunching`, async (t) => {
+    test(`an unreadable ${damage} receipt ${boundary} records manual recovery without relaunching`, INSTALL_MIGRATION, async (t) => {
       const f = fixture(t);
       const path = join(f.stateDirectory, 'install-receipt.json');
       const fail = () => {
@@ -159,7 +162,7 @@ for (const boundary of ['before commit', 'after commit'] as const) {
 }
 
 for (const boundary of ['prepared', 'target-reserved', 'target-published', 'target-staged', 'target-ready', 'receipt-renamed', 'receipt-committed']) {
-  test(`recovery after helper death at ${boundary} obeys the receipt commit boundary`, async (t) => {
+  test(`recovery after helper death at ${boundary} obeys the receipt commit boundary`, INSTALL_MIGRATION, async (t) => {
     const f = fixture(t);
     f.ports.checkpoint = (stage) => {
       if (stage === boundary) throw Object.assign(new Error('simulated crash'), {migrationCrash: true});
@@ -175,7 +178,7 @@ for (const boundary of ['prepared', 'target-reserved', 'target-published', 'targ
   });
 }
 
-test('pre-commit launch failure restores the original receipt and stops only the target through the identity port', async (t) => {
+test('pre-commit launch failure restores the original receipt and stops only the target through the identity port', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   f.ports.waitForReady = async () => { throw new Error('target exited'); };
   const result = await runMigration(f.plan, f.ports, {policy: f.policy});
@@ -188,7 +191,7 @@ test('pre-commit launch failure restores the original receipt and stops only the
   assert.equal(readMigrationJournal(f.stateDirectory, f.policy)?.inventory, null, 'restoration discards sensitive inventory');
 });
 
-test('a launch not yet recorded cannot delete its bundle or relaunch the source during recovery', async (t) => {
+test('a launch not yet recorded cannot delete its bundle or relaunch the source during recovery', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   f.ports.launchTarget = async () => { throw Object.assign(new Error('died after spawn'), {migrationCrash: true}); };
   await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /died after spawn/);
@@ -198,7 +201,7 @@ test('a launch not yet recorded cannot delete its bundle or relaunch the source 
   assert.deepEqual(migrationReceipt(f.stateDirectory), f.receipt);
 });
 
-test('the target-owned launch record recovers a real child after the helper dies before journal publication', async (t) => {
+test('the target-owned launch record recovers a real child after the helper dies before journal publication', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   let pid = 0;
   const modulePath = new URL('../scripts/migration-runtime.mjs', import.meta.url).href;
@@ -221,7 +224,7 @@ test('the target-owned launch record recovers a real child after the helper dies
   assert.equal(f.events.includes('launch-source'), true);
 });
 
-test('login cleanup requires the committed recovery parent, exact source and nonce', async (t) => {
+test('login cleanup requires the committed recovery parent, exact source and nonce', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   let enabled = true;
   let writes = 0;
@@ -246,7 +249,7 @@ test('login cleanup requires the committed recovery parent, exact source and non
 });
 
 for (const failure of ['stop', 'source', 'receipt'] as const) {
-  test(`failed ${failure} recovery records both errors without escaping or launching an unverified source`, async (t) => {
+  test(`failed ${failure} recovery records both errors without escaping or launching an unverified source`, INSTALL_MIGRATION, async (t) => {
     const f = fixture(t);
     f.ports.waitForReady = async () => {
       if (failure === 'source') f.bundle(f.source, 'c'.repeat(40));
@@ -265,7 +268,7 @@ for (const failure of ['stop', 'source', 'receipt'] as const) {
   });
 }
 
-test('post-helper repair ownership permits old-copy redirect without waiting for the live personal process', async (t) => {
+test('post-helper repair ownership permits old-copy redirect without waiting for the live personal process', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   await runMigration(f.plan, f.ports, {policy: f.policy});
   await assert.rejects(migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.source, port: 1, policy: f.policy, timeout: 5}), /helper is still running/);
@@ -274,7 +277,7 @@ test('post-helper repair ownership permits old-copy redirect without waiting for
   assert.deepEqual(await migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.source, port: 1, policy: f.policy, timeout: 5}), {proceed: true, committed: true, fresh: false});
 });
 
-test('invalid process identity and malformed repair entries are refused before recovery', async (t) => {
+test('invalid process identity and malformed repair entries are refused before recovery', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   const {journal} = await runMigration(f.plan, f.ports, {policy: f.policy});
   for (const changed of [{owner: {pid: -1, identity: 'invalid'}}, {ownerRole: 'unknown'}, {repairs: [{id: 'login', status: 'invented', message: 'bad'}]}]) {
@@ -285,7 +288,7 @@ test('invalid process identity and malformed repair entries are refused before r
   }
 });
 
-test('foreign target, symlink destination, changed staged identity and untrusted policy are refused', async (t) => {
+test('foreign target, symlink destination, changed staged identity and untrusted policy are refused', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   mkdirSync(join(f.home, 'Applications'));
   mkdirSync(f.plan.target);
@@ -305,7 +308,7 @@ test('foreign target, symlink destination, changed staged identity and untrusted
   assert.equal(prepareMigration({...f.args, receipt: {...f.receipt, repo: 'foreign/repo'}}), null);
 });
 
-test('unsupported packaged capability preserves the legacy in-place transition', (t) => {
+test('unsupported packaged capability preserves the legacy in-place transition', INSTALL_MIGRATION, (t) => {
   const f = fixture(t);
   f.bundle(f.stagedBundle, 'b'.repeat(40), true, null);
   assert.equal(prepareMigration(f.args), null);
@@ -314,7 +317,7 @@ test('unsupported packaged capability preserves the legacy in-place transition',
   assert.equal(prepareMigration(f.args), null, 'unverified release must keep migration disabled');
 });
 
-test('receipt edits and replaced target ownership prevent destructive recovery', async (t) => {
+test('receipt edits and replaced target ownership prevent destructive recovery', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   f.ports.checkpoint = (stage) => { if (stage === 'target-staged') throw Object.assign(new Error('crash'), {migrationCrash: true}); };
   await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}));
@@ -328,7 +331,7 @@ test('receipt edits and replaced target ownership prevent destructive recovery',
   assert.equal(f.events.includes('launch-source'), false);
 });
 
-test('corrupt or unsupported journals fail closed and a competing helper writes no outcome or receipt', async (t) => {
+test('corrupt or unsupported journals fail closed and a competing helper writes no outcome or receipt', INSTALL_MIGRATION, async (t) => {
   const f = fixture(t);
   atomicMigrationJson(join(f.stateDirectory, MIGRATION_JOURNAL), {plan: {...f.plan, protocol: 999}});
   assert.throws(() => readMigrationJournal(f.stateDirectory, f.policy), /Unsupported/);

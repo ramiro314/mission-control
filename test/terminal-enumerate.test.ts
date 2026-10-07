@@ -6,6 +6,9 @@ import { binPresent, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts
 import { enumerateTerminals } from "../src/server/terminal/enumerate.ts";
 import { EMULATORS, MULTIPLEXERS } from "../src/server/terminal/registry.ts";
 import type { BinSpec } from "../src/server/terminal/types.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const DISCOVERY = { skip: skipOnWin32("terminal discovery is unavailable on win32") };
 
 // What is at stake: the one thing a registry sweep can quietly get wrong, and the one cost it
 // must not impose.
@@ -48,7 +51,7 @@ test("every enumerated backend is the one filed under its id", async () => {
   }
 });
 
-test("a backend that is not installed costs no subprocess", () => {
+test("a backend that is not installed costs no subprocess", DISCOVERY, () => {
   // Answered from the filesystem, never by running anything. A failed spawn is ~1-3ms and
   // scales with the number of registered adapters; a PATH walk is microseconds. This is the
   // whole reason the registry can carry adapters for backends this machine has never had.
@@ -109,7 +112,7 @@ test("presence is about the binary, not about the backend running", () => {
   }
 });
 
-test("the discovery sweep preserves unavailable inventory and diagnoses unexpected exceptions", async (t) => {
+test("the discovery sweep preserves unavailable inventory and diagnoses unexpected exceptions", DISCOVERY, async (t) => {
   const backend = EMULATORS.wezterm;
   const original = { bin: backend.bin, list: backend.list };
   const refused = new Error("refused");

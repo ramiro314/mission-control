@@ -9,6 +9,10 @@ import { processIdentity } from '../scripts/update-lock.mjs';
 import { atomicMigrationJson, MIGRATION_ACK, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { boundedMigrationWait, migrationRuntimePorts, migrationStartupGate, sameMigrationProcess, verifyMigrationAssets } from '../scripts/migration-runtime.mjs';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
+import { skipOnWin32 } from './helpers/win32-skip.ts';
+
+// Process identity is read through /bin/ps, as the macOS install migration does.
+const MIGRATION = { skip: skipOnWin32('the macOS install migration is unavailable on win32') };
 
 function fixture(t: test.TestContext) {
   const stateDirectory = mkdtempSync(join(tmpdir(), 'mission-readiness-'));
@@ -22,7 +26,7 @@ function fixture(t: test.TestContext) {
   return {stateDirectory, journal, ack};
 }
 
-test('only the intended live process and exact acknowledgment tuple establish readiness', async (t) => {
+test('only the intended live process and exact acknowledgment tuple establish readiness', MIGRATION, async (t) => {
   const f = fixture(t);
   const ports = migrationRuntimePorts({port: 1, timeout: 5});
   for (const changed of [{nonce: 'stale'}, {pid: process.pid + 1}, {identity: 'reused PID'}, {commit: 'c'.repeat(40)}, {stateDirectory: '/another-state'}, {bundle: '/another-app'}]) {
@@ -34,7 +38,7 @@ test('only the intended live process and exact acknowledgment tuple establish re
   await assert.rejects(ports.waitForReady({...f.journal, targetProcess: {pid: 2147483647, identity: 'gone'}}), /exited/);
 });
 
-test('reused PID is not signalled; missing assets and a launch without its journal cannot start', async (t) => {
+test('reused PID is not signalled; missing assets and a launch without its journal cannot start', MIGRATION, async (t) => {
   const f = fixture(t);
   assert.equal(sameMigrationProcess({pid: process.pid, identity: 'different process'}), false);
   await migrationRuntimePorts({port: 1}).stopTarget({...f.journal, targetProcess: {pid: process.pid, identity: 'different process'}});
