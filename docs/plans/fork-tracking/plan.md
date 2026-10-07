@@ -10,7 +10,10 @@ written by the operator the same day in the plan review, which also settled deci
 that is rerun right before merge (decision 27), the recurring mission is created paused and
 enabled only after the merge (decision 28), and the label and issue writes of decision 10 gained
 a recorded standing grant and a refresh fallback (decision 29). These refine the mechanisms of
-decisions 10, 20, 23 and 24 and do not change any answer the operator gave. Not implemented.
+decisions 10, 20, 23 and 24 and do not change any answer the operator gave. Revised again for
+GitHub Inspector round 2 on #275: each replacement block records the section text it was
+written against, and the refresh stops on a mismatch instead of overwriting (decision 30,
+refines 18). Bot-authored PRs are also excluded from the standalone fixes. Not implemented.
 
 ## Problem
 
@@ -80,6 +83,7 @@ No test reads `docs/fork/`, so deleting it turns no test red.
 | 27 | (Repair round 1, refines 20 and 24) How ledger edits that merge into `main` after the migration first runs reach the issues | `fork-migrate.mjs` is a **reconciling upsert**, not create-only: it rewrites each migrated issue's sections and status from the ledger and adds any missing PR label. The implementing session reruns it as the **last step before the merge**, after its final update from `main`, so the issues match the ledger as it stands at the merge. |
 | 28 | (Repair round 1, refines 23) When the recurring mission starts | The implementing session creates "Refresh fork status" **paused** through `POST /api/schedules`. Its tasks run against `main`, where `scripts/fork-report.mjs` and `docs/fork/README.md` exist only after this PR merges. The PR's hand-off tells the human to press **Resume** on the mission after merging, and optionally **Run now**. |
 | 29 | (Repair round 1, refines 10) How the pull-request step is authorized to create labels and issues | The approved decision 10 is recorded as a standing grant in the `AGENTS.md` "Fork" section: in this repository only, a session may create a `fork:<slug>` label, create its `fork-feature` tracking issue, and add `fork:*` labels to its own PR. When a session's authorization still refuses those writes, it writes the full issue body into its PR's "Fork feature changes" section instead, and the refresh creates the label and issue after the merge. |
+| 30 | (GitHub Inspector round 2, refines 18) What stops two PRs that edit the same section from silently overwriting each other | Every replacement block keeps decision 18's full text and adds a first line `base: <hash>`. That is the first 12 hex characters of the SHA-256 of the issue section the PR edited against, or `base: new`. Before applying a PR, the refresh compares each base with the issue's current section. On a mismatch it writes nothing for that PR, or for any later PR touching the same feature, and reports it. A person, or a session asked to, then rewrites the block in the merged PR's body against the current text, keeping both changes, and updates its base. The next refresh applies it. This is the git conflict the ledger had, kept visible but moved to the one place it can still occur. |
 
 ## Design
 
@@ -153,8 +157,10 @@ block per feature:
 
 ### fork:per-task-base-branch
 #### Behavior contracts
+base: 3f9a1c07be42
 - (the complete new list, not a diff)
 #### Upstream surfaces touched
+base: 9d02e6a4c1f8
 (the complete new text)
 
 ### fork:windows-support
@@ -162,7 +168,11 @@ block per feature:
 active
 ```
 
-Each `####` block replaces the issue section of the same name in full. A `#### Status` block
+Each `####` block replaces the issue section of the same name in full. Its first line,
+`base: <hash>`, records which text it replaces (decision 30). `node scripts/fork-delta.mjs base
+<slug> "<section>"` prints the hash of the issue's current section, and the author copies it into
+the block when writing it. `base: new` means the section or the issue does not exist yet. A
+`#### Status` block
 takes one of `active`, `in-progress`, `superseded`, `removed` or `upstreamed`, plus an optional
 note. The refresh turns it into labels, closes or reopens the issue, and posts the closing
 comment with the date and the PR number. A PR that creates a new feature already wrote the full
@@ -190,6 +200,10 @@ unit-tested without the network.
     first sentence of its Intent, and the merged-into-`main` PRs carrying its label, ascending.
     Closed features follow the active ones.
   - **Standalone fixes**: merged-into-`main` PRs with no `fork:*` label, excluding upstream
+    sync PRs and bot-authored PRs (any `app/*` author, such as Dependabot). The fork's release
+    workflow is disabled, so it opens no release PRs. The three historic Dependabot PRs (#40,
+    #41, #43) are labeled `fork:dependabot` by the migration, so they stay under that removed
+    feature rather than counting as fixes.
     sync PRs.
 - It never shows open PRs or anything only on `release/windows` (decisions 15 and 25).
 
@@ -242,7 +256,12 @@ be deleted in a later PR. It is not needed afterwards.
    merged before that point edited the ledger, and the pre-merge migration rerun carries their
    changes (decision 27). `docs/fork/README.md` records the implementation PR's merge date as
    the cut-over.
-2. For each one, apply its "Fork feature changes" section to each named issue: replace the
+2. For each one, run `node scripts/fork-delta.mjs check <pr>` first. It parses the section,
+   validates its format, and compares every block's `base` with the issue's current section
+   text. When any block is stale, the refresh writes nothing for that PR. It holds back every
+   later PR that touches the same feature until the stale one is fixed, and lists them in the
+   run's summary and through `report_status` (decision 30). PRs for other features continue.
+   Otherwise, apply its "Fork feature changes" section to each named issue: replace the
    named sections, and apply any Status block. When a section names a `fork:<slug>` whose
    label or tracking issue does not exist, create them from the section, which then carries
    the full issue body. Also add any `fork:*` label the PR is missing (decision 29). Then add
@@ -303,7 +322,7 @@ mission's task body. Each refresh replaces its full content, so nothing in it is
   `docs/fork/ledger.md` and `ledger.html`. Following decision 14, the sync agent copies the
   branch's "Windows support" entry from `release/windows` into
   `docs/plans/windows-support/merge-delta.md`, written in the "Fork feature changes" format,
-  then resolves the conflict by deleting both ledger files. Under D27, dropping a Windows change
+  then resolves the conflict by deleting both ledger files. Under the Windows support plan's D27 ([docs/plans/windows-support/plan.md](../windows-support/plan.md), "Decisions"), dropping a Windows change
   needs the human. That does not apply here, because the entry's text is kept, not dropped.
 - **Until the merge:** branch PRs that change the Windows contracts update `merge-delta.md` on
   `release/windows`. That file lives only in the branch's plan folder, so it never conflicts
@@ -328,6 +347,8 @@ feature changes" section in the PR body, and add the feature's label (decision 2
 | --- | --- |
 | `scripts/fork-report.mjs` | New: renderer plus fetcher, as above |
 | `scripts/fork-migrate.mjs` | New: one-off idempotent migration, as above |
+| `scripts/fork-delta.mjs` | New: `base` prints a section's hash. `check <pr>` parses and validates a PR's "Fork feature changes" section and reports stale bases (decision 30). |
+| `test/fork-delta.test.ts` | New: parsing, format errors, hash stability, and stale-base detection from fixture issue and PR bodies |
 | `test/fork-report.test.ts` | New: renderer cases from fixture JSON |
 | `test/fork-migrate.test.ts` | New: ledger parsing and slug derivation against a fixture ledger excerpt |
 | `docs/fork/ledger.md`, `docs/fork/ledger.html` | Deleted |
@@ -362,8 +383,9 @@ section (decision 29). The daily mission gets its grant from its own task body.
 
 ## Verification
 
-- `node --test --import ./test/setup-state.mjs --import tsx test/fork-report.test.ts test/fork-migrate.test.ts`:
-  rendering of active, in-progress and closed features, standalone-fix exclusion of sync PRs
+- `node --test --import ./test/setup-state.mjs --import tsx test/fork-report.test.ts test/fork-migrate.test.ts test/fork-delta.test.ts`:
+  two PRs edited against the same base, where the second is reported stale and not applied;
+  rendering of active, in-progress and closed features, standalone-fix exclusion of sync PRs, bot-authored PRs
   and labeled PRs, the Windows "includes N" note, ledger parsing of all 18 entries, and the
   slug table.
 - `node scripts/fork-migrate.mjs --dry-run` output attached to the PR, reviewed before the real
