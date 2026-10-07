@@ -814,6 +814,17 @@ jobs:
   # native state lock, which fails on win32 until M2.2, and that would stop the shard before a
   # single test ran. Split, the shard still reports every test, and the ones that need the
   # addon fail on their own.
+  #
+  # The middle stage is `test:run` with the arguments `npm test` passes, plus three bounds that
+  # make every shard finish inside its step and print its summary. On run 37522217862 two shards
+  # were killed at the step timeout instead, because a file whose tests had timed out never
+  # exited (`install-service-native`) and another printed nothing at all
+  # (`prompted-wrapup-worker-e2e`). `--test-timeout` lowers the per-test bound `test:run` sets
+  # to two minutes (the slowest Linux test takes 64 s), `--test-force-exit` ends a file whose
+  # leaked handles would keep it alive, and `test/file-watchdog.mjs` ends and names a file
+  # still running after its budget, blocked event loop included. Each shard uploads its JUnit
+  # as `windows-unit-junit-shard-<n>`, the input for Windows shard timings; the name stays
+  # outside `test:timings`'s `unit-junit-node-*` pattern so Linux timings never read it.
   unit-windows:
     name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
     needs: [changes, dependencies-windows]
@@ -883,14 +894,24 @@ jobs:
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run pretest
 
-      # `--ignore-scripts` skips `pretest` and `posttest`, which the steps around this run.
       - name: Test
         id: test
         timeout-minutes: 60
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
-        run: npm test --ignore-scripts
+        run: npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" --test-shard="$MISSION_TEST_SHARD" --test-timeout=120000 --test-force-exit --import ./test/file-watchdog.mjs 'test/**/*.test.ts'
         env:
           MISSION_TEST_SHARD: ${{ matrix.shard }}/3
+          MISSION_TEST_FILE_BUDGET_MS: '900000'
+          MISSION_TEST_JUNIT: ${{ runner.temp }}/windows-unit-junit.xml
+
+      - name: Upload JUnit results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unit-junit-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-unit-junit.xml
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Workflow evidence tests (posttest)
         id: posttest
@@ -1134,6 +1155,19 @@ jobs:
         if: steps.unpack.outcome == 'success'
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --retries=0 --global-timeout=1800000
+        env:
+          MISSION_PLAYWRIGHT_JUNIT: ${{ runner.temp }}/windows-e2e-junit.xml
+
+      # Per-test results and durations, every run rather than only a failed one: the input for
+      # Windows e2e shard timings.
+      - name: Upload e2e JUnit results
+        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-e2e-junit-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-e2e-junit.xml
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload e2e report
         if: ${{ !cancelled() && steps.e2e.outcome == 'failure' }}

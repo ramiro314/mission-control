@@ -135,11 +135,11 @@ test("each product step is allowed to fail through one switch, and the job repor
 test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", () => {
   const run = (id: string) => [...WINDOWS.get(id)!.matchAll(/^ {8}run: (.+)$/gm)].map(([, cmd]) => cmd!);
   assert.ok(run("typecheck-windows").includes("npm run typecheck"));
-  assert.deepEqual(
-    run("unit-windows").filter((cmd) => cmd.startsWith("npm run p") || cmd.startsWith("npm test")),
-    ["npm run pretest", "npm test --ignore-scripts", "npm run posttest"],
-    "the unit shard runs all three stages of npm test",
-  );
+  const stages = run("unit-windows").filter((cmd) => /^npm (run (--silent )?)?(pretest|test:run|posttest)\b/.test(cmd));
+  assert.equal(stages.length, 3, "the unit shard runs all three stages of npm test");
+  assert.equal(stages[0], "npm run pretest");
+  assert.ok(stages[1]!.startsWith("npm run --silent test:run -- "), "the middle stage is npm test's own test:run");
+  assert.equal(stages[2], "npm run posttest");
   assert.match(WINDOWS.get("unit-windows")!, /MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/3$/m);
   assert.deepEqual(shards(WINDOWS.get("unit-windows")!), shards(ALL.get("unit-node-24")!));
   assert.ok(run("build-windows").includes("npm run build"));
@@ -237,4 +237,59 @@ test("CI result and the flake report ignore them until they are required", () =>
       `${id} does not wait on a Windows job`,
     );
   }
+});
+
+test("every unit shard finishes inside its step, so it prints its summary and JUnit", () => {
+  const body = WINDOWS.get("unit-windows")!;
+  const step = steps(body).find((s) => s.includes("        id: test\n"))!;
+  const command = step.match(/^ {8}run: (.+)$/m)![1]!;
+  const stepMs = Number(step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1]) * 60_000;
+
+  // The same files and shard as `npm test`, which runs the same `test:run`.
+  const scripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
+  const glob = scripts.test.match(/('[^']+\*\.test\.ts')$/)?.[1];
+  assert.ok(glob && command.endsWith(` ${glob}`), "the shard runs npm test's glob");
+  assert.ok(command.includes(' --test-shard="$MISSION_TEST_SHARD" '));
+  assert.ok(command.includes(' --test-concurrency="$MISSION_TEST_CONCURRENCY" '));
+  // The step expands those itself, no longer inside npm's script-shell, so it must run in bash
+  // (pwsh, the windows-latest default, would pass `--test-shard=`) and both must be set.
+  const stepShell = step.match(/^ {8}shell: (\S+)$/m)?.[1];
+  const jobShell = body.match(/^ {4}defaults:\n {6}run:\n {8}shell: (\S+)$/m)?.[1];
+  assert.equal(stepShell ?? jobShell, "bash", "the Test step runs in bash");
+  assert.match(step, /^ {10}MISSION_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/3$/m);
+  assert.match(body, /^ {6}MISSION_TEST_CONCURRENCY: '\d+'$/m, "the job sets the concurrency the step expands");
+
+  // A hung test fails sooner than test:run's own bound, and so names itself sooner.
+  const linuxMs = Number(scripts["test:run"].match(/--test-timeout=(\d+)/)?.[1]);
+  const testMs = Number(command.match(/ --test-timeout=(\d+) /)?.[1]);
+  assert.ok(testMs > 0 && testMs < linuxMs, `the Windows per-test timeout ${testMs} is below test:run's ${linuxMs}`);
+  // A file whose leaked handles outlive its tests exits, and one that will not is ended.
+  assert.ok(command.includes(" --test-force-exit "));
+  assert.ok(command.includes(" --import ./test/file-watchdog.mjs "));
+  assert.ok(existsSync(new URL("./file-watchdog.mjs", import.meta.url)));
+  const budgetMs = Number(step.match(/^ {10}MISSION_TEST_FILE_BUDGET_MS: '(\d+)'$/m)?.[1]);
+  assert.ok(budgetMs > testMs && budgetMs < stepMs, `the ${budgetMs} ms file budget sits inside the step`);
+});
+
+test("the unit and e2e shards upload JUnit that Linux shard timings never read", () => {
+  // The pattern `npm run test:timings` downloads and parses, read from the script itself.
+  const timings = readFileSync(new URL("../scripts/unit-shard-timings.ts", import.meta.url), "utf8");
+  const linuxArtifact = new RegExp(timings.match(/^const ARTIFACT = \/(.+)\/;$/m)![1]!);
+  assert.ok(linuxArtifact.test("unit-junit-node-24-shard-1"), "the timings pattern was read");
+  const cases = [
+    ["unit-windows", "MISSION_TEST_JUNIT", "windows-unit-junit-shard-"],
+    ["e2e-windows", "MISSION_PLAYWRIGHT_JUNIT", "windows-e2e-junit-shard-"],
+  ] as const;
+  for (const [id, variable, artifact] of cases) {
+    const body = WINDOWS.get(id)!;
+    const path = body.match(new RegExp(`^ {10}${variable}: (.+)$`, "m"))?.[1];
+    assert.ok(path, `${id} writes JUnit through ${variable}`);
+    const upload = steps(body).find((s) => s.includes(`name: ${artifact}\${{ matrix.shard }}`));
+    assert.ok(upload, `${id} uploads ${artifact}<n>`);
+    assert.ok(upload.includes(`path: ${path}\n`), `${id} uploads the file it wrote`);
+    assert.match(upload, /^ {8}if: \$\{\{ !cancelled\(\)/m, `${id} uploads after a failed run too`);
+    assert.ok(!linuxArtifact.test(`${artifact}1`), `test:timings never reads ${artifact}<n>`);
+  }
+  const config = readFileSync(new URL("../e2e/playwright.config.ts", import.meta.url), "utf8");
+  assert.match(config, /\["junit", \{ outputFile: process\.env\.MISSION_PLAYWRIGHT_JUNIT \}\]/, "Playwright writes JUnit where the job uploads it from");
 });

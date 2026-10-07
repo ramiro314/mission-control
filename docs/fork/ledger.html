@@ -1688,7 +1688,11 @@ skips on win32 goes through <code>skipOnWin32</code> or <code>skipSpecOnWin32</c
 with a stated reason (D37), and only where it exercises a surface win32 does not support (Codex,
 Pi, the terminal runtime and its backends, terminal discovery, the macOS updater, and the macOS
 app installer and install migration) or pins a POSIX-only implementation. A test of a supported
-surface stays failing until it is fixed.</li>
+surface stays failing until it is fixed. Each Windows unit shard runs under a two-minute
+per-test timeout, <code>--test-force-exit</code>, and the per-file budget in <code>test/file-watchdog.mjs</code>, so
+a hang fails by name and the shard still prints its summary. The unit and e2e shards upload JUnit as
+<code>windows-unit-junit-shard-&lt;n&gt;</code> and <code>windows-e2e-junit-shard-&lt;n&gt;</code>, which Linux shard timings
+never read.</li>
 <li><strong>Makefile</strong> (D31): run from Git Bash with a separately installed GNU make. On Windows
 (<code>OS=Windows_NT</code>), <code>make app</code>, <code>make install</code> and <code>make install-app</code> say they are macOS only
 and exit, and so do <code>make claude</code>, <code>up</code>, <code>down</code>, <code>restart</code>, <code>stop-all</code> and <code>status</code>, which

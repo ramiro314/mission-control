@@ -1399,7 +1399,11 @@ behaves exactly as it did. When the plan's merge gate (D8) passes, `release/wind
   with a stated reason (D37), and only where it exercises a surface win32 does not support (Codex,
   Pi, the terminal runtime and its backends, terminal discovery, the macOS updater, and the macOS
   app installer and install migration) or pins a POSIX-only implementation. A test of a supported
-  surface stays failing until it is fixed.
+  surface stays failing until it is fixed. Each Windows unit shard runs under a two-minute
+  per-test timeout, `--test-force-exit`, and the per-file budget in `test/file-watchdog.mjs`, so
+  a hang fails by name and the shard still prints its summary. The unit and e2e shards upload JUnit as
+  `windows-unit-junit-shard-<n>` and `windows-e2e-junit-shard-<n>`, which Linux shard timings
+  never read.
 - **Makefile** (D31): run from Git Bash with a separately installed GNU make. On Windows
   (`OS=Windows_NT`), `make app`, `make install` and `make install-app` say they are macOS only
   and exit, and so do `make claude`, `up`, `down`, `restart`, `stop-all` and `status`, which
