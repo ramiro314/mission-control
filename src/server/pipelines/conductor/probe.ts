@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -9,6 +9,7 @@ import {
 } from "@shared/pipeline.ts";
 import { envVar } from "../../config.ts";
 import { resolveBinPath, run } from "../../util/exec.ts";
+import { physicalPathSync } from "../../util/physical-path.ts";
 
 // Is ai-conductor installed, what version, and which repositories does it say it manages?
 //
@@ -109,7 +110,7 @@ export async function conductorInstallationVersion(
   if (!binPath) return unknown;
   let real: string;
   try {
-    real = realpathSync(binPath);
+    real = physicalPathSync(binPath);
   } catch {
     return unknown;
   }
@@ -122,7 +123,7 @@ export async function conductorInstallationVersion(
 
     let sourceSha: string | null = null;
     try {
-      const entry = realpathSync(join(root, "src", "conductor", "dist", "index.js"));
+      const entry = physicalPathSync(join(root, "src", "conductor", "dist", "index.js"));
       const sidecar = join(dirname(entry), ENGINE_SOURCE_SHA_SIDECAR);
       const file = statSync(sidecar);
       if (file.isFile() && file.size <= MAX_SOURCE_SHA_BYTES) {

@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { WORKTREE_POOLS_DIR } from "../config.ts";
 import { locateExecutableSync } from "../executables/locator.ts";
+import { physicalPathSync } from "./physical-path.ts";
 
 const bareConfigCache = new Map<string, { source: string; bare: boolean }>();
 
@@ -271,7 +272,7 @@ function resolveGitDir(cwd: string): { gitDir: string; root: string } | null {
 /** Physical path, so a root compares equal to git's `rev-parse --show-toplevel`. */
 function realPath(p: string): string {
   try {
-    return realpathSync(p);
+    return physicalPathSync(p);
   } catch {
     return p;
   }

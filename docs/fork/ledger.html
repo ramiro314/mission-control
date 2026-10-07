@@ -1585,7 +1585,7 @@ jobs&#39; condition and the tree-reuse wiring.</p>
 </tr>
 <tr>
 <td>PRs</td>
-<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces), pending (Windows CI wall time: Defender off, shared e2e <code>dist/</code>), pending (fake CLIs that start on win32). The per-task base branch it depends on (M0.1) has its own entry.</td>
+<td>On <code>main</code>: #128 (plan), #147 (<code>.gitattributes</code>, M0.2), #152 (process inspection, M1.1), #158 (process lifetime, M1.2), #176 (executable environment, M1.3), #154 (native addon sources, M1.4), #184 (this entry and the branch, M0.3), #185 (the weekly sync runbook and mission, M0.4). On <code>release/windows</code>: #224 (the first weekly sync of <code>main</code>, 2026-10-05), #187 (Windows CI and the skip guard, M2.1), #201 (state lock, M2.2), #209 (Keep Awake, M2.3), #191 (win32 seam implementations, M2.4), #192 (state home and paths, M2.5), #196 (harness availability, M2.6), #197 (runtime availability, M2.7), #210 (Setup checks, M2.8), #220 (Electron dev shell, M2.9), #233 (Makefile under Git Bash, M2.10), #225 (the Windows docs and this entry&#39;s update, M2.11), #237 (gate readiness, M2.12), pending (the D37 skips for unsupported surfaces), pending (Windows CI wall time: Defender off, shared e2e <code>dist/</code>), pending (fake CLIs that start on win32), pending (one physical spelling for 8.3 short paths). The per-task base branch it depends on (M0.1) has its own entry.</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1704,6 +1704,19 @@ the caller&#39;s argv, stdio and exit code, and takes the script down when it is
 product resolves and spawns that <code>.exe</code> like a Windows user&#39;s own tool, with no test-only
 path. Codex, Pi and terminal-backend fakes stay as they were, because those surfaces skip on
 win32.</li>
+<li><strong>Physical paths</strong> (<code>src/server/util/physical-path.ts</code>, D38): every synchronous realpath in
+<code>src/server</code> goes through <code>physicalPathSync</code>, so it spells a path the way
+<code>fs.promises.realpath</code> does. On win32 that is the native call, which expands
+8.3 short names (<code>C:\Users\RUNNER~1</code>) and restores on-disk case. That long spelling is what
+an exact physical path means on win32, and the <code>realpath(p) === resolve(p)</code> guards stay byte
+for byte. Junctions and symlinks are still resolved, so a linked path is still refused. Node&#39;s
+JS <code>realpathSync</code> keeps the short spelling, so it had named one directory two ways, and every
+worktree pool under it was refused as &quot;not an exact physical directory&quot;. POSIX keeps the JS
+call. <code>state/isolation.ts</code> keeps it too, because it judges a test home against roots
+<code>test/setup-state.mjs</code> captured the same way. On win32 the test preload and
+<code>e2e/playwright.config.ts</code> point <code>%TEMP%</code> at its long spelling, so fixtures and the daemon
+agree on every path derived from it. <code>test/physical-path.test.ts</code> refuses any new use of the
+JS realpath in <code>src/server</code>, whether named, namespace or default imported.</li>
 <li><strong>Makefile</strong> (D31): run from Git Bash with a separately installed GNU make. On Windows
 (<code>OS=Windows_NT</code>), <code>make app</code>, <code>make install</code> and <code>make install-app</code> say they are macOS only
 and exit, and so do <code>make claude</code>, <code>up</code>, <code>down</code>, <code>restart</code>, <code>stop-all</code> and <code>status</code>, which
@@ -1725,6 +1738,9 @@ call sites the seams replaced. An upstream commit that adds a direct <code>ps</c
 <code>process.kill(-pid)</code>, <code>detached: true</code> spawn, login-shell PATH read, or ladder location
 outside the seams is a conceptual conflict even when it merges cleanly: route it through the
 seam on <code>main</code>.</li>
+<li>Upstream physicalizes paths synchronously only where this branch now calls
+<code>physicalPathSync</code>. A new <code>realpathSync</code> in <code>src/server</code> is a conceptual conflict even when it
+merges cleanly. Route it through the seam, which <code>test/physical-path.test.ts</code> enforces.</li>
 <li><code>process.platform</code> is how the daemon and the Electron main process tell platforms apart. The
 daemon reads it for harness and runtime availability through <code>hostPlatform()</code>, so the e2e
 suite can build a daemon that answers win32.</li>
@@ -1758,7 +1774,9 @@ executable search ladder). On <code>release/windows</code> also: <code>src/serve
 <code>src/shared/harness-runtime.mjs</code>,
 <code>src/main/{index,menu,menu-template,tray,window}.ts</code>, <code>src/web/components/SetupPanel.tsx</code>,
 <code>scripts/{gen-icons,probe-keep-awake-native,native-addon-publish}.mjs</code>, <code>scripts/build-pi-extension.ts</code>,
-<code>scripts/smoke-bundles.mjs</code>, <code>test/pi-extension-build.test.ts</code>, <code>Makefile</code>, <code>package.json</code> (<code>dev:electron:app</code>, the <code>dev:*:lane</code> scripts), <code>docs/overview.md</code>,
+<code>scripts/smoke-bundles.mjs</code>, <code>test/pi-extension-build.test.ts</code>, every <code>src/server</code> module that
+called <code>realpathSync</code> (now <code>physicalPathSync</code>), <code>test/setup-state.mjs</code>,
+<code>e2e/playwright.config.ts</code>, <code>Makefile</code>, <code>package.json</code> (<code>dev:electron:app</code>, the <code>dev:*:lane</code> scripts), <code>docs/overview.md</code>,
 <code>.github/workflows/ci.yml</code> (the Windows jobs), <code>test/init-script.test.ts</code> (the shard budget models a pull request into <code>main</code>), <code>e2e/fixtures/{daemon,fake-agents,conductor}.ts</code>, the unit tests and e2e specs that
 skip on win32 or write a fake CLI, <code>AGENTS.md</code>, <code>e2e/README.md</code>, <code>docs/setup.md</code>, <code>docs/sessions.md</code> and
 <code>docs/desktop-and-packaging.md</code>.</p>
@@ -1769,12 +1787,12 @@ skip on win32 or write a fake CLI, <code>AGENTS.md</code>, <code>e2e/README.md</
 <code>test/executable-environment.test.ts</code>, <code>test/native-addon-sources.test.ts</code>,
 <code>docs/plans/windows-support/</code>, <code>docs/windows-branch-sync.md</code>. On <code>release/windows</code> also:
 <code>src/server/platform/{host,session-runtimes,durable-sync}.ts</code>, <code>src/server/setup/windows.ts</code>,
-<code>src/server/git/long-paths.ts</code>, <code>src/shared/native-path.ts</code>, <code>src/main/platform-shell.ts</code>,
+<code>src/server/git/long-paths.ts</code>, <code>src/server/util/physical-path.ts</code>, <code>src/shared/native-path.ts</code>, <code>src/main/platform-shell.ts</code>,
 <code>native/state-lock/state_lock_win.cc</code>, <code>native/keep-awake/keep_awake_win.cc</code>, <code>build/tray.ico</code>, <code>scripts/ci-allowed-failures.mjs</code>,
 <code>scripts/probe-keep-awake-native.d.mts</code>, <code>e2e/fixtures/win32-host-build.ts</code>,
 <code>e2e/specs/win32-{harness-availability,setup-checks}.spec.ts</code>, <code>test/helpers/win32-skip.ts</code>,
 <code>test/helpers/fake-executable.ts</code>, <code>test/helpers/fake-executable-launcher.cs</code>,
-<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
+<code>test/helpers/ci-workflow.ts</code>, and the tests <code>test/{ci-allowed-failures,desktop-shell-platform,dev-lane-stdin,durable-sync,harness-host-availability,keep-awake-probe,fake-executable,makefile-windows,native-path,physical-path,setup-windows-probes,state-home-resolution,win32-path-audit,win32-session-runtimes,win32-skip-guard,windows-ci,worktree-long-paths}.test.ts</code>.</p>
 <h2>Superseded and removed</h2>
 <h3>Complete frees the worktree</h3>
 <table>

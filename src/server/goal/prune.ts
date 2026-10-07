@@ -1,9 +1,10 @@
-import { readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { envVar } from "../config.ts";
 import { HEADLESS_CWD } from "../claude-cli.ts";
 import { unref } from "../util/timers.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 // Every headless `claude -p` mints a session id and writes a real transcript, exactly as an
 // interactive session does. Nothing ever reads them and nothing ever deletes them: 153 of 250
@@ -59,7 +60,7 @@ const PRUNE_AGE_MS = Number(envVar("HEADLESS_PRUNE_AGE_MS") ?? 24 * 60 * 60 * 10
 export function headlessTranscriptDir(projectsDir = join(homedir(), ".claude", "projects")): string {
   let cwd = HEADLESS_CWD;
   try {
-    cwd = realpathSync(HEADLESS_CWD);
+    cwd = physicalPathSync(HEADLESS_CWD);
   } catch {
     // unresolvable - use it as given; a wrong-but-absent dir prunes nothing
   }

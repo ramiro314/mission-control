@@ -1,5 +1,4 @@
 import { spawn, type SpawnOptions } from "node:child_process";
-import { realpathSync } from "node:fs";
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { isAbsolute } from "node:path";
@@ -9,6 +8,7 @@ import { z } from "zod";
 import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
 import type { BinSpec, TerminalResult } from "./types.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 /**
  * The oldest stable Herdr this client speaks, as a floor and never as an equality.
@@ -232,7 +232,7 @@ function sameLocalCwd(requested: string, reported: string | null | undefined): b
   try {
     // Herdr can report /private/var for a requested /var path, or resolve another symlink.
     // Both paths must resolve: a missing/inaccessible path cannot establish equivalence.
-    return realpathSync(requested) === realpathSync(reported);
+    return physicalPathSync(requested) === physicalPathSync(reported);
   } catch {
     return false;
   }

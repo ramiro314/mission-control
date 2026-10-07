@@ -1,4 +1,4 @@
-import { readdirSync, realpathSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
@@ -7,6 +7,7 @@ import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
 import { piPassiveRead } from "./meta.ts";
 import { readRange } from "../../util/file-tail.ts";
+import { physicalPathSync } from "../../util/physical-path.ts";
 
 // Pi's session transcript: where it lives, and what one of its records means.
 //
@@ -104,7 +105,7 @@ export function locatePiTranscript(s: Session, sessionsDir = piSessionsDir()): s
       if (newline < 0) return null;
       const header = JSON.parse(head.slice(0, newline));
       return header.type === "session" && header.id === s.agentSessionId &&
-        typeof header.cwd === "string" && realpathSync(header.cwd) === realpathSync(s.cwd)
+        typeof header.cwd === "string" && physicalPathSync(header.cwd) === physicalPathSync(s.cwd)
         ? s.transcriptPath : null;
     } catch { return null; }
   }

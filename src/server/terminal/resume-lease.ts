@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+  readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 /** Credential lifetime only. This journal never owns a task, binding, or database. */
 export interface ResumeLease {
@@ -42,7 +43,7 @@ export function writeResumeRecord(path: string, value: unknown): void {
 
 function directory(path: string): void {
   const info = lstatSync(path);
-  if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(path) !== path
+  if (!info.isDirectory() || info.isSymbolicLink() || physicalPathSync(path) !== path
     || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
     throw new Error("unsafe managed resume directory; retained for inspection");
   }
@@ -63,8 +64,8 @@ function record<T>(path: string): T | null {
 
 export function resumeLeaseRoot(stateDir: string): string {
   // Canonical daemon state identity partitions both control records and disposable homes.
-  const identity = createHash("sha256").update(realpathSync(stateDir)).digest("hex");
-  const parent = join(realpathSync(tmpdir()), "mission-control-resumes");
+  const identity = createHash("sha256").update(physicalPathSync(stateDir)).digest("hex");
+  const parent = join(physicalPathSync(tmpdir()), "mission-control-resumes");
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   directory(parent);
   const root = join(parent, identity);

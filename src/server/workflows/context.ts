@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem, Session, Task, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
@@ -56,6 +55,7 @@ import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
 import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -1518,7 +1518,7 @@ export async function readWorkflowRepositoryId(cwd: string | null): Promise<stri
   // adoption. On macOS every `/tmp` and `/var/folders` checkout differs between the two
   // spellings, and so does any repository behind a symlinked home or workspace.
   try {
-    return realpathSync(dir);
+    return physicalPathSync(dir);
   } catch {
     return dir;
   }

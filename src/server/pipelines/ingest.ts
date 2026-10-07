@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 
 import {
   ENGINEER_EVENT_LIMITS,
@@ -24,6 +23,7 @@ import {
   engineerEnvelopeMatchesEvent,
   parseEngineerEvent,
 } from "./commissions.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 // Pushed pipeline events: the ingest half of observation.
 //
@@ -181,7 +181,7 @@ function consentedByPath(): Map<string, { provider: PipelineProviderId; repoRoot
 /** `realpath`, or the path as written when it cannot be resolved. Never throws. */
 function resolved(path: string): string {
   try {
-    return realpathSync(path);
+    return physicalPathSync(path);
   } catch {
     return path;
   }

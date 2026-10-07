@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -9,6 +8,7 @@ import {
 
 import { run, type RunResult } from "../../util/exec.ts";
 import { conductorBin } from "./probe.ts";
+import { physicalPathSync } from "../../util/physical-path.ts";
 
 // Asking ai-conductor to do something, and finding out whether it did.
 //
@@ -392,7 +392,7 @@ function realPathOf(path: string): string {
   const tail: string[] = [];
   for (;;) {
     try {
-      return join(realpathSync(head), ...tail);
+      return join(physicalPathSync(head), ...tail);
     } catch {
       const parent = dirname(head);
       // `dirname('/') === '/'`: nothing above this exists as far as we can tell, so the

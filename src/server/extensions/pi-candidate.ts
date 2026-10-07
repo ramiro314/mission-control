@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { lstatSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { inspectMissionMcpTools, resolveMissionMcpRuntime } from "../mission-mcp.ts";
 import { verifyPiIntegration, PI_INTEGRATION_FILES } from "./pi-artifact.ts";
+import { physicalPathSync } from "../util/physical-path.ts";
 
 const short = (path: string) => path.length > 512 ? `${path.slice(0, 512)}…` : path;
 const missing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
@@ -74,7 +75,7 @@ export async function inspectPiCandidate(target: string, expectedPath: string, o
     if (installedManifest.buildId !== expectedManifest.buildId || installed.version !== installedManifest.buildId) {
       return warn("The installed Pi extension is out of date for this Mission Control build.", target);
     }
-    if (realpathSync(bundled) !== realpathSync(join(dirname(target), "mcp-server.mjs"))) {
+    if (physicalPathSync(bundled) !== physicalPathSync(join(dirname(target), "mcp-server.mjs"))) {
       return warn("The Pi extension does not resolve its matching MCP bridge beside the canonical extension.", target);
     }
   } catch {
@@ -85,7 +86,7 @@ export async function inspectPiCandidate(target: string, expectedPath: string, o
   const bridgePath = options.bridgeOverride ?? bundled;
   observe(bridgePath);
   let bridge: string;
-  try { bridge = realpathSync(bridgePath); }
+  try { bridge = physicalPathSync(bridgePath); }
   catch { return warn(`The Pi extension's configured MCP bridge at ${short(bridgePath)} cannot be resolved. Lifecycle reports may still work, but its tools do not.`, bridgePath); }
   if (!await inspectMissionMcpTools(bridge)) return warn(`The Pi extension's MCP bridge at ${short(bridge)} is stale or cannot answer tools/list. Lifecycle reports may still work, but the required Mission Control tools are unavailable.`, bridge);
   return { healthy: true, warning: null, detail: null };
