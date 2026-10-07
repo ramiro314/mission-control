@@ -414,21 +414,42 @@ function recordingDeps(): { calls: string[][]; deps: SnapshotDiffDeps } {
   return { calls, deps: { run: recorded } };
 }
 
-/** A member whose divergence includes files whose NAMES are the hazard. */
+/**
+ * A member whose divergence includes files whose NAMES are the hazard.
+ *
+ * NTFS refuses `:`, `*` and `"` in a filename, so two of those names cannot be written to a
+ * Windows worktree at all. They go into the snapshot's tree as git objects instead, on every
+ * platform: everything below reads commits and never the worktree, and a tree holds those
+ * names on win32 exactly as it does on POSIX. `mktree` skips the `core.protectNTFS` check
+ * that `update-index` would apply there.
+ */
 async function capturedWithNastyNames(name: string) {
   const { repo, member, baseSha } = mkRepoWithMember(name);
   writeFileSync(join(member, "keep.txt"), "edited by the member\n");
   writeFileSync(join(member, "--exploit"), "a filename that is also a flag\n");
-  writeFileSync(join(member, ":(glob)**"), "a filename that is also pathspec magic\n");
   writeFileSync(join(member, "space name.txt"), "a filename containing a space\n");
-  writeFileSync(join(member, "quote\"name.txt"), "a filename containing a quote\n");
   writeFileSync(join(member, "café.txt"), "a filename containing non-ASCII text\n");
   const captured = await captureWorktreeSnapshot({
     worktreePath: member,
     ensembleId: randomUUID(),
     artifactId: randomUUID(),
   });
-  return { repo, member, baseSha, snapshotSha: captured.snapshotSha };
+  const ntfsIllegal = {
+    ":(glob)**": "a filename that is also pathspec magic\n",
+    "quote\"name.txt": "a filename containing a quote\n",
+  };
+  const entries = git(repo, "ls-tree", "-z", captured.treeSha).split("\0").filter(Boolean);
+  for (const [path, content] of Object.entries(ntfsIllegal)) {
+    const blob = execFileSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { input: content })
+      .toString()
+      .trim();
+    entries.push(`100644 blob ${blob}\t${path}`);
+  }
+  const tree = execFileSync("git", ["-C", repo, "mktree", "-z"], { input: `${entries.join("\0")}\0` })
+    .toString()
+    .trim();
+  const snapshotSha = git(repo, "commit-tree", tree, "-p", captured.parentSha!, "-m", "nasty names");
+  return { repo, member, baseSha, snapshotSha };
 }
 
 test("a path filter cuts the patch to that file and leaves the statistics whole", async () => {
