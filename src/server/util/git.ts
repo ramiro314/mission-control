@@ -28,7 +28,8 @@ function literalBareConfig(source: string): boolean | null {
     }
     // Git writes a backslash in a value as `\\`, so a checkout whose remote is a Windows
     // drive path carries one. The escapes Git defines stay literal; any other is Git's to refuse.
-    const entry = /^([a-z][a-z0-9-]*)(?:[ \t]*=[ \t]*((?:[^"\\]|\\[\\ntb])*))?$/i.exec(line);
+    // Case-sensitive on purpose: Git rejects `\T`, so the key spells out both cases instead of `/i`.
+    const entry = /^([a-zA-Z][a-zA-Z0-9-]*)(?:[ \t]*=[ \t]*((?:[^"\\]|\\[\\ntb])*))?$/.exec(line);
     if (!inSection || !entry) return null;
     if (inCore && entry[1]!.toLowerCase() === "bare") {
       // Git owns duplicate precedence and alternate boolean spellings, including

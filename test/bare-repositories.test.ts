@@ -118,6 +118,7 @@ test("bare config detection agrees with Git on literals, overrides, unsupported 
     "[core]\n bare = invalid\n", '[core]\n bare = false\n other = "bad\\q"\n',
     '[core]\n bare = true\n[remote "origin"]\n url = C:\\\\work\\\\origin\n',
     "[core]\n bare = true\n other = a\\tb\\nc\\bd\n", "[core]\n bare = true\n other = C:\\work\n",
+    "[core]\n bare = true\n other = a\\Tb\n", "[core]\n bare = true\n other = a\\Nb\n", "[core]\n bare = true\n other = a\\Bb\n",
   ];
   try {
     for (const source of cases) {
