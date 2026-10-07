@@ -830,7 +830,9 @@ if (command.startsWith("issue list")) {
  * shows up exactly or provably does not) and an exit record when it goes, then behaves
  * like the real thing: it stays alive until SIGTERM, and it honours `-w <pid>` by
  * exiting when the watched process disappears - which is what keeps a SIGKILLed test
- * daemon from leaking an immortal fake into the operator's process table.
+ * daemon from leaking an immortal fake into the operator's process table. On win32, where
+ * a stop terminates it without running any handler, a detached watcher writes the exit
+ * record instead (`test/e2e-fixture-programs.test.ts` drives that path on every platform).
  *
  * CommonJS `require` for the reason FAKE_CMUX gives: the file is extension-less, which
  * Node treats as CJS.
@@ -847,6 +849,29 @@ const record = (kind, body) => {
     JSON.stringify(body, null, 2),
   );
 };
+// win32 ends a process without running its SIGTERM handler, so there a detached watcher
+// writes the exit record once this process is gone. "wx" keeps a record leave() wrote.
+// MC_E2E_KEEP_AWAKE_EXIT_WATCHER turns it on elsewhere, so a unit test can watch it work.
+// Started before the start record, so a stop that follows that record always finds it.
+if ((process.platform === "win32" || process.env.MC_E2E_KEEP_AWAKE_EXIT_WATCHER === "1") && dir) {
+  const watcher = [
+    "const { writeFileSync } = require('node:fs');",
+    "const [pid, path] = process.argv.slice(1);",
+    "setInterval(() => {",
+    "  try { process.kill(Number(pid), 0); return; } catch {}",
+    "  try { writeFileSync(path, JSON.stringify({ reason: 'terminated' }, null, 2), { flag: 'wx' }); } catch {}",
+    "  process.exit(0);",
+    "}, 100);",
+  ].join("\\n");
+  const exitPath = join(dir, "keep-awake-" + process.pid + "-exit.json");
+  require("node:child_process")
+    .spawn(process.execPath, ["-e", watcher, String(process.pid), exitPath], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    })
+    .unref();
+}
 record("start", { argv: process.argv.slice(2), pid: process.pid });
 const leave = (reason) => {
   record("exit", { reason });

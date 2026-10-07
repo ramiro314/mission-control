@@ -87,7 +87,11 @@ switch (process.env.FAKE_JIRA_MODE) {
   case "hang":
     // Dies by SIGNAL rather than reporting an exit, which is what run() reads as an
     // unreadable outcome. A real one is a 20s timeout; this reaches the same state at once.
-    process.kill(process.pid, "SIGKILL");
+    // Windows has no death by signal: a process killed there just exits with a code, which
+    // reads as a refusal. The one death run() can see on win32 is its own timeout, so there
+    // the fake hangs until that 20s timeout reaps it.
+    if (process.platform === "win32") setInterval(() => {}, 1 << 30);
+    else process.kill(process.pid, "SIGKILL");
     break;
   case "badtransition":
     fail([
