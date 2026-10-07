@@ -1,0 +1,530 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Track fork changes in GitHub issues and PRs, with a generated Claude doc, instead of the fork ledger</title><style>
+:root{color-scheme:dark;--bg:#10151d;--panel:#1a2432;--ink:#edf3fa;--muted:#b8c9dc;--line:#52647c;--link:#9bcfff;--new:#1f3a2a}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f4f7fb;--panel:#fff;--ink:#132239;--muted:#344d68;--line:#8899ad;--link:#064b8b;--new:#e3f4e8}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{max-width:1080px;margin:auto;padding:44px 24px 80px}h1{font-size:clamp(28px,3.6vw,42px);line-height:1.15;letter-spacing:-.02em;margin:0 0 25px}h2{font-size:25px;margin:42px 0 15px}h3{font-size:20px;margin:28px 0 12px}p,li{max-width:94ch;overflow-wrap:anywhere}a{color:var(--link)}code{font:.88em/1.6 ui-monospace,monospace;overflow-wrap:anywhere}pre{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.wide{overflow-x:auto;max-width:100%;border:1px solid var(--line);border-radius:10px;margin:20px 0;background:var(--panel)}table{border-collapse:collapse;min-width:660px;width:100%;font-size:15px}th,td{padding:11px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}svg{display:block;min-width:900px;width:100%;height:auto}svg rect{fill:var(--panel);stroke:var(--line)}svg rect.new{fill:var(--new);stroke:var(--link);stroke-width:2}svg text{fill:var(--ink);font:16px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}svg .small{font-size:13px;fill:var(--muted)}svg path{stroke:var(--link);fill:none;stroke-width:2}svg polygon{fill:var(--link)}li{margin:7px 0}
+</style></head><body><main>
+<h1>Track fork changes in GitHub issues and PRs, with a generated Claude doc, instead of the fork ledger</h1>
+<p>Status: shaped on 2026-10-07 from the shape task &quot;The ledger often causes conflicts between PRs
+leading to additional rounds of conflict solving. Plan a different way to keep track of the
+changes. Use github issues and PRs as a history and keep a claude artifact updated with the
+latest data. Only keep track of changes in main, plan how the changes in release/windows will be
+tracked once it&#39;s merged on main&quot;. Decisions recorded from four interview rounds. Approved as
+written by the operator the same day in the plan review, which also settled decision 26, with
+&quot;Create tickets after the plan merges&quot; chosen as the follow-up. Not implemented.</p>
+<h2>Problem</h2>
+<p><code>docs/fork/ledger.md</code> (1,535 lines) and its hand-rendered <code>docs/fork/ledger.html</code> (1,979 lines)
+record every fork feature against upstream. <code>AGENTS.md</code> makes every fork PR that adds or changes
+a feature edit both files in the same PR. Two parts of the ledger are shared by every PR: the
+&quot;At a glance&quot; table, where each PR appends its number to a row, and the status header. Any two
+PRs open at the same time therefore conflict on the same lines, and whichever merges second
+needs another round of conflict solving and CI. The ledger has 88 commits on <code>main</code>.</p>
+<p><code>release/windows</code> makes this worse. Its PRs edit the ledger too (for example #265 and #273),
+even though <a href="../../windows-branch-sync.md">docs/windows-branch-sync.md</a> says the ledger is not
+updated there. The weekly main-into-release/windows sync then conflicts on the same file.</p>
+<p>The ledger has two readers, and both must keep working:</p>
+<ul>
+<li><strong>The upstream-sync agent</strong> checks each new upstream commit against every active feature&#39;s
+behavior contracts, assumed upstream behavior and upstream surfaces
+(<a href="../../upstream-sync.md">docs/upstream-sync.md</a> section 2), and updates statuses and the
+ahead/behind header afterwards (section 7).</li>
+<li><strong>The human</strong> reads the status header and the at-a-glance table to see where the fork stands.</li>
+</ul>
+<h2>Where the ledger is referenced today (verified 2026-10-07)</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Reference</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>AGENTS.md</code></td>
+<td>&quot;Fork&quot; section: every feature PR updates its ledger entry and re-renders the HTML</td>
+</tr>
+<tr>
+<td><code>docs/upstream-sync.md</code></td>
+<td>Intro, section 2 (check commits against the ledger), section 6 (fork-only docs), section 7 (update the ledger), section 9 (Conceptual conflicts lists ledger entries)</td>
+</tr>
+<tr>
+<td><code>docs/windows-branch-sync.md</code></td>
+<td>Lines 104 and 168: the Windows entry&#39;s surfaces, and &quot;the ledger is not updated by this sync&quot;</td>
+</tr>
+<tr>
+<td><code>docs/README.md</code></td>
+<td>Line 59: index link to the ledger and its rendering</td>
+</tr>
+<tr>
+<td><code>.agents/memory/upstream-sync.md</code></td>
+<td>Line 15: check new commits against the ledger&#39;s active entries</td>
+</tr>
+<tr>
+<td><code>.github/workflows/ci.yml</code></td>
+<td>Line 538: a comment pointing at the CI time-to-green ledger entry</td>
+</tr>
+<tr>
+<td><code>docs/plans/*</code></td>
+<td>Historical plans that link the ledger. They are records of past decisions and are not edited.</td>
+</tr>
+</tbody></table></div>
+<p>No test reads <code>docs/fork/</code>, so deleting it turns no test red.</p>
+<h2>Decisions (recorded from the interview)</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Where each feature&#39;s sync-critical detail lives (intent, behavior contracts, assumed upstream behavior, surfaces touched, fork-only files)</td>
+<td>In the feature&#39;s <strong>tracking issue body</strong>: one issue per feature, labeled <code>fork-feature</code>. The sync agent reads it with <code>gh</code>.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>How a merged PR is tied to its feature</td>
+<td>A <strong>per-feature label</strong> <code>fork:&lt;slug&gt;</code> on the PR and on the tracking issue.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Standalone fixes</td>
+<td>Implicit: any PR merged into <code>main</code> with no <code>fork:*</code> label is listed as a standalone fix.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Fate of <code>ledger.md</code> and <code>ledger.html</code></td>
+<td>Migrate each entry into its tracking issue, then <strong>delete both files</strong>. A short <code>docs/fork/README.md</code> explains the system and links the doc.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>When the Claude doc is refreshed</td>
+<td>A <strong>daily scheduled mission</strong>, plus at the end of every upstream sync (see &quot;Upstream sync&quot; below).</td>
+</tr>
+<tr>
+<td>6</td>
+<td>How the snapshot is produced</td>
+<td>A repo script, <code>scripts/fork-report.mjs</code>, turns <code>gh</code> data and <code>git</code> counts into markdown. The agent only writes that markdown into the doc.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>How much the doc carries</td>
+<td>Status header, feature table (status, PRs, tracking issue link), standalone fixes, and a one-line intent per feature. Contracts stay in the issues and the doc links them.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>How status is recorded</td>
+<td>An open issue means active. <code>fork-status:in-progress</code> marks an open feature that is not finished on <code>main</code>. A closed issue carries exactly one of <code>fork-status:superseded</code>, <code>fork-status:removed</code> or <code>fork-status:upstreamed</code>, plus a closing comment naming the date and the PR.</td>
+</tr>
+<tr>
+<td>9</td>
+<td>How a PR&#39;s contract change reaches the issue</td>
+<td>The PR body carries a <strong>&quot;Fork feature changes&quot;</strong> section. The daily refresh applies it to the issue body once the PR has merged into <code>main</code>.</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Who creates labels and tracking issues, and who labels each PR</td>
+<td>The <strong>pull-request step</strong>. When it opens a PR, it applies the feature&#39;s label. For a new feature, it creates the <code>fork:&lt;slug&gt;</code> label and the tracking issue as part of opening the PR.</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Which ledger entries are migrated</td>
+<td><strong>All 18.</strong> The 15 active entries become open issues. The 3 superseded or removed entries become closed issues with their <code>fork-status</code> label. Historic PRs are labeled from the at-a-glance table.</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Windows support before <code>release/windows</code> merges</td>
+<td>An open <code>fork:windows-support</code> issue labeled <code>fork-status:in-progress</code>. PRs into <code>release/windows</code> also carry <code>fork:windows-support</code>, but the report counts only PRs merged into <code>main</code>.</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Windows support once <code>release/windows</code> merges</td>
+<td>The single &quot;feat: Windows support&quot; merge PR is labeled <code>fork:windows-support</code> and carries the Windows contract and surface delta. The refresh applies it to the issue and clears <code>fork-status:in-progress</code>. The report lists the merge PR as &quot;includes N release/windows PRs&quot;.</td>
+</tr>
+<tr>
+<td>14</td>
+<td>The ledger edits already on <code>release/windows</code></td>
+<td>On the weekly sync, <code>main</code>&#39;s deletion wins. The sync agent first copies the branch&#39;s version of the Windows entry into <code>docs/plans/windows-support/merge-delta.md</code>, the draft of the merge PR&#39;s &quot;Fork feature changes&quot;. <code>windows-branch-sync.md</code> gains this rule, and branch PRs stop editing the ledger now.</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Open (unmerged) PRs in the snapshot</td>
+<td><strong>Not shown.</strong> Only PRs merged into <code>main</code> count.</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Where the new rules are written</td>
+<td>The <code>AGENTS.md</code> &quot;Fork&quot; section and <code>docs/fork/README.md</code> only. The upstream <code>skills/pull-request/SKILL.md</code> is not touched, so the upstream-sync conflict surface does not grow.</td>
+</tr>
+<tr>
+<td>17</td>
+<td>How the refresh knows a delta was already applied</td>
+<td>It adds a <code>fork-delta:applied</code> label to the PR after applying it.</td>
+</tr>
+<tr>
+<td>18</td>
+<td>Shape of a &quot;Fork feature changes&quot; section</td>
+<td>Full replacement text for each issue section it changes, grouped per feature, or the single word <code>none</code>.</td>
+</tr>
+<tr>
+<td>19</td>
+<td>When a scheduled run cannot reach the Claude Docs connector</td>
+<td>It still applies deltas and labels, fails the doc write loudly through <code>report_status</code>, and leaves the generated markdown in <code>.tmp/fork-report.md</code> (gitignored).</td>
+</tr>
+<tr>
+<td>20</td>
+<td>How the one-off migration runs</td>
+<td>A committed, idempotent <code>scripts/fork-migrate.mjs</code> that parses <code>ledger.md</code>. The implementing session runs it once under the task&#39;s explicit authorization, then deletes the ledger in the same PR.</td>
+</tr>
+<tr>
+<td>21</td>
+<td>PRs that are open while the ledger is deleted</td>
+<td>On their next update from their base branch, the deletion wins. They move their ledger edit into a &quot;Fork feature changes&quot; section and label their PR.</td>
+</tr>
+<tr>
+<td>22</td>
+<td>Recurring mission settings</td>
+<td>&quot;Refresh fork status&quot;: daily at 08:00 local time, coalesce missed runs, skip if active, complete automatically, no PR. The task body grants the issue, label and doc writes.</td>
+</tr>
+<tr>
+<td>23</td>
+<td>Who creates the recurring mission</td>
+<td><strong>The implementing session</strong>, through the daemon (<code>POST /api/schedules</code>).</td>
+</tr>
+<tr>
+<td>24</td>
+<td>Delivery</td>
+<td><strong>One phase, one PR</strong>: both scripts with unit tests, the docs and <code>AGENTS.md</code> changes, the ledger deletion, the migration run and the first doc creation. The migration and doc creation run only after the human authorizes those writes.</td>
+</tr>
+<tr>
+<td>25</td>
+<td>Does the snapshot mention <code>release/windows</code></td>
+<td><strong>No.</strong> Only <code>main</code>. The Windows issue&#39;s in-progress status is enough.</td>
+</tr>
+<tr>
+<td>26</td>
+<td>What &quot;refresh at the end of every upstream sync&quot; means, given that a sync&#39;s deltas apply only after its PR merges (plan review)</td>
+<td>The runbook&#39;s hand-off tells the human to press <strong>Run now</strong> on &quot;Refresh fork status&quot; after merging the sync PR. Otherwise the next daily run catches it. The doc only ever shows merged state.</td>
+</tr>
+</tbody></table></div>
+<h2>Design</h2>
+<h3>Flow, before and after</h3>
+<div class="wide"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 640" role="img" aria-label="Fork tracking flow before and after: PRs stop editing a shared ledger file and instead label themselves on GitHub, and a daily mission generates the Claude doc">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <text x="20" y="34" font-weight="700">Before: every writer edits the same files in git</text>
+  <rect x="20" y="56" width="200" height="44" rx="8"/><text x="36" y="84">Fork PR</text>
+  <rect x="20" y="112" width="200" height="44" rx="8"/><text x="36" y="140">Another fork PR</text>
+  <rect x="20" y="168" width="200" height="44" rx="8"/><text x="36" y="196">release/windows PR</text>
+  <rect x="20" y="224" width="200" height="44" rx="8"/><text x="36" y="252">Upstream-sync agent</text>
+  <rect x="430" y="118" width="300" height="88" rx="8"/><text x="446" y="152">docs/fork/ledger.md</text><text x="446" y="178" class="small">+ hand-rendered ledger.html</text><text x="446" y="198" class="small">shared lines: status header, at-a-glance</text>
+  <path d="M220 78 L428 136" marker-end="url(#a)"/><path d="M220 134 L428 152" marker-end="url(#a)"/><path d="M220 190 L428 170" marker-end="url(#a)"/><path d="M220 246 L428 190" marker-end="url(#a)"/>
+  <text x="760" y="160" class="small">concurrent PRs conflict here,</text><text x="760" y="180" class="small">so a second round of conflict solving</text>
+
+  <text x="20" y="320" font-weight="700">After: PRs write only their own label and body; one serialized writer updates issues</text>
+  <rect class="new" x="20" y="344" width="230" height="58" rx="8"/><text x="36" y="368">Fork PR into main</text><text x="36" y="390" class="small">fork:slug + Fork feature changes</text>
+  <rect class="new" x="20" y="418" width="230" height="58" rx="8"/><text x="36" y="442">release/windows PR</text><text x="36" y="464" class="small">fork:windows-support, not counted</text>
+  <rect class="new" x="20" y="530" width="230" height="58" rx="8"/><text x="36" y="554">Upstream-sync agent</text><text x="36" y="576" class="small">reads issue bodies</text>
+  <rect class="new" x="380" y="410" width="260" height="88" rx="8"/><text x="396" y="442">GitHub</text><text x="396" y="466" class="small">tracking issues (fork-feature)</text><text x="396" y="486" class="small">merged PRs into main</text>
+  <rect class="new" x="760" y="344" width="260" height="58" rx="8"/><text x="776" y="368">Daily Refresh fork status</text><text x="776" y="390" class="small">applies merged deltas, fork-delta:applied</text>
+  <rect class="new" x="760" y="440" width="260" height="58" rx="8"/><text x="776" y="464">scripts/fork-report.mjs</text><text x="776" y="486" class="small">gh + git counts to markdown</text>
+  <rect class="new" x="760" y="540" width="260" height="58" rx="8"/><text x="776" y="564">Claude doc: fork status</text><text x="776" y="586" class="small">replaced in full each refresh</text>
+  <path d="M250 373 L378 432" marker-end="url(#a)"/><path d="M250 447 L378 452" marker-end="url(#a)"/><path d="M378 476 L252 552" marker-end="url(#a)"/>
+  <path d="M758 380 L642 432" marker-end="url(#a)"/><path d="M890 402 L890 438" marker-end="url(#a)"/><path d="M758 469 L642 462" marker-end="url(#a)"/><path d="M890 498 L890 538" marker-end="url(#a)"/>
+</svg></div>
+<p>Before, every writer edits the same two files in git, so concurrent PRs conflict. After, PRs
+only label themselves and describe their change in their own body. Issue bodies are written by
+one serialized writer, the daily refresh, and only from PRs that have merged into <code>main</code>. The
+Claude doc is regenerated in full each time. Nothing a PR writes is shared with another PR, so
+there is nothing to conflict on.</p>
+<h3>GitHub labels</h3>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Label</th>
+<th>On</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>fork-feature</code></td>
+<td>Tracking issues</td>
+<td>This issue is a fork feature&#39;s record.</td>
+</tr>
+<tr>
+<td><code>fork:&lt;slug&gt;</code></td>
+<td>Tracking issue and every PR of that feature</td>
+<td>The join key. One label per feature, for example <code>fork:windows-support</code>. A PR may carry several.</td>
+</tr>
+<tr>
+<td><code>fork-status:in-progress</code></td>
+<td>Open tracking issue</td>
+<td>The feature is not finished on <code>main</code>. Windows support starts with it.</td>
+</tr>
+<tr>
+<td><code>fork-status:superseded</code>, <code>fork-status:removed</code>, <code>fork-status:upstreamed</code></td>
+<td>Closed tracking issue</td>
+<td>Why the feature is no longer active. Exactly one per closed issue.</td>
+</tr>
+<tr>
+<td><code>fork-delta:applied</code></td>
+<td>Merged PR</td>
+<td>The refresh has applied this PR&#39;s &quot;Fork feature changes&quot; section.</td>
+</tr>
+</tbody></table></div>
+<p>Slugs come from the ledger&#39;s entry headings, lowercased and hyphenated (for example &quot;Per-task
+base branch&quot; becomes <code>fork:per-task-base-branch</code>). The migration script prints the slug table
+for review before writing anything.</p>
+<h3>Tracking issue</h3>
+<p>Title: <code>Fork feature: &lt;name&gt;</code>. Labels: <code>fork-feature</code>, <code>fork:&lt;slug&gt;</code>, and a <code>fork-status:*</code> label
+when the feature is not plainly active. The body uses the ledger entry&#39;s fields as fixed
+sections, so the refresh can replace them by heading:</p>
+<pre><code class="language-markdown">### Intent
+### Behavior contracts
+### Upstream behavior it assumes
+### Upstream surfaces touched
+### Fork-only files
+### Plan docs
+### Upstream candidate
+</code></pre>
+<p>The ledger&#39;s &quot;PRs&quot; field is not copied. The PR list is whatever GitHub returns for the label,
+so it can never drift.</p>
+<h3>&quot;Fork feature changes&quot; section in a PR body</h3>
+<p>Every PR that carries a <code>fork:*</code> label has this section, either holding the word <code>none</code> or one
+block per feature:</p>
+<pre><code class="language-markdown">## Fork feature changes
+
+### fork:per-task-base-branch
+#### Behavior contracts
+- (the complete new list, not a diff)
+#### Upstream surfaces touched
+(the complete new text)
+
+### fork:windows-support
+#### Status
+active
+</code></pre>
+<p>Each <code>####</code> block replaces the issue section of the same name in full. A <code>#### Status</code> block
+takes one of <code>active</code>, <code>in-progress</code>, <code>superseded</code>, <code>removed</code> or <code>upstreamed</code>, plus an optional
+note. The refresh turns it into labels, closes or reopens the issue, and posts the closing
+comment with the date and the PR number. A PR that creates a new feature already wrote the full
+body when it created the issue (decision 10), so its section is <code>none</code> unless the PR changed the
+issue body afterwards.</p>
+<h3><code>scripts/fork-report.mjs</code></h3>
+<p>It is split into a pure <code>renderForkReport(data)</code> and a thin fetcher, so the renderer is
+unit-tested without the network.</p>
+<ul>
+<li><strong>Inputs</strong>, fetched with <code>gh</code> and <code>git</code> from a checkout with <code>origin</code> and <code>upstream</code> fetched:<ul>
+<li>every <code>fork-feature</code> issue, open and closed (number, title, state, labels, body, URL)</li>
+<li>every PR merged into <code>main</code> (number, title, labels, head branch, merge date, URL)</li>
+<li>for <code>fork:windows-support</code> only: the count of PRs merged into <code>release/windows</code> that carry
+the label, used for the &quot;includes N release/windows PRs&quot; note on the merge PR&#39;s row</li>
+<li>the same <code>git</code> measurements the ledger&#39;s status header uses today: the upstream
+<code>package.json</code> version, the <code>upstream/main</code> SHA, and the ahead (with and without merges) and
+behind counts between <code>upstream/main</code> and <code>origin/main</code></li>
+</ul>
+</li>
+<li><strong>Output</strong>, written to <code>--out</code> (default <code>.tmp/fork-report.md</code>):<ul>
+<li><strong>Status header</strong>: last synced upstream version and SHA, the last sync PR (the newest
+merged PR whose head branch matches <code>sync/upstream-*</code>) and its date, the commit counts
+ahead and behind, the active feature count, and the measured-at SHA and time.</li>
+<li><strong>Features</strong>: one row per tracking issue, with name (linking the issue), status, the
+first sentence of its Intent, and the merged-into-<code>main</code> PRs carrying its label, ascending.
+Closed features follow the active ones.</li>
+<li><strong>Standalone fixes</strong>: merged-into-<code>main</code> PRs with no <code>fork:*</code> label, excluding upstream
+sync PRs.</li>
+</ul>
+</li>
+<li>It never shows open PRs or anything only on <code>release/windows</code> (decisions 15 and 25).</li>
+</ul>
+<h3><code>scripts/fork-migrate.mjs</code></h3>
+<p>A one-off and idempotent migration. It parses <code>ledger.md</code>&#39;s entries and its &quot;At a glance&quot; table, and:</p>
+<ol>
+<li>prints the plan: every label, every issue title with its slug, and every historic PR it
+would label. <code>--dry-run</code> stops here.</li>
+<li>creates any missing label.</li>
+<li>creates each tracking issue unless an issue with its <code>fork:&lt;slug&gt;</code> label already exists,
+and closes the 3 superseded or removed ones with their status label and a closing comment
+carrying the ledger&#39;s date and sync PR.</li>
+<li>labels every historic PR in the at-a-glance table with its feature&#39;s label and
+<code>fork-delta:applied</code>. Its contracts are already in the issue body, so the first refresh does
+not re-apply anything. &quot;Pending&quot; cells and issue numbers in the table are skipped.</li>
+</ol>
+<p>Re-running it after a partial failure finishes the remaining writes and changes nothing else.
+It can be deleted in a later PR once the migration is done. It is not needed afterwards.</p>
+<h3>Refresh procedure (the daily mission&#39;s task body, and <code>docs/fork/README.md</code>)</h3>
+<ol>
+<li>List PRs merged into <code>main</code> that carry a <code>fork:*</code> label and no <code>fork-delta:applied</code> label,
+oldest merge first.</li>
+<li>For each one, apply its &quot;Fork feature changes&quot; section to each named issue: replace the
+named sections, and apply any Status block. Then add <code>fork-delta:applied</code>. A PR with
+<code>none</code>, or with no section at all, gets the label too. A missing section is reported in
+the run&#39;s summary so the human can backfill it.</li>
+<li>Run <code>node scripts/fork-report.mjs</code>.</li>
+<li>Replace the Claude doc&#39;s whole content with the output through the Claude Docs connector.
+If the connector is unavailable, call <code>report_status</code> with the failure and leave
+<code>.tmp/fork-report.md</code> in place (decision 19). Steps 1 and 2 have already happened.</li>
+</ol>
+<p>The mission writes no repository files, so it opens no PR.</p>
+<h3>The Claude doc</h3>
+<p>One Claude Docs doc named &quot;Mission Control fork status&quot;, created once by the implementing
+session through the Claude Docs connector. Its link goes in <code>docs/fork/README.md</code> and in the
+mission&#39;s task body. Each refresh replaces its full content, so nothing in it is hand-edited.</p>
+<h3>Upstream sync</h3>
+<p><a href="../../upstream-sync.md">docs/upstream-sync.md</a> changes:</p>
+<ul>
+<li><strong>Section 2</strong> reads the active features from GitHub instead of the ledger:
+<code>gh issue list --label fork-feature --state open --json number,title,labels,body</code>. The checks
+against each issue&#39;s Behavior contracts, Upstream behavior it assumes, and Upstream surfaces
+touched sections are unchanged, as is the PR&#39;s &quot;Conceptual conflicts&quot; section.</li>
+<li><strong>Section 7</strong> stops editing files. The sync PR carries the upstream-sync feature&#39;s <code>fork:&lt;slug&gt;</code> label
+and a &quot;Fork feature changes&quot; section with a <code>#### Status</code> block for each feature the sync
+supersedes, removes or upstreams, and replacement surface text for each feature whose paths
+moved. The status header is no longer hand-measured, because the report computes it.</li>
+<li><strong>The doc refresh at the end of a sync</strong> (decisions 5 and 26): sync deltas are applied only after the
+human merges the sync PR. A sync session ends at the open PR, so it cannot refresh the doc
+itself. The runbook&#39;s hand-off tells the human to press <strong>Run now</strong> on &quot;Refresh fork status&quot;
+after merging the sync PR. If they don&#39;t, the next daily run catches it.</li>
+<li>The <code>.agents/memory/upstream-sync.md</code> line and the section 6 list of fork-only docs are
+updated to match.</li>
+</ul>
+<h3><code>release/windows</code></h3>
+<ul>
+<li><strong>Now (in this PR, on <code>main</code>):</strong> <a href="../../windows-branch-sync.md">docs/windows-branch-sync.md</a>
+gains the rule that PRs into <code>release/windows</code> carry <code>fork:windows-support</code> and never edit
+<code>docs/fork/</code>. The line-168 note is rewritten to match. The Windows tracking issue is created
+open, with <code>fork-status:in-progress</code>, from <code>main</code>&#39;s version of the entry.</li>
+<li><strong>The first weekly sync after this merges</strong> meets a modify/delete conflict on
+<code>docs/fork/ledger.md</code> and <code>ledger.html</code>. Following decision 14, the sync agent copies the
+branch&#39;s &quot;Windows support&quot; entry from <code>release/windows</code> into
+<code>docs/plans/windows-support/merge-delta.md</code>, written in the &quot;Fork feature changes&quot; format,
+then resolves the conflict by deleting both ledger files. Under D27, dropping a Windows change
+needs the human. That does not apply here, because the entry&#39;s text is kept, not dropped.</li>
+<li><strong>Until the merge:</strong> branch PRs that change the Windows contracts update <code>merge-delta.md</code> on
+<code>release/windows</code>. That file lives only in the branch&#39;s plan folder, so it never conflicts
+with <code>main</code>.</li>
+<li><strong>At the merge:</strong> the &quot;feat: Windows support&quot; merge PR into <code>main</code> carries the
+<code>fork:windows-support</code> label, and its &quot;Fork feature changes&quot; section is <code>merge-delta.md</code>&#39;s
+content plus <code>#### Status</code> <code>active</code>. After the human merges it, the refresh applies it,
+removes <code>fork-status:in-progress</code>, and the report lists that one PR with &quot;includes N
+release/windows PRs&quot;. The branch&#39;s individual PRs never appear as <code>main</code> changes.</li>
+</ul>
+<h3>Transition for open PRs</h3>
+<p>Several PRs are open while this lands, on <code>main</code> and on <code>release/windows</code>, and some carry
+ledger edits. On their next update from their base branch, each hits a modify/delete conflict
+on the ledger. Each resolves it the same way: keep the deletion, move the edit into a &quot;Fork
+feature changes&quot; section in the PR body, and add the feature&#39;s label (decision 21).
+<code>docs/fork/README.md</code> states this so an agent resolving the conflict finds the rule.</p>
+<h2>Changes</h2>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>scripts/fork-report.mjs</code></td>
+<td>New: renderer plus fetcher, as above</td>
+</tr>
+<tr>
+<td><code>scripts/fork-migrate.mjs</code></td>
+<td>New: one-off idempotent migration, as above</td>
+</tr>
+<tr>
+<td><code>test/fork-report.test.ts</code></td>
+<td>New: renderer cases from fixture JSON</td>
+</tr>
+<tr>
+<td><code>test/fork-migrate.test.ts</code></td>
+<td>New: ledger parsing and slug derivation against a fixture ledger excerpt</td>
+</tr>
+<tr>
+<td><code>docs/fork/ledger.md</code>, <code>docs/fork/ledger.html</code></td>
+<td>Deleted</td>
+</tr>
+<tr>
+<td><code>docs/fork/README.md</code></td>
+<td>New: the labels, the issue template, the &quot;Fork feature changes&quot; format, the refresh procedure, the transition rule, the mission&#39;s settings and the doc link</td>
+</tr>
+<tr>
+<td><code>AGENTS.md</code></td>
+<td>The &quot;Fork&quot; section&#39;s ledger rule becomes: label the PR <code>fork:&lt;slug&gt;</code>, create the label and tracking issue for a new feature, and write a &quot;Fork feature changes&quot; section, linking <code>docs/fork/README.md</code></td>
+</tr>
+<tr>
+<td><code>docs/upstream-sync.md</code></td>
+<td>Sections 2, 6, 7 and 9, and the intro, as above</td>
+</tr>
+<tr>
+<td><code>docs/windows-branch-sync.md</code></td>
+<td>Branch PR labeling, no ledger edits, the <code>merge-delta.md</code> rule, and the first-sync conflict resolution</td>
+</tr>
+<tr>
+<td><code>docs/README.md</code></td>
+<td>The index line points at <code>docs/fork/README.md</code></td>
+</tr>
+<tr>
+<td><code>.agents/memory/upstream-sync.md</code></td>
+<td>Reads the tracking issues instead of the ledger</td>
+</tr>
+<tr>
+<td><code>.github/workflows/ci.yml</code></td>
+<td>Line 538 comment only: points at the CI time-to-green tracking issue. Comment-only, so it is in scope and changes no CI behavior.</td>
+</tr>
+<tr>
+<td><code>docs/plans/fork-tracking/</code></td>
+<td>This plan</td>
+</tr>
+</tbody></table></div>
+<p>Historical plans under <code>docs/plans/</code> keep their ledger links. They record the decisions of
+their time, and <code>scripts/check-doc-links.mjs</code> is the check that says whether a dead relative
+link must be fixed. If it flags them, the implementing PR repoints those links at
+<code>docs/fork/README.md</code>.</p>
+<h2>External writes the implementation needs authorized</h2>
+<p>The implementing task&#39;s body must grant these, because a session&#39;s default authorization covers
+only its own PR (decision 24):</p>
+<ul>
+<li>creating 24 labels (<code>fork-feature</code>, 18 <code>fork:&lt;slug&gt;</code>, 4 <code>fork-status:*</code>, <code>fork-delta:applied</code>), 18 tracking issues, and the closing comments on 3 of them</li>
+<li>labeling the historic PRs listed in the at-a-glance table (about 70)</li>
+<li>creating the Claude doc through the Claude Docs connector</li>
+<li>creating the &quot;Refresh fork status&quot; recurring mission through <code>POST /api/schedules</code></li>
+</ul>
+<h2>Verification</h2>
+<ul>
+<li><code>node --test --import ./test/setup-state.mjs --import tsx test/fork-report.test.ts test/fork-migrate.test.ts</code>:
+rendering of active, in-progress and closed features, standalone-fix exclusion of sync PRs
+and labeled PRs, the Windows &quot;includes N&quot; note, ledger parsing of all 18 entries, and the
+slug table.</li>
+<li><code>node scripts/fork-migrate.mjs --dry-run</code> output attached to the PR, reviewed before the real
+run, and a second real run that reports zero writes, proving idempotence.</li>
+<li><code>node scripts/fork-report.mjs</code> output attached to the PR, compared by hand with the deleted
+ledger&#39;s status header and at-a-glance table. The counts and PR lists match, apart from the
+intended drops: open PRs, issue numbers, and <code>release/windows</code> PRs.</li>
+<li>A test PR body with a &quot;Fork feature changes&quot; section applied by one manual run of the
+refresh procedure on a throwaway feature, then the throwaway issue and label deleted.</li>
+<li><code>npm run typecheck</code>, <code>npm run lint</code> and <code>npm run docs:links</code>.</li>
+<li>No UI surface changes, so no Playwright spec is needed.</li>
+</ul>
+<h2>Assumptions and risks</h2>
+<ul>
+<li><strong>The Claude Docs connector is reachable from a daemon-dispatched session.</strong> This shaping
+session has it, and dispatched sessions run under the same signed-in Claude Code on this
+machine. That is inferred, not verified. Decision 19 makes the failure loud rather than
+silent.</li>
+<li><strong>Up to a day of lag.</strong> An issue body reflects a merged PR only after the next refresh. The
+upstream-sync agent reading issues must therefore apply any unapplied merged deltas first,
+or run the refresh before section 2. The runbook says so.</li>
+<li><strong>Label discipline.</strong> A feature PR that forgets its label is listed as a standalone fix. That
+is visible in the doc and fixed by labeling the PR. No conflict round is needed.</li>
+<li><strong>Issue bodies are editable by hand.</strong> A hand edit is overwritten only in the sections a
+later delta replaces. The issue&#39;s edit history is the audit trail.</li>
+</ul>
+<h2>Out of scope</h2>
+<ul>
+<li>Changing the upstream <code>skills/pull-request/SKILL.md</code> (decision 16).</li>
+<li>Tracking <code>release/windows</code> PRs as <code>main</code> changes before the merge (decisions 12 and 25).</li>
+<li>A dashboard surface for fork status. The Claude doc is the reading surface.</li>
+</ul>
+<h2>Rendering</h2>
+<p><code>plan.html</code> is generated from this file by <code>node docs/plans/fork-tracking/render-plan.mjs</code>,
+which inlines <code>flow.svg</code> in place of the mermaid block. <code>--check</code> fails when the page is stale.</p>
+</main></body></html>
