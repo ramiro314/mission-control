@@ -127,8 +127,8 @@ or issues.</p>
 </tr>
 <tr>
 <td>Per-task base branch</td>
-<td>Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label)</td>
-<td>#151 (plan M0.1), #161, #162, #163</td>
+<td>Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label, session Diff view)</td>
+<td>#151 (plan M0.1), #161, #162, #163, issue #136 (session Diff view)</td>
 </tr>
 <tr>
 <td>Docs-only CI</td>
@@ -1266,11 +1266,11 @@ refinement), <code>src/server/foreman/worker.ts</code> (latched log line), <code
 </thead>
 <tbody><tr>
 <td>Status</td>
-<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, the recurring-mission template (D35), and the task form field and card label; the session Diff view is a separate ticket.</td>
+<td><strong>Active</strong>. The storage, surface, dispatch and ship half of plan M0.1, its check, diff, conflict and merge-watcher followers, the recurring-mission template (D35), the task form field and card label, and the session Diff view.</td>
 </tr>
 <tr>
 <td>PRs</td>
-<td>#151, #161, #162 (task form field and card label), #163</td>
+<td>#151, #161, #162 (task form field and card label), #163, the session Diff view (issue #136)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -1315,6 +1315,9 @@ it again. The fixed wrap-up texts (<code>WRAPUP_PR</code>) are unchanged.</li>
 primary repository, null otherwise. The captured evidence diff and an affected-tests check&#39;s
 selection measure from <code>merge-base(HEAD, origin/&lt;base&gt;)</code> (<code>changeSourceRef</code> in <code>diff.ts</code>),
 and a base missing from the remote-tracking refs fails rather than falls back.</li>
+<li>The session Diff view (<code>GET /api/sessions/:id/diff</code>, no <code>base</code> or <code>commit</code> query) measures
+from the same <code>changeSourceRef</code>, given the base of the task the session runs (<code>taskBaseBranch</code>
+in <code>routes.ts</code>, shared with the reset routes). An explicit <code>base</code> query still wins.</li>
 <li>The Pull Request action&#39;s merge-conflict block names the binding&#39;s base. Foreman&#39;s nudge and
 the Wait for CI repair read GitHub&#39;s <code>baseRefName</code>, unchanged.</li>
 <li>A merge counts for a task with a base branch only when <code>gh</code> reports it merged into that branch
@@ -1341,7 +1344,7 @@ resets a reused slot to the frozen commit, so Return resetting to the default is
 (<code>BaseBranchSchema</code>, <code>DispatchSchema</code>, <code>UpdateTaskSchema</code>, <code>McpCreateTicketSchema</code>,
 <code>McpPushTaskSchema</code>), <code>src/server/tasks.ts</code> (create, <code>prepareUpdate</code>, <code>assignReserved</code>),
 <code>src/server/routes.ts</code> (<code>POST /api/tasks</code>, <code>POST /api/tasks/:id/update</code>, <code>/mcp/v3/tasks</code>,
-<code>/mcp/push-task</code>, session reset and its preview), <code>src/server/git/remote-default.ts</code>,
+<code>/mcp/push-task</code>, session reset and its preview, session diff), <code>src/server/git/remote-default.ts</code>,
 <code>src/server/dispatcher.ts</code> (<code>resolveTaskBases</code>), <code>src/server/actions.ts</code> (<code>resetToOrigin</code>,
 <code>resetPreview</code>), <code>src/server/reset.ts</code>, <code>src/server/task-contract.ts</code>,
 <code>src/server/workflows/{feedback,manager}.ts</code>, the MCP <code>create_task</code> and <code>push_task</code> tools in

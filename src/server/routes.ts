@@ -4481,7 +4481,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     } satisfies StandingInstructionsDelivery);
   });
 
-  // Diff of a session's worktree/branch vs its source branch (localhost read).
+  // The base branch of the task a session runs, or null for none. The Diff view and the reset
+  // both measure from it, so a task cut from `origin/<base>` is never compared with the default.
+  const taskBaseBranch = (session: Session): string | null =>
+    registry.taskForSession(session.id, session.cwd)?.baseBranch ?? null;
+
+  // Diff of a session's worktree/branch vs its source branch (localhost read): the task's base
+  // branch when it names one, else origin's default.
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -4514,7 +4520,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         truncated: false,
       });
     }
-    return c.json(await computeSessionDiff(resolved.root, source));
+    return c.json(await computeSessionDiff(resolved.root, source, taskBaseBranch(session)));
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
@@ -6240,14 +6246,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // A session running a task that names a base branch resets onto that branch, where the
   // task started, rather than onto origin's default. The preview and the reset ask the same.
-  const resetBaseBranch = (session: Session): string | null =>
-    registry.taskForSession(session.id, session.cwd)?.baseBranch ?? null;
-
   // Preview what a reset-to-origin would discard (fetches origin; localhost read).
   app.get("/api/sessions/:id/reset/preview", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(await resetPreview(session, resetBaseBranch(session)));
+    return c.json(await resetPreview(session, taskBaseBranch(session)));
   });
 
   // Pull latest and hard-reset the checkout to origin's default branch, then
@@ -6266,7 +6269,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
-      resetBaseBranch(session),
+      taskBaseBranch(session),
     );
     return c.json(r, r.ok ? 200 : 500);
   });

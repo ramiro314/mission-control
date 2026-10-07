@@ -179,11 +179,13 @@ one starts from origin's default branch and targets it, exactly as before.
   carries a "Base branch" section naming the branch and `gh pr create --base <base>`, and saying
   that wherever an instruction says the default branch it means `origin/<base>`. The workflow's
   pull-request handoff and a Pull Request session action name the base again.
-- **Checks and review measure from it.** The diff a workflow captures for its Personas, and the
-  changed files an affected-tests check selects tests from, are measured from
+- **Checks, review and the Diff view measure from it.** The diff a workflow captures for its
+  Personas, the changed files an affected-tests check selects tests from, and the session Diff
+  view are measured from
   `merge-base(HEAD, origin/<base>)` rather than from origin's default, so the base branch's own
   commits are not counted as the task's. A base branch that is not in the checkout's
-  remote-tracking refs fails the capture or the check instead of falling back to the default.
+  remote-tracking refs fails the capture, the check or the Diff view instead of falling back to
+  the default.
 - **Conflict reactions merge in the base.** A conflict is GitHub's own mergeability against the
   pull request's base, so Foreman's nudge and a Wait for CI repair already name it. The Pull
   Request session action's merge-conflict block names the task's base branch as well.
@@ -192,8 +194,6 @@ one starts from origin's default branch and targets it, exactly as before.
   merged into any other branch is not recorded as the task's merge.
 - **Primary repository only.** On a multi-repo task the attached repositories start from, and
   open their pull requests against, their own default branch.
-
-The session Diff view still compares against origin's default branch.
 
 ## Attaching more than one repository
 
