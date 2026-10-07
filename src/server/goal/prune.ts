@@ -1,10 +1,10 @@
 import { readdirSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { envVar } from "../config.ts";
 import { HEADLESS_CWD } from "../claude-cli.ts";
 import { unref } from "../util/timers.ts";
 import { physicalPathSync } from "../util/physical-path.ts";
+import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "../harness/claude/project-dir.ts";
 
 // Every headless `claude -p` mints a session id and writes a real transcript, exactly as an
 // interactive session does. Nothing ever reads them and nothing ever deletes them: 153 of 250
@@ -43,9 +43,9 @@ const PRUNE_AGE_MS = Number(envVar("HEADLESS_PRUNE_AGE_MS") ?? 24 * 60 * 60 * 10
 /**
  * The directory Claude writes a headless run's transcript to.
  *
- * Mirrors Claude's own encoding of a project dir - every `/` and `.` in the cwd replaced by
- * `-` - applied to `HEADLESS_CWD`, the exact cwd `runClaudeText` spawns with. Derived from
- * that constant rather than from `tmpdir()` again so the two cannot drift apart.
+ * Claude's own project dir (`claudeProjectDir`) for `HEADLESS_CWD`, the exact cwd
+ * `runClaudeText` spawns with. Derived from that constant rather than from `tmpdir()` again so
+ * the two cannot drift apart.
  *
  * The `realpathSync` is load-bearing and was found the hard way. Claude resolves the cwd
  * through symlinks BEFORE encoding it, and on macOS `os.tmpdir()` is `/var/folders/…/T`,
@@ -57,14 +57,14 @@ const PRUNE_AGE_MS = Number(envVar("HEADLESS_PRUNE_AGE_MS") ?? 24 * 60 * 60 * 10
  * Falls back to the unresolved path if realpath fails (the directory is gone), which can only
  * make the sweep a no-op - never point it somewhere else.
  */
-export function headlessTranscriptDir(projectsDir = join(homedir(), ".claude", "projects")): string {
+export function headlessTranscriptDir(projectsDir = CLAUDE_PROJECTS_DIR): string {
   let cwd = HEADLESS_CWD;
   try {
     cwd = physicalPathSync(HEADLESS_CWD);
   } catch {
     // unresolvable - use it as given; a wrong-but-absent dir prunes nothing
   }
-  return join(projectsDir, cwd.replace(/[/.]/g, "-"));
+  return claudeProjectDir(cwd, projectsDir);
 }
 
 /**
