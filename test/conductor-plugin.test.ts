@@ -776,17 +776,19 @@ test("identity resolves from the pin, the working directory, then the event", ()
   assert.deepEqual(resolveRun({}, WORKTREE, null), run);
   assert.deepEqual(resolveRun({}, `${WORKTREE}/src/deep/inside`, null), run);
   // 3. A named repository plus a slug the event carries. Three spellings, all conductor's.
+  //    The worktree is built from the repository, so it is spelled the platform's way.
+  const named = { ...run, worktree: join(REPO, ".worktrees", "a-feature") };
   assert.deepEqual(
     resolveRun({ MISSION_CONTROL_REPO: REPO }, "/elsewhere", { slug: "a-feature" }),
-    run,
+    named,
   );
   assert.deepEqual(
     resolveRun({ MISSION_CONTROL_REPO: REPO }, "/elsewhere", { featureSlug: "a-feature" }),
-    run,
+    named,
   );
   assert.deepEqual(
     resolveRun({ MISSION_CONTROL_REPO: REPO }, "/elsewhere", { feature: "a-feature" }),
-    run,
+    named,
   );
   // And nothing at all, which must be null rather than a half-built address.
   assert.equal(resolveRun({}, "/elsewhere", { type: "step_started" }), null);

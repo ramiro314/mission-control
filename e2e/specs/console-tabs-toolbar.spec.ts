@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { basename } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -166,7 +167,7 @@ test("the console detail's tab row carries the conversation's toolbar, and the p
   // the assertion that keeps the move from recreating the duplication the plan started from:
   // option 2 keeps that row, so a copy in the tab strip would be the second one.
   const cwd = (await detail.locator(".detail-sub .kv").first().innerText()).split("\n").pop()!;
-  const leaf = cwd.trim().split("/").filter(Boolean).pop()!;
+  const leaf = basename(cwd.trim());
   expect(leaf.length, "the path row rendered nothing to look for").toBeGreaterThan(3);
   await expect(tabs.getByText(leaf)).toHaveCount(0);
 

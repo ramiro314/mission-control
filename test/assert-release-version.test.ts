@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   releaseVersionProblem,
   readVersions,
@@ -38,7 +39,7 @@ test("every disagreement is named, including the lockfile's second copy", () => 
 });
 
 test("this repository's own versions agree with each other", () => {
-  const versions = readVersions(new URL("..", import.meta.url).pathname);
+  const versions = readVersions(fileURLToPath(new URL("..", import.meta.url)));
   assert.equal(versions.packageVersion, versions.lockVersion);
   assert.equal(versions.packageVersion, versions.lockPackageVersion);
   assert.equal(releaseVersionProblem({ tag: `v${versions.packageVersion}`, ...versions }), null);

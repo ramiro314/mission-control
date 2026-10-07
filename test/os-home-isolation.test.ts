@@ -25,6 +25,7 @@ const DATA_ONLY: Readonly<Record<string, string>> = {
   "test/executable-environment.test.ts": "an injected env for executable-search planning",
   "test/open-target-contract.test.ts": "an injected env for browser launch planning",
   "test/workflow-check-env.test.ts": "an input to scrubCheckEnv, compared as data",
+  "test/script-bash.test.ts": "an input to scriptEnv, compared as data",
   "test/os-home-isolation.test.ts": "this file's matcher cases",
 };
 

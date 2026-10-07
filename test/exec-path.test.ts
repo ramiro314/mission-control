@@ -17,7 +17,8 @@ import {
   resolveBinPath,
   run,
 } from "../src/server/util/exec.ts";
-import { writeFakeExecutable } from "./helpers/fake-executable.ts";
+import { fakeExecutablePath, writeFakeExecutable } from "./helpers/fake-executable.ts";
+import { writeFakeLoginShell } from "./helpers/login-shell.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
 import { osHomeEnv } from "./helpers/os-home.ts";
 
@@ -44,21 +45,17 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
   const root = mkdtempSync(join(tmpdir(), "mission-login-path-"));
   const stale = join(root, "stale-bin");
   const installed = join(root, "installed-bin");
-  const shell = join(root, "login-shell");
   const shellLog = join(root, "login-shell.log");
-  const agent = join(installed, FIXTURE_BIN);
+  // Named as the platform names a tool, so the win32 ladder's PATHEXT lookup finds it too.
+  const agent = fakeExecutablePath(join(installed, FIXTURE_BIN));
   mkdirSync(stale);
   mkdirSync(installed);
-  writeFileSync(
-    shell,
-    [
-      "#!/bin/sh",
-      'printf x >> "$MC_TEST_SHELL_LOG"',
-      'printf \'__MISSION_PATH__%s__MISSION_PATH__\' "$MC_TEST_LOGIN_PATH"',
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shell, 0o755);
+  // `SHELL` on POSIX, `SystemRoot` (whose PowerShell reads PATH) on win32.
+  const loginShell = writeFakeLoginShell(root, [
+    'require("node:fs").appendFileSync(process.env.MC_TEST_SHELL_LOG, "x");',
+    "process.stdout.write(`__MISSION_PATH__${process.env.MC_TEST_LOGIN_PATH}__MISSION_PATH__`);",
+    "",
+  ].join("\n"));
   writeFileSync(agent, "#!/bin/sh\nexit 0\n");
   chmodSync(agent, 0o755);
 
@@ -67,7 +64,7 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
       {
         ...osHomeEnv(root),
         PATH: "/usr/bin:/bin",
-        SHELL: shell,
+        ...loginShell,
         XDG_DATA_HOME: undefined,
         MC_TEST_LOGIN_PATH: `${stale}${delimiter}/usr/bin${delimiter}/bin`,
         MC_TEST_SHELL_LOG: shellLog,

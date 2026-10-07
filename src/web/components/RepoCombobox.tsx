@@ -122,7 +122,7 @@ export function repoOptionLabels(
   const hints = new Map<string, string>();
   for (const group of groups.values()) {
     if (group.length < 2) continue;
-    const segments = group.map((r) => r.replace(/\/+$/, "").split("/").filter(Boolean));
+    const segments = group.map((r) => r.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean));
     // How far up the shallowest member of the group can be asked to go. `- 1` because the
     // last segment is the name itself, which is the thing that already matched.
     const reach = Math.max(...segments.map((s) => s.length - 1));

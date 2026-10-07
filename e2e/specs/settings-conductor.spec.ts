@@ -84,7 +84,7 @@ test.describe("with a stale published Conductor bundle", () => {
       page.getByText(/bundle is 0\.103\.0, but its checkout is 0\.104\.0/),
     ).toBeVisible();
     await expect(
-      page.getByText(`${daemon.conductor.root}/bin/install`, { exact: false }),
+      page.getByText(join(daemon.conductor.root, "bin", "install"), { exact: false }),
     ).toBeVisible();
     await shoot(page, "08-stale-bundle");
     if (process.env.MC_E2E_EVIDENCE) {

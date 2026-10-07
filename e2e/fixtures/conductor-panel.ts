@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 /**
@@ -59,7 +60,7 @@ export function conductorTile(page: Page, label: string): Locator {
  * this matches on the leaf, which is what a person reads the row by too.
  */
 export function conductorRepoRow(page: Page, repoRoot: string): Locator {
-  const leaf = repoRoot.replace(/\/+$/, "").split("/").pop() ?? repoRoot;
+  const leaf = basename(repoRoot);
   return conductorDirectory(page).getByRole("button", { name: new RegExp(escapeRe(leaf)) });
 }
 

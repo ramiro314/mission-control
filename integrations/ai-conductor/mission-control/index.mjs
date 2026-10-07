@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 // The Mission Control visualizer for ai-conductor.
 //
@@ -372,7 +372,7 @@ function worktreeAbove(cwd) {
     if (found) return found;
     const up = dirname(at);
     // `dirname` of a filesystem root is itself, which is the only termination there is.
-    if (up === at || !at.includes(sep)) return null;
+    if (up === at) return null;
     at = up;
   }
 }
