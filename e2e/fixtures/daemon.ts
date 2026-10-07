@@ -44,6 +44,7 @@ import {
   removeFakeExecutable,
   writeFakeExecutable,
 } from "../../test/helpers/fake-executable.ts";
+import { processLifetime } from "../../src/server/platform/process-lifetime.ts";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -683,17 +684,27 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     }
   };
 
+  /*
+   * win32 has no process groups, and a kill ends only the process it names. The daemon's own
+   * descendants (git, PowerShell, a dispatched session) and the Foreman worker's then outlive
+   * it holding handles inside `home`, and win32 refuses to delete a file that is still open.
+   * So there the whole tree goes at once, through the same seam the daemon uses for its own
+   * children, while its root is still alive for `taskkill /T` to walk. A grace period would
+   * buy nothing: `kill("SIGTERM")` is already a forced termination on win32.
+   */
+  const end = async (proc: ChildProcess, hasExited: () => boolean): Promise<void> => {
+    if (process.platform === "win32") {
+      processLifetime.killTree(proc);
+    } else {
+      proc.kill("SIGTERM");
+      await new Promise((r) => setTimeout(r, 200));
+      if (!hasExited()) proc.kill("SIGKILL");
+    }
+  };
+
   const stop = async (): Promise<void> => {
-    if (foreman && !foremanExited) {
-      foreman.kill("SIGTERM");
-      await new Promise((r) => setTimeout(r, 200));
-      if (!foremanExited) foreman.kill("SIGKILL");
-    }
-    if (!exited) {
-      child.kill("SIGTERM");
-      await new Promise((r) => setTimeout(r, 200));
-      if (!exited) child.kill("SIGKILL");
-    }
+    if (foreman && !foremanExited) await end(foreman, () => foremanExited !== null);
+    if (!exited) await end(child, () => exited !== null);
     if (builtBundle) rmSync(daemonBundle, { force: true });
     if (weztermSocket?.listening) {
       await new Promise<void>((resolve) => weztermSocket.close(() => resolve()));
@@ -704,13 +715,20 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
      * A dispatch leaves `git` processes of its own working inside the leased pool, and they do
      * not die with the daemon that spawned them: SIGKILL above returns as soon as the daemon is
      * gone, so a recursive delete can walk a directory a grandchild is still creating files in
-     * and fail the TEST with `ENOTEMPTY` after its every assertion passed. Observed once in a
-     * full-suite run on `multi-repo-dispatch`, which is the spec that spawns the most of them.
-     * `maxRetries` is exactly what Node documents this for - it backs off on `ENOTEMPTY`,
-     * `EBUSY` and `EPERM` - and a teardown that cannot clean up after five attempts over ~1.5s
-     * is a real leak worth failing on rather than a race.
+     * and fail with `ENOTEMPTY`. Observed once in a full-suite run on `multi-repo-dispatch`,
+     * which is the spec that spawns the most of them. On win32 the processes `end` just
+     * terminated also release their handles a moment after `taskkill` returns. `maxRetries` is
+     * exactly what Node documents this for - it backs off on `ENOTEMPTY`, `EBUSY` and `EPERM`.
+     *
+     * A removal that still fails is reported and left in the temp dir, never thrown. A throw
+     * here fails a test after its every assertion passed, for a directory nothing reads again.
      */
-    rmSync(home, { force: true, recursive: true, maxRetries: 5, retryDelay: 300 });
+    try {
+      rmSync(home, { force: true, recursive: true, maxRetries: 5, retryDelay: 300 });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`e2e daemon fixture: left ${home} behind: ${reason}\n`);
+    }
   };
 
   const awaitBoot = async (): Promise<void> => {
