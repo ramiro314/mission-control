@@ -9,7 +9,11 @@ interface NativeOpenedPathBinding {
 export function validateNativeOpenedPathBinding(value: unknown): NativeOpenedPathBinding {
   if (typeof value !== "object" || value === null || !("openedPath" in value)
     || typeof value.openedPath !== "function") {
-    throw new Error("native filesystem addon must export openedPath");
+    // Coded so a refusal can name it: an addon built before `openedPath` existed still lets
+    // the daemon start, and only evidence notices.
+    throw Object.assign(new Error("native filesystem addon must export openedPath"), {
+      code: "ERR_OPENED_PATH_EXPORT_MISSING",
+    });
   }
   return value as NativeOpenedPathBinding;
 }

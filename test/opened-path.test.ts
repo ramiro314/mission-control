@@ -47,8 +47,11 @@ test("a platform with no descriptor path refuses rather than guessing from a nam
   }
 });
 
-test("an addon without openedPath is refused", () => {
-  assert.throws(() => validateNativeOpenedPathBinding({}), /must export openedPath/);
+test("an addon without openedPath is refused with a code a log line can name", () => {
+  assert.throws(() => validateNativeOpenedPathBinding({}), {
+    message: /must export openedPath/,
+    code: "ERR_OPENED_PATH_EXPORT_MISSING",
+  });
   assert.throws(() => validateNativeOpenedPathBinding(null), /must export openedPath/);
   const binding = { openedPath: () => "C:\\checkout\\evidence.log" };
   assert.equal(validateNativeOpenedPathBinding(binding), binding);

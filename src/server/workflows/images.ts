@@ -121,7 +121,15 @@ function assertOpenedInsideCheckout(
   let openedPath: string;
   try {
     openedPath = openedPathSync(fd);
-  } catch {
+  } catch (error) {
+    // Still refused, but the reason is logged: on win32 it can be a stale or missing addon
+    // (`ERR_OPENED_PATH_EXPORT_MISSING`, `MODULE_NOT_FOUND`) as well as a descriptor error
+    // (`EBADF`, `EOPENEDPATH`), and the refusal below reads the same for all of them.
+    const code = (error as { code?: unknown } | null)?.code;
+    workflowLog("warn", {
+      event: "evidence_opened_path_unverified",
+      error: typeof code === "string" ? code : "unclassified",
+    });
     throw new WorkflowImageEvidenceError(
       `${kind}_path`,
       `${label} opened without a verifiable checkout target`,
