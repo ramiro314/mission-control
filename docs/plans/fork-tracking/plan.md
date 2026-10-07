@@ -6,7 +6,11 @@ changes. Use github issues and PRs as a history and keep a claude artifact updat
 latest data. Only keep track of changes in main, plan how the changes in release/windows will be
 tracked once it's merged on main". Decisions recorded from four interview rounds. Approved as
 written by the operator the same day in the plan review, which also settled decision 26, with
-"Create tickets after the plan merges" chosen as the follow-up. Not implemented.
+"Create tickets after the plan merges" chosen as the follow-up. Revised in Plan Validation repair round 1: the migration became a reconciling upsert
+that is rerun right before merge (decision 27), the recurring mission is created paused and
+enabled only after the merge (decision 28), and the label and issue writes of decision 10 gained
+a recorded standing grant and a refresh fallback (decision 29). These refine the mechanisms of
+decisions 10, 20, 23 and 24 and do not change any answer the operator gave. Not implemented.
 
 ## Problem
 
@@ -73,6 +77,9 @@ No test reads `docs/fork/`, so deleting it turns no test red.
 | 24 | Delivery | **One phase, one PR**: both scripts with unit tests, the docs and `AGENTS.md` changes, the ledger deletion, the migration run and the first doc creation. The migration and doc creation run only after the human authorizes those writes. |
 | 25 | Does the snapshot mention `release/windows` | **No.** Only `main`. The Windows issue's in-progress status is enough. |
 | 26 | What "refresh at the end of every upstream sync" means, given that a sync's deltas apply only after its PR merges (plan review) | The runbook's hand-off tells the human to press **Run now** on "Refresh fork status" after merging the sync PR. Otherwise the next daily run catches it. The doc only ever shows merged state. |
+| 27 | (Repair round 1, refines 20 and 24) How ledger edits that merge into `main` after the migration first runs reach the issues | `fork-migrate.mjs` is a **reconciling upsert**, not create-only: it rewrites each migrated issue's sections and status from the ledger and adds any missing PR label. The implementing session reruns it as the **last step before the merge**, after its final update from `main`, so the issues match the ledger as it stands at the merge. |
+| 28 | (Repair round 1, refines 23) When the recurring mission starts | The implementing session creates "Refresh fork status" **paused** through `POST /api/schedules`. Its tasks run against `main`, where `scripts/fork-report.mjs` and `docs/fork/README.md` exist only after this PR merges. The PR's hand-off tells the human to press **Resume** on the mission after merging, and optionally **Run now**. |
+| 29 | (Repair round 1, refines 10) How the pull-request step is authorized to create labels and issues | The approved decision 10 is recorded as a standing grant in the `AGENTS.md` "Fork" section: in this repository only, a session may create a `fork:<slug>` label, create its `fork-feature` tracking issue, and add `fork:*` labels to its own PR. When a session's authorization still refuses those writes, it writes the full issue body into its PR's "Fork feature changes" section instead, and the refresh creates the label and issue after the merge. |
 
 ## Design
 
@@ -188,35 +195,58 @@ unit-tested without the network.
 
 ### `scripts/fork-migrate.mjs`
 
-A one-off and idempotent migration. It parses `ledger.md`'s entries and its "At a glance" table, and:
+A one-off migration that reconciles rather than only creates (decision 27). It parses
+`ledger.md`'s entries and its "At a glance" table, and:
 
 1. prints the plan: every label, every issue title with its slug, and every historic PR it
    would label. `--dry-run` stops here.
 2. creates any missing label.
-3. creates each tracking issue unless an issue with its `fork:<slug>` label already exists,
-   and closes the 3 superseded or removed ones with their status label and a closing comment
-   carrying the ledger's date and sync PR.
+3. creates each tracking issue that has no issue with its `fork:<slug>` label yet. When the
+   issue exists, it rewrites the issue's sections from the ledger entry where they differ. It
+   sets each issue's state and `fork-status` label from the ledger, and closes the 3 superseded
+   or removed ones with a closing comment carrying the ledger's date and sync PR, posted once.
 4. labels every historic PR in the at-a-glance table with its feature's label and
    `fork-delta:applied`. Its contracts are already in the issue body, so the first refresh does
    not re-apply anything. "Pending" cells and issue numbers in the table are skipped.
 
-Re-running it after a partial failure finishes the remaining writes and changes nothing else.
-It can be deleted in a later PR once the migration is done. It is not needed afterwards.
+Re-running it against an unchanged ledger makes zero writes. Against a ledger that changed, it
+writes exactly the differences. Overwriting issue sections is safe only before this PR merges,
+because nothing else writes issue bodies until the refresh mission is enabled (decision 28).
+
+**The window between the first run and the merge.** Other fork PRs keep editing the ledger on
+`main` until this PR merges. The implementing session therefore:
+
+1. runs `--dry-run`, then the real migration, early, so the human can review the issues;
+2. updates its branch from `main` as usual. Each modify/delete conflict on the ledger is
+   resolved by keeping the deletion, as decision 21 says;
+3. as its **last step before the merge**, runs the migration again against `main`'s current
+   ledger (`git show origin/main:docs/fork/ledger.md`, passed with `--ledger`), so ledger edits
+   merged after step 1 reach the issues;
+4. records that final run's commit in the PR. If `main`'s ledger changes again before the human
+   merges, the hand-off says to rerun step 3 first.
+
+After the merge the ledger no longer exists on `main`, so the window is closed. The script can
+be deleted in a later PR. It is not needed afterwards.
 
 ### Refresh procedure (the daily mission's task body, and `docs/fork/README.md`)
 
-1. List PRs merged into `main` that carry a `fork:*` label and no `fork-delta:applied` label,
-   oldest merge first.
+1. List PRs merged into `main` after this plan's PR merged that have no `fork-delta:applied`
+   label and either carry a `fork:*` label or have a "Fork feature changes" section. Order them
+   oldest merge first. The cut-over date is recorded in `docs/fork/README.md`.
 2. For each one, apply its "Fork feature changes" section to each named issue: replace the
-   named sections, and apply any Status block. Then add `fork-delta:applied`. A PR with
-   `none`, or with no section at all, gets the label too. A missing section is reported in
-   the run's summary so the human can backfill it.
+   named sections, and apply any Status block. When a section names a `fork:<slug>` whose
+   label or tracking issue does not exist, create them from the section, which then carries
+   the full issue body. Also add any `fork:*` label the PR is missing (decision 29). Then add
+   `fork-delta:applied`. A labeled PR with `none`, or with no section at all, gets
+   `fork-delta:applied` too. A missing section is reported in the run's summary so the human
+   can backfill it.
 3. Run `node scripts/fork-report.mjs`.
 4. Replace the Claude doc's whole content with the output through the Claude Docs connector.
    If the connector is unavailable, call `report_status` with the failure and leave
    `.tmp/fork-report.md` in place (decision 19). Steps 1 and 2 have already happened.
 
-The mission writes no repository files, so it opens no PR.
+The mission writes no repository files, so it opens no PR. Its tasks run against `main`, so it
+is created paused and enabled only after this plan's implementation merges (decision 28).
 
 ### The Claude doc
 
@@ -229,7 +259,11 @@ mission's task body. Each refresh replaces its full content, so nothing in it is
 [docs/upstream-sync.md](../../upstream-sync.md) changes:
 
 - **Section 2** reads the active features from GitHub instead of the ledger:
-  `gh issue list --label fork-feature --state open --json number,title,labels,body`. The checks
+  `gh issue list --label fork-feature --state open --json number,title,labels,body`. It then
+  reads, but does not apply, the "Fork feature changes" sections of PRs merged into `main` that
+  still lack `fork-delta:applied`, and overlays them on the issue text it checks. This covers
+  the up-to-a-day lag with reads only, so the sync session needs no issue-write grant and the
+  sync mission's task body does not change. The checks
   against each issue's Behavior contracts, Upstream behavior it assumes, and Upstream surfaces
   touched sections are unchanged, as is the PR's "Conceptual conflicts" section.
 - **Section 7** stops editing files. The sync PR carries the upstream-sync feature's `fork:<slug>` label
@@ -282,7 +316,7 @@ feature changes" section in the PR body, and add the feature's label (decision 2
 | `test/fork-migrate.test.ts` | New: ledger parsing and slug derivation against a fixture ledger excerpt |
 | `docs/fork/ledger.md`, `docs/fork/ledger.html` | Deleted |
 | `docs/fork/README.md` | New: the labels, the issue template, the "Fork feature changes" format, the refresh procedure, the transition rule, the mission's settings and the doc link |
-| `AGENTS.md` | The "Fork" section's ledger rule becomes: label the PR `fork:<slug>`, create the label and tracking issue for a new feature, and write a "Fork feature changes" section, linking `docs/fork/README.md` |
+| `AGENTS.md` | The "Fork" section's ledger rule becomes: label the PR `fork:<slug>`, create the label and tracking issue for a new feature, and write a "Fork feature changes" section, linking `docs/fork/README.md`. It also records the standing grant for those writes, in this repository only, and the fallback when a session's authorization refuses them (decision 29). |
 | `docs/upstream-sync.md` | Sections 2, 6, 7 and 9, and the intro, as above |
 | `docs/windows-branch-sync.md` | Branch PR labeling, no ledger edits, the `merge-delta.md` rule, and the first-sync conflict resolution |
 | `docs/README.md` | The index line points at `docs/fork/README.md` |
@@ -303,7 +337,12 @@ only its own PR (decision 24):
 - creating 24 labels (`fork-feature`, 18 `fork:<slug>`, 4 `fork-status:*`, `fork-delta:applied`), 18 tracking issues, and the closing comments on 3 of them
 - labeling the historic PRs listed in the at-a-glance table (about 70)
 - creating the Claude doc through the Claude Docs connector
-- creating the "Refresh fork status" recurring mission through `POST /api/schedules`
+- creating the "Refresh fork status" recurring mission, paused, through `POST /api/schedules`
+  (decision 28)
+- rerunning the migration as the last step before the merge (decision 27)
+
+Feature sessions after this lands get their label and issue grant from the `AGENTS.md` "Fork"
+section (decision 29). The daily mission gets its grant from its own task body.
 
 ## Verification
 
@@ -312,12 +351,17 @@ only its own PR (decision 24):
   and labeled PRs, the Windows "includes N" note, ledger parsing of all 18 entries, and the
   slug table.
 - `node scripts/fork-migrate.mjs --dry-run` output attached to the PR, reviewed before the real
-  run, and a second real run that reports zero writes, proving idempotence.
+  run, and a second real run that reports zero writes, proving idempotence. A unit case also
+  proves the reconcile: an issue whose section differs from a changed ledger entry is rewritten,
+  and a PR label added to the at-a-glance table is applied.
+- The final pre-merge rerun against `origin/main`'s ledger (decision 27), with its write count
+  and commit recorded in the PR.
 - `node scripts/fork-report.mjs` output attached to the PR, compared by hand with the deleted
   ledger's status header and at-a-glance table. The counts and PR lists match, apart from the
   intended drops: open PRs, issue numbers, and `release/windows` PRs.
-- A test PR body with a "Fork feature changes" section applied by one manual run of the
-  refresh procedure on a throwaway feature, then the throwaway issue and label deleted.
+- After the merge and **Resume**, one manual run of the refresh procedure on a throwaway PR
+  body: once for a feature whose label exists, and once for a `fork:<slug>` with no label or
+  issue (the decision 29 fallback). The throwaway issue and label are deleted afterwards.
 - `npm run typecheck`, `npm run lint` and `npm run docs:links`.
 - No UI surface changes, so no Playwright spec is needed.
 
@@ -328,8 +372,13 @@ only its own PR (decision 24):
   machine. That is inferred, not verified. Decision 19 makes the failure loud rather than
   silent.
 - **Up to a day of lag.** An issue body reflects a merged PR only after the next refresh. The
-  upstream-sync agent reading issues must therefore apply any unapplied merged deltas first,
-  or run the refresh before section 2. The runbook says so.
+  upstream-sync agent reads the unapplied merged deltas and overlays them, without writing
+  (see "Upstream sync").
+- **A session's harness may still refuse the decision 10 writes** despite the `AGENTS.md`
+  standing grant, for example when a Mission Control execution authorization block names
+  only its own PR. The refresh fallback in decision 29 then creates the label and the issue
+  after the merge, so the feature is never lost. It shows as a standalone fix for at most
+  one refresh cycle.
 - **Label discipline.** A feature PR that forgets its label is listed as a standalone fix. That
   is visible in the doc and fixed by labeling the PR. No conflict round is needed.
 - **Issue bodies are editable by hand.** A hand edit is overwritten only in the sections a
