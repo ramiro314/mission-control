@@ -45,6 +45,7 @@ import {
   writeFakeExecutable,
 } from "../../test/helpers/fake-executable.ts";
 import { osHomeEnv } from "../../test/helpers/os-home.ts";
+import { processLifetime } from "../../src/server/platform/process-lifetime.ts";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -153,6 +154,8 @@ export interface DaemonHandle {
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const BOOT_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
+/** How long `stop` waits on win32 for a tree root `taskkill` ended to report its exit. */
+const TREE_EXIT_TIMEOUT_MS = 5_000;
 
 /**
  * A terminal identity for the daemon to leak, seeded so that "it did not leak" can fail.
@@ -685,17 +688,35 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     }
   };
 
+  /*
+   * win32 has no process groups, and a kill ends only the process it names. The daemon's own
+   * descendants (git, PowerShell, a dispatched session) and the Foreman worker's then outlive
+   * it holding handles inside `home`, and win32 refuses to delete a file that is still open.
+   * So there the whole tree goes at once, through the same seam the daemon uses for its own
+   * children, while its root is still alive for `taskkill /T` to walk. A grace period would
+   * buy nothing: `kill("SIGTERM")` is already a forced termination on win32.
+   *
+   * `taskkill` returns once it has asked, not once the root is gone, so this then waits for the
+   * root's `exit`, bounded, before anyone tries to remove `home` under it. A root still running
+   * at the bound is left to the removal's retries below, which report it.
+   */
+  const end = async (proc: ChildProcess, hasExited: () => boolean): Promise<void> => {
+    if (process.platform === "win32") {
+      processLifetime.killTree(proc);
+      const deadline = Date.now() + TREE_EXIT_TIMEOUT_MS;
+      while (!hasExited() && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+      }
+    } else {
+      proc.kill("SIGTERM");
+      await new Promise((r) => setTimeout(r, 200));
+      if (!hasExited()) proc.kill("SIGKILL");
+    }
+  };
+
   const stop = async (): Promise<void> => {
-    if (foreman && !foremanExited) {
-      foreman.kill("SIGTERM");
-      await new Promise((r) => setTimeout(r, 200));
-      if (!foremanExited) foreman.kill("SIGKILL");
-    }
-    if (!exited) {
-      child.kill("SIGTERM");
-      await new Promise((r) => setTimeout(r, 200));
-      if (!exited) child.kill("SIGKILL");
-    }
+    if (foreman && !foremanExited) await end(foreman, () => foremanExited !== null);
+    if (!exited) await end(child, () => exited !== null);
     if (builtBundle) rmSync(daemonBundle, { force: true });
     if (weztermSocket?.listening) {
       await new Promise<void>((resolve) => weztermSocket.close(() => resolve()));
@@ -706,13 +727,27 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
      * A dispatch leaves `git` processes of its own working inside the leased pool, and they do
      * not die with the daemon that spawned them: SIGKILL above returns as soon as the daemon is
      * gone, so a recursive delete can walk a directory a grandchild is still creating files in
-     * and fail the TEST with `ENOTEMPTY` after its every assertion passed. Observed once in a
-     * full-suite run on `multi-repo-dispatch`, which is the spec that spawns the most of them.
-     * `maxRetries` is exactly what Node documents this for - it backs off on `ENOTEMPTY`,
-     * `EBUSY` and `EPERM` - and a teardown that cannot clean up after five attempts over ~1.5s
-     * is a real leak worth failing on rather than a race.
+     * and fail with `ENOTEMPTY`. Observed once in a full-suite run on `multi-repo-dispatch`,
+     * which is the spec that spawns the most of them. On win32 the descendants `end` just
+     * terminated also release their handles a moment after their root has exited. `maxRetries`
+     * is exactly what Node documents this for - it backs off on `ENOTEMPTY`, `EBUSY` and `EPERM`.
+     *
+     * On macOS and Linux a teardown that cannot clean up after five attempts over ~1.5s is a real
+     * leak, a spec leaving a live process in its home, and it fails the test. On win32 it is
+     * reported and left in the temp dir instead: `taskkill` cannot reach a descendant whose root
+     * already exited (`crash()` leaves exactly those), so there it is expected timing, not a
+     * finding worth failing a test whose every assertion passed.
      */
-    rmSync(home, { force: true, recursive: true, maxRetries: 5, retryDelay: 300 });
+    try {
+      rmSync(home, { force: true, recursive: true, maxRetries: 5, retryDelay: 300 });
+    } catch (error) {
+      if (process.platform === "win32") {
+        const reason = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`e2e daemon fixture: left ${home} behind: ${reason}\n`);
+      } else {
+        throw error;
+      }
+    }
   };
 
   const awaitBoot = async (): Promise<void> => {

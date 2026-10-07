@@ -6,7 +6,7 @@ import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { CiObservationSchema, type CiObservation } from "@shared/wait-for-ci.ts";
 import {
@@ -18,6 +18,7 @@ import {
 import { DB_PATH } from "./config.ts";
 import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
+import { underTestRunner } from "./util/test-runner.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
@@ -245,7 +246,36 @@ export function openDb(): DatabaseSync {
   }
   ranMigrationOnOpen = pendingMigration;
   db = opened;
+  closeBeforeTestStateRemoval();
   return opened;
+}
+
+/**
+ * The event `test/setup-state.mjs` emits, with an absolute path, just before it removes that
+ * path on win32. The name is spelled out there too, because that file cannot import this one.
+ */
+export const TEST_STATE_REMOVAL_EVENT = "mission-control:test-state-removal";
+
+let listensForTestStateRemoval = false;
+
+/**
+ * Under the test runner, close this connection before the directory holding it is removed.
+ *
+ * win32 refuses to delete a file that is still open, and this connection stays open for the
+ * life of the process. So every test home removed in an `after` hook, and the preload's own
+ * state dir removed at worker exit, failed with `EPERM` there and failed the whole file after
+ * its tests had passed. POSIX unlinks an open file without complaint, which is why the preload
+ * emits this only on win32. A later `openDb()` opens a fresh connection as usual.
+ */
+function closeBeforeTestStateRemoval(): void {
+  if (listensForTestStateRemoval || !underTestRunner()) return;
+  listensForTestStateRemoval = true;
+  process.on(TEST_STATE_REMOVAL_EVENT, (target: unknown) => {
+    if (!db || typeof target !== "string") return;
+    const inside = relative(resolve(target), resolve(DB_PATH));
+    if (inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return;
+    closeDb();
+  });
 }
 
 let ranMigrationOnOpen = false;

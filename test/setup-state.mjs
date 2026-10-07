@@ -21,9 +21,40 @@
 // module whose behavior we are trying to arrange. It writes environment, nothing else, and
 // never opens SQLite.
 
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, realpathSync, rmSync, writeSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Removing a directory on win32 first lets this process close what it holds open inside it.
+ *
+ * win32 refuses to delete a file that is still open, and `openDb` in `src/server/db.ts` keeps
+ * one connection open for the life of the process. So a test's `after(() => rmSync(home, ...))`
+ * failed with `EPERM` there, and node:test failed the whole file after its tests had passed.
+ * Around 300 files remove their home that way, so this fixes the removal once, here, rather
+ * than in each of them: `rmSync` announces the path it is about to remove, and `db.ts` closes
+ * its connection when that path holds the database. POSIX unlinks an open file without
+ * complaint, so nothing changes there.
+ *
+ * `syncBuiltinESMExports` is what reaches a named `import { rmSync } from "node:fs"`; without
+ * it only callers that read `fs.rmSync` would see the wrapper.
+ *
+ * The event name is a contract with `TEST_STATE_REMOVAL_EVENT` in `src/server/db.ts`, which
+ * this file cannot import. `test/test-state-removal.test.ts` fails if the two drift.
+ */
+export const TEST_STATE_REMOVAL_EVENT = "mission-control:test-state-removal";
+
+export function releaseBeforeRemoval(target = fs) {
+  const remove = target.rmSync;
+  target.rmSync = function rmSync(path, options) {
+    const absolute = resolve(path instanceof URL ? fileURLToPath(path) : String(path));
+    process.emit(TEST_STATE_REMOVAL_EVENT, absolute);
+    return remove.call(this, path, options);
+  };
+  if (target === fs) syncBuiltinESMExports();
+}
 
 // `node --test` sets this in each test process it spawns, which is the scope wanted: the
 // runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
@@ -165,7 +196,18 @@ if (process.env.NODE_TEST_CONTEXT) {
   // directory in the OS temp dir, which is the right place for it and is why this does not
   // sweep for strays on startup: a `readdir` of the temp dir on each of 596 worker launches
   // would cost more, every run, than the rare leak it tidies.
+  //
+  // A removal that still fails is reported and left behind, never thrown: a throw here crashes
+  // the worker after its tests have passed, and node:test then reports the whole file failed
+  // for one leftover temp directory.
   process.on("exit", () => {
-    rmSync(root, { recursive: true, force: true });
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      writeSync(2, `test/setup-state.mjs: left ${root} behind: ${reason}\n`);
+    }
   });
+
+  if (process.platform === "win32") releaseBeforeRemoval();
 }

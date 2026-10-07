@@ -81,6 +81,13 @@ and the rest of `*_BIN` under all three prefixes). Those outrank `PATH`, where m
 their fakes, so a developer's own override would otherwise send the suite to the real binary.
 A test that needs one sets it in its file body, as it does for its home.
 
+On win32 it also wraps `rmSync`, because win32 refuses to delete an open file and `openDb`
+keeps its connection open for the life of the worker. A removal first emits
+`mission-control:test-state-removal` with its path, and `src/server/db.ts` closes the
+connection that path holds, so `after(() => rmSync(home, ...))` works there unchanged. Its own
+exit cleanup reports a state dir it cannot remove rather than crashing a worker whose tests
+passed.
+
 A test that needs a particular database keeps seeding its own home above its imports, exactly
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
 runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only
