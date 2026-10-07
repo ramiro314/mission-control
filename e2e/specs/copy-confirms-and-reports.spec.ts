@@ -269,9 +269,10 @@ test("the Persona markdown copy confirms, and survives a refusing Clipboard API"
   // The guidance really is on the clipboard, written by the fallback this control could not
   // reach before. This is the assertion that would have failed in the packaged app.
   // On Windows, Chromium itself writes plain text to the system clipboard with CRLF line
-  // endings, the platform's clipboard convention, so the read is compared line by line.
+  // endings, the platform's clipboard convention, so only there is the read compared line by
+  // line. Everywhere else it stays byte for byte, so a CRLF the product added would still fail.
   const copied = await clipboardFromASecondPage(dashboard, daemon);
-  expect(copied.replaceAll("\r\n", "\n")).toBe(GUIDANCE);
+  expect(process.platform === "win32" ? copied.replaceAll("\r\n", "\n") : copied).toBe(GUIDANCE);
 
   await expect(copy).toBeVisible({ timeout: 4000 });
 });
