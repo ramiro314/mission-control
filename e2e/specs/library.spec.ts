@@ -419,6 +419,7 @@ test("a workflow link opens that workflow even before the event stream has annou
     .toBe(`#/library/workflows/${created.workflow.id}`);
   await expect(dashboard.getByRole("checkbox", { name: "Show archived" })).not.toBeChecked();
   await expect(dashboard.getByRole("button", { name: /Retired workflow/ })).toHaveCount(0);
+  await shoot(dashboard, "unannounced-workflow-link");
 });
 
 test("a link to a workflow that does not exist says so, rather than opening another one", async ({
@@ -434,6 +435,7 @@ test("a link to a workflow that does not exist says so, rather than opening anot
   await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/library/workflows/no-such-workflow");
   await expect(dashboard.getByRole("heading", { name: "Bug Fix Review" })).toHaveCount(0);
+  await shoot(dashboard, "missing-workflow-link");
 });
 
 test("the ＋ New cards open a blank draft, and creating a workflow lands on the new one", async ({
