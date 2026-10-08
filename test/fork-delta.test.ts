@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   APPLIED_LABEL,
   ForkDeltaFormatError,
+  UsageError,
   checkPr,
+  exitCodeFor,
   currentBase,
   featuresFromIssues,
   formatCheck,
@@ -221,7 +223,7 @@ test("two PRs edited against the same base: the second is reported stale and not
   const { text, code } = formatCheck(result);
   assert.equal(code, 1);
   assert.match(text, /^PR #102: stale\n {2}fork:a \/ Behavior contracts: written against [0-9a-f]{12}, now [0-9a-f]{12}/);
-  assert.match(text, /base a "<section>" --pr 102/);
+  assert.match(text, /\n {4}node scripts\/fork-delta\.mjs base a "Behavior contracts" --pr 102$/);
 });
 
 test("two concurrent Status blocks: the second is stale", () => {
@@ -399,6 +401,44 @@ test("a PR for a feature with no tracking issue carries base: new and creates it
   const run = refresh([], prs);
   assert.deepEqual(verdicts(run.entries), [[101, "apply"]]);
   assert.equal(run.issues[0]?.body, "### Intent\n\nDo a new thing.\n");
+});
+
+test("the repair hint names each stale block's own feature and section", () => {
+  const issues = [issue(10, "a", { Intent: "a0" }), issue(11, "b", { Intent: "b0", "Plan docs": "p0" })];
+  const both = (text: string) => ({ Intent: { base: sectionHash("a0"), text } });
+  const first = pr(101, day(1), { a: both("a1"), b: { Intent: { base: sectionHash("b0"), text: "b1" }, "Plan docs": { base: sectionHash("p0"), text: "p1" } } });
+  const second = pr(102, day(2), { a: both("a2"), b: { Intent: { base: sectionHash("b0"), text: "b2" }, "Plan docs": { base: sectionHash("p0"), text: "p2" } } });
+  const { text, code } = formatCheck(checkPr(second, issues, [first, second]));
+  assert.equal(code, 1);
+  assert.deepEqual(text.split("\n").slice(4), [
+    "  Repair: rewrite each stale block against its feature, keeping both changes:",
+    "    node scripts/fork-delta.mjs show a --pr 102",
+    "    node scripts/fork-delta.mjs show b --pr 102",
+    "  then set each block's base from:",
+    '    node scripts/fork-delta.mjs base a "Intent" --pr 102',
+    '    node scripts/fork-delta.mjs base b "Intent" --pr 102',
+    '    node scripts/fork-delta.mjs base b "Plan docs" --pr 102',
+  ]);
+});
+
+test("format and usage errors exit 2, and every other failure exits 3", () => {
+  const parseArgsError = Object.assign(new TypeError("Unknown option '--x'"), { code: "ERR_PARSE_ARGS_UNKNOWN_OPTION" });
+  assert.equal(exitCodeFor(new ForkDeltaFormatError("bad section")), 2);
+  assert.equal(exitCodeFor(new UsageError("expected a PR number")), 2);
+  assert.equal(exitCodeFor(parseArgsError), 2);
+  // An unknown slug is the caller's mistake, not GitHub's.
+  assert.throws(() => renderShow(new Map(), "nope"), UsageError);
+  // A failed gh call, unparseable gh output, and tracking issues that disagree.
+  const ghFailed = Object.assign(new Error("Command failed: gh issue list"), { status: 1 });
+  assert.equal(exitCodeFor(ghFailed), 3);
+  assert.equal(exitCodeFor(new SyntaxError("Unexpected token < in JSON")), 3);
+  let duplicate: unknown;
+  try {
+    featuresFromIssues([issue(1, "a", {}), issue(2, "a", {})]);
+  } catch (err) {
+    duplicate = err;
+  }
+  assert.equal(exitCodeFor(duplicate), 3);
 });
 
 test("check reports none, a missing section and an applied PR as nothing to apply", () => {

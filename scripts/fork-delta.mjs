@@ -27,8 +27,10 @@
  * The refresh applies pending PRs oldest merge first. A PR with a stale base is held, and so is
  * every later PR that names any feature a held PR names: its base overlaid all of the held PR's
  * blocks, not only the stale one. A PR held that way holds its own features in turn. PRs that
- * name none of them continue. `check` exits 0 when the PR may apply, 1 when it is stale or held,
- * and 2 on a format or usage error.
+ * name none of them continue. `check` exits 0 when the PR may apply and 1 when it is stale or
+ * held. Every command exits 2 on a format or usage error, which the person running it fixes, and
+ * 3 when it could not finish for any other reason, such as a failed `gh` call or tracking issues
+ * that disagree with each other, so a caller never tells an author to fix a section that is fine.
  *
  * Everything but the `gh` fetch is pure, and `test/fork-delta.test.ts` covers it.
  */
@@ -50,6 +52,17 @@ const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** A "Fork feature changes" section that does not follow the format. */
 export class ForkDeltaFormatError extends Error {
   name = "ForkDeltaFormatError";
+}
+
+/** A command line that names no command, PR or feature the tool can use. */
+export class UsageError extends Error {
+  name = "UsageError";
+}
+
+/** The exit code for an error: 2 for a format or usage error, 3 for anything else. */
+export function exitCodeFor(err) {
+  if (err instanceof ForkDeltaFormatError || err instanceof UsageError) return 2;
+  return typeof err?.code === "string" && err.code.startsWith("ERR_PARSE_ARGS") ? 2 : 3;
 }
 
 function formatError(message) {
@@ -377,7 +390,7 @@ export function checkPr(target, issues, prs) {
 /** `show`'s output: which issue, its status line, then the body the refresh will write. */
 export function renderShow(features, slug) {
   const feature = features.get(slug);
-  if (!feature?.exists) throw new Error(`no tracking issue carries fork:${slug}, and no pending PR creates it`);
+  if (!feature?.exists) throw new UsageError(`no tracking issue carries fork:${slug}, and no pending PR creates it`);
   const where = feature.issue ? `#${feature.issue}` : "not created yet";
   return `fork:${slug} (${where})\nStatus: ${statusLine(feature)}\n\n${renderIssueBody(feature)}`;
 }
@@ -393,11 +406,15 @@ export function formatCheck(result) {
     lines.push(`  fork:${s.slug} / ${s.section}: written against ${s.base}, now ${s.current}`);
   }
   if (result.stale.length) {
-    const slug = result.stale[0].slug;
-    lines.push(
-      `  Repair: rewrite each stale block against \`node scripts/fork-delta.mjs show ${slug} --pr ${result.number}\`, keeping both changes,`,
-      `  and set its base from \`node scripts/fork-delta.mjs base ${slug} "<section>" --pr ${result.number}\`.`,
-    );
+    const cli = "node scripts/fork-delta.mjs";
+    lines.push("  Repair: rewrite each stale block against its feature, keeping both changes:");
+    for (const slug of new Set(result.stale.map((s) => s.slug))) {
+      lines.push(`    ${cli} show ${slug} --pr ${result.number}`);
+    }
+    lines.push("  then set each block's base from:");
+    for (const s of result.stale) {
+      lines.push(`    ${cli} base ${s.slug} "${s.section}" --pr ${result.number}`);
+    }
   }
   if (result.heldBehind.length) {
     lines.push(`  held behind ${result.heldBehind.map((h) => `#${h}`).join(", ")}, which name the same features; repair those first`);
@@ -467,8 +484,6 @@ function usage() {
   ].join("\n");
 }
 
-class UsageError extends Error {}
-
 function prNumber(value) {
   if (!/^\d+$/.test(value ?? "")) throw new UsageError(`expected a PR number, got ${JSON.stringify(value)}`);
   return Number(value);
@@ -519,6 +534,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(err instanceof ForkDeltaFormatError ? `fork-delta: format error: ${message}` : `fork-delta: ${message}`);
-    process.exitCode = 2;
+    process.exitCode = exitCodeFor(err);
   }
 }

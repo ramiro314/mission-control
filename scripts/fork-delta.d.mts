@@ -2,6 +2,8 @@ export const APPLIED_LABEL: string;
 export const STATUSES: readonly string[];
 
 export class ForkDeltaFormatError extends Error {}
+export class UsageError extends Error {}
+export function exitCodeFor(err: unknown): 2 | 3;
 
 export type Issue = { number: number; state: string; labels: string[]; body: string };
 export type MergedPr = { number: number; mergedAt: string | null; labels: string[]; body: string };
