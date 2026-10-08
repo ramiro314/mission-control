@@ -38,6 +38,14 @@ export function conductorProjectsPath(home: string): string {
   return join(home, "conductor-projects.json");
 }
 
+/**
+ * Where the daemon fixture records the Mission Control daemon's pid, which the fake's
+ * `daemon start` names on win32 (see `FAKE_CONDUCT_TS`).
+ */
+export function missionDaemonPidPath(home: string): string {
+  return join(home, "mission-daemon.pid");
+}
+
 /** Durable Engineer runs scripted by the fake provider for one daemon. */
 export function conductorEngineerStatePath(home: string): string {
   return join(home, "conductor-engineer-state.json");
@@ -295,7 +303,9 @@ export function seedConductorInstallerCheckout(repo: string): string {
  *
  * A live pidfile names the PARENT process, which is the Mission Control daemon that spawned
  * this. The projection's liveness check is `process.kill(pid, 0)`, so a pidfile naming this
- * short-lived fake would read as a dead daemon the moment it exited.
+ * short-lived fake would read as a dead daemon the moment it exited. On win32 the parent is
+ * the fake's launcher (`test/helpers/fake-executable.ts`), which exits with it, so there the
+ * fake names the daemon pid the fixture recorded at `missionDaemonPidPath`.
  *
  * CommonJS `require`, deliberately: the file is extension-less, which Node treats as CJS,
  * and an `import` here would crash at spawn time in a way that reads as a missing engine
@@ -781,9 +791,12 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
   }
 } else if (argv[0] === "daemon" && argv[1] === "start") {
   mkdirSync(daemonDir, { recursive: true });
+  const pid = process.platform === "win32"
+    ? Number(readFileSync(process.env.MC_E2E_MISSION_DAEMON_PID, "utf8"))
+    : process.ppid;
   writeFileSync(
     join(daemonDir, "daemon.pid"),
-    JSON.stringify({ pid: process.ppid, uuid: "00000000-0000-4000-8000-000000000000", startedAt: new Date().toISOString() }),
+    JSON.stringify({ pid, uuid: "00000000-0000-4000-8000-000000000000", startedAt: new Date().toISOString() }),
   );
   say("daemon started (session conductor-fake)");
 } else if (argv[0] === "daemon" && argv[1] === "stop") {

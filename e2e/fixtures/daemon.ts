@@ -33,6 +33,7 @@ import {
   conductorEngineerStatePath,
   FAKE_CONDUCTOR_VERSION,
   makeFakeConductorBundleStale,
+  missionDaemonPidPath,
   seedConductorInstallerCheckout,
   writeConductorNodeRuntime,
   writeFakeConductor,
@@ -511,6 +512,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Where that fake records the verbs it is asked for. Set for every daemon so a spec only
     // has to read the file; a daemon that never spawns a control verb simply leaves it absent.
     MC_E2E_CONDUCTOR_LOG: conductor.logPath,
+    MC_E2E_MISSION_DAEMON_PID: missionDaemonPidPath(home),
     MC_E2E_RECORD_DIR: recordDir,
     // Re-read on every prompt-free Pi catalog probe so a spec can move from live discovery
     // to failure across a daemon restart without ever allowing a launch-shaped invocation.
@@ -642,6 +644,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     spawned.stdout?.on("data", (d: Buffer) => (log += d.toString()));
     spawned.stderr?.on("data", (d: Buffer) => (log += d.toString()));
     spawned.on("exit", (code, signal) => (exited = { code, signal }));
+    writeFileSync(missionDaemonPidPath(home), String(spawned.pid));
     return spawned;
   };
 
