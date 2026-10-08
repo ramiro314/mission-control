@@ -6,6 +6,7 @@ import {
   validateNativeStateLockBinding,
 } from "../../src/server/state-ownership-native.ts";
 import { validateNativeSymlinkPublicationBinding } from "../../src/server/symlink-publication.ts";
+import { validateNativeOpenedPathBinding } from "../../src/server/util/opened-path.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -29,8 +30,7 @@ const require = createRequire(import.meta.url);
 export function ensureNativeStateLockAddon(): string {
   const addon = nativeStateLockAddonPath();
   try {
-    validateNativeStateLockBinding(require(addon));
-    validateNativeSymlinkPublicationBinding(require(addon));
+    validateAddon(addon);
     return addon;
   } catch {
     delete require.cache[addon];
@@ -39,7 +39,13 @@ export function ensureNativeStateLockAddon(): string {
       stdio: "pipe",
     });
   }
+  validateAddon(addon);
+  return addon;
+}
+
+/** Only the win32 build exports `openedPath`; an addon built before it was added is rebuilt. */
+function validateAddon(addon: string): void {
   validateNativeStateLockBinding(require(addon));
   validateNativeSymlinkPublicationBinding(require(addon));
-  return addon;
+  if (process.platform === "win32") validateNativeOpenedPathBinding(require(addon));
 }

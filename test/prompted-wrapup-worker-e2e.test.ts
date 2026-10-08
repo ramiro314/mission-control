@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
 import { isWrapupPayload, WRAPUP_PR } from "../src/shared/queue.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
 import type { WorkflowStagedEvidenceList } from "../src/shared/workflow.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
@@ -73,7 +74,6 @@ const IDLE_SETTLE_MS = 5_500;
 function mkFakeClaude(opts: { fail: boolean; completions?: boolean[] }): { bin: string; log: string } {
   const dir = tmp("fake-claude-");
   const log = join(dir, "calls.log");
-  const bin = join(dir, "claude");
   const body = opts.fail
     ? `process.stderr.write("the model is broken"); process.exit(1);`
     : opts.completions
@@ -83,8 +83,8 @@ function mkFakeClaude(opts: { fail: boolean; completions?: boolean[] }): { bin: 
   const complete = completions[Math.min(call - 1, completions.length - 1)];
   process.stdout.write(JSON.stringify({ result: JSON.stringify({ complete, summary: complete ? "the ask was satisfied" : "background work is still pending", gaps: [] }) }));`
       : `process.stdout.write(JSON.stringify({ result: JSON.stringify({ complete: true, summary: "the ask was satisfied", gaps: [] }) }));`;
-  writeFileSync(
-    bin,
+  const bin = writeFakeExecutable(
+    join(dir, "claude"),
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const chunks = [];
@@ -95,7 +95,6 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  chmodSync(bin, 0o755);
   writeFileSync(log, "");
   return { bin, log };
 }
@@ -123,6 +122,14 @@ interface Stub {
   /** Every recorded call to one route, by `METHOD /path` prefix match. */
   to: (method: string, path: string) => Recorded[];
 }
+
+/**
+ * Every stub still listening. A test closes its own after its worker stops, but one that fails
+ * before that line would otherwise leave a listening server holding this file's process open
+ * after its last test, which on win32 held a whole CI shard until the step timeout.
+ */
+const openStubs = new Set<() => Promise<void>>();
+after(() => Promise.all([...openStubs].map((close) => close())));
 
 /**
  * The daemon surface the worker actually reaches on this path, and nothing else.
@@ -156,15 +163,18 @@ async function startStub(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
+  const close = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      openStubs.delete(close);
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    });
+  openStubs.add(close);
   return {
     port,
     calls,
     to: (method, path) => calls.filter((c) => c.method === method && c.path === path),
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections?.();
-        server.close(() => resolve());
-      }),
+    close,
   };
 }
 
@@ -320,6 +330,9 @@ async function runWorker(
       },
     },
   );
+  // Listened for from the spawn on: a worker that exits by itself before the SIGTERM below has
+  // already emitted `close`, and a listener added after it would wait forever.
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
   /**
@@ -363,14 +376,10 @@ async function runWorker(
     if (overslept > asked) deadline = Math.min(deadline + overslept, ceiling);
   } while (Date.now() < deadline && !opts.until?.());
   child.kill("SIGTERM");
-  await new Promise<void>((resolve) => {
-    const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
-    hard.unref?.();
-    child.on("close", () => {
-      clearTimeout(hard);
-      resolve();
-    });
-  });
+  const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
+  hard.unref?.();
+  await closed;
+  clearTimeout(hard);
   return out;
 }
 
@@ -1627,9 +1636,8 @@ function mkBoundaryAwareClaude(): { bin: string; log: string; prompt: string } {
   const dir = tmp("fake-claude-boundary-");
   const log = join(dir, "calls.log");
   const prompt = join(dir, "prompt.txt");
-  const bin = join(dir, "claude");
-  writeFileSync(
-    bin,
+  const bin = writeFakeExecutable(
+    join(dir, "claude"),
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const chunks = [];
@@ -1657,7 +1665,6 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  chmodSync(bin, 0o755);
   writeFileSync(log, "");
   return { bin, log, prompt };
 }
@@ -1684,9 +1691,8 @@ function mkFixedVerdictClaude(configuredVerdict: {
   const dir = tmp("fake-claude-evidence-verdict-");
   const log = join(dir, "calls.log");
   const prompt = join(dir, "prompt.txt");
-  const bin = join(dir, "claude");
-  writeFileSync(
-    bin,
+  const bin = writeFakeExecutable(
+    join(dir, "claude"),
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const chunks = [];
@@ -1705,7 +1711,6 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  chmodSync(bin, 0o755);
   writeFileSync(log, "");
   return { bin, log, prompt };
 }
@@ -2544,9 +2549,8 @@ test("a held shape completion gets its gaps, and its corrected re-completion sta
   const repo = tmp("pw-repo-");
   const dir = tmp("fake-claude-shape-");
   const log = join(dir, "calls.log");
-  const bin = join(dir, "claude");
-  writeFileSync(
-    bin,
+  const bin = writeFakeExecutable(
+    join(dir, "claude"),
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const chunks = [];
@@ -2564,7 +2568,6 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  chmodSync(bin, 0o755);
   writeFileSync(log, "");
 
   const session = mkSession(repo, { task: mkTaskSummary({ kind: "shape", workflowId: "wf-shape" }) });
@@ -2745,9 +2748,8 @@ test(`a genuinely unfinished managed ${kind} task receives its held gaps in the 
   const repo = tmp("pw-repo-");
   const dir = tmp("fake-claude-incomplete-");
   const log = join(dir, "calls.log");
-  const bin = join(dir, "claude");
-  writeFileSync(
-    bin,
+  const bin = writeFakeExecutable(
+    join(dir, "claude"),
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const chunks = [];
@@ -2767,7 +2769,6 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  chmodSync(bin, 0o755);
   writeFileSync(log, "");
 
   const session = mkSession(repo, {
