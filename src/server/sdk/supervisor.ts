@@ -26,7 +26,7 @@ import {
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
-import { listProcessesSnapshot } from "../discovery/processes.ts";
+import { listProcessesSnapshot, usableProcessSnapshot } from "../discovery/processes.ts";
 import {
   confirmReservedInjection,
   releaseInjection,
@@ -1412,7 +1412,7 @@ export class SdkSupervisor {
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
       lifetime = lifetime.then(async () => {
         try {
-          const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
+          const snapshot = await (this.deps.processSnapshot ?? usableProcessSnapshot)();
           const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
           if (!snapshot.unknownReason && process && this.lifetimeOwners.get(id) === handle && handle.recoveryProcessId === pid) {
             recordSdkSessionProcess(id, { pid, startMs: process.startMs });

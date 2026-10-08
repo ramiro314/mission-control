@@ -12,6 +12,7 @@ import { run } from "../util/exec.ts";
 import { LAUNCH_SCRIPT_FILE } from "../terminal/launch-process.ts";
 import { beginResumeLaunch, createResumeLease, reconcileResumeLeases, resumeLeaseRoot,
   revokeResumeLease, writeResumeRecord, type ResumeLease } from "../terminal/resume-lease.ts";
+import { runtimeUnavailableWhy } from "../platform/session-runtimes.ts";
 import { harnessFor, resumeArgvFor } from "./index.ts";
 
 export interface ResumeContext {
@@ -40,6 +41,16 @@ export function managedResumeRoot(): string {
 
 export function recheckManagedResumes() {
   return reconcileResumeLeases(managedResumeRoot(), Date.now(), preparing);
+}
+
+/**
+ * The daemon's periodic reconcile, or null on a host without the terminal runtime. A managed
+ * resume reopens a conversation in that runtime, so there is nothing to reconcile there, and on
+ * win32 the journal's POSIX owner and mode checks cannot pass: reading it only reported a
+ * journal "requiring inspection" at boot and every 30 seconds.
+ */
+export function reconcileManagedResumesOnHost(platform: NodeJS.Platform = process.platform) {
+  return runtimeUnavailableWhy("terminal", platform) ? null : recheckManagedResumes();
 }
 
 export function resumeConversation(session: Pick<Session, "agent" | "agentSessionId">): string {

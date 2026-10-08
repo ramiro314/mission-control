@@ -97,7 +97,8 @@ fixture's header says what it assumes about React's scheduler.
 
 ## Host concurrency
 
-Playwright uses at most four workers, and Mission Control permits one E2E invocation per user on
+Playwright uses at most four workers (two by default on Windows, where every process start costs
+several times more), and Mission Control permits one E2E invocation per user on
 a host at a time. This is a shared limit across linked worktrees: a second full or focused run
 waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
 and begins when that run exits. The kernel releases the lease automatically if its process dies.

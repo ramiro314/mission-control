@@ -32,7 +32,7 @@ import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
-import { recheckManagedResumes } from "./harness/resume.ts";
+import { reconcileManagedResumesOnHost } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
@@ -177,7 +177,7 @@ warnIfSessionAttributionDisabled();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
 const reconcileManagedResumeResources = () => {
-  try { recheckManagedResumes(); } catch (error) {
+  try { reconcileManagedResumesOnHost(); } catch (error) {
     console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");
   }
 };
