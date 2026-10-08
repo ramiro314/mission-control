@@ -57,7 +57,7 @@ installer) continue on `main`.
   so today Mission Control cannot dispatch a ticket that builds on `release/windows`.
 - **This checkout is a fork.** A weekly mission merges upstream into `main`
   ([upstream-sync runbook](../../upstream-sync.md)), and every fork feature has an entry in the
-  [fork ledger](../../fork/ledger.md).
+  [fork ledger](../../fork/README.md).
 
 ## Decisions
 

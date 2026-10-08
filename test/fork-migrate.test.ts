@@ -14,6 +14,7 @@ import {
   executeWrites,
   parseLedger,
   parsePrCell,
+  pendingBranches,
   planWrites,
   slugFor,
   unwrap,
@@ -191,8 +192,12 @@ the lockfile.
 
 const SLUGS = ["shape-tasks-grill-and-tickets", "task-source-workflow-default", "per-task-base-branch", "ci-time-to-green", "dependabot"];
 
-/** GitHub after a migration of `desired` succeeded, as `fetchState` would read it. */
+/**
+ * GitHub after a migration of `desired` succeeded, as `fetchState` would read it. Each pending
+ * branch has merged as PR 243, 244 and so on.
+ */
 function migrated(desired: Desired): Actual {
+  const pending = [...desired.pending].map(([branch, labels], i) => ({ branch, labels, number: 243 + i }));
   return {
     labels: desired.labels.map((l) => l.name),
     issues: desired.issues.map((issue, i) => ({
@@ -203,7 +208,8 @@ function migrated(desired: Desired): Actual {
       body: issue.body.replace(/\n/g, "\r\n"),
       comments: issue.closingComment ? [issue.closingComment] : [],
     })),
-    prs: new Map([...desired.prs].map(([n, labels]) => [n, [...labels]])),
+    prs: new Map([...desired.prs, ...pending.map((p): [number, string[]] => [p.number, p.labels])].map(([n, labels]) => [n, [...labels]])),
+    merged: new Map(pending.map((p) => [p.branch, [p.number]])),
   };
 }
 
@@ -224,6 +230,13 @@ test("slugs are the headings lowercased and hyphenated", () => {
   assert.equal(slugFor("PR merge-conflict reactions"), "pr-merge-conflict-reactions");
   assert.equal(slugFor("CI time-to-green"), "ci-time-to-green");
   assert.equal(slugFor("Upstream sync process and fork ledger"), "upstream-sync-process-and-fork-ledger");
+  // GitHub refuses a label over 50 characters, so this heading's slug is chosen by hand.
+  assert.equal(slugFor("MCP backlog listing and adoption across repositories"), "mcp-backlog-across-repositories");
+});
+
+test("a heading whose label GitHub would refuse stops the plan", () => {
+  const long = "A heading long enough that its derived label passes fifty";
+  assert.throws(() => desiredOf(LEDGER.replaceAll("Task-source workflow default", long)), /GitHub refuses a label name over 50 characters: fork:a-heading-long-enough/);
 });
 
 test("a PRs cell yields its PR numbers and skips pending cells, issue numbers and prose", () => {
@@ -236,6 +249,7 @@ test("a PRs cell yields its PR numbers and skips pending cells, issue numbers an
     prs: [59, 175],
     skipped: ["weekly mission PR", "pending (branch `feat/a, b`)"],
   });
+  assert.deepEqual(pendingBranches(["Pending (branch `feat/x`, issue #234)", "pending (tickets marker, issue #82)", "weekly mission PR", "issue #136 (branch `fix/y`)"]), ["feat/x"]);
 });
 
 test("prose is unwrapped per paragraph and list item, and relative links point at main", () => {
@@ -274,10 +288,15 @@ test("each entry becomes the issue template's sections, without the PRs field", 
   assert.equal(dependabot["Why it was removed"], "It moved versions away from upstream, which made every sync fight the lockfile.");
 });
 
-test("the plan labels table PRs only, Dependabot's under fork:dependabot, and lists the rest as notes", () => {
+test("the plan labels claimed PRs, Dependabot's under fork:dependabot, waits on pending branches, and lists the rest as notes", () => {
   const desired = desiredOf(LEDGER);
   assert.equal(desired.labels.length, 1 + SLUGS.length + 4 + 1);
-  assert.deepEqual([...desired.prs.keys()], [1, 3, 35, 40, 41, 43, 151, 161, 200, 215]);
+  // #83 is claimed only in its entry's PRs field, #250 in words PROSE_CLAIMS maps; #21 is
+  // related, not claimed.
+  assert.deepEqual([...desired.prs.keys()], [1, 3, 35, 40, 41, 43, 83, 151, 161, 200, 215, 250]);
+  assert.deepEqual(desired.prs.get(250), ["fork:per-task-base-branch", "fork-delta:applied"]);
+  assert.deepEqual(desired.prs.get(83), ["fork:shape-tasks-grill-and-tickets", "fork-delta:applied"]);
+  assert.deepEqual([...desired.pending], [["feat/task-source-workflow", ["fork:task-source-workflow-default", "fork-delta:applied"]]]);
   for (const n of [40, 41, 43]) assert.deepEqual(desired.prs.get(n), ["fork:dependabot", "fork-delta:applied"]);
 
   const issue = (slug: string) => defined(desired.issues.find((i) => i.slug === slug), slug);
@@ -289,7 +308,8 @@ test("the plan labels table PRs only, Dependabot's under fork:dependabot, and li
   assert.equal(issue("shape-tasks-grill-and-tickets").closingComment, null);
 
   assert.ok(desired.notes.some((n) => n.includes('"Standalone fixes" has no entry') && n.includes("#4, #13")));
-  assert.ok(desired.notes.some((n) => n.includes("fork:shape-tasks-grill-and-tickets: in the entry's PRs field") && n.includes("#83")));
+  assert.ok(desired.notes.some((n) => n.includes("fork:shape-tasks-grill-and-tickets: labeled from the entry's PRs field") && n.includes("#83")));
+  assert.ok(!desired.notes.some((n) => n.includes("feat/task-source-workflow")), "a pending branch is planned, not skipped");
   assert.ok(!desired.notes.some((n) => n.includes("#21")), "a related, unclaimed PR is not reported");
 });
 
@@ -350,6 +370,33 @@ test("status is reconciled, and the closing comment is posted only when its mark
   assert.ok(!planWrites(desired, actual).writes.some((w) => w.op === "comment-issue"));
 });
 
+test("a PR claimed in words is labeled only while its entry still says them", () => {
+  assert.ok(desiredOf(LEDGER).notes.includes('fork:per-task-base-branch: #250 labeled for the entry\'s words "the session Diff view (issue #136)"'));
+  const edited = desiredOf(LEDGER.replace("#151, #161, the session Diff view (issue #136)", "#151, #161"));
+  assert.ok(!edited.prs.has(250));
+  assert.ok(edited.notes.includes('"Per-task base branch" no longer says "the session Diff view (issue #136)", so #250 is not labeled for it'));
+});
+
+test("a pending branch labels the one PR merged from it into main, and is warned about otherwise", () => {
+  const desired = desiredOf(LEDGER);
+  const actual = migrated(desired);
+  actual.prs.set(243, ["enhancement"]);
+  const { writes, warnings } = planWrites(desired, actual);
+  assert.deepEqual(writes, [{ op: "label-pr", number: 243, addLabels: ["fork:task-source-workflow-default", "fork-delta:applied"] }]);
+  assert.deepEqual(warnings, []);
+
+  actual.prs.set(243, ["enhancement", "fork:task-source-workflow-default", "fork-delta:applied"]);
+  assert.deepEqual(planWrites(desired, actual), { writes: [], warnings: [] });
+
+  for (const [numbers, found] of [
+    [[], "no PR"],
+    [[243, 250], "2 PRs (#243, #250)"],
+  ] as const) {
+    actual.merged.set("feat/task-source-workflow", [...numbers]);
+    assert.deepEqual(planWrites(desired, actual), { writes: [], warnings: [`branch feat/task-source-workflow: ${found} merged into main; not labeled`] });
+  }
+});
+
 test("a feature label on two issues stops the plan", () => {
   const desired = desiredOf(LEDGER);
   const actual = migrated(desired);
@@ -365,7 +412,8 @@ test("a renamed heading stops the plan instead of creating a second issue beside
     /no ledger entry derives #301 \(fork:task-source-workflow-default\); if a heading was renamed, relabel the issue/,
   );
 
-  // Relabelled by hand, the rerun only reconciles the title and adds the new label.
+  // Relabelled by hand, the rerun only reconciles the title and adds the new label to the
+  // feature's merged PR.
   const actual = migrated(before);
   const issue = defined(actual.issues[1], "the task-source issue");
   issue.labels = ["fork-feature", "fork:source-workflow-default"];
@@ -373,8 +421,9 @@ test("a renamed heading stops the plan instead of creating a second issue beside
   const { writes } = planWrites(renamed, actual);
   assert.deepEqual(
     writes.map((w) => w.op),
-    ["edit-issue"],
+    ["edit-issue", "label-pr"],
   );
+  assert.deepEqual(only(writes[1], "label-pr").addLabels, ["fork:source-workflow-default"]);
   assert.equal(only(writes[0], "edit-issue").title, "Fork feature: Source workflow default");
 });
 
@@ -407,7 +456,7 @@ test("a table PR GitHub does not know is warned about and never labeled", () => 
   assert.deepEqual(warnings, ["#41 is not a pull request in this repository; not labeled"]);
   const labeled = writes.flatMap((w) => (w.op === "label-pr" ? [w.number] : []));
   assert.ok(!labeled.includes(41));
-  assert.equal(labeled.length, desired.prs.size - 1, "every other table PR is still labeled");
+  assert.equal(labeled.length, desired.prs.size - 1 + desired.pending.size, "every other claimed PR is still labeled");
 });
 
 test("a title that differs from the ledger heading is the only thing rewritten", () => {
@@ -452,7 +501,7 @@ function fakeRepo() {
   const gh = join(dir, "gh");
   writeFileSync(gh, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_GH}" "$@"\n`, { mode: 0o755 });
   const statePath = join(dir, "state.json");
-  const prs = Object.fromEntries([1, 3, 35, 40, 41, 43, 151, 161, 163, 200, 215].map((n) => [String(n), []]));
+  const prs = Object.fromEntries([1, 3, 35, 40, 41, 43, 83, 151, 161, 163, 200, 215, 250].map((n) => [String(n), []]));
   writeFileSync(statePath, JSON.stringify({ labels: ["bug"], issues: [], prs, calls: [] }));
   const ledger = join(dir, "ledger.md");
   const state = () => JSON.parse(readFileSync(statePath, "utf8")) as FakeState;
