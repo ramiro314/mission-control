@@ -126,6 +126,10 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
     await dashboard.locator(".settings-section.sc-section").screenshot({
       path: `${EVIDENCE}foreman-settings-tabs.png`,
     });
+    // The section above is its own scrollport and clips at the viewport; this is every field.
+    await panel(dashboard, "Launches").screenshot({
+      path: `${EVIDENCE}foreman-settings-launches-panel.png`,
+    });
   }
 });
 
