@@ -149,8 +149,11 @@ const markerWidgets = new WeakMap<HTMLElement, CommentMarkerWidget>();
  * the marker where the reader already is. An inline widget at the end of the anchored line
  * is in the accessibility tree, is reachable by Tab, and sits closer to the text it is
  * about than a gutter dot does.
+ *
+ * Exported for `test/file-editor-comment-marker.test.ts`, which pins `updateDOM` without a
+ * browser.
  */
-class CommentMarkerWidget extends WidgetType {
+export class CommentMarkerWidget extends WidgetType {
   constructor(
     private readonly marker: FileEditorCommentMarker,
     private readonly onSelect: (line: number) => void,
