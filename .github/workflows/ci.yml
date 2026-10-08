@@ -88,8 +88,8 @@ name: CI
 # `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
 # target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
 # The budget is for a pull request into `main`. One into `release/windows` that changes more
-# than docs also runs the twenty-one Windows jobs, which queue behind the cap and lengthen that
-# run instead.
+# than docs also runs the seventeen Windows jobs, which queue behind the cap and lengthen that
+# run instead; see "Windows shard counts" below.
 # `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
 # test derives the peak from this file's job graph and pins it at 19, so a new job that runs
 # beside the shards on a pull request fails it until it is counted against the 20-job cap. See
@@ -717,6 +717,27 @@ jobs:
   # accept them skipped on a pull request into another branch. Until then they are out of
   # `CI result`, upload no `flake-report-*` artifact (an expected failure is not a flake), and
   # leave every Linux job as it was.
+  #
+  # ### Windows shard counts
+  #
+  # Both suites are dealt by `scripts/unit-shard.mjs` on Windows durations, which the shards'
+  # own JUnit records: `npm run test:timings -- --windows <run-id>` regenerates
+  # `test/shard-timings-windows.json` and `e2e/shard-timings-windows.json`. Linux timings and
+  # shards are untouched. The target is about 15 minutes per Windows shard job, roughly twice
+  # Linux, with as few jobs as reach it: these jobs queue behind the same 20-job cap as the
+  # Linux peak (see "Shard budget"), so a shard more costs its setup time again without
+  # starting any sooner. The numbers come from run 37821364466:
+  #
+  # - E2E took 16 s plus 0.507 s per recorded second dealt, plus about 60 s of setup, and
+  #   records 14,980 s. Ten shards deal about 1,500 s each, about 14 minutes a job; nine would
+  #   be 15.4 and fourteen, the count before balancing, left the slowest at 14.4 minutes
+  #   beside a fastest of 6.4.
+  # - Unit took about 0.375 s per recorded second dealt at concurrency 4, plus 125 to 210 s of
+  #   setup, and records 4,964 s. Three shards deal about 1,650 s each, about 12 minutes a job;
+  #   two would be 17.
+  #
+  # Seventeen Windows jobs in all: dependencies, typecheck, build, native probes, three unit
+  # and ten e2e shards. The timings are per file, so changing a count needs no regeneration.
   dependencies-windows:
     name: dependencies (windows, node 24)
     needs: changes
@@ -829,6 +850,9 @@ jobs:
   # still running after its budget, blocked event loop included. Each shard uploads its JUnit
   # as `windows-unit-junit-shard-<n>`, the input for Windows shard timings; the name stays
   # outside `test:timings`'s `unit-junit-node-*` pattern so Linux timings never read it.
+  #
+  # Shard files are dealt by `scripts/unit-shard.mjs` on `test/shard-timings-windows.json`, as
+  # Linux deals them on `test/shard-timings.json`; see "Windows shard counts" above.
   unit-windows:
     name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
     needs: [changes, dependencies-windows]
@@ -844,6 +868,7 @@ jobs:
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
       MISSION_TEST_CONCURRENCY: '4'
       MISSION_TEST_SHARDS: '3'
+      MISSION_TEST_SHARD: ${{ matrix.shard }}/3
     defaults:
       run:
         shell: bash
@@ -898,13 +923,19 @@ jobs:
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: npm run pretest
 
+      - name: Select shard files
+        run: |
+          node scripts/unit-shard.mjs "$MISSION_TEST_SHARD" windows-unit > "$RUNNER_TEMP/unit-shard-files.txt"
+          echo "Unit shard $MISSION_TEST_SHARD runs $(wc -l < "$RUNNER_TEMP/unit-shard-files.txt") test files"
+
       - name: Test
         id: test
         timeout-minutes: 60
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
-        run: npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" --test-shard="$MISSION_TEST_SHARD" --test-timeout=120000 --test-force-exit --import ./test/file-watchdog.mjs 'test/**/*.test.ts'
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/unit-shard-files.txt"
+          npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" --test-timeout=120000 --test-force-exit --import ./test/file-watchdog.mjs "${files[@]}"
         env:
-          MISSION_TEST_SHARD: ${{ matrix.shard }}/3
           MISSION_TEST_FILE_BUDGET_MS: '900000'
           MISSION_TEST_JUNIT: ${{ runner.temp }}/windows-unit-junit.xml
 
@@ -1070,8 +1101,10 @@ jobs:
           STEPS_JSON: ${{ toJSON(steps) }}
         run: node scripts/ci-allowed-failures.mjs
 
-  # The same suite and shard count as the Linux `e2e` job. No tmux step: the terminal runtime
-  # is unavailable on win32 for now (M2.7).
+  # The same suite as the Linux `e2e` job, sharded by recorded Windows duration rather than by
+  # Playwright's `--shard`, which splits by test count: `scripts/unit-shard.mjs` deals whole
+  # spec files on `e2e/shard-timings-windows.json` into a `--test-list`; see "Windows shard
+  # counts" above. No tmux step: the terminal runtime is unavailable on win32 for now (M2.7).
   #
   # Like Linux, every shard tests the one `dist/` that `build-windows` built and smoked,
   # downloaded as the `dist-windows` artifact, instead of building its own: on run 37522217862
@@ -1086,7 +1119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     env:
       npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
       MISSION_WINDOWS_CI_ALLOWED_TO_FAIL: 'true'
@@ -1148,6 +1181,13 @@ jobs:
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: tar -xf dist.tar
 
+      # One spec file per line, relative to Playwright's test directory, which `--test-list`
+      # takes as every test in that file.
+      - name: Select shard specs
+        run: |
+          node scripts/unit-shard.mjs "${{ matrix.shard }}/${{ strategy.job-total }}" windows-e2e > "$RUNNER_TEMP/e2e-shard-specs.txt"
+          echo "E2E shard ${{ matrix.shard }}/${{ strategy.job-total }} runs $(wc -l < "$RUNNER_TEMP/e2e-shard-specs.txt") spec files"
+
       # Playwright stops itself five minutes inside the step's timeout. Killed by that timeout
       # instead, a shard reports nothing, and on run 37505044919 one runner was lost as the step
       # was torn down, which failed its job. A stop at the global timeout prints the run's totals,
@@ -1158,7 +1198,7 @@ jobs:
         timeout-minutes: 35
         if: steps.unpack.outcome == 'success'
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
-        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --retries=0 --global-timeout=1800000
+        run: npm run test:e2e -- --test-list="$RUNNER_TEMP/e2e-shard-specs.txt" --retries=0 --global-timeout=1800000
         env:
           MISSION_PLAYWRIGHT_JUNIT: ${{ runner.temp }}/windows-e2e-junit.xml
 
