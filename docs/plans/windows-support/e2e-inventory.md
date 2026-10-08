@@ -130,6 +130,13 @@ starvation signature. These own the fast assertion failures:
   harness the host runs, the fake `claude` holds the demo's turn open as the fake `codex` does,
   and `win32-tour-harness` walks both tours on that harness on every runner.
 
+- aacb6e98: a comment marker that loses keyboard focus when its state changes. On run
+  37807097380, shard 4, `file-line-comments` "a marker opens its thread from the keyboard, not
+  only from a mouse" failed `toBeFocused()` while the marker's name moved from "sent" to "no
+  answer": CodeMirror replaced the marker's button, because its widget had no `updateDOM`. It
+  passed on runs 37745155079 and 37758180479, so it is timing, not starvation. The widget now
+  updates the button in place, and a new spec changes a focused marker's state.
+
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
 to 05e056ac.
