@@ -471,6 +471,7 @@ test("a link followed before the workflow list arrives opens that workflow, not 
   await expect(heading).toBeVisible();
   await expect(dashboard.getByRole("heading", { name: "Bug Fix Review" })).toHaveCount(0);
   expect(await dashboard.evaluate(() => location.hash)).toBe(link);
+  await shoot(dashboard, "early-link-after-list");
 });
 
 test("the ＋ New cards open a blank draft, and creating a workflow lands on the new one", async ({

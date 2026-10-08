@@ -414,6 +414,7 @@ test("a budget chosen before the catalog arrives is still the operator's to save
   await expect(save).toBeEnabled({ timeout: 30_000 });
   await expect(dashboard.getByText(/A newer revision/)).toHaveCount(0);
   await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("3");
+  await shoot(dashboard, "early-budget-after-catalog");
   await save.click();
   await expect(save).toBeDisabled();
   await expect
