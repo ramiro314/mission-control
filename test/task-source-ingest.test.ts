@@ -36,6 +36,8 @@ const { openDb, deleteTask, getTask, listTasks, countTaskSourceSeen, forgetTaskS
   await import("../src/server/db.ts");
 const dbMod = await import("../src/server/db.ts");
 const { ingestSweep } = await import("../src/server/task-sources/ingest.ts");
+const { resolveTaskWorkflowId } = await import("../src/server/workflows/config.ts");
+const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -92,6 +94,8 @@ function fakeTasks(): TaskManager {
         enabled: input.enabled ?? true,
         repoRoot: input.repoRoot,
         source: input.source ?? null,
+        // The real manager's own resolution, so an omitted id reaches the kind's default.
+        workflowId: resolveTaskWorkflowId(input.workflowId, input.kind),
         status: "backlog",
       });
       dbMod.upsertTask(task);
@@ -165,6 +169,45 @@ test("a source configured with no autopilot answer files parked tasks", async ()
   assert.deepEqual(report.refused, []);
   assert.equal(report.filed, 1);
   assert.equal(listTasks()[0]!.enabled, false);
+});
+
+// The source's workflow default, in each of the three states a task's own `workflowId` has.
+// Parsed the way `getTaskSourcesConfig` reads the blob, so the inherit case is also the
+// stored source written before the field existed: it says nothing, and must ask the kind.
+for (const [name, defaults, expected] of [
+  ["a stored source with no workflow field inherits the kind's default", {}, NO_MISTAKES_REVIEW_WORKFLOW_ID],
+  ["a source set to None files tasks with no workflow", { workflowId: null }, null],
+  ["a source naming a workflow files tasks bound to it", { workflowId: "wf-deflake" }, "wf-deflake"],
+] as const) {
+  test(name, async () => {
+    const inst = TaskSourceInstanceSchema.parse({
+      id: "src-1",
+      kind: "github-issues",
+      repoRoot: "/repo",
+      defaults: { agent: "claude", ...defaults },
+    });
+    const report = await ingestSweep(inst, sweep([mkCandidate()]), fakeTasks(), deps);
+    assert.deepEqual(report.refused, []);
+    assert.equal(listTasks()[0]!.workflowId, expected);
+  });
+}
+
+test("a candidate that names its own workflow wins over the source's, None included", async () => {
+  const inst = mkSource({
+    defaults: { kind: "ship", agent: "claude", workflowId: "wf-deflake", priority: null, labels: [], enabled: true },
+  });
+  await ingestSweep(
+    inst,
+    sweep([
+      mkCandidate({ workflowId: null }),
+      mkCandidate({ ref: { sourceId: "src-1", externalId: "owner/repo#2", url: null }, workflowId: "wf-other" }),
+    ]),
+    fakeTasks(),
+    deps,
+  );
+  const byExternal = new Map(listTasks().map((t) => [t.source!.externalId, t.workflowId]));
+  assert.equal(byExternal.get("owner/repo#1"), null);
+  assert.equal(byExternal.get("owner/repo#2"), "wf-other");
 });
 
 test("a re-sweep of the same item files nothing", async () => {

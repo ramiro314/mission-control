@@ -239,6 +239,10 @@ Issues only report a flake. To get each actionable one fixed, add a
 - **Labels (none of)**: `wontfix`, or whatever label marks a flake you have decided to live with.
 - **Labels (any of)**: blank.
 - **Default kind**: ship, so each task ends in a fix pull request.
+- **Workflow**: a lightweight review Workflow such as a Deflake Review you published, rather than
+  **Kind default**, which binds the Ship row (No-Mistakes Review unless you changed it). A
+  deflake changes little code, and binding it here means no one has to rebind each flake task by
+  hand while ordinary Ship tasks keep their own review.
 
 Each sweep then files one backlog task per open actionable flake issue, and nothing for a flake
 that has not reached the threshold yet. The task's intent carries the issue's URL and body, and
@@ -247,8 +251,8 @@ source needs no intent of its own. With that skill switched on (see
 [Skills](skills-and-settings.md#skills-every-session-mixed-reload-behavior)), the agent reads the
 issue and its occurrence comments, reproduces the flake under load before changing anything,
 fixes its cause, proves the fix with a before and after repeated run at the same load, and
-commits it with `Fixes #<n>` in the commit message and its completion report. The kind's bound
-workflow opens the fix pull request with its Pull Request action, or Foreman's wrap-up does when
+commits it with `Fixes #<n>` in the commit message and its completion report. The task's bound
+workflow (the source's **Workflow**, or the kind's when left on Kind default) opens the fix pull request with its Pull Request action, or Foreman's wrap-up does when
 the kind has no workflow, and the pull-request skill carries `Fixes #<n>` into the description.
 Merging it closes the issue, and the next CI run drops the actionable label. Mission Control does not create this source for you.
 

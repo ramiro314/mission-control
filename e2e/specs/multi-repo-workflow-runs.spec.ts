@@ -45,10 +45,19 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   console.log(`CAPTURED e2e/.artifacts/multi-repo-workflow-runs/${name}.png`);
 }
 
+/**
+ * Every request here opens a socket of its own. Node's `fetch` pools keep-alive sockets, and the
+ * daemon closes an idle one at six seconds (Node's 5s keep-alive plus its 1s buffer). The UI
+ * steps between two reads can idle a pooled socket that long on a loaded runner, and a reuse
+ * that crosses the daemon's close fails with `read ECONNRESET`, which `expect.poll` does not
+ * retry.
+ */
+const CLOSE = { connection: "close" } as const;
+
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
     method: body === undefined ? "GET" : "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CLOSE },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
@@ -74,7 +83,7 @@ interface RunRow {
 interface TaskRow {
   id: string;
   worktreePath: string | null;
-  extraRepos: Array<{ repoRoot: string; worktreePath: string | null; prUrl: string | null }>;
+  extraRepos: Array<{ repoRoot: string; worktreePath: string | null }>;
 }
 
 /** Fill the dispatch form, attach `second-repo`, and launch. */
@@ -191,7 +200,7 @@ async function announcePullRequests(
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const response = await fetch(`${daemon.baseURL}/hooks/PostToolUse`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": token },
+    headers: { "content-type": "application/json", "x-harness-token": token, ...CLOSE },
     body: JSON.stringify({
       agent: session.agent,
       sessionId: session.agentSessionId ?? session.id,
@@ -212,20 +221,33 @@ async function announcePullRequests(
     .toEqual([...urls].sort());
 }
 
-/** Wait until the attached repo's own pull request has reached the task, or has not. */
-async function attachedRepoPr(daemon: DaemonHandle, taskId: string, url: string | null): Promise<void> {
+/**
+ * Wait until each repository of the session's task owns exactly these pull requests, primary
+ * first.
+ *
+ * Every repository, not only the attached one. Submit decides which repositories changed from
+ * the primary's work-episode pull request and each attached repo's own row, and the poller
+ * associates those on two separate paths, so either can land first. Waiting on the attached
+ * repo alone let a submit through before the primary's association, and that turn reviewed the
+ * attached repo only. `session.task.repoPrs` is projected from those same two reads.
+ */
+async function taskRepoPrs(
+  daemon: DaemonHandle,
+  sessionId: string,
+  expected: Array<string | null>,
+): Promise<void> {
   await expect
     .poll(
       async () => {
-        const tasks = await api<TaskRow[]>(daemon, "/api/tasks");
-        return tasks.find((t) => t.id === taskId)?.extraRepos[0]?.prUrl ?? null;
+        const sessions = await api<Array<{
+          id: string;
+          task: { repoPrs: Array<{ prUrl: string | null }> } | null;
+        }>>(daemon, "/api/sessions");
+        return sessions.find((s) => s.id === sessionId)?.task?.repoPrs.map((pr) => pr.prUrl) ?? [];
       },
-      {
-        timeout: 30_000,
-        message: `the attached repo should own ${url ?? "no pull request"}`,
-      },
+      { timeout: 30_000, message: "each repo of the task should own its pull request" },
     )
-    .toBe(url);
+    .toEqual(expected);
 }
 
 /** Publish a one-reviewer workflow and bind it to the session in Preview. */
@@ -295,7 +317,7 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   // One command, two pull requests: both repositories changed.
   await announcePullRequests(daemon, session, [PR_PRIMARY, PR_SECOND]);
   scriptPullRequests(daemon, task, { primary: true, second: true });
-  await attachedRepoPr(daemon, task.id, PR_SECOND);
+  await taskRepoPrs(daemon, session.id, [PR_PRIMARY, PR_SECOND]);
   const bindingId = await bindReview(daemon, session.id);
   await api(daemon, `/api/workflow-bindings/${bindingId}/submit`, {
     requestId: "e2e-multi-repo-review",
@@ -340,7 +362,7 @@ test("a repo the task never changed gets no review at all", async ({ dashboard, 
   // the primary is the changed one and fails here.
   await announcePullRequests(daemon, session, [PR_SECOND]);
   scriptPullRequests(daemon, task, { second: true });
-  await attachedRepoPr(daemon, task.id, PR_SECOND);
+  await taskRepoPrs(daemon, session.id, [null, PR_SECOND]);
   const bindingId = await bindReview(daemon, session.id);
   await api(daemon, `/api/workflow-bindings/${bindingId}/submit`, {
     requestId: "e2e-single-changed-repo",
