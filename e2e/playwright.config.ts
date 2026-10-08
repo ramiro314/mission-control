@@ -36,7 +36,14 @@ export default defineConfig({
   fullyParallel: true,
   // CI and local runs use four workers. In CI that matches each selected 4-core runner;
   // increasing shards provides parallelism without oversubscribing any one machine.
-  workers: 4,
+  //
+  // win32 runs two. Every test there boots a daemon, a browser and a fake CLI per command, and
+  // each of those process starts costs several times what it does on Linux, so four workers
+  // oversubscribe a 4-core runner. The symptom is not slow tests but tests that pass in about
+  // 25 s on one run and burn the whole 120 s timeout on the next: between Windows CI runs
+  // 37713823713 and 37736134634, 79 tests went from passing to timing out and 79 the other way
+  // (docs/plans/windows-support/e2e-inventory.md).
+  workers: process.platform === "win32" ? 2 : 4,
   // A dispatch waits on a real subprocess launching, so the default 30s is tight on a cold
   // CI runner. Two minutes leaves room for a loaded runner while a real hang still fails.
   timeout: 120_000,
