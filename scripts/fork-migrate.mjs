@@ -7,8 +7,9 @@
  *   node scripts/fork-migrate.mjs --dry-run      print the plan, read nothing from GitHub
  *   node scripts/fork-migrate.mjs                print the plan, then reconcile GitHub with it
  *
- * `--ledger <path>` reads a ledger other than the checkout's, for example
- * `git show origin/main:docs/fork/ledger.md > /tmp/ledger.md`. `--repo <owner/name>` names the
+ * `--ledger <path>` reads a ledger other than the checkout's. The PR that ran the migration also
+ * deleted the checkout's, so pass `main`'s copy until that PR merges:
+ * `git show origin/main:docs/fork/ledger.md > .tmp/ledger.md`. `--repo <owner/name>` names the
  * repository and defaults to the fork, never to whatever `gh` resolves in a checkout that also
  * has an `upstream` remote.
  *
