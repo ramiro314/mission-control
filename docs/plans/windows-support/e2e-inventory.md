@@ -95,7 +95,7 @@ Windows e2e now runs two workers (`e2e/playwright.config.ts`); Linux and macOS k
 | `file-line-comments`, `file-mermaid-preview`, `foreman-guide`, `foreman-invite`, `settings-standing-instructions` | Starvation only: dashboard setup timeouts, `ECONNRESET` | 69d2ed0c |
 | `settings-task-sources-jira` | Starvation, except the Rovo check | 69d2ed0c; Rovo check 933eeb8a |
 | `setup-banner-and-tour` | The Setup banner is absent after 20 s, the slow Setup read | 69d2ed0c |
-| `workflows-tour` | Not run: shard 14 hit the global timeout | 69d2ed0c |
+| `workflows-tour` | Not run: shard 14 hit the global timeout | `fix/win32-tour-harness-fallback`; see below |
 | `dispatch-restart-recovery` | Stale-ref fetch race: task seed answers 400 | 308298d4 |
 | `library-exit` | Escape on a graph node leaves the wrong workflow | e1354b36 |
 | `telemetry-settings` | Product analytics profile is not exporting | 88dc3820 |
@@ -122,7 +122,12 @@ starvation signature. These own the fast assertion failures:
 - c678f42a: triage of the remaining fast assertion failures, after 69d2ed0c lands. On run
   37745155079 these also include `conversation-html-artifact-preview`, `ensemble-review-restart`,
   `foreman-profile`, `library-commands`, `library`, `native-worktree-dispatch`,
-  `workflow-elapsed-clock`, `workflow-round-scrubber` and `workflows-tour`.
+  `workflow-elapsed-clock` and `workflow-round-scrubber`.
+- `fix/win32-tour-harness-fallback`: `workflows-tour` (moved from c678f42a) and `see-work-tour`.
+  Every server tour recipe (`src/server/tours.ts`) prefers Codex, which win32 refuses, so on
+  runs 37745155079 and 37758180479 the tours' temporary conversation and demo task stopped on
+  "Mission Control does not support Codex on Windows yet". Tour tasks now launch on the first
+  harness the host runs, and `win32-tour-harness` covers that on every runner.
 
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
