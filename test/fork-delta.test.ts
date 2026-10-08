@@ -8,6 +8,7 @@ import {
   currentBase,
   featuresFromIssues,
   formatCheck,
+  formatPlan,
   overlayFor,
   parseForkChanges,
   parseIssueBody,
@@ -268,8 +269,19 @@ test("a held PR holds back every later PR naming any of its features, and others
   // #103's own blocks match the overlay; it is held only for the feature it shares.
   const result = checkPr(onB, issues, prs);
   assert.deepEqual([result.stale, result.heldBehind, result.ok], [[], [102], false]);
-  assert.match(formatCheck(result).text, /^PR #103: held\n {2}held behind #102/);
-  assert.equal(checkPr(onD, issues, prs).ok, true);
+  assert.deepEqual(formatCheck(result), { text: "PR #103: held\n  held behind #102, which name the same features; repair those first", code: 1 });
+  assert.deepEqual(formatCheck(checkPr(onD, issues, prs)), { text: "PR #105: ok, 1 block(s) across fork:d match their base", code: 0 });
+
+  // `pending` reports each verdict, and why a PR is not applied.
+  assert.deepEqual(formatPlan(entries).split("\n"), [
+    "#101 apply   fork:a",
+    "#102 stale   fork:a, fork:b: fork:a / Intent",
+    "#103 held    fork:b, fork:c: behind #102",
+    "#104 held    fork:c: behind #103",
+    "#105 apply   fork:d",
+    "#106 apply   (none)",
+  ]);
+  assert.equal(formatPlan([]), "no merged PR is waiting to be applied");
 });
 
 test("a PR whose section does not parse holds back the features it names", () => {
@@ -281,6 +293,19 @@ test("a PR whose section does not parse holds back the features it names", () =>
   assert.match(entries[0]?.error ?? "", /first line must be "base:/);
   assert.deepEqual(overlayFor(issues, [broken, later]).skipped, [101]);
   assert.throws(() => checkPr(broken, issues, [broken, later]), ForkDeltaFormatError);
+  assert.deepEqual(formatPlan(entries).split("\n"), [
+    `#101 invalid fork:a: ${entries[0]?.error}`,
+    "#102 held    fork:a: behind #101",
+  ]);
+});
+
+test("a slug on two tracking issues, or a section heading repeated in one, is refused", () => {
+  assert.throws(
+    () => featuresFromIssues([issue(1, "a", { Intent: "x" }), issue(2, "a", { Intent: "y" })]),
+    /fork:a is on more than one tracking issue: #1 and #2/,
+  );
+  const repeated = { ...issue(1, "a", {}), body: "### Intent\n\nx\n\n### Intent\n\ny\n" };
+  assert.throws(() => featuresFromIssues([repeated]), /issue #1 has two "### Intent" sections/);
 });
 
 test("the --pr cutoff excludes PR n and anything merged after it from the overlay", () => {
@@ -329,7 +354,10 @@ test("a held PR repaired with base --pr passes check, and so do the PRs held beh
   assert.equal(repairedBase, sectionHash("- one\n- two"));
   prs[1] = { ...pr(102, day(2), { a: { "Behavior contracts": { base: repairedBase, text: "- one\n- two\n- three" } } }) };
 
-  assert.equal(checkPr(prs[1], issues, prs).ok, true);
+  assert.deepEqual(formatCheck(checkPr(prs[1], issues, prs)), {
+    text: "PR #102: ok, 1 block(s) across fork:a match their base",
+    code: 0,
+  });
   assert.equal(checkPr(prs[2]!, issues, prs).ok, true);
   // #104's base included #102's old block, so it is reported stale in turn.
   assert.deepEqual(checkPr(prs[3]!, issues, prs).stale.map((s) => s.section), ["Behavior contracts"]);
