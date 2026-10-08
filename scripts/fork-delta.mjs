@@ -80,7 +80,7 @@ export function sectionHash(text) {
 }
 
 /** Lines of `text`, each marked when it sits inside a fenced code block, fence lines included. */
-function scanLines(text) {
+export function scanLines(text) {
   const out = [];
   let fence = null;
   for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
