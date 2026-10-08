@@ -128,8 +128,10 @@ export interface DaemonHandle {
   installFakeGh(): void;
   /** Remove that fake GitHub CLI so a later Setup read observes a regression. */
   removeFakeGh(): void;
-  /** Make the next daemon-side `git fetch origin` report Git's stale-ref race. */
+  /** Make the next daemon-side fetch from demo-repo's origin report Git's stale-ref race. */
   failNextGitFetchWithRefRace(): void;
+  /** Whether that armed race is still waiting for a fetch, so a spec can prove one met it. */
+  gitFetchRefRacePending(): boolean;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -292,29 +294,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
-  if (gitFetchRefRace) {
-    const fakeGit = join(home, "bin", "git");
-    mkdirSync(dirname(fakeGit), { recursive: true });
-    writeFakeExecutable(
-      fakeGit,
-      [
-        "const { existsSync, unlinkSync } = require('node:fs');",
-        "const { spawnSync } = require('node:child_process');",
-        `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
-        `const realPath = ${JSON.stringify(process.env.PATH ?? "")};`,
-        "const args = process.argv.slice(2);",
-        "if (args[0] === '-C' && args[2] === 'fetch' && args[3] === 'origin' && existsSync(marker)) {",
-        "  unlinkSync(marker);",
-        "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
-        "  process.exit(1);",
-        "}",
-        "const result = spawnSync('git', args, { env: { ...process.env, PATH: realPath }, stdio: 'inherit' });",
-        "if (result.error) throw result.error;",
-        "process.exit(result.status ?? 1);",
-        "",
-      ].join("\n"),
-    );
-  }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
     copyFileSync(bins.codex, join(daemonPathBin, "codex"));
@@ -348,6 +327,36 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
+  if (gitFetchRefRace) {
+    // The race is injected where git talks to origin, not by a fake `git` on the daemon's
+    // PATH. A PATH fake sits in front of every git call the daemon makes, and on win32 each
+    // one then starts a .NET launcher and a Node process before real git, which added to a
+    // seed `rev-parse` already slow enough on a loaded runner to be stopped, and stalled a
+    // dispatch's worktree provisioning past a minute. Git runs
+    // `remote.origin.uploadpack` only for a fetch or `ls-remote` against demo-repo's origin,
+    // and its stderr reaches the fetch's own.
+    const uploadPack = writeFakeExecutable(
+      join(home, "ref-race-upload-pack"),
+      [
+        "const { existsSync, unlinkSync } = require('node:fs');",
+        "const { spawnSync } = require('node:child_process');",
+        `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
+        "if (existsSync(marker)) {",
+        "  unlinkSync(marker);",
+        "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
+        "  process.exit(1);",
+        "}",
+        "const result = spawnSync('git', ['upload-pack', ...process.argv.slice(2)], { stdio: 'inherit' });",
+        "if (result.error) throw result.error;",
+        "process.exit(result.status ?? 1);",
+        "",
+      ].join("\n"),
+    );
+    // Git hands this to `sh -c`, which reads a backslash as an escape: forward slashes keep a
+    // win32 path intact, and the quotes keep one with a space in it a single word.
+    const shellPath = `'${uploadPack.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`;
+    execFileSync("git", ["-C", repo, "config", "remote.origin.uploadpack", shellPath], { stdio: "pipe" });
+  }
   const secondRepo = seedRepo(workspace, "second-repo");
   // Two checkouts that share a basename, in different parents. The repo picker draws a
   // checkout by its DIRECTORY NAME, which makes a shared basename the one case where a name
@@ -405,6 +414,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     writeFileSync(gitFetchRefRaceMarker, "fail once\n");
   };
 
+  const gitFetchRefRacePending = (): boolean => existsSync(gitFetchRefRaceMarker);
+
   const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
@@ -421,7 +432,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     PATH:
       conductorNodeVersion === undefined
         ? [
-            ...(gitFetchRefRace ? [join(home, "bin")] : []),
             ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
             process.env.PATH ?? "",
           ].filter(Boolean).join(delimiter)
@@ -844,6 +854,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     installFakeGh,
     removeFakeGh,
     failNextGitFetchWithRefRace,
+    gitFetchRefRacePending,
     readLog: () => log,
     startForeman,
     crash,
