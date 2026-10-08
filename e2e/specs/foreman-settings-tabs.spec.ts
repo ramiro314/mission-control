@@ -10,6 +10,14 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 // OUTSIDE this strip, so a bookmark that expected the tab still finds the way.
 const GROUPS = ["Posture", "Launches", "Safety"] as const;
 
+// The selects and switches that carry a per-field explanation. Posture's tier buttons are
+// not counted: the panel prints the chosen tier's sentence on purpose.
+const EXPLAINED_FIELDS: Record<(typeof GROUPS)[number], number> = {
+  Posture: 0,
+  Launches: 3,
+  Safety: 2,
+};
+
 function declaredCount(name: (typeof GROUPS)[number]): number {
   const group = FOREMAN_SETTINGS_TABS.find((candidate) => candidate.label === name);
   if (!group) throw new Error(`no Foreman settings group is labelled ${name}`);
@@ -26,6 +34,16 @@ function panel(page: Page, name: (typeof GROUPS)[number]): Locator {
 
 function tab(page: Page, name: (typeof GROUPS)[number]): Locator {
   return controls(page).getByRole("tab", { name });
+}
+
+/** Every select and switch in `scope`, with the explanation its tooltip describes it by. */
+async function fieldExplanations(scope: Locator): Promise<string[]> {
+  return scope.getByRole("combobox").or(scope.getByRole("checkbox")).evaluateAll((fields) =>
+    fields.map((field) =>
+      (field.getAttribute("aria-describedby") ?? "").split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ").replace(/\s+/g, " ").trim()),
+  );
 }
 
 test("each Foreman tab reveals one group while the posture and read-only cards stay visible", async ({
@@ -76,19 +94,27 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
         break;
     }
 
+    // Each field's explanation is spent on hover and focus: its tooltip still describes the
+    // field, and the panel no longer prints that sentence under it. Asserted on the text
+    // rather than on the column's height, which also moves with the host's fonts and with the
+    // catalog notices a host legitimately shows - Windows measured 1359px with neither
+    // regressed.
+    const explanations = await fieldExplanations(panel(dashboard, name));
+    expect(explanations.length, `${name} lost its explained fields`)
+      .toBe(EXPLAINED_FIELDS[name]);
+    const printed = (await panel(dashboard, name).innerText()).replace(/\s+/g, " ");
+    for (const explanation of explanations) {
+      expect(explanation, `a ${name} field lost its explanation`).not.toBe("");
+      expect(printed, `a field's explanation is printing under it again: ${explanation}`)
+        .not.toContain(explanation);
+    }
+
     const height = await controls(dashboard).evaluate((element) =>
       Math.ceil(element.getBoundingClientRect().height),
     );
     heights.set(name, height);
   }
 
-  // The bound sits between two measured states of this column, not at a target. The compact
-  // Standing guidance card added by the fixed System profile puts the tallest tab near
-  // 1160px locally and 1185px in CI. Printing the per-field prose again would add roughly
-  // 245px, so 1300 still catches that regression while leaving room for CI font metrics.
-  expect(Math.max(...heights.values()),
-    `a field's explanation is printing under it again: ${JSON.stringify(Object.fromEntries(heights))}`)
-    .toBeLessThan(1_300);
   if (process.env.MC_E2E_EVIDENCE) {
     // eslint-disable-next-line no-console
     console.log(`OBSERVED Foreman control heights: ${JSON.stringify(Object.fromEntries(heights))}`);
