@@ -49,6 +49,9 @@ export function gitRepo(): { path: string; baseSha: string } {
   git("init", "-q");
   git("config", "user.email", "test@localhost");
   git("config", "user.name", "Test");
+  // Pinned so a restore writes back the LF bytes the tests compare against, whatever the
+  // runner's `core.autocrlf` says (it is true on Windows).
+  git("config", "core.autocrlf", "false");
   writeFileSync(join(path, "README.md"), "base\n");
   git("add", "-A");
   git("commit", "-q", "-m", "base");

@@ -53,6 +53,9 @@ function mkRepo(name: string): { repo: string; first: string; second: string } {
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
   git(repo, "config", "user.email", "t@test");
   git(repo, "config", "user.name", "t");
+  // Provisioned worktrees share this config, so they check out the LF bytes compared
+  // below even where the runner sets `core.autocrlf` (Windows).
+  git(repo, "config", "core.autocrlf", "false");
   writeFileSync(join(repo, "file.txt"), "first\n");
   // In the BASE commit, because the rules that decide what a clean spares are the ones the
   // tree is being reset to - a `.gitignore` added later is not in force at that moment.

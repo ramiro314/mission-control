@@ -55,6 +55,23 @@ test("capture records honest observed evidence and a ref that resolves to the sn
   assert.equal(await gitSnapshotAdapter.verify(captured.locator, { repoPath: path }), true);
 });
 
+test("the fingerprint is the same whatever the operator's core.autocrlf says", async () => {
+  // A comparison across members trusts the fingerprint alone. A Windows member under
+  // `core.autocrlf=true` holds CRLF on disk where a Linux member holds LF, and git stores both
+  // as the same LF blobs - so equal digests here prove the fingerprint is git objects, not the
+  // working-tree bytes, which differ between the two iterations.
+  const fingerprints = [];
+  for (const [autocrlf, eol] of [["false", "\n"], ["true", "\r\n"]] as const) {
+    const { path, baseSha } = gitRepo();
+    git(path, "config", "core.autocrlf", autocrlf);
+    writeFileSync(join(path, "README.md"), `base${eol}more${eol}`);
+    writeFileSync(join(path, "new.txt"), `added${eol}`);
+    const captured = await gitSnapshotAdapter.capture({ runId: UUID_A, artifactId: UUID_B, worktreePath: path, baseSha });
+    fingerprints.push(captured.fingerprint);
+  }
+  assert.equal(fingerprints[1], fingerprints[0]);
+});
+
 test("verify fails once the private ref no longer resolves to its commit", async () => {
   const { path, baseSha } = gitRepo();
   writeFileSync(join(path, "x.txt"), "x\n");
