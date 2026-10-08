@@ -114,6 +114,7 @@ on:
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a fresh push doesn't queue behind stale work.
+# `cancel-closed-pr-ci.yml` joins this group when a pull request closes, so keep the two in step.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
