@@ -243,7 +243,8 @@ import {
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
-import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
+import { serverTour, tourCreateFor, tourRecipeFor, type TourOperation } from "./tours.ts";
+import { hostPlatform } from "./platform/host.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
@@ -8041,7 +8042,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // The tour route family. Not a second dispatch API: the body chooses only a repository,
   // while `SERVER_TOURS` fixes the prompt, agent, model, kind, Workflow posture, and MCP tool
-  // list of every task a tour may create. An unknown tour, or an operation a tour does not
+  // list of every task a tour may create. `tourCreateFor` only swaps a harness this host
+  // refuses for one it runs. An unknown tour, or an operation a tour does not
   // declare, is refused here rather than falling through to general dispatch.
   async function runTourRecipe(c: Context, operation: TourOperation) {
     const tour = serverTour(c.req.param("tourId"));
@@ -8056,7 +8058,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
 
     const task = tasks.create(
-      { ...recipe.create, repoRoot: resolved.repoRoot, extraRepoRoots: [] },
+      { ...tourCreateFor(recipe, hostPlatform()), repoRoot: resolved.repoRoot, extraRepoRoots: [] },
       undefined,
       MANUAL_DISPATCH_TASK_CREATE,
     );

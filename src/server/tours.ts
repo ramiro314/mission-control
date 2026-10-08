@@ -3,7 +3,8 @@ import {
   SEE_WORK_TOUR_PREVIEW_INTENT,
   WORKFLOWS_TOUR_PREVIEW_INTENT,
 } from "@shared/protocol.ts";
-import type { Task } from "@shared/types.ts";
+import { harnessUnsupportedWhy } from "@shared/harness-capabilities.ts";
+import { AGENT_TYPES, type Task } from "@shared/types.ts";
 import type { MissionMcpRequirement } from "./mission-mcp.ts";
 import type { CreateTaskInput } from "./tasks.ts";
 
@@ -130,6 +131,27 @@ export const SERVER_TOURS: Readonly<Record<string, ServerTourDefinition>> = {
 
 export function serverTour(tourId: string | undefined): ServerTourDefinition | null {
   return tourId && Object.hasOwn(SERVER_TOURS, tourId) ? SERVER_TOURS[tourId]! : null;
+}
+
+/**
+ * The task a recipe creates on this host.
+ *
+ * A recipe names its preferred harness, and a model that belongs to it. On a host that refuses
+ * that harness (`unsupportedHosts`), the tour launches on the first harness in `AGENT_TYPES`
+ * the host runs instead, on that harness's default model, so the tour still has a live session
+ * to show. When the host runs none, the recipe is returned unchanged and the usual refusal says
+ * why the tour cannot start.
+ */
+export function tourCreateFor(
+  recipe: TourTaskRecipe,
+  platform: string,
+): TourTaskRecipe["create"] {
+  const preferred = recipe.create.agent;
+  if (!preferred || !harnessUnsupportedWhy(preferred, platform)) return recipe.create;
+  const agent = AGENT_TYPES.find((candidate) => !harnessUnsupportedWhy(candidate, platform));
+  if (!agent) return recipe.create;
+  const { model: _model, ...rest } = recipe.create;
+  return { ...rest, agent };
 }
 
 /** The recipe a tour's task matches, or null when the task does not belong to that tour. */

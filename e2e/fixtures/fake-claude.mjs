@@ -99,6 +99,10 @@ let turnModel = MODEL;
 let effort = argvValue("--effort") ?? "medium";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = Number(process.env.MC_E2E_CLAUDE_HELD_TURN_MS ?? 5_000);
+// The See the work tour's demo asks a real model to pause before opening the review channel.
+// Matched by inclusion and held like `HELD_TURN`, as `fake-codex.mjs` does, so the demo shows a
+// genuine Working state when a host that refuses Codex runs the tour on Claude.
+const SEE_WORK_TOUR_MARKER = "[Mission Control See the work tour demo]";
 // This review scenario has to submit two queued messages before the held turn drains. A
 // separate longer window keeps that setup deterministic under the full gate's four workers
 // without adding ten seconds to every spec that uses the ordinary held turn.
@@ -1393,7 +1397,7 @@ rl.on("line", (line) => {
       openTurn = turnState;
       return;
     }
-    const heldTurnMs = prompt === HELD_TURN
+    const heldTurnMs = prompt === HELD_TURN || prompt.includes(SEE_WORK_TOUR_MARKER)
       ? HELD_TURN_MS
       : prompt === REVIEW_HELD_TURN
       ? REVIEW_HELD_TURN_MS
