@@ -302,6 +302,15 @@ function changedSections(current, next) {
 export function planWrites(desired, actual) {
   const writes = [];
   const warnings = [];
+  // A renamed heading derives a new slug, which would silently create a second issue and leave
+  // the old one orphaned, so stop before any write and let a person relabel it.
+  const slugs = new Set(desired.issues.map((i) => `fork:${i.slug}`));
+  const orphans = actual.issues.flatMap((i) => i.labels.filter((l) => l.startsWith("fork:") && !slugs.has(l)).map((l) => `#${i.number} (${l})`));
+  if (orphans.length) {
+    throw new Error(
+      `no ledger entry derives ${orphans.join(", ")}; if a heading was renamed, relabel the issue with the entry's new fork:<slug> (or restore the heading) and rerun`,
+    );
+  }
   const existing = new Set(actual.labels);
   for (const label of desired.labels) if (!existing.has(label.name)) writes.push({ op: "create-label", ...label });
 

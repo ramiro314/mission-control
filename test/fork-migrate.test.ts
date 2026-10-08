@@ -357,6 +357,27 @@ test("a feature label on two issues stops the plan", () => {
   assert.throws(() => planWrites(desired, actual), /fork:shape-tasks-grill-and-tickets is on more than one issue: #300, #999/);
 });
 
+test("a renamed heading stops the plan instead of creating a second issue beside the orphaned one", () => {
+  const before = desiredOf(LEDGER);
+  const renamed = desiredOf(LEDGER.replaceAll("Task-source workflow default", "Source workflow default"));
+  assert.throws(
+    () => planWrites(renamed, migrated(before)),
+    /no ledger entry derives #301 \(fork:task-source-workflow-default\); if a heading was renamed, relabel the issue/,
+  );
+
+  // Relabelled by hand, the rerun only reconciles the title and adds the new label.
+  const actual = migrated(before);
+  const issue = defined(actual.issues[1], "the task-source issue");
+  issue.labels = ["fork-feature", "fork:source-workflow-default"];
+  actual.labels.push("fork:source-workflow-default");
+  const { writes } = planWrites(renamed, actual);
+  assert.deepEqual(
+    writes.map((w) => w.op),
+    ["edit-issue"],
+  );
+  assert.equal(only(writes[0], "edit-issue").title, "Fork feature: Source workflow default");
+});
+
 test("a ledger entry with text outside its table and titled paragraphs is refused", () => {
   assert.throws(() => parseLedger(LEDGER.replace("**Intent.** Swept", "Stray line.\n\n**Intent.** Swept")), /Task-source workflow default: text outside/);
 });
