@@ -10,7 +10,8 @@
 // keeps "/" alone. That keeps macOS byte-for-byte unchanged, including the case where "\" is
 // an ordinary filename character inside a POSIX path. The same spelling also decides case: a
 // win32 path compares case-insensitively, as NTFS does, so a shell's `c:\code` is inside an
-// allowlisted `C:\Code`; a POSIX path stays exact.
+// allowlisted `C:\Code`, and `C:/Code` names the same folder as `C:\Code`; a POSIX path stays
+// exact.
 
 /** Whether `p` is spelled as an absolute win32 path: `C:\`, `C:/`, or a `\\server` share. */
 function isWin32Spelled(p: string): boolean {
@@ -55,7 +56,10 @@ export function subpathWithin(inner: string, outer: string): string | null {
   const root = stripTrailingSeparator(outer);
   const separators = separatorsOf(root);
   const win32 = separators.length > 1;
-  const same = (a: string, b: string): boolean => (win32 ? a.toLowerCase() === b.toLowerCase() : a === b);
+  // A win32 path may mix its separators: git spells a toplevel `C:/code/mono` beside a native
+  // `C:\code\mono`, and both name the same directory.
+  const fold = (p: string): string => p.toLowerCase().replaceAll("\\", "/");
+  const same = (a: string, b: string): boolean => (win32 ? fold(a) === fold(b) : a === b);
   if (same(dir, root)) return "";
   // Compared head-then-boundary rather than through one folded `startsWith`, so the slice
   // below lands on `dir`'s own boundary even where folding changes a string's length.

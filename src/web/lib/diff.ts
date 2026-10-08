@@ -2,6 +2,8 @@
 // unit-tested directly. Turns a (possibly multi-file) `git diff` patch into
 // per-file hunks with old/new line numbers and +/- classification.
 
+import { stripTrailingSeparator, subpathWithin } from "@shared/native-path.ts";
+
 export type DiffLineType = "add" | "del" | "ctx" | "hunk";
 
 export interface DiffLine {
@@ -29,11 +31,6 @@ export interface DiffFileTarget {
   path: string | null;
   /** Why this file cannot be opened in the Files tab, or null when it can. */
   reason: string | null;
-}
-
-/** Drop any trailing slashes so two directory paths concatenate predictably. */
-function trimTrailingSlash(path: string): string {
-  return path.replace(/\/+$/, "");
 }
 
 /**
@@ -94,16 +91,17 @@ export function diffFileOpenTarget(
     return { path: null, reason: "This file's path cannot be resolved in the checkout." };
   }
 
-  const root = trimTrailingSlash(repoRoot);
-  const base = trimTrailingSlash(cwd);
-  const absolute = `${root}/${file.path}`;
-  if (base !== root && !absolute.startsWith(`${base}/`)) {
+  // Git spells its toplevel with "/" on every host (`C:/work/repo` on win32), while the
+  // session's cwd is native (`C:\work\repo`), so the two meet through the shared
+  // component-boundary rule rather than a string prefix.
+  const path = subpathWithin(`${stripTrailingSeparator(repoRoot)}/${file.path}`, cwd);
+  if (!path) {
     return {
       path: null,
       reason: "This file is outside the session's working directory, so the Files tab cannot open it.",
     };
   }
-  return { path: absolute.slice(base.length + 1), reason: null };
+  return { path, reason: null };
 }
 
 /** Strip a leading a/ or b/ prefix (git's default) and surrounding quotes. */

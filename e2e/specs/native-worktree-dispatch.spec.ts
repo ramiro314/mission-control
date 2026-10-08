@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -132,7 +132,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   const firstSessionRow = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title });
   await firstSessionRow.click();
   const firstDetail = dashboard.locator(".console-detail");
-  await expect(firstDetail.locator(".detail-sub dd.mono").first()).toContainText("worktree-pools/");
+  await expect(firstDetail.locator(".detail-sub dd.mono").first()).toContainText(`worktree-pools${sep}`);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
     await firstDetail.locator(".detail-sub dd.mono").first().hover();
