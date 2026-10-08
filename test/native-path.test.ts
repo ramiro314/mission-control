@@ -45,6 +45,14 @@ test("a win32 path compares case-insensitively, as NTFS does, and keeps its own 
   assert.equal(checkCommandSubpath("C:\\code\\mono", "c:\\code\\mono\\Packages\\Web"), "Packages/Web");
 });
 
+test("a win32 path spelled with either separator is the same path", () => {
+  // Git reports a toplevel as `C:/...` beside a native `C:\...` cwd.
+  assert.equal(subpathWithin("C:/code/mono/web/app.ts", "C:\\code\\mono"), "web/app.ts");
+  assert.equal(subpathWithin("C:\\code\\mono\\web", "c:/Code/Mono"), "web");
+  assert.equal(subpathWithin("C:/code/mono", "C:\\code\\mono\\"), "");
+  assert.equal(subpathWithin("C:/code/mono-backup", "C:\\code\\mono"), null);
+});
+
 test("a POSIX path stays case-sensitive", () => {
   assert.equal(pathWithin("/Repo/web", "/repo"), false);
   assert.equal(pathWithin("/repo", "/Repo"), false);

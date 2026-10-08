@@ -211,7 +211,7 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   await expect(card).toContainText("Write a Haiku About Flexbox");
   // Running on the SDK runtime, headless, with a worktree of its own.
   await expect(card).toContainText("Agent SDK");
-  await expect(card).toContainText("worktree-pools/");
+  await expect(card).toContainText(`worktree-pools${sep}`);
   // The driver accepts turn one before it reports the native conversation id. Once that
   // binding arrives, the same accepted prompt must become the card's Goal. Scoped to the
   // Goal line because both the title and the activity ticker also derive from this text.

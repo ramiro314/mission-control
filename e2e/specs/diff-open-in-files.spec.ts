@@ -7,6 +7,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * The Diff tab's route into the Files tab.
@@ -199,6 +200,10 @@ test("a changed file whose name ends in a line-number suffix opens as itself", a
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(
+    test,
+    "NTFS cannot name a file `notes:12`: the colon addresses an alternate data stream of `notes`, so the file this pins cannot exist on win32",
+  );
   await dispatch(dashboard, daemon);
   const cwd = await sessionCwd(daemon);
   writeFileSync(join(cwd, "notes:12"), "colon named\n");

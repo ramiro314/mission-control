@@ -831,8 +831,10 @@ test("backlog and dispatch submissions reset the guided workflow", async ({
   const dialog = await openGuidedAtKind(dashboard);
   const repo = dialog.getByPlaceholder("search repos or type a path…");
 
+  // Claude Code, not Codex: a submit is refused for a harness the host does not run, and win32
+  // refuses Codex. The scout kind is what the reset below has to undo.
   await dashboard.keyboard.press("t");
-  await dashboard.keyboard.press("x");
+  await dashboard.keyboard.press("c");
   await dashboard.keyboard.press("n");
   await repo.fill(daemon.repo);
   await taskBox(dialog).fill("shelve the guided draft");

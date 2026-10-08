@@ -170,6 +170,20 @@ async function conversationShare(page: Page): Promise<number> {
   });
 }
 
+/**
+ * Wait until the daemon holds the band's hidden cells. A checkbox flips on the optimistic
+ * write, before its PUT lands, and the full document load that follows can abort that PUT on a
+ * slow runner - which reopened the console with the preference never saved.
+ */
+async function bandHidden(daemon: DaemonHandle, hidden: string[]): Promise<void> {
+  await expect
+    .poll(async () => {
+      const view = await api<{ config: { hiddenDisplayItems: string[] } }>(daemon, "/api/ui/config");
+      return ["detailPath", "detailBranch"].filter((id) => view.config.hiddenDisplayItems.includes(id));
+    }, { message: "the daemon saved the conversation header preference" })
+    .toEqual(hidden);
+}
+
 /** The two conversation-header checkboxes, on the Display settings page. */
 function bandBoxes(page: Page): { path: Locator; branch: Locator } {
   return {
@@ -226,6 +240,7 @@ test("both band cells ship visible, switch off together, and give the conversati
   await path.uncheck();
   await branch.uncheck();
   await expect(cardBranch).toBeChecked();
+  await bandHidden(daemon, ["detailPath", "detailBranch"]);
 
   // (2) Back to the console. The band is ABSENT, not emptied - a count, which an empty `<dl>`
   // with its padding and border would fail.
@@ -258,6 +273,7 @@ test("both band cells ship visible, switch off together, and give the conversati
   await expect(restored.branch).not.toBeChecked();
   await restored.path.check();
   await restored.branch.check();
+  await bandHidden(daemon, []);
 
   const back = await openConsoleDetail(
     dashboard,
@@ -284,6 +300,7 @@ test("hiding one cell leaves the band standing for the other", async ({ dashboar
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   await bandBoxes(dashboard).path.uncheck();
+  await bandHidden(daemon, ["detailPath"]);
 
   const detail = await openConsoleDetail(dashboard, daemon, /Keep the Branch When the Path Goes/i);
   const band = detail.locator(".detail-sub");

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -9,6 +9,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 import { writeScoutBundle } from "../../test/helpers/archive-fixture.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 // This file seeds one older portable bundle after its isolated daemon has started. Keep the
 // real reconciler quick enough for that compatibility proof instead of reaching into its DB.
@@ -282,7 +284,7 @@ test("a scout without a report warns first, then closes only after confirmation"
   }
 
   // Until the second click, the task and checkout remain live so Cancel is still a real exit.
-  await expect(card).toContainText("worktree-pools/");
+  await expect(card).toContainText(`worktree-pools${sep}`);
   expect(await archives(daemon), "the warning does not invent an archive").toHaveLength(0);
 
   // Leaving the decision clears its authority. Reopening must start from the ordinary
@@ -336,6 +338,7 @@ test("completing a submitted scout closes it, and the archive survives its task"
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   await disableSkills(daemon);
   await dispatchScout(dashboard, daemon, SCOUT_TASK);
 
@@ -380,6 +383,7 @@ test("reclaiming an unarchived scout keeps the page it had already written", asy
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   await disableSkills(daemon);
   await dispatchScout(dashboard, daemon, `${NO_SUBMIT} ${SCOUT_TASK}`);
 
@@ -789,6 +793,7 @@ test("a finished scout keeps its concise title and ordered human prompt context"
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   await disableSkills(daemon);
 
   // One bundle exactly as an older build wrote it: no kind field and no prompt trail. The
