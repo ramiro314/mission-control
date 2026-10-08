@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -6,6 +7,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
 
 /**
  * The conversation header stays on ONE row, and the review button is on it at every width.
@@ -174,11 +176,11 @@ async function sessionId(daemon: DaemonHandle): Promise<string> {
  * nobody touches it. Same recipe as `workflow-bind-chip-returns.spec.ts`, and no model tokens -
  * the verdict is chosen by a marker the fake agent reads out of the persona's guidance.
  *
- * One chip rather than the six the Inspector's report names, and that is deliberate: what a
- * browser adds here is that the rung fires on a chip the CSS does not mention. That it fires on
- * ALL of them is a property of the rule's shape, which is pinned in
- * `test/detail-head-ladder.test.ts` instead - an allowlist cannot miss a chip, and a browser
- * test that enumerated six would have said nothing about the seventh.
+ * Two chips rather than the six the Inspector's report names, and not more: what a browser adds
+ * here is that the rung fires on chips the CSS does not mention. That it fires on ALL of them is
+ * a property of the rule's shape, which is pinned in `test/detail-head-ladder.test.ts` instead -
+ * an allowlist cannot miss a chip, and a browser test that enumerated six would have said
+ * nothing about the seventh. The second chip is `seedPullRequest`'s, and it is there for width.
  */
 async function seedWorkflowChip(daemon: DaemonHandle, session: string): Promise<void> {
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
@@ -226,6 +228,78 @@ async function seedWorkflowChip(daemon: DaemonHandle, session: string): Promise<
 }
 
 /**
+ * Put a pull request chip on the header beside the workflow chip, so the row carries a
+ * situational load rung 6 cannot fit at the narrowest pane on any font stack.
+ *
+ * One workflow chip was not enough everywhere. Its label is status text (`Review changes`), so
+ * its width is whatever the font makes of two words, and on the Windows runner the row at a
+ * 400px window fit at rung 6 with that chip still drawn (101px of chip, run 37821364466): the
+ * header never wrapped, and the rung-7 claim below had nothing to prove. That row had at most
+ * 17px to spare, and a second real chip costs it about 85px (76px of chip on macOS, plus the
+ * row's gap), so no font stack close to those two can fit it at rung 6. Lengthening the
+ * spec's own text instead would have been tuned to one font.
+ *
+ * Adopted the way `pr-merge-conflicts.spec.ts` adopts one: the session cuts a feature branch,
+ * the fake `gh` reports a pull request for its checkout, and the `prCreated` hook a harness
+ * fires on `gh pr create` hands it to the poller. An adopted pull request also brings the
+ * Inspector's queued mark, a third chip the rung sheds; nothing here depends on it.
+ */
+async function seedPullRequest(daemon: DaemonHandle): Promise<void> {
+  interface Row {
+    id: string;
+    agent: string;
+    cwd: string | null;
+    state: string;
+    agentSessionId: string | null;
+    prUrl: string | null;
+  }
+  const url = "https://github.com/acme/mission-e2e/pull/18342";
+  let session: Row | undefined;
+  await expect
+    .poll(
+      async () => {
+        session = (await api<Row[]>(daemon, "/api/sessions")).find((s) => s.state !== "exited");
+        return session?.cwd ?? "";
+      },
+      { message: "the dispatched session should have a checkout", timeout: 60_000 },
+    )
+    .not.toBe("");
+  const cwd = session!.cwd!;
+  // The branch poller only asks `gh` about a session on a feature branch.
+  execFileSync("git", ["-C", cwd, "switch", "-q", "-c", "e2e/header-chip"]);
+  writeGhPullRequests(daemon.home, [{
+    cwd,
+    url,
+    number: 18342,
+    state: "OPEN",
+    createdAt: new Date().toISOString(),
+    mergedAt: null,
+    headRefOid: execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    mergeable: "MERGEABLE",
+    baseRefName: "main",
+  }]);
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const hook = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session!.agent,
+      sessionId: session!.agentSessionId ?? session!.id,
+      cwd,
+      prCreated: true,
+      prUrl: url,
+    }),
+  });
+  expect(hook.ok, `the Stop hook answered ${hook.status}`).toBe(true);
+  await expect
+    .poll(
+      async () => (await api<Row[]>(daemon, "/api/sessions")).find((s) => s.id === session!.id)?.prUrl,
+      { message: `the PR poller should adopt the pull request:\n${daemon.readLog()}`, timeout: 30_000 },
+    )
+    .toBe(url);
+}
+
+/**
  * The pieces of the header this spec reads, by the class the ladder acts on.
  *
  * Read as WIDTHS rather than with `toBeVisible`, because a shed word keeps a 1x1
@@ -236,6 +310,7 @@ async function seedWorkflowChip(daemon: DaemonHandle, session: string): Promise<
 const PARTS = {
   review: ".badge-btn",
   chip: ".workflow-chip",
+  pr: ".pr-chip",
   keycap: ".badge-btn .kb-hint",
   arrow: ".badge-go",
   name: ".detail-title h2",
@@ -534,67 +609,96 @@ test("the review button survives every width, and the readouts go before it", as
   expect(drawn(back, "model"), "the model pill never came back").toBe(true);
 });
 
-test("a header carrying a situational chip still fits the narrowest supported pane", async ({
-  dashboard,
-  daemon,
-}) => {
-  // GitHub Inspector on #890, round 1: rungs 1 to 6 shed what the header ALWAYS draws, and a
-  // fixed set cannot answer a row whose width moves with the session. A conversation carrying
-  // the conditional chips - a pull request, an Inspector verdict, a workflow run per repository,
-  // an ensemble, a pipeline link - spent every rung and wrapped anyway, which is this change's
-  // own defect arriving through a different door. Rung 7 is the answer, and this is its proof at
-  // a real width.
-  const head = await asking(dashboard, daemon);
-  await seedWorkflowChip(daemon, await sessionId(daemon));
+test.describe("a header carrying situational chips", () => {
+  // The branch poller ships at 20s, which would spend the test's budget waiting on the pull
+  // request `seedPullRequest` puts on the row. Scoped to this test so the other three keep the
+  // shipped cadence.
+  test.use({ daemonEnv: { MISSION_PR_POLL_MS: "400" } });
 
-  // Present first, and DRAWN rather than merely in the markup, so the sheds below are shedding
-  // something. An open run also withdraws the bind offer, so this chip is what replaces it.
-  await expect(head.locator(".workflow-chip")).toBeVisible({ timeout: 30_000 });
-  await dashboard.setViewportSize({ width: 1560, height: 900 });
-  const wide = await readHead(dashboard);
-  expect(wide.rows, "the wide header wrapped with a chip on it").toBe(1);
-  expect(drawn(wide, "chip"), "precondition: the situational chip is on the wide header")
-    .toBe(true);
-
-  // The same sweep the invariants use, with a chip on the row this time.
-  const samples: (Head & { window: number })[] = [];
-  for (let window = 1900; window >= 400; window -= 20) {
-    await dashboard.setViewportSize({ width: window, height: 900 });
-    samples.push({ window, ...(await readHead(dashboard)) });
-  }
-  const spent = (state: Head): number => state.rung.split(" ").filter(Boolean).length;
-  const where = (state: Head & { window: number }): string => `${state.window}px ("${state.rung}")`;
-
-  // The finding itself: no width leaves this header stacked. Not "stacked with rungs in hand" -
-  // stacked at all. That is the stronger form of the first sweep's claim 1, and it is only
-  // available because past the last rung the row's requirement stops depending on the chips.
-  expect(
-    samples.filter((state) => state.rows === 2).map(where),
-    "a header carrying a situational chip wrapped at some width",
-  ).toEqual([]);
-  expect(
-    samples.filter((state) => !drawn(state, "review")).map(where),
-    "the review button was not drawn",
-  ).toEqual([]);
-
-  // And the chip is what paid for the row, at the last rung and not before: a chip shed early
-  // would be a header giving up a fact it had the room to draw.
-  const shed = samples.filter((state) => !drawn(state, "chip"));
-  expect(shed.length, "the situational chip was never shed, so no width needed rung 7")
-    .toBeGreaterThan(0);
-  for (const state of shed) {
-    expect(spent(state), `${where(state)} shed the situational chip before the last rung`).toBe(7);
-  }
-
-  const narrowest = samples[samples.length - 1]!;
-  expect(spent(narrowest), "the narrowest header did not reach the last rung").toBe(7);
-  await shot(
+  test("a header carrying situational chips still fits the narrowest supported pane", async ({
     dashboard,
-    head,
-    "header-chip-narrowest",
-    `a ${narrowest.container}px header carrying a workflow chip, at rung "${narrowest.rung}": ` +
-      `one row, the chip shed, the review button still drawn`,
-  );
+    daemon,
+  }) => {
+    // GitHub Inspector on #890, round 1: rungs 1 to 6 shed what the header ALWAYS draws, and a
+    // fixed set cannot answer a row whose width moves with the session. A conversation carrying
+    // the conditional chips - a pull request, an Inspector verdict, a workflow run per
+    // repository, an ensemble, a pipeline link - spent every rung and wrapped anyway, which is
+    // this change's own defect arriving through a different door. Rung 7 is the answer, and this
+    // is its proof at a real width.
+    const head = await asking(dashboard, daemon);
+    await seedPullRequest(daemon);
+    await seedWorkflowChip(daemon, await sessionId(daemon));
+
+    // Present first, and DRAWN rather than merely in the markup, so the sheds below are shedding
+    // something. An open run also withdraws the bind offer, so this chip is what replaces it.
+    await expect(head.locator(".workflow-chip")).toBeVisible({ timeout: 30_000 });
+    await expect(head.locator(".pr-chip")).toBeVisible({ timeout: 30_000 });
+    await dashboard.setViewportSize({ width: 1560, height: 900 });
+    const wide = await readHead(dashboard);
+    expect(wide.rows, "the wide header wrapped with its chips on it").toBe(1);
+    for (const part of ["chip", "pr"] as const) {
+      expect(drawn(wide, part), `precondition: \`${PARTS[part]}\` is on the wide header`).toBe(true);
+    }
+    await shot(
+      dashboard,
+      head,
+      "header-chips-1560",
+      `the 1560px header carries a ${wide.width.chip}px workflow chip and a ${wide.width.pr}px ` +
+        `pull request chip on ${wide.rows} row(s)`,
+    );
+
+    // The same sweep the invariants use, with the chips on the row this time.
+    const samples: (Head & { window: number })[] = [];
+    for (let window = 1900; window >= 400; window -= 20) {
+      await dashboard.setViewportSize({ width: window, height: 900 });
+      samples.push({ window, ...(await readHead(dashboard)) });
+    }
+    const spent = (state: Head): number => state.rung.split(" ").filter(Boolean).length;
+    const where = (state: Head & { window: number }): string =>
+      `${state.window}px ("${state.rung}")`;
+    // Every sample in one line each, so a failure on a runner whose fonts differ from this
+    // machine's says where the rungs fired there without a trace to unpack.
+    const table = samples
+      .map((s) => `${where(s)} rows=${s.rows} row=${s.container} chip=${s.width.chip} pr=${s.width.pr}`)
+      .join("\n");
+
+    // The finding itself: no width leaves this header stacked. Not "stacked with rungs in hand" -
+    // stacked at all. That is the stronger form of the first sweep's claim 1, and it is only
+    // available because past the last rung the row's requirement stops depending on the chips.
+    expect(
+      samples.filter((state) => state.rows === 2).map(where),
+      "a header carrying situational chips wrapped at some width",
+    ).toEqual([]);
+    expect(
+      samples.filter((state) => !drawn(state, "review")).map(where),
+      "the review button was not drawn",
+    ).toEqual([]);
+
+    // And the chips are what paid for the row, at the last rung and not before: a chip shed
+    // early would be a header giving up a fact it had the room to draw.
+    for (const part of ["chip", "pr"] as const) {
+      const shed = samples.filter((state) => !drawn(state, part));
+      expect(shed.length, `\`${PARTS[part]}\` was never shed, so no width needed rung 7:\n${table}`)
+        .toBeGreaterThan(0);
+      for (const state of shed) {
+        expect(spent(state), `${where(state)} shed \`${PARTS[part]}\` before the last rung`).toBe(7);
+      }
+    }
+
+    const narrowest = samples[samples.length - 1]!;
+    expect(spent(narrowest), `the narrowest header did not reach the last rung:\n${table}`).toBe(7);
+    // The narrowest window that still fit at rung 6: how far above the floor this font stack
+    // needed rung 7, which is the margin this load has over the font's slack.
+    const lastFit = samples.findLast((state) => spent(state) < 7)!;
+    await shot(
+      dashboard,
+      head,
+      "header-chip-narrowest",
+      `a ${narrowest.container}px header carrying a workflow chip and a pull request, at rung ` +
+        `"${narrowest.rung}": one row, both chips shed, the review button still drawn; the ` +
+        `narrowest window that fit without rung 7 was ${lastFit.window}px`,
+    );
+  });
 });
 
 test("a collapsed control is still the control it was, and still names itself", async ({

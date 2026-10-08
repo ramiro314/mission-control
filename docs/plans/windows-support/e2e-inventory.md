@@ -188,6 +188,17 @@ starvation signature. These own the fast assertion failures:
   passed on runs 37745155079 and 37758180479, so it is timing, not starvation. The widget now
   updates the button in place, and a new spec changes a focused marker's state.
 
+- `console-header-one-row`: "a header carrying a situational chip still fits the narrowest
+  supported pane" failed on every Windows run (37736134634, 37807097380, 37821364466) with "the
+  situational chip was never shed, so no width needed rung 7". The product is right: the
+  header stayed on one row at every width. Run 37821364466's trace shows that at a 400px window
+  the 356px row fit at rung 6 with the 101px workflow chip still drawn, with at most 17px to
+  spare, so the spec had nothing to prove there. The test now also adopts a pull request
+  through the fake `gh`, so the row carries a second real chip, 76px on macOS. On macOS rung 7
+  then fires at every window from 540px down and both chips go only at rung 7. The order and
+  never-wraps assertions are unchanged, and the failure message now lists every sample. That
+  makes the next font difference readable without unpacking a trace.
+
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
 to 05e056ac.
