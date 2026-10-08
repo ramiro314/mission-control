@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <node_api.h>
+#include <uv.h>
 
 #include <new>
 #include <string>
@@ -16,6 +17,10 @@
 // state_lock.cc, and `acquire`/`release` keep its handle contract: one exclusive,
 // non-blocking lock per state home, held by a tagged handle that releases on `release`, on
 // garbage collection, or when the process dies, with the same error codes.
+//
+// It also exports `openedPath`, which only win32 needs: workflow evidence proves an opened
+// file is inside its checkout from the descriptor itself, and darwin (O_NOFOLLOW_ANY) and
+// linux (/proc/self/fd) already have that without an addon.
 
 namespace {
 
@@ -264,6 +269,82 @@ napi_value UnsupportedPublication(napi_env env, napi_callback_info) {
   return ThrowSystemError(env, "ENOTSUP", "symlink publication is not supported on win32");
 }
 
+bool WideToUtf8(const std::wstring& input, std::string* output) {
+  if (input.empty()) return false;
+  const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input.data(),
+                                         static_cast<int>(input.size()), nullptr, 0, nullptr,
+                                         nullptr);
+  if (length <= 0) return false;
+  output->resize(static_cast<size_t>(length));
+  return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input.data(),
+                             static_cast<int>(input.size()), &(*output)[0], length, nullptr,
+                             nullptr) == length;
+}
+
+// The final path of the file an open descriptor refers to, read from the descriptor's own
+// handle, so a directory renamed or relinked after the open cannot change the answer. It is
+// spelled the way libuv's realpath spells a path (the same GetFinalPathNameByHandleW flags and
+// prefix handling), so it compares byte for byte with `fs.realpathSync.native`.
+//
+// `uv_get_osfhandle`, never `_get_osfhandle`: the descriptor lives in node's C runtime, and
+// this addon links its own, whose descriptor table is empty.
+napi_value OpenedPath(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 1) {
+    return ThrowTypeError(env, "openedPath requires one file descriptor");
+  }
+  napi_valuetype type;
+  int32_t fd = -1;
+  if (napi_typeof(env, argv[0], &type) != napi_ok || type != napi_number ||
+      napi_get_value_int32(env, argv[0], &fd) != napi_ok || fd < 0) {
+    return ThrowTypeError(env, "openedPath requires a non-negative file descriptor");
+  }
+  const HANDLE file = uv_get_osfhandle(fd);
+  if (file == INVALID_HANDLE_VALUE) {
+    return ThrowSystemError(env, "EBADF", "openedPath descriptor is not open");
+  }
+
+  std::wstring path(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD capacity = static_cast<DWORD>(path.size());
+    const DWORD length =
+        GetFinalPathNameByHandleW(file, &path[0], capacity, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (length == 0) {
+      return ThrowSystemError(
+          env,
+          "EOPENEDPATH",
+          std::string("could not read the descriptor's final path: ") +
+              SystemMessage(GetLastError()));
+    }
+    // Too small a buffer returns the size it needs, terminator included; success returns the
+    // length without it.
+    if (length < capacity) {
+      path.resize(length);
+      break;
+    }
+    path.resize(length);
+  }
+
+  const std::wstring unc_prefix = L"\\\\?\\UNC\\";
+  const std::wstring long_prefix = L"\\\\?\\";
+  if (path.compare(0, unc_prefix.size(), unc_prefix) == 0) {
+    path = L"\\\\" + path.substr(unc_prefix.size());
+  } else if (path.compare(0, long_prefix.size(), long_prefix) == 0) {
+    path = path.substr(long_prefix.size());
+  } else {
+    return ThrowSystemError(env, "EOPENEDPATH", "descriptor's final path has no volume prefix");
+  }
+
+  std::string utf8;
+  napi_value result;
+  if (!WideToUtf8(path, &utf8) ||
+      napi_create_string_utf8(env, utf8.data(), utf8.size(), &result) != napi_ok) {
+    return ThrowSystemError(env, "EOPENEDPATH", "could not encode the descriptor's final path");
+  }
+  return result;
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
@@ -273,8 +354,9 @@ NAPI_MODULE_INIT() {
       {"linkSymlinkNoReplace", nullptr, UnsupportedPublication, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"exchangePaths", nullptr, UnsupportedPublication, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renameNoReplace", nullptr, UnsupportedPublication, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"openedPath", nullptr, OpenedPath, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  if (napi_define_properties(env, exports, 5, properties) != napi_ok) {
+  if (napi_define_properties(env, exports, 6, properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native state lock addon");
     return nullptr;
   }

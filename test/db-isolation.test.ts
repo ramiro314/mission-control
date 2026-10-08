@@ -37,6 +37,21 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
+ * The environment that moves `os.tmpdir()` to `dir` on every platform.
+ *
+ * `os.tmpdir()` reads `TMPDIR` on macOS and Linux and `TEMP` then `TMP` on win32, where
+ * `TMPDIR` is ignored. A case that moves only `TMPDIR` leaves a win32 child on the runner's
+ * real temp dir, so the allowlist it means to narrow or launder never moves.
+ */
+function osTempEnv(dir: string): { TMPDIR: string; TEMP: string; TMP: string } {
+  return { TMPDIR: dir, TEMP: dir, TMP: dir };
+}
+
+/** The same move made from inside a child script, after the preload has run. */
+const moveTempTo = (dir: string): string =>
+  `Object.assign(process.env, ${JSON.stringify(osTempEnv(dir))});`;
+
+/**
  * Import the server graph the way a test file does, open the db, and report what happened.
  *
  * The report comes from INSIDE the child because a bootstrap dir does not survive the
@@ -371,7 +386,7 @@ test("moving HOME and TMPDIR after the preload cannot launder the operator's sta
 
   const res = runChild(
     `process.env.HOME = process.env.USERPROFILE = ${JSON.stringify(decoy)};
-     process.env.TMPDIR = ${JSON.stringify(jail)};
+     ${moveTempTo(jail)}
      process.env.MISSION_HOME = ${JSON.stringify(operator)};
      ${OPEN_AND_REPORT}`,
     osHomeEnv(jail),
@@ -422,7 +437,7 @@ test("a no-preload worker cannot move HOME to drop the real state dir from the d
        delete process.env.NODE_TEST_CONTEXT;
        process.execArgv = process.execArgv.filter((f) => !f.startsWith("--test-"));
        process.env.HOME = process.env.USERPROFILE = ${JSON.stringify(decoy)};
-       process.env.TMPDIR = ${JSON.stringify(join(userInfo().homedir, ".ai-harness"))};
+       ${moveTempTo(join(userInfo().homedir, ".ai-harness"))}
        process.env.MISSION_HOME = ${JSON.stringify(probe)};
        const { openDb } = await import(${JSON.stringify(dbUrl)});
        openDb();
@@ -467,7 +482,7 @@ test("a production state home configured inside the temp dir is still refused", 
 });
 
 test("an override outside the temp dir is refused even though it is explicit", () => {
-  // A throwaway `$TMPDIR` is what makes this honest: the refused path is a perfectly
+  // A throwaway temp dir is what makes this honest: the refused path is a perfectly
   // ordinary directory, not an operator-looking one, and it fails purely because it is
   // somewhere durable. That is the case that catches a fixture home pointed at a checkout,
   // a shared scratch dir, or anywhere else a test's leavings would outlive the run.
@@ -484,7 +499,7 @@ test("an override outside the temp dir is refused even though it is explicit", (
     ["a durable directory", join(home, "durable-state")],
     ["a sibling of the temp root", join(home, "elsewhere-tmp-sibling", "state")],
   ] as const) {
-    const res = runChild(OPEN_AND_REPORT, { TMPDIR: tmproot, MISSION_HOME: durable });
+    const res = runChild(OPEN_AND_REPORT, { ...osTempEnv(tmproot), MISSION_HOME: durable });
     assert.notEqual(res.status, 0, `${why} was opened`);
     assert.match(res.stderr, /not a disposable test state dir/, why);
     assert.equal(existsSync(durable), false, `${why} was created before the refusal`);
