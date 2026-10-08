@@ -50,6 +50,29 @@ discard; the managed-resume reconcile runs only where the terminal runtime does;
 carries a subscriber limit sized to its design. The spawn census on macOS for
 `dispatch-backdrop-dismiss.spec.ts` went from 3.00 to 2.25 Setup rounds per test.
 
+## Measured on Windows: run 37736134634
+
+PR #310's CI run on `3454f47fe`, all 14 Windows e2e shards, against run 37713823713.
+
+- **The targeted fixes work on a real host.** The 8 win32 daemon logs in failure bodies carry no
+  managed-resume "requires inspection" line and no `MaxListenersExceededWarning` (the baseline's
+  17 all carried both). `/api/harnesses/models` no longer stalls: on shard 3, p90 went from 87 s
+  to 5.2 s.
+- **The shard timeouts are not fixed.** 4 shards hit the 1800 s global timeout (4, 8, 13 and 14;
+  the baseline had 3, 4 and 14). Passes went from 699 to 665, `/api/health` timeouts stayed at
+  15, and dispatch-modal `toBeHidden` failures went from 65 to 63.
+- **One run per side is noisy.** Shards moved in both directions with no related change: shard 3
+  went from 1800 s to 646 s, shard 9 from 675 s to 1726 s.
+- **Where the timed-out shards spend their budget** is in tests that burn the full 120 s timeout.
+  On shard 8, `product-issue-reporting` takes 1,871 s: `/api/product-issues/preflight` takes 21
+  to 84 s because it runs four fake `gh` calls in sequence, each a .NET launcher plus `node.exe`
+  on win32, while the daemon answers in milliseconds. On shards 4 and 14, the `file-*` and
+  `workflow-run-*` specs dispatch a fake Claude session per test. 14 of the 15 `/api/health`
+  timeouts still have an empty daemon log: the process cannot reach its first line in 30 s on a
+  loaded runner.
+
+Ticket 69d2ed0c owns what is left.
+
 ## Reclassification of cause J and `foreman-settings-tabs`
 
 | Spec | Run 37713823713 | Owner |
