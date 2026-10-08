@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 /**
  * What is at stake: this is the one path where a Persona's review authority comes from a file
@@ -213,8 +214,12 @@ test("a path that cannot become a Persona is refused by name, and nothing is sto
  * Both are refused by name here, and neither can reach the read: without the `fstat` guard the
  * FIFO would come back "has no content to review with" and `/dev/zero` "is not a text document",
  * which is how this test would report the guard's absence.
+ *
+ * win32 has neither, so the directory case above is the descriptor check it runs there.
  */
-test("a FIFO and a character device are refused on the descriptor, not read", async () => {
+test("a FIFO and a character device are refused on the descriptor, not read", {
+  skip: skipOnWin32("FIFOs and /dev character devices do not exist on win32"),
+}, async () => {
   const { request } = fixture();
   const fifo = join(sources, "role.fifo");
   execFileSync("mkfifo", [fifo]);
