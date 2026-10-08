@@ -387,6 +387,7 @@ test.describe("Sitrep pagination", () => {
   });
 
   test("a reconnect snapshot follows the selected source's committed successor after a missed adoption", async ({ dashboard, daemon }) => {
+    skipSpecOnWin32(test, "the terminal runtime is unavailable on win32, so no terminal successor can be adopted");
     await observeTransferStream(dashboard);
     await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }) });
     await dashboard.reload();
