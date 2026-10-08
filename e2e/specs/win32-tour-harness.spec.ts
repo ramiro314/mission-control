@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -31,12 +32,32 @@ function step(page: Page, title: string): Locator {
 
 interface TourTask { title: string; agent: string; model: string | null; status: string; outcome: string | null }
 
+/** Stand in for the demo agent calling `request_input`, over the channel that tool uses. */
+async function raiseTourReview(daemon: DaemonHandle): Promise<void> {
+  let cwd: string | null = null;
+  await expect.poll(async () => {
+    const sessions = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Array<{ cwd: string | null; task?: { title: string } }>;
+    cwd = sessions.find((session) => session.task?.title === "Tour demo")?.cwd ?? null;
+    return cwd;
+  }, { timeout: 30_000 }).toBeTruthy();
+  const question = "Which review path should this demo take?";
+  const response = await fetch(`${daemon.baseURL}/mcp/reviews`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim() },
+    body: JSON.stringify({
+      env: {}, cwd, kind: "input", title: question, body: question,
+      decisions: [{ id: "q", question, options: [{ id: "o0", label: "Looks good" }, { id: "o1", label: "Show me later" }] }],
+    }),
+  });
+  expect(response.status, await response.clone().text()).toBe(200);
+}
+
 async function tourTask(daemon: DaemonHandle, title: string): Promise<TourTask | undefined> {
   const response = await fetch(`${daemon.baseURL}/api/tasks`);
   return ((await response.json()) as TourTask[]).find((task) => task.title === title);
 }
 
-test("See the work runs its conversation and demo on a harness the host supports", async ({ dashboard, daemon }) => {
+test("See the work walks its conversation and demo to completion on a harness the host supports", async ({ dashboard, daemon }) => {
   await dashboard.emulateMedia({ reducedMotion: "reduce" });
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   await dashboard.getByRole("button", { name: "Start See the work tour" }).click();
@@ -66,8 +87,27 @@ test("See the work runs its conversation and demo on a harness the host supports
   expect({ agent: demo?.agent, model: demo?.model }).toEqual({ agent: "claude", model: null });
   await shoot(dashboard, "see-work-working");
 
-  await working.getByRole("button", { name: "Exit tour" }).click();
-  await expect(working).toBeHidden({ timeout: 30_000 });
+  await expect(dashboard.getByRole("heading", { name: /^working$/i })).toBeVisible();
+
+  // The demo's live lifecycle on the substituted harness: a real review pause, Idle, Complete.
+  const review = raiseTourReview(daemon);
+  await working.getByRole("button", { name: "Next" }).click();
+  const needsYou = step(dashboard, "Needs You");
+  await expect(needsYou.getByRole("button", { name: "Open review" })).toBeEnabled({ timeout: 30_000 });
+  await review;
+  await needsYou.getByRole("button", { name: "Open review" }).click();
+  const reviewDialog = dashboard.getByRole("dialog", { name: "Review request" });
+  await reviewDialog.getByRole("radio", { name: /Looks good/ }).check();
+  await reviewDialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(reviewDialog).toBeHidden();
+
+  const idle = step(dashboard, "Idle");
+  await expect(idle).toBeVisible({ timeout: 30_000 });
+  await idle.getByRole("button", { name: "Show actions" }).click();
+  await step(dashboard, "Complete or run a retro").getByRole("button", { name: "Open Complete" }).click();
+  const complete = step(dashboard, "Complete the tour");
+  await complete.getByRole("button", { name: "Complete tour" }).click();
+  await expect(complete).toBeHidden({ timeout: 30_000 });
   await expect.poll(async () => {
     const tasks = await Promise.all(["Tour conversation", "Tour demo"].map((title) => tourTask(daemon, title)));
     return tasks.map((task) => task && { status: task.status, outcome: task.outcome });
@@ -77,7 +117,7 @@ test("See the work runs its conversation and demo on a harness the host supports
   ]);
 });
 
-test("Follow the review reaches the binding chip on its temporary conversation", async ({ dashboard, daemon }) => {
+test("Follow the review binds and walks the run from its temporary conversation", async ({ dashboard, daemon }) => {
   await dashboard.emulateMedia({ reducedMotion: "reduce" });
   await dashboard.setViewportSize({ width: 1440, height: 900 });
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
@@ -92,7 +132,17 @@ test("Follow the review reaches the binding chip on its temporary conversation",
   await expect.poll(async () => (await tourTask(daemon, "Tour conversation"))?.agent).toBe("claude");
   await shoot(dashboard, "workflows-binding-chip");
 
-  await binding.getByRole("button", { name: "Exit tour" }).click();
-  await expect(binding).toBeHidden({ timeout: 30_000 });
+  await binding.getByRole("button", { name: "Open Bind workflow" }).click();
+  const bindDialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
+  await expect(bindDialog).toBeVisible();
+  await expect(bindDialog.getByLabel("Session")).toBeDisabled();
+  await step(dashboard, "Bind one yourself").getByRole("button", { name: "Open a run" }).click();
+  await expect(bindDialog).toBeHidden();
+
+  const run = step(dashboard, "A run walks its stages");
+  await expect(run).toContainText("Step 5 of 13");
+  await expect(dashboard.getByRole("group", { name: "Workflow run pipeline" })).toBeVisible({ timeout: 30_000 });
+  await run.getByRole("button", { name: "Exit tour" }).click();
+  await expect(run).toBeHidden({ timeout: 30_000 });
   await expect.poll(async () => (await tourTask(daemon, "Tour conversation"))?.status).toBe("done");
 });

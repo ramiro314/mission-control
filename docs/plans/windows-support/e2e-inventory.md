@@ -127,7 +127,8 @@ starvation signature. These own the fast assertion failures:
   Every server tour recipe (`src/server/tours.ts`) prefers Codex, which win32 refuses, so on
   runs 37745155079 and 37758180479 the tours' temporary conversation and demo task stopped on
   "Mission Control does not support Codex on Windows yet". Tour tasks now launch on the first
-  harness the host runs, and `win32-tour-harness` covers that on every runner.
+  harness the host runs, the fake `claude` holds the demo's turn open as the fake `codex` does,
+  and `win32-tour-harness` walks both tours on that harness on every runner.
 
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
