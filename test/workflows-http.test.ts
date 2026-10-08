@@ -18,6 +18,8 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { builtinWorkflowId } = await import("../src/server/workflows/builtin-workflows.ts");
+const { getTaskSourcesConfig, setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
+const { TaskSourcesConfigSchema } = await import("../src/shared/task-source.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -325,6 +327,101 @@ test("a configured dispatch default cannot be archived or deleted", async () => 
     })).status,
     200,
   );
+});
+
+test("a task source names only a bindable workflow, and keeps it from being archived", async () => {
+  const { request } = fixture();
+  const published = await seedValid(request);
+  assert.equal(
+    (await request(`/api/workflows/${published.workflow.id}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ expectedDraftRevision: 1 }),
+    })).status,
+    200,
+  );
+  // A draft is enough: it has no published version to bind.
+  const unpublished = await (await request("/api/workflows", {
+    method: "POST",
+    body: JSON.stringify({ name: "Unpublished", draft: { nodes: [], edges: [] } }),
+  })).json() as { workflow: { id: string } };
+  // Stored straight through the config module, so the PUT below carries its unresolvable
+  // repo through as an unchanged stored pair and needs no real git checkout.
+  const stored = { id: "src-flakes", kind: "github-issues", label: "flakes", repoRoot: "/repo/demo", config: {} };
+  setTaskSourcesConfig(TaskSourcesConfigSchema.parse({ sources: [stored] }));
+  const save = (workflowId: string | null | undefined) => request("/api/task-sources/config", {
+    method: "PUT",
+    body: JSON.stringify({ sources: [{ ...stored, defaults: workflowId === undefined ? {} : { workflowId } }] }),
+  });
+
+  for (const refused of ["workflow-missing", unpublished.workflow.id]) {
+    const response = await save(refused);
+    assert.equal(response.status, 409, refused);
+    assert.match(
+      (await response.json() as { error: string }).error,
+      /The workflow for task source flakes must be an active published workflow/,
+    );
+  }
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, undefined, "a refusal stores nothing");
+
+  assert.equal((await save(published.workflow.id)).status, 200);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, published.workflow.id);
+
+  const archived = await request(`/api/workflows/${published.workflow.id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  assert.equal(archived.status, 409);
+  assert.match((await archived.json() as { error: string }).error, /Used by the task source flakes\. Choose another workflow for it before archiving/);
+  const deleted = await request(`/api/workflows/${published.workflow.id}/delete`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  assert.equal(deleted.status, 409);
+  assert.match((await deleted.json() as { error: string }).error, /Used by the task source flakes/);
+
+  // None and inherit both release it.
+  assert.equal((await save(null)).status, 200);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, null);
+  assert.equal((await save(undefined)).status, 200);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, undefined);
+  assert.equal(
+    (await request(`/api/workflows/${published.workflow.id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ expectedDraftRevision: 1 }),
+    })).status,
+    200,
+  );
+  const archivedId = published.workflow.id;
+
+  // Archived is the third refusal: a new choice of it stores nothing.
+  const naming = await save(archivedId);
+  assert.equal(naming.status, 409);
+  assert.match((await naming.json() as { error: string }).error, /must be an active published workflow/);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, undefined);
+
+  // A source whose STORED choice has gone stale does not block its siblings: a whole-list
+  // save that keeps the choice unchanged passes, while changing it to another unbindable id
+  // is still refused.
+  const sibling = { ...stored, id: "src-other", label: "other" };
+  setTaskSourcesConfig(TaskSourcesConfigSchema.parse({
+    sources: [{ ...stored, defaults: { workflowId: archivedId } }, sibling],
+  }));
+  const saveBoth = (workflowId: string, siblingLabel: string) => request("/api/task-sources/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      sources: [{ ...stored, defaults: { workflowId } }, { ...sibling, label: siblingLabel }],
+    }),
+  });
+  assert.equal((await saveBoth(archivedId, "renamed")).status, 200);
+  assert.deepEqual(
+    getTaskSourcesConfig().sources.map((s) => [s.label, s.defaults.workflowId]),
+    [["flakes", archivedId], ["renamed", undefined]],
+  );
+  const changed = await saveBoth("workflow-missing", "renamed again");
+  assert.equal(changed.status, 409);
+  assert.match((await changed.json() as { error: string }).error, /task source flakes must be an active published workflow/);
+  assert.equal(getTaskSourcesConfig().sources[0]!.defaults.workflowId, archivedId, "the refusal stored nothing");
+  setTaskSourcesConfig({ sources: [] });
 });
 
 test("workflow summaries are bounded SSE projections, not graph blobs", async () => {

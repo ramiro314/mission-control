@@ -397,10 +397,19 @@ any entry it links that bears on your task.
 
 ## Fork
 
-This checkout is a fork of `teamupstart/mission-control`. What the fork changes, one entry per
-feature, is recorded in the [fork ledger](docs/fork/ledger.md); upstream commits come in only
-through the [upstream-sync runbook](docs/upstream-sync.md).
+This checkout is a fork of `teamupstart/mission-control`. What the fork changes is recorded on
+GitHub, one `fork-feature` tracking issue per feature, joined to its PRs by a `fork:<slug>` label
+([docs/fork/README.md](docs/fork/README.md)); upstream commits come in only through the
+[upstream-sync runbook](docs/upstream-sync.md).
 
-A fork PR that adds or changes a feature updates that feature's ledger entry (intent,
-contracts, assumed upstream behavior, surfaces, status, PRs) in the same PR, and re-renders
-`docs/fork/ledger.html` from `docs/fork/ledger.md`.
+A fork PR that adds or changes a feature carries the feature's `fork:<slug>` label and a
+"Fork feature changes" section in its body, in the format `docs/fork/README.md` describes. It
+never edits an issue body itself: the daily refresh applies the section once the PR merges. A
+PR for a new feature creates the `fork:<slug>` label and the feature's tracking issue, with the
+full body, when it opens.
+
+**Standing grant, this repository only.** A session may create a `fork:<slug>` label, create
+that feature's `fork-feature` tracking issue, and add `fork:*` labels to its own PR, without
+asking. It grants no other write. When a session's authorization still refuses those writes,
+it writes the full issue body under `### fork:<slug>` in its PR's "Fork feature changes"
+section instead, and the refresh creates the label and the issue after the merge.

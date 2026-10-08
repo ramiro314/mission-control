@@ -12,7 +12,10 @@ import {
   PRIORITY_LABELS,
   TASK_KIND_INFO,
   TASK_PRIORITIES,
+  taskDefaultWorkflowId,
+  type KindWorkflowDefaults,
 } from "@shared/task.ts";
+import type { WorkflowSummary } from "@shared/workflow.ts";
 import {
   DEFAULT_SWEEP_INTERVAL_MS,
   DEFAULT_MAX_PER_SWEEP,
@@ -56,6 +59,78 @@ import { Tooltip } from "./Tooltip.tsx";
 /** A source with no label of its own still needs something to be called. */
 function nameOf(src: TaskSourceInstance, kindLabel: string): string {
   return src.label.trim() || kindLabel;
+}
+
+/** The workflow picker's None value. Kind default is the empty string, like Agent's Inherit. */
+const NO_WORKFLOW = "__none";
+
+/**
+ * The source editor's Workflow picker: inherit the kind's Dispatch default, None, or one
+ * bindable published Workflow - the three states `TaskSourceDefaults.workflowId` stores.
+ */
+function WorkflowPicker({
+  src,
+  workflows,
+  kindWorkflowDefaults,
+  onChange,
+}: {
+  src: TaskSourceInstance;
+  workflows: WorkflowSummary[];
+  /** Settings -> Workflows -> Dispatch defaults, or null while it is not known. */
+  kindWorkflowDefaults: KindWorkflowDefaults | null;
+  onChange: (next: TaskSourceInstance) => void;
+}): React.JSX.Element {
+  const chosen = src.defaults.workflowId;
+  // The filter the Recurring Mission editor's picker applies: a version to bind, or nothing.
+  const published = workflows.filter(
+    (w) => w.archivedAt === null && w.currentVersionId !== null && w.publishedVersion !== null,
+  );
+  // Named only when the rows are known; a guess at the built-in would read as the operator's.
+  const kindDefaultId = kindWorkflowDefaults
+    ? taskDefaultWorkflowId(src.defaults.kind, kindWorkflowDefaults)
+    : undefined;
+  const kindDefault = kindDefaultId === undefined
+    ? "Kind default"
+    : `Kind default (${kindDefaultId === null
+      ? "None"
+      : workflows.find((w) => w.id === kindDefaultId)?.name ?? "unavailable Workflow"})`;
+  const stranded = typeof chosen === "string" && !published.some((w) => w.id === chosen);
+  return (
+    <label className="ts-field">
+      <span className="ts-field-label">Workflow</span>
+      <Tooltip label="Which Workflow a swept task arms after its work. Kind default follows this kind's row on Settings - Workflows - Dispatch defaults, read as each row is filed.">
+        <select
+          className="harnesses-select"
+          aria-label="Workflow for tasks this source files"
+          value={chosen === undefined ? "" : chosen ?? NO_WORKFLOW}
+          onChange={(e) => {
+            const { workflowId: _previous, ...rest } = src.defaults;
+            const value = e.target.value;
+            onChange({
+              ...src,
+              defaults: value === ""
+                ? rest
+                : { ...rest, workflowId: value === NO_WORKFLOW ? null : value },
+            });
+          }}
+        >
+          <option value="">{kindDefault}</option>
+          <option value={NO_WORKFLOW}>None</option>
+          {published.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name} · v{w.publishedVersion}
+            </option>
+          ))}
+          {/* Kept rather than dropped, so the select does not draw another choice over it. */}
+          {stranded && (
+            <option value={chosen}>
+              {workflows.find((w) => w.id === chosen)?.name ?? "Unavailable Workflow"}
+            </option>
+          )}
+        </select>
+      </Tooltip>
+    </label>
+  );
 }
 
 /** Minutes, for a field a human types into. The stored value is ms and clamped server-side. */
@@ -808,6 +883,8 @@ export function SourceCard({
   onChange,
   onRemove,
   state,
+  workflows = [],
+  kindWorkflowDefaults = null,
 }: {
   src: TaskSourceInstance;
   kindLabel: string;
@@ -819,6 +896,10 @@ export function SourceCard({
   onChange: (next: TaskSourceInstance) => void;
   onRemove: () => void;
   state: TaskSourcesState;
+  /** The Workflow catalog, for the workflow picker. */
+  workflows?: WorkflowSummary[];
+  /** Settings -> Workflows -> Dispatch defaults, or null while it is not known. */
+  kindWorkflowDefaults?: KindWorkflowDefaults | null;
 }): React.JSX.Element {
   const { val, edit, commit, draft } = useDraftText();
   const [busy, setBusy] = useState<string | null>(null);
@@ -1022,33 +1103,6 @@ export function SourceCard({
         </label>
         <div className="ts-fields">
           <label className="ts-field">
-            <span className="ts-field-label">Agent</span>
-            <Tooltip label="Which harness a task swept by this source is dispatched to. Inherit follows this kind's row on Settings - Models, read as each row is filed.">
-              <select
-                className="harnesses-select"
-                aria-label="Agent for tasks this source files"
-                value={src.defaults.agent ?? ""}
-                onChange={(e) =>
-                  onChange({
-                    ...src,
-                    defaults: {
-                      ...src.defaults,
-                      agent: (e.target.value || null) as AgentType | null,
-                    },
-                  })
-                }
-              >
-                <option value="">Inherit - this kind's agent</option>
-                {AGENT_TYPES.map((a) => (
-                  <option key={a} value={a}>
-                    {AGENT_IDENTITY[a].label}
-                  </option>
-                ))}
-              </select>
-            </Tooltip>
-          </label>
-
-          <label className="ts-field">
             <span className="ts-field-label">Kind</span>
             <Tooltip label="What a swept task is asked to produce">
               <select
@@ -1069,6 +1123,40 @@ export function SourceCard({
                 {BACKLOG_TASK_KINDS.map((kind) => (
                   <option key={kind} value={kind}>
                     {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
+          </label>
+
+          <WorkflowPicker
+            src={src}
+            workflows={workflows}
+            kindWorkflowDefaults={kindWorkflowDefaults}
+            onChange={onChange}
+          />
+
+          <label className="ts-field">
+            <span className="ts-field-label">Agent</span>
+            <Tooltip label="Which harness a task swept by this source is dispatched to. Inherit follows this kind's row on Settings - Models, read as each row is filed.">
+              <select
+                className="harnesses-select"
+                aria-label="Agent for tasks this source files"
+                value={src.defaults.agent ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...src,
+                    defaults: {
+                      ...src.defaults,
+                      agent: (e.target.value || null) as AgentType | null,
+                    },
+                  })
+                }
+              >
+                <option value="">Inherit - this kind's agent</option>
+                {AGENT_TYPES.map((a) => (
+                  <option key={a} value={a}>
+                    {AGENT_IDENTITY[a].label}
                   </option>
                 ))}
               </select>
@@ -1448,7 +1536,15 @@ function SourceDirectory({
   );
 }
 
-export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.JSX.Element {
+export function TaskSourcesPanel({
+  state,
+  workflows = [],
+  kindWorkflowDefaults = null,
+}: {
+  state: TaskSourcesState;
+  workflows?: WorkflowSummary[];
+  kindWorkflowDefaults?: KindWorkflowDefaults | null;
+}): React.JSX.Element {
   const { view, save, error } = state;
   const [repos, setRepos] = useState<string[]>([]);
   const [draftRepo, setDraftRepo] = useState("");
@@ -1684,6 +1780,8 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
                   onChange={replace}
                   onRemove={() => remove(selected.id)}
                   state={state}
+                  workflows={workflows}
+                  kindWorkflowDefaults={kindWorkflowDefaults}
                 />
               ) : (
                 <p className="settings-hint ts-empty">
