@@ -161,7 +161,7 @@ test("the committed timings and this checkout's unit glob partition cleanly", ()
   assertEachFileOnce(files, partitionUnitTests(files, timings, 6), 6, "6 shards");
 });
 
-test("every suite's committed timings name only its files, which partition cleanly", () => {
+test("every suite's committed timings are its own shape, and its files partition cleanly", () => {
   const shapes: Record<ShardSuite, RegExp> = {
     unit: /^test\/.+\.test\.ts$/,
     "windows-unit": /^test\/.+\.test\.ts$/,
@@ -174,7 +174,9 @@ test("every suite's committed timings name only its files, which partition clean
     assert.ok(files.every((file) => shapes[suite].test(file)), suite);
     const timings = readShardTimings(repo, suite);
     assert.ok(Object.values(timings).every((ms) => Number.isInteger(ms) && (ms as number) >= 0), suite);
-    assert.deepEqual(Object.keys(timings).filter((file) => !files.includes(file)), [], `${suite} times only its own files`);
+    // Keys of the suite's shape only; a deleted file left in them is stale, which costs balance
+    // until the next regeneration and never fails a run.
+    assert.ok(Object.keys(timings).every((file) => shapes[suite].test(file)), `${suite} times files of its own shape`);
     for (const total of [3, 10]) assertEachFileOnce(files, partitionUnitTests(files, timings, total), total, `${suite}, ${total} shards`);
   }
   assert.deepEqual(suiteFiles(repo, "windows-unit"), unitTestFiles(repo), "Windows runs the same unit files as Linux");

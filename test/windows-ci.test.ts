@@ -307,6 +307,12 @@ test("each shard runs the files its suite deals it on Windows timings", () => {
     assert.ok(select.includes(`node scripts/unit-shard.mjs ${spec} ${suite} > "$RUNNER_TEMP/${list}"`), `${id} deals ${suite}`);
     assert.ok(steps(body).indexOf(select) < steps(body).indexOf(stepById(body, testId).step), "selection runs first");
     assert.ok(stepById(body, testId).run.includes(`"$RUNNER_TEMP/${list}"`), `${id} runs the files it selected`);
+    // Both steps expand `$RUNNER_TEMP` and `$(wc ...)`, which pwsh, the windows-latest default,
+    // does not.
+    const jobShell = body.match(/^ {4}defaults:\n {6}run:\n {8}shell: (\S+)$/m)?.[1];
+    for (const step of [select, stepById(body, testId).step]) {
+      assert.equal(step.match(/^ {8}shell: (\S+)$/m)?.[1] ?? jobShell, "bash", `${id}: ${step.split("\n")[0]!.trim()} runs in bash`);
+    }
     assert.doesNotMatch(body, /--test-shard|--shard=/, `${id} does not shard by index or test count`);
     assert.ok(Object.keys(readShardTimings(repo, suite)).length > 0, `${suite} has committed timings`);
   }
