@@ -136,6 +136,10 @@ export async function ingestSweep(
       // `DispatchSchema.agent` spells that absence rather than null. A candidate that names
       // its own agent still wins over both.
       agent: c.agent ?? inst.defaults.agent ?? undefined,
+      // `!== undefined` and not `??`: `null` is an explicit None, from the candidate or the
+      // source, and must not fall through to the next. Left undefined at both, the task asks
+      // its kind's Dispatch default, exactly as an unset agent does.
+      workflowId: c.workflowId !== undefined ? c.workflowId : inst.defaults.workflowId,
       // `??` and not `||`: a candidate that deliberately says `null` is saying "no
       // priority", and must not silently inherit the source's default.
       priority: c.priority !== undefined ? c.priority : inst.defaults.priority,

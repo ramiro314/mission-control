@@ -179,11 +179,13 @@ one starts from origin's default branch and targets it, exactly as before.
   carries a "Base branch" section naming the branch and `gh pr create --base <base>`, and saying
   that wherever an instruction says the default branch it means `origin/<base>`. The workflow's
   pull-request handoff and a Pull Request session action name the base again.
-- **Checks and review measure from it.** The diff a workflow captures for its Personas, and the
-  changed files an affected-tests check selects tests from, are measured from
+- **Checks, review and the Diff view measure from it.** The diff a workflow captures for its
+  Personas, the changed files an affected-tests check selects tests from, and the session Diff
+  view are measured from
   `merge-base(HEAD, origin/<base>)` rather than from origin's default, so the base branch's own
   commits are not counted as the task's. A base branch that is not in the checkout's
-  remote-tracking refs fails the capture or the check instead of falling back to the default.
+  remote-tracking refs fails the capture, the check or the Diff view instead of falling back to
+  the default.
 - **Conflict reactions merge in the base.** A conflict is GitHub's own mergeability against the
   pull request's base, so Foreman's nudge and a Wait for CI repair already name it. The Pull
   Request session action's merge-conflict block names the task's base branch as well.
@@ -192,8 +194,6 @@ one starts from origin's default branch and targets it, exactly as before.
   merged into any other branch is not recorded as the task's merge.
 - **Primary repository only.** On a multi-repo task the attached repositories start from, and
   open their pull requests against, their own default branch.
-
-The session Diff view still compares against origin's default branch.
 
 ## Attaching more than one repository
 
@@ -1318,7 +1318,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
+| **What a swept task looks like** | the agent, kind, workflow, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Workflow** is the after-work Workflow each swept task binds: **Kind default** (the starting value, and what a source saved before this field reads as) takes the kind's row under [Settings → Workflows → Dispatch defaults](workflows.md) as each row is filed, **None** files tasks with no Workflow, and any bindable published Workflow pins that one. A source naming an unknown, archived or unpublished Workflow is refused on save, and a Workflow a source names cannot be archived or deleted until the source names another. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |

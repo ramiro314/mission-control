@@ -541,7 +541,7 @@ jobs:
   # smoke failure skips E2E rather than running it against a bundle that does not boot. Plan
   # section 8 (docs/plans/ci-time-to-green/plan.md) keeps it only if the pull request median does
   # not regress #221's. Both medians and the query are in the description of the pull request
-  # that made this change, which the CI time-to-green entry in docs/fork/ledger.md lists.
+  # that made this change, which carries the fork:ci-time-to-green label (docs/fork/README.md).
   #
   # Gated to Node 24 rather than the matrix. The matrix exists to pin the `node:sqlite`
   # floor and the current release for the DAEMON; the browser layer gains nothing from

@@ -5,9 +5,9 @@ This repository is a fork. `ramiro314/mission-control` (`origin`) is upstream
 runbook is how an agent brings upstream's new commits into the fork. It is the source of truth
 for every sync; the plan that set it up is [docs/plans/upstream-sync/plan.md](plans/upstream-sync/plan.md).
 
-What the fork changes, feature by feature, is recorded in the
-[fork ledger](fork/ledger.md) ([rendered](fork/ledger.html)). Every sync reads it before
-merging (section 2) and updates it afterwards (section 7).
+What the fork changes, feature by feature, is recorded in GitHub `fork-feature` tracking issues
+([docs/fork/README.md](fork/README.md)). Every sync reads them before merging (section 2) and
+records what it changed in its PR's "Fork feature changes" section (section 7).
 
 ## When a sync runs
 
@@ -53,27 +53,37 @@ git rev-list --count origin/main..upstream/main
 If the count is `0`, upstream has nothing the fork lacks. Stop here: no branch, no PR. Report
 that the fork is already current and end the task.
 
-## 2. Check the new commits against the fork ledger
+## 2. Check the new commits against the fork's features
 
-Before merging, read what upstream is bringing in and compare it with every **active** entry in
-[docs/fork/ledger.md](fork/ledger.md):
+Before merging, read what upstream is bringing in and compare it with every **active** fork
+feature, that is every open tracking issue:
 
 ```sh
 git log --oneline --no-merges origin/main..upstream/main
 git diff --stat origin/main...upstream/main
+gh issue list --repo ramiro314/mission-control --label fork-feature --state open --limit 100 --json number,title,labels,body
 ```
 
-For each active entry, check the new commits, their PR titles and any plan docs they add against
-the entry's three lists:
+An issue body can lag `main` by up to a day: a merged PR's "Fork feature changes" reach it only
+at the next refresh. Read each feature as it will stand once those apply, without writing
+anything:
+
+```sh
+node scripts/fork-delta.mjs pending              # merged PRs whose changes are not applied yet
+node scripts/fork-delta.mjs show <slug>          # one feature's issue with them overlaid
+```
+
+For each active feature, check the new commits, their PR titles and any plan docs they add
+against the issue's three sections:
 
 - **Behavior contracts**: does an upstream change break or duplicate something the fork promises?
-- **Upstream behavior it assumes**: does upstream change a behavior the entry relies on? This is
-  the check that catches a design conflict with no textual conflict, as #1148 did for the
+- **Upstream behavior it assumes**: does upstream change a behavior the feature relies on? This
+  is the check that catches a design conflict with no textual conflict, as #1148 did for the
   fork's "Complete frees the worktree".
 - **Upstream surfaces touched**: does upstream change a module, route, protocol type, database
-  column or UI view the entry lists?
+  column or UI view the feature lists?
 
-Record every hit, and every entry you checked with no hit, for the PR's "Conceptual conflicts"
+Record every hit, and every feature you checked with no hit, for the PR's "Conceptual conflicts"
 section (section 9). A hit that would remove or rework a fork feature follows rule 3 of
 section 4: stop and `request_input` before acting on it. A hit that needs no change (upstream
 touched a surface, the fork's contract still holds) is recorded with the reason.
@@ -109,7 +119,7 @@ The conflict policy for every sync:
 Also look for **design conflicts** that merge cleanly as text. A file can merge without markers
 and still carry two behaviors for the same control. Read upstream's new commits, their PR
 titles and any plan docs they add, and ask whether a fork feature touches the same routes,
-protocol types, UI views or database columns. The ledger check in section 2 is how that
+protocol types, UI views or database columns. The feature check in section 2 is how that
 question gets asked systematically.
 
 ### Worked example: Complete and the worktree (sync of 2026-09-29)
@@ -158,8 +168,8 @@ the fork has no Dependabot and takes new versions through this sync.
 ## 6. Fork-only surface a sync must preserve
 
 These exist only in the fork. A sync keeps them working, and a conflict with one follows rule 3.
-The full list, with each feature's contracts and surfaces, is the
-[fork ledger](fork/ledger.md); the highlights are:
+The full list, with each feature's contracts and surfaces, is the open `fork-feature` tracking
+issues (section 2); the highlights are:
 
 - **Flake-aware testing and its report action**: `.github/actions/mission-flake-report/`,
   the fork's changes to `.github/workflows/ci.yml` and `.github/actions/run-unit-shard/`,
@@ -194,35 +204,30 @@ The full list, with each feature's contracts and surfaces, is the
 - **Wait for CI**: the workflow block that waits for pull-request CI and reads flakes in the
   Inspector (`src/shared/wait-for-ci.ts`).
 - **The fork-only `package.json` entries** in section 5.
-- **Fork-only docs**: this runbook, `.agents/memory/upstream-sync.md`, and the plans under
-  `docs/plans/` that upstream does not have.
+- **Fork-only docs**: this runbook, [docs/fork/README.md](fork/README.md),
+  [docs/windows-branch-sync.md](windows-branch-sync.md), `.agents/memory/upstream-sync.md`, and
+  the plans under `docs/plans/` that upstream does not have.
+- **Fork tracking scripts**: `scripts/fork-delta.mjs`, `scripts/fork-report.mjs` and
+  `scripts/fork-migrate.mjs`, with their tests.
 
-## 7. Update the fork ledger
+## 7. Record the feature changes in the PR
 
-After the merge commit and any follow-up commits are on the sync branch, and before opening the
-PR, update [docs/fork/ledger.md](fork/ledger.md) on the same branch:
+A sync edits no file to record what it did to the fork's features, and it never edits a
+tracking issue. Its PR carries the `fork:upstream-sync-process-and-fork-ledger` label and a
+"Fork feature changes" section in the format [docs/fork/README.md](fork/README.md) describes,
+which the refresh applies to the issues after the human merges the PR:
 
-1. **Statuses.** An entry upstream replaced becomes `superseded by upstream`, and a fork
-   feature the sync removed becomes `removed`, each with the date and the sync PR (for example
-   "superseded by upstream #1148, 2026-09-29, sync PR #62"). An entry upstream accepted from
-   the fork becomes `upstreamed`. An active entry whose surfaces moved gets its paths corrected.
-   The sync PR's number exists only once the PR is open, so fill it in with a follow-up commit
-   on the same branch right after opening it.
-2. **Status header.** Measure it on the sync branch after the merge, with `HEAD` in place of
-   the ledger's `origin/main` (the ledger explains each number):
+1. **Statuses.** A `#### Status` block for each feature the sync changes: `superseded` for one
+   upstream replaced, `removed` for one the sync removed, `upstreamed` for one upstream accepted
+   from the fork, with a note naming the upstream PR (for example "superseded by upstream
+   #1148"). The refresh adds the date and the sync PR's number when it closes the issue.
+2. **Moved surfaces.** For an active feature whose paths moved, a replacement
+   `#### Upstream surfaces touched` block with the corrected text.
+3. **Bases.** Each block's `base:` line comes from `node scripts/fork-delta.mjs base <slug>
+   "<section>"`, or `base <slug> Status` for a Status block.
 
-   ```sh
-   git show upstream/main:package.json | grep '"version"'
-   git rev-parse --short upstream/main
-   git rev-list --count upstream/main..HEAD
-   git rev-list --count --no-merges upstream/main..HEAD
-   git rev-list --count HEAD..upstream/main
-   ```
-
-   Update the synced version and SHA, the sync date, the counts, the SHA they were measured at,
-   and the active feature count.
-3. **Re-render** `docs/fork/ledger.html` from the updated markdown, as described at the end of
-   the ledger. The two must say the same thing.
+A sync that changes no feature writes `none`. The status header (synced version, ahead and
+behind counts) is no longer measured by hand: `scripts/fork-report.mjs` computes it.
 
 ## 8. Gates
 
@@ -253,12 +258,15 @@ When a gate fails, do not fix anything yet. First work out where the failure com
 - Push `sync/upstream-<date>` to `origin` and open one PR against the fork's `main`, following
   the `mission-pull-request` skill. List upstream's new PRs, every conflict and how it was
   resolved, anything asked under rule 3, and any deviation from this runbook.
-- The PR has a **Conceptual conflicts** section from section 2: one line per active ledger
-  entry, naming either the upstream commit that touches its contracts, assumptions or surfaces
-  and how that was resolved, or "no hit". It also lists the ledger status changes from
-  section 7.
+- The PR has a **Conceptual conflicts** section from section 2: one line per active feature,
+  naming either the upstream commit that touches its contracts, assumptions or surfaces and how
+  that was resolved, or "no hit". It also has the "Fork feature changes" section from section 7.
 - Wait for the PR's CI to go green and fix what fails.
 - **The human merges.** The agent never merges a sync PR.
+- **Hand-off: press Run now after merging.** The sync's feature changes reach the tracking
+  issues and the fork status snapshot only when the "Refresh fork status" mission applies them.
+  The hand-off tells the human to press **Run now** on that mission after merging the sync PR;
+  otherwise the next daily run catches it.
 
 ## When a gate fails: the sync, upstream, or the machine
 
