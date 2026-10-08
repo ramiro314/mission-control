@@ -131,7 +131,6 @@ async function runPathRead(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
-  encoding: BufferEncoding,
 ): Promise<PathReadOutcome> {
   return await new Promise((resolve) => {
     let settled = false;
@@ -159,7 +158,7 @@ async function runPathRead(
       );
       let stdout = "";
       const terminate = (): void => processLifetime.killTree(child);
-      child.stdout.setEncoding(encoding);
+      child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
         if (stdout.length <= 1024 * 1024) return;
@@ -195,16 +194,16 @@ async function directLoginPath(
 ): Promise<LoginShellResult | undefined> {
   const read = platform.directPathRead?.(env);
   if (!read) return undefined;
-  const outcomes = await Promise.all(read.commands.map(({ command, args }) =>
-    runPathRead(command, args, env, timeoutMs, "latin1")));
-  const stdouts: string[] = [];
-  for (const outcome of outcomes) {
-    if (!("stdout" in outcome)) return undefined;
-    stdouts.push(outcome.stdout);
+  try {
+    const outcomes = await Promise.all(read.commands.map(({ command, args }) =>
+      runPathRead(command, args, env, timeoutMs)));
+    if (outcomes.some((outcome) => !("stdout" in outcome))) return undefined;
+    const path = read.path()?.trim();
+    if (path === undefined) return undefined;
+    return path ? { path, problem: null } : { path: null, problem: "login shell returned no PATH" };
+  } finally {
+    read.dispose();
   }
-  const path = read.path(stdouts)?.trim();
-  if (path === undefined) return undefined;
-  return path ? { path, problem: null } : { path: null, problem: "login shell returned no PATH" };
 }
 
 export async function probeLoginShellPath(
@@ -232,7 +231,7 @@ export async function probePathRead(
   const remainingMs = row.directPathRead ? deadline - Date.now() : timeoutMs;
   if (remainingMs <= 0) return { path: null, problem: "login shell timed out" };
   const { command: shell, args } = row.loginShellPathRead(env);
-  const outcome = await runPathRead(shell, args, env, remainingMs, "utf8");
+  const outcome = await runPathRead(shell, args, env, remainingMs);
   if (!("stdout" in outcome)) return { path: null, problem: outcome.problem };
   const { stdout } = outcome;
   const marker = LOGIN_SHELL_PATH_MARKER;

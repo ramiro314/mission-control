@@ -14,9 +14,8 @@ import {
   expandWindowsEnvironmentReferences,
   posixExecutableEnvironment,
   registryPath,
-  registryPathValue,
+  registryExportPathValue,
   win32ExecutableEnvironment,
-  WINDOWS_ENVIRONMENT_KEYS,
   windowsPowerShellPath,
   windowsRegPath,
 } from "../src/server/platform/executable-environment.ts";
@@ -291,54 +290,85 @@ test("the catalog finds powershell at its fixed win32 path, and nowhere else on 
 
 const noPowerShell = existsSync(windowsPowerShellPath(process.env)) ? false : "Windows PowerShell is not installed";
 
-test("win32 reads PATH with reg.exe first, from the machine and then the user environment key", () => {
+test("win32 reads PATH with reg export first, the machine and then the user environment key, into files it removes", () => {
   const read = win32ExecutableEnvironment.directPathRead?.(WIN_ENV);
-  assert.deepEqual(read?.commands, [
-    { command: "D:\\Windows\\System32\\reg.exe", args: ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"] },
-    { command: "D:\\Windows\\System32\\reg.exe", args: ["query", "HKCU\\Environment"] },
-  ]);
+  assert.ok(read);
+  try {
+    assert.deepEqual(read.commands.map(({ command, args }) => [command, args[0], args[1], args[3]]), [
+      ["D:\\Windows\\System32\\reg.exe", "export", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "/y"],
+      ["D:\\Windows\\System32\\reg.exe", "export", "HKCU\\Environment", "/y"],
+    ]);
+    const files = read.commands.map(({ args }) => args[2]!);
+    assert.equal(new Set(files).size, 2);
+    assert.ok(files.every((file) => existsSync(dirname(file))), "each export lands in a directory that exists");
+    assert.equal(read.path(), null, "no export was written, so the read cannot answer");
+    read.dispose();
+    assert.ok(files.every((file) => !existsSync(dirname(file))), "dispose removes the exports' directory");
+  } finally {
+    read.dispose();
+  }
   assert.equal(windowsRegPath({}), "C:\\Windows\\System32\\reg.exe");
 });
 
-/** `reg query <key>` output as reg.exe prints it: a blank line, the key, its values, a blank line. */
-const regQuery = (key: string, ...values: Array<[name: string, type: string, data: string]>) =>
-  ["", key, ...values.map(([name, type, data]) => `    ${name}    ${type}    ${data}`), "", ""].join("\r\n");
+type RegValue = [name: string, kind: "sz" | "expand" | "hex1" | "multi", data: string];
+
+/** A `reg export` value line: a quoted string, or UTF-16LE bytes wrapped as regedit wraps them. */
+function regExportLine([name, kind, data]: RegValue): string {
+  const quote = (text: string) => `"${text.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
+  if (kind === "sz") return `${quote(name)}=${quote(data)}`;
+  const type = { expand: "hex(2)", hex1: "hex(1)", multi: "hex(7)" }[kind];
+  const bytes = [...Buffer.from(`${data}\0`, "utf16le")].map((byte) => byte.toString(16).padStart(2, "0"));
+  const rows: string[] = [];
+  for (let at = 0; at < bytes.length; at += 24) rows.push(bytes.slice(at, at + 24).join(","));
+  return `${quote(name)}=${type}:${rows.join(",\\\r\n  ")}`;
+}
+
+/** The text of the `.reg` file `reg export <key>` writes. */
+const regExport = (key: string, ...values: RegValue[]) =>
+  ["Windows Registry Editor Version 5.00", "", `[${key}]`, ...values.map(regExportLine), "", ""].join("\r\n");
+/** That text as reg.exe writes it: UTF-16LE behind a byte-order mark. */
+const exportFile = (text: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
 const MACHINE_KEY = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
 const USER_KEY = "HKEY_CURRENT_USER\\Environment";
 
-test("registryPathValue reads Path as GetEnvironmentVariable reports it", () => {
+test("registryExportPathValue reads Path as GetEnvironmentVariable reports it", () => {
   const env = { SystemRoot: "C:\\Windows", USERPROFILE: "C:\\Users\\Ramiro" };
+  const value = (...values: RegValue[]) => registryExportPathValue(exportFile(regExport(USER_KEY, ...values)), env);
   assert.equal(
-    registryPathValue(regQuery(MACHINE_KEY,
-      ["ComSpec", "REG_EXPAND_SZ", "%SystemRoot%\\system32\\cmd.exe"],
-      ["Path", "REG_EXPAND_SZ", "%SystemRoot%\\system32;%SYSTEMROOT%;C:\\Program Files\\Git\\cmd"],
-    ), env),
-    "C:\\Windows\\system32;C:\\Windows;C:\\Program Files\\Git\\cmd",
-    "a REG_EXPAND_SZ is expanded, its names matched without regard to case",
+    registryExportPathValue(exportFile(regExport(MACHINE_KEY,
+      ["ComSpec", "expand", "%SystemRoot%\\system32\\cmd.exe"],
+      ["Path", "expand", "%SystemRoot%\\system32;%SYSTEMROOT%;C:\\Program Files\\Git\\cmd;C:\\Program Files\\nodejs\\;C:\\Program Files\\GitHub CLI\\"],
+    )), env),
+    "C:\\Windows\\system32;C:\\Windows;C:\\Program Files\\Git\\cmd;C:\\Program Files\\nodejs\\;C:\\Program Files\\GitHub CLI\\",
+    "a REG_EXPAND_SZ wrapped over several lines is expanded, its names matched without regard to case",
   );
+  assert.equal(value(["PATH", "sz", "%USERPROFILE%\\bin;D:\\\"quoted\""]), "%USERPROFILE%\\bin;D:\\\"quoted\"", "a REG_SZ as stored");
+  assert.equal(value(["Path", "hex1", "D:\\tools"]), "D:\\tools", "a REG_SZ exported as hex(1)");
   assert.equal(
-    registryPathValue(regQuery(USER_KEY, ["PATH", "REG_SZ", "%USERPROFILE%\\bin;D:\\tools"]), env),
-    "%USERPROFILE%\\bin;D:\\tools",
-    "a REG_SZ is reported as stored, and the value name matched without regard to case",
+    value(["Path", "expand", "C:\\Users\\张伟\\AppData\\Roaming\\npm;C:\\Users\\Āria\\bin"]),
+    "C:\\Users\\张伟\\AppData\\Roaming\\npm;C:\\Users\\Āria\\bin",
+    "characters no console code page holds arrive exactly",
   );
-  assert.equal(registryPathValue(regQuery(USER_KEY, ["TEMP", "REG_EXPAND_SZ", "%USERPROFILE%\\Temp"]), env), null, "no Path");
-  assert.equal(registryPathValue(regQuery(USER_KEY, ["Path", "REG_SZ", ""]), env), "", "an empty Path");
-  assert.equal(registryPathValue(`${regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"])}${USER_KEY}\\Sub\r\n`, env), "D:\\tools");
-  assert.equal(registryPathValue(regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"]).replaceAll("\r\n", "\n"), env), "D:\\tools");
+  assert.equal(value(["TEMP", "expand", "%USERPROFILE%\\Temp"]), null, "no Path");
+  assert.equal(value(["Path", "sz", ""]), "", "an empty Path");
+  assert.equal(value(["Path", "expand", ""]), "", "an empty REG_EXPAND_SZ");
+  assert.equal(
+    registryExportPathValue(exportFile(`${regExport(USER_KEY)}[${USER_KEY}\\Sub]\r\n"Path"="D:\\\\sub"\r\n`), env),
+    null,
+    "a subkey's Path is not the key's",
+  );
 });
 
-test("registryPathValue leaves to PowerShell whatever reg.exe cannot report exactly", () => {
-  // reg.exe writes the console code page; the probe decodes it as Latin-1, one character per byte.
-  const latin1 = (text: string) => Buffer.from(text, "utf8").toString("latin1");
-  assert.equal(registryPathValue(latin1(regQuery(USER_KEY, ["Path", "REG_SZ", "C:\\Users\\José\\bin"])), {}), undefined);
-  assert.equal(registryPathValue(regQuery(USER_KEY, ["Path", "REG_MULTI_SZ", "a\\0b"]), {}), undefined);
-  assert.equal(registryPathValue("", {}), undefined, "no output at all");
-  assert.equal(registryPathValue("ERROR: Access is denied.\r\n", {}), undefined);
-  assert.equal(
-    registryPathValue(latin1(regQuery(USER_KEY, ["OneDrive", "REG_SZ", "C:\\Users\\José\\OneDrive"], ["Path", "REG_SZ", "D:\\tools"])), {}),
-    "D:\\tools",
-    "only the Path value has to be ASCII",
-  );
+test("registryExportPathValue leaves to PowerShell whatever the export cannot report exactly", () => {
+  const value = (...values: RegValue[]) => registryExportPathValue(exportFile(regExport(USER_KEY, ...values)), {});
+  assert.equal(value(["Path", "multi", "C:\\a\0C:\\b"]), undefined, "a REG_MULTI_SZ");
+  assert.equal(registryExportPathValue(exportFile(`${regExport(USER_KEY)}`.replace("]\r\n", "]\r\n\"Path\"=dword:00000001\r\n")), {}), undefined, "a DWORD");
+  assert.equal(registryExportPathValue(exportFile(regExport(USER_KEY).replace("]\r\n", "]\r\n\"Path\"=hex(2):41,00,00,00,42,00,00,00\r\n")), {}), undefined, "a NUL inside the string");
+  assert.equal(registryExportPathValue(exportFile(regExport(USER_KEY).replace("]\r\n", "]\r\n\"Path\"=hex(2):41,00,42\r\n")), {}), undefined, "an odd byte count");
+  assert.equal(registryExportPathValue(Buffer.from(regExport(USER_KEY, ["Path", "sz", "D:\\tools"]), "latin1"), {}), undefined, "not UTF-16LE");
+  assert.equal(registryExportPathValue(exportFile(regExport(USER_KEY).replace("Windows Registry Editor Version 5.00", "REGEDIT4")), {}), undefined, "another format");
+  assert.equal(registryExportPathValue(exportFile("Windows Registry Editor Version 5.00\r\n\r\n"), {}), undefined, "no key at all");
+  assert.equal(registryExportPathValue(Buffer.alloc(0), {}), undefined, "an empty file");
 });
 
 test("expandWindowsEnvironmentReferences follows ExpandEnvironmentStrings", () => {
@@ -354,26 +384,28 @@ test("expandWindowsEnvironmentReferences follows ExpandEnvironmentStrings", () =
 });
 
 test("registryPath joins machine then user and drops a missing or empty value, as the PowerShell read did", () => {
-  const machine = regQuery(MACHINE_KEY, ["Path", "REG_SZ", "C:\\Windows\\system32"]);
-  const user = regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"]);
+  const machine = exportFile(regExport(MACHINE_KEY, ["Path", "sz", "C:\\Windows\\system32"]));
+  const user = exportFile(regExport(USER_KEY, ["Path", "sz", "D:\\tools"]));
   assert.equal(registryPath([machine, user], {}), "C:\\Windows\\system32;D:\\tools");
-  assert.equal(registryPath([machine, regQuery(USER_KEY)], {}), "C:\\Windows\\system32");
-  assert.equal(registryPath([regQuery(MACHINE_KEY, ["Path", "REG_SZ", ""]), user], {}), "D:\\tools");
-  assert.equal(registryPath([regQuery(MACHINE_KEY), regQuery(USER_KEY)], {}), "");
-  assert.equal(registryPath([machine, ""], {}), null, "either output unreadable sends the read to PowerShell");
+  assert.equal(registryPath([machine, exportFile(regExport(USER_KEY))], {}), "C:\\Windows\\system32");
+  assert.equal(registryPath([exportFile(regExport(MACHINE_KEY, ["Path", "sz", ""])), user], {}), "D:\\tools");
+  assert.equal(registryPath([exportFile(regExport(MACHINE_KEY)), exportFile(regExport(USER_KEY))], {}), "");
+  assert.equal(registryPath([machine, Buffer.alloc(0)], {}), null, "either file unreadable sends the read to PowerShell");
 });
 
-// The win32 row's ordering - reg.exe first, PowerShell when reg cannot answer, one deadline for
-// both - driven on every host: the row keeps its arguments and its parser, and only the two
-// executables it starts are fakes that log each start and answer from the environment.
+// The win32 row's ordering - reg export first, PowerShell when it cannot answer, one deadline for
+// both - driven on every host: the row keeps its arguments, its files and its parser, and only
+// the two executables it starts are fakes that log each start and answer from the environment.
 
 const FAKE_REG = [
-  "const key = process.argv[3] ?? \"\";",
+  "const [, key = \"\", file] = process.argv.slice(2);",
   "const hive = key.startsWith(\"HKLM\") ? \"MACHINE\" : \"USER\";",
-  "require(\"node:fs\").appendFileSync(process.env.MC_TEST_LOG, `reg ${hive}\\n`);",
+  "const fs = require(\"node:fs\");",
+  "fs.appendFileSync(process.env.MC_TEST_LOG, `reg ${hive}\\n`);",
   "setTimeout(() => {",
-  // Bytes as reg.exe writes them in a single-byte console code page.
-  "  process.stdout.write(Buffer.from(process.env[`MC_TEST_REG_${hive}`] ?? \"\", \"latin1\"));",
+  "  const text = process.env[`MC_TEST_REG_${hive}`];",
+  // As reg.exe writes it: UTF-16LE behind a byte-order mark.
+  "  if (text !== undefined) fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, \"utf16le\")]));",
   "  process.exitCode = Number(process.env.MC_TEST_REG_EXIT ?? 0);",
   "}, Number(process.env.MC_TEST_REG_DELAY_MS ?? 0));",
   "",
@@ -390,14 +422,16 @@ const FAKE_POWERSHELL = [
 const POWERSHELL_PATH = "E:\\from-powershell";
 
 function fakePathReaders() {
-  const directory = mkdtempSync(join(tmpdir(), "mission-path-read-"));
+  const directory = mkdtempSync(join(tmpdir(), "mission-path-read-fakes-"));
   const reg = writeFakeExecutable(join(directory, "reg"), FAKE_REG);
   const powershell = writeFakeExecutable(join(directory, "powershell"), FAKE_POWERSHELL);
   const log = join(directory, "started");
+  const exportDirectories: string[] = [];
   const row = (regCommand: string): ExecutableEnvironmentPlatform => ({
     ...win32ExecutableEnvironment,
     directPathRead(env) {
       const real = win32ExecutableEnvironment.directPathRead!(env);
+      exportDirectories.push(dirname(real.commands[0]!.args[2]!));
       return { ...real, commands: real.commands.map((command) => ({ ...command, command: regCommand })) };
     },
     loginShellPathRead: (env) => ({ ...win32ExecutableEnvironment.loginShellPathRead(env), command: powershell }),
@@ -415,6 +449,7 @@ function fakePathReaders() {
         ...vars,
       }, options.timeoutMs ?? 30_000);
       const started = existsSync(log) ? readFileSync(log, "utf8").split(/\r?\n/).filter(Boolean).sort() : [];
+      assert.ok(exportDirectories.every((exported) => !existsSync(exported)), "the read left its exports behind");
       return { result, started };
     },
     missingReg: join(directory, "missing", "reg.exe"),
@@ -422,18 +457,23 @@ function fakePathReaders() {
   };
 }
 
-const MACHINE_PATH = regQuery(MACHINE_KEY, ["Path", "REG_EXPAND_SZ", "%MC_TEST_ROOT%\\system32"]);
-const USER_PATH = regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"]);
+const MACHINE_PATH = regExport(MACHINE_KEY, ["Path", "expand", "%MC_TEST_ROOT%\\system32"]);
+const USER_PATH = regExport(USER_KEY, ["Path", "sz", "D:\\tools"]);
 const BOTH_REG = ["reg MACHINE", "reg USER"];
 
-test("the win32 read answers from both reg queries and never starts PowerShell", async () => {
+test("the win32 read answers from both reg exports and never starts PowerShell", async () => {
   const fakes = fakePathReaders();
   try {
     assert.deepEqual(await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH }), {
       result: { path: "D:\\Root\\system32;D:\\tools", problem: null },
       started: BOTH_REG,
     });
-    assert.deepEqual(await fakes.read({ MC_TEST_REG_MACHINE: regQuery(MACHINE_KEY), MC_TEST_REG_USER: regQuery(USER_KEY) }), {
+    assert.deepEqual(
+      await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: regExport(USER_KEY, ["Path", "sz", "C:\\Users\\张伟\\AppData\\Roaming\\npm"]) }),
+      { result: { path: "D:\\Root\\system32;C:\\Users\\张伟\\AppData\\Roaming\\npm", problem: null }, started: BOTH_REG },
+      "a non-ASCII Path arrives exactly, without PowerShell",
+    );
+    assert.deepEqual(await fakes.read({ MC_TEST_REG_MACHINE: regExport(MACHINE_KEY), MC_TEST_REG_USER: regExport(USER_KEY) }), {
       result: { path: null, problem: "login shell returned no PATH" },
       started: BOTH_REG,
     }, "neither key holds a Path: the registry answered, and PowerShell would read the same nothing");
@@ -442,24 +482,25 @@ test("the win32 read answers from both reg queries and never starts PowerShell",
   }
 });
 
-test("the win32 read falls back to PowerShell whenever reg cannot answer exactly", async () => {
+test("the win32 read falls back to PowerShell whenever reg export cannot answer exactly", async () => {
   const fakes = fakePathReaders();
   const fallback = { result: { path: POWERSHELL_PATH, problem: null }, started: [...BOTH_REG, "powershell"].sort() };
   try {
     assert.deepEqual(
-      await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: regQuery(USER_KEY, ["Path", "REG_SZ", "C:\\Users\\José\\bin"]) }),
-      fallback,
-      "a non-ASCII Path in the console code page",
-    );
-    assert.deepEqual(
-      await fakes.read({ MC_TEST_REG_MACHINE: regQuery(MACHINE_KEY, ["Path", "REG_MULTI_SZ", "C:\\a\\0C:\\b"]), MC_TEST_REG_USER: USER_PATH }),
+      await fakes.read({ MC_TEST_REG_MACHINE: regExport(MACHINE_KEY, ["Path", "multi", "C:\\a\0C:\\b"]), MC_TEST_REG_USER: USER_PATH }),
       fallback,
       "a Path of another type",
     );
     assert.deepEqual(
+      await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH.replace("Windows Registry Editor Version 5.00", "REGEDIT4") }),
+      fallback,
+      "a file in another format",
+    );
+    assert.deepEqual(await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH }), fallback, "a reg export that wrote no file");
+    assert.deepEqual(
       await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH, MC_TEST_REG_EXIT: "1" }),
       fallback,
-      "a reg query that exits non-zero",
+      "a reg export that exits non-zero",
     );
     assert.deepEqual(
       await fakes.read({}, { regCommand: fakes.missingReg }),
@@ -471,7 +512,7 @@ test("the win32 read falls back to PowerShell whenever reg cannot answer exactly
   }
 });
 
-test("the win32 read's reg queries and PowerShell fallback share one deadline", async () => {
+test("the win32 read's reg exports and PowerShell fallback share one deadline", async () => {
   const fakes = fakePathReaders();
   const timeoutMs = 2_000;
   try {
@@ -496,15 +537,18 @@ test("the win32 PATH read answers through the real reg.exe", { skip: noReg }, as
   assert.match(result.path ?? "", /\\System32(;|$)/i, "the machine PATH carries System32");
 });
 
-test("reg.exe reports exactly the PATH Windows PowerShell reports", { skip: noReg || noPowerShell }, () => {
-  const run = (command: string, args: readonly string[], encoding: BufferEncoding) =>
-    execFileSync(command, args, { encoding, windowsHide: true, timeout: 30_000 });
-  const viaReg = registryPath(
-    WINDOWS_ENVIRONMENT_KEYS.map((key) => run(windowsRegPath(process.env), ["query", key], "latin1")),
-    process.env,
-  );
+test("reg export reports exactly the PATH Windows PowerShell reports", { skip: noReg || noPowerShell }, () => {
+  const read = win32ExecutableEnvironment.directPathRead!(process.env);
+  let viaReg: string | null;
+  try {
+    for (const { command, args } of read.commands) execFileSync(command, args, { windowsHide: true, timeout: 30_000 });
+    viaReg = read.path();
+  } finally {
+    read.dispose();
+  }
   const powerShell = win32ExecutableEnvironment.loginShellPathRead(process.env);
-  const viaPowerShell = /__MISSION_PATH__([\s\S]*)__MISSION_PATH__/.exec(run(powerShell.command, powerShell.args, "utf8"))?.[1];
-  assert.notEqual(viaReg, null, "reg.exe could not report this machine's PATH exactly");
+  const printed = execFileSync(powerShell.command, powerShell.args, { encoding: "utf8", windowsHide: true, timeout: 30_000 });
+  const viaPowerShell = /__MISSION_PATH__([\s\S]*)__MISSION_PATH__/.exec(printed)?.[1];
+  assert.notEqual(viaReg, null, "reg export could not report this machine's PATH exactly");
   assert.equal(viaReg?.trim(), viaPowerShell?.trim());
 });

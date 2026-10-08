@@ -1,3 +1,5 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 
 // Executable environment: where the executable resolver looks, which file names a command may
@@ -20,13 +22,15 @@ export interface LoginShellPathRead {
 
 /**
  * A cheaper read of the same PATH, tried before `loginShellPathRead`. Every command starts at
- * once, and `path` receives their stdout decoded as Latin-1, one character per byte, so it can
- * tell ASCII from anything else. It answers the PATH, or null when an output carries something
- * it cannot answer exactly, which sends the probe on to `loginShellPathRead`.
+ * once; once all of them exit 0, `path` answers the PATH from what they wrote, or null when
+ * anything it reads cannot be answered exactly, which sends the probe on to
+ * `loginShellPathRead`. `dispose` removes what the commands wrote, and runs once the read is
+ * over whether or not it answered.
  */
 export interface DirectPathRead {
   commands: readonly LoginShellPathRead[];
-  path(stdouts: readonly string[]): string | null;
+  path(): string | null;
+  dispose(): void;
 }
 
 export interface ExecutableEnvironmentPlatform {
@@ -168,42 +172,92 @@ export function expandWindowsEnvironmentReferences(value: string, env: NodeJS.Pr
   return expanded;
 }
 
-/** One value line of `reg query`: four spaces, the name, four spaces, the type, four spaces, the data. */
-const REG_VALUE_LINE = /^ {4}(.+?) {4}(REG_[A-Z_]+)(?: {4}(.*))?$/;
+/** The first line of the `.reg` file `reg export` writes. */
+const REG_EXPORT_HEADER = "Windows Registry Editor Version 5.00";
+
+/** The text of a string value in a `.reg` file: `\\` and `\"` stand for themselves. */
+function regExportUnescape(text: string): string {
+  return text.replace(/\\(.)/g, "$1");
+}
 
 /**
- * The `Path` value in the `reg query <key>` output `stdout`, as
+ * A `.reg` file's string data as `RegistryKey.GetValue` returns it: a quoted `REG_SZ`, or the
+ * UTF-16LE bytes of `hex(1)` (`REG_SZ`) or `hex(2)` (`REG_EXPAND_SZ`, then expanded against
+ * `env`) less their one terminating NUL. Undefined for any other type, an odd byte count, or a
+ * NUL inside the string.
+ */
+function regExportString(data: string, env: NodeJS.ProcessEnv): string | undefined {
+  const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(data);
+  if (quoted) return regExportUnescape(quoted[1]!);
+  const hex = /^hex\(([12])\):((?:[0-9a-f]{2})(?:,[0-9a-f]{2})*)?$/i.exec(data);
+  if (!hex) return undefined;
+  const bytes = Buffer.from((hex[2] ?? "").replaceAll(",", ""), "hex");
+  if (bytes.length % 2) return undefined;
+  let text = bytes.toString("utf16le");
+  if (text.endsWith("\0")) text = text.slice(0, -1);
+  if (text.includes("\0")) return undefined;
+  return hex[1] === "2" ? expandWindowsEnvironmentReferences(text, env) : text;
+}
+
+/**
+ * The `Path` value in the `.reg` file `reg export <key>` wrote, as
  * `[Environment]::GetEnvironmentVariable` reports it: a `REG_EXPAND_SZ` expanded against `env`,
  * a `REG_SZ` as stored, and null when the key holds no `Path`.
  *
- * Undefined means the output cannot be answered exactly: it lists no key, `Path` has another
- * type, or its data is not ASCII. reg.exe writes the console code page, not UTF-8, so a
- * non-ASCII byte could be any of several characters.
+ * `reg export` writes UTF-16LE, so every character arrives exactly; `reg query` would print the
+ * console code page, which turns a character it lacks into `?` or a look-alike letter.
+ * Undefined means the file cannot be answered exactly: it is not a UTF-16LE `.reg` file, or
+ * `Path` has another type or data a string cannot hold.
  */
-export function registryPathValue(stdout: string, env: NodeJS.ProcessEnv): string | null | undefined {
-  const lines = stdout.split(/\r?\n/);
-  if (!lines.some((line) => line.startsWith("HKEY_"))) return undefined;
-  for (const line of lines) {
-    const match = REG_VALUE_LINE.exec(line);
-    if (!match || match[1]!.toLowerCase() !== "path") continue;
-    const data = match[3] ?? "";
-    if (/[\u0080-\uffff]/.test(data)) return undefined;
-    if (match[2] === "REG_SZ") return data;
-    if (match[2] === "REG_EXPAND_SZ") return expandWindowsEnvironmentReferences(data, env);
-    return undefined;
+export function registryExportPathValue(file: Buffer, env: NodeJS.ProcessEnv): string | null | undefined {
+  if (file.length % 2 || file[0] !== 0xff || file[1] !== 0xfe) return undefined;
+  // A long hex value wraps as `,\` then the next line, indented.
+  const lines = file.subarray(2).toString("utf16le").replace(/,\\\r?\n[ \t]*/g, ",").split(/\r?\n/);
+  if (lines[0] !== REG_EXPORT_HEADER) return undefined;
+  const key = lines.findIndex((line) => line.startsWith("["));
+  if (key < 0) return undefined;
+  for (const line of lines.slice(key + 1)) {
+    // The next key is a subkey; its values are not the key's.
+    if (line.startsWith("[")) break;
+    const value = /^"((?:[^"\\]|\\.)*)"=(.*)$/.exec(line);
+    if (!value || regExportUnescape(value[1]!).toLowerCase() !== "path") continue;
+    return regExportString(value[2]!, env);
   }
   return null;
 }
 
 /**
- * PATH from the `reg query` output of each `WINDOWS_ENVIRONMENT_KEYS` key, in order, joined as
+ * PATH from the `reg export` file of each `WINDOWS_ENVIRONMENT_KEYS` key, in order, joined as
  * the PowerShell read joins them: machine then user, blank values dropped. Null when either
- * output cannot be answered exactly.
+ * file cannot be answered exactly.
  */
-export function registryPath(stdouts: readonly string[], env: NodeJS.ProcessEnv): string | null {
-  const values = stdouts.map((stdout) => registryPathValue(stdout, env));
+export function registryPath(files: readonly Buffer[], env: NodeJS.ProcessEnv): string | null {
+  const values = files.map((file) => registryExportPathValue(file, env));
   if (values.some((value) => value === undefined)) return null;
   return values.filter(Boolean).join(";");
+}
+
+/**
+ * Both environment keys exported by `reg.exe` into a fresh temporary directory, one `.reg`
+ * file each, and PATH read back from them.
+ */
+function registryExportRead(env: NodeJS.ProcessEnv): DirectPathRead {
+  const directory = mkdtempSync(join(tmpdir(), "mission-path-read-"));
+  const files = WINDOWS_ENVIRONMENT_KEYS.map((_, index) => join(directory, `${index}.reg`));
+  return {
+    commands: WINDOWS_ENVIRONMENT_KEYS.map((key, index) => ({
+      command: windowsRegPath(env),
+      args: ["export", key, files[index]!, "/y"],
+    })),
+    path() {
+      try {
+        return registryPath(files.map((file) => readFileSync(file)), env);
+      } catch {
+        return null;
+      }
+    },
+    dispose: () => rmSync(directory, { recursive: true, force: true }),
+  };
 }
 
 /** What Windows uses when PATHEXT is unset: the extensions that start a program. */
@@ -230,7 +284,7 @@ const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
  *   edited by an installer after Mission Control started reaches it the same way a new login
  *   shell's would on macOS. The read keeps its `login-shell` provenance in the ladder: it is the
  *   same rung, filled from the platform's own source. Every Setup check forces this read, so it
- *   is two `reg query` processes rather than a Windows PowerShell start, and PowerShell's
+ *   is two `reg export` processes rather than a Windows PowerShell start, and PowerShell's
  *   `[Environment]::GetEnvironmentVariable` stays as the fallback for any value `reg` cannot
  *   report exactly.
  */
@@ -279,10 +333,7 @@ export const win32ExecutableEnvironment: ExecutableEnvironmentPlatform = {
       `[Console]::Out.Write('${LOGIN_SHELL_PATH_MARKER}' + $path + '${LOGIN_SHELL_PATH_MARKER}')`,
     ].join("\n")),
   }),
-  directPathRead: (env) => ({
-    commands: WINDOWS_ENVIRONMENT_KEYS.map((key) => ({ command: windowsRegPath(env), args: ["query", key] })),
-    path: (stdouts) => registryPath(stdouts, env),
-  }),
+  directPathRead: registryExportRead,
 };
 
 /**
