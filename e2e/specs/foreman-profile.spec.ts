@@ -53,6 +53,17 @@ async function openProfileMenu(page: Page): Promise<void> {
   await expect(page.getByRole("menu", { name: "More Foreman profile actions" })).toBeVisible();
 }
 
+/**
+ * The clipboard's text as the copy wrote it. On Windows, Chromium itself writes plain text to
+ * the system clipboard with CRLF line endings, the platform's clipboard convention, so only
+ * there is the read compared line by line. Everywhere else it stays byte for byte, so a CRLF
+ * the product added would still fail.
+ */
+async function clipboardText(page: Page): Promise<string> {
+  const text = await page.evaluate(() => navigator.clipboard.readText());
+  return process.platform === "win32" ? text.replaceAll("\r\n", "\n") : text;
+}
+
 async function downloadedText(download: Download): Promise<string> {
   const path = await download.path();
   expect(path, "the local browser did not expose the completed download").not.toBeNull();
@@ -116,7 +127,7 @@ test("Foreman's fixed System profile owns exact guidance and links every other s
   await openProfileMenu(dashboard);
   await dashboard.getByRole("menuitem", { name: "Copy Markdown" }).click();
   await expect(dashboard.getByRole("menuitem", { name: "Copied" })).toBeVisible();
-  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(EXACT);
+  expect(await clipboardText(dashboard)).toBe(EXACT);
   const downloadPromise = dashboard.waitForEvent("download");
   await dashboard.getByRole("menuitem", { name: "Download FOREMAN.md" }).click();
   const download = await downloadPromise;
@@ -213,7 +224,7 @@ test("Foreman's fixed System profile owns exact guidance and links every other s
   const conflictedMenu = dashboard.getByRole("menu", { name: "More Foreman profile actions" });
   await expect(conflictedMenu.getByRole("menuitem", { name: "Download FOREMAN.md" })).toBeEnabled();
   await conflictedMenu.getByRole("menuitem", { name: "Copy Markdown" }).click();
-  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(LOCAL_CONFLICT);
+  expect(await clipboardText(dashboard)).toBe(LOCAL_CONFLICT);
   await dashboard.keyboard.press("Escape");
   await profile(dashboard).getByRole("alert").getByRole("button", { name: "Reload latest" }).click();
   expect((await instructions(daemon)).text).toBe(REMOTE_CONFLICT);

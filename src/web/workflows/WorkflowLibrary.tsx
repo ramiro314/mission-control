@@ -91,15 +91,18 @@ export function workflowSelectionRestore(
   all: WorkflowSummary[] = active,
   explicitlyRequestedId: string | null = null,
 ): string | undefined {
-  if (initialized || selectedId !== null || all.length === 0) return undefined;
+  if (initialized || selectedId !== null) return undefined;
   // An explicit request is opened even when the list does not hold it yet. The list is the
   // event stream's, and a workflow created a moment before its link was followed reaches it
   // one `workflow_upsert` later - so "not listed" means "not announced yet", not "not there".
   // Falling back would open another workflow and rewrite the address bar to name it. The
   // draft loads by id either way, and an id that really is gone shows its load error.
+  // That holds before the snapshot too: waiting for a non-empty list left nothing selected,
+  // the empty selection was reported, and the address bar lost the id it was opened with.
   if (explicitlyRequestedId !== null && rememberedId === explicitlyRequestedId) {
     return explicitlyRequestedId;
   }
+  if (all.length === 0) return undefined;
   return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]?.id;
 }
 

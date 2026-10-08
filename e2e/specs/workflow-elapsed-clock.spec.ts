@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * Every member of a run's stage, and the stage itself, says how long it ran.
@@ -133,6 +134,8 @@ test("each member and its stage show a live clock that freezes when it finishes"
   dashboard,
   daemon,
 }) => {
+  // The live half is the blocked Command, which win32 never runs: it settles as not run.
+  skipSpecOnWin32(test, "check commands run only on Linux and macOS, through POSIX process groups, so the daemon records this gate as unavailable on win32 instead of running it");
   const scratch = mkdtempSync(join(tmpdir(), "mc-e2e-clock-"));
   const gate = join(scratch, "release");
   try {

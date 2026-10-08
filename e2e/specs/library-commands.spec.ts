@@ -391,6 +391,37 @@ test("changing only the run budget saves the whole slot, and it survives a reloa
     .toMatchObject({ maxRuns: 3, defaultCommand: ["npm", "run", "build"] });
 });
 
+test("a budget chosen before the catalog arrives is still the operator's to save", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The editor opens before the catalog does, on the slot as a fresh one carries it. A budget
+   * chosen in that window was edited against exactly the slot the catalog then delivers - yet
+   * that first delivery was held as "a newer revision", and Save stayed disabled behind a
+   * conflict nobody had written. A loaded Windows runner reached that window on its own; it is
+   * held open here by severing the event stream, then reloading, as the unloaded-catalog case
+   * above does.
+   */
+  await dashboard.route("**/events", (route) => route.abort());
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/build`);
+  await dashboard.reload();
+  await expect(dashboard.getByRole("heading", { name: "build", exact: true })).toBeVisible();
+  await dashboard.getByLabel("How often this Command may run").selectOption("3");
+
+  await dashboard.unroute("**/events");
+  const save = dashboard.getByRole("button", { name: "Save Command" });
+  await expect(save).toBeEnabled({ timeout: 30_000 });
+  await expect(dashboard.getByText(/A newer revision/)).toHaveCount(0);
+  await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("3");
+  await shoot(dashboard, "early-budget-after-catalog");
+  await save.click();
+  await expect(save).toBeDisabled();
+  await expect
+    .poll(async () => slotOf(await catalog(daemon), "build"))
+    .toMatchObject({ maxRuns: 3, defaultCommand: null, overrides: [] });
+});
+
 test("an override, a nested override, and a removal all survive a reload", async ({
   dashboard,
   daemon,

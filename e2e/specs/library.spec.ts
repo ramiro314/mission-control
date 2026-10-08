@@ -438,6 +438,42 @@ test("a link to a workflow that does not exist says so, rather than opening anot
   await shoot(dashboard, "missing-workflow-link");
 });
 
+test("a link followed before the workflow list arrives opens that workflow, not the first one", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The builder waited for a non-empty list before honoring the link, reported "nothing
+  // open" meanwhile, and the address bar dropped the id - so the list's arrival opened the
+  // first workflow instead. A loaded Windows runner reached that window on its own; it is held
+  // open here by severing the event stream, then reloading so no snapshot is already in hand.
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E early link",
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 220, y: 0 } },
+      ],
+      edges: [
+        { id: "done", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" },
+      ],
+    },
+  });
+  const link = `#/library/workflows/${created.workflow.id}`;
+  await dashboard.route("**/events", (route) => route.abort());
+  await dashboard.goto(`${daemon.baseURL}/${link}`);
+  await dashboard.reload();
+  const heading = dashboard.getByRole("heading", { name: "E2E early link" });
+  await expect(heading).toBeVisible();
+  expect(await dashboard.evaluate(() => location.hash)).toBe(link);
+
+  await dashboard.unroute("**/events");
+  await expect(dashboard.getByRole("button", { name: /^Bug Fix Review/ })).toBeVisible({ timeout: 30_000 });
+  await expect(heading).toBeVisible();
+  await expect(dashboard.getByRole("heading", { name: "Bug Fix Review" })).toHaveCount(0);
+  expect(await dashboard.evaluate(() => location.hash)).toBe(link);
+  await shoot(dashboard, "early-link-after-list");
+});
+
 test("the ＋ New cards open a blank draft, and creating a workflow lands on the new one", async ({
   dashboard,
   daemon,

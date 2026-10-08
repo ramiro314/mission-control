@@ -421,11 +421,15 @@ test("completing merged work retires its owned session and withdraws the retro o
   await expect(retro).toBeHidden();
   await expect.poll(async () => (await sessions(daemon)).some((row) => row.id === session.id))
     .toBe(false);
+  // On win32 the checkout stays, refused for the reason `WIN32_OCCUPANCY_UNPROVABLE` gives
+  // (`fixtures/win32-occupancy.ts`). The offer and the session above behave the same there,
+  // so only the return is left to the POSIX runners.
+  const returned = process.platform !== "win32";
   await expect.poll(async () => (await tasks(daemon)).find((task) => task.id === source!.id), {
     timeout: 60_000,
-  }).toMatchObject({ status: "done", worktreePath: null });
+  }).toMatchObject(returned ? { status: "done", worktreePath: null } : { status: "done" });
   expect((await tasks(daemon)).filter((task) => task.title === `Retro: ${source!.title}`)).toEqual([]);
-  observed("completion withdrew the retro offer, retired the owned session, and returned its checkout");
+  observed(`completion withdrew the retro offer, retired the owned session${returned ? ", and returned its checkout" : ""}`);
   await shoot(dashboard, dashboard, "06-completed-owned-session-retired");
 });
 

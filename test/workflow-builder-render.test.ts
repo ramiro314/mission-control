@@ -364,6 +364,10 @@ test("last workflow restoration excludes archived history unless a version link 
     workflowSelectionRestore(false, null, active, "workflow-new", active, "workflow-new"),
     "workflow-new",
   );
+  // Nor does it wait for the list: a link followed before the snapshot opens at once, where
+  // waiting reported no selection and the address bar dropped the id it was opened with.
+  assert.equal(workflowSelectionRestore(false, null, [], "workflow-new", [], "workflow-new"), "workflow-new");
+  assert.equal(workflowSelectionRestore(false, null, [], "workflow-1"), undefined);
   // Only an explicit request is trusted that far; a remembered id that is gone still falls back.
   assert.equal(workflowSelectionRestore(false, null, active, "workflow-gone"), "workflow-1");
 });
