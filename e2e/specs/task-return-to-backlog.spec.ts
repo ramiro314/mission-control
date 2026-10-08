@@ -5,6 +5,8 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Task } from "../../src/shared/types.ts";
 
@@ -77,6 +79,7 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   test.setTimeout(180_000);
   const first = await file(daemon, "Requeue me from the footer");
   const second = await file(daemon, "Stay behind the requeued task");

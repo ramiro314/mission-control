@@ -7,6 +7,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const EVIDENCE = artifactsDir("task-worktree-return");
 test.afterEach(async ({ daemon }, info) => {
@@ -54,6 +56,7 @@ async function capture(page: Page, name: string): Promise<void> {
 }
 
 test("Complete resets and returns both owned worktrees and the next dispatch reuses them", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   test.setTimeout(240_000);
   const first = await dispatch(dashboard, daemon, "Complete the multi repo return test", true);
   const paths = [first.worktreePath!, first.extraRepos[0]!.worktreePath!];
@@ -82,6 +85,7 @@ test("Complete resets and returns both owned worktrees and the next dispatch reu
 });
 
 test("Reset retains its checkout and a later safe Kill returns it automatically", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   test.setTimeout(180_000);
   const first = await dispatch(dashboard, daemon, "Reset then kill the clean task");
   writeFileSync(join(first.worktreePath!, "discard-on-reset.md"), "Reset removes this.\n");
@@ -108,6 +112,7 @@ test("Reset retains its checkout and a later safe Kill returns it automatically"
 });
 
 test("Kill retains ignored local work and leaves manual cleanup available", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   const first = await dispatch(dashboard, daemon, "Preserve ignored notes on Kill");
   const path = first.worktreePath!;
   const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim();
