@@ -190,6 +190,31 @@ test("npm script-shell must name bash", async () => {
   })).state, "unknown");
 });
 
+test("npm script-shell is read from npm's config files, and asks npm only when that read cannot answer", async () => {
+  const commands: string[] = [];
+  const recording = async (bin: string, args: string[]) => {
+    commands.push(bin);
+    return healthy(bin, args);
+  };
+  assert.deepEqual(await probe("npm-script-shell", {
+    npmConfigGet: async (key) => key === "script-shell" ? "D:\\Git\\bin\\bash.exe" : null,
+    runCommand: recording,
+  }), { state: "satisfied", evidence: "script-shell = D:\\Git\\bin\\bash.exe" });
+  assert.deepEqual(commands, [], "npm was started although its config files answered");
+
+  for (const unset of ["", "null", "undefined"]) {
+    const status = await probe("npm-script-shell", { npmConfigGet: async () => unset, runCommand: recording });
+    assert.equal(status.state, "needs-setup", JSON.stringify(unset));
+  }
+  assert.deepEqual(commands, []);
+
+  assert.deepEqual(await probe("npm-script-shell", { npmConfigGet: async () => null, runCommand: recording }), {
+    state: "satisfied",
+    evidence: "script-shell = C:\\Program Files\\Git\\bin\\bash.exe",
+  });
+  assert.deepEqual(commands, ["cmd.exe"], "a read that cannot answer leaves the question to npm");
+});
+
 test("Visual Studio Build Tools: no installer, no C++ workload, and a failed query", async () => {
   assert.deepEqual(await probe("vs-build-tools", { resolveBinPath: async (bin) => bin === VSWHERE ? null : HEALTHY_PATHS[bin] ?? null }), { state: "missing" });
 

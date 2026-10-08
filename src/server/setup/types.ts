@@ -55,6 +55,11 @@ export interface SetupDeps {
   ghBin(): string;
   resolveBinPath(bin: string): Promise<string | null>;
   runCommand(bin: string, argv: string[]): Promise<RunResult>;
+  /**
+   * What `npm config get <key>` prints, read from npm's config files without starting npm, or
+   * null when that read cannot answer exactly and npm itself must be asked.
+   */
+  npmConfigGet?(key: string): Promise<string | null>;
   installedPlugins(): Promise<InstalledPluginsRead>;
   skills(): SetupSkillsRead;
   conductorProbe(): Promise<PipelineProbe>;

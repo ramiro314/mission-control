@@ -80,7 +80,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "execFile", command: "descriptor.command", contract: "current-runtime", reason: "bounded isolated Pi extension load through the shared Node or Electron runtime resolver" },
   ],
   "src/server/executables/locator.ts": [
-    { operation: "spawn", command: "shell", contract: "bootstrap-login-shell", reason: "bounded shell probe that constructs the locator snapshot" },
+    { operation: "spawn", command: "command", contract: "bootstrap-login-shell", reason: "bounded PATH read that constructs the locator snapshot: the platform table's login shell, or on win32 its fixed-path reg.exe queries" },
   ],
   "src/server/git/worktree-activity.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git stream reader" },
@@ -274,7 +274,7 @@ function boundarySignature(
 function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
   switch (boundary.contract) {
     case "bootstrap-login-shell":
-      return boundary.command === "shell";
+      return boundary.command === "command";
     case "current-runtime":
       return ["args.node", "descriptor.command", "request.node", "process.execPath"].includes(boundary.command);
     // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`

@@ -82,15 +82,23 @@ export async function gitForWindowsStatus(deps: SetupDeps): Promise<SetupStatus>
 }
 
 /**
- * npm's `script-shell`, read through `cmd.exe` because `npm` on Windows is a `.cmd` shim,
- * which Node refuses to start without a shell.
+ * npm's `script-shell`. `deps.npmConfigGet` reads it from npm's config files; only when that
+ * read cannot answer exactly is npm itself asked, through `cmd.exe` because `npm` on Windows is
+ * a `.cmd` shim, which Node refuses to start without a shell.
  */
 export async function npmScriptShellStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const read = await deps.npmConfigGet?.("script-shell") ?? null;
+  if (read !== null) return scriptShellStatus(read);
   const result = await deps.runCommand("cmd.exe", ["/d", "/s", "/c", "npm config get script-shell"]);
-  const value = result.stdout.trim();
   if (result.outcomeUnknown || result.code !== 0) {
     return { state: "unknown", why: "npm's script-shell setting could not be read.", evidence: outputOf(result) };
   }
+  return scriptShellStatus(result.stdout);
+}
+
+/** The status for what `npm config get script-shell` printed. */
+function scriptShellStatus(printed: string): SetupStatus {
+  const value = printed.trim();
   if (!value || value === "undefined" || value === "null") {
     return { state: "needs-setup", why: "npm's script-shell is not set, so npm runs package scripts through cmd.exe.", evidence: null };
   }
