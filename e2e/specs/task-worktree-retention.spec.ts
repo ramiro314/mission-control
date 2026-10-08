@@ -8,6 +8,8 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * The 30-day task worktree rule, both halves of it, through a real native checkout.
@@ -147,6 +149,7 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   await dispatch(dashboard, daemon, INTENT);
   // Every wait here is on real server work - provisioning a checkout, settling a killed
   // session, a restart's first retention pass - so each names a timeout instead of taking

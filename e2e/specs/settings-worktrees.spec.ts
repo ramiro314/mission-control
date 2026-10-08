@@ -8,6 +8,8 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const EVIDENCE = artifactsDir("settings-worktrees");
 
@@ -31,6 +33,7 @@ async function shoot(page: Page, name: string, fullPage = false): Promise<void> 
 }
 
 test("safe prune removes conductor scratch while preserving unknown pipeline work", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   const acquire = async () => {
     const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
       data: { repositoryPath: daemon.repo, label: "pipeline scratch regression" },
@@ -81,6 +84,7 @@ test("safe prune removes conductor scratch while preserving unknown pipeline wor
 
 for (const action of ["destroy", "prune"] as const) {
   test(`${action} executes an idle slot after sibling process churn without refreshing`, async ({ dashboard, daemon }) => {
+    skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
     const acquire = async (label: string) => {
       const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
         data: { repositoryPath: daemon.repo, label },
@@ -156,6 +160,7 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   daemon,
   context,
 }) => {
+  skipSpecOnWin32(test, `the cmux terminal backend is unavailable on win32, and ${WIN32_OCCUPANCY_UNPROVABLE}`);
   const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
     data: { repositoryPath: daemon.repo, label: "settings evidence" },
   });
@@ -362,6 +367,7 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   // Two previews and a real return, and a return is `git fetch` plus a reset to the fetched
   // remote default on a checkout on disk. That is seconds of git per Execute, so the default
   // thirty is a budget for the browser and not for the work underneath it.
@@ -418,6 +424,7 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   test.setTimeout(120_000);
   const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
     data: { repositoryPath: daemon.repo, label: "quarantined destroy" },
@@ -627,6 +634,7 @@ test("a failed refresh keeps the observed inventory instead of blanking it to a 
  * sibling in the same pool proves the fixed set is exactly what was ticked.
  */
 test("bulk destroy removes exactly the selected slots in the background", async ({ dashboard, daemon, context }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   test.setTimeout(120_000);
   const leases: Array<{ path: string; leaseId: string }> = [];
   for (const label of ["bulk one", "bulk two", "bulk kept"]) {
@@ -822,6 +830,7 @@ test("bulk destroy removes exactly the selected slots in the background", async 
  * missing-slot blocker is what the preview shows.
  */
 test("a bulk selection that lost a slot is blocked at preview, not silently narrowed", async ({ dashboard, daemon }) => {
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   test.setTimeout(120_000);
   const leases: Array<{ path: string; leaseId: string }> = [];
   for (const label of ["narrowed survivor", "narrowed vanishes"]) {
