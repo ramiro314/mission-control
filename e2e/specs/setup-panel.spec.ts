@@ -75,7 +75,7 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
   // The evidence is stated relative to this machine's home rather than repeating it. The
   // absolute path stays reachable through the row's tooltip description.
   const evidence = claude.locator(".setup-evidence");
-  await expect(evidence).toHaveText(/^~\//);
+  await expect(evidence).toHaveText(/^~[\\/]/);
   const describedBy = await evidence.getAttribute("aria-describedby");
   expect(await page.locator(`#${describedBy}`).textContent()).toContain(daemon.home);
 
@@ -107,7 +107,7 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
   // Still on Pipelines: a Re-check reports into the family being read rather than moving the
   // rail to wherever the gaps now are.
   await expectRowStatus(page, "dependency-ai-conductor", "Ready");
-  await expect(conductor).toContainText("installed-conductor/bin/conduct-ts");
+  await expect(conductor).toContainText(join("installed-conductor", "bin", "conduct-ts"));
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("guided-setup");

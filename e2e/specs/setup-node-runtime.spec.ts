@@ -1,11 +1,13 @@
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Locator, Page } from "@playwright/test";
 import { expect, test as base } from "../fixtures/test.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import {
   fakeExecutablePath,
   removeFakeExecutable,
@@ -28,11 +30,16 @@ const test = base.extend<{ selectedNode: { path: string; version(value: string):
   },
 });
 
-test("Setup detects old, missing and invalid Node and runs the repair through the chosen terminal", async ({ page, daemon, selectedNode }) => {
-  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+async function openNodeRow(page: Page, baseURL: string): Promise<Locator> {
+  await page.goto(`${baseURL}/#/settings/setup`);
   await openSetupFamily(page, "runtime");
   const row = setupRow(page, "dependency-node-runtime");
   await expect(row).toContainText("Node.js 22.0.0 is too old");
+  return row;
+}
+
+test("Setup detects old, missing and invalid Node", async ({ page, daemon, selectedNode }) => {
+  const row = await openNodeRow(page, daemon.baseURL);
   await expect(row).toContainText("requires Node.js 24 or newer");
   await expect(row).toContainText("restart Mission Control");
   await expect(row).toContainText("brew install node");
@@ -45,18 +52,6 @@ test("Setup detects old, missing and invalid Node and runs the repair through th
     await page.screenshot({ path: join(dir, name), fullPage: true });
   };
   await capture("incompatible.png");
-  await row.getByLabel("Terminal for Node.js").selectOption("cmux");
-  const request = page.waitForRequest(r => r.url().endsWith("/api/setup/install") && r.method() === "POST");
-  await row.getByRole("button", { name: "Run in a terminal" }).click();
-  expect((await request).postDataJSON()).toEqual({ id: "node-runtime", backend: "cmux" });
-  await expect(row.getByRole("status")).toContainText("When the installer finishes, press Re-check.");
-  const launches = () => recordsIn<{ argv: string[] }>(daemon.recordDir, f => f.startsWith("cmux-"));
-  await expect.poll(() => launches().length).toBe(1);
-  const argv = launches()[0]!.argv;
-  expect(argv[argv.indexOf("--command") + 1]).toBe(shellCommand(["/bin/sh", "-c", setupInstallerShell(["brew", "install", "node"])]));
-  // Opening a terminal is not evidence of a repaired installation.
-  await page.getByRole("button", { name: "Re-check", exact: true }).click();
-  await expect(row).toContainText("Node.js 22.0.0 is too old");
   selectedNode.remove();
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row).toContainText("Node.js could not be found");
@@ -69,4 +64,21 @@ test("Setup detects old, missing and invalid Node and runs the repair through th
   await expect(row).toContainText("Node.js 24.0.0");
   await expect(row.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
   await capture("ready.png");
+});
+
+test("Setup runs the Node repair through the chosen terminal, which repairs nothing by itself", async ({ page, daemon }) => {
+  skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
+  const row = await openNodeRow(page, daemon.baseURL);
+  await row.getByLabel("Terminal for Node.js").selectOption("cmux");
+  const request = page.waitForRequest(r => r.url().endsWith("/api/setup/install") && r.method() === "POST");
+  await row.getByRole("button", { name: "Run in a terminal" }).click();
+  expect((await request).postDataJSON()).toEqual({ id: "node-runtime", backend: "cmux" });
+  await expect(row.getByRole("status")).toContainText("When the installer finishes, press Re-check.");
+  const launches = () => recordsIn<{ argv: string[] }>(daemon.recordDir, f => f.startsWith("cmux-"));
+  await expect.poll(() => launches().length).toBe(1);
+  const argv = launches()[0]!.argv;
+  expect(argv[argv.indexOf("--command") + 1]).toBe(shellCommand(["/bin/sh", "-c", setupInstallerShell(["brew", "install", "node"])]));
+  // Opening a terminal is not evidence of a repaired installation.
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+  await expect(row).toContainText("Node.js 22.0.0 is too old");
 });

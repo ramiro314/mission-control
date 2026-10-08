@@ -108,7 +108,9 @@ test("a satisfied row states its evidence relative to the home directory", async
 
   const satisfied = snapshot.rows.filter((row) => row.status.state === "satisfied");
   expect(satisfied.length, "the fixture machine has something installed to report").toBeGreaterThan(0);
-  const underHome = satisfied.filter((row) => row.status.evidence.startsWith(`${snapshot.home}/`));
+  // Either separator: a win32 home and every path resolved under it use backslashes.
+  const underHome = satisfied.filter((row) =>
+    ["/", "\\"].some((separator) => row.status.evidence.startsWith(`${snapshot.home}${separator}`)));
   expect(underHome.length, "at least one probe resolves inside the home directory").toBeGreaterThan(0);
 
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
@@ -117,7 +119,7 @@ test("a satisfied row states its evidence relative to the home directory", async
     const evidence = setupRow(page, `${row.rowId.source}-${row.rowId.id}`).locator(".setup-evidence");
     // Exactly the shortened string on screen...
     await expect(evidence).toHaveText(homeRelative(row.status.evidence, snapshot.home));
-    expect(homeRelative(row.status.evidence, snapshot.home)).toMatch(/^~\//);
+    expect(homeRelative(row.status.evidence, snapshot.home)).toMatch(/^~[\\/]/);
     // ...and the absolute one still reachable, through the shared Tooltip's description
     // rather than a native title, which this codebase does not use.
     await expect(evidence).not.toHaveAttribute("title", /./);
