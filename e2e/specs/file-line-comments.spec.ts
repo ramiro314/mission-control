@@ -964,6 +964,10 @@ test.describe("line comments in the Files editor", () => {
     await expect(marker).toBeVisible();
     const shortId = /MC-\w+/.exec((await marker.getAttribute("aria-label"))!)![0];
 
+    // A keystroke first, so the focus is a keyboard user's: after the mouse clicks above,
+    // a scripted `focus()` would not match `:focus-visible` and the photograph would show
+    // no ring at all.
+    await page.keyboard.press("Shift");
     await marker.focus();
     await expect(marker).toBeFocused();
 
@@ -976,6 +980,7 @@ test.describe("line comments in the Files editor", () => {
     await expect(answered).toBeVisible();
     await expect(answered, "a state change must not take the marker out from under focus")
       .toBeFocused();
+    await shoot(page.locator(".file-main"), page, "marker-focus-after-state-change");
 
     // And the button kept answers for the comment it now names.
     await page.keyboard.press("Enter");
