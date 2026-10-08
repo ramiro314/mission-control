@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -74,6 +74,17 @@ const RETRY_REPLY = "Retyped after the daemon came back.";
  */
 function sentMarker(line: number, tail = ""): RegExp {
   return new RegExp(`^Comment MC-\\w+ on line ${line}, (?:queued|sent|no answer)${tail}$`);
+}
+
+/** Answer a comment through the reply channel its agent's MCP child uses. */
+async function agentAnswers(daemon: DaemonHandle, cwd: string, commentId: string, body: string): Promise<void> {
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const res = await fetch(`${daemon.baseURL}/mcp/file-comments/replies`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ env: {}, cwd, commentId, body }),
+  });
+  expect(res.status, `the reply channel accepted the answer: ${await res.clone().text()}`).toBe(200);
 }
 
 /** The durable statuses a sent comment can hold, for the same reason as `sentMarker`. */
@@ -925,6 +936,51 @@ test.describe("line comments in the Files editor", () => {
     // the marker - which is why `mousedown` is defended even though it no longer activates.
     await marker.click();
     await expect(thread).toContainText(COMMENT);
+  });
+
+  test("a focused marker keeps focus when its comment changes state", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * A marker's name carries its state, and the state moves on its own - delivery, the grace
+     * window, a reply. CodeMirror used to answer every such change by replacing the marker's
+     * `<button>`, which dropped a keyboard user's focus to the page mid-read. On a slow host
+     * the change landed between `focus()` and the assertion in the keyboard test above.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFileInEditor(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    await lineNumber(page, 3).click();
+    await page.getByRole("textbox", { name: "Comment on line 3" }).fill(COMMENT);
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const marker = page.getByRole("button", { name: sentMarker(3) });
+    await expect(marker).toBeVisible();
+    const shortId = /MC-\w+/.exec((await marker.getAttribute("aria-label"))!)![0];
+
+    await marker.focus();
+    await expect(marker).toBeFocused();
+
+    // The reply always lands as a message, whatever state delivery has reached, so the
+    // marker's name is certain to change - and nothing on the page has been touched.
+    await agentAnswers(daemon, cwd, `${shortId}.1`, REPLY);
+    const answered = page.getByRole("button", {
+      name: new RegExp(`^Comment ${shortId} on line 3, [a-z ]+, 1 reply$`),
+    });
+    await expect(answered).toBeVisible();
+    await expect(answered, "a state change must not take the marker out from under focus")
+      .toBeFocused();
+
+    // And the button kept answers for the comment it now names.
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("region", { name: `Comment ${shortId} on line 3` }))
+      .toContainText(REPLY);
   });
 
   test("a blank line borrows the nearest line that speaks, and an empty file takes nothing", async ({
