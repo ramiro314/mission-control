@@ -176,9 +176,13 @@ export function parseJUnit(xml: string): JUnitParse {
 
 export type JUnitFileTimes = { ok: true; times: Map<string, number> } | { ok: false; error: string };
 
-/** The first `file` a test case at or under `element` reports. */
+/**
+ * The first file a test case at or under `element` reports: its `file`, or its `classname`
+ * where there is none, since Playwright writes no `file` and names each case's class after its
+ * spec file.
+ */
 function firstCaseFile(element: XmlElement): string | null {
-  if (element.name === "testcase") return element.attrs.file ?? null;
+  if (element.name === "testcase") return element.attrs.file ?? element.attrs.classname ?? null;
   for (const child of element.children) {
     const file = firstCaseFile(child);
     if (file) return file;
@@ -200,7 +204,7 @@ function sumTopLevelTimes(element: XmlElement, into: Map<string, number>): void 
 }
 
 /**
- * The milliseconds each test file took, keyed by the `file` the runner reported. Each top-level
+ * The milliseconds each test file took, keyed by the file the runner reported. Each top-level
  * `testsuite` or `testcase` counts once, at its own time: a suite's time covers its `before` and
  * `after` hooks as well as its cases, so summing the cases alone would miss a file whose cost is
  * in a suite hook. A suite belongs to the file its first case reports. An element with no such

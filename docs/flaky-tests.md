@@ -112,8 +112,8 @@ and the step prints how many files the shard runs.
 
 The timings only steer balance. The file set always comes from the glob, so a stale, partial or
 empty timings file can make one shard slower than the rest but never drops a test file or runs
-one twice. `test/unit-shard.test.ts` holds that invariant. E2E shards are unaffected: they keep
-Playwright's `--shard`.
+one twice. `test/unit-shard.test.ts` holds that invariant. Linux E2E shards are unaffected:
+they keep Playwright's `--shard`.
 
 A pull request runs three Node 24 unit shards and fourteen E2E shards, and a push to `main` runs
 six Node 26 unit shards. With `gates` and `docs checks`, the pull request counts make 19 of
@@ -135,6 +135,36 @@ another repository), sums each file's top-level suite and test times per Node re
 `describe` suite counts at its own time, so its hooks are included), averages the releases
 the run covered, keeps only files that exist in the checkout, and rewrites the file. Commit the
 result on its own.
+
+### Windows shard timings
+
+The Windows unit and E2E shards on `release/windows` are balanced the same way, on Windows
+durations, which differ from Linux by several times and not uniformly. The unit shards run
+`node scripts/unit-shard.mjs <index>/<total> windows-unit`, weighted by
+`test/shard-timings-windows.json`. The E2E shards run
+`node scripts/unit-shard.mjs <index>/<total> windows-e2e`, which expands `e2e/specs/**/*.spec.ts`,
+weighs each spec file by `e2e/shard-timings-windows.json`, and prints the shard's files relative
+to `e2e/specs`. That is the form Playwright's `--test-list` takes, so the shard runs every test
+in each file it was dealt, instead of the test-count split `--shard` makes. Linux timings and
+shards never read either file. The "Windows shard counts" comment in `.github/workflows/ci.yml`
+holds the arithmetic behind three unit and ten E2E shards.
+
+A Windows unit shard hands its files to `test:run` in batches of at most 6,000 characters of
+paths, each writing its own `windows-unit-junit-<n>.xml`. Passed whole, they did not fit: on run
+37841183938 a command line on the way to the tests was cut at 8,191 characters, cmd.exe's limit,
+and each shard silently ran only its first ~240 files. The "Every dealt file ran" step then runs
+`scripts/shard-junit-coverage.ts`, which names any dealt file no JUnit case reports.
+
+Each Windows shard uploads its JUnit as `windows-unit-junit-shard-<n>` (one file per batch) or
+`windows-e2e-junit-shard-<n>`. To regenerate both files from a recent Windows run:
+
+```sh
+npm run test:timings -- --windows <run-id>
+```
+
+Playwright's JUnit names no `file`, so a spec's time is its suite's, matched through the
+cases' `classname`, which Playwright sets to the spec file. The Windows jobs are allowed to fail, so a failing test's time counts too: on
+run 37821364466 that was 990 of the 14,980 recorded E2E seconds.
 
 ## The "Flaky tests" check
 

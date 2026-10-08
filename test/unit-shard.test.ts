@@ -9,10 +9,14 @@ import {
   parseShardSpec,
   partitionUnitTests,
   readShardTimings,
+  SHARD_SUITES,
+  type ShardSuite,
   shardWeights,
+  suiteFiles,
   unitTestFiles,
 } from "../scripts/unit-shard.mjs";
-import { shardTimings } from "../scripts/unit-shard-timings.ts";
+import { shardTimings, TIMING_SOURCES } from "../scripts/unit-shard-timings.ts";
+import { batchReports, unreportedFiles } from "../scripts/shard-junit-coverage.ts";
 
 // What is at stake: coverage. Timings only steer which shard a file lands in; whatever they
 // say, every unit test file must run in exactly one shard, or CI goes green without it.
@@ -158,6 +162,45 @@ test("the committed timings and this checkout's unit glob partition cleanly", ()
   assertEachFileOnce(files, partitionUnitTests(files, timings, 6), 6, "6 shards");
 });
 
+test("every suite's committed timings are its own shape, and its files partition cleanly", () => {
+  const shapes: Record<ShardSuite, RegExp> = {
+    unit: /^test\/.+\.test\.ts$/,
+    "windows-unit": /^test\/.+\.test\.ts$/,
+    // Relative to Playwright's test directory, as its `--test-list` takes them.
+    "windows-e2e": /^[^/].*\.spec\.ts$/,
+  };
+  for (const suite of Object.keys(SHARD_SUITES) as ShardSuite[]) {
+    const files = suiteFiles(repo, suite);
+    assert.ok(files.length > 0, suite);
+    assert.ok(files.every((file) => shapes[suite].test(file)), suite);
+    const timings = readShardTimings(repo, suite);
+    assert.ok(Object.values(timings).every((ms) => Number.isInteger(ms) && (ms as number) >= 0), suite);
+    // Keys of the suite's shape only; a deleted file left in them is stale, which costs balance
+    // until the next regeneration and never fails a run.
+    assert.ok(Object.keys(timings).every((file) => shapes[suite].test(file)), `${suite} times files of its own shape`);
+    for (const total of [3, 10]) assertEachFileOnce(files, partitionUnitTests(files, timings, total), total, `${suite}, ${total} shards`);
+  }
+  assert.deepEqual(suiteFiles(repo, "windows-unit"), unitTestFiles(repo), "Windows runs the same unit files as Linux");
+  assert.notEqual(SHARD_SUITES["windows-unit"].timings, SHARD_SUITES.unit.timings, "Windows keeps its own timings");
+});
+
+test("the CLI deals the suite it is named, and refuses one it does not know", () => {
+  const cli = (...args: string[]) => spawnSync(process.execPath, [join(repo, "scripts", "unit-shard.mjs"), ...args], { encoding: "utf8" });
+  const dealt = Array.from({ length: 3 }, (_, i) => {
+    const result = cli(`${i + 1}/3`, "windows-e2e");
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim().split("\n");
+  });
+  assertEachFileOnce(suiteFiles(repo, "windows-e2e"), dealt, 3, "windows-e2e via the CLI");
+  assert.ok(dealt.flat().every((file) => !file.startsWith("e2e/")), "e2e files print relative to e2e/specs");
+  assert.deepEqual(cli("1/2").stdout, cli("1/2", "unit").stdout, "the suite defaults to Linux unit");
+
+  const unknown = cli("1/2", "linux-e2e");
+  assert.equal(unknown.status, 1);
+  assert.equal(unknown.stdout, "");
+  assert.match(unknown.stderr, /unknown suite "linux-e2e"; expected one of unit, windows-unit, windows-e2e/);
+});
+
 test("each unit shard uploads its JUnit results for the timings generator", () => {
   const action = readFileSync(join(repo, ".github", "actions", "run-unit-shard", "action.yml"), "utf8");
   const upload = /- name: Upload JUnit results\n([\s\S]*?)(?=\n\n|\n {4}- name:)/.exec(action)?.[1] ?? "";
@@ -196,7 +239,7 @@ test("timings sum each file's top-level suites and cases per Node release and av
 });
 
 test("timings refuse an artifact that is not a unit shard's JUnit, or XML that does not parse", () => {
-  assert.throws(() => shardTimings([{ artifact: "flake-report-unit-node-24-shard-1", xml: junit([]) }], []), /not a unit-junit/);
+  assert.throws(() => shardTimings([{ artifact: "flake-report-unit-node-24-shard-1", xml: junit([]) }], []), /does not match \/\^unit-junit-node-/);
   assert.throws(() => shardTimings([{ artifact: "unit-junit-node-24-shard-1", xml: "<testsuites>" }], []), /not well-formed/);
 });
 
@@ -239,4 +282,75 @@ test("a suite counts once at its own time: hooks are included, concurrent cases 
     // cases add up to, and the nested suite is not counted again.
     "/w/test/parallel.test.ts": 2500,
   });
+});
+
+test("Windows timings match win32 paths and Playwright suites, and sum one run's shards", () => {
+  const [unit, e2e] = TIMING_SOURCES.windows;
+  const runner = "D:\\a\\mission-control\\mission-control";
+  const unitTimings = shardTimings(
+    [
+      { artifact: "windows-unit-junit-shard-1", xml: junit([{ file: `${runner}\\test\\a.test.ts`, seconds: 3 }]) },
+      { artifact: "windows-unit-junit-shard-2", xml: junit([{ file: `${runner}\\test\\b.test.ts`, seconds: 1.5 }]) },
+    ],
+    ["test/a.test.ts", "test/b.test.ts"],
+    unit!.artifact,
+  );
+  // One sample, not an average across shards: each file ran in exactly one of them.
+  assert.deepEqual(unitTimings, { "test/a.test.ts": 3000, "test/b.test.ts": 1500 });
+
+  // Playwright's shape: no `file`, and each case's `classname` is the spec file.
+  const playwright = (name: string, seconds: number) =>
+    `<testsuites><testsuite name="${name}" time="${seconds}"><testcase name="t" classname="${name}" time="${seconds}"></testcase></testsuite></testsuites>`;
+  const e2eTimings = shardTimings(
+    [
+      { artifact: "windows-e2e-junit-shard-1", xml: playwright("rail.spec.ts", 53.007) },
+      { artifact: "windows-e2e-junit-shard-2", xml: playwright("board.spec.ts", 10.25) },
+    ],
+    ["board.spec.ts", "rail.spec.ts"],
+    e2e!.artifact,
+  );
+  assert.deepEqual(e2eTimings, { "board.spec.ts": 10250, "rail.spec.ts": 53007 });
+
+  assert.throws(() => shardTimings([{ artifact: "unit-junit-node-24-shard-1", xml: junit([]) }], [], unit!.artifact), /does not match/);
+});
+
+test("a case with no file belongs to its classname, as Playwright reports it", () => {
+  const parsed = junitFileTimes(`<testsuites>
+<testsuite name="rail.spec.ts" time="4"><testcase name="a" classname="rail.spec.ts" time="1"/><testcase name="b" classname="rail.spec.ts" time="3"/></testsuite>
+<testcase name="node" classname="test" time="2" file="/w/test/a.test.ts"/>
+</testsuites>`);
+  assert.ok(parsed.ok);
+  // A Node case keeps its `file` over its `classname`.
+  assert.deepEqual(Object.fromEntries(parsed.times), { "rail.spec.ts": 4000, "/w/test/a.test.ts": 2000 });
+});
+
+test("a shard's JUnit must name every file it was dealt, wherever the runner put the checkout", () => {
+  const runner = "D:\\a\\mission-control\\mission-control";
+  const batches = [
+    junit([{ file: `${runner}\\test\\a.test.ts`, seconds: 1 }]),
+    // A file that fails to load still reports one failing case under its own name.
+    `<testsuites><testcase name="b.test.ts" classname="test" time="0.1" file="${runner}\\test\\b.test.ts"><failure message="test failed"/></testcase></testsuites>`,
+  ];
+  assert.deepEqual(unreportedFiles(["test/a.test.ts", "test/b.test.ts"], batches), []);
+  // Dropped files are named in list order; a path that merely ends the same way does not count.
+  assert.deepEqual(
+    unreportedFiles(["test/c.test.ts", "test/a.test.ts", "test/b.test.ts"], [junit([{ file: "/w/test/a.test.ts", seconds: 1 }, { file: "/w/test/xb.test.ts", seconds: 1 }])]),
+    ["test/c.test.ts", "test/b.test.ts"],
+  );
+  assert.throws(() => unreportedFiles(["test/a.test.ts"], ["<testsuites>"]), /not well-formed/);
+});
+
+test("batch results are read in batch order, and nothing else beside them is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shard-junit-coverage-"));
+  try {
+    for (const name of ["windows-unit-junit-10.xml", "windows-unit-junit-2.xml", "windows-unit-junit-1.xml", "windows-unit-junit.xml", "windows-unit-junit-x.xml", "other-1.xml"]) {
+      writeFileSync(join(dir, name), "<testsuites/>");
+    }
+    assert.deepEqual(
+      batchReports(join(dir, "windows-unit-junit")).map((path) => path.slice(dir.length + 1)),
+      ["windows-unit-junit-1.xml", "windows-unit-junit-2.xml", "windows-unit-junit-10.xml"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
