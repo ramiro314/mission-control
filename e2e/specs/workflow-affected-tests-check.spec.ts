@@ -7,6 +7,9 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
+
+skipSpecOnWin32(test, "check commands run only on Linux and macOS, through POSIX process groups, so the daemon records this gate as unavailable on win32 instead of running it");
 
 /**
  * An `affected-tests` Command, end to end: the daemon reads the repository's committed
