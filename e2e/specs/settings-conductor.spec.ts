@@ -26,6 +26,8 @@ import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 test.use({ daemonEnv: { MISSION_PIPELINE_TICK_MS: "1000" } });
 
 const EVIDENCE = artifactsDir("settings-conductor");
+// The panel names the configured binary, which is `conduct-ts.exe` on win32.
+const MISSING_ENGINE = /Setup needed .*conduct-ts(?:\.exe)? is not on this daemon/;
 
 async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -423,7 +425,7 @@ test.describe("with no engine or verified source checkout", () => {
 
     await openConductor(page, daemon.baseURL);
     await expect.poll(() => pipelineReads.length).toBeGreaterThan(0);
-    await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
+    await expect(page.getByText(MISSING_ENGINE)).toBeVisible();
     await expect(page.getByRole("button", { name: "I installed it, check again" })).toBeVisible();
     await expect(page.getByText("git clone https://github.com/mancej/ai-conductor.git")).toBeVisible();
     await expect(page.getByText("cd ai-conductor && ./bin/install")).toBeVisible();
@@ -457,6 +459,7 @@ test.describe("with a verified local Conductor checkout", () => {
     page,
     daemon,
   }) => {
+    skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
     test.setTimeout(75_000);
     expect(daemon.conductorCheckout).not.toBeNull();
     const checkout = daemon.conductorCheckout!;
@@ -493,7 +496,7 @@ test.describe("with a verified local Conductor checkout", () => {
     await expect(page.getByRole("status")).toContainText(
       "Installer terminal opened. Setup is not complete until Mission Control detects conduct-ts",
     );
-    await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
+    await expect(page.getByText(MISSING_ENGINE)).toBeVisible();
     await expect.poll(() => installerTerminals(daemon.recordDir).length).toBe(1);
     const argv = installerTerminals(daemon.recordDir)[0]?.argv ?? [];
     expect(argv[0]).toBe("new-workspace");

@@ -13,6 +13,7 @@ import {
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 /**
  * Acting on a pipeline from the dashboard, rather than only watching one.
@@ -350,6 +351,7 @@ test("a broken seal offers the ceremony, in a terminal, running the engine's own
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
   seedConductorRun(daemon.repo, "fix-the-thing", {
     steps: { worktree: "done", build: "in_progress" },
     lastStep: "build",
