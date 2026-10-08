@@ -372,6 +372,40 @@ test("the hash follows the editor to a second asset, without stacking history", 
   await expect(dashboard.getByRole("heading", { name: "Who does the reviewing?" })).toBeVisible();
 });
 
+test("a workflow link opens that workflow even before the event stream has announced it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The race a slow daemon loses: the workflow is created over HTTP, and the link to it lands
+  // before its `workflow_upsert` frame has reached the page. Held here by dropping every such
+  // frame, so the list the builder mounts with never contains the linked workflow. The builder
+  // used to read "not in the list" as "not there" and open the first workflow by name instead
+  // (Bug Fix Review), which is what the Windows runner showed in `library-exit.spec.ts`.
+  await dashboard.addInitScript(() => {
+    const native = Object.getOwnPropertyDescriptor(EventSource.prototype, "onmessage")!;
+    Object.defineProperty(EventSource.prototype, "onmessage", {
+      ...native,
+      set(this: EventSource, handler: ((event: MessageEvent) => void) | null) {
+        native.set!.call(this, handler && ((event: MessageEvent) => {
+          if ((JSON.parse(event.data as string) as { type?: string }).type === "workflow_upsert") return;
+          handler.call(this, event);
+        }));
+      },
+    });
+  });
+  await dashboard.reload();
+  await expect(dashboard.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Unannounced workflow",
+    description: "Linked before the stream says it exists.",
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/library/workflows/${created.workflow.id}`);
+  await expect(dashboard.getByRole("heading", { name: "Unannounced workflow" })).toBeVisible();
+  expect(await dashboard.evaluate(() => location.hash))
+    .toBe(`#/library/workflows/${created.workflow.id}`);
+});
+
 test("the ＋ New cards open a blank draft, and creating a workflow lands on the new one", async ({
   dashboard,
   daemon,
