@@ -393,6 +393,19 @@ test("a workflow link opens that workflow even before the event stream has annou
       },
     });
   });
+  // One archived workflow, in the snapshot the reload brings, so the list draws its "Show
+  // archived" toggle at all. An unlisted workflow is not an archived one: the toggle that a
+  // route to an archived workflow switches on has to stay off here.
+  const retired = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Retired workflow",
+    description: "Archived, so the list offers to show it.",
+  });
+  const archived = await fetch(`${daemon.baseURL}/api/workflows/${retired.workflow.id}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  expect(archived.ok).toBe(true);
   await dashboard.reload();
   await expect(dashboard.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
 
@@ -404,6 +417,23 @@ test("a workflow link opens that workflow even before the event stream has annou
   await expect(dashboard.getByRole("heading", { name: "Unannounced workflow" })).toBeVisible();
   expect(await dashboard.evaluate(() => location.hash))
     .toBe(`#/library/workflows/${created.workflow.id}`);
+  await expect(dashboard.getByRole("checkbox", { name: "Show archived" })).not.toBeChecked();
+  await expect(dashboard.getByRole("button", { name: /Retired workflow/ })).toHaveCount(0);
+});
+
+test("a link to a workflow that does not exist says so, rather than opening another one", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The other side of trusting the link: an id nobody will ever announce. The builder loads it
+  // by id, the daemon answers 404, and the page says that, keeping the address it was given -
+  // never quietly substituting the first workflow in the list and renaming the hash after it.
+  await dashboard.goto(`${daemon.baseURL}/#/library/workflows/no-such-workflow`);
+  const failure = dashboard.getByRole("alert").filter({ hasText: "no such workflow" });
+  await expect(failure).toBeVisible();
+  await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/library/workflows/no-such-workflow");
+  await expect(dashboard.getByRole("heading", { name: "Bug Fix Review" })).toHaveCount(0);
 });
 
 test("the ＋ New cards open a blank draft, and creating a workflow lands on the new one", async ({
