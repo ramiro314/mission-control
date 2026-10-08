@@ -155,7 +155,7 @@ assertion failures from run 37736134634; each is below, read against this run an
 | `task-source-sync` (older imports) | A Keep updated write still in flight when the last sweep started invalidated that sweep's refresh, which then counted nothing | Fixed: the spec waits for the daemon to hold each value. Passed on this run |
 | `shape-tickets-marker` (cancelled task lapses), `scout-archive` (complete, reclaim, concise title) | The task cancel or removal must release the worktree, which win32 refuses (plan M2.4) | D37 skip with `WIN32_OCCUPANCY_UNPROVABLE` |
 | `ensemble-failure-actions` | Product: a withdraw whose cancel cannot release the worktree answers 400, so the second member stays active and the run never fails | c679c577 |
-| `console-header-one-row` (situational chip) | Windows fonts fit the header at every width without rung 7, so the proof is vacuous there | c43aba91 |
+| `console-header-one-row` (situational chip) | Windows fonts fit the header at every width without rung 7, so the proof is vacuous there | c43aba91: fixed in the spec with a second situational chip, a pull request; see below |
 
 Failing on this run and not in c678f42a's list: `library-exit` (e1354b36), `conductor-loops`,
 `pipeline-controls` and `pipeline-provider-readiness` (05e056ac), `queued-turn-delivery` and
@@ -217,6 +217,17 @@ starvation signature. These own the fast assertion failures:
   answer": CodeMirror replaced the marker's button, because its widget had no `updateDOM`. It
   passed on runs 37745155079 and 37758180479, so it is timing, not starvation. The widget now
   updates the button in place, and a new spec changes a focused marker's state.
+
+- `console-header-one-row`: "a header carrying a situational chip still fits the narrowest
+  supported pane" failed on every Windows run (37736134634, 37807097380, 37821364466) with "the
+  situational chip was never shed, so no width needed rung 7". The product is right: the
+  header stayed on one row at every width. Run 37821364466's trace shows that at a 400px window
+  the 356px row fit at rung 6 with the 101px workflow chip still drawn, with at most 17px to
+  spare, so the spec had nothing to prove there. The test now also adopts a pull request
+  through the fake `gh`, so the row carries a second real chip, 76px on macOS. On macOS rung 7
+  then fires at every window from 540px down and both chips go only at rung 7. The order and
+  never-wraps assertions are unchanged, and the failure message now lists every sample. That
+  makes the next font difference readable without unpacking a trace.
 
 - `fix/win32-ensemble-cancel-tracked`: `ensemble-failure-actions` ("a failed ensemble can be
   dismissed without deletion...") and `ensemble-review-restart` ("a dead provider parks the
