@@ -307,11 +307,30 @@ export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
     unknownReason: table.failure
       ? `process listing failed: ${describeFailure(table.failure)}`
       : effectiveUid === null
-        ? "process listing failed: effective user identity is unavailable"
+        ? NO_EFFECTIVE_UID
         : null,
     cwdScopePids,
     completedCollectorPids: table.collectorPids,
   };
+}
+
+const NO_EFFECTIVE_UID = "process listing failed: effective user identity is unavailable";
+
+/**
+ * `listProcessesSnapshot` for a caller that uses a snapshot only when `unknownReason` is null.
+ *
+ * Without an effective uid (win32) every snapshot is unusable, which is known before listing
+ * anything, so this answers that reason at once instead of running the listing just to discard
+ * it. On win32 that listing is a PowerShell CIM query over every process on the machine.
+ */
+export async function usableProcessSnapshot(
+  list: () => Promise<ProcessSnapshot> = listProcessesSnapshot,
+  geteuid: (() => number) | null = process.geteuid ?? null,
+): Promise<ProcessSnapshot> {
+  if (typeof geteuid !== "function") {
+    return { processes: [], unknownReason: NO_EFFECTIVE_UID, cwdScopePids: [], completedCollectorPids: [] };
+  }
+  return await list();
 }
 
 export async function listProcesses(): Promise<Proc[]> {

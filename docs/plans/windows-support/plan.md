@@ -2,6 +2,9 @@
 
 Status: approved 2026-10-04 after a five-round interview and plan review. Amended the same day in plan-validation repair round 1 (D33 to D35, the D16 release correction, the early SDK spike, and executable checks for A5 and A10), and in repair round 2 (D36 and D37, named producers for the M3 and after-the-merge tickets, and the win32 cwd fallback), and in repair round 3 (D38: seams discovered during M2 are built on the branch), and in repair round 4 (how the PR-less gating ticket M2.0 releases its dependents), and in repair round 5 (M3 restructured into two tickets: M3.1 owns the merge PR on its own session branch, and M3.2 retires). Follow-up: Mission Control slices this plan into tickets after its pull request merges, in two stages (see [Ticket slicing](#ticket-slicing-d34)). Not implemented.
 
+The Windows e2e failure inventory, with the ticket that owns each open cause, is kept in
+[e2e-inventory.md](e2e-inventory.md).
+
 ## Goal
 
 Mission Control runs natively on Windows 11 (x64): the daemon, the Foreman worker, the

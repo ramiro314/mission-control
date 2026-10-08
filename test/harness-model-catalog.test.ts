@@ -16,6 +16,7 @@ import {
 import { HARNESSES } from "../src/server/harness/index.ts";
 import {
   HarnessModelCatalogService,
+  hostModelCatalogSpecs,
   type ModelCatalogSpecs,
 } from "../src/server/harness/model-catalog-service.ts";
 
@@ -352,4 +353,22 @@ test("the service remains exhaustive when its specs are traversed generically", 
   const result = await service.getCatalogs();
   assert.deepEqual(Object.keys(result), [...AGENT_TYPES]);
   assert.deepEqual(seen, ["pi"]);
+});
+
+test("a host that refuses a harness never starts that harness to ask for its models", async () => {
+  // Codex and Pi are refused on win32, and their discovery is a real process each (Codex's
+  // app-server, Pi's catalog probe) that the dashboard asked for on every load there.
+  const win32 = hostModelCatalogSpecs("win32");
+  assert.equal(win32.codex.discover, null);
+  assert.equal(win32.pi.discover, null);
+  assert.equal(win32.claude.discover, HARNESSES.claude.models.discover);
+
+  const darwin = hostModelCatalogSpecs("darwin");
+  for (const agent of AGENT_TYPES) assert.equal(darwin[agent].discover, HARNESSES[agent].models.discover, agent);
+
+  const result = await new HarnessModelCatalogService({
+    specs: { ...win32, claude: { shipped: MODEL_CATALOG.claude, discover: null } },
+  }).getCatalogs();
+  assert.deepEqual(result.codex, { choices: [...MODEL_CATALOG.codex], source: "shipped", refreshedAt: null, problem: null });
+  assert.deepEqual(result.pi, { choices: [...MODEL_CATALOG.pi], source: "shipped", refreshedAt: null, problem: null });
 });

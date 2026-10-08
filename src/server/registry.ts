@@ -824,6 +824,9 @@ function bucketedAge(ms: number | null): number | null {
  * the next discovery sweep. SDK sessions use the supervisor's durable `sdk:<uuid>` and
  * report directly through the handle that owns that entry.
  */
+/** Subscribers the Registry carries before Node reports a possible listener leak. */
+const REGISTRY_SUBSCRIBER_LIMIT = 100;
+
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   /** Accepted steers the agent has not read yet, by note key. See `recordSteeredTurn`. */
@@ -1176,6 +1179,10 @@ export class Registry extends EventEmitter {
 
   constructor() {
     super();
+    // A fan-out bus by design: about a dozen services subscribe at boot and every open
+    // dashboard tab adds one through SSE. Node's default of ten warned on every boot; this
+    // bound still warns on a subscriber that leaks per request.
+    this.setMaxListeners(REGISTRY_SUBSCRIBER_LIMIT);
     this.latestRateLimits = loadClaudeRateLimits();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);

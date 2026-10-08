@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
-  listProcessesSnapshot,
+  usableProcessSnapshot,
   type Proc,
   type ProcessSnapshot,
 } from "../discovery/processes.ts";
@@ -38,7 +38,8 @@ export interface WorktreeOccupancyDeps {
 }
 
 const DEFAULT_DEPS: WorktreeOccupancyDeps = {
-  listProcesses: listProcessesSnapshot,
+  // Occupancy refuses an unusable snapshot, so a host that cannot produce one skips the listing.
+  listProcesses: () => usableProcessSnapshot(),
   readCwds: readProcCwdsSnapshot,
   knownOwner: () => null,
   ownProcesses: ownWorktreeProcesses,

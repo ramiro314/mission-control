@@ -1,3 +1,4 @@
+import { harnessUnsupportedWhy } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import {
   HARNESS_MODEL_CATALOG_LIMITS,
@@ -6,6 +7,7 @@ import {
   type HarnessModelCatalogChoice,
   type HarnessModelCatalogs,
 } from "@shared/protocol.ts";
+import { hostPlatform } from "../platform/host.ts";
 import { HARNESSES } from "./index.ts";
 import type { ModelCatalogDiscover, ModelCatalogSpec } from "./types.ts";
 
@@ -25,10 +27,18 @@ type CacheEntry = {
   refreshedAtMs: number;
 };
 
-function defaultSpecs(): Record<AgentType, ModelCatalogSpec> {
+/**
+ * Every harness's catalog as `platform` can use it. A harness the host refuses keeps its shipped
+ * list and loses discovery: nothing can dispatch it there, and asking it for models would start
+ * its CLI (Codex's app-server, Pi's catalog probe) on every dashboard load for nothing.
+ */
+export function hostModelCatalogSpecs(platform: NodeJS.Platform): ModelCatalogSpecs {
   return Object.fromEntries(
-    AGENT_TYPES.map((agent) => [agent, HARNESSES[agent].models]),
-  ) as Record<AgentType, ModelCatalogSpec>;
+    AGENT_TYPES.map((agent) => {
+      const spec = HARNESSES[agent].models;
+      return [agent, harnessUnsupportedWhy(agent, platform) ? { ...spec, discover: null } : spec];
+    }),
+  ) as ModelCatalogSpecs;
 }
 
 export class HarnessModelCatalogService {
@@ -41,7 +51,7 @@ export class HarnessModelCatalogService {
   private stopped = false;
 
   constructor(deps: HarnessModelCatalogServiceDeps = {}) {
-    const specs = deps.specs ?? defaultSpecs();
+    const specs = deps.specs ?? hostModelCatalogSpecs(hostPlatform());
     this.specs = Object.fromEntries(
       AGENT_TYPES.map((agent) => [agent, specs[agent]]),
     ) as Record<AgentType, ModelCatalogSpec>;
