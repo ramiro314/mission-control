@@ -15,6 +15,7 @@ import {
 import {
   executableEnvironmentFor,
   LOGIN_SHELL_PATH_MARKER,
+  type ExecutableEnvironmentPlatform,
 } from "../platform/executable-environment.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
 
@@ -122,16 +123,20 @@ function isPathCommand(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
 
-export async function probeLoginShellPath(
-  env: NodeJS.ProcessEnv = process.env,
-  timeoutMs = LOGIN_SHELL_TIMEOUT_MS,
-  platform: NodeJS.Platform = process.platform,
-): Promise<LoginShellResult> {
-  const { command: shell, args } = executableEnvironmentFor(platform).loginShellPathRead(env);
+type PathReadOutcome = { stdout: string } | { problem: "login shell failed" | "login shell timed out" };
+
+/** Run one PATH-read command to exit within `timeoutMs`, killing its whole tree on the deadline. */
+async function runPathRead(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  encoding: BufferEncoding,
+): Promise<PathReadOutcome> {
   return await new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (result: LoginShellResult): void => {
+    const finish = (result: PathReadOutcome): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
@@ -141,7 +146,7 @@ export async function probeLoginShellPath(
       // `execFile` deliberately omits process-group ownership from its public options.
       // Spawn directly so startup-file grandchildren cannot outlive the discovery bound.
       const child = spawn(
-        shell,
+        command,
         args,
         {
           ...processLifetime.treeRootOptions,
@@ -154,41 +159,79 @@ export async function probeLoginShellPath(
       );
       let stdout = "";
       const terminate = (): void => processLifetime.killTree(child);
-      child.stdout.setEncoding("utf8");
+      child.stdout.setEncoding(encoding);
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
         if (stdout.length <= 1024 * 1024) return;
         terminate();
-        finish({ path: null, problem: "login shell failed" });
+        finish({ problem: "login shell failed" });
       });
-      child.once("error", () => finish({ path: null, problem: "login shell failed" }));
+      child.once("error", () => finish({ problem: "login shell failed" }));
       child.once("close", (code) => {
-        if (code !== 0) {
-          finish({ path: null, problem: "login shell failed" });
-          return;
-        }
-        const marker = LOGIN_SHELL_PATH_MARKER;
-        const start = stdout.indexOf(marker);
-        const end = start < 0 ? -1 : stdout.indexOf(marker, start + marker.length);
-        const path = start >= 0 && end >= 0
-          ? stdout.slice(start + marker.length, end).trim()
-          : "";
-        finish(path
-          ? { path, problem: null }
-          : { path: null, problem: "login shell returned no PATH" });
+        finish(code === 0 ? { stdout } : { problem: "login shell failed" });
       });
       timer = setTimeout(() => {
         // Signalling only the direct shell leaves startup-file grandchildren alive. A
         // grandchild that keeps stdout or stderr open would make daemon initialization
         // unbounded, so kill the detached group and settle independently of `close`.
         terminate();
-        finish({ path: null, problem: "login shell timed out" });
+        finish({ problem: "login shell timed out" });
       }, timeoutMs);
       timer.unref?.();
     } catch {
-      finish({ path: null, problem: "login shell failed" });
+      finish({ problem: "login shell failed" });
     }
   });
+}
+
+/**
+ * The platform's cheaper PATH read (`directPathRead`), or undefined when it has none, or when
+ * any of its commands failed or its outputs could not be answered exactly.
+ */
+async function directLoginPath(
+  platform: ExecutableEnvironmentPlatform,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<LoginShellResult | undefined> {
+  const read = platform.directPathRead?.(env);
+  if (!read) return undefined;
+  const outcomes = await Promise.all(read.commands.map(({ command, args }) =>
+    runPathRead(command, args, env, timeoutMs, "latin1")));
+  const stdouts: string[] = [];
+  for (const outcome of outcomes) {
+    if (!("stdout" in outcome)) return undefined;
+    stdouts.push(outcome.stdout);
+  }
+  const path = read.path(stdouts)?.trim();
+  if (path === undefined) return undefined;
+  return path ? { path, problem: null } : { path: null, problem: "login shell returned no PATH" };
+}
+
+export async function probeLoginShellPath(
+  env: NodeJS.ProcessEnv = process.env,
+  timeoutMs = LOGIN_SHELL_TIMEOUT_MS,
+  platform: NodeJS.Platform = process.platform,
+): Promise<LoginShellResult> {
+  const row = executableEnvironmentFor(platform);
+  // One deadline covers the direct read and the fallback after it.
+  const deadline = Date.now() + timeoutMs;
+  const direct = await directLoginPath(row, env, timeoutMs);
+  if (direct) return direct;
+  const remainingMs = row.directPathRead ? deadline - Date.now() : timeoutMs;
+  if (remainingMs <= 0) return { path: null, problem: "login shell timed out" };
+  const { command: shell, args } = row.loginShellPathRead(env);
+  const outcome = await runPathRead(shell, args, env, remainingMs, "utf8");
+  if (!("stdout" in outcome)) return { path: null, problem: outcome.problem };
+  const { stdout } = outcome;
+  const marker = LOGIN_SHELL_PATH_MARKER;
+  const start = stdout.indexOf(marker);
+  const end = start < 0 ? -1 : stdout.indexOf(marker, start + marker.length);
+  const path = start >= 0 && end >= 0
+    ? stdout.slice(start + marker.length, end).trim()
+    : "";
+  return path
+    ? { path, problem: null }
+    : { path: null, problem: "login shell returned no PATH" };
 }
 
 export class ExecutableLocator {

@@ -18,6 +18,17 @@ export interface LoginShellPathRead {
   args: readonly string[];
 }
 
+/**
+ * A cheaper read of the same PATH, tried before `loginShellPathRead`. Every command starts at
+ * once, and `path` receives their stdout decoded as Latin-1, one character per byte, so it can
+ * tell ASCII from anything else. It answers the PATH, or null when an output carries something
+ * it cannot answer exactly, which sends the probe on to `loginShellPathRead`.
+ */
+export interface DirectPathRead {
+  commands: readonly LoginShellPathRead[];
+  path(stdouts: readonly string[]): string | null;
+}
+
 export interface ExecutableEnvironmentPlatform {
   /** Roots holding application bundles, whose supported locations are checked before PATH. */
   applicationDirectories(home: string, env: NodeJS.ProcessEnv): readonly string[];
@@ -29,6 +40,8 @@ export interface ExecutableEnvironmentPlatform {
   executableNames(command: string, env: NodeJS.ProcessEnv): readonly string[];
   /** The command whose stdout carries the login environment's PATH between two markers. */
   loginShellPathRead(env: NodeJS.ProcessEnv): LoginShellPathRead;
+  /** A cheaper read of the same PATH, where the platform has one. */
+  directPathRead?(env: NodeJS.ProcessEnv): DirectPathRead;
 }
 
 const POSIX_OS_DEFAULTS: readonly string[] = Object.freeze([
@@ -108,6 +121,91 @@ export function powerShellArgs(script: string): string[] {
   ];
 }
 
+/** `reg.exe`, which every Windows install ships, by its fixed path. */
+export function windowsRegPath(env: NodeJS.ProcessEnv): string {
+  return win32.join(systemRoot(env), "System32", "reg.exe");
+}
+
+/** The registry keys Windows builds a new process's PATH from, machine first. */
+export const WINDOWS_ENVIRONMENT_KEYS = [
+  "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+  "HKCU\\Environment",
+] as const;
+
+/** A variable looked up the way Windows does, without regard to case. */
+function windowsEnvironmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  if (!name) return undefined;
+  const wanted = name.toUpperCase();
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && key.toUpperCase() === wanted) return value;
+  }
+  return undefined;
+}
+
+/**
+ * `value` with its `%NAME%` references expanded as `ExpandEnvironmentStrings` does, which is
+ * what `[Environment]::GetEnvironmentVariable` applies to a `REG_EXPAND_SZ`. A defined name is
+ * replaced, an undefined one stays as written, and its closing `%` may then open the next
+ * reference: `%UNSET%PATH%` keeps `%UNSET` and expands `%PATH%`.
+ */
+export function expandWindowsEnvironmentReferences(value: string, env: NodeJS.ProcessEnv): string {
+  let expanded = "";
+  let at = 0;
+  while (at < value.length) {
+    const open = value.indexOf("%", at);
+    const close = open < 0 ? -1 : value.indexOf("%", open + 1);
+    if (close < 0) return expanded + value.slice(at);
+    expanded += value.slice(at, open);
+    const replacement = windowsEnvironmentValue(env, value.slice(open + 1, close));
+    if (replacement === undefined) {
+      expanded += value.slice(open, close);
+      at = close;
+    } else {
+      expanded += replacement;
+      at = close + 1;
+    }
+  }
+  return expanded;
+}
+
+/** One value line of `reg query`: four spaces, the name, four spaces, the type, four spaces, the data. */
+const REG_VALUE_LINE = /^ {4}(.+?) {4}(REG_[A-Z_]+)(?: {4}(.*))?$/;
+
+/**
+ * The `Path` value in the `reg query <key>` output `stdout`, as
+ * `[Environment]::GetEnvironmentVariable` reports it: a `REG_EXPAND_SZ` expanded against `env`,
+ * a `REG_SZ` as stored, and null when the key holds no `Path`.
+ *
+ * Undefined means the output cannot be answered exactly: it lists no key, `Path` has another
+ * type, or its data is not ASCII. reg.exe writes the console code page, not UTF-8, so a
+ * non-ASCII byte could be any of several characters.
+ */
+export function registryPathValue(stdout: string, env: NodeJS.ProcessEnv): string | null | undefined {
+  const lines = stdout.split(/\r?\n/);
+  if (!lines.some((line) => line.startsWith("HKEY_"))) return undefined;
+  for (const line of lines) {
+    const match = REG_VALUE_LINE.exec(line);
+    if (!match || match[1]!.toLowerCase() !== "path") continue;
+    const data = match[3] ?? "";
+    if (/[\u0080-\uffff]/.test(data)) return undefined;
+    if (match[2] === "REG_SZ") return data;
+    if (match[2] === "REG_EXPAND_SZ") return expandWindowsEnvironmentReferences(data, env);
+    return undefined;
+  }
+  return null;
+}
+
+/**
+ * PATH from the `reg query` output of each `WINDOWS_ENVIRONMENT_KEYS` key, in order, joined as
+ * the PowerShell read joins them: machine then user, blank values dropped. Null when either
+ * output cannot be answered exactly.
+ */
+export function registryPath(stdouts: readonly string[], env: NodeJS.ProcessEnv): string | null {
+  const values = stdouts.map((stdout) => registryPathValue(stdout, env));
+  if (values.some((value) => value === undefined)) return null;
+  return values.filter(Boolean).join(";");
+}
+
 /** What Windows uses when PATHEXT is unset: the extensions that start a program. */
 const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 
@@ -131,7 +229,10 @@ const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
  *   user environment in the registry, machine first, and that is what is read here. A PATH
  *   edited by an installer after Mission Control started reaches it the same way a new login
  *   shell's would on macOS. The read keeps its `login-shell` provenance in the ladder: it is the
- *   same rung, filled from the platform's own source.
+ *   same rung, filled from the platform's own source. Every Setup check forces this read, so it
+ *   is two `reg query` processes rather than a Windows PowerShell start, and PowerShell's
+ *   `[Environment]::GetEnvironmentVariable` stays as the fallback for any value `reg` cannot
+ *   report exactly.
  */
 export const win32ExecutableEnvironment: ExecutableEnvironmentPlatform = {
   applicationDirectories: (home, env) => [
@@ -177,6 +278,10 @@ export const win32ExecutableEnvironment: ExecutableEnvironmentPlatform = {
       "$path = (@($machine, $user) | Where-Object { $_ }) -join ';'",
       `[Console]::Out.Write('${LOGIN_SHELL_PATH_MARKER}' + $path + '${LOGIN_SHELL_PATH_MARKER}')`,
     ].join("\n")),
+  }),
+  directPathRead: (env) => ({
+    commands: WINDOWS_ENVIRONMENT_KEYS.map((key) => ({ command: windowsRegPath(env), args: ["query", key] })),
+    path: (stdouts) => registryPath(stdouts, env),
   }),
 };
 

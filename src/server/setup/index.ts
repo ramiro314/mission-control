@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+
 import { canInstallPiExtension } from "../environment/pi-extension.ts";
 import type { AgentType } from "@shared/types.ts";
 import { EXECUTABLE_SOURCE_LABELS, type ExecutableId } from "@shared/executables.ts";
@@ -40,6 +42,7 @@ import { configuredTerminalTargetDeps } from "../terminals-config.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
+import { npmConfigGet } from "./npm-config.ts";
 import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
 import {
   developerModeStatus,
@@ -392,6 +395,13 @@ export function defaultSetupDeps(): SetupDeps {
     ghBin,
     resolveBinPath,
     runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),
+    npmConfigGet: (key) => npmConfigGet(key, {
+      env: process.env,
+      cwd: process.cwd(),
+      platform: process.platform,
+      homedir: homedir(),
+      resolveBinPath,
+    }),
     installedPlugins: () => installedPluginsRead(claudePluginsDir(environment.homeDir)),
     skills: (): SetupSkillsRead => {
       const config = getSkillsConfig();

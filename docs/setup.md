@@ -71,7 +71,9 @@ On Windows, a **Windows** family checks the prerequisites for running Mission Co
 **Git for Windows** (a `git` whose version names `.windows.`, which also installs Git Bash),
 **Developer Mode** (the `AllowDevelopmentWithoutDevLicense` registry value, which real
 symlinks for skills and extensions need), **Long paths** (the `LongPathsEnabled` registry
-value), npm's **script-shell** pointing at bash, **Visual Studio Build Tools** with the C++
+value), npm's **script-shell** pointing at bash (read from npm's config files the way
+`npm config get` reads them, and asked of npm itself only for a setup that read does not
+model), **Visual Studio Build Tools** with the C++
 workload (asked through `vswhere`), and **Python 3** (in node-gyp's order: `python3`,
 `python`, then `py -3`). Each row reads **Ready** with its evidence, or explains the gap and
 shows the command that fixes it, to copy and run yourself: the Windows fixes need an

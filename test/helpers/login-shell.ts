@@ -13,9 +13,10 @@ import { writeFakeExecutable } from "./fake-executable.ts";
  * - **POSIX** starts `$SHELL -ilc ...`, so the fake is `<root>/login-shell` under a shebang
  *   naming this Node by its absolute path, because a fixture's PATH need not carry `node`.
  *   The entry returned is `SHELL`.
- * - **win32** starts Windows PowerShell by its fixed path under `%SystemRoot%`, so the fake is
- *   that `powershell.exe` under `<root>/Windows`, written through `writeFakeExecutable`. The
- *   entry returned is `SystemRoot`.
+ * - **win32** first queries the registry with `reg.exe` under `%SystemRoot%`, and falls back to
+ *   Windows PowerShell by its fixed path under the same root. The fake is that `powershell.exe`
+ *   under `<root>/Windows`, written through `writeFakeExecutable`; the fake root has no
+ *   `reg.exe`, so every read reaches it. The entry returned is `SystemRoot`.
  *
  * Either way the script ignores the arguments the product passes and writes whatever the
  * test wants the probe to read, between `__MISSION_PATH__` markers.

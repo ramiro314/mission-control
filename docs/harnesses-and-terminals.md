@@ -47,7 +47,10 @@ come from one per-platform table in
 [`src/server/platform/executable-environment.ts`](../src/server/platform/executable-environment.ts).
 macOS and Linux share its POSIX row. The `win32` row looks a bare command up by each PATHEXT
 name (`claude.exe`, never npm's extensionless shell script) and fills the login-shell step from
-the machine and user PATH in the registry, read through Windows PowerShell.
+the machine and user PATH in the registry. Every Setup check forces that read, so it queries
+the two registry keys with `reg.exe` and expands their `%VAR%` references itself, and starts
+Windows PowerShell only when a value cannot be read exactly that way, such as a non-ASCII path
+in reg.exe's console code page.
 
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's

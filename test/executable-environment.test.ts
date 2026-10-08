@@ -6,11 +6,18 @@ import test from "node:test";
 
 import { executableSpec } from "../src/server/executables/catalog.ts";
 import { ExecutableLocator, probeLoginShellPath } from "../src/server/executables/locator.ts";
+import { execFileSync } from "node:child_process";
+
 import {
   executableEnvironmentFor,
+  expandWindowsEnvironmentReferences,
   posixExecutableEnvironment,
+  registryPath,
+  registryPathValue,
   win32ExecutableEnvironment,
+  WINDOWS_ENVIRONMENT_KEYS,
   windowsPowerShellPath,
+  windowsRegPath,
 } from "../src/server/platform/executable-environment.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
@@ -109,6 +116,7 @@ for (const platform of POSIX_PLATFORMS) {
       args: LOGIN_SHELL_ARGS,
     });
     assert.deepEqual(row.loginShellPathRead({}), { command: "/bin/zsh", args: LOGIN_SHELL_ARGS });
+    assert.equal(row.directPathRead, undefined, "POSIX has no cheaper read to try first");
   });
 }
 
@@ -252,7 +260,7 @@ test("the win32 locator returns claude.exe, ranks directories before extensions,
   assert.equal(posix.resolveSync(executableSpec("gh")), null);
 });
 
-test("win32 reads PATH from the machine and user environment through Windows PowerShell", () => {
+test("win32 falls back to reading PATH from the machine and user environment through Windows PowerShell", () => {
   const read = win32ExecutableEnvironment.loginShellPathRead(WIN_ENV);
   assert.equal(read.command, "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
   assert.deepEqual(read.args.slice(0, -1), POWERSHELL_FLAGS);
@@ -281,8 +289,95 @@ test("the catalog finds powershell at its fixed win32 path, and nowhere else on 
 
 const noPowerShell = existsSync(windowsPowerShellPath(process.env)) ? false : "Windows PowerShell is not installed";
 
-test("the win32 PATH read answers through the real Windows PowerShell", { skip: noPowerShell }, async () => {
+test("win32 reads PATH with reg.exe first, from the machine and then the user environment key", () => {
+  const read = win32ExecutableEnvironment.directPathRead?.(WIN_ENV);
+  assert.deepEqual(read?.commands, [
+    { command: "D:\\Windows\\System32\\reg.exe", args: ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"] },
+    { command: "D:\\Windows\\System32\\reg.exe", args: ["query", "HKCU\\Environment"] },
+  ]);
+  assert.equal(windowsRegPath({}), "C:\\Windows\\System32\\reg.exe");
+});
+
+/** `reg query <key>` output as reg.exe prints it: a blank line, the key, its values, a blank line. */
+const regQuery = (key: string, ...values: Array<[name: string, type: string, data: string]>) =>
+  ["", key, ...values.map(([name, type, data]) => `    ${name}    ${type}    ${data}`), "", ""].join("\r\n");
+const MACHINE_KEY = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+const USER_KEY = "HKEY_CURRENT_USER\\Environment";
+
+test("registryPathValue reads Path as GetEnvironmentVariable reports it", () => {
+  const env = { SystemRoot: "C:\\Windows", USERPROFILE: "C:\\Users\\Ramiro" };
+  assert.equal(
+    registryPathValue(regQuery(MACHINE_KEY,
+      ["ComSpec", "REG_EXPAND_SZ", "%SystemRoot%\\system32\\cmd.exe"],
+      ["Path", "REG_EXPAND_SZ", "%SystemRoot%\\system32;%SYSTEMROOT%;C:\\Program Files\\Git\\cmd"],
+    ), env),
+    "C:\\Windows\\system32;C:\\Windows;C:\\Program Files\\Git\\cmd",
+    "a REG_EXPAND_SZ is expanded, its names matched without regard to case",
+  );
+  assert.equal(
+    registryPathValue(regQuery(USER_KEY, ["PATH", "REG_SZ", "%USERPROFILE%\\bin;D:\\tools"]), env),
+    "%USERPROFILE%\\bin;D:\\tools",
+    "a REG_SZ is reported as stored, and the value name matched without regard to case",
+  );
+  assert.equal(registryPathValue(regQuery(USER_KEY, ["TEMP", "REG_EXPAND_SZ", "%USERPROFILE%\\Temp"]), env), null, "no Path");
+  assert.equal(registryPathValue(regQuery(USER_KEY, ["Path", "REG_SZ", ""]), env), "", "an empty Path");
+  assert.equal(registryPathValue(`${regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"])}${USER_KEY}\\Sub\r\n`, env), "D:\\tools");
+  assert.equal(registryPathValue(regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"]).replaceAll("\r\n", "\n"), env), "D:\\tools");
+});
+
+test("registryPathValue leaves to PowerShell whatever reg.exe cannot report exactly", () => {
+  // reg.exe writes the console code page; the probe decodes it as Latin-1, one character per byte.
+  const latin1 = (text: string) => Buffer.from(text, "utf8").toString("latin1");
+  assert.equal(registryPathValue(latin1(regQuery(USER_KEY, ["Path", "REG_SZ", "C:\\Users\\José\\bin"])), {}), undefined);
+  assert.equal(registryPathValue(regQuery(USER_KEY, ["Path", "REG_MULTI_SZ", "a\\0b"]), {}), undefined);
+  assert.equal(registryPathValue("", {}), undefined, "no output at all");
+  assert.equal(registryPathValue("ERROR: Access is denied.\r\n", {}), undefined);
+  assert.equal(
+    registryPathValue(latin1(regQuery(USER_KEY, ["OneDrive", "REG_SZ", "C:\\Users\\José\\OneDrive"], ["Path", "REG_SZ", "D:\\tools"])), {}),
+    "D:\\tools",
+    "only the Path value has to be ASCII",
+  );
+});
+
+test("expandWindowsEnvironmentReferences follows ExpandEnvironmentStrings", () => {
+  const env = { SystemRoot: "C:\\Windows", Empty: "", PATH: "C:\\bin" };
+  const expand = (value: string) => expandWindowsEnvironmentReferences(value, env);
+  assert.equal(expand("%systemroot%\\System32"), "C:\\Windows\\System32");
+  assert.equal(expand("%UNSET%\\bin"), "%UNSET%\\bin", "an undefined name stays as written");
+  assert.equal(expand("%UNSET%PATH%"), "%UNSETC:\\bin", "the closing % of an undefined name may open the next");
+  assert.equal(expand("a%Empty%b"), "ab", "a defined empty value expands to nothing");
+  assert.equal(expand("100%"), "100%", "an unterminated reference is kept");
+  assert.equal(expand("%%PATH%"), "%C:\\bin");
+  assert.equal(expand("no references"), "no references");
+});
+
+test("registryPath joins machine then user and drops a missing or empty value, as the PowerShell read did", () => {
+  const machine = regQuery(MACHINE_KEY, ["Path", "REG_SZ", "C:\\Windows\\system32"]);
+  const user = regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"]);
+  assert.equal(registryPath([machine, user], {}), "C:\\Windows\\system32;D:\\tools");
+  assert.equal(registryPath([machine, regQuery(USER_KEY)], {}), "C:\\Windows\\system32");
+  assert.equal(registryPath([regQuery(MACHINE_KEY, ["Path", "REG_SZ", ""]), user], {}), "D:\\tools");
+  assert.equal(registryPath([regQuery(MACHINE_KEY), regQuery(USER_KEY)], {}), "");
+  assert.equal(registryPath([machine, ""], {}), null, "either output unreadable sends the read to PowerShell");
+});
+
+const noReg = existsSync(windowsRegPath(process.env)) ? false : "reg.exe is not installed";
+
+test("the win32 PATH read answers through the real reg.exe", { skip: noReg }, async () => {
   const result = await probeLoginShellPath(process.env, 30_000, "win32");
   assert.equal(result.problem, null);
   assert.match(result.path ?? "", /\\System32(;|$)/i, "the machine PATH carries System32");
+});
+
+test("reg.exe reports exactly the PATH Windows PowerShell reports", { skip: noReg || noPowerShell }, () => {
+  const run = (command: string, args: readonly string[], encoding: BufferEncoding) =>
+    execFileSync(command, args, { encoding, windowsHide: true, timeout: 30_000 });
+  const viaReg = registryPath(
+    WINDOWS_ENVIRONMENT_KEYS.map((key) => run(windowsRegPath(process.env), ["query", key], "latin1")),
+    process.env,
+  );
+  const powerShell = win32ExecutableEnvironment.loginShellPathRead(process.env);
+  const viaPowerShell = /__MISSION_PATH__([\s\S]*)__MISSION_PATH__/.exec(run(powerShell.command, powerShell.args, "utf8"))?.[1];
+  assert.notEqual(viaReg, null, "reg.exe could not report this machine's PATH exactly");
+  assert.equal(viaReg?.trim(), viaPowerShell?.trim());
 });
