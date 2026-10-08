@@ -12,8 +12,10 @@
  * repository and defaults to the fork, never to whatever `gh` resolves in a checkout that also
  * has an `upstream` remote.
  *
- * The plan lists every label, every tracking issue with its slug and status, and every historic
- * PR from the "At a glance" table with the labels it gets. A real run is a reconciling upsert: it
+ * The plan lists every label, every tracking issue with its slug and status, every historic PR
+ * the ledger claims (in the "At a glance" table or an entry's PRs field) with the labels it gets,
+ * and every "pending (branch `x`)" cell, which a real run resolves to the PR merged into `main`
+ * from that branch. A real run is a reconciling upsert: it
  * reads the labels, the `fork-feature` issues and the PRs, and writes only the differences, so a
  * rerun against an unchanged ledger writes nothing. It creates missing labels, creates each
  * missing tracking issue, rewrites the title, sections, state and `fork-status:*` label of an
@@ -45,8 +47,10 @@ export const TEMPLATE_SECTIONS = [
   "Plan docs",
   "Upstream candidate",
 ];
-/** GitHub's documented limit is not stated; a longer label is flagged in the plan for review. */
-export const LABEL_WARN_LENGTH = 50;
+/** GitHub refuses a label name longer than this. */
+export const LABEL_MAX_LENGTH = 50;
+/** Headings whose derived slug would make a `fork:<slug>` label longer than GitHub accepts. */
+export const SLUG_OVERRIDES = new Map([["MCP backlog listing and adoption across repositories", "mcp-backlog-across-repositories"]]);
 
 const LEDGER_DIR = "docs/fork";
 const TABLE_FIELDS = new Set(["Status", "PRs", "Plan docs", "Upstream candidate"]);
@@ -65,12 +69,18 @@ const STATUS_LABELS = {
   upstreamed: "A closed fork feature that upstream took",
 };
 
-/** `fork:<slug>`'s slug: the heading lowercased, every run of other characters one hyphen. */
+/**
+ * `fork:<slug>`'s slug: the heading lowercased, every run of other characters one hyphen, unless
+ * `SLUG_OVERRIDES` names a shorter one.
+ */
 export function slugFor(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  return (
+    SLUG_OVERRIDES.get(name) ??
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+  );
 }
 
 /** `text` split at commas outside parentheses and backticks. */
@@ -102,6 +112,11 @@ export function parsePrCell(cell) {
     else skipped.push(item);
   }
   return { prs, skipped };
+}
+
+/** The branches a PRs cell's skipped items name as still pending, as in "pending (branch `x`)". */
+export function pendingBranches(skipped) {
+  return skipped.flatMap((item) => (/^pending\b/i.test(item) ? [...item.matchAll(/\bbranch `([^`]+)`/g)].map((m) => m[1]) : []));
 }
 
 /**
@@ -170,8 +185,16 @@ function parseEntry({ name, lines }, repo) {
     ...paragraphs.filter((p) => !TEMPLATE_SECTIONS.includes(p.name)).map((p) => ({ name: p.name, text: found.get(p.name) })),
   ];
   const statusText = fields.get("Status").replace(/\*\*/g, "");
-  const claimed = fields.get("PRs").split(/related, not claimed/i)[0];
-  return { name, slug: slugFor(name), status: statusOf(name, fields.get("Status")), statusText, sections, entryPrs: parsePrCell(claimed).prs };
+  const claimed = parsePrCell(fields.get("PRs").split(/related, not claimed/i)[0]);
+  return {
+    name,
+    slug: slugFor(name),
+    status: statusOf(name, fields.get("Status")),
+    statusText,
+    sections,
+    entryPrs: claimed.prs,
+    entryPending: pendingBranches(claimed.skipped),
+  };
 }
 
 function parseGlance(lines) {
@@ -215,7 +238,11 @@ function closingComment(entry) {
   return `Closed by the fork ledger migration. Ledger status: ${entry.statusText}.\n\n${CLOSING_MARKER}\n`;
 }
 
-/** What GitHub should hold once the migration has run: labels, tracking issues, PR labels. */
+/**
+ * What GitHub should hold once the migration has run: labels, tracking issues, PR labels, and the
+ * pending branches whose merged PR gets its feature's labels. A PR is labeled for every feature
+ * whose "At a glance" row or PRs field claims it.
+ */
 export function desiredState(ledger) {
   const labels = [
     { name: FEATURE_LABEL, color: "0e8a16", description: "A fork feature's tracking issue" },
@@ -237,30 +264,33 @@ export function desiredState(ledger) {
   });
   const bySlug = new Map(ledger.entries.map((e) => [e.name, e.slug]));
   const prs = new Map();
+  const pending = new Map();
   const notes = [];
+  const claim = (slug, number) => prs.set(number, (prs.get(number) ?? new Set()).add(`fork:${slug}`).add(APPLIED_LABEL));
+  const wait = (slug, branch) => pending.set(branch, (pending.get(branch) ?? new Set()).add(`fork:${slug}`).add(APPLIED_LABEL));
   for (const row of ledger.glance) {
     const slug = bySlug.get(row.name);
     if (!slug) {
       notes.push(`"${row.name}" has no entry, so its PRs are not labeled: ${row.prs.map((n) => `#${n}`).join(", ") || "none"}`);
       continue;
     }
-    for (const item of row.skipped) notes.push(`fork:${slug}: skipped "${item}"`);
-    for (const number of row.prs) {
-      const set = prs.get(number) ?? new Set();
-      prs.set(number, set.add(`fork:${slug}`).add(APPLIED_LABEL));
-    }
+    for (const item of row.skipped) if (!pendingBranches([item]).length) notes.push(`fork:${slug}: skipped "${item}"`);
+    for (const number of row.prs) claim(slug, number);
+    for (const branch of pendingBranches(row.skipped)) wait(slug, branch);
   }
   for (const entry of ledger.entries) {
     const tabled = new Set(ledger.glance.find((r) => r.name === entry.name)?.prs ?? []);
-    const missing = entry.entryPrs.filter((n) => !tabled.has(n));
-    if (missing.length) {
-      notes.push(`fork:${entry.slug}: in the entry's PRs field but not the "At a glance" table, so not labeled: ${missing.map((n) => `#${n}`).join(", ")}`);
-    }
+    const extra = entry.entryPrs.filter((n) => !tabled.has(n));
+    if (extra.length) notes.push(`fork:${entry.slug}: labeled from the entry's PRs field, not in the "At a glance" table: ${extra.map((n) => `#${n}`).join(", ")}`);
+    for (const number of entry.entryPrs) claim(entry.slug, number);
+    for (const branch of entry.entryPending) wait(entry.slug, branch);
   }
-  for (const { name } of labels) {
-    if (name.length > LABEL_WARN_LENGTH) notes.push(`label ${name} is ${name.length} characters; GitHub may refuse a name over ${LABEL_WARN_LENGTH}`);
+  const tooLong = labels.filter(({ name }) => name.length > LABEL_MAX_LENGTH).map(({ name }) => `${name} (${name.length})`);
+  if (tooLong.length) {
+    throw new Error(`GitHub refuses a label name over ${LABEL_MAX_LENGTH} characters: ${tooLong.join(", ")}; add the heading to SLUG_OVERRIDES`);
   }
-  return { labels, issues, prs: new Map([...prs].sort((a, b) => a[0] - b[0]).map(([n, set]) => [n, [...set]])), notes };
+  const listed = (map) => new Map([...map].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([key, set]) => [key, [...set]]));
+  return { labels, issues, prs: listed(prs), pending: listed(pending), notes };
 }
 
 /** The plan every run prints first, and all `--dry-run` prints. */
@@ -273,6 +303,8 @@ export function formatPlan(desired) {
   }
   lines.push("", `Historic PRs (${desired.prs.size}):`);
   for (const [number, labels] of desired.prs) lines.push(`  #${number}  ${labels.join(", ")}`);
+  lines.push("", `Pending branches, labeled once a PR from them has merged into main (${desired.pending.size}):`);
+  for (const [branch, labels] of desired.pending) lines.push(`  ${branch}  ${labels.join(", ")}`);
   if (desired.notes.length) lines.push("", "Notes:", ...desired.notes.map((n) => `  ${n}`));
   return `${lines.join("\n")}\n`;
 }
@@ -296,8 +328,9 @@ function changedSections(current, next) {
 
 /**
  * The writes that bring `actual` GitHub state to `desired`, in the order they run. `actual` is
- * `{ labels: string[], issues: { number, title, state, labels, body, comments }[], prs: Map }`,
- * where `comments` are comment bodies and `prs` maps a PR number to its labels.
+ * `{ labels: string[], issues: { number, title, state, labels, body, comments }[], prs: Map,
+ * merged: Map }`, where `comments` are comment bodies, `prs` maps a PR number to its labels, and
+ * `merged` maps a head branch to the PRs merged from it into `main`.
  */
 export function planWrites(desired, actual) {
   const writes = [];
@@ -345,7 +378,18 @@ export function planWrites(desired, actual) {
     if (want.state === "open" && state === "closed") writes.push({ op: "reopen-issue", slug: want.slug, number: issue.number });
   }
 
-  for (const [number, labels] of desired.prs) {
+  const wanted = new Map(desired.prs);
+  for (const [branch, labels] of desired.pending) {
+    const numbers = actual.merged.get(branch) ?? [];
+    if (numbers.length !== 1) {
+      const found = numbers.length ? `${numbers.length} PRs (${numbers.map((n) => `#${n}`).join(", ")})` : "no PR";
+      warnings.push(`branch ${branch}: ${found} merged into main; not labeled`);
+      continue;
+    }
+    const [number] = numbers;
+    wanted.set(number, [...new Set([...(wanted.get(number) ?? []), ...labels])]);
+  }
+  for (const [number, labels] of [...wanted].sort((a, b) => a[0] - b[0])) {
     const have = actual.prs.get(number);
     if (!have) {
       warnings.push(`#${number} is not a pull request in this repository; not labeled`);
@@ -403,7 +447,7 @@ export function ghRunner(repo) {
 
 const labelNames = (labels) => labels.map((l) => l.name);
 
-/** The labels, `fork-feature` issues with their comments, and every PR's labels. */
+/** The labels, `fork-feature` issues with their comments, every PR's labels, and main's merged heads. */
 export function fetchState(run) {
   const labels = labelNames(JSON.parse(run(["label", "list", "--limit", "1000", "--json", "name"])));
   const issues = labels.includes(FEATURE_LABEL)
@@ -411,10 +455,13 @@ export function fetchState(run) {
         run(["issue", "list", "--label", FEATURE_LABEL, "--state", "all", "--limit", "1000", "--json", "number,title,state,labels,body,comments"]),
       ).map((i) => ({ ...i, labels: labelNames(i.labels), comments: (i.comments ?? []).map((c) => c.body) }))
     : [];
-  const prs = new Map(
-    JSON.parse(run(["pr", "list", "--state", "all", "--limit", "1000", "--json", "number,labels"])).map((p) => [p.number, labelNames(p.labels)]),
-  );
-  return { labels, issues, prs };
+  const list = JSON.parse(run(["pr", "list", "--state", "all", "--limit", "1000", "--json", "number,labels,headRefName,baseRefName,state"]));
+  const prs = new Map(list.map((p) => [p.number, labelNames(p.labels)]));
+  const merged = new Map();
+  for (const p of list) {
+    if (p.state === "MERGED" && p.baseRefName === "main") merged.set(p.headRefName, [...(merged.get(p.headRefName) ?? []), p.number].sort((a, b) => a - b));
+  }
+  return { labels, issues, prs, merged };
 }
 
 /** Make each write in order, printing it first. A new issue's number is read from `gh`'s URL. */

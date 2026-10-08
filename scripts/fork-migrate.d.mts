@@ -2,7 +2,8 @@ export const DEFAULT_REPO: string;
 export const FEATURE_LABEL: string;
 export const CLOSING_MARKER: string;
 export const TEMPLATE_SECTIONS: readonly string[];
-export const LABEL_WARN_LENGTH: number;
+export const LABEL_MAX_LENGTH: number;
+export const SLUG_OVERRIDES: ReadonlyMap<string, string>;
 
 export type LedgerEntry = {
   name: string;
@@ -11,6 +12,7 @@ export type LedgerEntry = {
   statusText: string;
   sections: { name: string; text: string }[];
   entryPrs: number[];
+  entryPending: string[];
 };
 export type GlanceRow = { name: string; prs: number[]; skipped: string[] };
 export type Ledger = { entries: LedgerEntry[]; glance: GlanceRow[] };
@@ -27,11 +29,12 @@ export type Desired = {
   labels: { name: string; color: string; description: string }[];
   issues: DesiredIssue[];
   prs: Map<number, string[]>;
+  pending: Map<string, string[]>;
   notes: string[];
 };
 
 export type ActualIssue = { number: number; title: string; state: string; labels: string[]; body: string; comments: string[] };
-export type Actual = { labels: string[]; issues: ActualIssue[]; prs: Map<number, string[]> };
+export type Actual = { labels: string[]; issues: ActualIssue[]; prs: Map<number, string[]>; merged: Map<string, number[]> };
 
 export type SectionChange = { name: string; current: string | null; next: string | null };
 export type Write =
@@ -55,6 +58,7 @@ export type Run = (args: string[], input?: string) => string;
 
 export function slugFor(name: string): string;
 export function parsePrCell(cell: string): { prs: number[]; skipped: string[] };
+export function pendingBranches(skipped: readonly string[]): string[];
 export function unwrap(text: string): string;
 export function absoluteLinks(text: string, repo: string): string;
 export function parseLedger(text: string, options?: { repo?: string }): Ledger;
