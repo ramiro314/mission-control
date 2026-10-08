@@ -110,7 +110,14 @@ test("product analytics is an independently operable export, to a collector you 
   await dashboard.getByRole("button", { name: "Save the product analytics destination" }).click();
 
   await expect(share).toBeEnabled({ timeout: 15_000 });
+  // The switch echoes the click before the daemon answers, so `toBeChecked` alone says nothing
+  // about what is stored. The health read below asks the daemon, and on a loaded runner it can
+  // be served before the consent write commits - so wait for that write's own answer first.
+  const consented = dashboard.waitForResponse(
+    (r) => r.url().endsWith("/api/telemetry/config") && r.request().method() === "PUT",
+  );
   await share.check();
+  expect((await consented).ok()).toBe(true);
   await expect(share).toBeChecked();
   await shoot(dashboard, "06-product-enabled", true);
 

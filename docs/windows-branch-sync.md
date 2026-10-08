@@ -101,10 +101,28 @@ Also look for **design conflicts** that merge cleanly as text. A seam on `main` 
 call site, a new function or a changed signature that the branch's win32 implementation does
 not cover yet. Check every commit from section 1 that touches a seam or its platform map:
 `src/server/process-inspection/`, `src/server/platform/`, `scripts/native-addon-sources.mjs`,
-and the call sites listed in the fork ledger's "Windows support" entry under "Upstream
-surfaces touched". A new direct `ps`, `lsof`, `process.kill(-pid)`, `detached: true` spawn or
+and the call sites listed under "Upstream surfaces touched" in the `fork:windows-support`
+tracking issue (`node scripts/fork-delta.mjs show windows-support`), together with
+`docs/plans/windows-support/merge-delta.md` on this branch when it changes that section. A new direct `ps`, `lsof`, `process.kill(-pid)`, `detached: true` spawn or
 login-shell PATH read on `main` belongs behind the seam; route it through the seam on this
 branch and note it in the PR.
+
+### The deleted fork ledger
+
+`main` no longer has `docs/fork/ledger.md` or `docs/fork/ledger.html`: the fork's features moved
+to GitHub tracking issues ([docs/fork/README.md](fork/README.md)). The first sync after that
+change meets a modify/delete conflict on both files wherever `release/windows` edited them.
+**`main`'s deletion wins**, but the branch's Windows support entry is kept, not dropped, so rule
+3 does not apply:
+
+1. Before resolving, copy the branch's "Windows support" entry out of
+   `git show origin/release/windows:docs/fork/ledger.md` into
+   `docs/plans/windows-support/merge-delta.md`, rewritten in the "Fork feature changes" format:
+   a `### fork:windows-support` block with one `####` block per issue section the branch
+   changed, each carrying the full new text. Compare against
+   `node scripts/fork-delta.mjs show windows-support` and keep only the sections that differ.
+2. Resolve the conflict by deleting both files: `git rm docs/fork/ledger.md docs/fork/ledger.html`.
+3. Say so in the PR, as a conflict resolved by this rule.
 
 ### Dependencies
 
@@ -165,5 +183,24 @@ git diff origin/main -- package.json
   one rewrites `main`'s commits, so they never become ancestors of `release/windows`, and every
   later sync conflicts on the same lines again. The agent never merges a sync PR.
 
-The fork ledger is not updated by this sync. It lives on `main` and records the fork against
-upstream; a merge into `release/windows` changes neither.
+## Fork feature tracking on this branch
+
+Windows support is one fork feature, tracked by the open `fork:windows-support` issue labeled
+`fork-status:in-progress` ([docs/fork/README.md](fork/README.md)). Only PRs merged into `main`
+change that issue, so work on `release/windows` reaches it once, through the merge PR:
+
+- **Every PR into `release/windows` carries the `fork:windows-support` label**, sync PRs
+  included. The status snapshot counts those PRs on the merge PR's row and never lists them as
+  `main` changes.
+- **Never edit `docs/fork/` on this branch**, and never edit the tracking issue from it.
+- **A PR that changes a Windows contract, assumption or surface updates
+  `docs/plans/windows-support/merge-delta.md`** in the same PR, in the "Fork feature changes"
+  format, as the full replacement text of each issue section it changes. The file lives only in
+  this branch's plan folder, so it never conflicts with `main`.
+- **At the merge into `main`**, the "feat: Windows support" PR carries `fork:windows-support`,
+  and its "Fork feature changes" section is `merge-delta.md`'s content, each block's `base:`
+  line taken then with `node scripts/fork-delta.mjs base windows-support "<section>"`, plus a
+  `#### Status` block saying `active`. The refresh applies it after the human merges, which
+  clears `fork-status:in-progress`.
+
+A sync whose re-applied Windows change (section 3) moves a surface updates `merge-delta.md` too.

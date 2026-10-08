@@ -60,7 +60,7 @@ installer) continue on `main`.
   so today Mission Control cannot dispatch a ticket that builds on `release/windows`.
 - **This checkout is a fork.** A weekly mission merges upstream into `main`
   ([upstream-sync runbook](../../upstream-sync.md)), and every fork feature has an entry in the
-  [fork ledger](../../fork/ledger.md).
+  [fork ledger](../../fork/README.md).
 
 ## Decisions
 
@@ -176,8 +176,8 @@ flowchart LR
   task a mission files inherits the base. The card shows the base when it is not the default
   branch.
 - **Followers:** the worktree start point at dispatch and at reset, the PR base used by the
-  shipping and publication paths, the affected-tests and check diff base, PR merge-conflict
-  reactions, and the merge watcher. A PR merged into a non-default base counts as done and
+  shipping and publication paths, the affected-tests and check diff base, the session Diff
+  view, PR merge-conflict reactions, and the merge watcher. A PR merged into a non-default base counts as done and
   unblocks dependents.
 - **Validation:** the branch must exist on `origin` when the task is created and when it is
   dispatched, and when a mission template is saved. Otherwise the request is refused with a

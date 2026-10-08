@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 640" role="img" aria-label="Fork tracking flow before and after: PRs stop editing a shared ledger file and instead label themselves on GitHub, and a daily mission generates the Claude doc">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><polygon points="0,0 10,5 0,10"/></marker></defs>
+  <text x="20" y="34" font-weight="700">Before: every writer edits the same files in git</text>
+  <rect x="20" y="56" width="200" height="44" rx="8"/><text x="36" y="84">Fork PR</text>
+  <rect x="20" y="112" width="200" height="44" rx="8"/><text x="36" y="140">Another fork PR</text>
+  <rect x="20" y="168" width="200" height="44" rx="8"/><text x="36" y="196">release/windows PR</text>
+  <rect x="20" y="224" width="200" height="44" rx="8"/><text x="36" y="252">Upstream-sync agent</text>
+  <rect x="430" y="118" width="300" height="88" rx="8"/><text x="446" y="152">docs/fork/ledger.md</text><text x="446" y="178" class="small">+ hand-rendered ledger.html</text><text x="446" y="198" class="small">shared lines: status header, at-a-glance</text>
+  <path d="M220 78 L428 136" marker-end="url(#a)"/><path d="M220 134 L428 152" marker-end="url(#a)"/><path d="M220 190 L428 170" marker-end="url(#a)"/><path d="M220 246 L428 190" marker-end="url(#a)"/>
+  <text x="760" y="160" class="small">concurrent PRs conflict here,</text><text x="760" y="180" class="small">so a second round of conflict solving</text>
+
+  <text x="20" y="320" font-weight="700">After: PRs write only their own label and body; one serialized writer updates issues</text>
+  <rect class="new" x="20" y="344" width="230" height="58" rx="8"/><text x="36" y="368">Fork PR into main</text><text x="36" y="390" class="small">fork:slug + Fork feature changes</text>
+  <rect class="new" x="20" y="418" width="230" height="58" rx="8"/><text x="36" y="442">release/windows PR</text><text x="36" y="464" class="small">fork:windows-support, not counted</text>
+  <rect class="new" x="20" y="530" width="230" height="58" rx="8"/><text x="36" y="554">Upstream-sync agent</text><text x="36" y="576" class="small">reads issue bodies</text>
+  <rect class="new" x="380" y="410" width="260" height="88" rx="8"/><text x="396" y="442">GitHub</text><text x="396" y="466" class="small">tracking issues (fork-feature)</text><text x="396" y="486" class="small">merged PRs into main</text>
+  <rect class="new" x="760" y="344" width="260" height="58" rx="8"/><text x="776" y="368">Daily Refresh fork status</text><text x="776" y="390" class="small">applies merged deltas, fork-delta:applied</text>
+  <rect class="new" x="760" y="440" width="260" height="58" rx="8"/><text x="776" y="464">scripts/fork-report.mjs</text><text x="776" y="486" class="small">gh + git counts to markdown</text>
+  <rect class="new" x="760" y="540" width="260" height="58" rx="8"/><text x="776" y="564">Claude doc: fork status</text><text x="776" y="586" class="small">replaced in full each refresh</text>
+  <path d="M250 373 L378 432" marker-end="url(#a)"/><path d="M250 447 L378 452" marker-end="url(#a)"/><path d="M378 476 L252 552" marker-end="url(#a)"/>
+  <path d="M758 380 L642 432" marker-end="url(#a)"/><path d="M890 402 L890 438" marker-end="url(#a)"/><path d="M758 469 L642 462" marker-end="url(#a)"/><path d="M890 498 L890 538" marker-end="url(#a)"/>
+</svg>
