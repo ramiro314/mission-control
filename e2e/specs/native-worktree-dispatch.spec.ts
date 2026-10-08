@@ -5,6 +5,8 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const EVIDENCE = artifactsDir("native-worktree-dispatch");
 
@@ -100,6 +102,8 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   dashboard,
   daemon,
 }) => {
+  // Its Clean up has to release both worktrees before the slots can be reused.
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   // Three native dispatches, a kill, and a confirmed cleanup, each of them real git work on
   // real trees. The default thirty seconds covers the browser, not the disk underneath it.
   test.setTimeout(240_000);

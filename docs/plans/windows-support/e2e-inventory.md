@@ -153,7 +153,7 @@ assertion failures from run 37736134634; each is below, read against this run an
 | `guided-dispatch` (submissions reset) | The spec picked Codex, which win32 refuses at submit, so the modal stayed open | Fixed: the spec picks Claude Code; the scout kind still proves the reset |
 | `conversation-band-optional` (2) | The checkbox flips on its optimistic write, and the full page load that followed could abort the PUT | Fixed: the spec waits for the daemon to hold the preference. Passed on this run |
 | `task-source-sync` (older imports) | A Keep updated write still in flight when the last sweep started invalidated that sweep's refresh, which then counted nothing | Fixed: the spec waits for the daemon to hold each value. Passed on this run |
-| `shape-tickets-marker` (cancelled task lapses), `scout-archive` (complete, reclaim, concise title) | The task cancel or removal must release the worktree, which win32 refuses (plan M2.4) | D37 skip with `WIN32_OCCUPANCY_UNPROVABLE` |
+| `shape-tickets-marker` (cancelled task lapses), `scout-archive` (complete, reclaim, concise title), `native-worktree-dispatch` | The task cancel, removal or Clean up must release the worktree, which win32 refuses (plan M2.4). `native-worktree-dispatch` reached its Clean up only once its separator assertion was fixed (PR #335's run 37826835412) | D37 skip with `WIN32_OCCUPANCY_UNPROVABLE` |
 | `ensemble-failure-actions` | Product: a withdraw whose cancel cannot release the worktree answers 400, so the second member stays active and the run never fails | c679c577 |
 | `console-header-one-row` (situational chip) | Windows fonts fit the header at every width without rung 7, so the proof is vacuous there | c43aba91 |
 
