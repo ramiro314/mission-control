@@ -378,3 +378,12 @@ test("homeRelative rewrites only a true child of the home directory", () => {
   assert.equal(homeRelative("Authenticated to github.com", HOME), "Authenticated to github.com");
   assert.equal(homeRelative("/home/operator/x", ""), "/home/operator/x", "no home reported");
 });
+
+test("homeRelative separates with the home's own separator", () => {
+  const win32Home = "C:\\Users\\operator";
+  assert.equal(homeRelative("C:\\Users\\operator\\fake-bin\\claude.exe", win32Home), "~\\fake-bin\\claude.exe");
+  assert.equal(homeRelative("C:\\Users\\operator", win32Home), "~");
+  assert.equal(homeRelative("C:\\Users\\operator2\\bin\\gh.exe", win32Home), "C:\\Users\\operator2\\bin\\gh.exe");
+  // On POSIX a backslash is a filename character, so `operator\bin` is a sibling, not a child.
+  assert.equal(homeRelative("/home/operator\\bin/gh", HOME), "/home/operator\\bin/gh");
+});

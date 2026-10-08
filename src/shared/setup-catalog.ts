@@ -575,13 +575,16 @@ export interface SetupChecksView {
  * An exact prefix match on the daemon's own `homeDir`, not a `/Users/` pattern: this build
  * runs on Linux too, and a regex over a path is how you end up rewriting `/var/Users/...`.
  * The trailing separator check is what keeps a sibling directory out - `/home/jo` must not
- * rewrite `/home/jordan/bin`. Anything not under the home is returned untouched.
+ * rewrite `/home/jordan/bin`. The separator is the home's own: a win32 home is spelled with
+ * backslashes, and so is every path the daemon resolves under it, while on POSIX a backslash
+ * is an ordinary filename character. Anything not under the home is returned untouched.
  */
 export function homeRelative(evidence: string, home: string): string {
   if (!home || !evidence.startsWith(home)) return evidence;
   const rest = evidence.slice(home.length);
   if (rest === "") return "~";
-  return rest.startsWith("/") ? "~" + rest : evidence;
+  const separator = home.includes("\\") ? "\\" : "/";
+  return rest.startsWith(separator) ? "~" + rest : evidence;
 }
 
 /** A server-issued binding between one checks observation and a later dismissal write. */

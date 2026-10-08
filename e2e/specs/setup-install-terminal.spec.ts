@@ -164,6 +164,7 @@ test.describe("with one verified local provider checkout", () => {
   });
 
   test("Setup sends only provider identity and terminal choice", async ({ page, daemon }) => {
+    skipSpecOnWin32(test, "cmux and the terminal runtime are unavailable on win32");
     test.setTimeout(45_000);
     expect(daemon.conductorCheckout).not.toBeNull();
     const checkout = daemon.conductorCheckout!;
