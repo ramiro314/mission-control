@@ -193,3 +193,20 @@ On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-del
 to 05e056ac.
 
 The Windows CI shard timings ticket (8b370c3d) waits on all of them.
+
+## Assertion failures without an owner: run 37821364466
+
+Ticket 30a2e1ee took the fast assertion failures on run 37821364466 that no ticket owned (the
+c678f42a outcome names them). Source: the `windows-e2e-junit-shard-*` artifacts and the
+Playwright reports' traces and screenshots. Every one is either fixed or a D37 skip, so none needs
+a narrower ticket.
+
+| Spec | Cause | Outcome |
+|---|---|---|
+| `library` (missing link, unpublished bind) | Product: a deep link that landed before the workflow list arrived selected nothing, the empty selection was reported, and the address bar dropped the id, so the list's arrival opened Bug Fix Review | Fixed: `workflowSelectionRestore` opens an explicit request before the list arrives. A new spec holds the event stream to reproduce it |
+| `library-commands` (run budget) | Product: a budget chosen before the catalog arrived was held as a conflict with the first delivery ("A newer revision (r1)"), so Save stayed disabled | Fixed: `commandSync` takes a first delivery equal to a fresh slot as the draft's baseline. A new spec holds the event stream to reproduce it |
+| `board-card-workflow-progress`, `working-indicator` | The settings write raced a full page load: the trace shows the `PUT /api/ui/config` aborted (`-1`) by the reload | Fixed: the specs wait for the daemon to hold the Display item (`expectDaemonHides`) |
+| `foreman-profile` | Chromium writes the clipboard with CRLF on Windows, so Copy Markdown did not read back byte for byte | Fixed: the spec compares line by line on win32 only, as `copy-confirms-and-reports` does |
+| `retro-offer` (completing merged work) | The task completes and the session retires, but the checkout return is refused (`WIN32_OCCUPANCY_UNPROVABLE`) | Fixed: the checkout return is asserted on Linux and macOS only, and the rest of the test still runs on win32 |
+| `workflow-elapsed-clock` (member clocks) | The live clock it watches is a blocked Command, and win32 never runs Commands, so the gate settles as not run | D37 skip with the Command-check reason used by 3aeb7ea1's specs |
+| `workflow-round-scrubber` | A click scrolled the page 2px under Windows fonts, so the tile's viewport `y` moved | Fixed: the spec reads the tile against the strip, not the viewport |

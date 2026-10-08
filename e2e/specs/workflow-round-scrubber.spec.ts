@@ -289,9 +289,15 @@ test("a round is one tile however many times it captured evidence", async ({
 
   // Read BEFORE the click that has to leave them alone: the strip's height and the geometry
   // of a tile whose round is NOT the one being picked in. The count badge is deliberately
-  // static, so choosing a capture must move nothing in the strip at all.
+  // static, so choosing a capture must move nothing in the strip at all. The tile is read
+  // against the strip, not the viewport: a click scrolls its target into view, and on Windows
+  // fonts that scrolled the page 2px, which moved every box on it.
+  const inStrip = async (tile: Locator) => {
+    const [box, strip] = await Promise.all([tile.boundingBox(), scrubber.boundingBox()]);
+    return { x: box!.x - strip!.x, y: box!.y - strip!.y, width: box!.width };
+  };
   const beforeStrip = stripBox!.height;
-  const beforeSecond = (await tileOf(2).boundingBox())!;
+  const beforeSecond = await inStrip(tileOf(2));
 
   // Opening another round: its tray replaces the first, and there is still only one.
   await tileOf(2).click();
@@ -375,7 +381,7 @@ test("a round is one tile however many times it captured evidence", async ({
   await shoot(dashboard, scrubber, "03-strip-with-capture-selected");
 
   // Nothing in the strip moved. The badges are static text for exactly this reason.
-  const afterSecond = (await tileOf(2).boundingBox())!;
+  const afterSecond = await inStrip(tileOf(2));
   expect(afterSecond.x).toBeCloseTo(beforeSecond.x, 0);
   expect(afterSecond.y).toBeCloseTo(beforeSecond.y, 0);
   expect(afterSecond.width).toBeCloseTo(beforeSecond.width, 0);

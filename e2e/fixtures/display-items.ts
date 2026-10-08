@@ -1,5 +1,8 @@
+import { expect } from "@playwright/test";
+
 import { UI_CONFIG_DEFAULTS } from "../../src/shared/protocol.ts";
 import type { DisplayItemId } from "../../src/web/lib/board-card.ts";
+import type { DaemonHandle } from "./daemon.ts";
 
 /**
  * The shipped hidden-items list with some ids un-hidden.
@@ -21,4 +24,25 @@ import type { DisplayItemId } from "../../src/web/lib/board-card.ts";
  */
 export function displayItemsShowing(...ids: readonly DisplayItemId[]): string[] {
   return UI_CONFIG_DEFAULTS.hiddenDisplayItems.filter((hidden) => !ids.includes(hidden));
+}
+
+/**
+ * Wait until the daemon holds each of `ids` hidden, or each of them shown.
+ *
+ * A Display checkbox flips on its optimistic write, before its PUT lands, and a full page
+ * load straight after it can abort that PUT on a slow runner - which reloads into a preference
+ * that was never saved. Call this between the click and the reload or navigation.
+ */
+export async function expectDaemonHides(
+  daemon: DaemonHandle,
+  ids: readonly DisplayItemId[],
+  hidden: boolean,
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      const response = await fetch(`${daemon.baseURL}/api/ui/config`);
+      const view = (await response.json()) as { config: { hiddenDisplayItems: string[] } };
+      return ids.filter((id) => view.config.hiddenDisplayItems.includes(id) === hidden);
+    }, { message: `the daemon saved ${ids.join(", ")} ${hidden ? "hidden" : "shown"}` })
+    .toEqual([...ids]);
 }
