@@ -89,6 +89,16 @@ test("the status header reports the merge-base, the newest sync PR and the count
   assert.equal(row(report, "Measured at"), "| Measured at | `origin/main` `5a48970a1092`, 2026-10-07T15:00Z |");
 });
 
+test("every paragraph is one line, so the Claude doc stores the report byte for byte", () => {
+  // The Claude Docs connector folds a soft line break into a space, so a wrapped paragraph
+  // would make the published doc differ from the report it was written from.
+  const report = renderForkReport(data({ issues: [issue(300, "Shape tasks", "shape-tasks", "Shape first.")], prs: [pr(4)] }));
+  const lines = report.split("\n");
+  const prose = (line: string | undefined) => !!line && !line.startsWith("|") && !line.startsWith("#");
+  const wrapped = lines.filter((line, i) => prose(line) && prose(lines[i + 1]));
+  assert.deepEqual(wrapped, []);
+});
+
 test("an upstream tip past the merge-base is counted as behind, never reported as synced", () => {
   const report = renderForkReport(
     data({ git: { mergeBase: MERGE_BASE, mergeBaseVersion: "1.26.0", upstreamTip: UPSTREAM_TIP, ahead: 341, aheadNoMerges: 247, behind: 12 } }),
