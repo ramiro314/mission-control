@@ -247,3 +247,42 @@ test("a stale snapshot cannot acknowledge a row after repair and regression", as
   assert.equal(store.writes, 0);
   assert.deepEqual(store.value, { firstLaunchAcknowledged: true, acknowledged: [] });
 });
+
+test("overlapping reads share one probe round, and each still gets its own token", async () => {
+  const store = bannerStore();
+  const setupDeps = deps("Finish setup.", null, store);
+  let rounds = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setupDeps.refreshPath = async () => {
+    rounds += 1;
+    await gate;
+  };
+  const app = appFor(setupDeps);
+
+  // A dashboard load and the reload right behind it: the second read arrives while the first
+  // round is still probing the machine.
+  const first = app.request("/api/setup/checks", { headers: LOOPBACK });
+  const second = app.request("/api/setup/checks", { headers: LOOPBACK });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const snapshots = await Promise.all([first, second].map(async (response) => (await response).json() as Promise<{
+    snapshotToken: string;
+    banner: { attentionRowIds: unknown[] };
+  }>));
+  assert.equal(rounds, 1);
+  assert.notEqual(snapshots[0]!.snapshotToken, snapshots[1]!.snapshotToken);
+
+  for (const snapshot of snapshots) {
+    const response = await app.request("/api/setup/checks", {
+      method: "PUT",
+      headers: { ...LOOPBACK, "content-type": "application/json" },
+      body: JSON.stringify({ snapshotToken: snapshot.snapshotToken, acknowledged: snapshot.banner.attentionRowIds }),
+    });
+    assert.equal(response.status, 200);
+  }
+
+  // Uncached: a read that starts after the shared round settled probes the machine again.
+  await app.request("/api/setup/checks", { headers: LOOPBACK });
+  assert.equal(rounds, 2);
+});

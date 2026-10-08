@@ -410,6 +410,7 @@ import {
 } from "./setup/install.ts";
 import { startSetupService } from "./setup/service.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
+import type { SetupChecksView } from "@shared/setup-catalog.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
@@ -1554,6 +1555,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
   const setupSnapshots = createSetupSnapshotTracker(randomUUID);
+  /** The Setup probe round in flight, which a concurrent `GET /api/setup/checks` joins. */
+  let setupRound: Promise<SetupChecksView> | null = null;
   // Bound to THIS daemon's stored per-multiplexer terminal preference, which is what makes
   // the terminal a raised multiplexer session opens the one the operator picked. The
   // mechanism defaults are Automatic on their own - see `automaticFocusEmulator` - so every
@@ -7870,8 +7873,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Uncached. Re-checking reflects installs and sign-ins without restarting, while every
   // remedy remains inert data for the browser to link or copy. The one write during this read
   // only retires acknowledgements for rows the fresh result proved repaired or removed.
-  app.get("/api/setup/checks", async (c) =>
-    c.json(setupSnapshots.issue(await setupChecksView(setupDeps ?? defaultSetupDeps()))));
+  //
+  // A read that arrives while a round is still probing joins that round instead of starting a
+  // second one. A round starts a dozen processes, PowerShell and npm among them on win32, and a
+  // dashboard load followed by a reload otherwise runs two of them side by side. Each response
+  // still gets its own snapshot token, and a read after the round settles probes again.
+  app.get("/api/setup/checks", async (c) => {
+    setupRound ??= setupChecksView(setupDeps ?? defaultSetupDeps()).finally(() => { setupRound = null; });
+    return c.json(setupSnapshots.issue(await setupRound));
+  });
   // The same resource path as the read, so dismissal adds no second setup read or endpoint.
   // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
   // probes, and any install behavior remain completely outside this write.
