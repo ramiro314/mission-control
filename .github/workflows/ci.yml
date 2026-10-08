@@ -852,7 +852,8 @@ jobs:
   # outside `test:timings`'s `unit-junit-node-*` pattern so Linux timings never read it.
   #
   # Shard files are dealt by `scripts/unit-shard.mjs` on `test/shard-timings-windows.json`, as
-  # Linux deals them on `test/shard-timings.json`; see "Windows shard counts" above.
+  # Linux deals them on `test/shard-timings.json`; see "Windows shard counts" above. They run in
+  # batches, one `windows-unit-junit-<n>.xml` each, and a step checks that every one ran.
   unit-windows:
     name: unit (windows, node 24, shard ${{ matrix.shard }}/3)
     needs: [changes, dependencies-windows]
@@ -928,23 +929,51 @@ jobs:
           node scripts/unit-shard.mjs "$MISSION_TEST_SHARD" windows-unit > "$RUNNER_TEMP/unit-shard-files.txt"
           echo "Unit shard $MISSION_TEST_SHARD runs $(wc -l < "$RUNNER_TEMP/unit-shard-files.txt") test files"
 
+      # The shard's files go to `test:run` in batches of at most MISSION_TEST_BATCH_CHARS
+      # characters of paths, each batch writing its own JUnit. Passed whole, they did not fit:
+      # on run 37841183938 a command line on the way from npm to the tests was cut at 8,191
+      # characters, cmd.exe's limit, and every shard silently ran only its first ~240 files.
+      # Files are dealt longest first, so the first batch holds the slow ones.
       - name: Test
         id: test
         timeout-minutes: 60
         continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
         run: |
           mapfile -t files < "$RUNNER_TEMP/unit-shard-files.txt"
-          npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" --test-timeout=120000 --test-force-exit --import ./test/file-watchdog.mjs "${files[@]}"
+          status=0 batch=() chars=0 n=0
+          run_batch() {
+            n=$((n + 1))
+            echo "Batch $n: ${#batch[@]} test files"
+            MISSION_TEST_JUNIT="$MISSION_WINDOWS_JUNIT-$n.xml" npm run --silent test:run -- --test-concurrency="$MISSION_TEST_CONCURRENCY" --test-timeout=120000 --test-force-exit --import ./test/file-watchdog.mjs "${batch[@]}" || status=$?
+            batch=() chars=0
+          }
+          for file in "${files[@]}"; do
+            if (( ${#batch[@]} && chars + ${#file} + 1 > MISSION_TEST_BATCH_CHARS )); then run_batch; fi
+            batch+=("$file") chars=$((chars + ${#file} + 1))
+          done
+          if (( ${#batch[@]} )); then run_batch; fi
+          exit "$status"
         env:
           MISSION_TEST_FILE_BUDGET_MS: '900000'
-          MISSION_TEST_JUNIT: ${{ runner.temp }}/windows-unit-junit.xml
+          MISSION_TEST_BATCH_CHARS: '6000'
+          MISSION_WINDOWS_JUNIT: ${{ runner.temp }}/windows-unit-junit
+
+      # A dealt file the JUnit never names never ran; see `scripts/shard-junit-coverage.ts`.
+      - name: Every dealt file ran
+        id: coverage
+        timeout-minutes: 5
+        if: steps.test.outcome != 'skipped'
+        continue-on-error: ${{ env.MISSION_WINDOWS_CI_ALLOWED_TO_FAIL == 'true' }}
+        run: node --import tsx scripts/shard-junit-coverage.ts "$RUNNER_TEMP/unit-shard-files.txt" "$MISSION_WINDOWS_JUNIT"
+        env:
+          MISSION_WINDOWS_JUNIT: ${{ runner.temp }}/windows-unit-junit
 
       - name: Upload JUnit results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-unit-junit-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/windows-unit-junit.xml
+          path: ${{ runner.temp }}/windows-unit-junit-*.xml
           if-no-files-found: warn
           retention-days: 7
 

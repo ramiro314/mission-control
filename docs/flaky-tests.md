@@ -149,7 +149,13 @@ in each file it was dealt, instead of the test-count split `--shard` makes. Linu
 shards never read either file. The "Windows shard counts" comment in `.github/workflows/ci.yml`
 holds the arithmetic behind three unit and ten E2E shards.
 
-Each Windows shard uploads its JUnit as `windows-unit-junit-shard-<n>` or
+A Windows unit shard hands its files to `test:run` in batches of at most 6,000 characters of
+paths, each writing its own `windows-unit-junit-<n>.xml`. Passed whole, they did not fit: on run
+37841183938 a command line on the way to the tests was cut at 8,191 characters, cmd.exe's limit,
+and each shard silently ran only its first ~240 files. The "Every dealt file ran" step then runs
+`scripts/shard-junit-coverage.ts`, which names any dealt file no JUnit case reports.
+
+Each Windows shard uploads its JUnit as `windows-unit-junit-shard-<n>` (one file per batch) or
 `windows-e2e-junit-shard-<n>`. To regenerate both files from a recent Windows run:
 
 ```sh

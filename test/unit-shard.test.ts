@@ -16,6 +16,7 @@ import {
   unitTestFiles,
 } from "../scripts/unit-shard.mjs";
 import { shardTimings, TIMING_SOURCES } from "../scripts/unit-shard-timings.ts";
+import { batchReports, unreportedFiles } from "../scripts/shard-junit-coverage.ts";
 
 // What is at stake: coverage. Timings only steer which shard a file lands in; whatever they
 // say, every unit test file must run in exactly one shard, or CI goes green without it.
@@ -321,4 +322,35 @@ test("a case with no file belongs to its classname, as Playwright reports it", (
   assert.ok(parsed.ok);
   // A Node case keeps its `file` over its `classname`.
   assert.deepEqual(Object.fromEntries(parsed.times), { "rail.spec.ts": 4000, "/w/test/a.test.ts": 2000 });
+});
+
+test("a shard's JUnit must name every file it was dealt, wherever the runner put the checkout", () => {
+  const runner = "D:\\a\\mission-control\\mission-control";
+  const batches = [
+    junit([{ file: `${runner}\\test\\a.test.ts`, seconds: 1 }]),
+    // A file that fails to load still reports one failing case under its own name.
+    `<testsuites><testcase name="b.test.ts" classname="test" time="0.1" file="${runner}\\test\\b.test.ts"><failure message="test failed"/></testcase></testsuites>`,
+  ];
+  assert.deepEqual(unreportedFiles(["test/a.test.ts", "test/b.test.ts"], batches), []);
+  // Dropped files are named in list order; a path that merely ends the same way does not count.
+  assert.deepEqual(
+    unreportedFiles(["test/c.test.ts", "test/a.test.ts", "test/b.test.ts"], [junit([{ file: "/w/test/a.test.ts", seconds: 1 }, { file: "/w/test/xb.test.ts", seconds: 1 }])]),
+    ["test/c.test.ts", "test/b.test.ts"],
+  );
+  assert.throws(() => unreportedFiles(["test/a.test.ts"], ["<testsuites>"]), /not well-formed/);
+});
+
+test("batch results are read in batch order, and nothing else beside them is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shard-junit-coverage-"));
+  try {
+    for (const name of ["windows-unit-junit-10.xml", "windows-unit-junit-2.xml", "windows-unit-junit-1.xml", "windows-unit-junit.xml", "windows-unit-junit-x.xml", "other-1.xml"]) {
+      writeFileSync(join(dir, name), "<testsuites/>");
+    }
+    assert.deepEqual(
+      batchReports(join(dir, "windows-unit-junit")).map((path) => path.slice(dir.length + 1)),
+      ["windows-unit-junit-1.xml", "windows-unit-junit-2.xml", "windows-unit-junit-10.xml"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

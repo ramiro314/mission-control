@@ -52,6 +52,13 @@ function stepById(body: string, id: string): { step: string; run: string } {
   return { step, run: line ?? block ?? "" };
 }
 
+/** The `test:run` invocation inside the unit Test step's batch loop. */
+function testRunLine(run: string): string {
+  const line = run.split("\n").map((l) => l.trim()).find((l) => l.includes(" npm run --silent test:run -- "));
+  assert.ok(line, "the Test step runs test:run");
+  return line;
+}
+
 /**
  * Evaluates the Windows `if:` for one event, through the JavaScript operators it shares.
  * `base_ref` is GitHub's empty string on every event but a pull request, and `changes` answers
@@ -150,10 +157,12 @@ test("they cover typecheck, the sharded unit suite, build plus smoke, and e2e", 
   const run = (id: string) => [...WINDOWS.get(id)!.matchAll(/^ {8}run: (.+)$/gm)].map(([, cmd]) => cmd!);
   assert.ok(run("typecheck-windows").includes("npm run typecheck"));
   const unit = WINDOWS.get("unit-windows")!;
-  const stages = ["pretest", "test", "posttest"].map((id) => stepById(unit, id).run.split("\n").at(-1)!);
-  assert.equal(stages[0], "npm run pretest", "the unit shard runs all three stages of npm test");
-  assert.ok(stages[1]!.startsWith("npm run --silent test:run -- "), "the middle stage is npm test's own test:run");
-  assert.equal(stages[2], "npm run posttest");
+  assert.equal(stepById(unit, "pretest").run, "npm run pretest", "the unit shard runs all three stages of npm test");
+  assert.ok(
+    testRunLine(stepById(unit, "test").run).startsWith('MISSION_TEST_JUNIT="$MISSION_WINDOWS_JUNIT-$n.xml" npm run --silent test:run -- '),
+    "the middle stage is npm test's own test:run, one JUnit per batch",
+  );
+  assert.equal(stepById(unit, "posttest").run, "npm run posttest");
   const unitTotal = shards(unit)!.length;
   assert.match(unit, new RegExp(`^ {6}MISSION_TEST_SHARD: \\$\\{\\{ matrix\\.shard \\}\\}/${unitTotal}$`, "m"));
   assert.match(unit, new RegExp(`^ {6}MISSION_TEST_SHARDS: '${unitTotal}'$`, "m"));
@@ -256,7 +265,7 @@ test("CI result and the flake report ignore them until they are required", () =>
 test("every unit shard finishes inside its step, so it prints its summary and JUnit", () => {
   const body = WINDOWS.get("unit-windows")!;
   const { step, run } = stepById(body, "test");
-  const command = run.split("\n").at(-1)!;
+  const command = testRunLine(run);
   const stepMs = Number(step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1]) * 60_000;
 
   const scripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
@@ -316,19 +325,36 @@ test("each shard runs the files its suite deals it on Windows timings", () => {
     assert.doesNotMatch(body, /--test-shard|--shard=/, `${id} does not shard by index or test count`);
     assert.ok(Object.keys(readShardTimings(repo, suite)).length > 0, `${suite} has committed timings`);
   }
-  assert.ok(stepById(WINDOWS.get("unit-windows")!, "test").run.includes('mapfile -t files < "$RUNNER_TEMP/unit-shard-files.txt"'));
-  assert.match(stepById(WINDOWS.get("unit-windows")!, "test").run, / "\$\{files\[@\]\}"$/);
+});
 
-  // npm hands its script to bash, and bash to node, as one win32 command line of at most
-  // 32,767 characters. 2 KiB covers the rest of it: the executable paths and `test:run` itself.
-  const total = shards(WINDOWS.get("unit-windows")!)!.length;
+test("the unit shard runs its files in batches that fit a win32 command line, and checks each ran", () => {
+  const body = WINDOWS.get("unit-windows")!;
+  const { step, run } = stepById(body, "test");
+  assert.ok(run.startsWith('mapfile -t files < "$RUNNER_TEMP/unit-shard-files.txt"\n'));
+  assert.ok(testRunLine(run).endsWith(' "${batch[@]}" || status=$?'), "a failed batch does not stop the next");
+  assert.ok(run.includes("if (( ${#batch[@]} && chars + ${#file} + 1 > MISSION_TEST_BATCH_CHARS )); then run_batch; fi"));
+  assert.ok(run.endsWith('\nexit "$status"'), "the step fails when any batch failed");
+
+  // On run 37841183938 every shard ran only the files that fit in 8,191 characters, cmd.exe's
+  // limit, with the rest of the command. A batch's paths, `test:run` and the step's own command
+  // line, with 1 KiB for executable paths, stay inside it.
+  const scripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
+  const budget = Number(step.match(/^ {10}MISSION_TEST_BATCH_CHARS: '(\d+)'$/m)?.[1]);
+  const rest = scripts["test:run"].length + testRunLine(run).length + 1_024;
+  assert.ok(budget > 0 && budget + rest <= 8_191, `a ${budget}-character batch and ${rest} characters of command fit 8,191`);
+  const total = shards(body)!.length;
   const lists = partitionUnitTests(suiteFiles(repo, "windows-unit"), readShardTimings(repo, "windows-unit"), total);
-  const longest = Math.max(...lists.map((files) => files.map((file) => ` "${file}"`).join("").length));
-  assert.ok(scripts["test:run"].length < 1_024);
-  assert.ok(
-    longest + 2_048 <= 32_767,
-    `the longest Windows unit shard's file list is ${longest} characters; deal the files to more shards`,
-  );
+  assert.ok(lists.flat().every((file) => file.length + 1 <= budget), "every file fits a batch on its own");
+
+  // The shard's JUnit has to name every file it was dealt, or the run lost some.
+  const prefix = step.match(/^ {10}MISSION_WINDOWS_JUNIT: (.+)$/m)?.[1];
+  assert.equal(prefix, "${{ runner.temp }}/windows-unit-junit");
+  const coverage = stepById(body, "coverage");
+  assert.equal(coverage.run, 'node --import tsx scripts/shard-junit-coverage.ts "$RUNNER_TEMP/unit-shard-files.txt" "$MISSION_WINDOWS_JUNIT"');
+  assert.match(coverage.step, new RegExp(`^ {10}MISSION_WINDOWS_JUNIT: ${prefix.replace(/[$.{}]/g, "\\$&")}$`, "m"));
+  assert.match(coverage.step, /^ {8}if: steps\.test\.outcome != 'skipped'$/m);
+  assert.ok(steps(body).indexOf(step) < steps(body).indexOf(coverage.step), "the check reads what the Test step wrote");
+  assert.ok(existsSync(new URL("../scripts/shard-junit-coverage.ts", import.meta.url)));
 });
 
 test("the unit and e2e shards upload JUnit that Linux shard timings never read", () => {
@@ -336,23 +362,25 @@ test("the unit and e2e shards upload JUnit that Linux shard timings never read",
   const timings = readFileSync(new URL("../scripts/unit-shard-timings.ts", import.meta.url), "utf8");
   const linuxArtifact = new RegExp(timings.match(/^const ARTIFACT = \/(.+)\/;$/m)![1]!);
   assert.ok(linuxArtifact.test("unit-junit-node-24-shard-1"), "the timings pattern was read");
+  // The unit shard writes `<prefix>-<n>.xml` per batch; e2e writes one file.
   const cases = [
-    ["unit-windows", "MISSION_TEST_JUNIT", "windows-unit-junit-shard-"],
-    ["e2e-windows", "MISSION_PLAYWRIGHT_JUNIT", "windows-e2e-junit-shard-"],
+    ["unit-windows", "MISSION_WINDOWS_JUNIT", "windows-unit-junit-shard-", (written: string): [string, string] => [`${written}-*.xml`, `${written}-1.xml`]],
+    ["e2e-windows", "MISSION_PLAYWRIGHT_JUNIT", "windows-e2e-junit-shard-", (written: string): [string, string] => [written, written]],
   ] as const;
-  for (const [id, variable, artifact] of cases) {
+  for (const [id, variable, artifact, files] of cases) {
     const body = WINDOWS.get(id)!;
-    const path = body.match(new RegExp(`^ {10}${variable}: (.+)$`, "m"))?.[1];
-    assert.ok(path, `${id} writes JUnit through ${variable}`);
+    const written = body.match(new RegExp(`^ {10}${variable}: (.+)$`, "m"))?.[1];
+    assert.ok(written, `${id} writes JUnit through ${variable}`);
+    const [uploaded, path] = files(written);
     const upload = steps(body).find((s) => s.includes(`name: ${artifact}\${{ matrix.shard }}`));
     assert.ok(upload, `${id} uploads ${artifact}<n>`);
-    assert.ok(upload.includes(`path: ${path}\n`), `${id} uploads the file it wrote`);
+    assert.ok(upload.includes(`path: ${uploaded}\n`), `${id} uploads the files it wrote`);
     assert.match(upload, /^ {8}if: \$\{\{ !cancelled\(\)/m, `${id} uploads after a failed run too`);
     assert.ok(!linuxArtifact.test(`${artifact}1`), `test:timings never reads ${artifact}<n>`);
     // `test:timings -- --windows` reads exactly these, at the file each one uploads.
     const source = TIMING_SOURCES.windows.find((candidate) => candidate.artifact.test(`${artifact}1`));
     assert.ok(source, `test:timings --windows reads ${artifact}<n>`);
-    assert.equal(source.junit, path.split("/").at(-1), `test:timings --windows reads ${artifact}<n>'s JUnit file`);
+    assert.match(path.split("/").at(-1)!, source.junit, `test:timings --windows reads ${artifact}<n>'s JUnit files`);
   }
   const config = readFileSync(new URL("../e2e/playwright.config.ts", import.meta.url), "utf8");
   assert.match(config, /\["junit", \{ outputFile: process\.env\.MISSION_PLAYWRIGHT_JUNIT \}\]/, "Playwright writes JUnit where the job uploads it from");

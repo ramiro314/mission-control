@@ -28,15 +28,16 @@ interface TimingSource {
   artifact: RegExp;
   /** The `gh run download --pattern` that fetches them. */
   pattern: string;
-  /** The JUnit file inside each artifact. */
-  junit: string;
+  /** The JUnit files inside each artifact: one per batch the shard ran its files in. */
+  junit: RegExp;
 }
 
 export const TIMING_SOURCES: Record<"linux" | "windows", TimingSource[]> = {
-  linux: [{ suite: "unit", artifact: ARTIFACT, pattern: "unit-junit-node-*", junit: "junit.xml" }],
+  linux: [{ suite: "unit", artifact: ARTIFACT, pattern: "unit-junit-node-*", junit: /^junit\.xml$/ }],
   windows: [
-    { suite: "windows-unit", artifact: /^windows-unit-junit-shard-\d+$/, pattern: "windows-unit-junit-shard-*", junit: "windows-unit-junit.xml" },
-    { suite: "windows-e2e", artifact: /^windows-e2e-junit-shard-\d+$/, pattern: "windows-e2e-junit-shard-*", junit: "windows-e2e-junit.xml" },
+    // `-<n>` per batch; a shard from before batching wrote one file without it.
+    { suite: "windows-unit", artifact: /^windows-unit-junit-shard-\d+$/, pattern: "windows-unit-junit-shard-*", junit: /^windows-unit-junit(?:-\d+)?\.xml$/ },
+    { suite: "windows-e2e", artifact: /^windows-e2e-junit-shard-\d+$/, pattern: "windows-e2e-junit-shard-*", junit: /^windows-e2e-junit\.xml$/ },
   ],
 };
 
@@ -83,10 +84,11 @@ function regenerate(root: string, runId: string, source: TimingSource): void {
   const dir = mkdtempSync(join(tmpdir(), "unit-shard-timings-"));
   try {
     execFileSync("gh", ["run", "download", runId, "--pattern", source.pattern, "--dir", dir], { stdio: "inherit" });
-    const reports = readdirSync(dir).filter((name) => source.artifact.test(name)).sort().map((artifact) => ({
-      artifact,
-      xml: readFileSync(join(dir, artifact, source.junit), "utf8"),
-    }));
+    const reports = readdirSync(dir).filter((name) => source.artifact.test(name)).sort().flatMap((artifact) =>
+      readdirSync(join(dir, artifact)).filter((name) => source.junit.test(name)).sort().map((name) => ({
+        artifact,
+        xml: readFileSync(join(dir, artifact, name), "utf8"),
+      })));
     if (!reports.length) throw new Error(`run ${runId} has no ${source.pattern} artifacts`);
     const timings = shardTimings(reports, suiteFiles(root, source.suite), source.artifact);
     const count = Object.keys(timings).length;
