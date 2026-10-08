@@ -133,6 +133,13 @@ export function renderForkReport(data) {
   const prs = mergedIntoMain(data.prs);
   const features = featureRows(data.issues, prs, windowsIncludes(prs, data.windowsPrs));
   const fixes = prs.filter((pr) => !featureSlugs(pr.labels).length && !isSync(pr) && !isBot(pr)).sort(byNumber);
+  // A fork:* label keeps a PR out of the fixes, so one no tracking issue carries (a typo, or a
+  // feature whose issue the refresh has not created yet) would otherwise vanish from the report.
+  const tracked = new Set(data.issues.flatMap((issue) => featureSlugs(issue.labels)));
+  const unmatched = prs
+    .map((pr) => ({ pr, slugs: featureSlugs(pr.labels).filter((s) => !tracked.has(s)) }))
+    .filter((u) => u.slugs.length)
+    .sort((a, b) => byNumber(a.pr, b.pr));
   const lastSync = prs.filter(isSync).sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0];
 
   const active = features.filter((f) => f.open);
@@ -165,6 +172,22 @@ export function renderForkReport(data) {
     for (const f of features) lines.push(`| ${f.name} | ${f.status} | ${f.intent} | ${f.prs} |`);
   } else {
     lines.push("No `fork-feature` tracking issues yet.");
+  }
+  if (unmatched.length) {
+    lines.push(
+      "",
+      "## Unmatched fork labels",
+      "",
+      "These merged PRs carry a `fork:*` label that no tracking issue carries, so that work is missing",
+      "from the features above. Fix the label, or let the refresh create the feature's issue.",
+      "",
+      "| PR | Title | Unmatched labels | Merged |",
+      "| --- | --- | --- | --- |",
+    );
+    for (const { pr, slugs } of unmatched) {
+      const labels = slugs.map((s) => `\`${FEATURE_LABEL}${s}\``).join(", ");
+      lines.push(`| ${prLink(pr)} | ${cell(pr.title)} | ${labels} | ${day(pr.mergedAt)} |`);
+    }
   }
   lines.push("", "## Standalone fixes", "");
   if (fixes.length) {

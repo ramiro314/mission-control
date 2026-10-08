@@ -161,6 +161,30 @@ test("standalone fixes exclude labeled, upstream sync and bot-authored PRs", () 
   assert.match(row(report, "Active fork features"), /and 2 standalone fixes \|$/);
 });
 
+test("a merged PR whose fork label no tracking issue carries is listed, not dropped", () => {
+  const report = renderForkReport(
+    data({
+      issues: [issue(300, "Decision forms", "decision-forms", "Ask once.")],
+      prs: [
+        pr(6, { labels: ["fork:decision-forms"] }),
+        pr(9, { labels: ["fork:decison-forms"], title: "fix: a typo'd label" }),
+        pr(8, { labels: ["fork:decision-forms", "fork:new-thing"] }),
+        pr(10, { labels: ["fork:never-merged"], mergedAt: null }),
+      ],
+    }),
+  );
+  assert.deepEqual(
+    section(report, "Unmatched fork labels").split("\n").filter((l) => l.startsWith("| [#")),
+    [
+      `| [#8](${REPO}/pull/8) | PR 8 | \`fork:new-thing\` | 2026-09-18 |`,
+      `| [#9](${REPO}/pull/9) | fix: a typo'd label | \`fork:decison-forms\` | 2026-09-19 |`,
+    ],
+  );
+  assert.match(report, /\| \[#6\]\([^)]+\), \[#8\]\([^)]+\) \|/);
+  assert.doesNotMatch(report, /#10\b/);
+  assert.doesNotMatch(renderForkReport(data({ issues: [issue(300, "Decision forms", "decision-forms", "Ask once.")], prs: [pr(6, { labels: ["fork:decision-forms"] })] })), /Unmatched/);
+});
+
 test("each release/windows merge PR counts only the branch PRs that merge brought into main", () => {
   const branch = (number: number, mergedAt: string) => ({ number, mergedAt });
   const report = renderForkReport(
