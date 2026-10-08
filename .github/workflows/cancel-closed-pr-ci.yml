@@ -1,0 +1,31 @@
+name: Cancel CI on closed pull request
+
+# A pull request merged or closed while its CI run is still going leaves that run holding up to
+# 19 of GitHub Free's 20 concurrent job slots, and the push to `main` a merge starts queues
+# behind it. That run's result can no longer gate anything, so this workflow ends it.
+#
+# It does so by joining the run's concurrency group rather than calling the API: `ci.yml` groups
+# a pull request's run as `ci-CI-refs/pull/<number>/merge` with `cancel-in-progress: true`, and
+# concurrency groups are shared across every workflow in the repository, so arriving in the same
+# group cancels the run in progress (or queued) there. That needs no token permissions at all.
+# The ref is built from the pull request number rather than read from `github.ref`, so the group
+# matches whatever ref a closed event reports. `test/cancel-closed-pr-ci.test.ts` fails if this
+# group drifts from `ci.yml`'s.
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: ci-CI-refs/pull/${{ github.event.pull_request.number }}/merge
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  cancel:
+    name: cancel superseded CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report
+        run: echo "Pull request #${{ github.event.pull_request.number }} closed; its CI run, if any, was cancelled by concurrency."

@@ -110,7 +110,7 @@ The specs that failed only by starvation, 43 of their 45 tests passing:
 | `file-mermaid-preview`, `foreman-guide`, `foreman-invite`, `settings-standing-instructions`, `setup-banner-and-tour` | Pass, as on run 37758180479 | None |
 | `settings-task-sources-jira` | Pass, the Rovo check included | None |
 | `file-line-comments` | 13 of 14 pass. The keyboard-marker test fails `toBeFocused`: the focused marker went from "sent" to "no answer", and the widget rebuilds its button on any state change, dropping focus. Timing, not starvation | aacb6e98 |
-| `workflows-tour` | "an empty machine seeds the demonstration run" fails on every Windows run: the tour's temporary conversation is a Codex task, which win32 refuses | 271c1380 |
+| `workflows-tour` | "an empty machine seeds the demonstration run" fails on every Windows run: the tour's temporary conversation is a Codex task, which win32 refuses | Fixed after this run by #330 (`fix/win32-tour-harness-fallback`) |
 
 ## What still slows a fresh daemon on win32
 
@@ -143,7 +143,7 @@ pinned by `test/db-schema-commits.test.ts`). A fresh upgrade now makes 35 commit
 | `file-line-comments`, `file-mermaid-preview`, `foreman-guide`, `foreman-invite`, `settings-standing-instructions` | Starvation only: dashboard setup timeouts, `ECONNRESET` | 69d2ed0c |
 | `settings-task-sources-jira` | Starvation, except the Rovo check | 69d2ed0c; Rovo check 933eeb8a |
 | `setup-banner-and-tour` | The Setup banner is absent after 20 s, the slow Setup read | 69d2ed0c |
-| `workflows-tour` | Not run: shard 14 hit the global timeout | 271c1380: its own cause, see run 37807097380 |
+| `workflows-tour` | Not run: shard 14 hit the global timeout | `fix/win32-tour-harness-fallback`; see below |
 | `dispatch-restart-recovery` | Stale-ref fetch race: task seed answers 400 | 308298d4 |
 | `library-exit` | Escape on a graph node leaves the wrong workflow | e1354b36 |
 | `telemetry-settings` | Product analytics profile is not exporting | 88dc3820 |
@@ -155,8 +155,6 @@ pinned by `test/db-schema-commits.test.ts`). A fresh upgrade now makes 35 commit
 - 69d2ed0c: re-measure after these fixes land, and clear what still times out (run 37807097380
   and the fresh-schema fix above).
 - 308298d4, e1354b36, 88dc3820, 933eeb8a, ba5ad02e: the per-spec causes above.
-- 271c1380: the tours start their temporary conversation and demo task on Codex, which win32
-  refuses (`workflows-tour`, and likely `see-work-tour`).
 - aacb6e98: a focused file comment marker loses focus when its state changes
   (`file-line-comments`).
 
@@ -175,7 +173,13 @@ starvation signature. These own the fast assertion failures:
 - c678f42a: triage of the remaining fast assertion failures, after 69d2ed0c lands. On run
   37745155079 these also include `conversation-html-artifact-preview`, `ensemble-review-restart`,
   `foreman-profile`, `library-commands`, `library`, `native-worktree-dispatch`,
-  `workflow-elapsed-clock`, `workflow-round-scrubber` and `workflows-tour`.
+  `workflow-elapsed-clock` and `workflow-round-scrubber`.
+- `fix/win32-tour-harness-fallback`: `workflows-tour` (moved from c678f42a) and `see-work-tour`.
+  Every server tour recipe (`src/server/tours.ts`) prefers Codex, which win32 refuses, so on
+  runs 37745155079 and 37758180479 the tours' temporary conversation and demo task stopped on
+  "Mission Control does not support Codex on Windows yet". Tour tasks now launch on the first
+  harness the host runs, the fake `claude` holds the demo's turn open as the fake `codex` does,
+  and `win32-tour-harness` walks both tours on that harness on every runner.
 
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`

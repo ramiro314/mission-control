@@ -469,9 +469,11 @@ no resume state, new top-bar control, or chapter beyond this one guided sequence
    of the form. The operator clicks that button to schedule one fixed read-only Ship task on
    Codex pinned to `gpt-6-sol`. This is a real model call and can spend model tokens. On an
    empty fleet, the temporary Chat conversation is a separate real model call using Codex's
-   configured default model. Each temporary daemon route accepts only a repository; it owns
-   the prompt, kind, and no-Workflow posture. Only the Ship route grants the required
-   `request_input` MCP tool.
+   configured default model. On a host that refuses Codex, such as Windows, both run on the
+   first harness the host supports, on that harness's default model. The Follow the review
+   tour's temporary conversation follows the same rule. Each temporary daemon route accepts
+   only a repository; it owns the prompt, kind, and no-Workflow posture. Only the Ship route
+   grants the required `request_input` MCP tool.
 9. **Working** spotlights that task's real Board tile while its session runs.
 10. **Needs You** follows the same tile when the agent's review request reaches the existing
    Mission Control review channel.

@@ -6,7 +6,8 @@ import { Registry } from "../src/server/registry.ts";
 import { buildApp } from "../src/server/routes.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
-import { SERVER_TOURS, serverTour, tourRecipeFor } from "../src/server/tours.ts";
+import { harnessUnsupportedWhy } from "../src/shared/harness-capabilities.ts";
+import { SERVER_TOURS, serverTour, tourCreateFor, tourRecipeFor } from "../src/server/tours.ts";
 import { enableExperience, experienceFacts } from "./helpers/experience-assertions.ts";
 
 function tourTask(overrides: Partial<Task> = {}): Task {
@@ -387,4 +388,29 @@ test("identity is matched per recipe, so cleanup names one outcome and only one"
   // A right-looking title with the wrong intent prefix is still not the tour's task.
   assert.equal(tourRecipeFor(tour, tourTask({ intent: "Tour demo please" })), null);
   assert.equal(tourRecipeFor(tour, tourTask({ labels: [] })), null);
+});
+
+const everyRecipe = Object.values(SERVER_TOURS).flatMap((tour) =>
+  Object.entries(tour.operations).map(([operation, recipe]) => ({ name: `${tour.id} ${operation}`, recipe: recipe! })));
+
+test("a host that runs a recipe's harness launches the recipe unchanged", () => {
+  for (const platform of ["darwin", "linux"]) {
+    for (const { name, recipe } of everyRecipe) {
+      assert.equal(tourCreateFor(recipe, platform), recipe.create, `${name} on ${platform}`);
+    }
+  }
+});
+
+test("a host that refuses a recipe's harness launches the tour on one it runs, on that harness's default model", () => {
+  for (const { name, recipe } of everyRecipe) {
+    assert.ok(harnessUnsupportedWhy(recipe.create.agent!, "win32"), `${name} names a harness win32 refuses`);
+    const create = tourCreateFor(recipe, "win32");
+    assert.equal(create.agent, "claude", name);
+    assert.equal(harnessUnsupportedWhy(create.agent!, "win32"), null, name);
+    assert.equal("model" in create, false, name);
+    // Everything else the recipe fixes - and what its cleanup identity reads - is untouched.
+    const { agent: _agent, model: _model, ...fixed } = recipe.create;
+    const { agent: _swapped, ...kept } = create;
+    assert.deepEqual(kept, fixed, name);
+  }
 });
