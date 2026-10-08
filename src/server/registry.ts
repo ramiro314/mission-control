@@ -815,6 +815,9 @@ function bucketedAge(ms: number | null): number | null {
   return ms === null ? null : Math.floor(ms / 10_000);
 }
 
+/** Subscribers the Registry carries before Node reports a possible listener leak. */
+const REGISTRY_SUBSCRIBER_LIMIT = 100;
+
 /**
  * In-memory source of truth for live sessions and pending reviews. Emits a
  * `ServerEvent` on every change; the SSE layer forwards those to browsers.
@@ -824,9 +827,6 @@ function bucketedAge(ms: number | null): number | null {
  * the next discovery sweep. SDK sessions use the supervisor's durable `sdk:<uuid>` and
  * report directly through the handle that owns that entry.
  */
-/** Subscribers the Registry carries before Node reports a possible listener leak. */
-const REGISTRY_SUBSCRIBER_LIMIT = 100;
-
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   /** Accepted steers the agent has not read yet, by note key. See `recordSteeredTurn`. */
