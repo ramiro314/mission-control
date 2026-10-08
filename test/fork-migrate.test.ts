@@ -11,6 +11,7 @@ import {
   TEMPLATE_SECTIONS,
   absoluteLinks,
   desiredState,
+  executeWrites,
   parseLedger,
   parsePrCell,
   planWrites,
@@ -358,6 +359,62 @@ test("a feature label on two issues stops the plan", () => {
 
 test("a ledger entry with text outside its table and titled paragraphs is refused", () => {
   assert.throws(() => parseLedger(LEDGER.replace("**Intent.** Swept", "Stray line.\n\n**Intent.** Swept")), /Task-source workflow default: text outside/);
+});
+
+test("a malformed ledger is refused with a message naming what is wrong", () => {
+  const cases: [string, string, string, RegExp][] = [
+    ["unknown field", "| Upstream candidate | Maybe. Self-contained. |", "| Owner | me |\n| Upstream candidate | Maybe. Self-contained. |", /Shape tasks, grill and tickets: unknown field "Owner"/],
+    ["missing PRs row", "| PRs | #200 (the plan), #215 |\n", "", /CI time-to-green: the field table has no PRs row/],
+    ["unreadable status", "| Status | **Removed** 2026-09-29", "| Status | **Gone** 2026-09-29", /Dependabot: cannot read a status from "\*\*Gone\*\*/],
+    ["repeated paragraph", "**Fork-only files.** None.", "**Intent.** Again.\n\n**Fork-only files.** None.", /Task-source workflow default: two "Intent" paragraphs/],
+    ["duplicate slug", "### Task-source workflow default", "### Shape tasks: grill and tickets", /two entries derive the slug shape-tasks-grill-and-tickets/],
+    ["no At a glance", "## At a glance", "## Overview", /the ledger has no "## At a glance" section/],
+    ["two-cell glance row", "| Dependabot | Removed (2026-09-29, #62) | #35, #40, #41, #43 |", "| Dependabot | #35 |", /"At a glance" row does not have three cells: "\| Dependabot \| #35 \|"/],
+  ];
+  for (const [name, from, to, message] of cases) {
+    assert.equal(LEDGER.split(from).length, 2, `${name}: the mutation matches the fixture once`);
+    assert.throws(() => parseLedger(LEDGER.replace(from, to)), message, name);
+  }
+});
+
+test("a table PR GitHub does not know is warned about and never labeled", () => {
+  const desired = desiredOf(LEDGER);
+  const actual = migrated(desired);
+  actual.prs.delete(41);
+  for (const labels of actual.prs.values()) labels.splice(0);
+  const { writes, warnings } = planWrites(desired, actual);
+  assert.deepEqual(warnings, ["#41 is not a pull request in this repository; not labeled"]);
+  const labeled = writes.flatMap((w) => (w.op === "label-pr" ? [w.number] : []));
+  assert.ok(!labeled.includes(41));
+  assert.equal(labeled.length, desired.prs.size - 1, "every other table PR is still labeled");
+});
+
+test("a title that differs from the ledger heading is the only thing rewritten", () => {
+  const desired = desiredOf(LEDGER);
+  const actual = migrated(desired);
+  defined(actual.issues[0], "the shape issue").title = "Fork feature: Shape tasks";
+  const { writes } = planWrites(desired, actual);
+  assert.equal(writes.length, 1);
+  const edit = only(writes[0], "edit-issue");
+  assert.deepEqual(
+    [edit.number, edit.title, edit.body, edit.sections, edit.addLabels, edit.removeLabels],
+    [300, "Fork feature: Shape tasks, grill and tickets", null, [], [], []],
+  );
+});
+
+test("an issue create that prints no URL stops the run before the writes that need its number", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return "";
+  };
+  const writes: Write[] = [
+    { op: "create-issue", slug: "dependabot", title: "Fork feature: Dependabot", body: "x\n", labels: ["fork-feature"] },
+    { op: "comment-issue", slug: "dependabot", number: null, body: "closing" },
+    { op: "close-issue", slug: "dependabot", number: null },
+  ];
+  assert.throws(() => executeWrites(writes, run, () => {}), /gh issue create printed no issue URL: $/);
+  assert.equal(calls.length, 1);
 });
 
 // The CLI, against a fake `gh` that keeps GitHub's state in a JSON file.
