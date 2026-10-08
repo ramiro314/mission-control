@@ -107,6 +107,9 @@ export class FakeGateway implements EnsembleTaskGateway {
     this.cancelled.push(taskId);
     const t = this.state.get(taskId);
     if (t) t.status = "cancelled";
+    if (this.untrackableTrees) {
+      throw new Error(`task cancelled, but its resources remain tracked: native worktree release refused`);
+    }
   }
 
   async settleSuperseded(taskId: string, outcome: string): Promise<void> {
@@ -156,6 +159,11 @@ export class FakeGateway implements EnsembleTaskGateway {
   }
   failCancel(taskId: string): void {
     this.cancelFailures.add(taskId);
+  }
+  private untrackableTrees = false;
+  /** Every cancel cancels its Task and then rejects, keeping the tree tracked: TaskManager on win32. */
+  keepTreesOnCancel(): void {
+    this.untrackableTrees = true;
   }
   failSettle(taskId: string): void {
     this.settleFailures.add(taskId);

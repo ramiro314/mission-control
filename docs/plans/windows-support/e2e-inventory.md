@@ -188,6 +188,15 @@ starvation signature. These own the fast assertion failures:
   passed on runs 37745155079 and 37758180479, so it is timing, not starvation. The widget now
   updates the button in place, and a new spec changes a focused marker's state.
 
+- `fix/win32-ensemble-cancel-tracked`: `ensemble-failure-actions` ("a failed ensemble can be
+  dismissed without deletion...") and `ensemble-review-restart` ("a dead provider parks the
+  review..."), both on shard 3 of runs 37807097380 and 37821364466. win32 cancels a member's task
+  but refuses to release its worktree, answering not-ok, and the ensemble engine read that as a
+  failed teardown: a withdrawal answered 400 and left the run `running`, and Cancel run stuck at
+  `cancelling`. The engine now settles a member once its task is no longer live and leaves the
+  tree tracked for Reclaim; `ensemble-recovery.test.ts` pins it. Confirm both on the next Windows
+  run.
+
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
 to 05e056ac.
