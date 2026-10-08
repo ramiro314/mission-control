@@ -93,4 +93,16 @@ Ticket 69d2ed0c owns what is left.
 - 69d2ed0c: re-measure after these fixes land, and clear what still times out.
 - 308298d4, e1354b36, 88dc3820, 933eeb8a, ba5ad02e: the per-spec causes above.
 
+From run 37736134634, every failing Windows test has an owner. 69d2ed0c owns the 259 with a
+starvation signature. These own the fast assertion failures:
+
+- a00a75fa: worktree destroy, prune and return where checkout occupancy is unknown on win32
+  (`settings-worktrees`, `task-worktree-retention`, `task-return-to-backlog`).
+- 8b540e0e: Setup rows that read differently on win32 (`setup-panel`, `setup-family-rail`,
+  `setup-node-runtime`, `setup-install-terminal`).
+- f19e6b8d: Pi and terminal-runtime cases that escaped the D37 skips (`pi-model-catalog`,
+  `sdk-terminal-handoff`).
+- 05e056ac: Conductor and pipeline controls on win32 (`settings-conductor`, `pipeline-controls`).
+- c678f42a: triage of the remaining 19, after 69d2ed0c lands.
+
 The Windows CI shard timings ticket (8b370c3d) waits on all of them.
