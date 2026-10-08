@@ -87,6 +87,54 @@ Windows e2e now runs two workers (`e2e/playwright.config.ts`); Linux and macOS k
 - 71 Windows tests still fail or error. Each has an owner below; 12 of them still carry a
   starvation signature (5 `/api/health`, 4 `ECONNRESET`, 3 slow) and belong to 69d2ed0c.
 
+## Everything landed: run 37807097380
+
+`release/windows` at `4124233dc`, the first push run with two workers and every starvation fix:
+shared Setup rounds, no model discovery for refused harnesses, no discarded process listings, no
+managed-resume reconcile without the terminal runtime (#310), and the cheaper PATH and npm reads
+(#320). Source: the `windows-e2e-junit-shard-*` artifacts.
+
+- **No shard hits the 1800 s global timeout.** The slowest took 902 s. The push runs before it
+  (37758124425 through 37793182116) had 2 to 8 shards at 1800 s each, because the two-worker
+  change reached `release/windows` only when #310 merged; until then every push ran four.
+- 1,165 tests: 988 passed, 29 failed, 19 errored, 129 skipped. Test timeouts 5, dispatch-modal
+  `toBeHidden` 4, `ECONNRESET` 1.
+- Linux on the same run: all 14 e2e shards succeed.
+- 12 `/api/health` boot timeouts across 7 shards (5 on run 37758180479), every one with an empty
+  daemon log. That is the starvation signature still left; see the next section.
+
+The specs that failed only by starvation, 43 of their 45 tests passing:
+
+| Spec | Run 37807097380 | Owner |
+|---|---|---|
+| `file-mermaid-preview`, `foreman-guide`, `foreman-invite`, `settings-standing-instructions`, `setup-banner-and-tour` | Pass, as on run 37758180479 | None |
+| `settings-task-sources-jira` | Pass, the Rovo check included | None |
+| `file-line-comments` | 13 of 14 pass. The keyboard-marker test fails `toBeFocused`: the focused marker went from "sent" to "no answer", and the widget rebuilds its button on any state change, dropping focus. Timing, not starvation | aacb6e98 |
+| `workflows-tour` | "an empty machine seeds the demonstration run" fails on every Windows run: the tour's temporary conversation is a Codex task, which win32 refuses | Fixed after this run by #330 (`fix/win32-tour-harness-fallback`) |
+
+## What still slows a fresh daemon on win32
+
+A daemon that answers nothing for 30 s never reached `listen`: a healthy boot prints nothing
+before `listening on`. Before `listen` it starts at most two `reg export` processes, capped at
+5 s, and otherwise only works synchronously. The largest synchronous cost on a fresh state home is
+the schema.
+
+- **Every table and index was its own commit.** A fresh database gains 109 tables and 263 indexes,
+  and the upgrade created them outside any transaction: 263 commits, each a WAL flush. win32
+  makes that flush a real `FlushFileBuffers`.
+- **Measured.** On the Windows unit runner (run 37793182116) every `telemetry-migration` test,
+  each one fresh upgrade, takes 4.2 to 6.0 s; locally it takes 50 ms. Running the upgrade three
+  times costs no more than once, so the time is in the writing pass. On macOS with
+  `PRAGMA fullfsync = ON`, which makes each commit a real flush, a fresh upgrade takes 1.2 to
+  1.5 s.
+- Every e2e test boots its daemon on a fresh state home, so every test paid this before the
+  daemon could answer, and paid more on a loaded runner.
+
+Fixed on this ticket's branch: the schema's CREATE statements commit once (`src/server/db.ts`,
+pinned by `test/db-schema-commits.test.ts`). A fresh upgrade now makes 35 commits, the rest being
+`migrate`'s own steps, and takes 0.14 s with real flushes on macOS. Its effect on the Windows
+`/api/health` count is measured by this branch's own CI run.
+
 ## Reclassification of cause J and `foreman-settings-tabs`
 
 | Spec | Run 37713823713 | Owner |
@@ -104,8 +152,11 @@ Windows e2e now runs two workers (`e2e/playwright.config.ts`); Linux and macOS k
 ## Open tickets
 
 - c49c6d9c: the PATH read and npm script-shell probe without PowerShell and npm on win32.
-- 69d2ed0c: re-measure after these fixes land, and clear what still times out.
+- 69d2ed0c: re-measure after these fixes land, and clear what still times out (run 37807097380
+  and the fresh-schema fix above).
 - 308298d4, e1354b36, 88dc3820, 933eeb8a, ba5ad02e: the per-spec causes above.
+- aacb6e98: a focused file comment marker loses focus when its state changes
+  (`file-line-comments`).
 
 From run 37736134634, every failing Windows test has an owner. 69d2ed0c owns the 259 with a
 starvation signature. These own the fast assertion failures:

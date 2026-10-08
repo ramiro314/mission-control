@@ -328,6 +328,30 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
+  // One transaction for every CREATE, not one per statement. Outside a transaction each of the
+  // ~370 tables and indexes a fresh database gains is its own commit, and every commit flushes
+  // the WAL to disk. win32 makes that flush a real `FlushFileBuffers`, so a fresh daemon spent
+  // 4 to 6 s here on a CI runner before it could listen (macOS: 50 ms), and every e2e test
+  // boots one. On an existing database every statement is a no-op and the commit writes
+  // nothing. `migrate` stays outside: its steps take their own transactions.
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    createSchemaObjects(d);
+    d.exec("COMMIT;");
+  } catch (error) {
+    // As in `rebuildDerivedPartialIndexIfStale`: a failed ROLLBACK must not bury the real error.
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw error;
+  }
+  migrateTelemetry(d);
+  migrate(d);
+  markDatabaseSchemaCurrent(d);
+}
+
+/** Every table and index the current schema declares, created where missing. */
+function createSchemaObjects(d: DatabaseSync): void {
   d.exec(`
     CREATE TABLE IF NOT EXISTS reviews (
       id                     TEXT PRIMARY KEY,
@@ -3053,9 +3077,6 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // is that a projection checkpoint, its aggregate state and its output batch must commit in
   // one transaction with the writer that already serializes everything else here.
   createTelemetryTables(d);
-  migrateTelemetry(d);
-  migrate(d);
-  markDatabaseSchemaCurrent(d);
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */
