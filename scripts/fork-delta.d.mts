@@ -43,6 +43,7 @@ export type CheckResult = {
 };
 
 export function normalizeSection(text: string): string;
+export function scanLines(text: string): { line: string; code: boolean }[];
 export function sectionHash(text: string): string;
 export function parseForkChanges(body: string | null | undefined): ForkChanges | null;
 export function parseIssueBody(body: string | null | undefined): { preamble: string; sections: Section[] };
