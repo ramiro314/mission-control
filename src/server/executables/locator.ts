@@ -15,6 +15,7 @@ import {
 import {
   executableEnvironmentFor,
   LOGIN_SHELL_PATH_MARKER,
+  type DirectPathRead,
   type ExecutableEnvironmentPlatform,
 } from "../platform/executable-environment.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
@@ -185,14 +186,21 @@ async function runPathRead(
 
 /**
  * The platform's cheaper PATH read (`directPathRead`), or undefined when it has none, or when
- * any of its commands failed or its outputs could not be answered exactly.
+ * it could not be set up, any of its commands failed, or its outputs could not be answered
+ * exactly. Like the login-shell read, it never throws: a failure of the cheap mechanism itself
+ * sends the probe on to `loginShellPathRead`.
  */
 async function directLoginPath(
   platform: ExecutableEnvironmentPlatform,
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
 ): Promise<LoginShellResult | undefined> {
-  const read = platform.directPathRead?.(env);
+  let read: DirectPathRead | undefined;
+  try {
+    read = platform.directPathRead?.(env);
+  } catch {
+    return undefined;
+  }
   if (!read) return undefined;
   try {
     const outcomes = await Promise.all(read.commands.map(({ command, args }) =>
@@ -202,7 +210,13 @@ async function directLoginPath(
     if (path === undefined) return undefined;
     return path ? { path, problem: null } : { path: null, problem: "login shell returned no PATH" };
   } finally {
-    read.dispose();
+    // Cleanup never replaces the answer. On win32 a reg.exe killed at the deadline may still
+    // hold its export open, and Windows refuses to delete an open file.
+    try {
+      read.dispose();
+    } catch {
+      // Left for the OS temp cleanup.
+    }
   }
 }
 

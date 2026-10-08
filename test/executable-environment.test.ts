@@ -20,6 +20,7 @@ import {
   windowsRegPath,
 } from "../src/server/platform/executable-environment.ts";
 import { writeFakeExecutable } from "./helpers/fake-executable.ts";
+import { withProcessEnv } from "./helpers/process-env.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const HOME = "/fixture/home";
@@ -427,20 +428,28 @@ function fakePathReaders() {
   const powershell = writeFakeExecutable(join(directory, "powershell"), FAKE_POWERSHELL);
   const log = join(directory, "started");
   const exportDirectories: string[] = [];
-  const row = (regCommand: string): ExecutableEnvironmentPlatform => ({
+  const row = (regCommand: string, disposeThrows: boolean): ExecutableEnvironmentPlatform => ({
     ...win32ExecutableEnvironment,
     directPathRead(env) {
       const real = win32ExecutableEnvironment.directPathRead!(env);
       exportDirectories.push(dirname(real.commands[0]!.args[2]!));
-      return { ...real, commands: real.commands.map((command) => ({ ...command, command: regCommand })) };
+      return {
+        ...real,
+        commands: real.commands.map((command) => ({ ...command, command: regCommand })),
+        dispose() {
+          real.dispose();
+          // As win32 refuses to delete an export a killed reg.exe still holds open.
+          if (disposeThrows) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+        },
+      };
     },
     loginShellPathRead: (env) => ({ ...win32ExecutableEnvironment.loginShellPathRead(env), command: powershell }),
   });
   return {
     /** The read's result, and which fakes it started, sorted. */
-    async read(vars: NodeJS.ProcessEnv, options: { timeoutMs?: number; regCommand?: string } = {}) {
+    async read(vars: NodeJS.ProcessEnv, options: { timeoutMs?: number; regCommand?: string; disposeThrows?: boolean } = {}) {
       rmSync(log, { force: true });
-      const result = await probePathRead(row(options.regCommand ?? reg), {
+      const result = await probePathRead(row(options.regCommand ?? reg, options.disposeThrows ?? false), {
         PATH: [dirname(process.execPath), process.env.PATH].join(delimiter),
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         MC_TEST_LOG: log,
@@ -524,6 +533,39 @@ test("the win32 read's reg exports and PowerShell fallback share one deadline", 
     assert.deepEqual(result, { path: null, problem: "login shell timed out" });
     // A fallback given a fresh budget would end near twice the timeout.
     assert.ok(Date.now() - started < timeoutMs + 1_500, `took ${Date.now() - started} ms against a ${timeoutMs} ms budget`);
+  } finally {
+    fakes.clean();
+  }
+});
+
+test("the win32 read falls back to PowerShell when its export directory cannot be made", async () => {
+  const fakes = fakePathReaders();
+  const missing = join(tmpdir(), "mission-missing-temp", "absent");
+  try {
+    // os.tmpdir() reads TMPDIR on POSIX and TEMP, then TMP, on win32.
+    const { result, started } = await withProcessEnv(
+      { TMPDIR: missing, TEMP: missing, TMP: missing },
+      () => fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH }),
+    );
+    assert.deepEqual(result, { path: POWERSHELL_PATH, problem: null });
+    assert.deepEqual(started, ["powershell"], "no reg export started without somewhere to write");
+  } finally {
+    fakes.clean();
+  }
+});
+
+test("a cleanup the OS refuses never replaces the win32 read's answer", async () => {
+  const fakes = fakePathReaders();
+  try {
+    assert.deepEqual(
+      await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH }, { disposeThrows: true }),
+      { result: { path: "D:\\Root\\system32;D:\\tools", problem: null }, started: BOTH_REG },
+    );
+    const { result } = await fakes.read(
+      { MC_TEST_REG_DELAY_MS: "60000", MC_TEST_PS_DELAY_MS: "60000" },
+      { timeoutMs: 1_000, disposeThrows: true },
+    );
+    assert.deepEqual(result, { path: null, problem: "login shell timed out" });
   } finally {
     fakes.clean();
   }
