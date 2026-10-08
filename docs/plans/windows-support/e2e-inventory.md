@@ -73,6 +73,20 @@ PR #310's CI run on `3454f47fe`, all 14 Windows e2e shards, against run 37713823
 
 Ticket 69d2ed0c owns what is left.
 
+## Two workers on Windows: run 37745155079
+
+The 4-worker run showed the timeouts follow load, not specs: 79 tests went from passing to timing
+out and 79 the other way between runs 37713823713 and 37736134634, and only 38 timed out in both.
+Windows e2e now runs two workers (`e2e/playwright.config.ts`); Linux and macOS keep four.
+
+- **No shard hits the 1800 s global timeout.** The slowest took 1030 s; the two 4-worker runs had
+  3 and 4 shards at 1800 s.
+- Test timeouts 149 to 6, timeouts while setting up `dashboard` 42 to 0, `/api/health` 15 to 5,
+  dispatch-modal `toBeHidden` 65 to 5, passes 699 to 987 (against run 37713823713).
+- Linux on the same run: all 14 e2e shards and `CI result` succeed.
+- 71 Windows tests still fail or error. Each has an owner below; 12 of them still carry a
+  starvation signature (5 `/api/health`, 4 `ECONNRESET`, 3 slow) and belong to 69d2ed0c.
+
 ## Reclassification of cause J and `foreman-settings-tabs`
 
 | Spec | Run 37713823713 | Owner |
@@ -103,6 +117,15 @@ starvation signature. These own the fast assertion failures:
 - f19e6b8d: Pi and terminal-runtime cases that escaped the D37 skips (`pi-model-catalog`,
   `sdk-terminal-handoff`).
 - 05e056ac: Conductor and pipeline controls on win32 (`settings-conductor`, `pipeline-controls`).
-- c678f42a: triage of the remaining 19, after 69d2ed0c lands.
+- 3aeb7ea1: workflow Command checks that do not run or report on win32
+  (`workflow-affected-tests-check`, `workflow-run-failing-check`, `workflow-spent-check-queue`).
+- c678f42a: triage of the remaining fast assertion failures, after 69d2ed0c lands. On run
+  37745155079 these also include `conversation-html-artifact-preview`, `ensemble-review-restart`,
+  `foreman-profile`, `library-commands`, `library`, `native-worktree-dispatch`,
+  `workflow-elapsed-clock`, `workflow-round-scrubber` and `workflows-tour`.
+
+On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
+`continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
+to 05e056ac.
 
 The Windows CI shard timings ticket (8b370c3d) waits on all of them.
