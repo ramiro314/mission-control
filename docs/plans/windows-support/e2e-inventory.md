@@ -194,8 +194,8 @@ starvation signature. These own the fast assertion failures:
   but refuses to release its worktree, answering not-ok, and the ensemble engine read that as a
   failed teardown: a withdrawal answered 400 and left the run `running`, and Cancel run stuck at
   `cancelling`. The engine now settles a member once its task is no longer live and leaves the
-  tree tracked for Reclaim; `ensemble-recovery.test.ts` pins it. Confirm both on the next Windows
-  run.
+  tree tracked for Reclaim; `ensemble-recovery.test.ts` and `ensemble-finalization.test.ts` pin
+  it. Both specs passed on Windows in run 37827279011 (shard 3), PR #336's CI.
 
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`
