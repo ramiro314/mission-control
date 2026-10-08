@@ -113,7 +113,7 @@ or issues.</p>
 <tr>
 <td>Upstream sync process and fork ledger</td>
 <td>Active</td>
-<td>#59, #62, #66, weekly mission PR, #175 (2026-10-05 sync), #275 (fork-tracking plan), #282 (fork-delta tool), pending (branch <code>feat/fork-migrate</code>)</td>
+<td>#59, #62, #66, weekly mission PR, #175 (2026-10-05 sync), #275 (fork-tracking plan), #282 (fork-delta tool), #285 (fork-migrate), pending (branch <code>feat/fork-report-tool</code>)</td>
 </tr>
 <tr>
 <td>Persona reasoning effort</td>
@@ -820,7 +820,7 @@ the workflow editor and ladder components, <code>TaskSourcesPanel.tsx</code>, <c
 </tr>
 <tr>
 <td>PRs</td>
-<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), #175 (the 2026-10-05 sync), #275 (the <a href="../plans/fork-tracking/plan.md">fork-tracking plan</a> that replaces this ledger), #282 (its <code>scripts/fork-delta.mjs</code>), and pending (branch <code>feat/fork-migrate</code>, its <code>scripts/fork-migrate.mjs</code>)</td>
+<td>#59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), #175 (the 2026-10-05 sync), #275 (the <a href="../plans/fork-tracking/plan.md">fork-tracking plan</a> that replaces this ledger), #282 (its <code>scripts/fork-delta.mjs</code>), #285 (its <code>scripts/fork-migrate.mjs</code>), and pending (branch <code>feat/fork-report-tool</code>, its <code>scripts/fork-report.mjs</code>)</td>
 </tr>
 <tr>
 <td>Plan docs</td>
@@ -865,7 +865,8 @@ describes. A &quot;nothing new&quot; run relies on auto-on-conclusion to close i
 <code>.d.mts</code> and <code>test/fork-delta.test.ts</code>), which checks and bases a PR&#39;s &quot;Fork feature changes&quot;
 section for the tracking issues that replace this ledger, and <code>scripts/fork-migrate.mjs</code> (with
 its <code>.d.mts</code>, <code>test/fork-migrate.test.ts</code> and <code>test/helpers/fake-gh-fork.mjs</code>), the one-off
-migration of this ledger into those issues.</p>
+migration of this ledger into those issues, and <code>scripts/fork-report.mjs</code> (with its <code>.d.mts</code>
+and <code>test/fork-report.test.ts</code>), which renders the fork status snapshot from them.</p>
 <h3>Persona reasoning effort</h3>
 <table>
 <thead>

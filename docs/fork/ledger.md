@@ -50,7 +50,7 @@ or issues.
 | Task-source workflow default | Active | Pending (branch `feat/task-source-workflow`, issue #234) |
 | MCP backlog listing and adoption across repositories | Active | #14 |
 | Flake-aware testing | Active | #25, #26, #27, #29, #44, #48, #53 |
-| Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR, #175 (2026-10-05 sync), #275 (fork-tracking plan), #282 (fork-delta tool), pending (branch `feat/fork-migrate`) |
+| Upstream sync process and fork ledger | Active | #59, #62, #66, weekly mission PR, #175 (2026-10-05 sync), #275 (fork-tracking plan), #282 (fork-delta tool), #285 (fork-migrate), pending (branch `feat/fork-report-tool`) |
 | Persona reasoning effort | Active | Pending (branch `feat/persona-effort`) |
 | PR merge-conflict reactions | Active (signal, chip, Blocked pull requests inbox and alert, workflow repair rounds) | #108, #125, #145, pending (branch `feat/workflow-merge-conflicts`) |
 | Per-task base branch | Active (storage, API, MCP, dispatch, reset, PR base, checks, conflicts, merge watcher, recurring-mission template, task form field and card label, session Diff view) | #151 (plan M0.1), #161, #162, #163, issue #136 (session Diff view) |
@@ -608,7 +608,7 @@ flakes into deflake tasks.
 | Field | Value |
 | --- | --- |
 | Status | **Active** |
-| PRs | #59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), #175 (the 2026-10-05 sync), #275 (the [fork-tracking plan](../plans/fork-tracking/plan.md) that replaces this ledger), #282 (its `scripts/fork-delta.mjs`), and pending (branch `feat/fork-migrate`, its `scripts/fork-migrate.mjs`) |
+| PRs | #59 (plan), #62 (first sync, runbook), #66 (this ledger), the PR that recorded the weekly sync mission in the runbook (all after the original backfill range), #175 (the 2026-10-05 sync), #275 (the [fork-tracking plan](../plans/fork-tracking/plan.md) that replaces this ledger), #282 (its `scripts/fork-delta.mjs`), #285 (its `scripts/fork-migrate.mjs`), and pending (branch `feat/fork-report-tool`, its `scripts/fork-report.mjs`) |
 | Plan docs | [upstream-sync/plan.md](../plans/upstream-sync/plan.md), [tickets.md](../plans/upstream-sync/tickets.md) |
 | Upstream candidate | No. It exists only because this is a fork. |
 
@@ -648,7 +648,8 @@ conceptual conflicts.
 `.d.mts` and `test/fork-delta.test.ts`), which checks and bases a PR's "Fork feature changes"
 section for the tracking issues that replace this ledger, and `scripts/fork-migrate.mjs` (with
 its `.d.mts`, `test/fork-migrate.test.ts` and `test/helpers/fake-gh-fork.mjs`), the one-off
-migration of this ledger into those issues.
+migration of this ledger into those issues, and `scripts/fork-report.mjs` (with its `.d.mts`
+and `test/fork-report.test.ts`), which renders the fork status snapshot from them.
 
 ### Persona reasoning effort
 
