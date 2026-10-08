@@ -330,9 +330,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   if (gitFetchRefRace) {
     // The race is injected where git talks to origin, not by a fake `git` on the daemon's
     // PATH. A PATH fake sits in front of every git call the daemon makes, and on win32 each
-    // one then starts a .NET launcher and a Node process before real git: enough to push the
-    // 4s `rev-parse` the task seed waits on past its limit (refused as "not a git
-    // repository"), and to stall a dispatch's worktree provisioning past a minute. Git runs
+    // one then starts a .NET launcher and a Node process before real git, which added to a
+    // seed `rev-parse` already slow enough on a loaded runner to be stopped, and stalled a
+    // dispatch's worktree provisioning past a minute. Git runs
     // `remote.origin.uploadpack` only for a fetch or `ls-remote` against demo-repo's origin,
     // and its stderr reaches the fetch's own.
     const uploadPack = writeFakeExecutable(
