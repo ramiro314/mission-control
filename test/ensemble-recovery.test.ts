@@ -473,6 +473,21 @@ test("a member whose cancel left its Task live still holds the withdrawal open",
   assert.notEqual(store.getRun(run.id)!.status, "failed");
 });
 
+test("a cancel that resolves but leaves the Task live still holds the withdrawal open", async () => {
+  const { store, gateway, engine } = makeEngine();
+  const { run } = store.createRun(runInsert(reviewPlan(2, 2)));
+  await engine.launch(run.id);
+  const victimTask = gateway.dispatched[0]!.taskId;
+  gateway.running(victimTask, `/wt/${victimTask}`);
+  gateway.ignoreCancel(victimTask);
+  const victim = store.listAttempts(run.id).find((a) => a.taskId === victimTask)!.memberId;
+
+  assert.equal(await engine.withdrawMember(run.id, victim, "operator withdrew it"), false);
+  assert.ok(gateway.cancelled.includes(victimTask), "the cancel was attempted");
+  assert.notEqual(store.getMember(victim)!.status, "withdrawn");
+  assert.match(store.getMember(victim)!.error ?? "", new RegExp(`${victimTask} is still live after its cancel`));
+});
+
 test("restoreArtifact verifies the private ref, then restores through the adapter", async () => {
   const verified: string[] = [];
   const restored: string[] = [];
