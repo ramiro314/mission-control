@@ -14,7 +14,8 @@
  * has an `upstream` remote.
  *
  * The plan lists every label, every tracking issue with its slug and status, every historic PR
- * the ledger claims (in the "At a glance" table or an entry's PRs field) with the labels it gets,
+ * the ledger claims (in the "At a glance" table, an entry's PRs field, or in words that
+ * `PROSE_CLAIMS` maps to a number) with the labels it gets,
  * and every "pending (branch `x`)" cell, which a real run resolves to the PR merged into `main`
  * from that branch. A real run is a reconciling upsert: it
  * reads the labels, the `fork-feature` issues and the PRs, and writes only the differences, so a
@@ -47,6 +48,21 @@ export const TEMPLATE_SECTIONS = [
   "Fork-only files",
   "Plan docs",
   "Upstream candidate",
+];
+/**
+ * PRs the ledger claims in words rather than by number, each matched by a person against the PR
+ * on GitHub. A claim applies only while its entry's field table still contains `text`, so a
+ * ledger edited since cannot keep a stale one.
+ */
+export const PROSE_CLAIMS = [
+  { entry: "Upstream sync process and fork ledger", text: "the PR that recorded the weekly sync mission in the runbook", pr: 73 },
+  { entry: "Shape tasks, grill and tickets", text: "pending (tickets marker, issue #82)", pr: 100 },
+  { entry: "Shape tasks, grill and tickets", text: "pending (MCP `create_task` files scout, plan and shape)", pr: 101 },
+  { entry: "PR merge-conflict reactions", text: "pending (the Foreman nudge ticket)", pr: 149 },
+  { entry: "PR merge-conflict reactions", text: "(../plans/pr-merge-conflicts/plan.md)", pr: 103 },
+  { entry: "Per-task base branch", text: "the session Diff view (issue #136)", pr: 250 },
+  { entry: "Docs-only CI", text: "(../plans/docs-only-ci/plan.md)", pr: 141 },
+  { entry: "CodeQL advanced setup", text: "2026-10-04, PR pending", pr: 111 },
 ];
 /** GitHub refuses a label name longer than this. */
 export const LABEL_MAX_LENGTH = 50;
@@ -195,6 +211,7 @@ function parseEntry({ name, lines }, repo) {
     sections,
     entryPrs: claimed.prs,
     entryPending: pendingBranches(claimed.skipped),
+    fieldText: [...fields.values()].join("\n"),
   };
 }
 
@@ -285,6 +302,13 @@ export function desiredState(ledger) {
     if (extra.length) notes.push(`fork:${entry.slug}: labeled from the entry's PRs field, not in the "At a glance" table: ${extra.map((n) => `#${n}`).join(", ")}`);
     for (const number of entry.entryPrs) claim(entry.slug, number);
     for (const branch of entry.entryPending) wait(entry.slug, branch);
+  }
+  for (const { entry: name, text, pr } of PROSE_CLAIMS) {
+    const entry = ledger.entries.find((e) => e.name === name);
+    if (entry?.fieldText.includes(text)) {
+      notes.push(`fork:${entry.slug}: #${pr} labeled for the entry's words "${text}"`);
+      claim(entry.slug, pr);
+    } else notes.push(`"${name}" no longer says "${text}", so #${pr} is not labeled for it`);
   }
   const tooLong = labels.filter(({ name }) => name.length > LABEL_MAX_LENGTH).map(({ name }) => `${name} (${name.length})`);
   if (tooLong.length) {

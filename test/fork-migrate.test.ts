@@ -291,8 +291,10 @@ test("each entry becomes the issue template's sections, without the PRs field", 
 test("the plan labels claimed PRs, Dependabot's under fork:dependabot, waits on pending branches, and lists the rest as notes", () => {
   const desired = desiredOf(LEDGER);
   assert.equal(desired.labels.length, 1 + SLUGS.length + 4 + 1);
-  // #83 is claimed only in its entry's PRs field; #21 is related, not claimed.
-  assert.deepEqual([...desired.prs.keys()], [1, 3, 35, 40, 41, 43, 83, 151, 161, 200, 215]);
+  // #83 is claimed only in its entry's PRs field, #250 in words PROSE_CLAIMS maps; #21 is
+  // related, not claimed.
+  assert.deepEqual([...desired.prs.keys()], [1, 3, 35, 40, 41, 43, 83, 151, 161, 200, 215, 250]);
+  assert.deepEqual(desired.prs.get(250), ["fork:per-task-base-branch", "fork-delta:applied"]);
   assert.deepEqual(desired.prs.get(83), ["fork:shape-tasks-grill-and-tickets", "fork-delta:applied"]);
   assert.deepEqual([...desired.pending], [["feat/task-source-workflow", ["fork:task-source-workflow-default", "fork-delta:applied"]]]);
   for (const n of [40, 41, 43]) assert.deepEqual(desired.prs.get(n), ["fork:dependabot", "fork-delta:applied"]);
@@ -366,6 +368,13 @@ test("status is reconciled, and the closing comment is posted only when its mark
 
   dependabot.comments.push(`Closed earlier.\n\n${CLOSING_MARKER}`);
   assert.ok(!planWrites(desired, actual).writes.some((w) => w.op === "comment-issue"));
+});
+
+test("a PR claimed in words is labeled only while its entry still says them", () => {
+  assert.ok(desiredOf(LEDGER).notes.includes('fork:per-task-base-branch: #250 labeled for the entry\'s words "the session Diff view (issue #136)"'));
+  const edited = desiredOf(LEDGER.replace("#151, #161, the session Diff view (issue #136)", "#151, #161"));
+  assert.ok(!edited.prs.has(250));
+  assert.ok(edited.notes.includes('"Per-task base branch" no longer says "the session Diff view (issue #136)", so #250 is not labeled for it'));
 });
 
 test("a pending branch labels the one PR merged from it into main, and is warned about otherwise", () => {
@@ -492,7 +501,7 @@ function fakeRepo() {
   const gh = join(dir, "gh");
   writeFileSync(gh, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_GH}" "$@"\n`, { mode: 0o755 });
   const statePath = join(dir, "state.json");
-  const prs = Object.fromEntries([1, 3, 35, 40, 41, 43, 83, 151, 161, 163, 200, 215].map((n) => [String(n), []]));
+  const prs = Object.fromEntries([1, 3, 35, 40, 41, 43, 83, 151, 161, 163, 200, 215, 250].map((n) => [String(n), []]));
   writeFileSync(statePath, JSON.stringify({ labels: ["bug"], issues: [], prs, calls: [] }));
   const ledger = join(dir, "ledger.md");
   const state = () => JSON.parse(readFileSync(statePath, "utf8")) as FakeState;

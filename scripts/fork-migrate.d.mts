@@ -4,6 +4,7 @@ export const CLOSING_MARKER: string;
 export const TEMPLATE_SECTIONS: readonly string[];
 export const LABEL_MAX_LENGTH: number;
 export const SLUG_OVERRIDES: ReadonlyMap<string, string>;
+export const PROSE_CLAIMS: readonly { entry: string; text: string; pr: number }[];
 
 export type LedgerEntry = {
   name: string;
@@ -13,6 +14,7 @@ export type LedgerEntry = {
   sections: { name: string; text: string }[];
   entryPrs: number[];
   entryPending: string[];
+  fieldText: string;
 };
 export type GlanceRow = { name: string; prs: number[]; skipped: string[] };
 export type Ledger = { entries: LedgerEntry[]; glance: GlanceRow[] };
