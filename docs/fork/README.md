@@ -13,8 +13,8 @@ There are two readers:
 - **The upstream-sync agent** checks each new upstream commit against every active feature's
   contracts, assumptions and surfaces ([the upstream-sync runbook](../upstream-sync.md),
   section 2).
-- **The human** reads the fork status snapshot that `scripts/fork-report.mjs` renders (see
-  [The status snapshot](#the-status-snapshot)).
+- **The human** reads the [Mission Control fork status](https://claude.ai/code/artifact/e4edd7ae-0dfa-4071-a6c3-27778ec4c949) Claude doc, the snapshot
+  that `scripts/fork-report.mjs` renders (see [The status snapshot](#the-status-snapshot)).
 
 ## Labels
 
@@ -120,13 +120,12 @@ and are never applied; see [docs/windows-branch-sync.md](../windows-branch-sync.
 ## Refreshing the issues
 
 Issue bodies have one writer: the refresh, which applies merged PRs' sections in merge order.
-The cut-over is the day the PR that deleted the fork ledger merged into `main`. PRs merged
-before it edited the ledger, and the migration carried their changes into the issues. Print the
-date with:
-
-```sh
-git log -1 --first-parent --format=%cs origin/main -- docs/fork/ledger.md
-```
+The cut-over is **2026-10-08**, the day
+[#311](https://github.com/ramiro314/mission-control/pull/311), which deleted the fork ledger,
+merged into `main` (06:14 UTC). It is the UTC date because `--since` becomes a GitHub search
+qualifier; the merge commit's own date reads 2026-10-07 in Pacific time. PRs merged before it
+edited the ledger, and the migration carried their changes into the issues and labeled them
+`fork-delta:applied`.
 
 The procedure, with `<cut-over>` that date:
 
@@ -143,17 +142,22 @@ The procedure, with `<cut-over>` that date:
    `fork-delta:applied` last. A labeled PR whose section is `none`, or missing, gets
    `fork-delta:applied` too, and a missing section is reported so the human can backfill it.
    Every write is safe to repeat, because a run that fails partway repeats that PR next time.
+   `check` then reports a block it already applied as stale; when the issue section holds
+   exactly that block's text, finish the PR's remaining writes instead of holding it.
 3. **Render the snapshot** with `node scripts/fork-report.mjs`.
-4. **Publish it.** Replace the fork status doc's whole content with `.tmp/fork-report.md`. If
-   that fails, report the failure and leave the file in place; steps 1 and 2 have already
-   happened.
+4. **Publish it.** Replace the whole content of the
+   [fork status doc](https://claude.ai/code/artifact/e4edd7ae-0dfa-4071-a6c3-27778ec4c949) with `.tmp/fork-report.md`, unchanged, through the Claude Docs
+   connector. If the connector is unavailable or the write fails, report the failure through
+   `report_status` and leave the file in place; steps 1 and 2 have already happened.
 
 Report every held PR, and every PR held behind it, in the run's summary.
 
 ### The "Refresh fork status" mission
 
 A [recurring mission](../recurring-missions.md) runs the procedure above. It lives on the
-operator's daemon, not in this repository.
+operator's daemon, not in this repository. It was created **paused**, because its tasks run
+against `main` and this page's cut-over date and doc link reach `main` only with the PR that
+recorded them; press **Resume** on it once that PR has merged.
 
 | Setting | Value |
 | --- | --- |
@@ -163,14 +167,19 @@ operator's daemon, not in this repository.
 | Completion | Complete the task automatically |
 | Pull request | None: the mission writes no repository files |
 
-Its task body grants the issue, label and doc writes the procedure makes. Press **Run now** on
-it after merging an upstream-sync PR, so the sync's status changes reach the issues the same
-day; otherwise the next daily run applies them.
+Its task body carries the procedure, the cut-over date and the doc link, and grants the issue,
+label and doc writes the procedure makes and nothing else. Press **Run now** on it after merging
+an upstream-sync PR, so the sync's status changes reach the issues the same day; otherwise the
+next daily run applies them.
+
+A daemon-dispatched session reaches the Claude Docs connector: the session that created the doc
+was one, and it created and replaced the doc through the connector.
 
 ## The status snapshot
 
 `node scripts/fork-report.mjs` writes `.tmp/fork-report.md` (gitignored), built from GitHub
-and `git` alone:
+and `git` alone. The refresh publishes it as the
+[Mission Control fork status](https://claude.ai/code/artifact/e4edd7ae-0dfa-4071-a6c3-27778ec4c949) Claude doc, so nothing in the doc is edited by hand:
 
 - **Status header**: the last synced upstream version and SHA (the merge-base of
   `upstream/main` and `origin/main`), the last sync PR, commits ahead and behind, the active
