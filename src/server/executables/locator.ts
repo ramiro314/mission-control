@@ -212,7 +212,19 @@ export async function probeLoginShellPath(
   timeoutMs = LOGIN_SHELL_TIMEOUT_MS,
   platform: NodeJS.Platform = process.platform,
 ): Promise<LoginShellResult> {
-  const row = executableEnvironmentFor(platform);
+  return await probePathRead(executableEnvironmentFor(platform), env, timeoutMs);
+}
+
+/**
+ * The PATH read `row` describes: its direct read first, where it has one, and its login-shell
+ * read when that cannot answer, both within `timeoutMs`. Exported so tests can drive the win32
+ * row's ordering with fake executables on any host.
+ */
+export async function probePathRead(
+  row: ExecutableEnvironmentPlatform,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<LoginShellResult> {
   // One deadline covers the direct read and the fallback after it.
   const deadline = Date.now() + timeoutMs;
   const direct = await directLoginPath(row, env, timeoutMs);

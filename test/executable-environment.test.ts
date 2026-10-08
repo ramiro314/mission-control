@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import { executableSpec } from "../src/server/executables/catalog.ts";
-import { ExecutableLocator, probeLoginShellPath } from "../src/server/executables/locator.ts";
+import { ExecutableLocator, probeLoginShellPath, probePathRead } from "../src/server/executables/locator.ts";
 import { execFileSync } from "node:child_process";
 
 import {
   executableEnvironmentFor,
+  type ExecutableEnvironmentPlatform,
   expandWindowsEnvironmentReferences,
   posixExecutableEnvironment,
   registryPath,
@@ -19,6 +20,7 @@ import {
   windowsPowerShellPath,
   windowsRegPath,
 } from "../src/server/platform/executable-environment.ts";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const HOME = "/fixture/home";
@@ -359,6 +361,131 @@ test("registryPath joins machine then user and drops a missing or empty value, a
   assert.equal(registryPath([regQuery(MACHINE_KEY, ["Path", "REG_SZ", ""]), user], {}), "D:\\tools");
   assert.equal(registryPath([regQuery(MACHINE_KEY), regQuery(USER_KEY)], {}), "");
   assert.equal(registryPath([machine, ""], {}), null, "either output unreadable sends the read to PowerShell");
+});
+
+// The win32 row's ordering - reg.exe first, PowerShell when reg cannot answer, one deadline for
+// both - driven on every host: the row keeps its arguments and its parser, and only the two
+// executables it starts are fakes that log each start and answer from the environment.
+
+const FAKE_REG = [
+  "const key = process.argv[3] ?? \"\";",
+  "const hive = key.startsWith(\"HKLM\") ? \"MACHINE\" : \"USER\";",
+  "require(\"node:fs\").appendFileSync(process.env.MC_TEST_LOG, `reg ${hive}\\n`);",
+  "setTimeout(() => {",
+  // Bytes as reg.exe writes them in a single-byte console code page.
+  "  process.stdout.write(Buffer.from(process.env[`MC_TEST_REG_${hive}`] ?? \"\", \"latin1\"));",
+  "  process.exitCode = Number(process.env.MC_TEST_REG_EXIT ?? 0);",
+  "}, Number(process.env.MC_TEST_REG_DELAY_MS ?? 0));",
+  "",
+].join("\n");
+
+const FAKE_POWERSHELL = [
+  "require(\"node:fs\").appendFileSync(process.env.MC_TEST_LOG, \"powershell\\n\");",
+  "setTimeout(() => {",
+  "  process.stdout.write(`__MISSION_PATH__${process.env.MC_TEST_PS_PATH}__MISSION_PATH__`);",
+  "}, Number(process.env.MC_TEST_PS_DELAY_MS ?? 0));",
+  "",
+].join("\n");
+
+const POWERSHELL_PATH = "E:\\from-powershell";
+
+function fakePathReaders() {
+  const directory = mkdtempSync(join(tmpdir(), "mission-path-read-"));
+  const reg = writeFakeExecutable(join(directory, "reg"), FAKE_REG);
+  const powershell = writeFakeExecutable(join(directory, "powershell"), FAKE_POWERSHELL);
+  const log = join(directory, "started");
+  const row = (regCommand: string): ExecutableEnvironmentPlatform => ({
+    ...win32ExecutableEnvironment,
+    directPathRead(env) {
+      const real = win32ExecutableEnvironment.directPathRead!(env);
+      return { ...real, commands: real.commands.map((command) => ({ ...command, command: regCommand })) };
+    },
+    loginShellPathRead: (env) => ({ ...win32ExecutableEnvironment.loginShellPathRead(env), command: powershell }),
+  });
+  return {
+    /** The read's result, and which fakes it started, sorted. */
+    async read(vars: NodeJS.ProcessEnv, options: { timeoutMs?: number; regCommand?: string } = {}) {
+      rmSync(log, { force: true });
+      const result = await probePathRead(row(options.regCommand ?? reg), {
+        PATH: [dirname(process.execPath), process.env.PATH].join(delimiter),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        MC_TEST_LOG: log,
+        MC_TEST_ROOT: "D:\\Root",
+        MC_TEST_PS_PATH: POWERSHELL_PATH,
+        ...vars,
+      }, options.timeoutMs ?? 30_000);
+      const started = existsSync(log) ? readFileSync(log, "utf8").split(/\r?\n/).filter(Boolean).sort() : [];
+      return { result, started };
+    },
+    missingReg: join(directory, "missing", "reg.exe"),
+    clean: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+const MACHINE_PATH = regQuery(MACHINE_KEY, ["Path", "REG_EXPAND_SZ", "%MC_TEST_ROOT%\\system32"]);
+const USER_PATH = regQuery(USER_KEY, ["Path", "REG_SZ", "D:\\tools"]);
+const BOTH_REG = ["reg MACHINE", "reg USER"];
+
+test("the win32 read answers from both reg queries and never starts PowerShell", async () => {
+  const fakes = fakePathReaders();
+  try {
+    assert.deepEqual(await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH }), {
+      result: { path: "D:\\Root\\system32;D:\\tools", problem: null },
+      started: BOTH_REG,
+    });
+    assert.deepEqual(await fakes.read({ MC_TEST_REG_MACHINE: regQuery(MACHINE_KEY), MC_TEST_REG_USER: regQuery(USER_KEY) }), {
+      result: { path: null, problem: "login shell returned no PATH" },
+      started: BOTH_REG,
+    }, "neither key holds a Path: the registry answered, and PowerShell would read the same nothing");
+  } finally {
+    fakes.clean();
+  }
+});
+
+test("the win32 read falls back to PowerShell whenever reg cannot answer exactly", async () => {
+  const fakes = fakePathReaders();
+  const fallback = { result: { path: POWERSHELL_PATH, problem: null }, started: [...BOTH_REG, "powershell"].sort() };
+  try {
+    assert.deepEqual(
+      await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: regQuery(USER_KEY, ["Path", "REG_SZ", "C:\\Users\\José\\bin"]) }),
+      fallback,
+      "a non-ASCII Path in the console code page",
+    );
+    assert.deepEqual(
+      await fakes.read({ MC_TEST_REG_MACHINE: regQuery(MACHINE_KEY, ["Path", "REG_MULTI_SZ", "C:\\a\\0C:\\b"]), MC_TEST_REG_USER: USER_PATH }),
+      fallback,
+      "a Path of another type",
+    );
+    assert.deepEqual(
+      await fakes.read({ MC_TEST_REG_MACHINE: MACHINE_PATH, MC_TEST_REG_USER: USER_PATH, MC_TEST_REG_EXIT: "1" }),
+      fallback,
+      "a reg query that exits non-zero",
+    );
+    assert.deepEqual(
+      await fakes.read({}, { regCommand: fakes.missingReg }),
+      { result: { path: POWERSHELL_PATH, problem: null }, started: ["powershell"] },
+      "a reg.exe that does not start",
+    );
+  } finally {
+    fakes.clean();
+  }
+});
+
+test("the win32 read's reg queries and PowerShell fallback share one deadline", async () => {
+  const fakes = fakePathReaders();
+  const timeoutMs = 2_000;
+  try {
+    const started = Date.now();
+    const { result } = await fakes.read(
+      { MC_TEST_REG_DELAY_MS: "60000", MC_TEST_PS_DELAY_MS: "60000" },
+      { timeoutMs },
+    );
+    assert.deepEqual(result, { path: null, problem: "login shell timed out" });
+    // A fallback given a fresh budget would end near twice the timeout.
+    assert.ok(Date.now() - started < timeoutMs + 1_500, `took ${Date.now() - started} ms against a ${timeoutMs} ms budget`);
+  } finally {
+    fakes.clean();
+  }
 });
 
 const noReg = existsSync(windowsRegPath(process.env)) ? false : "reg.exe is not installed";
