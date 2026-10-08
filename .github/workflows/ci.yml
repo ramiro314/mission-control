@@ -114,9 +114,13 @@ on:
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a fresh push doesn't queue behind stale work.
+# `main` is the exception: its running run finishes, and of the pushes that land meanwhile only
+# the newest waits behind it, because a pending run in a group replaces the one pending before
+# it. One `main` run at a time keeps it out of the way of pull request runs under the 20-job cap.
+# `cancel-closed-pr-ci.yml` joins this group when a pull request closes, so keep the two in step.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
