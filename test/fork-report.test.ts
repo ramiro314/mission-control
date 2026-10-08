@@ -47,7 +47,7 @@ function data(extra: Partial<ReportData> = {}): ReportData {
   return {
     issues: [],
     prs: [],
-    windowsPrCount: 0,
+    windowsPrs: [],
     git: { mergeBase: MERGE_BASE, mergeBaseVersion: "1.26.0", upstreamTip: MERGE_BASE, ahead: 341, aheadNoMerges: 247, behind: 0 },
     measuredAt: { sha: ORIGIN, time: "2026-10-07T15:00Z" },
     ...extra,
@@ -161,28 +161,41 @@ test("standalone fixes exclude labeled, upstream sync and bot-authored PRs", () 
   assert.match(row(report, "Active fork features"), /and 2 standalone fixes \|$/);
 });
 
-test("the release/windows merge PR carries the count of branch PRs it includes", () => {
+test("each release/windows merge PR counts only the branch PRs that merge brought into main", () => {
+  const branch = (number: number, mergedAt: string) => ({ number, mergedAt });
   const report = renderForkReport(
     data({
-      windowsPrCount: 23,
+      windowsPrs: [
+        branch(147, "2026-10-01T00:00:00Z"),
+        branch(265, "2026-10-20T00:00:00Z"),
+        branch(273, "2026-11-01T09:00:00Z"),
+        branch(410, "2026-11-10T00:00:00Z"),
+        branch(420, "2026-11-20T00:00:00Z"),
+        branch(460, "2026-12-05T00:00:00Z"),
+        branch(470, "2026-12-06T00:00:00Z"),
+      ],
       issues: [issue(310, "Windows support", "windows-support", "Run on Windows.")],
       prs: [
         pr(128, { labels: ["fork:windows-support"] }),
-        pr(400, { labels: ["fork:windows-support"], headRefName: "release/windows", title: "feat: Windows support" }),
-        pr(147, { labels: ["fork:windows-support"] }),
+        pr(450, { labels: ["fork:windows-support"], headRefName: "release/windows", mergedAt: "2026-12-01T00:00:00Z" }),
+        pr(400, { labels: ["fork:windows-support"], headRefName: "release/windows", mergedAt: "2026-11-01T09:00:00Z" }),
+        pr(480, { labels: ["fork:windows-support"], headRefName: "release/windows", mergedAt: null }),
       ],
     }),
   );
+  // #273 merged into the branch at the same instant as #400 and is counted there; #460 and
+  // #470 landed after the last merge into main, so no row counts them.
   assert.equal(
     section(report, "Features").split("\n").find((l) => l.startsWith("| [Windows")),
-    `| [Windows support](${REPO}/issues/310) | active | Run on Windows. | [#128](${REPO}/pull/128), [#147](${REPO}/pull/147), [#400](${REPO}/pull/400) (includes 23 release/windows PRs) |`,
+    `| [Windows support](${REPO}/issues/310) | active | Run on Windows. | [#128](${REPO}/pull/128), ` +
+      `[#400](${REPO}/pull/400) (includes 3 release/windows PRs), [#450](${REPO}/pull/450) (includes 2 release/windows PRs) |`,
   );
 });
 
 test("open PRs and PRs merged only into release/windows never appear", () => {
   const report = renderForkReport(
     data({
-      windowsPrCount: 2,
+      windowsPrs: [{ number: 265, mergedAt: "2026-09-20T00:00:00Z" }],
       issues: [
         issue(310, "Windows support", "windows-support", "Run on Windows.", {
           labels: ["fork-feature", "fork:windows-support", "fork-status:in-progress"],

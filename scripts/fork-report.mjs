@@ -16,8 +16,8 @@
  * behind count, and named beside it when it differs from the merge-base.
  *
  * Only PRs merged into `main` are shown. Open PRs and PRs merged into `release/windows` never
- * appear; the one exception is a count of the latter, carried on the row of the PR that merges
- * `release/windows` into `main`.
+ * appear; the one exception is a count of the latter, carried on the row of each PR that merges
+ * `release/windows` into `main` and counting only the branch PRs that merge brought in.
  *
  * `renderForkReport` is pure, and `test/fork-report.test.ts` covers it from fixture data.
  */
@@ -85,8 +85,24 @@ function byNumber(a, b) {
   return a.number - b.number;
 }
 
+/**
+ * For each PR that merged `release/windows` into `main`, how many `fork:windows-support` PRs
+ * merged into the branch after the previous such merge and no later than this one. A branch PR
+ * merged after the last merge has not reached `main` and is not counted anywhere.
+ */
+export function windowsIncludes(prs, windowsPrs) {
+  const time = (pr) => Date.parse(pr.mergedAt);
+  const merges = prs.filter((pr) => pr.headRefName === WINDOWS_BRANCH).sort((a, b) => time(a) - time(b));
+  const counts = new Map();
+  merges.forEach((merge, i) => {
+    const after = i ? time(merges[i - 1]) : -Infinity;
+    counts.set(merge.number, windowsPrs.filter((w) => w.mergedAt && time(w) > after && time(w) <= time(merge)).length);
+  });
+  return counts;
+}
+
 /** Features in display order: open issues first, then closed, each by issue number. */
-function featureRows(issues, prs, windowsPrCount) {
+function featureRows(issues, prs, includes) {
   const open = (issue) => (issue.state.toLowerCase() === "closed" ? 1 : 0);
   return [...issues]
     .sort((a, b) => open(a) - open(b) || byNumber(a, b))
@@ -94,8 +110,8 @@ function featureRows(issues, prs, windowsPrCount) {
       const slugs = featureSlugs(issue.labels);
       const linked = prs.filter((pr) => featureSlugs(pr.labels).some((s) => slugs.includes(s))).sort(byNumber);
       const links = linked.map((pr) => {
-        const windowsMerge = slugs.includes(WINDOWS_SLUG) && pr.headRefName === WINDOWS_BRANCH;
-        return windowsMerge ? `${prLink(pr)} (includes ${windowsPrCount} ${WINDOWS_BRANCH} PRs)` : prLink(pr);
+        const windowsMerge = slugs.includes(WINDOWS_SLUG) && includes.has(pr.number);
+        return windowsMerge ? `${prLink(pr)} (includes ${includes.get(pr.number)} ${WINDOWS_BRANCH} PRs)` : prLink(pr);
       });
       return {
         open: !open(issue),
@@ -109,13 +125,13 @@ function featureRows(issues, prs, windowsPrCount) {
 
 /**
  * The report's markdown. `data` holds every `fork-feature` issue, the merged PRs (anything not
- * merged into `main` is dropped here), the count of `fork:windows-support` PRs merged into
- * `release/windows`, and the git measurements.
+ * merged into `main` is dropped here), the `fork:windows-support` PRs merged into
+ * `release/windows` with their merge times, and the git measurements.
  */
 export function renderForkReport(data) {
   const { git, measuredAt } = data;
   const prs = mergedIntoMain(data.prs);
-  const features = featureRows(data.issues, prs, data.windowsPrCount);
+  const features = featureRows(data.issues, prs, windowsIncludes(prs, data.windowsPrs));
   const fixes = prs.filter((pr) => !featureSlugs(pr.labels).length && !isSync(pr) && !isBot(pr)).sort(byNumber);
   const lastSync = prs.filter(isSync).sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0];
 
@@ -186,13 +202,13 @@ function fetchData(repo) {
     labels: labelNames(pr.labels),
   }));
   const windowsPrs = gh(
-    ["pr", "list", "--state", "merged", "--base", WINDOWS_BRANCH, "--label", `${FEATURE_LABEL}${WINDOWS_SLUG}`, "--limit", "1000", "--json", "number"],
+    ["pr", "list", "--state", "merged", "--base", WINDOWS_BRANCH, "--label", `${FEATURE_LABEL}${WINDOWS_SLUG}`, "--limit", "1000", "--json", "number,mergedAt"],
     repo,
   );
   return {
     issues,
     prs,
-    windowsPrCount: windowsPrs.length,
+    windowsPrs,
     git: {
       mergeBase,
       mergeBaseVersion: JSON.parse(git("show", `${mergeBase}:package.json`)).version,
