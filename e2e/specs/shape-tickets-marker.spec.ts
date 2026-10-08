@@ -5,6 +5,8 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 import {
   api,
   dispatchShape,
@@ -233,6 +235,8 @@ test("Stop shows nothing, and a pending choice whose task is cancelled shows Tic
   dashboard,
   daemon,
 }) => {
+  // The cancel below has to release the task's worktree to answer ok.
+  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   const { task, card } = await pendingShapeTask(dashboard, daemon, { stopFirst: true });
   await expect(card.getByRole("note", { name: "Tickets after merge" })).toBeVisible();
 

@@ -172,7 +172,8 @@ test("a plan session creates dependency-gated B and A+B backlog cards", async ({
     targetRepository: "shared-lib",
   });
   expect(ambiguous.status).toBe(409);
-  const ambiguity = await ambiguous.text();
+  // Parsed, not read as text: JSON doubles every backslash in a win32 candidate path.
+  const ambiguity = ((await ambiguous.json()) as { error: string }).error;
   expect(ambiguity).toContain("ambiguous");
   for (const candidate of daemon.twinRepos ?? []) expect(ambiguity).toContain(candidate);
 

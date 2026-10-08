@@ -97,6 +97,34 @@ test("a trailing slash on either directory does not corrupt the path", () => {
 });
 
 /**
+ * Git on win32 reports its toplevel as `C:/...` while a session's cwd is native `C:\...`.
+ * Compared as strings, every changed file in every win32 session read as outside the cwd,
+ * so the jump was disabled for all of them (Windows e2e run 37807097380).
+ */
+test("a win32 repo root spelled with forward slashes still contains the native cwd", () => {
+  const root = "C:/Users/runner/AppData/Local/Temp/pools/demo";
+  assert.equal(
+    diffFileOpenTarget(mkFile(), root, "C:\\Users\\runner\\AppData\\Local\\Temp\\pools\\demo").path,
+    "src/web/App.tsx",
+  );
+  assert.equal(
+    diffFileOpenTarget(
+      mkFile({ path: "packages/app/src/index.ts" }),
+      root,
+      "c:\\users\\runner\\appdata\\local\\temp\\pools\\demo\\packages\\app\\",
+    ).path,
+    "src/index.ts",
+  );
+  const outside = diffFileOpenTarget(
+    mkFile({ path: "src/index.ts" }),
+    root,
+    "C:\\Users\\runner\\AppData\\Local\\Temp\\pools\\demo\\packages\\app",
+  );
+  assert.equal(outside.path, null);
+  assert.match(outside.reason ?? "", /outside/i);
+});
+
+/**
  * `workspaceFileTarget` reads a trailing `:12` as a line number, which is right for a
  * path a human typed in a sentence and wrong for one git emitted. Routing the diff
  * through it opened `notes` for a file genuinely named `notes:12` - enabled, and the

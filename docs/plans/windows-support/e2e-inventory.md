@@ -135,6 +135,34 @@ pinned by `test/db-schema-commits.test.ts`). A fresh upgrade now makes 35 commit
 `migrate`'s own steps, and takes 0.14 s with real flushes on macOS. Its effect on the Windows
 `/api/health` count is measured by this branch's own CI run.
 
+## Fast assertion failures after 69d2ed0c: run 37821364466
+
+`release/windows` at `7c1426fa0`, the push run after the fresh-schema fix (#332), the tour harness
+fallback (#330) and the marker focus fix (#333). 1,168 tests: 1,006 passed, 28 failed, 3 errored,
+131 skipped. Linux on the same run: all 14 e2e shards succeed. Ticket c678f42a took the 19 fast
+assertion failures from run 37736134634; each is below, read against this run and run 37807097380.
+
+| Spec | Cause | Outcome |
+|---|---|---|
+| `board-card-workflow-details-upgrade`, `session-names-its-bound-workflow`, `file-comment-follow-up-after-edit`, `repo-picker-names`, `review-answers-in-conversation`, `review-duplicate-ask`, `scout-archive` (inline rename, arrows and slash) | Starvation | Pass on both runs; no owner needed |
+| `see-work-tour` | The tour's demo task was a Codex task | Passes since #330 |
+| `diff-open-in-files`, the `l` shortcut | Product: git spells the toplevel `C:/...` and the session cwd is `C:\...`, so every changed file read as outside the cwd and Open in Files was disabled | Fixed: `diffFileOpenTarget` compares through `subpathWithin`, which now treats `/` and `\` as the same win32 separator |
+| `diff-open-in-files`, a `notes:12` file | NTFS reads `notes:12` as an alternate data stream of `notes`, so the file cannot exist | D37 skip |
+| `dispatch-and-converse` (live session), `scout-archive` (warns first), `native-worktree-dispatch` | The spec expected `worktree-pools/`; win32 prints `worktree-pools\` | Fixed in the spec with `path.sep`. `scout-archive` "warns first" then reaches a later assertion that also fails on macOS: flaky-test ticket 375900cd |
+| `cross-repo-plan-tasks` | The spec searched the raw JSON body, where every backslash of a win32 path is doubled | Fixed: the spec reads the parsed `error` |
+| `guided-dispatch` (submissions reset) | The spec picked Codex, which win32 refuses at submit, so the modal stayed open | Fixed: the spec picks Claude Code; the scout kind still proves the reset |
+| `conversation-band-optional` (2) | The checkbox flips on its optimistic write, and the full page load that followed could abort the PUT | Fixed: the spec waits for the daemon to hold the preference. Passed on this run |
+| `task-source-sync` (older imports) | A Keep updated write still in flight when the last sweep started invalidated that sweep's refresh, which then counted nothing | Fixed: the spec waits for the daemon to hold each value. Passed on this run |
+| `shape-tickets-marker` (cancelled task lapses), `scout-archive` (complete, reclaim, concise title) | The task cancel or removal must release the worktree, which win32 refuses (plan M2.4) | D37 skip with `WIN32_OCCUPANCY_UNPROVABLE` |
+| `ensemble-failure-actions` | Product: a withdraw whose cancel cannot release the worktree answers 400, so the second member stays active and the run never fails | c679c577 |
+| `console-header-one-row` (situational chip) | Windows fonts fit the header at every width without rung 7, so the proof is vacuous there | c43aba91: fixed in the spec with a second situational chip, a pull request; see below |
+
+Failing on this run and not in c678f42a's list: `library-exit` (e1354b36), `conductor-loops`,
+`pipeline-controls` and `pipeline-provider-readiness` (05e056ac), `queued-turn-delivery` and
+`sdk-terminal-handoff` (f19e6b8d), `ensemble-review-restart` (c679c577), and
+`board-card-workflow-progress`, `foreman-profile`, `library-commands`, `library`, `retro-offer`,
+`working-indicator`, `workflow-elapsed-clock` and `workflow-round-scrubber` (30a2e1ee).
+
 ## Reclassification of cause J and `foreman-settings-tabs`
 
 | Spec | Run 37713823713 | Owner |
@@ -170,10 +198,12 @@ starvation signature. These own the fast assertion failures:
 - 05e056ac: Conductor and pipeline controls on win32 (`settings-conductor`, `pipeline-controls`).
 - 3aeb7ea1: workflow Command checks that do not run or report on win32
   (`workflow-affected-tests-check`, `workflow-run-failing-check`, `workflow-spent-check-queue`).
-- c678f42a: triage of the remaining fast assertion failures, after 69d2ed0c lands. On run
-  37745155079 these also include `conversation-html-artifact-preview`, `ensemble-review-restart`,
-  `foreman-profile`, `library-commands`, `library`, `native-worktree-dispatch`,
-  `workflow-elapsed-clock` and `workflow-round-scrubber`.
+- c678f42a: triage of the remaining fast assertion failures, after 69d2ed0c lands. Done; see
+  run 37821364466 above. What it left went to c679c577 (ensemble withdraw when the worktree
+  release is refused), c43aba91 (console header rung 7 on Windows fonts) and 30a2e1ee (the
+  assertion failures outside its list, including `ensemble-review-restart`, `foreman-profile`,
+  `library-commands`, `library`, `workflow-elapsed-clock` and `workflow-round-scrubber` from run
+  37745155079; `conversation-html-artifact-preview` passes on run 37821364466).
 - `fix/win32-tour-harness-fallback`: `workflows-tour` (moved from c678f42a) and `see-work-tour`.
   Every server tour recipe (`src/server/tours.ts`) prefers Codex, which win32 refuses, so on
   runs 37745155079 and 37758180479 the tours' temporary conversation and demo task stopped on
@@ -198,6 +228,15 @@ starvation signature. These own the fast assertion failures:
   then fires at every window from 540px down and both chips go only at rung 7. The order and
   never-wraps assertions are unchanged, and the failure message now lists every sample. That
   makes the next font difference readable without unpacking a trace.
+
+- `fix/win32-ensemble-cancel-tracked`: `ensemble-failure-actions` ("a failed ensemble can be
+  dismissed without deletion...") and `ensemble-review-restart` ("a dead provider parks the
+  review..."), both on shard 3 of runs 37807097380 and 37821364466. win32 cancels a member's task
+  but refuses to release its worktree, answering not-ok, and the ensemble engine read that as a
+  failed teardown: a withdrawal answered 400 and left the run `running`, and Cancel run stuck at
+  `cancelling`. The engine now settles a member once its task is no longer live and leaves the
+  tree tracked for Reclaim; `ensemble-recovery.test.ts` pins it. Confirm both on the next Windows
+  run.
 
 On run 37745155079, `task-worktree-return` belongs to a00a75fa, `queued-turn-delivery` (Codex) and
 `continue-in-terminal-mode` to f19e6b8d, and `conductor-loops` and `pipeline-provider-readiness`

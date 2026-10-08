@@ -30,8 +30,13 @@ async function configure(page: Page, daemon: DaemonHandle) {
   await expect(page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"})).not.toBeChecked();
 }
 async function enable(page: Page, daemon: DaemonHandle) {
-  await page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"}).check();
-  await expect.poll(async()=> (await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json()).sources[0].keepUpdated).toBe(true);
+  await keepUpdated(page, daemon, true);
+}
+// Waits for the daemon to hold the value, not just the checkbox: a config write still in
+// flight when a sweep starts invalidates that sweep's refresh, which then counts nothing.
+async function keepUpdated(page: Page, daemon: DaemonHandle, on: boolean) {
+  await page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"}).setChecked(on);
+  await expect.poll(async()=> (await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json()).sources[0].keepUpdated).toBe(on);
 }
 
 test("imported update setting matches the backlog autopilot typography and card", async ({ page, daemon }) => {
@@ -151,7 +156,7 @@ test("older imports need adoption and missing source items leave a visible error
   const review = page.getByRole("article", { name: "Source update for acme/demo#17" });
   await expect(review.getByText("Review this older task before enabling updates for it.")).toBeVisible();
   expect((await tasks(page, daemon))[0]!.title).toBe("Imported issue");
-  await page.getByRole("checkbox", { name: "Keep imported backlog tasks updated" }).uncheck();
+  await keepUpdated(page, daemon, false);
   await expect(review.getByRole("button", { name: "Use source", exact: true })).toBeDisabled();
   await enable(page, daemon);
   await review.getByRole("button", { name: "Use source", exact: true }).click();
