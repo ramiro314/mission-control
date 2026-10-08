@@ -8,12 +8,17 @@ const read = (name: string) => readFileSync(join(workflows, name), "utf8");
 
 // The cancel workflow only works while its concurrency group is the exact string `ci.yml`
 // evaluates for a pull request run; a renamed workflow or regrouped CI would silently stop it.
+// `main` queues instead of cancelling: one run at a time, and only the newest pending push runs
+// next. Pull request refs still cancel, which is what lets the cancel workflow end one.
 test("closing a pull request joins its CI run's concurrency group", () => {
   const ci = read("ci.yml");
   const cancel = read("cancel-closed-pr-ci.yml");
 
   assert.match(ci, /^name: CI$/m);
-  assert.match(ci, /^concurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: true$/m);
+  assert.match(
+    ci,
+    /^concurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}$/m,
+  );
   assert.match(cancel, /^ {4}types: \[closed\]$/m);
   assert.match(
     cancel,
