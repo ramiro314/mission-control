@@ -6,6 +6,7 @@ import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { run } from "../src/server/util/exec.ts";
 import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 function fixture(t: TestContext) {
   const { root, clone } = mkOriginAndClone("mission-worktree-scratch-");
@@ -46,18 +47,24 @@ test("recognized untracked conductor state is clean and removable without force"
   assert.ok(!gitIn(identity.mainCheckoutRoot, "worktree", "list", "--porcelain").includes(path));
 });
 
-for (const name of [
-  "notes.txt",
-  ".pipeline/notes.txt",
-  ".pipeline-copy/DONE",
-  "nested/.pipeline/DONE",
-  ".pipeline/gates/nested/notes.json",
-  ".pipeline/DONE/notes.txt",
-  'notes\n?? .pipeline/DONE',
-  'a "quoted" file.txt',
-  "résumé.txt",
-]) {
-  test(`unrecognized untracked content stays dirty: ${JSON.stringify(name)}`, async (t) => {
+// A newline and a '"' are what defeat a line-reading or unquoting parser, and NTFS refuses both,
+// so on win32 those two cases cannot be set up. "résumé.txt" keeps the quoting claim there.
+const ntfsIllegal = skipOnWin32(
+  "NTFS forbids a newline and a '\"' in a filename, so no win32 worktree can hold one for git to report",
+);
+
+for (const [name, skip] of [
+  ["notes.txt", false],
+  [".pipeline/notes.txt", false],
+  [".pipeline-copy/DONE", false],
+  ["nested/.pipeline/DONE", false],
+  [".pipeline/gates/nested/notes.json", false],
+  [".pipeline/DONE/notes.txt", false],
+  ["notes\n?? .pipeline/DONE", ntfsIllegal],
+  ['a "quoted" file.txt', ntfsIllegal],
+  ["résumé.txt", false],
+] as const) {
+  test(`unrecognized untracked content stays dirty: ${JSON.stringify(name)}`, { skip }, async (t) => {
     const { path, identity, write } = fixture(t);
     write(scratch[0]);
     write(name, "real work\n");
