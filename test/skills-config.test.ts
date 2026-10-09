@@ -1,9 +1,10 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { denyDirectory } from "./helpers/denied-directory.ts";
 
 // The generation watermark and the apply transaction. Real db, real filesystem: the
 // invariant under test ("the generation moves only when the DISK moves") spans both,
@@ -402,8 +403,7 @@ test("an unwritable skills dir is reported, never thrown", () => {
   const lockedPi = join(home, "locked-pi");
   for (const dir of [locked, lockedCodex, lockedPi]) {
     mkdirSync(dir, { recursive: true });
-    chmodSync(dir, 0o500);
-    after(() => chmodSync(dir, 0o700));
+    after(denyDirectory(dir, "write"));
   }
   process.env.CLAUDE_SKILLS_DIR = locked;
   process.env.CODEX_SKILLS_DIR = lockedCodex;
