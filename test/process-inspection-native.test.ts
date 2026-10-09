@@ -10,7 +10,7 @@ import test from "node:test";
 import { hasNativeAddonSources } from "../scripts/native-addon-sources.mjs";
 import { readProcCwdsSnapshot } from "../src/server/discovery/proc-cwd.ts";
 import { listProcessesSnapshot, type ProcessSnapshot } from "../src/server/discovery/processes.ts";
-import { createWin32ProcessInspector, win32OwnerInScope } from "../src/server/process-inspection/win32.ts";
+import { createWin32ProcessInspector, win32CwdFromDosPath, win32OwnerInScope } from "../src/server/process-inspection/win32.ts";
 import { inspectWorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { ensureNativeProcessInspectionAddon } from "./helpers/native-process-inspection.ts";
 
@@ -103,4 +103,153 @@ test("the addon reads the owner and working directory of real native and WOW64 p
     moved = cwd === undefined ? undefined : await realpath(cwd);
   }
   assert.equal(moved, target);
+});
+
+// ---- the addon's own failures ----
+
+/** Win32 errors the addon reports. */
+const ERROR_ACCESS_DENIED = 5;
+const ERROR_INVALID_DATA = 13;
+const ERROR_PARTIAL_COPY = 299;
+const ERROR_NOACCESS = 998;
+
+/** Where the fake address space starts, and where each structure sits in it. */
+const BASE = 0x7ff6_0000;
+const PEB = BASE;
+const PARAMS = BASE + 0x100;
+const TEXT = BASE + 0x200;
+const SIZE = 0x400;
+
+interface Layout {
+  wow64: boolean;
+  paramsInPeb: number;
+  curdirInParams: number;
+  pointer: number;
+}
+const LAYOUT_64: Layout = { wow64: false, paramsInPeb: 0x20, curdirInParams: 0x38, pointer: 8 };
+const LAYOUT_32: Layout = { wow64: true, paramsInPeb: 0x10, curdirInParams: 0x24, pointer: 4 };
+
+interface Image {
+  bytes: Uint8Array;
+  view: DataView;
+  /** Overwrite a pointer-sized field at an absolute address. */
+  pointer(address: number, value: number): void;
+  /** Absolute address of a field of CurrentDirectory.DosPath. */
+  dosPath: { length: number; maximum: number; buffer: number };
+}
+
+/**
+ * One snapshot of a healthy address space: a PEB pointing at a normalized parameter block whose
+ * CurrentDirectory.DosPath names `path`, laid out as `layout` lays it out. Each case below then
+ * breaks exactly one thing.
+ */
+function image(layout: Layout, path: string): Image {
+  const bytes = new Uint8Array(SIZE);
+  const view = new DataView(bytes.buffer);
+  const at = (address: number) => address - BASE;
+  const pointer = (address: number, value: number) => {
+    if (layout.pointer === 8) view.setBigUint64(at(address), BigInt(value), true);
+    else view.setUint32(at(address), value, true);
+  };
+  pointer(PEB + layout.paramsInPeb, PARAMS);
+  view.setUint32(at(PARAMS), 0x300, true); // MaximumLength
+  view.setUint32(at(PARAMS + 4), 0x300, true); // Length
+  view.setUint32(at(PARAMS + 8), 0x1, true); // Flags: RTL_USER_PROC_PARAMS_NORMALIZED
+  const curdir = PARAMS + layout.curdirInParams;
+  const text = Buffer.from(path, "utf16le");
+  view.setUint16(at(curdir), text.length, true);
+  view.setUint16(at(curdir + 2), 0x208, true);
+  pointer(curdir + layout.pointer, TEXT);
+  bytes.set(text, at(TEXT));
+  return { bytes, view, pointer, dosPath: { length: curdir, maximum: curdir + 2, buffer: curdir + layout.pointer } };
+}
+
+const SLOT = "C:\\pool\\1\\repo\\";
+const OTHER = "D:\\elsewhere\\";
+
+test("the addon's cwd parser answers a path only for a structure that holds every layout invariant", { skip: noAddon }, () => {
+  const native = ensureNativeProcessInspectionAddon();
+  const read = (images: Image[], layout: Layout, peb = PEB) =>
+    native.readCwdFromImages(images.map((one) => one.bytes), BASE, peb, layout.wow64);
+  const broken = (layout: Layout, mutate: (one: Image) => void) => {
+    const one = image(layout, SLOT);
+    mutate(one);
+    return read([one], layout);
+  };
+  const invalid = { failed: "layout", code: ERROR_INVALID_DATA };
+
+  for (const layout of [LAYOUT_64, LAYOUT_32]) {
+    const name = layout.wow64 ? "32-bit" : "64-bit";
+    assert.deepEqual(read([image(layout, SLOT)], layout), { cwd: SLOT }, `${name}: the healthy structure reads`);
+
+    const cases: Array<[string, (one: Image) => void, object]> = [
+      ["a DosPath Length above its MaximumLength", (one) => one.view.setUint16(one.dosPath.maximum - BASE, 4, true), invalid],
+      ["an odd DosPath Length", (one) => one.view.setUint16(one.dosPath.length - BASE, 7, true), invalid],
+      ["an empty DosPath", (one) => one.view.setUint16(one.dosPath.length - BASE, 0, true), invalid],
+      ["a null DosPath buffer", (one) => one.pointer(one.dosPath.buffer, 0), invalid],
+      ["a DosPath buffer outside the address space", (one) => one.pointer(one.dosPath.buffer, 0x1000), { failed: "ReadProcessMemory", code: ERROR_NOACCESS }],
+      ["a DosPath buffer running off the end", (one) => one.pointer(one.dosPath.buffer, BASE + SIZE - 4), { failed: "ReadProcessMemory", code: ERROR_PARTIAL_COPY }],
+      ["a parameter block that is not normalized", (one) => one.view.setUint32(PARAMS + 8 - BASE, 0, true), invalid],
+      ["a parameter block too short to hold CURDIR", (one) => one.view.setUint32(PARAMS + 4 - BASE, layout.curdirInParams, true), invalid],
+      ["a parameter block longer than its allocation", (one) => one.view.setUint32(PARAMS - BASE, 0x10, true), invalid],
+      ["a null ProcessParameters", (one) => one.pointer(PEB + layout.paramsInPeb, 0), invalid],
+      ["a ProcessParameters outside the address space", (one) => one.pointer(PEB + layout.paramsInPeb, 0x1000), { failed: "ReadProcessMemory", code: ERROR_NOACCESS }],
+    ];
+    for (const [label, mutate, expected] of cases) {
+      assert.deepEqual(broken(layout, mutate), expected, `${name}: ${label} fails, never a path`);
+    }
+    assert.deepEqual(read([image(layout, SLOT)], layout, 0), invalid, `${name}: a null PEB fails`);
+
+    // A cwd that keeps changing under the reader is never half of one path and half of another,
+    // and one that settles answers the settled path, not the first one seen.
+    const flapping = [SLOT, OTHER, SLOT, OTHER, SLOT, OTHER].map((path) => image(layout, path));
+    assert.deepEqual(read(flapping, layout), { failed: "stable read", code: ERROR_INVALID_DATA }, `${name}: a cwd that never settles fails`);
+    assert.deepEqual(read([image(layout, SLOT), image(layout, OTHER)], layout), { cwd: OTHER }, `${name}: a cwd that settles reads the settled path`);
+  }
+
+  // The wrong layout is a layout surprise too: each finds no parameter block where it looks.
+  assert.deepEqual(read([image(LAYOUT_32, SLOT)], LAYOUT_64), invalid, "a 32-bit PEB read as 64-bit fails");
+  assert.deepEqual(read([image(LAYOUT_64, SLOT)], LAYOUT_32), invalid, "a 64-bit PEB read as 32-bit fails");
+
+  // Text the structure carries intact but that is no cwd: the addon hands it over, and the
+  // inspector's shape check (`win32CwdFromDosPath`) is what refuses it.
+  for (const text of ["pool\\1\\", "C:\\pool\\1", "\\\\.\\pipe\\x\\"]) {
+    const answer = read([image(LAYOUT_64, text)], LAYOUT_64);
+    assert.deepEqual(answer, { cwd: text });
+    assert.equal(win32CwdFromDosPath(text), null, `${JSON.stringify(text)} is not a cwd`);
+  }
+
+  assert.throws(() => native.readCwdFromImages([], BASE, PEB, false), /expected images, base, peb and wow64/);
+});
+
+test("the addon refuses an impossible pid, and reports a refused open and an exited process as failed reads", { skip: noAddon, timeout: 60_000 }, async (t) => {
+  const native = ensureNativeProcessInspectionAddon();
+  for (const read of [native.owners, native.cwds]) {
+    for (const pid of [0, -1, 1.5, 2 ** 32, Number.NaN]) {
+      assert.throws(() => read([pid]), /every pid must be a positive 32-bit integer/, `pid ${pid}`);
+    }
+    assert.throws(() => read(["7" as unknown as number]), /every pid must be a positive 32-bit integer/);
+    assert.throws(() => (read as (value: unknown) => unknown)(7), /expected one array of pids/);
+  }
+
+  // pid 4 is the System process: protected, so no caller without kernel help may read its memory.
+  assert.deepEqual(native.cwds([4]), [{ failed: "OpenProcess", code: ERROR_ACCESS_DENIED }]);
+
+  // An exited process whose handle is still held, as this process holds its child's until the
+  // exit event is delivered. Polling synchronously keeps the event loop from delivering it, so
+  // the pid cannot be released, let alone reused, while the addon looks at it.
+  const child = spawn(join(SYSTEM_ROOT, "System32", "cmd.exe"), ["/d", "/q", "/k"], { stdio: ["pipe", "ignore", "ignore"] });
+  await once(child, "spawn");
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+  });
+  const pid = child.pid!;
+  assert.deepEqual(native.owners([pid]), [{ sameUser: true }]);
+  child.kill();
+  const deadline = Date.now() + 10_000;
+  let owner = native.owners([pid])[0];
+  while ((owner as { failed?: string }).failed !== "exited" && Date.now() < deadline) owner = native.owners([pid])[0];
+  assert.deepEqual(owner, { failed: "exited", code: 0 });
+  assert.deepEqual(native.cwds([pid]), [{ failed: "exited", code: 0 }]);
+  assert.equal(win32OwnerInScope(owner), false, "an exited process is out of scope");
 });

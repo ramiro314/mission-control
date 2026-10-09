@@ -21,6 +21,17 @@ export interface NativeProcessInspectionBinding {
   cwds(pids: readonly number[]): NativeProcessCwd[];
 }
 
+/**
+ * The addon's third export, which the daemon never calls: the parser `cwds` runs on a live
+ * process, run over byte images of an address space instead. `images` are successive snapshots
+ * of the region starting at `base` (each re-read takes the next, and the last repeats), `peb` is
+ * the PEB's address in it, and `wow64` selects the 32-bit layout. It lets a test drive the layout
+ * checks with structures no live process would hand over.
+ */
+export interface NativeCwdImageReader {
+  readCwdFromImages(images: readonly Uint8Array[], base: number, peb: number, wow64: boolean): NativeProcessCwd;
+}
+
 type RequireFn = (id: string) => unknown;
 
 /**

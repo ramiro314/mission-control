@@ -19,6 +19,10 @@
 //
 // Neither function decides anything. Each reports, per pid, what it read or which step failed
 // with which Win32 error, and the TypeScript caller owns the policy for each failure.
+//
+// `readCwdFromImages(images, base, peb, wow64)` is the daemon-unused third export: the same cwd
+// parser over byte images of an address space instead of a live process, so a test can feed it
+// the corrupt structures no live process would, and pin that each one fails rather than reads.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -90,23 +94,70 @@ NtQueryInformationProcessFn QueryInformationProcess() {
   return fn;
 }
 
-bool ReadExact(HANDLE process, uint64_t address, void* out, size_t size, Failure* failure) {
-  SIZE_T read = 0;
-  if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(address), out, size, &read)) {
-    *failure = {"ReadProcessMemory", GetLastError()};
-    return false;
-  }
-  if (read != size) {
-    *failure = {"ReadProcessMemory", ERROR_PARTIAL_COPY};
-    return false;
-  }
-  return true;
-}
+// The target's address space, as the cwd parser sees it. A live process is read through
+// ReadProcessMemory; `readCwdFromImages` supplies byte images instead, so the layout checks
+// below can be driven with corrupt structures that no live process would hand over.
+class Memory {
+ public:
+  virtual ~Memory() = default;
+  virtual bool Read(uint64_t address, void* out, size_t size, Failure* failure) = 0;
+  // Called before each re-read of the cwd, so an image source can change between reads.
+  virtual void NextPass() {}
+};
 
-bool ReadPointer(HANDLE process, uint64_t address, uint32_t size, uint64_t* out, Failure* failure) {
-  if (size == 8) return ReadExact(process, address, out, 8, failure);
+class ProcessMemory : public Memory {
+ public:
+  explicit ProcessMemory(HANDLE process) : process_(process) {}
+  bool Read(uint64_t address, void* out, size_t size, Failure* failure) override {
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(process_, reinterpret_cast<LPCVOID>(address), out, size, &read)) {
+      *failure = {"ReadProcessMemory", GetLastError()};
+      return false;
+    }
+    if (read != size) {
+      *failure = {"ReadProcessMemory", ERROR_PARTIAL_COPY};
+      return false;
+    }
+    return true;
+  }
+
+ private:
+  HANDLE process_;
+};
+
+// Byte images of one region of an address space starting at `base`, one image per read pass;
+// the last image keeps answering once the passes run past it. A read outside the region fails
+// the way ReadProcessMemory fails on memory that is not mapped.
+class ImageMemory : public Memory {
+ public:
+  ImageMemory(std::vector<std::vector<uint8_t>> images, uint64_t base)
+      : images_(std::move(images)), base_(base) {}
+  bool Read(uint64_t address, void* out, size_t size, Failure* failure) override {
+    const std::vector<uint8_t>& image = images_[pass_ < images_.size() ? pass_ : images_.size() - 1];
+    const uint64_t end = base_ + image.size();
+    if (address < base_ || address >= end) {
+      *failure = {"ReadProcessMemory", ERROR_NOACCESS};
+      return false;
+    }
+    if (size > end - address) {
+      *failure = {"ReadProcessMemory", ERROR_PARTIAL_COPY};
+      return false;
+    }
+    std::memcpy(out, image.data() + (address - base_), size);
+    return true;
+  }
+  void NextPass() override { ++pass_; }
+
+ private:
+  std::vector<std::vector<uint8_t>> images_;
+  uint64_t base_;
+  size_t pass_ = 0;
+};
+
+bool ReadPointer(Memory& memory, uint64_t address, uint32_t size, uint64_t* out, Failure* failure) {
+  if (size == 8) return memory.Read(address, out, 8, failure);
   uint32_t narrow = 0;
-  if (!ReadExact(process, address, &narrow, 4, failure)) return false;
+  if (!memory.Read(address, &narrow, 4, failure)) return false;
   *out = narrow;
   return true;
 }
@@ -119,13 +170,13 @@ struct RemoteString {
   uint64_t buffer;
 };
 
-bool ReadRemoteString(HANDLE process, uint64_t address, const Layout& layout, RemoteString* out,
+bool ReadRemoteString(Memory& memory, uint64_t address, const Layout& layout, RemoteString* out,
                       Failure* failure) {
   uint16_t lengths[2] = {0, 0};
-  if (!ReadExact(process, address, lengths, sizeof(lengths), failure)) return false;
+  if (!memory.Read(address, lengths, sizeof(lengths), failure)) return false;
   out->length = lengths[0];
   out->maximum = lengths[1];
-  return ReadPointer(process, address + layout.pointer_size, layout.pointer_size, &out->buffer, failure);
+  return ReadPointer(memory, address + layout.pointer_size, layout.pointer_size, &out->buffer, failure);
 }
 
 bool InvalidLayout(Failure* failure) {
@@ -133,8 +184,8 @@ bool InvalidLayout(Failure* failure) {
   return false;
 }
 
-// Where the target's process parameters live, and in which layout.
-bool LocateParameters(HANDLE process, uint64_t* params, const Layout** layout, Failure* failure) {
+// Where a live target's PEB lives, and in which layout.
+bool LocatePeb(HANDLE process, uint64_t* peb, const Layout** layout, Failure* failure) {
   const auto query = QueryInformationProcess();
   if (query == nullptr) {
     *failure = {"GetProcAddress", ERROR_PROC_NOT_FOUND};
@@ -150,35 +201,28 @@ bool LocateParameters(HANDLE process, uint64_t* params, const Layout** layout, F
     *failure = {"NtQueryInformationProcess", static_cast<DWORD>(status)};
     return false;
   }
-
-  uint64_t peb = 0;
   if (peb32 != 0) {
-    peb = peb32;
+    *peb = peb32;
     *layout = &kLayout32;
-  } else {
-    PROCESS_BASIC_INFORMATION basic = {};
-    status = query(process, ProcessBasicInformation, &basic, sizeof(basic), nullptr);
-    if (status < 0) {
-      *failure = {"NtQueryInformationProcess", static_cast<DWORD>(status)};
-      return false;
-    }
-    peb = reinterpret_cast<uint64_t>(basic.PebBaseAddress);
-    *layout = &kLayout64;
+    return true;
   }
-  if (peb == 0) return InvalidLayout(failure);
 
-  if (!ReadPointer(process, peb + (*layout)->params_in_peb, (*layout)->pointer_size, params, failure)) {
+  PROCESS_BASIC_INFORMATION basic = {};
+  status = query(process, ProcessBasicInformation, &basic, sizeof(basic), nullptr);
+  if (status < 0) {
+    *failure = {"NtQueryInformationProcess", static_cast<DWORD>(status)};
     return false;
   }
-  if (*params == 0) return InvalidLayout(failure);
+  *peb = reinterpret_cast<uint64_t>(basic.PebBaseAddress);
+  *layout = &kLayout64;
   return true;
 }
 
 // One read of CurrentDirectory.DosPath, checked against what the real structure always holds.
-bool ReadDosPath(HANDLE process, uint64_t params, const Layout& layout, RemoteString* path,
+bool ReadDosPath(Memory& memory, uint64_t params, const Layout& layout, RemoteString* path,
                  std::vector<char16_t>* text, Failure* failure) {
   uint32_t header[3] = {0, 0, 0};  // MaximumLength, Length, Flags
-  if (!ReadExact(process, params, header, sizeof(header), failure)) return false;
+  if (!memory.Read(params, header, sizeof(header), failure)) return false;
   const uint32_t maximum = header[0];
   const uint32_t length = header[1];
   const uint32_t flags = header[2];
@@ -190,38 +234,33 @@ bool ReadDosPath(HANDLE process, uint64_t params, const Layout& layout, RemoteSt
     return InvalidLayout(failure);
   }
 
-  if (!ReadRemoteString(process, params + layout.curdir_in_params, layout, path, failure)) return false;
+  if (!ReadRemoteString(memory, params + layout.curdir_in_params, layout, path, failure)) return false;
   if (path->length == 0 || path->length % 2 != 0 || path->maximum < path->length ||
       path->length / 2 > kMaxPathUnits || path->buffer == 0) {
     return InvalidLayout(failure);
   }
 
   text->assign(path->length / 2, 0);
-  return ReadExact(process, path->buffer, text->data(), path->length, failure);
+  return memory.Read(path->buffer, text->data(), path->length, failure);
 }
 
-// Whether the process behind an open handle has already exited. Its handle outlives it while
-// anyone holds one, but its address space and handle table, cwd included, are gone. A process
-// that exited with code 259 (STILL_ACTIVE) reads as running, which only costs certainty.
-bool Exited(HANDLE process) {
-  DWORD code = 0;
-  return GetExitCodeProcess(process, &code) && code != STILL_ACTIVE;
-}
-
-// One working-directory read, retried until two consecutive reads agree, so a cwd that
+// The working directory behind a PEB, read until two consecutive reads agree, so a cwd that
 // changes while we read is never reported as half of one path and half of another.
-bool ReadStableCwd(HANDLE process, std::u16string* cwd, Failure* failure) {
+bool ReadStableCwd(Memory& memory, uint64_t peb, const Layout& layout, std::u16string* cwd,
+                   Failure* failure) {
+  if (peb == 0) return InvalidLayout(failure);
   uint64_t params = 0;
-  const Layout* layout = nullptr;
-  if (!LocateParameters(process, &params, &layout, failure)) return false;
+  if (!ReadPointer(memory, peb + layout.params_in_peb, layout.pointer_size, &params, failure)) return false;
+  if (params == 0) return InvalidLayout(failure);
 
   RemoteString previous = {};
   std::vector<char16_t> previous_text;
-  if (!ReadDosPath(process, params, *layout, &previous, &previous_text, failure)) return false;
+  if (!ReadDosPath(memory, params, layout, &previous, &previous_text, failure)) return false;
   for (int attempt = 0; attempt < kStableReadAttempts; ++attempt) {
+    memory.NextPass();
     RemoteString current = {};
     std::vector<char16_t> current_text;
-    if (!ReadDosPath(process, params, *layout, &current, &current_text, failure)) return false;
+    if (!ReadDosPath(memory, params, layout, &current, &current_text, failure)) return false;
     if (current.length == previous.length && current.buffer == previous.buffer &&
         current_text == previous_text) {
       cwd->assign(current_text.begin(), current_text.end());
@@ -234,17 +273,34 @@ bool ReadStableCwd(HANDLE process, std::u16string* cwd, Failure* failure) {
   return false;
 }
 
+// Whether the process behind an open handle has already exited. Its handle outlives it while
+// anyone holds one, but its address space and handle table, cwd included, are gone. A process
+// that exited with code 259 (STILL_ACTIVE) reads as running, which only costs certainty.
+bool Exited(HANDLE process) {
+  DWORD code = 0;
+  return GetExitCodeProcess(process, &code) && code != STILL_ACTIVE;
+}
+
 bool ReadCwd(DWORD pid, std::u16string* cwd, Failure* failure) {
   Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid));
   if (!process) {
     *failure = {"OpenProcess", GetLastError()};
     return false;
   }
-  if (ReadStableCwd(process.get(), cwd, failure)) return true;
-  // A read that failed because the process exited mid-read says so, rather than surfacing as
-  // the memory error its vanished address space produced.
-  if (Exited(process.get())) *failure = {"exited", 0};
-  return false;
+  uint64_t peb = 0;
+  const Layout* layout = nullptr;
+  ProcessMemory memory(process.get());
+  const bool read = LocatePeb(process.get(), &peb, &layout, failure) &&
+                    ReadStableCwd(memory, peb, *layout, cwd, failure);
+  // An exited process holds no cwd, even while its memory still reads: termination is reported
+  // before the address space is torn down, and that leftover is not where anything sits. Asked
+  // after the read, so an exit during it is caught too, and a failed read that the exit caused
+  // says so instead of surfacing as the memory error the vanishing address space produced.
+  if (Exited(process.get())) {
+    *failure = {"exited", 0};
+    return false;
+  }
+  return read;
 }
 
 bool ReadTokenUser(HANDLE token, std::vector<BYTE>* buffer, Failure* failure) {
@@ -377,6 +433,19 @@ napi_value Owners(napi_env env, napi_callback_info info) {
   return results;
 }
 
+// `{ cwd }` for a read that answered, `{ failed, code }` for one that did not.
+napi_value CwdObject(napi_env env, bool read, const std::u16string& cwd, const Failure& failure) {
+  if (!read) return FailureObject(env, failure);
+  napi_value entry;
+  napi_value path;
+  if (napi_create_object(env, &entry) != napi_ok ||
+      napi_create_string_utf16(env, cwd.data(), cwd.size(), &path) != napi_ok ||
+      napi_set_named_property(env, entry, "cwd", path) != napi_ok) {
+    return nullptr;
+  }
+  return entry;
+}
+
 napi_value Cwds(napi_env env, napi_callback_info info) {
   std::vector<DWORD> pids;
   if (!ReadPids(env, info, &pids)) return nullptr;
@@ -384,22 +453,70 @@ napi_value Cwds(napi_env env, napi_callback_info info) {
   napi_value results;
   if (napi_create_array_with_length(env, pids.size(), &results) != napi_ok) return nullptr;
   for (size_t i = 0; i < pids.size(); ++i) {
-    napi_value entry = nullptr;
     std::u16string cwd;
     Failure failure = {};
-    if (ReadCwd(pids[i], &cwd, &failure)) {
-      napi_value path;
-      if (napi_create_object(env, &entry) != napi_ok ||
-          napi_create_string_utf16(env, cwd.data(), cwd.size(), &path) != napi_ok ||
-          napi_set_named_property(env, entry, "cwd", path) != napi_ok) {
-        return nullptr;
-      }
-    } else if ((entry = FailureObject(env, failure)) == nullptr) {
+    const bool read = ReadCwd(pids[i], &cwd, &failure);
+    napi_value entry = CwdObject(env, read, cwd, failure);
+    if (entry == nullptr || napi_set_element(env, results, static_cast<uint32_t>(i), entry) != napi_ok) {
       return nullptr;
     }
-    if (napi_set_element(env, results, static_cast<uint32_t>(i), entry) != napi_ok) return nullptr;
   }
   return results;
+}
+
+bool ReadAddress(napi_env env, napi_value value, uint64_t* out) {
+  double number = 0;
+  if (napi_get_value_double(env, value, &number) != napi_ok || !(number >= 0) ||
+      number > 9007199254740991.0 || number != static_cast<double>(static_cast<uint64_t>(number))) {
+    return false;
+  }
+  *out = static_cast<uint64_t>(number);
+  return true;
+}
+
+// `readCwdFromImages(images, base, peb, wow64)`: the parser `cwds` runs on a live process, run
+// over byte images of an address space instead. `images` are successive snapshots of the region
+// that starts at `base` (each re-read takes the next, the last one repeats), `peb` is the PEB's
+// address in it, and `wow64` selects the 32-bit layout. It reads no process; it exists so the
+// layout checks can be driven with structures no live process would hand over.
+napi_value ReadCwdFromImages(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value argv[4];
+  bool is_array = false;
+  uint32_t count = 0;
+  uint64_t base = 0;
+  uint64_t peb = 0;
+  bool wow64 = false;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 4 ||
+      napi_is_array(env, argv[0], &is_array) != napi_ok || !is_array ||
+      napi_get_array_length(env, argv[0], &count) != napi_ok || count == 0 ||
+      !ReadAddress(env, argv[1], &base) || !ReadAddress(env, argv[2], &peb) ||
+      napi_get_value_bool(env, argv[3], &wow64) != napi_ok) {
+    return ThrowTypeError(env, "expected images, base, peb and wow64");
+  }
+
+  std::vector<std::vector<uint8_t>> images;
+  for (uint32_t i = 0; i < count; ++i) {
+    napi_value element;
+    bool is_typed = false;
+    napi_typedarray_type type;
+    size_t length = 0;
+    void* data = nullptr;
+    if (napi_get_element(env, argv[0], i, &element) != napi_ok ||
+        napi_is_typedarray(env, element, &is_typed) != napi_ok || !is_typed ||
+        napi_get_typedarray_info(env, element, &type, &length, &data, nullptr, nullptr) != napi_ok ||
+        type != napi_uint8_array) {
+      return ThrowTypeError(env, "every image must be a Uint8Array");
+    }
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    images.emplace_back(bytes, bytes + length);
+  }
+
+  ImageMemory memory(std::move(images), base);
+  std::u16string cwd;
+  Failure failure = {};
+  const bool read = ReadStableCwd(memory, peb, wow64 ? kLayout32 : kLayout64, &cwd, &failure);
+  return CwdObject(env, read, cwd, failure);
 }
 
 }  // namespace
@@ -408,8 +525,9 @@ NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
       {"owners", nullptr, Owners, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"cwds", nullptr, Cwds, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"readCwdFromImages", nullptr, ReadCwdFromImages, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  if (napi_define_properties(env, exports, 2, properties) != napi_ok) {
+  if (napi_define_properties(env, exports, 3, properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native process inspection addon");
     return nullptr;
   }
