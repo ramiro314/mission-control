@@ -10,6 +10,15 @@ import { harnessUnsupportedWhy } from "../src/shared/harness-capabilities.ts";
 import { SERVER_TOURS, serverTour, tourCreateFor, tourRecipeFor } from "../src/server/tours.ts";
 import { enableExperience, experienceFacts } from "./helpers/experience-assertions.ts";
 
+/**
+ * The task each see-work recipe launches on this host: its own harness and model where the host
+ * runs that harness, and `tourCreateFor`'s substitute where it does not (Codex on win32). The
+ * substitution itself is pinned per platform at the bottom of this file.
+ */
+const SEE_WORK = SERVER_TOURS["see-work"]!.operations;
+const HOST_DEMO = tourCreateFor(SEE_WORK.dispatch!, process.platform);
+const HOST_PREVIEW = tourCreateFor(SEE_WORK.preview!, process.platform);
+
 function tourTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "tour-task",
@@ -82,8 +91,8 @@ test("the tour route fixes Sol, the harmless prompt, and request_input at the se
     body: JSON.stringify({ repoRoot: process.cwd() }),
   });
   assert.equal(response.status, 200);
-  assert.equal(captured.created?.agent, "codex");
-  assert.equal(captured.created?.model, "gpt-6-sol");
+  assert.equal(captured.created?.agent, HOST_DEMO.agent);
+  assert.equal(captured.created?.model, HOST_DEMO.model);
   assert.equal(captured.created?.workflowId, null);
   assert.equal(captured.created?.backlog, true);
   assert.match(String(captured.created?.intent), /Do not edit files/);
@@ -128,7 +137,7 @@ test("an empty-fleet preview launches one fixed manual Chat conversation", async
   assert.equal(response.status, 200);
   assert.equal(captured?.title, "Tour conversation");
   assert.equal(captured?.kind, "chat");
-  assert.equal(captured?.agent, "codex");
+  assert.equal(captured?.agent, HOST_PREVIEW.agent);
   assert.equal(captured?.model, undefined);
   assert.equal(captured?.workflowId, null);
   assert.equal(captured?.backlog, false);

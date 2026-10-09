@@ -24,14 +24,15 @@ import {
 import { fakeExecutablePath } from "./helpers/fake-executable.ts";
 import { writeFakeLoginShell } from "./helpers/login-shell.ts";
 import { osHomeEnv } from "./helpers/os-home.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 /**
- * Install a tool named `path` the way the platform names one, and return where it landed:
+ * Install a tool named `path` the way `platform` names one, and return where it landed:
  * `path` itself on POSIX, `<path>.exe` on win32, whose ladder looks a bare command up only by
  * its PATHEXT names. Nothing here is ever started, so the file need not be a real program.
  */
-function executable(path: string): string {
-  const file = fakeExecutablePath(path);
+function executable(path: string, platform: NodeJS.Platform = process.platform): string {
+  const file = fakeExecutablePath(path, platform);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, "#!/bin/sh\nexit 0\n");
   chmodSync(file, 0o755);
@@ -376,7 +377,8 @@ test("a relative per-tool override is rejected instead of depending on daemon cw
 
 test("custom per-user terminal app locations are supported without a filesystem scan", async () => {
   const f = fixture();
-  const wezterm = executable(join(f.root, "Applications", "WezTerm.app", "Contents", "MacOS", "wezterm"));
+  // Named as the darwin row this case drives names it, whatever the host.
+  const wezterm = executable(join(f.root, "Applications", "WezTerm.app", "Contents", "MacOS", "wezterm"), "darwin");
   try {
     const locator = new ExecutableLocator({
       env: f.env,
@@ -413,7 +415,11 @@ test("dead login shells degrade to manager and OS defaults", async () => {
   }
 });
 
-test("a login-shell grandchild holding output cannot outlive the discovery deadline", async () => {
+// win32 reads PATH with `reg.exe` and `powershell.exe -NoProfile`. On that host the fake answers
+// its PATH and no deadline is ever reached.
+const POSIX_LOGIN_SHELL = skipOnWin32("pins a POSIX login shell's startup-file grandchild holding the PATH read's stdout open; the win32 PATH read runs no startup files, and a grandchild there does not hold the read open");
+
+test("a login-shell grandchild holding output cannot outlive the discovery deadline", { skip: POSIX_LOGIN_SHELL }, async () => {
   const f = fixture();
   // Written once the grandchild holds stdout and the PATH is printed, so the case cannot pass
   // on a shell that was simply still starting when the deadline fired.

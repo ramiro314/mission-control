@@ -28,6 +28,21 @@ if (result.error) throw result.error;
 process.exit(result.status ?? 1);
 `;
 
+/**
+ * Each platform row's version-manager shim directories, relative to the home directory. asdf
+ * ships no Windows build, so win32 has no rung for it.
+ */
+const MANAGER_SHIMS = process.platform === "win32"
+  ? [
+    ["AppData", "Local", "mise", "shims"],
+    ["AppData", "Local", "Volta", "bin"],
+  ]
+  : [
+    [".local", "share", "mise", "shims"],
+    [".asdf", "shims"],
+    [".volta", "bin"],
+  ];
+
 test("run passes manager precedence through to child hooks with env shebangs", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "mission-hook-path-"));
   // A unique interpreter name models the system Ruby collision without running host Ruby.
@@ -56,12 +71,11 @@ test("run passes manager precedence through to child hooks with env shebangs", a
       MISE_SHIMS_DIR: undefined,
       ASDF_DATA_DIR: undefined,
       VOLTA_HOME: undefined,
+      // win32 places its managers under these profile folders; unset, they follow the home.
+      LOCALAPPDATA: undefined,
+      APPDATA: undefined,
     }, async () => {
-      for (const location of [
-        [".local", "share", "mise", "shims"],
-        [".asdf", "shims"],
-        [".volta", "bin"],
-      ]) {
+      for (const location of MANAGER_SHIMS) {
         await t.test(location.join("/"), async () => {
           const shim = join(root, ...location, interpreter);
           script(shim, 'process.stdout.write("managed runtime\\n");\n');

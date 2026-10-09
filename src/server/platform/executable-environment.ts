@@ -86,9 +86,16 @@ export const posixExecutableEnvironment: ExecutableEnvironmentPlatform = {
 // win32 paths are built with `path.win32` rather than the host's `path`, so the row answers the
 // same on every machine and its tests run on macOS and Linux too.
 
-/** A Windows variable, trimmed, or the documented default when it is unset or blank. */
+/**
+ * A Windows variable, trimmed, or the documented default when it is unset or blank.
+ *
+ * Read without regard to case, as Windows does: `process.env` is case-insensitive on win32, but
+ * a copy of it is a plain object, and a daemon started from Git Bash inherits `SYSTEMROOT` and
+ * `PROGRAMFILES` rather than `SystemRoot` and `ProgramFiles`. The name as written wins when an
+ * object carries both spellings.
+ */
 function windowsVariable(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
-  return env[name]?.trim() || fallback;
+  return (env[name] ?? windowsEnvironmentValue(env, name))?.trim() || fallback;
 }
 
 function systemRoot(env: NodeJS.ProcessEnv): string {
