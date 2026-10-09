@@ -339,7 +339,9 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       localUnitWorkers: "6",
       unitShardOption: "${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}",
       unitShardOptionPrecedesPattern: true,
-      playwrightWorkers: { ci: 4, local: 4 },
+      // The config reads the platform it runs on, and win32 deliberately runs two workers
+      // (see `e2e/playwright.config.ts`), so each platform pins its own count.
+      playwrightWorkers: process.platform === "win32" ? { ci: 2, local: 2 } : { ci: 4, local: 4 },
     },
   );
 });

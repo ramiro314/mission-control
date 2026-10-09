@@ -32,12 +32,16 @@ const HARNESS = join(REPO_ROOT, "test", "helpers", "electron-entry-harness.cjs")
 let mainBundleBuilt = false;
 function mainBundle(): string {
   if (mainBundleBuilt) return MAIN_BUNDLE;
-  const built = spawnSync("npm", ["run", "build:main"], {
+  // Through a shell, because on win32 `npm` is `npm.cmd`, which `spawnSync` neither finds
+  // without one nor may run without one. One fixed command string rather than an argument
+  // list, which Node deprecates beside `shell` (DEP0190).
+  const built = spawnSync("npm run build:main", {
     cwd: REPO_ROOT,
     encoding: "utf8",
     timeout: 300_000,
+    shell: true,
   });
-  assert.equal(built.status, 0, `could not build the main bundle: ${built.stderr}`);
+  assert.equal(built.status, 0, `could not build the main bundle: ${built.error ?? built.stderr}`);
   assert.ok(existsSync(MAIN_BUNDLE), `the build did not produce ${MAIN_BUNDLE}`);
   mainBundleBuilt = true;
   return MAIN_BUNDLE;
