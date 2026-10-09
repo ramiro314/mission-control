@@ -180,10 +180,15 @@ const QUEUE_PLAN: BacklogPlan = {
   generatedAt: 1000,
 };
 
+// An error notice carries no Trust button, so its copy has the whole 360px column. The copy
+// must overflow that on every platform's fallback font: an earlier 79-character message fit
+// within 360px under Windows' Segoe UI (scrollWidth equal to clientWidth) and never ellipsized,
+// while Linux and macOS clipped it.
 const NOTICED_QUEUE = QUEUE.map((task, index) => ({
   ...task,
   error: index === 0
-    ? "Dispatch stopped before provisioning, so launch this task manually when ready."
+    ? "Dispatch stopped before provisioning because the base branch could not be fetched,"
+      + " so launch this task manually once the repository is reachable again."
     : task.error,
 }));
 
