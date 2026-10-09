@@ -260,3 +260,14 @@ a narrower ticket.
 | `retro-offer` (completing merged work) | The task completes and the session retires, but the checkout return is refused (`WIN32_OCCUPANCY_UNPROVABLE`) | Fixed: the checkout return is asserted on Linux and macOS only, and the rest of the test still runs on win32 |
 | `workflow-elapsed-clock` (member clocks) | The live clock it watches is a blocked Command, and win32 never runs Commands, so the gate settles as not run | D37 skip with the Command-check reason used by 3aeb7ea1's specs |
 | `workflow-round-scrubber` | A click scrolled the page 2px under Windows fonts, so the tile's viewport `y` moved | Fixed: the spec reads the tile against the strip, not the viewport |
+
+## Three persistent failures: issue #352
+
+Three specs failed on every Windows run from 37837881594 to 37861785127. None of them comes from a
+win32 product defect, and none shares the workflow Check supervisor cause (#345).
+
+| Spec | Cause | Outcome |
+|---|---|---|
+| `pipeline-provider-readiness` (typed failure, fresh host) | The spec failed the recovery launch with `chmod 0o644`, but win32 has no execute bit, and the daemon launches the `.exe` launcher beside the script anyway. The retry launched normally | Fixed: the spec renames the launched path (`fakeExecutablePath`) away and back, which fails the launch on every platform |
+| `board-card-workflow-details` | The settings write raced a full page load, as for `board-card-workflow-progress` above. Run 37858238213 lost an uncheck (a sentence at line 253), and the other two runs lost a check (no sentence at line 200) | Fixed: the spec waits for the daemon to hold each toggle (`expectDaemonHides`). Holding every `PUT /api/ui/config` for 3 s fails the old spec at line 200 every time, and the fixed spec passes |
+| `native-worktree-dispatch` | Clean up answers `native worktree release refused: process listing failed: effective user identity is unavailable` for both repositories (plan M2.4), so neither slot is released or reused | D37 skip with `WIN32_OCCUPANCY_UNPROVABLE`. The spec fails on win32 only from the cleanup on, but its reuse half depends on it |
