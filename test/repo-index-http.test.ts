@@ -304,8 +304,10 @@ test("a saved missing directory is reported unsafe if it later resolves at or ab
   const deferred = join(operatorHome, "future-code");
   assert.equal((await putDirectories([deferred])).status, 200);
   assert.equal((await getView()).directories[0]?.status, "missing");
+  assert.deepEqual(indexedDirectories(), [deferred], "a missing safe row is still a root to walk");
 
   symlinkSync(operatorHome, deferred);
+  assert.deepEqual(indexedDirectories(), [], "discovery never walks home through the new link");
   const view = await getView();
   assert.deepEqual(view.directories[0], {
     path: deferred,

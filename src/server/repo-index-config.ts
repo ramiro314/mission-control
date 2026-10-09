@@ -107,11 +107,6 @@ export function namesFilesystemRoot(
     || isFilesystemRoot(deps.canonicalize(path), pathApi);
 }
 
-/** Whether scanning a path would reach the operator's home or a whole volume. */
-export function resolvesToBroadRoot(path: string): boolean {
-  return resolvesAtOrAboveHome(path) || namesFilesystemRoot(path);
-}
-
 /** Validate the whole list so duplicate and broad-root checks compare canonical paths. */
 export function validateIndexedDirectories(rows: readonly IndexedDirectory[]): void {
   if (rows.length > MAX_INDEXED_DIRECTORIES) {
@@ -163,7 +158,7 @@ export function indexedDirectories(): string[] {
     // A missing path can become a symlink after it was saved. Reapply the broad-root guard
     // at read time so that filesystem change cannot turn a safe deferred row into a home or
     // whole-volume scan.
-    if (!resolvesToBroadRoot(row.path)) roots.add(canonical);
+    if (!resolvesAtOrAboveHome(canonical) && !namesFilesystemRoot(row.path)) roots.add(canonical);
   }
   return [...roots];
 }
