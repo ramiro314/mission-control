@@ -44,6 +44,8 @@ test("a network-layer navigation failure carries the socket picture; anything el
   assert.equal(await withSocketDiagnostics(async () => "loaded", summary), "loaded");
 });
 
-test("this host's real socket picture can be read", { skip: process.platform !== "win32" }, () => {
-  assert.match(hostSocketSummary(), /^TCP sockets: \d+ \(.*\); most held by: /);
+test("this host's real socket picture can be read, and never throws", () => {
+  // netstat's shape on win32; elsewhere `ss -s`, or the sentence saying why it is unavailable.
+  const expected = process.platform === "win32" ? /^TCP sockets: \d+ \(.*\); most held by: / : /\S/;
+  assert.match(hostSocketSummary(), expected);
 });

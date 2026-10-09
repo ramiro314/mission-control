@@ -83,7 +83,9 @@ test("POSIX renames once, since an open handle never blocks a rename there", asy
   assert.equal(calls.length, 1);
 });
 
-test("a directory renames once a handle inside it closes", { skip: process.platform !== "win32" }, async () => {
+// On every platform: win32 refuses the rename until the handle closes and this waits it out;
+// POSIX renames at once with the handle still open. Either way the bundle ends up moved.
+test("a directory renames once a handle inside it closes", async () => {
   const root = mkdtempSync(join(tmpdir(), "settling-rename-"));
   try {
     const from = join(root, "bundle");
