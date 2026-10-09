@@ -1,8 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -60,24 +61,28 @@ after(() => {
  * convenience: `run()` reads `outcomeUnknown` off a child that died WITHOUT reporting its
  * own exit, which is what our own timeout, the OOM killer and an operator's `pkill` all
  * look like. Faking it with a special exit code would exercise the 502 path instead.
+ *
+ * Windows has no death by signal: a process killed there just exits with a code, which reads
+ * exactly like a refusal. The one death `run()` can see on win32 is its own timeout, so there
+ * the fake hangs until `GH_TIMEOUT_MS` reaps it - the same 504, about twenty seconds later.
  */
 function fakeGh(mode: "created" | "refused" | "unknown"): string {
-  const path = join(bin, `gh-${mode}`);
   const body =
     mode === "created"
       ? [
           // Everything gh was asked to do, for the assertions below: the cwd first, then
           // one argv entry per line so a title with spaces stays one entry.
-          `{ pwd; for a in "$@"; do printf '%s\\n' "$a"; done; } > "$MC_GH_RECORD"`,
-          `echo "Creating issue in acme/demo"`,
-          `echo "https://github.com/acme/demo/issues/7"`,
+          `require("node:fs").writeFileSync(process.env.MC_GH_RECORD, [process.cwd(), ...process.argv.slice(2)].map((line) => line + "\\n").join(""));`,
+          `console.log("Creating issue in acme/demo");`,
+          `console.log("https://github.com/acme/demo/issues/7");`,
         ]
       : mode === "refused"
-        ? [`echo "could not add label: 'triage' not found" >&2`, `exit 1`]
-        : [`kill -9 $$`];
-  writeFileSync(path, ["#!/bin/sh", ...body, ""].join("\n"));
-  chmodSync(path, 0o755);
-  return path;
+        ? [`console.error("could not add label: 'triage' not found");`, `process.exitCode = 1;`]
+        : [
+            `if (process.platform === "win32") setInterval(() => {}, 1 << 30);`,
+            `else process.kill(process.pid, "SIGKILL");`,
+          ];
+  return writeFakeExecutable(join(bin, `gh-${mode}`), [...body, ""].join("\n"));
 }
 
 const GH = {

@@ -14,18 +14,23 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-wait-for-ci-"));
 process.env.MISSION_HOME = home;
 // The fake `gh`: prints whatever the test last wrote, and records the query it was asked.
 const ghDir = mkdtempSync(join(tmpdir(), "mission-wait-for-ci-gh-"));
-const ghBin = join(ghDir, "gh");
-writeFileSync(ghBin, `#!/bin/sh\nprintf '%s' "$@" > "${ghDir}/args"\ncat "${ghDir}/response.json"\n`);
-chmodSync(ghBin, 0o755);
+const ghBin = writeFakeExecutable(
+  join(ghDir, "gh"),
+  `const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(join(ghDir, "args"))}, process.argv.slice(2).join(""));
+process.stdout.write(fs.readFileSync(${JSON.stringify(join(ghDir, "response.json"))}));
+`,
+);
 process.env.MISSION_GH_BIN = ghBin;
 after(() => {
   rmSync(home, { recursive: true, force: true });

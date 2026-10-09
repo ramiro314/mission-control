@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 import type {
@@ -70,19 +71,18 @@ process.env.RUN_NODE = process.execPath;
 process.env.RUN_ORPHAN_READY = RUN_ORPHAN_READY;
 process.env.RUN_HOLD_FIFO = RUN_HOLD_FIFO;
 
-const fakeBin = join(home, "fake-claude.sh");
-writeFileSync(
-  fakeBin,
-  `#!/bin/sh
-cat > "$RUN_STDIN"
-: > "$RUN_ARGS"
-for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
-pwd > "$RUN_CWD"
-printf '%s\\n%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS" > "$RUN_ENV"
-printf '{"result":"the model text"}'
+const fakeBin = writeFakeExecutable(
+  join(home, "fake-claude"),
+  `const fs = require("node:fs");
+const env = process.env;
+const lines = (values) => values.map((value) => (value ?? "") + "\\n").join("");
+fs.writeFileSync(env.RUN_STDIN, fs.readFileSync(0));
+fs.writeFileSync(env.RUN_ARGS, lines(process.argv.slice(2)));
+fs.writeFileSync(env.RUN_CWD, lines([process.cwd()]));
+fs.writeFileSync(env.RUN_ENV, lines([env.TMUX_PANE, env.WEZTERM_PANE, env.ITERM_SESSION_ID, env.MISSION_HEADLESS]));
+process.stdout.write('{"result":"the model text"}');
 `,
 );
-chmodSync(fakeBin, 0o755);
 // Before the import: `claude-cli.ts` resolves the binary at module load.
 process.env.MISSION_CLAUDE_BIN = fakeBin;
 

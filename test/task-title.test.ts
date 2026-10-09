@@ -1,11 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkEmuHandle } from "./helpers/session-fixture.ts";
 import { terminalResourceId } from "../src/shared/pane.ts";
 
@@ -24,34 +25,42 @@ const bin = mkdtempSync(join(tmpdir(), "fake-claude-"));
 const modeFile = join(bin, "mode");
 const callsFile = join(bin, "calls");
 const releaseFile = join(bin, "release");
-const fake = join(bin, "claude.sh");
-writeFileSync(
-  fake,
-  `#!/bin/sh
-cat > /dev/null
-echo x >> ${callsFile}
-# Printed as a %s ARGUMENT, never as the printf format: a format string processes escapes and
-# POSIX leaves \\" undefined, so a formatted reply is valid JSON on one CI runner and garbage
-# on the other. As an argument the payload reaches stdout byte for byte.
-case "$(cat ${modeFile} 2>/dev/null)" in
-  crash) echo "boom" >&2; exit 1 ;;
-  hang)
-    while [ ! -f "${releaseFile}" ]; do sleep 0.01; done
-    printf %s '{"result":"\`\`\`json\\n{\\"title\\":\\"Fix flaky worktree cleanup\\"}\\n\`\`\`"}'
-    ;;
-  # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp
-  # onto the card, which would leave it blank.
-  blank) printf %s '{"result":"{\\"title\\":\\"   \\"}"}' ;;
-  # A reply that keeps the request framing anyway. The prompt asks for the work's name and not
-  # the ask for it; this is the reply where that instruction did not take.
-  framed) printf %s '{"result":"{\\"title\\":\\"We should implement the Herdr multiplexer\\"}"}' ;;
-  # The model fences its JSON even when told not to (observed on a real probe), so the fake
-  # does too - that keeps the parse ladder inside what this test covers rather than mocked.
-  *) printf %s '{"result":"\`\`\`json\\n{\\"title\\":\\"Fix flaky worktree cleanup\\"}\\n\`\`\`"}' ;;
-esac
+/** The envelope `claude -p --output-format json` prints around a reply of `text`. */
+const envelope = (text: string): string => JSON.stringify({ result: text });
+// The model fences its JSON even when told not to (observed on a real probe), so the fake
+// does too - that keeps the parse ladder inside what this test covers rather than mocked.
+const fenced = envelope(`\`\`\`json\n${JSON.stringify({ title: "Fix flaky worktree cleanup" })}\n\`\`\``);
+const replies = {
+  hang: fenced,
+  // Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp
+  // onto the card, which would leave it blank.
+  blank: envelope(JSON.stringify({ title: "   " })),
+  // A reply that keeps the request framing anyway. The prompt asks for the work's name and not
+  // the ask for it; this is the reply where that instruction did not take.
+  framed: envelope(JSON.stringify({ title: "We should implement the Herdr multiplexer" })),
+};
+const fake = writeFakeExecutable(
+  join(bin, "claude"),
+  `const fs = require("node:fs");
+fs.readFileSync(0);
+fs.appendFileSync(${JSON.stringify(callsFile)}, "x\\n");
+let mode = "";
+try { mode = fs.readFileSync(${JSON.stringify(modeFile)}, "utf8").trim(); } catch {}
+const replies = ${JSON.stringify(replies)};
+if (mode === "crash") {
+  process.stderr.write("boom\\n");
+  process.exitCode = 1;
+} else if (mode === "hang") {
+  const wait = setInterval(() => {
+    if (!fs.existsSync(${JSON.stringify(releaseFile)})) return;
+    clearInterval(wait);
+    process.stdout.write(replies.hang);
+  }, 10);
+} else {
+  process.stdout.write(replies[mode] ?? ${JSON.stringify(fenced)});
+}
 `,
 );
-chmodSync(fake, 0o755);
 const setMode = (m: "good" | "crash" | "blank" | "hang" | "framed"): void => writeFileSync(modeFile, m);
 const callCount = (): number =>
   existsSync(callsFile) ? readFileSync(callsFile, "utf8").split("\n").filter(Boolean).length : 0;

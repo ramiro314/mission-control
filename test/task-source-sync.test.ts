@@ -1,12 +1,13 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema, sameSourceRef } from "../src/shared/task-source.ts";
 import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/shared/task-source.ts";
 import { sourceContent } from "../src/shared/task-source-sync.ts";
 import { dependencyInputOf } from "../src/shared/task-dependency.ts";
+import { fakeExecutablePath, writeFakeExecutable } from "./helpers/fake-executable.ts";
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { getTask, listTasks, deleteTask, openDb, countTaskSourceSeen, inTransaction } = await import("../src/server/db.ts");
@@ -153,15 +154,14 @@ test("GitHub linked failures never persist command output or parser details in r
   const bin = join(dir, "gh");
   const before = process.env.MISSION_GH_BIN;
   const secret = "fake-token-should-not-be-persisted /private/operator/path account@example.test";
-  process.env.MISSION_GH_BIN = bin;
+  process.env.MISSION_GH_BIN = fakeExecutablePath(bin);
   const localSource = { ...src, repoRoot: dir };
   setTaskSourcesConfig({ sources: [localSource] });
   try {
     const { buildApp } = await import("../src/server/routes.ts");
     const app = buildApp({ registry, tasks, reviews: {} as never, queues: {} as never });
     for (const [stream, code] of [["stderr", 1], ["stdout", 0]] as const) {
-      writeFileSync(bin, `#!/usr/bin/env node\nprocess.${stream}.write(${JSON.stringify(secret)}); process.exitCode = ${code};\n`);
-      chmodSync(bin, 0o755);
+      writeFakeExecutable(bin, `process.${stream}.write(${JSON.stringify(secret)}); process.exitCode = ${code};\n`);
       assert.equal((await refresh(localSource, tasks, [])).skipped, 1);
       const record = getSourceSync(task.id)!;
       assert.equal(record.error, code === 1

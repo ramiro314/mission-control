@@ -1,10 +1,11 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -410,9 +411,7 @@ test("the MCP client sends a base branch only to the routes that refuse what the
 
 test("MCP push_task sets the task's base branch before mirroring it, and refuses one origin lacks", async () => {
   const { repo } = mkRepo("route-push");
-  const gh = join(bin, "gh");
-  writeFileSync(gh, "#!/bin/sh\necho https://github.com/acme/demo/issues/7\n");
-  chmodSync(gh, 0o755);
+  const gh = writeFakeExecutable(join(bin, "gh"), `console.log("https://github.com/acme/demo/issues/7");\n`);
   process.env.MISSION_GH_BIN = gh;
   setTaskSourcesConfig(TaskSourcesConfigSchema.parse({
     sources: [{ id: "src-gh", kind: "github-issues", label: "demo issues", repoRoot: repo, config: {} }],
