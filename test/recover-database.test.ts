@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   APP_BUNDLE_ID,
   durableCopySqliteSet,
@@ -19,6 +20,14 @@ import type {
   DurableDatabaseOperations,
   DurableWriteOperations,
 } from "../scripts/recover-database.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+// `runDatabaseRecovery` refuses every host but darwin unless a test injects its operations: it
+// quits and relaunches the installed app by its macOS bundle id through osascript and
+// LaunchServices. The durable publication it reaches is therefore never run on win32.
+const MACOS_RECOVERY = {
+  skip: skipOnWin32("product-app database recovery stops and relaunches the macOS app by bundle id"),
+};
 
 function database(path: string, marker: string): void {
   const db = new DatabaseSync(path);
@@ -238,7 +247,7 @@ test("database replacement fsyncs files before durably publishing the SQLite set
 
   durableReplaceSqliteSet(source, live, 0o640, operations);
 
-  assert.match(temporary, /^\/state\/\.harness\.db\.replacement-.+$/);
+  assert.ok(temporary.startsWith(join(directory, ".harness.db.replacement-")), temporary);
   assert.ok(events.indexOf(`fsync:${temporary}`) < events.indexOf(`rename:${temporary}:${live}`));
   assert.ok(events.indexOf(`remove:${live}-wal`) < events.indexOf(`rename:${temporary}:${live}`));
   assert.ok(events.indexOf(`remove:${live}-shm`) < events.indexOf(`rename:${temporary}:${live}`));
@@ -282,9 +291,10 @@ test("rollback snapshots fsync every copied file and both snapshot directory lev
 });
 
 test("the recovery addon path is anchored to the script rather than the caller's cwd", () => {
+  const checkout = resolve("/checkout");
   assert.equal(
-    recoveryStateLockAddonPath("file:///checkout/scripts/recover-database.mjs"),
-    "/checkout/dist/native/state-lock.node",
+    recoveryStateLockAddonPath(pathToFileURL(join(checkout, "scripts", "recover-database.mjs")).href),
+    join(checkout, "dist", "native", "state-lock.node"),
   );
 });
 
@@ -302,7 +312,7 @@ test("daemon ownership proof follows a bounded live parent chain", () => {
   assert.equal(processDescendsFrom(9090, 2020, parentPidFor), false);
 });
 
-test("a valid candidate stops by exact bundle id, restores, launches once, and reports dynamic health", async (t) => {
+test("a valid candidate stops by exact bundle id, restores, launches once, and reports dynamic health", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
 
@@ -329,7 +339,7 @@ test("a valid candidate stops by exact bundle id, restores, launches once, and r
   );
 });
 
-test("a daemon is never signaled unless the receipt-verified product app owned the stop", async (t) => {
+test("a daemon is never signaled unless the receipt-verified product app owned the stop", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations({
     appRunning: true,
@@ -352,7 +362,7 @@ test("a daemon is never signaled unless the receipt-verified product app owned t
   assert.equal(fake.actions.some((action) => action.startsWith("launch:")), false);
 });
 
-test("a running verified app does not authorize signaling a daemon it does not own", async (t) => {
+test("a running verified app does not authorize signaling a daemon it does not own", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations({ appRunning: true, daemonRunning: true, daemonOwnedByApp: false });
 
@@ -371,7 +381,7 @@ test("a running verified app does not authorize signaling a daemon it does not o
   assert.equal(fake.actions.some((action) => action.startsWith("launch:")), false);
 });
 
-test("interrupted stop times out before any database file is moved", async (t) => {
+test("interrupted stop times out before any database file is moved", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations({ stopBlocked: true });
 
@@ -389,7 +399,7 @@ test("interrupted stop times out before any database file is moved", async (t) =
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
-test("an invalid candidate is rejected before stopping the app or daemon", async (t) => {
+test("an invalid candidate is rejected before stopping the app or daemon", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const invalid = join(f.root, "invalid.db");
   writeFileSync(invalid, "not sqlite");
@@ -407,7 +417,7 @@ test("an invalid candidate is rejected before stopping the app or daemon", async
   assert.equal(fake.actions.includes("acquire"), false);
 });
 
-test("a prepared-ledger failure relaunches the stopped healthy app without changing the database", async (t) => {
+test("a prepared-ledger failure relaunches the stopped healthy app without changing the database", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
 
@@ -431,7 +441,7 @@ test("a prepared-ledger failure relaunches the stopped healthy app without chang
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
-test("relaunch failure restores the preserved rollback material without a second launch", async (t) => {
+test("relaunch failure restores the preserved rollback material without a second launch", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations({ launchFails: true });
 
@@ -454,7 +464,7 @@ test("relaunch failure restores the preserved rollback material without a second
   );
 });
 
-test("installed-state publication failure rolls back without relying on ledger status", async (t) => {
+test("installed-state publication failure rolls back without relying on ledger status", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
 
@@ -479,7 +489,7 @@ test("installed-state publication failure rolls back without relying on ledger s
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
-test("post-health bookkeeping failure warns without reverting the applied database", async (t) => {
+test("post-health bookkeeping failure warns without reverting the applied database", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
 
@@ -506,7 +516,7 @@ test("post-health bookkeeping failure warns without reverting the applied databa
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
-test("applied-ledger publication failure warns without reverting or stopping the healthy app", async (t) => {
+test("applied-ledger publication failure warns without reverting or stopping the healthy app", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
 
@@ -532,7 +542,7 @@ test("applied-ledger publication failure warns without reverting or stopping the
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
-test("an identical candidate retries after an injected install failure was rolled back", async (t) => {
+test("an identical candidate retries after an injected install failure was rolled back", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
   const request = { kind: "restore", candidatePath: f.candidate } as const;
@@ -562,7 +572,7 @@ test("an identical candidate retries after an injected install failure was rolle
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 2);
 });
 
-test("repeat invocation is a no-op and never reapplies or relaunches", async (t) => {
+test("repeat invocation is a no-op and never reapplies or relaunches", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
   const request = { kind: "restore", candidatePath: f.candidate } as const;
@@ -579,7 +589,7 @@ test("repeat invocation is a no-op and never reapplies or relaunches", async (t)
   assert.equal(marker(f.live), "candidate");
 });
 
-test("concurrent identical invocations serialize to one install and one relaunch", async (t) => {
+test("concurrent identical invocations serialize to one install and one relaunch", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
   const request = { kind: "restore", candidatePath: f.candidate } as const;
@@ -603,7 +613,7 @@ test("concurrent identical invocations serialize to one install and one relaunch
   assert.equal(marker(f.live), "candidate");
 });
 
-test("a serialized duplicate relaunches once when it had to stop the healthy app", async (t) => {
+test("a serialized duplicate relaunches once when it had to stop the healthy app", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
   const originalAppIsRunning = fake.ops.appIsRunning;
@@ -650,7 +660,7 @@ test("a serialized duplicate relaunches once when it had to stop the healthy app
   assert.equal(marker(f.live), "candidate");
 });
 
-test("relaunch health retries one transient daemon identity mismatch", async (t) => {
+test("relaunch health retries one transient daemon identity mismatch", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations({ healthAmbiguousOnce: true });
 
@@ -665,7 +675,7 @@ test("relaunch health retries one transient daemon identity mismatch", async (t)
   assert.equal(marker(f.live), "candidate");
 });
 
-test("different recoveries cannot lose an applied transition after daemon lock release", async (t) => {
+test("different recoveries cannot lose an applied transition after daemon lock release", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const candidateB = join(f.root, "candidate-b.db");
   database(candidateB, "candidate-b");
@@ -725,7 +735,7 @@ test("different recoveries cannot lose an applied transition after daemon lock r
   assert.equal(marker(f.live), "candidate-b");
 });
 
-test("an explicit rollback uses preserved material through the same guarded flow", async (t) => {
+test("an explicit rollback uses preserved material through the same guarded flow", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const fake = operations();
   const applied = await runDatabaseRecovery(
@@ -748,7 +758,7 @@ test("an explicit rollback uses preserved material through the same guarded flow
   assert.match(String(originalAttempt?.message), /rolled back by recovery/);
 });
 
-test("explicit rollback is scoped to its recovery id rather than historical content digest", async (t) => {
+test("explicit rollback is scoped to its recovery id rather than historical content digest", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const originalCandidate = join(f.root, "original.db");
   const latestCandidate = join(f.root, "latest.db");
@@ -779,7 +789,7 @@ test("explicit rollback is scoped to its recovery id rather than historical cont
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 4);
 });
 
-test("candidate validation rejects foreign-key corruption before stop", async (t) => {
+test("candidate validation rejects foreign-key corruption before stop", MACOS_RECOVERY, async (t) => {
   const f = fixture(t);
   const walCandidate = join(f.root, "wal-candidate.db");
   const db = new DatabaseSync(walCandidate);

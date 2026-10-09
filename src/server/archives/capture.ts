@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, open, realpath, rm, rmdir, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
   type ArchiveManifestArtifact,
   type ArchiveManifestRepository,
 } from "@shared/archives.ts";
+import { renameAllowingHeldHandles } from "../platform/held-handle-rename.ts";
 import { verifyArchiveBundle } from "./bundle.ts";
 import type { ArchiveCaptureJob } from "./capture-store.ts";
 import { headOf, resolveRoots } from "./checkout.ts";
@@ -134,7 +135,7 @@ async function publish(
   deps: ArchiveCaptureDeps,
   now: () => number,
 ): Promise<ArchiveCaptureOutcome> {
-  const renameDir = deps.rename ?? ((from, to) => rename(from, to));
+  const renameDir = deps.rename ?? ((from, to) => renameAllowingHeldHandles(from, to));
   const staging = stagingRoot(deps.libraryRoot);
   // Staged under `<staging>/<producer>/<archive>` rather than a flat temp name, so the SAME
   // importer that verifies a stranger's bundle can verify this one before it is published -
