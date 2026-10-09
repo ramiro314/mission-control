@@ -9,6 +9,7 @@ import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
+import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT } from "./config.ts";
@@ -111,6 +112,7 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
+import { holdIdleConnections } from "./http-keep-alive.ts";
 import {
   attachSessionTelemetry,
   noteDaemonShuttingDown,
@@ -846,6 +848,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;
   console.log(`[mission-control] listening on ${where}`);
 });
+// `serve` without a `createServer` option is Node's own `http.Server`.
+holdIdleConnections(server as Server);
 
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
