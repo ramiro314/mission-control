@@ -16,6 +16,9 @@ import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session } from "@shared/types.ts";
 import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+const WEZTERM_SOCKET = skipOnWin32("the terminal runtime is unavailable on win32; these cases drive its WezTerm adapter over a WezTerm socket fixture whose Unix-socket listen aborts Node there");
 
 // What is at stake: that a terminal backend which CANNOT do something refuses by
 // declaration, rather than doing nothing quietly or typing into the wrong pane.
@@ -221,7 +224,7 @@ test("a nested session is typed into at its innermost pane, never at the tab sho
   assert.ok(argv.some((a) => a.includes("paste-buffer")), "the multiplexer took the paste");
 });
 
-test("a prompt past tmux's command limit still reaches the composer", async (t) => {
+test("a prompt past tmux's command limit still reaches the composer", { skip: WEZTERM_SOCKET }, async (t) => {
   // The bug, from the end a dispatch experiences it. `injectPrompt` is what hands a task's
   // intent to its freshly launched agent, and for a prompt of any size it used to hand the
   // whole thing to `tmux set-buffer -b <buf> -- <text>`. tmux caps total command length far
@@ -273,7 +276,7 @@ test("a prompt past tmux's command limit still reaches the composer", async (t) 
   }
 });
 
-test("a backend with no mode concept is never probed for one", async (t) => {
+test("a backend with no mode concept is never probed for one", { skip: WEZTERM_SOCKET }, async (t) => {
   // A probe that always answers "not in a mode" and a backend that has no such state are
   // the same behaviour and different claims - and the first costs a subprocess per write.
   const socket = await weztermSocketFixture();
