@@ -22,6 +22,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { processLifetime } from "../../src/server/platform/process-lifetime.ts";
 import { freeLoopbackPort, type DaemonHandle } from "./daemon.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -50,8 +51,11 @@ export async function startDevDashboard(daemon: DaemonHandle): Promise<DevDashbo
 
   // Node running Vite's own entry, not `npx vite`: an `npx` wrapper is a process whose child
   // holds the port, so killing what we spawned left the server - and the port - behind for
-  // the next run. `detached` puts Vite and the esbuild service it spawns in one process
-  // group, which is what `stop()` signals.
+  // the next run. Vite is started as the root of its own process tree, with the esbuild
+  // service it spawns inside it, and `stop()` ends that tree. Through `processLifetime`
+  // rather than a negated pid, because win32 has no process groups: there `kill(-pid)`
+  // threw ESRCH into an empty catch, and every spec on this fixture left a live Vite server
+  // and its file watchers running for the rest of the shard.
   const child: ChildProcess = spawn(
     process.execPath,
     [
@@ -63,6 +67,7 @@ export async function startDevDashboard(daemon: DaemonHandle): Promise<DevDashbo
       "--strictPort",
     ],
     {
+      ...processLifetime.treeRootOptions,
       cwd: REPO_ROOT,
       env: {
         ...process.env,
@@ -70,7 +75,6 @@ export async function startDevDashboard(daemon: DaemonHandle): Promise<DevDashbo
         MISSION_HOME: daemon.home,
       },
       stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
     },
   );
   child.stdout?.on("data", (chunk: Buffer) => (log += chunk.toString()));
@@ -79,15 +83,8 @@ export async function startDevDashboard(daemon: DaemonHandle): Promise<DevDashbo
   let exited: { code: number | null; signal: string | null } | null = null;
   child.on("exit", (code, signal) => (exited = { code, signal }));
 
-  const stop = (): void => {
-    if (!child.pid) return;
-    try {
-      // The GROUP, negated - see `detached` above.
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // Already gone, which is the same end state.
-    }
-  };
+  // The whole tree - see the spawn above. Never throws; an exited tree is the same end state.
+  const stop = (): void => processLifetime.killTree(child);
 
   // Fetched rather than TCP-probed. A listening socket is not a served application: Vite
   // binds before its first transform, and a spec that navigated in that window would read

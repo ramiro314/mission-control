@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { WorkflowRunSummary } from "../../src/shared/workflow.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -240,6 +241,61 @@ function refuseOneDelivery(daemon: DaemonHandle, runId: string, sessionId: strin
       submission.created_at,
     );
   });
+}
+
+type RunFrameWindow = Window & {
+  runFrameStream?: EventSource;
+  runFrames?: Map<string, WorkflowRunSummary>;
+};
+
+/**
+ * Keep the dashboard's stream, and the newest summary it delivered for every run.
+ *
+ * Reloads, because an init script only runs on a new document and the fixture has already
+ * loaded the one this spec would otherwise reach by a hash-only `goto`.
+ */
+async function observeRunFrames(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, config?: EventSourceInit) {
+        super(url, config);
+        if (String(url) !== "/events") return;
+        const state = window as RunFrameWindow;
+        state.runFrameStream = this;
+        state.runFrames ??= new Map();
+        this.addEventListener("message", (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type === "snapshot") {
+            for (const run of message.workflowRunSummaries) state.runFrames!.set(run.id, run);
+          } else if (message.type === "workflow_run_upsert") {
+            state.runFrames!.set(message.run.id, message.run);
+          }
+        });
+      }
+    };
+  });
+  await page.reload();
+}
+
+/**
+ * Deliver the run once more, a millisecond newer, the way any later update to it arrives.
+ *
+ * Every newer `updatedAt` reloads the ladder's stage detail, and while that loads the ladder's
+ * section is replaced by a placeholder, so the one that comes back is a new element. On a busy
+ * Windows runner the spotlight was left framing a ladder that had been replaced; this replaces
+ * it on purpose instead of waiting for a run update to land at the wrong moment.
+ */
+async function redeliverRun(page: Page, runId: string): Promise<void> {
+  await page.evaluate((id) => {
+    const state = window as RunFrameWindow;
+    const run = state.runFrames?.get(id);
+    if (!state.runFrameStream || !run) throw new Error(`the dashboard never received run ${id}`);
+    const newer = { ...run, updatedAt: run.updatedAt + 1 };
+    state.runFrameStream.dispatchEvent(new MessageEvent("message", {
+      data: JSON.stringify({ type: "workflow_run_upsert", run: newer }),
+    }));
+  }, runId);
 }
 
 async function builtinVersionId(daemon: DaemonHandle): Promise<string> {
@@ -618,6 +674,7 @@ test("a finished built-in run is walked in Runs and then in its session's Workfl
 }) => {
   await dashboard.emulateMedia({ reducedMotion: "reduce" });
   await dashboard.setViewportSize({ width: 1440, height: 900 });
+  await observeRunFrames(dashboard);
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   const sessionId = await dispatchSession(dashboard, daemon, "hold a session for the Library tour");
   const runId = await seedTerminalRun(
@@ -657,6 +714,12 @@ test("a finished built-in run is walked in Runs and then in its session's Workfl
   await expect.poll(() => hash(dashboard)).toBe("#/fleet");
   const ladder = dashboard.getByRole("region", { name: /workflow stages$/ });
   await expect(ladder).toBeVisible({ timeout: 30_000 });
+  await expect(ladder).toHaveCSS("outline-width", "2px");
+  // The spotlight follows the ladder when a run update replaces it, rather than framing the
+  // element that was detached.
+  const spotlit = await ladder.elementHandle();
+  await redeliverRun(dashboard, runId);
+  await expect.poll(() => spotlit!.evaluate((element) => element.isConnected)).toBe(false);
   await expect(ladder).toHaveCSS("outline-width", "2px");
   await expect(dialog).not.toContainText("no longer live");
   await shoot(dashboard, "08-session-ladder");

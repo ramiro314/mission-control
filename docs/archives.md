@@ -574,6 +574,13 @@ the exact key's bundle from `.trash` before it reports success, including after 
 An interrupted deletion is finished on the next start. A bundle under the legacy root is
 trashed inside that root, so the durable step stays a rename within one directory tree.
 
+On win32 a directory cannot be renamed while any file inside it is open, and something often
+has one open for a moment: the daemon still closing an artifact response the dashboard
+abandoned, or the virus scanner reading a file that was just written. That rename, and the
+rename that publishes a captured bundle, therefore retry `EPERM`, `EACCES` and `EBUSY` for up
+to five seconds while the destination is still absent, before reporting the refusal
+(`src/server/platform/settling-rename.ts`). Other platforms rename once.
+
 This removes **a local file and its index rows**, retaining its local capture deletion marker.
 It touches no task, no session, and no repository, and it makes no claim about copies
 elsewhere: a two-way sync tool may propagate

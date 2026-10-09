@@ -44,6 +44,25 @@ test("transient ingress failure retries without another gesture and stops after 
   assert.equal(new Set(attempts.map((r) => r.body)).size, 1, "retries retain the record and timestamp");
 });
 
+test("a slow ingress answer is waited for, not abandoned as a failed attempt", async (t) => {
+  // Real time: the attempt's deadline is an AbortSignal timer, which mocked timers do not reach.
+  const outcomes: string[] = [];
+  t.mock.method(globalThis, "fetch", (_path: string, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const answered = setTimeout(() => {
+      outcomes.push("answered");
+      resolve(new Response("{}", { status: 200 }));
+    }, 2_500);
+    init.signal?.addEventListener("abort", () => {
+      clearTimeout(answered);
+      outcomes.push("aborted");
+      reject(init.signal!.reason);
+    });
+  }));
+  featureAction("files", "enter");
+  await flushExperience();
+  assert.deepEqual(outcomes, ["answered"], "a development proxy on a loaded machine answers this slowly");
+});
+
 test("reader visits survive StrictMode replay and count again after a real departure", async (t) => {
   const records: string[] = [];
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });

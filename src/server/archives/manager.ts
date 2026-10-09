@@ -1,7 +1,7 @@
 import { verifyArchiveBundle } from "./bundle.ts";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rm, rmdir, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
@@ -43,6 +43,7 @@ import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/promp
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
 import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
+import { settlingRename } from "../platform/settling-rename.ts";
 
 /**
  * The daemon's one owner of the archive library.
@@ -194,7 +195,7 @@ export class ArchiveManager {
     this.titleStore = options.titleStore ?? new ArchiveTitleStore(this.libraryPath);
     this.captureStore = options.captureStore ?? new ArchiveCaptureStore();
     this.tasks = options.tasks ?? null;
-    this.renameDir = options.rename ?? ((from, to) => rename(from, to));
+    this.renameDir = options.rename ?? ((from, to) => settlingRename(from, to));
     this.afterSubmissionAttribution = options.afterSubmissionAttribution;
     this.handToTarget = options.openTarget ?? openFile;
     this.log =
