@@ -227,7 +227,7 @@ test("ownership contention refuses startup before the state database is touched"
 
 test("ownership contention leaves the live daemon's in-flight terminal resume alone", {
   skip: skipOnWin32(
-    "seeds a terminal-runtime resume lease, whose directory check pins POSIX uid and mode bits; the terminal runtime is unavailable on win32",
+    "seeds a terminal-runtime resume lease; the terminal runtime is unavailable on win32",
   ),
 }, async () => {
   const home = join(root, "untouched-resume");

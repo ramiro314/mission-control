@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+  readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { syncDirectory } from "../platform/durable-sync.ts";
+import { privateToCurrentUser } from "../platform/private-storage.ts";
+import { settledRenameSync } from "../platform/settled-rename.ts";
 import { physicalPathSync } from "../util/physical-path.ts";
 
 /** Credential lifetime only. This journal never owns a task, binding, or database. */
@@ -27,24 +30,19 @@ export interface ResumeLeaseStatus {
 export const RESUME_START_MS = 120_000;
 const ID = /^[a-f0-9-]{36}$/;
 
-function syncDirectory(path: string): void {
-  const fd = openSync(path, "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-}
-
 /** Publish whole private records, including after a process or machine crash. */
 export function writeResumeRecord(path: string, value: unknown): void {
   const tmp = `${path}.${randomUUID()}.tmp`;
   const fd = openSync(tmp, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(tmp, path);
+  settledRenameSync(tmp, path);
   syncDirectory(dirname(path));
 }
 
 function directory(path: string): void {
   const info = lstatSync(path);
   if (!info.isDirectory() || info.isSymbolicLink() || physicalPathSync(path) !== path
-    || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
+    || !privateToCurrentUser(info)) {
     throw new Error("unsafe managed resume directory; retained for inspection");
   }
 }
@@ -56,7 +54,7 @@ function record<T>(path: string): T | null {
     throw error;
   }
   if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024
-    || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
+    || !privateToCurrentUser(info)) {
     throw new Error("unsafe managed resume record; retained for inspection");
   }
   return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -207,7 +205,7 @@ export function createResumeLease(root: string, conversation: string, preparing:
   mkdirSync(staging, { mode: 0o700 });
   try {
     writeResumeRecord(join(staging, "lease.json"), lease);
-    renameSync(staging, dir);
+    settledRenameSync(staging, dir);
     syncDirectory(dirname(dir));
   } finally { rmSync(staging, { recursive: true, force: true }); }
   preparing.add(id);

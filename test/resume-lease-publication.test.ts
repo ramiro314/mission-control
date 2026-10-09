@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { createResumeLease, reconcileResumeLeases, resumeLeaseRoot, revokeResumeLease } from "../src/server/terminal/resume-lease.ts";
@@ -20,7 +20,7 @@ for (const operation of ["write", "publish"] as const) test(`failed lease ${oper
       return originalOpen(...args);
     })
     : t.mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
-      if (String(args[1]).startsWith(join(root, "leases") + "/")) throw injected;
+      if (String(args[1]).startsWith(join(root, "leases") + sep)) throw injected;
       return originalRename(...args);
     });
   syncBuiltinESMExports();
