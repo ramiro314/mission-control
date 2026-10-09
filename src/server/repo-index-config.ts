@@ -92,9 +92,19 @@ export function isFilesystemRoot(
  * Whether a configured path names a filesystem root, as written or once canonical. Both are
  * asked because each can hide the other: a symlink to `/` is only a root once followed, and a
  * `subst` drive's root is only a root as written, since its realpath is the folder it maps.
+ * The path API and the canonicalizer are parameters so both cases can be tested from any
+ * platform without a real link or drive mapping.
  */
-export function namesFilesystemRoot(path: string): boolean {
-  return isFilesystemRoot(resolve(expandHome(path.trim()))) || isFilesystemRoot(canonicalize(path));
+export function namesFilesystemRoot(
+  path: string,
+  deps: {
+    pathApi: { parse: typeof parse; resolve: typeof resolve };
+    canonicalize: (path: string) => string;
+  } = { pathApi: { parse, resolve }, canonicalize },
+): boolean {
+  const { pathApi } = deps;
+  return isFilesystemRoot(pathApi.resolve(expandHome(path.trim())), pathApi)
+    || isFilesystemRoot(deps.canonicalize(path), pathApi);
 }
 
 /** Whether scanning a path would reach the operator's home or a whole volume. */

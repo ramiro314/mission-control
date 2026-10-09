@@ -42,10 +42,13 @@ process.env.MISSION_HOME = stateHome;
 Object.assign(process.env, osHomeEnv(operatorHome));
 for (const name of WORKSPACE_ENV_NAMES) delete process.env[name];
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, setAppConfig } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { invalidateReposCache } = await import("../src/server/repos.ts");
-const { isFilesystemRoot } = await import("../src/server/repo-index-config.ts");
+const { indexedDirectories, isFilesystemRoot, namesFilesystemRoot } = await import(
+  "../src/server/repo-index-config.ts"
+);
+const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 
 const app = buildApp({
   registry: {} as Registry,
@@ -202,6 +205,61 @@ test("every filesystem root is broad, whichever drive or share it names", () => 
   assert.equal(isFilesystemRoot("\\\\server\\share\\", path.win32), true);
   assert.equal(isFilesystemRoot("D:\\code", path.win32), false);
   assert.equal(isFilesystemRoot("\\\\server\\share\\code", path.win32), false);
+});
+
+test("a filesystem root is named as written or once canonical, whichever hides it", () => {
+  const win32 = (links: Record<string, string>) => ({
+    pathApi: path.win32,
+    canonicalize: (p: string) => links[path.win32.resolve(p)] ?? path.win32.resolve(p),
+  });
+  // A `subst` drive: its realpath is the folder it maps, so only the spelling is a root.
+  assert.equal(namesFilesystemRoot("W:\\", win32({ "W:\\": "C:\\Users\\me\\work" })), true);
+  // A link to another drive: only the canonical path is a root.
+  assert.equal(namesFilesystemRoot("C:\\Users\\me\\d", win32({ "C:\\Users\\me\\d": "D:\\" })), true);
+  assert.equal(namesFilesystemRoot("\\\\server\\share\\", win32({})), true);
+  assert.equal(namesFilesystemRoot("C:\\Users\\me\\code", win32({})), false);
+
+  const posix = (links: Record<string, string>) => ({
+    pathApi: path.posix,
+    canonicalize: (p: string) => links[path.posix.resolve(p)] ?? path.posix.resolve(p),
+  });
+  assert.equal(namesFilesystemRoot("/srv/everything", posix({ "/srv/everything": "/" })), true);
+  assert.equal(namesFilesystemRoot("/srv/code", posix({})), false);
+});
+
+test("a filesystem root that is not above home is refused, reported unsafe, and never scanned", async () => {
+  // On win32 home moves to a drive letter other than the temp directory's, so that drive's
+  // root is not an ancestor of home on any machine's layout and only the drive-root guard can
+  // refuse it. On POSIX every filesystem root is `/`, which is always above home, so the same
+  // three doors refuse it through the home check instead.
+  const tempRoot = path.parse(realpathSync.native(tmpdir())).root;
+  const win32 = process.platform === "win32";
+  const otherDrive = tempRoot.slice(0, 1).toUpperCase() === "Z" ? "Y" : "Z";
+  const home = win32 ? `${otherDrive}:\\operator` : operatorHome;
+  const refusal = win32 ? /is the root of a drive/ : /at or above your home directory/;
+  // Bound the walk, so a regression that let the root through reads one directory, not a disk.
+  const previousDepth = process.env.MISSION_REPOS_MAX_DEPTH;
+  process.env.MISSION_REPOS_MAX_DEPTH = "0";
+  Object.assign(process.env, osHomeEnv(home));
+  try {
+    // 1. Saving it.
+    const res = await putDirectories([tempRoot]);
+    assert.equal(res.status, 400, `expected ${tempRoot} to be refused`);
+    assert.match((await res.json() as { error: string }).error, refusal);
+
+    // 2 and 3. A row already saved, as an older build or a hand edit could leave it.
+    setAppConfig(APP_CONFIG_ENTRIES.repoIndex, { directories: [{ path: tempRoot }] });
+    invalidateReposCache();
+    assert.deepEqual(indexedDirectories(), [], "discovery never walks the root");
+    const row = (await getView()).directories[0];
+    assert.equal(row?.path, tempRoot);
+    assert.equal(row?.status, "unsafe");
+    assert.equal(row?.repoCount, null);
+  } finally {
+    Object.assign(process.env, osHomeEnv(operatorHome));
+    if (previousDepth === undefined) delete process.env.MISSION_REPOS_MAX_DEPTH;
+    else process.env.MISSION_REPOS_MAX_DEPTH = previousDepth;
+  }
 });
 
 test("a removed default and an intentionally empty list survive a re-read", async () => {
