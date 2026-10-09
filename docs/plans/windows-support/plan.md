@@ -294,6 +294,28 @@ POSIX implementation issues the same commands it did before.
    first confirms whether a reliable win32 source exists. If none does, the win32
    `readProcCwdsSnapshot` returns its existing `unknownReason`, which destructive callers
    already treat as unsafe to proceed, and the ticket records that choice.
+   **Outcome (issue #372):** a source exists. The `native/process-inspection` addon reads each
+   process's cwd from its PEB (`CurrentDirectory.DosPath`, with the 32-bit layout for WOW64), and
+   scopes by user by comparing each process token's SID with the daemon's own. Both were measured
+   on Windows 11 25H2 (build 26200, x64) across a 478-process desktop session. Every same-user
+   process the addon could open answered a well-formed path, and a read that breaks a layout
+   invariant fails for that pid rather than answering a path. The same measurement found 17 of
+   320 same-user processes that refuse `PROCESS_VM_READ`: 11 run at high integrity (elevated or
+   UIAccess), and the rest are processes whose own DACL refuses memory reads (1Password). Their
+   cwds cannot be read without elevation, so they stay in scope and leave occupancy unknown. On
+   such a host the cwd read alone never proves a slot idle. It names occupants wherever it can
+   read them. **The rename probe from task `90865459` therefore stays as a second check**, run
+   for exactly the slots the cwd read leaves unknown: a slot directory that renames away and
+   back is held by no process, the unreadable ones included. Neither check replaces the other.
+   Scope where Windows will not name an owner was decided by the human in review, against the
+   issue's stricter "outside scope only when another user is proven". On the measured session,
+   156 processes (System, csrss, services, svchost and the like) refuse even `OpenProcess`.
+   Windows reports no SID for any of them, so counting them would leave occupancy unknown for
+   every daemon that is not elevated. They are out of scope, and the residual risk is a process
+   of this user that hardens its own DACL against limited information. A process that opens
+   but refuses its token counts as this user's in the daemon's own logon session (two such
+   `SamsungMagician.exe` processes were measured beside two this user owned). It counts as
+   another user's in any other session (`audiodg.exe`, LOCAL SERVICE, session 0).
 5. **State home and paths** (D22): resolve `%USERPROFILE%\.mission-control`, and audit for
    string-concatenated `/` paths, `/tmp`, and POSIX file modes on that branch.
 6. **Harness availability** (D10, D20): on win32, Claude Code is available. Codex and Pi report

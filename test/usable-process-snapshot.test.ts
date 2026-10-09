@@ -3,24 +3,25 @@ import test from "node:test";
 
 import { usableProcessSnapshot, type ProcessSnapshot } from "../src/server/discovery/processes.ts";
 
-// win32 has no effective uid, so every system-wide listing there is reported unusable after the
-// fact - and on win32 one listing is a PowerShell CIM query over every process.
-test("a host with no effective uid answers unusable without listing anything", async () => {
+// An inspector that cannot tell which processes the daemon's user owns makes every system-wide
+// listing unusable after the fact - and on win32 one listing is a PowerShell CIM query over every
+// process.
+test("a host that cannot scope processes by user answers unusable without listing anything", async () => {
   let listed = 0;
   const snapshot = await usableProcessSnapshot(async () => {
     listed += 1;
     throw new Error("the listing should not run");
-  }, null);
+  }, () => "process owners are unreadable without the native process inspection addon (missing)");
   assert.equal(listed, 0);
   assert.deepEqual(snapshot, {
     processes: [],
-    unknownReason: "process listing failed: effective user identity is unavailable",
+    unknownReason: "process listing failed: process owners are unreadable without the native process inspection addon (missing)",
     cwdScopePids: [],
     completedCollectorPids: [],
   });
 });
 
-test("a host with an effective uid gets the real listing", async () => {
+test("a host that can scope processes by user gets the real listing", async () => {
   const listing: ProcessSnapshot = { processes: [], unknownReason: null, cwdScopePids: [7], completedCollectorPids: [] };
-  assert.equal(await usableProcessSnapshot(async () => listing, () => 501), listing);
+  assert.equal(await usableProcessSnapshot(async () => listing, () => null), listing);
 });

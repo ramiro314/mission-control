@@ -1,5 +1,5 @@
 import type { RunResult } from "../util/exec.ts";
-import { processInspector } from "../process-inspection/index.ts";
+import { processInspector, type ProcessInspector } from "../process-inspection/index.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
 import type { Harness } from "../harness/types.ts";
@@ -283,13 +283,15 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
-  const table = await processInspector().listProcesses();
+export async function listProcessesSnapshot(
+  inspector: ProcessInspector = processInspector(),
+): Promise<ProcessSnapshot> {
+  const table = await inspector.listProcesses();
+  const scopeUnavailable = inspector.userScopeUnavailable();
   const procs: Proc[] = [];
   const cwdScopePids: number[] = [];
-  const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
   for (const row of table.rows) {
-    if (effectiveUid !== null && row.uid === effectiveUid && !row.state.startsWith("Z")) cwdScopePids.push(row.pid);
+    if (row.ownedByDaemonUser && !row.state.startsWith("Z")) cwdScopePids.push(row.pid);
     const match = matchAgent(row.command);
     procs.push({
       pid: row.pid,
@@ -306,29 +308,35 @@ export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
     processes: procs,
     unknownReason: table.failure
       ? `process listing failed: ${describeFailure(table.failure)}`
-      : effectiveUid === null
-        ? NO_EFFECTIVE_UID
+      : scopeUnavailable
+        ? `process listing failed: ${scopeUnavailable}`
         : null,
     cwdScopePids,
     completedCollectorPids: table.collectorPids,
   };
 }
 
-const NO_EFFECTIVE_UID = "process listing failed: effective user identity is unavailable";
-
 /**
  * `listProcessesSnapshot` for a caller that uses a snapshot only when `unknownReason` is null.
  *
- * Without an effective uid (win32) every snapshot is unusable, which is known before listing
- * anything, so this answers that reason at once instead of running the listing just to discard
- * it. On win32 that listing is a PowerShell CIM query over every process on the machine.
+ * An inspector that cannot tell which processes the daemon's user owns makes every snapshot
+ * unusable, and that is known before listing anything, so this answers the reason at once
+ * instead of running the listing just to discard it. On win32 that is a daemon whose native
+ * process inspection addon did not load, where the listing is a PowerShell CIM query over every
+ * process on the machine.
  */
 export async function usableProcessSnapshot(
   list: () => Promise<ProcessSnapshot> = listProcessesSnapshot,
-  geteuid: (() => number) | null = process.geteuid ?? null,
+  scopeUnavailable: () => string | null = () => processInspector().userScopeUnavailable(),
 ): Promise<ProcessSnapshot> {
-  if (typeof geteuid !== "function") {
-    return { processes: [], unknownReason: NO_EFFECTIVE_UID, cwdScopePids: [], completedCollectorPids: [] };
+  const reason = scopeUnavailable();
+  if (reason) {
+    return {
+      processes: [],
+      unknownReason: `process listing failed: ${reason}`,
+      cwdScopePids: [],
+      completedCollectorPids: [],
+    };
   }
   return await list();
 }
