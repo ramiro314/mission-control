@@ -8,13 +8,14 @@
  * flag from the script therefore turns the rename case `true` and fails it.
  *
  * `ci-result.sh` reads its input with the machine's own `jq`. Its cases skip without it, saying
- * so, and a CI run without it fails instead (`jqSkip`).
+ * so, and a CI run without it fails instead (`jqSkip`). One case swaps in a `jq` stub that
+ * answers in CRLF lines, as `jq` on Windows does, so every platform holds the script to them.
  *
  * The last case feeds `decideWaitForCi` the check list a docs-only run produces.
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,6 +193,24 @@ test("ci-result: an unreadable or empty NEEDS_JSON fails", JQ, () => {
     assert.equal(r.code, 1, `${JSON.stringify(json)}: ${r.stdout}`);
     assert.match(r.stdout, /::error::CI result: NEEDS_JSON/);
   }
+});
+
+/** A `jq` stub first on `PATH` that answers `STUB_JQ_OUT`, whatever it is asked. */
+const crlfJq = join(dir, "crlf-jq");
+mkdirSync(crlfJq);
+writeFileSync(join(crlfJq, "jq"), `#!/bin/sh\ncat > /dev/null\nprintf '%s' "$STUB_JQ_OUT"\n`);
+chmodSync(join(crlfJq, "jq"), 0o755);
+
+test("ci-result: reads jq's CRLF lines, as jq on Windows writes them, the way it reads LF", () => {
+  const crlf = (results: Record<string, string>) => ALL.map((job) => `${job} ${results[job] ?? "success"}\r\n`).join("");
+  const pass = runBashScript(CI_RESULT, [], crlfJq, { STUB_JQ_OUT: crlf(DOCS_ONLY_SKIPS), DOCS_ONLY: "true", SKIPPABLE });
+  assert.equal(pass.status, 0, pass.stdout);
+  assert.match(pass.stdout, /^gates: skipped \(docs-only change\)$/m);
+  assert.match(pass.stdout, /^flake-report: success$/m);
+
+  const fail = runBashScript(CI_RESULT, [], crlfJq, { STUB_JQ_OUT: crlf({ e2e: "cancelled" }), DOCS_ONLY: "false", SKIPPABLE });
+  assert.equal(fail.status, 1, fail.stdout);
+  assert.deepEqual(fail.stdout.split("\n").filter((l) => l.startsWith("::error::")), ["::error::e2e: cancelled"]);
 });
 
 // ---- Wait for CI ---------------------------------------------------------------------------
