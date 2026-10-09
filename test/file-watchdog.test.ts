@@ -9,9 +9,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const WATCHDOG = fileURLToPath(new URL("./file-watchdog.mjs", import.meta.url));
+// A URL, not a path: `--import` resolves its argument as a module specifier, and on win32 an
+// absolute path like `C:\...` reads as a URL with the scheme `c:`, which Node refuses.
+const WATCHDOG = new URL("./file-watchdog.mjs", import.meta.url).href;
 
 test("a file that outlives its budget is ended and named, and the run still reports", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "mission-file-watchdog-"));

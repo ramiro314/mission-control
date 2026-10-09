@@ -912,9 +912,13 @@ test("removing a task never removes its archive", async () => {
 test("a ship task's cleanup does no archive work at all", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
-  const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "failed", worktreePath: cwd, repoRoot: cwd });
+  // The checkout the worktree came from, as for a real task. Naming the worktree itself runs
+  // `git -C <worktree> worktree remove <worktree>` from inside the directory it deletes, which
+  // win32 refuses.
+  const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "failed", worktreePath: cwd, repoRoot });
   h.registry.upsertTask(task);
-  assert.equal((await h.tasks.reclaim(task.id)).ok, true);
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, true, reclaimed.error);
   assert.equal(h.scouts.captureJobsForTask(task.id).length, 0);
 });
 
