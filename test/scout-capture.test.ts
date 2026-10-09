@@ -465,9 +465,15 @@ test("a companion directory swap cannot redirect discovery outside the checkout"
 test("a submitted report with a symlinked companion is refused rather than called complete", async () => {
   const outside = mkdirp(join(home, "companion-target"));
   writeFileSync(join(outside, "secret.txt"), "not yours");
+  // A name the disk holds and the bundle cannot. `\` is a separator on win32, so no file there
+  // can carry one; DEL is a legal NTFS name character, and the checkout resolver refuses it
+  // before the archive path check is reached, with its own reason.
+  const win32 = process.platform === "win32";
+  const unrepresentable = win32 ? "bad\u007fname.txt" : "bad\\name.txt";
+  const refusal = win32 ? "contains characters a path cannot carry" : "cannot be represented";
   const root = makeCheckout({
     "docs/reports/resume/report.html": validReportHtml(),
-    "docs/reports/resume/bad\\name.txt": "cannot be represented in a bundle",
+    [`docs/reports/resume/${unrepresentable}`]: "cannot be represented in a bundle",
   });
   symlinkSync(join(outside, "secret.txt"), join(root, "docs/reports/resume/linked.txt"));
 
@@ -476,8 +482,10 @@ test("a submitted report with a symlinked companion is refused rather than calle
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.equal(outcome.problems.length, 2, "every automatically omitted companion is a problem");
-  assert.match(outcome.problems.join(" "), /docs\/reports\/resume\/linked\.txt.*symbolic link/);
-  assert.match(outcome.problems.join(" "), /bad\\name\.txt.*cannot be represented/);
+  const problems = outcome.problems.join(" ");
+  assert.match(problems, /docs\/reports\/resume\/linked\.txt.*symbolic link/);
+  const named = problems.indexOf(`resume/${unrepresentable}:`);
+  assert.ok(named >= 0 && problems.indexOf(refusal, named) > named, problems);
   const read = await verifyArchiveBundle(library, {
     producerId: PRODUCER,
     archiveId: job.archiveId,

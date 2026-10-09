@@ -18,6 +18,8 @@ import {
   expandHome,
   getRepoIndexConfig,
   indexedDirectories,
+  isTooBroadToScan,
+  namesFilesystemRoot,
   repositoryIndexEnvironmentOverride,
   resolvesAtOrAboveHome,
   validateIndexedDirectories,
@@ -115,7 +117,7 @@ async function directoryView(
     };
   }
 
-  if (enforceSavedSafety && resolvesAtOrAboveHome(resolved)) {
+  if (enforceSavedSafety && isTooBroadToScan(path, resolved)) {
     return {
       path,
       resolved,
@@ -173,6 +175,8 @@ export {
   expandHome,
   getRepoIndexConfig,
   indexedDirectories,
+  isTooBroadToScan,
+  namesFilesystemRoot,
   resolvesAtOrAboveHome,
   validateIndexedDirectories,
 };

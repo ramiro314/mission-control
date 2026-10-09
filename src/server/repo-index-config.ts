@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, relative, resolve, sep } from "node:path";
+import { delimiter, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   MAX_INDEXED_DIRECTORIES,
@@ -74,6 +74,51 @@ export function resolvesAtOrAboveHome(path: string): boolean {
       && !fromPathToHome.startsWith(`..${sep}`));
 }
 
+/**
+ * Whether an absolute path is the root of a filesystem: `/`, a win32 drive root such as `D:\`,
+ * or a UNC share root. Scanning one walks a whole volume. On POSIX `/` is always at or above
+ * home, so this adds nothing there. A win32 drive root need not be: with a checkout on `D:`
+ * and the home on `C:`, `/` resolves to `D:\`, which is not an ancestor of the home. The path
+ * API is a parameter so a win32 spelling can be tested from any platform.
+ */
+export function isFilesystemRoot(
+  absolute: string,
+  pathApi: { parse: typeof parse } = { parse },
+): boolean {
+  return pathApi.parse(absolute).root === absolute;
+}
+
+/**
+ * Whether a configured path names a filesystem root, as written or once canonical. Both are
+ * asked because each can hide the other: a symlink to `/` is only a root once followed, and a
+ * `subst` drive's root is only a root as written, since its realpath is the folder it maps.
+ * The path API and the canonicalizer are parameters so both cases can be tested from any
+ * platform without a real link or drive mapping.
+ */
+export function namesFilesystemRoot(
+  path: string,
+  deps: {
+    pathApi: { parse: typeof parse; resolve: typeof resolve };
+    canonicalize: (path: string) => string;
+  } = { pathApi: { parse, resolve }, canonicalize },
+): boolean {
+  const { pathApi } = deps;
+  return isFilesystemRoot(pathApi.resolve(expandHome(path.trim())), pathApi)
+    || isFilesystemRoot(deps.canonicalize(path), pathApi);
+}
+
+/**
+ * The one read-time answer to whether a saved row is too broad to touch: it resolves at or
+ * above home, or it names a filesystem root. Discovery skips such a row and Settings reports
+ * it unsafe, and both ask here so the two can never disagree. `canonical` is the row as it
+ * resolves now, which carries the home check; `savedPath` is the row as saved, which the
+ * drive-root check needs because a `subst` root is a root only as written.
+ * `validateIndexedDirectories` asks the two legs separately, to word each refusal.
+ */
+export function isTooBroadToScan(savedPath: string, canonical: string): boolean {
+  return resolvesAtOrAboveHome(canonical) || namesFilesystemRoot(savedPath);
+}
+
 /** Validate the whole list so duplicate and broad-root checks compare canonical paths. */
 export function validateIndexedDirectories(rows: readonly IndexedDirectory[]): void {
   if (rows.length > MAX_INDEXED_DIRECTORIES) {
@@ -98,6 +143,11 @@ export function validateIndexedDirectories(rows: readonly IndexedDirectory[]): v
         `"${path}" is at or above your home directory. Name the folder that holds your checkouts.`,
       );
     }
+    if (namesFilesystemRoot(path)) {
+      throw new RepoIndexConfigError(
+        `"${path}" is the root of a drive. Name the folder that holds your checkouts.`,
+      );
+    }
     const duplicate = seen.get(canonical);
     if (duplicate !== undefined) {
       throw new RepoIndexConfigError(
@@ -118,8 +168,9 @@ export function indexedDirectories(): string[] {
   for (const row of getRepoIndexConfig().directories) {
     const canonical = canonicalize(row.path);
     // A missing path can become a symlink after it was saved. Reapply the broad-root guard
-    // at read time so that filesystem change cannot turn a safe deferred row into a home scan.
-    if (!resolvesAtOrAboveHome(canonical)) roots.add(canonical);
+    // at read time so that filesystem change cannot turn a safe deferred row into a home or
+    // whole-volume scan.
+    if (!isTooBroadToScan(row.path, canonical)) roots.add(canonical);
   }
   return [...roots];
 }

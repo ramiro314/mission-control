@@ -91,9 +91,9 @@ export function diffFileOpenTarget(
     return { path: null, reason: "This file's path cannot be resolved in the checkout." };
   }
 
-  // Git spells its toplevel with "/" on every host (`C:/work/repo` on win32), while the
-  // session's cwd is native (`C:\work\repo`), so the two meet through the shared
-  // component-boundary rule rather than a string prefix.
+  // The daemon reports the toplevel natively (`C:\work\repo` on win32), but the patch's
+  // paths always use "/", so the joined path mixes separators. It meets the native cwd
+  // through the shared component-boundary rule rather than a string prefix.
   const path = subpathWithin(`${stripTrailingSeparator(repoRoot)}/${file.path}`, cwd);
   if (!path) {
     return {

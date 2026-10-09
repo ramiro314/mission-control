@@ -113,7 +113,9 @@ test("resolveTaskRepoRoot refuses a checkout with no reachable main checkout", a
   assert.match(refusal.ok ? "" : refusal.error, /not a repo's main checkout/);
   // The sentence has to name the path, since the caller is usually an agent passing its
   // own cwd and has no other way to tell which of its arguments was wrong.
-  assert.match(refusal.ok ? "" : refusal.error, new RegExp(realpathSync(tree)));
+  // A substring test, not a RegExp: a win32 path is full of `\`, which a pattern reads as escapes.
+  const named = refusal.ok ? "" : refusal.error;
+  assert.ok(named.includes(realpathSync(tree)), `${named} should name ${realpathSync(tree)}`);
 });
 
 test("MCP create_task from inside a pooled worktree files against the repo that owns it", async () => {

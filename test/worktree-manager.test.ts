@@ -219,12 +219,25 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     assertUnknown(inspected, step);
   }
 
-  const added = await new NativeWorktreeGit(async () => unknown()).add(
+  // On win32 the add first makes sure of `core.longpaths`, so that probe answers here and the
+  // add itself is the step that dies. The platform is named so both orders run everywhere.
+  const longPathsSet = (run: (bin: string, args: string[]) => Promise<RunResult>) =>
+    async (bin: string, args: string[]) =>
+      args.includes("core.longpaths") ? known("true\n") : run(bin, args);
+  for (const platform of ["darwin", "win32"] as const) {
+    const added = await new NativeWorktreeGit(longPathsSet(async () => unknown()), platform).add(
+      identity,
+      join(identity.poolPath, "unknown-add"),
+      sha,
+    );
+    assertUnknown(added, /git worktree add/);
+  }
+  const unconfigured = await new NativeWorktreeGit(async () => unknown(), "win32").add(
     identity,
     join(identity.poolPath, "unknown-add"),
     sha,
   );
-  assertUnknown(added, /git worktree add/);
+  assertUnknown(unconfigured, /git config core\.longpaths/);
 
   // Return fetches only into a repository that already has refs, so every case below
   // answers that probe and lets the step it is about be the one that dies. A probe that

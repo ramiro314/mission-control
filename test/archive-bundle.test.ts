@@ -351,7 +351,8 @@ test("an artifact path is resolved against the bundle, never joined blindly", as
   const root = library("resolve");
   const written = writeScoutBundle(root, {});
   const resolved = await resolveArchiveFile(written.dir, "report/report.html");
-  assert.ok(resolved.endsWith("report/report.html"));
+  // A native path on disk, so the separator is the platform's, not the archive path's `/`.
+  assert.ok(resolved.endsWith(join("report", "report.html")), resolved);
   await assert.rejects(
     () => resolveArchiveFile(written.dir, "../../../etc/passwd"),
     (error: unknown) => error instanceof ArchivePathError,

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { join, sep } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { buildApp } from "../src/server/routes.ts";
 import type { Registry } from "../src/server/registry.ts";
@@ -76,9 +77,10 @@ test("a subdirectory resolves to the repository AND back to itself", async () =>
   // really for: this suite often runs from a linked worktree under `~/.treehouse/`, where a
   // bare realpath answers with a path that is not inside the resolved main root at all, and
   // a caller comparing the two by prefix would discard the subdirectory as "outside".
-  assert.ok(body.path.endsWith("/src/shared"), `expected a src/shared path, got ${body.path}`);
+  // Native paths, so the boundary is the platform's separator.
+  assert.ok(body.path.endsWith(`${sep}${join("src", "shared")}`), `expected a src/shared path, got ${body.path}`);
   assert.ok(
-    body.path.startsWith(`${body.repoRoot}/`),
+    body.path.startsWith(`${body.repoRoot}${sep}`),
     `${body.path} should sit inside ${body.repoRoot}`,
   );
   // The root's own canonical path is the root, so an entry typed there stays repo-wide.

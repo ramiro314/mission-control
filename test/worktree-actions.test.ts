@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
 import { TaskManager } from "../src/server/tasks.ts";
@@ -428,8 +428,10 @@ test("task previews bind attached disposable Git risks outside native inventory"
 
 test("legacy task Return reaches the exact conditional adapter through TaskManager", async () => {
   const registry = new Registry();
-  const repoRoot = "/repo/settings-legacy-task";
-  const path = "/treehouse/settings-legacy-task/repo";
+  // Native absolute paths: the legacy owner rows are read back through `resolve`, which gives
+  // a bare `/repo` a drive on win32, and a stored path must compare equal to its reading.
+  const repoRoot = resolve("/repo/settings-legacy-task");
+  const path = resolve("/treehouse/settings-legacy-task/repo");
   const leaseId = "settings-legacy-lease";
   const calls: string[][] = [];
   let returned = false;
