@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, statSync } from "node:fs";
 import { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } from "../../src/shared/pipeline.ts";
+import { expectedMode } from "./posix-mode.ts";
 
 export function pipelineCredentialFromDescriptor(
   descriptor: { args: string[]; env: Record<string, string> } | null | undefined,
@@ -8,7 +9,7 @@ export function pipelineCredentialFromDescriptor(
   assert.ok(descriptor);
   const path = descriptor.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV];
   assert.ok(path, "the descriptor names its private credential file");
-  assert.equal(statSync(path).mode & 0o077, 0, "the credential file is owner-only");
+  assert.equal(statSync(path).mode & 0o777, expectedMode(0o600), "the credential file is owner-only");
   const parsed = JSON.parse(readFileSync(path, "utf8")) as {
     credential?: unknown;
     expiresAt?: unknown;

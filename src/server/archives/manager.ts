@@ -23,6 +23,7 @@ import { SCOUT_REPORT_PATH_SHAPE, scoutReportDirectory, scoutReportSlug, type Sc
 import type { Session } from "@shared/types.ts";
 import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
+import { renameAllowingHeldHandles } from "../platform/held-handle-rename.ts";
 import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
 import {
   archiveOperationKey,
@@ -43,7 +44,6 @@ import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/promp
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
 import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
-import { settlingRename } from "../platform/settling-rename.ts";
 
 /**
  * The daemon's one owner of the archive library.
@@ -195,7 +195,7 @@ export class ArchiveManager {
     this.titleStore = options.titleStore ?? new ArchiveTitleStore(this.libraryPath);
     this.captureStore = options.captureStore ?? new ArchiveCaptureStore();
     this.tasks = options.tasks ?? null;
-    this.renameDir = options.rename ?? ((from, to) => settlingRename(from, to));
+    this.renameDir = options.rename ?? ((from, to) => renameAllowingHeldHandles(from, to));
     this.afterSubmissionAttribution = options.afterSubmissionAttribution;
     this.handToTarget = options.openTarget ?? openFile;
     this.log =
