@@ -33,8 +33,8 @@ const home = mkdtempSync(join(tmpdir(), "mission-telemetry-dispatch-"));
 // Set before importing anything that resolves the state dir.
 process.env.MISSION_HOME = home;
 // Binaries that exist, so bin resolution is never what fails a launch here.
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_PI_BIN = "/bin/echo";
+process.env.MISSION_CLAUDE_BIN = process.execPath;
+process.env.MISSION_PI_BIN = process.execPath;
 
 const { closeDb, openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
