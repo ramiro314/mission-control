@@ -4,6 +4,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const HELD_TURN = "hold the current turn open";
 const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
@@ -77,6 +78,7 @@ test(`a queued conversation turn is delivered once the ${agent} agent goes idle`
   dashboard,
   daemon,
 }) => {
+  if (agent === "codex") skipSpecOnWin32(test, "Codex is unavailable on win32");
   await dispatch(dashboard, daemon, agent);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
@@ -139,6 +141,7 @@ test(`a queued turn still lands after the ${agent} driver takes a mid-turn messa
   dashboard,
   daemon,
 }) => {
+  if (agent === "codex") skipSpecOnWin32(test, "Codex is unavailable on win32");
   await dispatch(dashboard, daemon, agent);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
@@ -205,6 +208,7 @@ test("a Codex final answer releases a queued turn when later lifecycle notificat
   dashboard,
   daemon,
 }) => {
+  skipSpecOnWin32(test, "Codex is unavailable on win32");
   await dispatch(dashboard, daemon, "codex");
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();

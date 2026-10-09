@@ -927,9 +927,10 @@ export function writeFakeAgents(home: string): FakeAgents {
   // so a spec can widen it without restarting the daemon.
   writeFileSync(piSdkModelsPath(home), JSON.stringify(FAKE_PI_SDK_MODELS, null, 2));
 
-  const cmux = join(binDir, "fake-cmux");
-  writeFileSync(cmux, FAKE_CMUX);
-  chmodSync(cmux, 0o755);
+  // Launchable on win32 too, through its `.exe` launcher. The terminal runtime is unavailable
+  // there (D37), but a spec whose claim is not about a terminal - a reseal path refused before
+  // any argv is composed - still needs a backend that opens when the path is a good one.
+  const cmux = writeFakeExecutable(join(binDir, "fake-cmux"), FAKE_CMUX);
 
   const herdr = join(binDir, "fake-herdr");
   writeFileSync(herdr, FAKE_HERDR);
