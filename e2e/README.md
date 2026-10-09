@@ -119,6 +119,20 @@ step. Each shard tests the `dist/` that `build-smoke-node-24` built and smoked, 
 artifact, rather than building its own. That target is measured, not enforced with a timeout, so a slow run
 retains its complete failure diagnostics.
 
+## The launching session's environment
+
+A run started from inside an agent session, which is how a Mission Control agent runs this
+suite, inherits that session's identity: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, and the
+`MISSION_HOME`, `MISSION_PORT` and `MISSION_API_TOKEN_FILE` Mission Control handed it. Global
+setup deletes those families from the runner's environment before Playwright forks a worker,
+so the workers, every fixture daemon and the agents it launches see what they would see from a
+plain shell. `e2e/launcher-env.ts` lists the families: every `CLAUDE*`, `ANTHROPIC_*`,
+`CODEX_*` and `PI_CODING_AGENT_*` name, and every `MISSION_*`, `FLEET_*` and `HARNESS_*` name
+except the suite's own `MISSION_PLAYWRIGHT_*` settings. The run prints the names it cleared.
+
+A Mission Control setting a spec needs reaches the daemon through `fixtures/daemon.ts` or the spec's
+`daemonEnv`, never through the shell that launched the run.
+
 Useful flags:
 
 ```sh
