@@ -107,6 +107,18 @@ export function namesFilesystemRoot(
     || isFilesystemRoot(deps.canonicalize(path), pathApi);
 }
 
+/**
+ * The one read-time answer to whether a saved row is too broad to touch: it resolves at or
+ * above home, or it names a filesystem root. Discovery skips such a row and Settings reports
+ * it unsafe, and both ask here so the two can never disagree. `canonical` is the row as it
+ * resolves now, which carries the home check; `savedPath` is the row as saved, which the
+ * drive-root check needs because a `subst` root is a root only as written.
+ * `validateIndexedDirectories` asks the two legs separately, to word each refusal.
+ */
+export function isTooBroadToScan(savedPath: string, canonical: string): boolean {
+  return resolvesAtOrAboveHome(canonical) || namesFilesystemRoot(savedPath);
+}
+
 /** Validate the whole list so duplicate and broad-root checks compare canonical paths. */
 export function validateIndexedDirectories(rows: readonly IndexedDirectory[]): void {
   if (rows.length > MAX_INDEXED_DIRECTORIES) {
@@ -158,7 +170,7 @@ export function indexedDirectories(): string[] {
     // A missing path can become a symlink after it was saved. Reapply the broad-root guard
     // at read time so that filesystem change cannot turn a safe deferred row into a home or
     // whole-volume scan.
-    if (!resolvesAtOrAboveHome(canonical) && !namesFilesystemRoot(row.path)) roots.add(canonical);
+    if (!isTooBroadToScan(row.path, canonical)) roots.add(canonical);
   }
   return [...roots];
 }
