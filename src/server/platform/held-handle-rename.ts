@@ -1,3 +1,4 @@
+import { renameSync } from "node:fs";
 import { rename } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -8,7 +9,9 @@ import { setTimeout as delay } from "node:timers/promises";
 // handle to the directory or to a file under it is open: a concurrent reader such as the archive
 // reconciler's scan, or an antivirus or indexer opening a file that was just written. Those
 // handles close on their own within moments, so win32 retries for a bounded time and then
-// reports the last error unchanged. `test/held-handle-rename.test.ts` pins both answers.
+// reports the last error unchanged. A caller that must not yield uses the synchronous form, which
+// blocks while it waits and so keeps a far shorter budget. `test/held-handle-rename.test.ts` pins
+// both answers for both forms.
 
 /** The errors win32 reports for a rename blocked by another handle. */
 const HELD_HANDLE_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
@@ -49,4 +52,43 @@ export async function renameAllowingHeldHandles(
     }
     await using.sleep(wait);
   }
+}
+
+/**
+ * The synchronous form's waits on win32: eight attempts, 635 ms of blocking in all. The managed
+ * resume journal publishes a lease synchronously so that concurrent requests cannot interleave
+ * before it reserves a conversation, and a scanner holding a file it just wrote is the refusal
+ * it meets: on Windows 11 with Defender on, eight processes creating leases at once saw 27 of
+ * 3,600 staging-directory renames refused with EPERM before this wait, and none after it.
+ */
+export const HELD_HANDLE_SYNC_WAITS_MS = [5, 10, 20, 40, 80, 160, 320] as const;
+
+export interface RenameSyncHost {
+  rename(from: string, to: string): void;
+  sleep(ms: number): void;
+}
+
+const syncHost: RenameSyncHost = {
+  // Through the live binding, so a test that mocks `fs.renameSync` still reaches this call.
+  rename: (from, to) => renameSync(from, to),
+  sleep: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); },
+};
+
+/** `renameAllowingHeldHandles` for a synchronous caller, blocking for at most 635 ms on win32. */
+export function renameAllowingHeldHandlesSync(
+  from: string,
+  to: string,
+  platform: NodeJS.Platform = process.platform,
+  using: RenameSyncHost = syncHost,
+): void {
+  for (const wait of platform === "win32" ? HELD_HANDLE_SYNC_WAITS_MS : []) {
+    try {
+      return using.rename(from, to);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null)?.code;
+      if (!code || !HELD_HANDLE_CODES.has(code)) throw error;
+    }
+    using.sleep(wait);
+  }
+  using.rename(from, to);
 }

@@ -4,8 +4,8 @@ import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { syncDirectory } from "../platform/durable-sync.ts";
+import { renameAllowingHeldHandlesSync } from "../platform/held-handle-rename.ts";
 import { privateToCurrentUser } from "../platform/private-storage.ts";
-import { settledRenameSync } from "../platform/settled-rename.ts";
 import { physicalPathSync } from "../util/physical-path.ts";
 
 /** Credential lifetime only. This journal never owns a task, binding, or database. */
@@ -35,7 +35,7 @@ export function writeResumeRecord(path: string, value: unknown): void {
   const tmp = `${path}.${randomUUID()}.tmp`;
   const fd = openSync(tmp, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
-  settledRenameSync(tmp, path);
+  renameAllowingHeldHandlesSync(tmp, path);
   syncDirectory(dirname(path));
 }
 
@@ -205,7 +205,7 @@ export function createResumeLease(root: string, conversation: string, preparing:
   mkdirSync(staging, { mode: 0o700 });
   try {
     writeResumeRecord(join(staging, "lease.json"), lease);
-    settledRenameSync(staging, dir);
+    renameAllowingHeldHandlesSync(staging, dir);
     syncDirectory(dirname(dir));
   } finally { rmSync(staging, { recursive: true, force: true }); }
   preparing.add(id);

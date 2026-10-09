@@ -58,7 +58,7 @@ syncBuiltinESMExports();createResumeLease(process.argv[1],'crashed',new Set());`
 });
 
 // A scanner that briefly holds a freshly written file refuses its rename on win32 with EPERM.
-// Publication retries that refusal there through `settledRenameSync`, for the record and for the
+// Publication retries that refusal there through `renameAllowingHeldHandlesSync`, for the record and for the
 // staging directory that carries it into `leases/`. POSIX never sees such a refusal, so it reports
 // one as before. Any other refusal is reported everywhere and leaves no partial journal.
 for (const step of ["record", "staging directory"] as const) for (const code of ["EPERM", "ENOENT"] as const) {
