@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What stops the dashboard reporting that it paused an engine that is still dispatching.
 //
@@ -23,7 +23,7 @@ import { join } from "node:path";
 // the real `runConductorControl` against a fake CLI that reproduces one of those shapes, so
 // the thing under test is the predicate over stdout rather than a stub of it.
 //
-// The fake is a shell script and the assertions read the argv it recorded, because the OTHER
+// The fake is a Node script and the assertions read the argv it recorded, because the OTHER
 // half of being wrong here is spawning the right words in the wrong shape: `daemon park` takes
 // a bare positional and `decide-grant` takes exactly three flags, and either mistake produces
 // a zero exit and a refusal nobody asked to read.
@@ -33,26 +33,25 @@ process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 
 const binDir = mkdtempSync(join(tmpdir(), "fake-conduct-"));
-const fake = join(binDir, "conduct-ts");
 const recorded = join(binDir, "argv.txt");
-const scripted = join(binDir, "script.sh");
+const scripted = join(binDir, "script.json");
 
 /**
  * A fake `conduct-ts` that records its argv and then behaves however a case says.
  *
- * The behaviour is a second script the case writes, rather than a table baked in here: every
+ * The behaviour is a script the case writes, rather than a table baked in here: every
  * interesting shape is about what conductor PRINTS and with what exit code, and a fake that
  * chose those for the test would be the test asserting against itself.
  */
-writeFileSync(
-  fake,
-  `#!/bin/sh
-printf '%s\\n' "$*" >> ${JSON.stringify(recorded)}
-printf '%s\\n' "cwd=$PWD" >> ${JSON.stringify(recorded)}
-. ${JSON.stringify(scripted)}
+const fake = writeFakeExecutable(
+  join(binDir, "conduct-ts"),
+  `const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(recorded)}, process.argv.slice(2).join(" ") + "\\ncwd=" + process.cwd() + "\\n");
+const { stdout, exitCode } = JSON.parse(fs.readFileSync(${JSON.stringify(scripted)}, "utf8"));
+process.stdout.write(stdout);
+process.exitCode = exitCode;
 `,
 );
-chmodSync(fake, 0o755);
 process.env.MISSION_CONDUCTOR_BIN = fake;
 
 const { runConductorControl, conductorConsoleArgv, conductorControlArgv } = await import(
@@ -65,13 +64,13 @@ after(() => {
 });
 
 // Through `realpathSync`, because the temp dir is a symlink on macOS and the child reports
-// the resolved path in `$PWD` - the same reason `resolveRepoRoot` hands the daemon a real one.
+// the resolved path as its cwd - the same reason `resolveRepoRoot` hands the daemon a real one.
 const REPO = realpathSync(mkdtempSync(join(tmpdir(), "mission-pipeline-repo-")));
 after(() => rmSync(REPO, { recursive: true, force: true }));
 
 /** What the engine will print and exit with, for the next invocation. */
-function scripts(body: string): void {
-  writeFileSync(scripted, body);
+function scripts(stdout: string, exitCode = 0): void {
+  writeFileSync(scripted, JSON.stringify({ stdout, exitCode }));
   rmSync(recorded, { force: true });
 }
 
@@ -123,7 +122,7 @@ test("a verb that printed its confirmation is a success, whatever else it printe
   // `daemon start` runs the engine's own installation check first with INHERITED stdio, so
   // the confirmation is preceded by however many lines that felt like printing. A predicate
   // anchored to the start of the output rather than to a line would fail on every real start.
-  scripts(`printf 'checking install…\\nskills: 41 ok\\ndaemon started (session conductor-demo)\\n'\n`);
+  scripts("checking install…\nskills: 41 ok\ndaemon started (session conductor-demo)\n");
   const started = await runConductorControl("daemon-start", target());
   assert.equal(started.ok, true);
   assert.match(started.detail, /daemon is running/);
@@ -139,7 +138,7 @@ test("a verb that printed its confirmation is a success, whatever else it printe
 test("a clean exit with no confirmation is a FAILURE, and says so in those words", async () => {
   // The shape this whole module exists for: conductor's argv detector rejected the verb
   // before it ran, printed a refusal about a different subcommand, and exited 0.
-  scripts(`printf 'the inline SDLC pipeline now runs under the \`inline\` subcommand\\n'\n`);
+  scripts("the inline SDLC pipeline now runs under the `inline` subcommand\n");
   const parked = await runConductorControl("park", target({ slug: "fix-the-thing" }));
   assert.equal(parked.ok, false);
   assert.match(parked.detail, /exited cleanly without confirming/);
@@ -161,12 +160,12 @@ test("silence is how a stop succeeds, and any output means it did not", async ()
   // `daemon stop` prints nothing when it works - killing the session is idempotent - and
   // prints its FAILURES to stdout rather than stderr. So output at all is the engine saying
   // something went wrong, even behind a zero exit.
-  scripts("exit 0\n");
+  scripts("");
   const quiet = await runConductorControl("daemon-stop", target());
   assert.equal(quiet.ok, true);
   assert.match(quiet.detail, /stopped/);
 
-  scripts(`printf 'no daemon session found for this repository\\n'\n`);
+  scripts("no daemon session found for this repository\n");
   const noisy = await runConductorControl("daemon-stop", target());
   assert.equal(noisy.ok, false);
   assert.match(noisy.output, /no daemon session/);
@@ -181,17 +180,17 @@ test("pause and resume accept the engine's idempotent answers as successes", asy
     ["daemon resumed", "daemon-resume"],
     ["not paused", "daemon-resume"],
   ] as const) {
-    scripts(`printf '%s\\n' ${JSON.stringify(line)}\n`);
+    scripts(`${line}\n`);
     const result = await runConductorControl(action, target());
     assert.equal(result.ok, true, line);
   }
   // A sentence about some other state is not a confirmation.
-  scripts(`printf 'daemon is not running\\n'\n`);
+  scripts("daemon is not running\n");
   assert.equal((await runConductorControl("daemon-pause", target())).ok, false);
 });
 
 test("park and unpark confirm for THIS feature, not for whichever one the engine mentioned", async () => {
-  scripts(`printf "Parked 'fix-the-thing' - no dispatch until unparked\\n"\n`);
+  scripts("Parked 'fix-the-thing' - no dispatch until unparked\n");
   const parked = await runConductorControl("park", target({ slug: "fix-the-thing" }));
   assert.equal(parked.ok, true);
   // A bare positional. There is no `--slug` on this verb, and passing one falls through to a
@@ -200,22 +199,22 @@ test("park and unpark confirm for THIS feature, not for whichever one the engine
 
   // The same output, asked about a different feature. A predicate that matched the verb's
   // sentence without binding the slug would report a park that never happened.
-  scripts(`printf "Parked 'other-thing' - no dispatch until unparked\\n"\n`);
+  scripts("Parked 'other-thing' - no dispatch until unparked\n");
   assert.equal((await runConductorControl("park", target({ slug: "fix-the-thing" }))).ok, false);
 
-  scripts(`printf "'fix-the-thing' is already parked\\n"\n`);
+  scripts("'fix-the-thing' is already parked\n");
   assert.equal((await runConductorControl("park", target({ slug: "fix-the-thing" }))).ok, true);
 
-  scripts(`printf "Unparked 'fix-the-thing'\\n"\n`);
+  scripts("Unparked 'fix-the-thing'\n");
   assert.equal((await runConductorControl("unpark", target({ slug: "fix-the-thing" }))).ok, true);
   assert.equal(invocations()[0], "daemon unpark fix-the-thing");
 
-  scripts(`printf "'fix-the-thing' was not operator-parked\\n"\n`);
+  scripts("'fix-the-thing' was not operator-parked\n");
   assert.equal((await runConductorControl("unpark", target({ slug: "fix-the-thing" }))).ok, true);
 });
 
 test("a grant is spawned as three flags and confirmed for the exact step", async () => {
-  scripts(`printf "DECIDE grant recorded for 'prd' in 'fix-the-thing'.\\n"\n`);
+  scripts("DECIDE grant recorded for 'prd' in 'fix-the-thing'.\n");
   const granted = await runConductorControl(
     "grant",
     target({ slug: "fix-the-thing", step: "prd", reason: "the assumption changed" }),
@@ -226,7 +225,7 @@ test("a grant is spawned as three flags and confirmed for the exact step", async
   assert.equal(invocations()[0], "decide-grant --slug fix-the-thing --step prd --reason the assumption changed");
 
   // A grant recorded for a DIFFERENT step is not this grant.
-  scripts(`printf "DECIDE grant recorded for 'plan' in 'fix-the-thing'.\\n"\n`);
+  scripts("DECIDE grant recorded for 'plan' in 'fix-the-thing'.\n");
   const wrong = await runConductorControl(
     "grant",
     target({ slug: "fix-the-thing", step: "prd", reason: "why" }),
@@ -238,7 +237,7 @@ test("a plan grant is refused here, before anything is spawned", async () => {
   // conductor refuses this in four independent places of its own, so nothing below is the
   // enforcement - it is the EXPLANATION, which a relayed exit code cannot give. The absence
   // of an invocation is the assertion: no subprocess ran to learn something already known.
-  scripts(`printf "DECIDE grant recorded for 'plan' in 'fix-the-thing'.\\n"\n`);
+  scripts("DECIDE grant recorded for 'plan' in 'fix-the-thing'.\n");
   const refused = await runConductorControl(
     "grant",
     target({ slug: "fix-the-thing", step: "plan", reason: "I would like to re-plan" }),

@@ -1,9 +1,11 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Task } from "../src/shared/types.ts";
@@ -62,22 +64,19 @@ after(() => {
  * look like. Faking it with a special exit code would exercise the 502 path instead.
  */
 function fakeGh(mode: "created" | "refused" | "unknown"): string {
-  const path = join(bin, `gh-${mode}`);
   const body =
     mode === "created"
       ? [
           // Everything gh was asked to do, for the assertions below: the cwd first, then
           // one argv entry per line so a title with spaces stays one entry.
-          `{ pwd; for a in "$@"; do printf '%s\\n' "$a"; done; } > "$MC_GH_RECORD"`,
-          `echo "Creating issue in acme/demo"`,
-          `echo "https://github.com/acme/demo/issues/7"`,
+          `require("node:fs").writeFileSync(process.env.MC_GH_RECORD, [process.cwd(), ...process.argv.slice(2)].map((line) => line + "\\n").join(""));`,
+          `console.log("Creating issue in acme/demo");`,
+          `console.log("https://github.com/acme/demo/issues/7");`,
         ]
       : mode === "refused"
-        ? [`echo "could not add label: 'triage' not found" >&2`, `exit 1`]
-        : [`kill -9 $$`];
-  writeFileSync(path, ["#!/bin/sh", ...body, ""].join("\n"));
-  chmodSync(path, 0o755);
-  return path;
+        ? [`console.error("could not add label: 'triage' not found");`, `process.exitCode = 1;`]
+        : [`process.kill(process.pid, "SIGKILL");`];
+  return writeFakeExecutable(join(bin, `gh-${mode}`), [...body, ""].join("\n"));
 }
 
 const GH = {
@@ -280,7 +279,11 @@ test("a gh that refuses is a 502, and leaves nothing behind", async () => {
 
 // 504: gh died without reporting back, so the issue MAY exist. The whole safety property
 // of this route is that this case does not arrive as a 502.
-test("a gh that never reports back is a 504 carrying outcomeUnknown", async () => {
+test("a gh that never reports back is a 504 carrying outcomeUnknown", {
+  // `run()` tells this case apart by the signal the child died of, and a win32 child killed
+  // from outside reports an exit code instead, so the fake cannot reproduce it there.
+  skip: skipOnWin32("death by signal is POSIX-only: a killed win32 child reports an exit code"),
+}, async () => {
   configure(GITHUB);
   process.env.MISSION_GH_BIN = GH.unknown;
 

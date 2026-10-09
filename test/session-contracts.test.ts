@@ -352,11 +352,15 @@ function typecheckWithPatch(patch: ((dir: string) => void) | null): string {
     cpSync(path.join(REPO, "hooks"), path.join(dir, "hooks"), { recursive: true });
     // App code also imports plain-Node installer policy from scripts/.
     cpSync(path.join(REPO, "scripts"), path.join(dir, "scripts"), { recursive: true });
-    symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
+    // A junction on win32, which needs no symlink privilege; the type is ignored elsewhere.
+    symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"), "junction");
     writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify(PROBE_TSCONFIG));
     patch?.(dir);
     try {
-      execFileSync(path.join(REPO, "node_modules/.bin/tsc"), ["--noEmit", "-p", dir], {
+      // TypeScript's own entry point under this Node, not `node_modules/.bin/tsc`: on win32
+      // that is npm's extensionless POSIX shim, which cannot be spawned, and the empty output
+      // of that failure reads as a clean typecheck.
+      execFileSync(process.execPath, [path.join(REPO, "node_modules/typescript/bin/tsc"), "--noEmit", "-p", dir], {
         encoding: "utf8",
         stdio: "pipe",
       });

@@ -50,7 +50,9 @@ function engineer(
   extraEnv: Record<string, string> = {},
 ): { stdout: string; status: number } {
   try {
-    const stdout = execFileSync(process.execPath, [fake.bin, ...args], {
+    // Started the way the daemon starts it: on win32 `fake.bin` is the launcher `.exe`, which
+    // Node cannot load as a script.
+    const stdout = execFileSync(fake.bin, args, {
       env: { ...env, ...extraEnv },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -117,9 +119,8 @@ test("concurrent reservations for one correlation both survive", () => {
   const start = (attemptKey: string): Promise<number> =>
     new Promise((resolve) => {
       const child = spawn(
-        process.execPath,
+        fake.bin,
         [
-          fake.bin,
           "engineer", "run-create",
           "--repo-root", home,
           "--idea", "Concurrent reservations",

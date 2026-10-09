@@ -1,9 +1,10 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -50,8 +51,7 @@ after(() => {
  * line. `refused` is the retry-safe failure: a non-zero exit with no URL.
  */
 function fakeGh(mode: "created" | "refused"): string {
-  const path = join(bin, `gh-${mode}`);
-  writeFileSync(path, `#!/usr/bin/env node
+  return writeFakeExecutable(join(bin, `gh-${mode}`), `#!/usr/bin/env node
 const fs = require("node:fs");
 fs.appendFileSync(process.env.MC_GH_RECORD, JSON.stringify(process.argv.slice(2)) + "\\n");
 if (${JSON.stringify(mode)} === "refused") {
@@ -64,8 +64,6 @@ n += 1;
 fs.writeFileSync(process.env.MC_GH_COUNTER, String(n));
 process.stdout.write("https://github.com/acme/demo/issues/" + n + "\\n");
 `);
-  chmodSync(path, 0o755);
-  return path;
 }
 const GH = { created: fakeGh("created"), refused: fakeGh("refused") };
 

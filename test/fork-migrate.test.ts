@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CLOSING_MARKER,
   DEFAULT_REPO,
@@ -22,6 +22,7 @@ import {
   type Desired,
   type Write,
 } from "../scripts/fork-migrate.mjs";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 
 // What is at stake: a one-off migration that writes 18 issues, 24 labels and about 70 PR labels
 // into the fork, and is rerun right before its PR merges. A rerun that rewrites what is already
@@ -498,8 +499,7 @@ type FakeState = {
 
 function fakeRepo() {
   const dir = mkdtempSync(join(tmpdir(), "fork-migrate-"));
-  const gh = join(dir, "gh");
-  writeFileSync(gh, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_GH}" "$@"\n`, { mode: 0o755 });
+  const gh = writeFakeExecutable(join(dir, "gh"), `import(${JSON.stringify(pathToFileURL(FAKE_GH).href)});\n`);
   const statePath = join(dir, "state.json");
   const prs = Object.fromEntries([1, 3, 35, 40, 41, 43, 83, 151, 161, 163, 200, 215, 250].map((n) => [String(n), []]));
   writeFileSync(statePath, JSON.stringify({ labels: ["bug"], issues: [], prs, calls: [] }));

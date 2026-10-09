@@ -1906,7 +1906,8 @@ test("the fake verifier returns its policy-derived verdict for the legacy zero-e
     ["No evidence is registered for this work, so the contract clause 'evidence registration is done' is not satisfied.", false],
     ["Workflow evidence registration is not required for this handoff.", true],
   ] as const) {
-    const result = spawnSync(process.execPath, [fake.bin], {
+    // The fake itself, not `node <fake.bin>`: on win32 `fake.bin` is the launcher `.exe`.
+    const result = spawnSync(fake.bin, [], {
       input: prompt, encoding: "utf8", env: { ...process.env, FAKE_CLAUDE_LOG: fake.log },
     });
     assert.equal(result.status, 0, result.stderr);
