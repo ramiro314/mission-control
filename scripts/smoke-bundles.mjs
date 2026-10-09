@@ -252,9 +252,10 @@ async function smokeNativeKeepAwake() {
 }
 
 /**
- * On a platform that builds it, the process inspection addon must load and recognize this
- * process as its own user's. Both reads are side-effect free, and without the addon win32
- * worktree occupancy is unknown for every slot.
+ * On a platform that builds it, the process inspection addon must load, export every read and
+ * the check job functions, and recognize this process as its own user's. The reads are
+ * side-effect free. Without the addon win32 worktree occupancy is unknown for every slot, and
+ * workflow Checks record their gate as not run.
  */
 async function smokeNativeProcessInspection() {
   if (!hasNativeAddonSources("process-inspection", process.platform)) {
@@ -273,17 +274,25 @@ async function smokeNativeProcessInspection() {
     fail(`the native process inspection addon could not load (${err instanceof Error ? err.message : err})`);
     return;
   }
-  if (typeof binding?.owners !== "function" || typeof binding?.cwds !== "function") {
-    fail("the native process inspection addon does not export owners and cwds functions");
+  const exports = ["owners", "cwds", "identity", "jobAssign", "jobActive", "jobTerminate", "jobRelease"];
+  const missing = exports.filter((name) => typeof binding?.[name] !== "function");
+  if (missing.length > 0) {
+    fail(`the native process inspection addon does not export ${missing.join(", ")}`);
     return;
   }
   const [owner] = binding.owners([process.pid]);
   const [cwd] = binding.cwds([process.pid]);
-  if (owner?.sameUser !== true || typeof cwd?.cwd !== "string") {
-    fail(`the native process inspection addon misread this process (${JSON.stringify({ owner, cwd })})`);
+  const identity = binding.identity(process.pid);
+  if (
+    owner?.sameUser !== true ||
+    typeof cwd?.cwd !== "string" ||
+    typeof identity?.start !== "string" ||
+    typeof identity?.command !== "string"
+  ) {
+    fail(`the native process inspection addon misread this process (${JSON.stringify({ owner, cwd, identity })})`);
     return;
   }
-  console.log("[smoke] native process inspection addon reads this process's owner and cwd");
+  console.log("[smoke] native process inspection addon reads this process's owner, cwd and start identity");
 }
 
 /**

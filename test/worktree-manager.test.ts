@@ -1182,3 +1182,45 @@ test("lifecycle guard runs after native fetch and refuses newly created work bef
   assert.ok(existsSync(local));
   assert.equal(m.lookupLease({ leaseId: held.leaseId, path: held.path, owner: held.owner }).state, "active");
 });
+
+test("a Check slot goes back and is reused past processes the system refused to open, and no other slot does", async () => {
+  // The win32 desktop shape (#345): an elevated or self-hardened program the daemon may not open
+  // leaves every slot's occupancy unknown. The stand-in reads such a process the way
+  // `inspectWorktreeOccupancy` does: unknown, except for the slots the manager names as Check
+  // slots in `refusedCwdsUnoccupied`.
+  const { clone, sha } = repository("mission-native-check-refused-");
+  let refusedProcess = false;
+  const m = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
+    occupancy: async (paths, options) =>
+      new Map(paths.map((path): [string, WorktreeOccupancy] => [
+        path,
+        !refusedProcess || options?.refusedCwdsUnoccupied?.has(path)
+          ? { status: "known", occupants: [] }
+          : { status: "unknown", reason: "cwd listing omitted 1 ps-listed PID: 77" },
+      ])),
+  });
+  const check = lease(await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "check", key: "attempt-1" } }));
+  const task = lease(await acquire(m, clone, sha, "task-1"));
+
+  refusedProcess = true;
+  assert.deepEqual(
+    await m.release(task, { ownerAuthorized: true }),
+    { outcome: "refused", reason: "cwd listing omitted 1 ps-listed PID: 77" },
+    "a task's slot is judged exactly as before",
+  );
+  assert.equal((await m.release(check, { ownerAuthorized: true })).outcome, "released", "a Check's slot goes back");
+
+  refusedProcess = false;
+  assert.equal((await m.release(task, { ownerAuthorized: true })).outcome, "released");
+  refusedProcess = true;
+
+  // Both slots are available now. The one a task last held is still judged strictly and set
+  // aside; the one a Check last held is reused rather than quarantined.
+  const next = lease(await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "check", key: "attempt-2" } }));
+  assert.equal(next.path, check.path);
+  const taskSlot = m.store.slot(task.slotId)!;
+  assert.equal(taskSlot.state, "quarantined");
+  assert.equal(taskSlot.quarantineReason, "slot occupancy is unknown");
+  assert.equal(m.store.slot(check.slotId)!.state, "leased");
+});

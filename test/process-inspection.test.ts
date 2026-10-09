@@ -28,6 +28,7 @@ import { readProcCwdsSnapshot } from "../src/server/discovery/proc-cwd.ts";
 import { listProcessesSnapshot } from "../src/server/discovery/processes.ts";
 import type {
   NativeProcessCwd,
+  NativeProcessIdentity,
   NativeProcessInspectionBinding,
   NativeProcessOwner,
 } from "../src/server/process-inspection-native.ts";
@@ -222,8 +223,9 @@ function powerShellRunner(answers: Record<string, RunResult | string | null> = {
 function fakeNative(answers: {
   owners?: Record<number, NativeProcessOwner>;
   cwds?: Record<number, NativeProcessCwd>;
+  identities?: Record<number, NativeProcessIdentity>;
 } = {}) {
-  const calls: Array<{ read: "owners" | "cwds"; pids: number[] }> = [];
+  const calls: Array<{ read: "owners" | "cwds" | "identity"; pids: number[] }> = [];
   const refused = { failed: "OpenProcess", code: 5 };
   const binding: NativeProcessInspectionBinding = {
     owners(pids) {
@@ -233,6 +235,10 @@ function fakeNative(answers: {
     cwds(pids) {
       calls.push({ read: "cwds", pids: [...pids] });
       return pids.map((pid) => answers.cwds?.[pid] ?? refused);
+    },
+    identity(pid) {
+      calls.push({ read: "identity", pids: [pid] });
+      return answers.identities?.[pid] ?? refused;
     },
   };
   return Object.assign(binding, { calls });
@@ -463,9 +469,17 @@ test("win32 cwds keep every well-formed path and report the rest as a partial re
     "could not read the working directory of 4 of 7 processes: 13 (OpenProcess failed with code 5), 14 (exited), "
       + "15 (not a working directory path), 16 (layout failed with code 13)",
   );
+  // Only an outright refusal to open is a refusal. An exit, a misread layout and a failed read
+  // are not, so occupancy never treats them as anything but unknown.
+  assert.deepEqual(read.refused, new Set([13]));
   // Partial, like an lsof that lost a pid: the paths it has are evidence, and occupancy rechecks
-  // every pid it omitted.
+  // every pid it omitted. The refusal travels with the snapshot.
   assert.deepEqual(await readProcCwdsSnapshot([10, 13], inspector), {
+    cwds: new Map([[10, "C:\\pool\\1\\repo\\src"]]),
+    unknownReason: null,
+    refused: new Set([13]),
+  });
+  assert.deepEqual(await readProcCwdsSnapshot([10, 14], inspector), {
     cwds: new Map([[10, "C:\\pool\\1\\repo\\src"]]),
     unknownReason: null,
   });
@@ -473,6 +487,7 @@ test("win32 cwds keep every well-formed path and report the rest as a partial re
   const complete = await inspector.readCwds([10, 11]);
   assert.equal(complete.result.code, 0);
   assert.equal(complete.result.stderr, "");
+  assert.equal(complete.refused, undefined);
 
   const many = await createWin32ProcessInspector(powerShellRunner().runner, () => fakeNative()).readCwds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert.match(many.result.stderr, /^could not read the working directory of 10 of 10 processes: 1 \(OpenProcess failed with code 5\), .*8 \(OpenProcess failed with code 5\) and 2 more$/);
@@ -568,13 +583,41 @@ test("win32 occupancy names a same-user occupant, ignores other users, and goes 
   assert.deepEqual(unknown.get(idle), { status: "unknown", reason }, "never empty while a same-user cwd is unread");
 });
 
-test("win32 synchronous reads answer unreadable without blocking the daemon on PowerShell", () => {
+test("win32 synchronous reads come from the addon and never block the daemon on PowerShell", () => {
   const { runner, calls } = powerShellRunner();
-  const inspector = createWin32ProcessInspector(runner);
-  for (const pid of [process.pid, 1, 0, -1, 1.5]) {
+  const native = fakeNative({
+    identities: {
+      10: { start: "134360109787967324", command: 'node.exe -e\n"hold"   attempt-1' },
+      11: { failed: "exited", code: 0 },
+      12: { start: "not-a-tick-count", command: "node.exe" },
+      13: { start: "134360109787967324", command: " \t " },
+    },
+  });
+  const inspector = createWin32ProcessInspector(runner, () => native);
+  // Ticks rather than a printed time, and the command flattened as every platform's is.
+  assert.deepEqual(inspector.readStartAndCommandSync(10), {
+    start: "134360109787967324",
+    command: 'node.exe -e "hold" attempt-1',
+  });
+  assert.equal(inspector.readStartTimeSync(10), "134360109787967324");
+  // An exited process, a start that is not a tick count and an empty command are unreadable,
+  // never half an identity.
+  for (const pid of [11, 12]) {
     assert.equal(inspector.readStartAndCommandSync(pid), null);
     assert.equal(inspector.readStartTimeSync(pid), null);
   }
+  assert.equal(inspector.readStartAndCommandSync(13), null);
+  // A pid no process can have never reaches the addon.
+  const before = native.calls.length;
+  for (const pid of [0, -1, 1.5, 2 ** 32]) {
+    assert.equal(inspector.readStartAndCommandSync(pid), null);
+    assert.equal(inspector.readStartTimeSync(pid), null);
+  }
+  assert.equal(native.calls.length, before);
+
+  const headless = createWin32ProcessInspector(runner, missingNative);
+  assert.equal(headless.readStartAndCommandSync(process.pid), null, "without the addon there is no identity");
+  assert.equal(headless.readStartTimeSync(process.pid), null);
   assert.deepEqual(calls, [], "no synchronous read starts a process");
 });
 

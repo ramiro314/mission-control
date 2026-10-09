@@ -12,7 +12,7 @@
  * are exercised against something that actually changes.
  */
 import { after, afterEach, test } from "node:test";
-import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +28,9 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 // subsystem stores is canonicalized.
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-runtime-")));
 process.env.HARNESS_HOME = home;
+// On win32 a check's identity and its job come from the native process inspection addon, and
+// `checkRuntimeSupport()` below asks for them.
+provisionNativeProcessInspection();
 
 const { openDb } = await import("../src/server/db.ts");
 const { CheckLeaseManager, CheckLeaseStore } =
@@ -39,6 +42,8 @@ const { ModeledCheckTreeProvider, checkHolderToken, pinModeledWorktree } =
   await import("./helpers/modeled-check-provider.ts");
 const { verifyPinnedBase } = await import("../src/server/dispatcher.ts");
 const { processStartIdentity, checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
+const { establishCheckGroup } = await import("../src/server/workflows/check-group.ts");
+const { processLifetime } = await import("../src/server/platform/process-lifetime.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 
 type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
@@ -53,7 +58,7 @@ const modeledProvider = (cli: TreehouseCli) =>
  * Every case here starts a real process, and a platform that cannot read a process start
  * identity declines checks by design. Rather than pretend, the suite says so out loud.
  */
-const UNSUPPORTED = skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported;
+const UNSUPPORTED = !checkRuntimeSupport().supported;
 
 const liveRows = (): unknown[] =>
   db
@@ -781,6 +786,8 @@ test("startup recovery keeps a lease whose group it may not signal", { skip: UNS
   });
   const alivePid = alive.pid!;
   alive.unref();
+  // A group, as the supervisor's gate makes one: nothing to do where `detached` did, a job on win32.
+  assert.equal(establishCheckGroup(alivePid), null);
   f.leases.processes.record(ref.attemptId, alivePid, "an-identity-this-process-does-not-have");
   const before = f.pool.calls.filter((c) => c.cmd === "return").length;
 
@@ -796,7 +803,7 @@ test("startup recovery keeps a lease whose group it may not signal", { skip: UNS
   // And nothing was signalled: the process a mismatched identity protects is still there.
   assert.doesNotThrow(() => process.kill(alivePid, 0), "a process we could not identify was signalled");
 
-  process.kill(-alivePid, "SIGKILL");
+  processLifetime.signalTree(alivePid, "SIGKILL");
   // Cleaned up by hand, because the point of the case is that the product refused to.
   await f.leases.releaseForAttempt(ref.attemptId);
 });

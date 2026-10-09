@@ -16,6 +16,11 @@ import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { worktreeRetryRequest } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
+
+// The real occupancy reads below need process owners and cwds, which on win32 come from the
+// native process inspection addon. Nothing has loaded it yet: it loads on the first read.
+provisionNativeProcessInspection();
 
 const db = openDb();
 const occupancy = (paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> =>

@@ -4,6 +4,8 @@ import type { Socket } from "node:net";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import type { CheckExecutionResult } from "./checks.ts";
 import {
+  abandonCheckGroup,
+  establishCheckGroup,
   terminateCheckGroup,
   unwatchCheckGroup,
   watchCheckGroup,
@@ -172,6 +174,7 @@ gate.on("data", function () {
     child = cp.spawn(argv[0], argv.slice(1), {
       stdio: ["ignore", "inherit", "inherit"],
       shell: false,
+      windowsHide: true,
     });
   } catch (e) {
     reportAndWait({ spawnError: { code: e && e.code, message: String((e && e.message) || e) } }, 127);
@@ -297,11 +300,14 @@ function infrastructure(reason: string): CheckExecutionResult {
  *     pid is our shim rather than a runtime that failed to start.
  *  3. Read `processStartIdentity(pid)`. Unreadable is fatal to this attempt: we will not start
  *     something we could not later prove is dead.
- *  4. Call `onSupervisorReady` - synchronously, the persist step.
- *  5. Release the gate. Steps 3 to 5 contain no `await`, which is what removes the window in
- *     which branch code could be running with no durable owner.
+ *  4. `establishCheckGroup(pid)`: a no-op where spawning already made the group (POSIX), the
+ *     job object every later descendant is created in on win32. A shim outside its group is
+ *     fatal to this attempt for the same reason an unreadable identity is.
+ *  5. Call `onSupervisorReady` - synchronously, the persist step.
+ *  6. Release the gate. Steps 3 to 6 contain no `await`, which is what removes the window in
+ *     which branch code could be running with no durable owner, or outside its group.
  *
- * A failure anywhere in 2 to 4 closes the gate and kills the shim. Because the gate was never
+ * A failure anywhere in 2 to 5 closes the gate and kills the shim. Because the gate was never
  * released, nothing branch-authored ever ran, and `supervisor` comes back null to say so.
  */
 export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<CheckSpawnOutcome> {
@@ -330,7 +336,12 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       // the control channel - 3 is the gate the parent writes one byte to, 4 is how the shim
       // reports readiness and the command's outcome. Two fds rather than one duplex socket so
       // each direction's EOF means exactly one thing.
-      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+      //
+      // `overlapped` rather than `pipe` for the two the shim opens as sockets. On win32 a
+      // socket over a pipe without FILE_FLAG_OVERLAPPED never delivers what the shim writes, so
+      // its readiness never arrived and every check timed out before starting. Everywhere else
+      // Node documents `overlapped` as exactly `pipe`.
+      stdio: ["ignore", "pipe", "pipe", "overlapped", "overlapped"],
       windowsHide: true,
     });
   } catch (err) {
@@ -392,12 +403,15 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
    * abandoned, always abandoned.
    */
   let aborted = false;
+  /** The pid whose group step 4 established, until the gate opens or the attempt is abandoned. */
+  let established: number | null = null;
   const abortBeforeRelease = (reason: string): void => {
     if (aborted) return;
     aborted = true;
     failure ??= infrastructure(reason);
     gate.destroy();
     child.kill("SIGKILL");
+    if (established !== null) abandonCheckGroup(established);
   };
 
   const readyTimer = setTimeout(() => {
@@ -473,7 +487,7 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
   }
 
   /**
-   * Steps 3 to 5. Synchronous from here to the released byte, on purpose.
+   * Steps 3 to 6. Synchronous from here to the released byte, on purpose.
    */
   function onReady(): void {
     if (aborted || supervisor || settled) return;
@@ -491,6 +505,12 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       );
       return;
     }
+    const group = establishCheckGroup(pid);
+    if (group !== null) {
+      abortBeforeRelease(`${group}, so it could not be proven finished afterwards and no command was started`);
+      return;
+    }
+    established = pid;
     const ready: CheckSupervisorIdentity = { pid, identity };
     try {
       request.onSupervisorReady?.(ready);

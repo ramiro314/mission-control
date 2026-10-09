@@ -1,5 +1,5 @@
 import { after, test } from "node:test";
-import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -30,6 +30,9 @@ after(() => rmSync(home, { recursive: true, force: true }));
 // worktree planted in there passes or fails depending on what ran before it.
 const checkTree = mkdtempSync(join(tmpdir(), "mission-workflow-engine-tree-"));
 after(() => rmSync(checkTree, { recursive: true, force: true }));
+
+// On win32 a check's identity and its job come from the native process inspection addon.
+provisionNativeProcessInspection();
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -2108,7 +2111,7 @@ test("a disabled check auto-passes without reaching the execution runtime", asyn
  * just take a minute to say so.
  */
 test("stop() cancels a live check group instead of waiting out its command", {
-  skip: skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported,
+  skip: !checkRuntimeSupport().supported,
 }, async () => {
   const store = seedSubmission("check-stop", checkGraph);
   const engine = new WorkflowEngine(store, () => {}, {

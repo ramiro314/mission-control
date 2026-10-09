@@ -43,10 +43,12 @@ function condense(commandLine: string): string {
  *
  * ## It is a COMPOSITE, and it has to be
  *
- * No shell-reachable start-time field on either platform has the resolution to stand alone.
- * `ps -o lstart=` is whole-SECOND; Linux's `starttime` is clock ticks, typically 10ms. A pid
- * recycled inside that window compares equal, and signalling a stranger's process group is
- * the single thing this function exists to prevent. So the identity is
+ * No shell-reachable start-time field on either POSIX platform has the resolution to stand
+ * alone. `ps -o lstart=` is whole-SECOND; Linux's `starttime` is clock ticks, typically 10ms. A
+ * pid recycled inside that window compares equal, and signalling a stranger's process group is
+ * the single thing this function exists to prevent. Windows keeps a creation time in 100ns
+ * ticks, which is finer, and it gets the same composite anyway, so that one rule holds
+ * everywhere instead of one platform resting on a timestamp alone. So the identity is
  * `(start-time field, command line)`, and the supervisor's shim takes the attempt id as an
  * argument specifically so the second half is unique to one attempt. A false match then
  * requires the same pid, started in the same second, running our shim, for an attempt id only
@@ -68,9 +70,9 @@ function condense(commandLine: string): string {
  * on a timestamp alone is precisely the failure mode the composite exists to remove, so it
  * must never be allowed to look like a successful read.
  *
- * SYNCHRONOUS on purpose, and it costs one `ps` on macOS. The gate that records this must not
- * yield between reading identity and persisting it, and the last-resort `exit` hook cannot
- * await anything at all.
+ * SYNCHRONOUS on purpose, and it costs one `ps` on macOS and one native read on win32. The gate
+ * that records this must not yield between reading identity and persisting it, and the
+ * last-resort `exit` hook cannot await anything at all.
  */
 export function processStartIdentity(pid: number): string | null {
   // Only 0 and below are refused, and the bound is deliberately LOOSER than the one guarding
@@ -82,9 +84,18 @@ export function processStartIdentity(pid: number): string | null {
   // containerised Linux daemon as a platform that cannot run checks at all.
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (process.platform === "linux") return linuxIdentity(pid);
-  if (process.platform === "darwin") return darwinIdentity(pid);
+  if (INSPECTED_IDENTITY_PLATFORMS.has(process.platform)) return inspectedIdentity(pid);
   return null;
 }
+
+/**
+ * Where both halves come from process inspection: `ps` on macOS, the native process inspection
+ * addon on win32 (`process-inspection/win32.ts`).
+ */
+const INSPECTED_IDENTITY_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["darwin", "win32"]);
+
+/** Every platform a check can run on: Linux reads `/proc`, the others process inspection. */
+const CHECK_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["linux", ...INSPECTED_IDENTITY_PLATFORMS]);
 
 /**
  * Field 22 of `/proc/<pid>/stat` plus `/proc/<pid>/cmdline`. Two cheap reads, no subprocess.
@@ -116,7 +127,7 @@ function linuxIdentity(pid: number): string | null {
 }
 
 /** One synchronous read of both halves through process inspection. */
-function darwinIdentity(pid: number): string | null {
+function inspectedIdentity(pid: number): string | null {
   const read = processInspector().readStartAndCommandSync(pid);
   if (!read) return null;
   return `${process.platform}${HALF}${read.start}${HALF}${condense(read.command)}`;
@@ -135,12 +146,13 @@ let cachedSupport: CheckRuntimeSupport | undefined;
  *
  * Two questions, and both have to be yes:
  *
- *  1. Is this a platform with POSIX process groups? Everything downstream signals `-pid`, and
- *     Windows has no such thing.
+ *  1. Is this a platform `check-group.ts` can hold a process group on? POSIX process groups on
+ *     Linux and macOS, a job object on win32 (`check-group-win32.ts`).
  *  2. Can we actually read a process start identity - proven by reading our OWN? A platform
  *     string is a guess; a container with no `/proc` mounted, or an image with no `ps`,
- *     answers that guess wrong. Probing the live daemon asks the same question the check will
- *     ask, cheaply, once.
+ *     answers that guess wrong, and so does a win32 checkout that never built the native addon
+ *     its identities and jobs come from. Probing the live daemon asks the same question the
+ *     check will ask, cheaply, once.
  *
  * **Where the answer is no, checks do not run.** The executor reports `unavailable` with a
  * sentence naming the platform, which routes into the already-tested third passing outcome -
@@ -163,11 +175,11 @@ export function resetCheckRuntimeSupportCache(): void {
 }
 
 function computeSupport(): CheckRuntimeSupport {
-  if (process.platform !== "linux" && process.platform !== "darwin") {
+  if (!CHECK_PLATFORMS.has(process.platform)) {
     return {
       supported: false,
       note:
-        "Check commands run only on Linux and macOS, and this daemon is on " +
+        "Check commands run only on Linux, macOS and Windows, and this daemon is on " +
         `${process.platform}, so the gate was recorded and passed.`,
     };
   }

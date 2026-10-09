@@ -80,6 +80,17 @@ function ownDescendants(processes: readonly Proc[], roots: ReadonlySet<number>):
   return own;
 }
 
+export interface WorktreeOccupancyOptions {
+  /**
+   * Targets for which a same-user process the system refused to open at all (`refused` on the
+   * cwd snapshot: an elevated or self-hardened program on win32) is not counted as a possible
+   * occupant. Every other target, and every other kind of unread process, still makes
+   * occupancy unknown. The worktree manager names only slots a workflow Check last held, whose
+   * own processes were already proven gone (see `WorktreeManager`).
+   */
+  refusedCwdsUnoccupied?: ReadonlySet<string>;
+}
+
 /**
  * One bounded all-process query projected over one or more worktrees. Both system reads run
  * exactly once. Unknown system evidence returns unknown for every target, never an empty set.
@@ -87,6 +98,7 @@ function ownDescendants(processes: readonly Proc[], roots: ReadonlySet<number>):
 export async function inspectWorktreeOccupancy(
   targetPaths: readonly string[],
   deps: Partial<WorktreeOccupancyDeps> = {},
+  options: WorktreeOccupancyOptions = {},
 ): Promise<Map<string, WorktreeOccupancy>> {
   const d = { ...DEFAULT_DEPS, ...deps };
   const result = new Map<string, WorktreeOccupancy>();
@@ -173,6 +185,9 @@ export async function inspectWorktreeOccupancy(
       return current?.startRaw === process.startRaw && confirmedScope.has(process.pid);
     });
   }
+  // Set when every process still unresolved is one the system refused outright: unknown for
+  // the targets that count such a process, while the rest are projected from what was read.
+  let refusedOnlyReason: string | null = null;
   if (unresolved.length > 0) {
     if (cwdFailure) {
       for (const target of targets) result.set(target, { status: "unknown", reason: cwdFailure });
@@ -183,8 +198,14 @@ export async function inspectWorktreeOccupancy(
     const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";
     const reason =
       `cwd listing omitted ${unresolvedPids.length} ps-listed PID${unresolvedPids.length === 1 ? "" : "s"}: ${shown}${remainder}`;
-    for (const target of targets) result.set(target, { status: "unknown", reason });
-    return result;
+    const refused = cwdSnapshot.refused;
+    const tolerant = options.refusedCwdsUnoccupied;
+    const onlyRefused = refused !== undefined && unresolved.every((process) => refused.has(process.pid));
+    if (!onlyRefused || !tolerant || !targets.some((target) => tolerant.has(target))) {
+      for (const target of targets) result.set(target, { status: "unknown", reason });
+      return result;
+    }
+    refusedOnlyReason = reason;
   }
 
   const canonicalTargets = new Map<string, string>();
@@ -211,6 +232,10 @@ export async function inspectWorktreeOccupancy(
   }
 
   for (const target of targets) {
+    if (refusedOnlyReason !== null && !options.refusedCwdsUnoccupied?.has(target)) {
+      result.set(target, { status: "unknown", reason: refusedOnlyReason });
+      continue;
+    }
     result.set(target, {
       status: "known",
       occupants: occupants.get(target)!.sort((a, b) => a.pid - b.pid),

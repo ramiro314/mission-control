@@ -1,5 +1,6 @@
 import { processLifetime } from "../platform/process-lifetime.ts";
 import { processStartIdentity } from "./check-identity.ts";
+import { createWin32CheckGroups } from "./check-group-win32.ts";
 
 // Taking a check's process group down, and PROVING afterwards that it is gone.
 //
@@ -22,10 +23,11 @@ import { processStartIdentity } from "./check-identity.ts";
 // leased tree while one of them is still writing into it corrupts the next lessee. So every
 // path here ends in a positive probe of the GROUP rather than of the leader.
 //
-// POSIX only. Signals reach the group through `processLifetime.signalTree`, whose POSIX
-// implementation is `process.kill(-pid, …)`, and this module reads its errnos as POSIX ones.
-// `checkRuntimeSupport()` refuses to run checks anywhere this file could not work - so this
-// module may assume it, and does.
+// What a "group" IS belongs to the platform, behind `CheckGroupPlatform`: a POSIX process group
+// on Linux and macOS, reached through `processLifetime.signalTree` (`process.kill(-pid, …)`), and
+// a job object on win32 (`check-group-win32.ts`). Both report through POSIX errnos, so the policy
+// below - identity before every signal, and only proven emptiness returns a tree - is written
+// once. `checkRuntimeSupport()` refuses to run checks anywhere neither could work.
 
 /**
  * What we were able to PROVE about a check's process group.
@@ -69,6 +71,82 @@ export interface CheckGroupTeardownOptions {
 }
 
 /**
+ * How one platform holds a check's process group. The policy in this file is the same on every
+ * platform; only these mechanisms differ.
+ */
+export interface CheckGroupPlatform {
+  /**
+   * Whether a first, catchable signal exists. Without one the grace before `SIGKILL` would wait
+   * out nothing, so the ladder skips it.
+   */
+  readonly graceful: boolean;
+  /**
+   * Make a supervisor that has just started, and has started nothing yet, the root of a group
+   * that everything it starts later belongs to. Null once it is, or why it could not be.
+   */
+  establish(pid: number): string | null;
+  /** Whether anything still answers on the group. False is proof of emptiness. */
+  answers(pid: number): boolean;
+  /** Signal the whole group. Throws as `process.kill` does, `ESRCH` when there is no group. */
+  signal(pid: number, signal: NodeJS.Signals): void;
+  /** Give up a group whose supervisor was abandoned before its gate opened. */
+  abandon(pid: number): void;
+}
+
+/**
+ * POSIX: `processLifetime.treeRootOptions` already made the supervisor a process-group leader
+ * when it was spawned, so there is nothing to establish, and a group needs no handle to give up.
+ */
+const posixGroups: CheckGroupPlatform = {
+  graceful: true,
+  establish: () => null,
+  answers(pid) {
+    try {
+      processLifetime.signalTree(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  },
+  signal: (pid, signal) => processLifetime.signalTree(pid, signal),
+  abandon: () => {},
+};
+
+/** The platform-selection point. `win32` holds its groups in jobs; everything else is POSIX. */
+const PLATFORM_GROUPS: Partial<Record<NodeJS.Platform, CheckGroupPlatform>> = {
+  win32: createWin32CheckGroups(),
+};
+
+const platformGroups: CheckGroupPlatform = PLATFORM_GROUPS[process.platform] ?? posixGroups;
+let groups: CheckGroupPlatform = platformGroups;
+
+/**
+ * Test-only: run with this platform's mechanisms wrapped, for example an `establish` that
+ * refuses, so a caller's reaction to a refusal can be driven on any platform. `null` restores
+ * them.
+ */
+export function overrideCheckGroupPlatform(
+  wrap: ((platform: CheckGroupPlatform) => CheckGroupPlatform) | null,
+): void {
+  groups = wrap ? wrap(platformGroups) : platformGroups;
+}
+
+/**
+ * Make a just-started supervisor the root of its check group, before its gate opens. Null once
+ * it is, or the reason it could not be, which `check-spawn.ts` turns into an attempt that
+ * starts nothing.
+ */
+export function establishCheckGroup(pid: number): string | null {
+  if (!signallableGroup(pid)) return `pid ${pid} cannot lead a check group`;
+  return groups.establish(pid);
+}
+
+/** Give up the group of a supervisor abandoned before its gate opened. */
+export function abandonCheckGroup(pid: number): void {
+  if (signallableGroup(pid)) groups.abandon(pid);
+}
+
+/**
  * Whether a pid may be signalled as a process GROUP at all.
  *
  * The bound is not defensive noise. `process.kill(-0, …)` signals our OWN process group -
@@ -86,7 +164,9 @@ export function signallableGroup(pid: number): boolean {
  *
  * `kill(-pid, 0)` sends nothing; it asks the kernel whether the group exists. `ESRCH` is the
  * one answer that proves emptiness. `EPERM` means the group is there and we may not signal it,
- * which is still "something is there".
+ * which is still "something is there". On win32 the same question is the job's count of live
+ * processes, and the two zombie paragraphs below do not apply: a job counts a process out the
+ * moment it exits, whoever still holds a handle to it.
  *
  * Two honest limitations, stated here because every caller inherits them.
  *
@@ -105,17 +185,12 @@ export function signallableGroup(pid: number): boolean {
  */
 export function checkGroupAnswers(pid: number): boolean {
   if (!signallableGroup(pid)) return false;
-  try {
-    processLifetime.signalTree(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== "ESRCH";
-  }
+  return groups.answers(pid);
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
   try {
-    processLifetime.signalTree(pid, signal);
+    groups.signal(pid, signal);
   } catch {
     // ESRCH here means the group went away between the probe and the signal, which is the
     // outcome we were aiming for. Anything else is re-answered by the probe below rather
@@ -172,14 +247,17 @@ async function waitForEmpty(pid: number, budgetMs: number, pollMs: number): Prom
  *     `SIGKILL`s the whole group while the leader is still identifiable, so reaching this state
  *     needs a descendant that outlives `SIGKILL` or has left the group. Asserted in
  *     `test/workflow-check-supervisor.test.ts`.
- *  3. A match is signalled: `SIGTERM`, a bounded grace, then `SIGKILL`.
+ *  3. A match is signalled: `SIGTERM`, a bounded grace, then `SIGKILL`. Where the platform has
+ *     no catchable signal (win32, whose jobs end at once) the first signal is the last, so the
+ *     ladder goes straight to it rather than waiting out a grace nothing can use.
  *  4. Then prove it. Poll the group, bounded, and report what the probe actually said.
  *
  * Step 3's escalation does not re-read the identity, and that is deliberate rather than
  * sloppy: the leader may legitimately have exited during the grace while a descendant lives
  * on, which makes the identity unreadable on a group we have already positively identified
- * within this call. Both kernels refuse to reuse a pid while a process group still bears it,
- * so the group id we verified at step 2 still names our group for as long as it answers.
+ * within this call. Both POSIX kernels refuse to reuse a pid while a process group still bears
+ * it, so the group id we verified at step 2 still names our group for as long as it answers.
+ * On win32 the job, not the pid, is the group, and it is never handed to another process.
  */
 export async function terminateCheckGroup(
   pid: number,
@@ -199,8 +277,10 @@ export async function terminateCheckGroup(
   // own. Probing before signalling keeps a clean run from sending signals nobody needed.
   if (!checkGroupAnswers(pid)) return "empty";
 
-  signalGroup(pid, "SIGTERM");
-  if (await waitForEmpty(pid, graceMs, pollMs)) return "empty";
+  if (groups.graceful) {
+    signalGroup(pid, "SIGTERM");
+    if (await waitForEmpty(pid, graceMs, pollMs)) return "empty";
+  }
   signalGroup(pid, "SIGKILL");
   if (await waitForEmpty(pid, confirmMs, pollMs)) return "empty";
   return "not-empty";

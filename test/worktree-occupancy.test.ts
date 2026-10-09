@@ -297,3 +297,51 @@ test("this daemon's running worktree Git and its helpers are never occupants, an
     assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10], "a foreign process in the slot still counts");
   }
 });
+
+/** Processes 10, 20 and 30 in scope; 10 sits in `one`, 20 and 30 were not read. */
+function refusalDeps(cwdOf: (one: string) => Map<number, string>, refused: number[]) {
+  return (one: string) => ({
+    listProcesses: async () => ({
+      processes: [process(10), process(20), process(30)],
+      unknownReason: null,
+      cwdScopePids: [10, 20, 30],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => ({ cwds: cwdOf(one), unknownReason: null, refused: new Set(refused) }),
+  });
+}
+
+test("processes the system refused outright are not occupants of a slot that tolerates them, and only of that slot", async () => {
+  const { one, ten } = fixture();
+  const deps = refusalDeps((slot) => new Map([[10, slot]]), [20, 30])(one);
+  const result = await inspectWorktreeOccupancy([one, ten], deps, { refusedCwdsUnoccupied: new Set([one, ten]) });
+  // What was read still counts: process 10 sits in slot 1.
+  const inOne = result.get(one);
+  assert.equal(inOne?.status, "known");
+  assert.deepEqual(inOne?.status === "known" ? inOne.occupants.map((occupant) => occupant.pid) : null, [10]);
+  assert.deepEqual(result.get(ten), { status: "known", occupants: [] });
+
+  const strictForTen = await inspectWorktreeOccupancy([one, ten], deps, { refusedCwdsUnoccupied: new Set([one]) });
+  assert.equal(strictForTen.get(one)?.status, "known");
+  assert.deepEqual(
+    strictForTen.get(ten),
+    { status: "unknown", reason: "cwd listing omitted 2 ps-listed PIDs: 20, 30" },
+    "a target that does not tolerate refusals is judged as before",
+  );
+});
+
+test("without tolerance, or with any unread process the system did not refuse, occupancy stays unknown", async () => {
+  const { one } = fixture();
+  const refusedOnly = refusalDeps((slot) => new Map([[10, slot]]), [20, 30])(one);
+  assert.deepEqual(await inspectWorktreeOccupancy([one], refusedOnly).then((r) => r.get(one)), {
+    status: "unknown",
+    reason: "cwd listing omitted 2 ps-listed PIDs: 20, 30",
+  });
+
+  // Process 30 was not read for some other reason, so nothing proves where it is.
+  const mixed = refusalDeps((slot) => new Map([[10, slot]]), [20])(one);
+  assert.deepEqual(
+    await inspectWorktreeOccupancy([one], mixed, { refusedCwdsUnoccupied: new Set([one]) }).then((r) => r.get(one)),
+    { status: "unknown", reason: "cwd listing omitted 2 ps-listed PIDs: 20, 30" },
+  );
+});

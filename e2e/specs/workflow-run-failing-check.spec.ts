@@ -2,9 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
-
-skipSpecOnWin32(test, "check commands run only on Linux and macOS, through POSIX process groups, so the daemon records this gate as unavailable on win32 instead of running it");
 
 /**
  * A failed command gate is a blocker, and it keeps everything a person needs from it.

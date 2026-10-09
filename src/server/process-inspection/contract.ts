@@ -21,8 +21,13 @@ export interface ProcessInspector {
    * for a system-wide listing whose `ownedByDaemonUser` would all be false.
    */
   userScopeUnavailable(): string | null;
-  /** The working directory of each pid. Omission is not proof a pid exited. */
-  readCwds(pids: readonly number[]): Promise<{ cwds: Map<number, string>; result: RunResult }>;
+  /**
+   * The working directory of each pid. Omission is not proof a pid exited. `refused` names the
+   * omitted pids the system declined to open for this user at all (win32 `ERROR_ACCESS_DENIED`:
+   * an elevated or self-hardened process), as opposed to ones it could not read for any other
+   * reason. Absent where the system does not tell the two apart, as `lsof` does not.
+   */
+  readCwds(pids: readonly number[]): Promise<{ cwds: Map<number, string>; result: RunResult; refused?: ReadonlySet<number> }>;
   /** Every path each pid has open, in the order the system reported them. */
   readOpenFiles(pids: readonly number[]): Promise<{ files: Map<number, string[]>; result: RunResult }>;
   /**

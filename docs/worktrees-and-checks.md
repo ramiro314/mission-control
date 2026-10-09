@@ -440,6 +440,19 @@ the leader exiting proves nothing about its children. A group it cannot prove is
 its lease rather than handing back a tree something may still be writing into. Test commands
 get sixty minutes before this teardown begins; other Command slots keep the ten-minute default.
 
+On Windows the group is a job object, and there is no `SIGTERM` to send a console program, so
+the job is ended at once with no grace. Everything the command started is in the job even after
+its parent exits, so the emptiness proof covers it the same way. The job also ends with the
+daemon: if the daemon is killed mid-check, Windows ends the check's processes with it.
+
+Windows also refuses to let Mission Control read the working directory of some of your own
+programs: elevated ones, and ones that protect themselves, such as a password manager. For a
+task's worktree that leaves occupancy unknown, and the worktree is kept. For a check's worktree
+it does not. Nobody works in a check's worktree, and the check's own processes have already
+been proven gone, so a program Windows refuses to open is not counted as being inside one. That
+covers handing the worktree back and reusing a slot a check last held. A program Mission Control
+can read, and one it failed to read for any other reason, still counts as before.
+
 **A daemon shutdown skips the grace and goes straight to `SIGKILL`**, deliberately. Stopping
 Mission Control mid-build would otherwise wait out the rest of the command's timeout - up to
 sixty minutes for one test suite - and the output a grace period buys is output nobody is left to
