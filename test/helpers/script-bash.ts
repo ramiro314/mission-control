@@ -55,6 +55,29 @@ export function scriptEnv(
   return { ...windows, PATH: `${stubs}${join}${base.PATH ?? ""}`, ...env };
 }
 
+/** Whether `command` resolves on PATH in the bash `scriptBash` picks, where a script runs it. */
+export function onScriptPath(command: string): boolean {
+  const r = spawnSync(scriptBash(), ["-c", 'command -v "$1"', "probe", command], { stdio: "ignore" });
+  // A bash that does not start answers nothing about `command`; the tests that run it fail
+  // on that themselves, more plainly than a skip would.
+  return r.error !== undefined || r.status === 0;
+}
+
+/**
+ * The `skip` option for a test whose script calls `jq`. GitHub's runners ship it; macOS and
+ * Git for Windows do not, and without it the script's output is a missing file rather than a
+ * reason. A developer without `jq` sees the tests skip and why. A CI run without it is a
+ * broken runner, so there it throws instead of passing the suite on skips.
+ */
+export function jqSkip(
+  installed: () => boolean = () => onScriptPath("jq"),
+  env: NodeJS.ProcessEnv = process.env,
+): string | false {
+  if (installed()) return false;
+  if (env.CI) throw new Error("jq is not on PATH: these scripts call it, and every CI runner must provide it");
+  return "jq is not installed: install it (brew install jq, winget install jqlang.jq) to run the scripts that call it";
+}
+
 /** Run `script` with `args` as CI does, with `stubs` first on PATH and only `env` set. */
 export function runBashScript(
   script: string,

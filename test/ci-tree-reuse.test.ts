@@ -8,6 +8,9 @@
  * rest stay the green path. The artifact the green path downloads is the one `record` wrote,
  * which holds the two modes to the same file format.
  *
+ * `jq` is the machine's own, never a stub. Every case that reaches it skips without it, saying
+ * so, and a CI run without it fails instead (`jqSkip`).
+ *
  * The one case that answers `true` is the happy path; every other condition and failure answers
  * `false`, exits 0, and says why.
  */
@@ -17,9 +20,11 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBashScript } from "./helpers/script-bash.ts";
+import { jqSkip, runBashScript } from "./helpers/script-bash.ts";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/ci-tree-reuse.sh", import.meta.url));
+/** Both modes read and write their JSON with `jq`. */
+const JQ = { skip: jqSkip() };
 
 const dir = mkdtempSync(join(tmpdir(), "mission-ci-tree-reuse-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -123,7 +128,7 @@ function assertDecision(r: ReturnType<typeof run>, value: "true" | "false") {
 
 // ---- record ----------------------------------------------------------------------------------
 
-test("record: writes the tested tree and the run's docs_only value", () => {
+test("record: writes the tested tree and the run's docs_only value", JQ, () => {
   const file = join(dir, "tested-tree.json");
   const r = run(["record", file], { STUB_GIT_TREE: TREE, DOCS_ONLY: "false" });
   assert.equal(r.code, 0, r.stderr);
@@ -141,7 +146,7 @@ test("record: a git failure warns, writes nothing, and never fails the pull requ
 
 // ---- decide ----------------------------------------------------------------------------------
 
-test("decide: the merged PR's newest green run tested this exact tree, so it is reused", () => {
+test("decide: the merged PR's newest green run tested this exact tree, so it is reused", JQ, () => {
   const r = decide();
   assertDecision(r, "true");
   assert.match(r.stdout, /Run 42 of #7 tested tree c{40}/);
@@ -153,7 +158,7 @@ test("decide: the merged PR's newest green run tested this exact tree, so it is 
   ]);
 });
 
-test("decide: anything but a push to main never reuses, and never calls the API", () => {
+test("decide: anything but a push to main never reuses, and never calls the API", JQ, () => {
   const cases: Array<[event: string, ref: string]> = [
     ["pull_request", "refs/pull/7/merge"],
     ["workflow_dispatch", "refs/heads/main"],
@@ -248,7 +253,7 @@ const ARTIFACTS: Record<string, () => string> = {
 };
 
 for (const c of FALSE_CASES) {
-  test(`decide: runs everything, and says why, for ${c.name}`, () => {
+  test(`decide: runs everything, and says why, for ${c.name}`, JQ, () => {
     const artifact = c.over.STUB_ARTIFACT;
     const over = artifact && ARTIFACTS[artifact] ? { ...c.over, STUB_ARTIFACT: ARTIFACTS[artifact]() } : c.over;
     const r = decide(over);
@@ -258,7 +263,7 @@ for (const c of FALSE_CASES) {
   });
 }
 
-test("decide: a failing git rev-parse of the pushed tree runs everything", () => {
+test("decide: a failing git rev-parse of the pushed tree runs everything", JQ, () => {
   const r = decide({ STUB_GIT_EXIT: "128" });
   assertDecision(r, "false");
   assert.match(r.stdout, /git rev-parse a{40}\^\{tree\} failed/);

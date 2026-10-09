@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { after, describe, test } from "node:test";
 import {
   FLAKY_TESTS_CHECK_NAME,
@@ -244,7 +244,10 @@ describe("rerun mode", () => {
       cwd: work,
       encoding: "utf8",
       env: {
-        PATH: process.env.PATH,
+        // The action splits its rerun command on whitespace, so the command names `node` and
+        // the runner, which resolve from here, not their paths: `C:\Program Files\nodejs` is
+        // Node's default Windows home, and a temp dir may hold a space too.
+        PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
         RUNNER_TEMP: work,
         GITHUB_STEP_SUMMARY: summaryPath,
         GITHUB_OUTPUT: outputPath,
@@ -257,7 +260,7 @@ describe("rerun mode", () => {
         INPUT_JOB: "unit (node 24, shard 1/6)",
         INPUT_JUNIT: first,
         "INPUT_EXIT-CODE": "1",
-        "INPUT_RERUN-COMMAND": `${process.execPath} ${fake} {junit} {files}`,
+        "INPUT_RERUN-COMMAND": `node ${basename(fake)} {junit} {files}`,
       },
     });
     assert.equal(run.status, 0, run.stdout + run.stderr);
