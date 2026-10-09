@@ -181,8 +181,9 @@ const QUEUE_PLAN: BacklogPlan = {
 };
 
 // An error notice carries no Trust button, so its copy has the whole 360px column. The copy
-// must overflow that on every platform's fallback font: an earlier 79-character message filled
-// exactly 360px on Windows and never ellipsized, while Linux and macOS clipped it.
+// must overflow that on every platform's fallback font: an earlier 79-character message fit
+// within 360px under Windows' Segoe UI (scrollWidth equal to clientWidth) and never ellipsized,
+// while Linux and macOS clipped it.
 const NOTICED_QUEUE = QUEUE.map((task, index) => ({
   ...task,
   error: index === 0
