@@ -38,6 +38,13 @@ import { fileURLToPath } from "node:url";
  * its connection when that path holds the database. POSIX unlinks an open file without
  * complaint, so nothing changes there.
  *
+ * Another process can also hold a handle for a moment: Defender scanning a file a test just
+ * wrote, which is why a developer machine fails where the CI runner, with real-time scanning
+ * off, does not, or a child process a test just ended, whose working directory win32 holds
+ * until it has fully exited. So a removal refused with `EPERM`, `EACCES` or `EBUSY` is tried
+ * again, up to `REMOVAL_ATTEMPTS` times. Node's own `maxRetries` cannot do this: since `rmSync`
+ * moved into C++ it fails at once on these errors on win32, whatever it is given.
+ *
  * `syncBuiltinESMExports` is what reaches a named `import { rmSync } from "node:fs"`; without
  * it only callers that read `fs.rmSync` would see the wrapper.
  *
@@ -46,12 +53,28 @@ import { fileURLToPath } from "node:url";
  */
 export const TEST_STATE_REMOVAL_EVENT = "mission-control:test-state-removal";
 
-export function releaseBeforeRemoval(target = fs) {
+/** Each retry waits 100 ms longer than the last, so a handle that never closes costs 2.8 s. */
+export const REMOVAL_ATTEMPTS = 8;
+const REMOVAL_BACKOFF_MS = 100;
+const HELD_HANDLE_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export function releaseBeforeRemoval(target = fs, wait = sleepSync) {
   const remove = target.rmSync;
   target.rmSync = function rmSync(path, options) {
     const absolute = resolve(path instanceof URL ? fileURLToPath(path) : String(path));
     process.emit(TEST_STATE_REMOVAL_EVENT, absolute);
-    return remove.call(this, path, options);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return remove.call(this, path, options);
+      } catch (error) {
+        if (attempt >= REMOVAL_ATTEMPTS || !HELD_HANDLE_CODES.has(error?.code)) throw error;
+        wait(attempt * REMOVAL_BACKOFF_MS);
+      }
+    }
   };
   if (target === fs) syncBuiltinESMExports();
 }

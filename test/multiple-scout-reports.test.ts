@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -9,6 +8,9 @@ import type { ArchiveSubject, ArchiveTaskGateway } from "../src/server/archives/
 import type { ArchiveManagerOptions } from "../src/server/archives/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { validReportHtml } from "./helpers/archive-fixture.ts";
+// The rename the product uses by default, so a fixture that wraps it still waits out a handle
+// win32 holds briefly on a directory it is moving.
+import { renameAllowingHeldHandles as rename } from "../src/server/platform/held-handle-rename.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-multiple-scouts-"));
 process.env.MISSION_HOME = home;

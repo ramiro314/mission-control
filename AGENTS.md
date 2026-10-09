@@ -84,9 +84,11 @@ A test that needs one sets it in its file body, as it does for its home.
 On win32 it also wraps `rmSync`, because win32 refuses to delete an open file and `openDb`
 keeps its connection open for the life of the worker. A removal first emits
 `mission-control:test-state-removal` with its path, and `src/server/db.ts` closes the
-connection that path holds, so `after(() => rmSync(home, ...))` works there unchanged. Its own
-exit cleanup reports a state dir it cannot remove rather than crashing a worker whose tests
-passed.
+connection that path holds, so `after(() => rmSync(home, ...))` works there unchanged. A
+removal refused with `EPERM`, `EACCES` or `EBUSY` is also tried again a few times, because
+another process, such as Defender scanning a file a test just wrote or a child still exiting
+from inside the directory, can hold a handle for a moment. Its own exit cleanup reports
+a state dir it cannot remove rather than crashing a worker whose tests passed.
 
 A test that needs a particular database keeps seeding its own home above its imports, exactly
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
