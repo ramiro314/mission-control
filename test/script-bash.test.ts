@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { scriptBash, scriptEnv } from "./helpers/script-bash.ts";
+import { jqSkip, onScriptPath, scriptBash, scriptEnv } from "./helpers/script-bash.ts";
 
 const GIT_BASH = "C:\\Program Files\\Git\\bin\\bash.exe";
 const MSYS_BASH = "C:\\Program Files\\Git\\usr\\bin\\bash.exe";
@@ -36,4 +36,16 @@ test("a script sees its stubs first on PATH and only the env it is given", () =>
     PATH: "D:\\stubs;C:\\Git\\usr\\bin;C:\\Windows",
     A: "1",
   });
+});
+
+test("a command is on the script's PATH only when that bash resolves it", () => {
+  assert.equal(onScriptPath("cd"), true);
+  assert.equal(onScriptPath("mission-control-no-such-command"), false);
+});
+
+test("a missing jq skips locally with how to install it, and is an error on CI", () => {
+  assert.equal(jqSkip(() => true, {}), false);
+  assert.equal(jqSkip(() => true, { CI: "true" }), false);
+  assert.match(String(jqSkip(() => false, {})), /^jq is not installed: install it \(brew install jq, winget install jqlang\.jq\)/);
+  assert.throws(() => jqSkip(() => false, { CI: "true" }), /jq is not on PATH: .* every CI runner must provide it/);
 });
