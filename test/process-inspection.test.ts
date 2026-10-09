@@ -469,9 +469,17 @@ test("win32 cwds keep every well-formed path and report the rest as a partial re
     "could not read the working directory of 4 of 7 processes: 13 (OpenProcess failed with code 5), 14 (exited), "
       + "15 (not a working directory path), 16 (layout failed with code 13)",
   );
+  // Only an outright refusal to open is a refusal. An exit, a misread layout and a failed read
+  // are not, so occupancy never treats them as anything but unknown.
+  assert.deepEqual(read.refused, new Set([13]));
   // Partial, like an lsof that lost a pid: the paths it has are evidence, and occupancy rechecks
-  // every pid it omitted.
+  // every pid it omitted. The refusal travels with the snapshot.
   assert.deepEqual(await readProcCwdsSnapshot([10, 13], inspector), {
+    cwds: new Map([[10, "C:\\pool\\1\\repo\\src"]]),
+    unknownReason: null,
+    refused: new Set([13]),
+  });
+  assert.deepEqual(await readProcCwdsSnapshot([10, 14], inspector), {
     cwds: new Map([[10, "C:\\pool\\1\\repo\\src"]]),
     unknownReason: null,
   });
@@ -479,6 +487,7 @@ test("win32 cwds keep every well-formed path and report the rest as a partial re
   const complete = await inspector.readCwds([10, 11]);
   assert.equal(complete.result.code, 0);
   assert.equal(complete.result.stderr, "");
+  assert.equal(complete.refused, undefined);
 
   const many = await createWin32ProcessInspector(powerShellRunner().runner, () => fakeNative()).readCwds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert.match(many.result.stderr, /^could not read the working directory of 10 of 10 processes: 1 \(OpenProcess failed with code 5\), .*8 \(OpenProcess failed with code 5\) and 2 more$/);

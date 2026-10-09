@@ -337,11 +337,17 @@ export function createWin32ProcessInspector(
         return { cwds, result: unreadable(`the working directory read failed: ${firstLine(error)}`) };
       }
       const missed: string[] = [];
+      const refused = new Set<number>();
       pids.forEach((pid, index) => {
-        const answer = answers[index] as { cwd?: unknown } | undefined;
+        const answer = answers[index] as { cwd?: unknown; failed?: unknown; code?: unknown } | undefined;
         const cwd = typeof answer?.cwd === "string" ? win32CwdFromDosPath(answer.cwd) : null;
-        if (cwd) cwds.set(pid, cwd);
-        else missed.push(`${pid} (${describeCwdFailure(answer)})`);
+        if (cwd) {
+          cwds.set(pid, cwd);
+          return;
+        }
+        // Refused outright, as opposed to unreadable for any other reason: see the contract.
+        if (answer?.failed === "OpenProcess" && answer.code === ERROR_ACCESS_DENIED) refused.add(pid);
+        missed.push(`${pid} (${describeCwdFailure(answer)})`);
       });
       if (missed.length === 0) {
         return { cwds, result: { stdout: "", stderr: "", code: 0, childPid: null, outcomeUnknown: false, overflowed: false } };
@@ -350,7 +356,7 @@ export function createWin32ProcessInspector(
       const reason =
         `could not read the working directory of ${missed.length} of ${pids.length} processes: `
         + `${missed.slice(0, SHOWN_CWD_FAILURES).join(", ")}${remainder}`;
-      return { cwds, result: unreadable(reason) };
+      return { cwds, result: unreadable(reason), refused };
     },
 
     async readOpenFiles() {

@@ -4,6 +4,11 @@ export interface ProcCwdSnapshot {
   cwds: Map<number, string>;
   /** Non-null when lsof failed without a usable, bounded process answer. */
   unknownReason: string | null;
+  /**
+   * Omitted pids the system refused to open for this user at all (`ProcessInspector.readCwds`).
+   * Absent where the system does not say, which is every platform but win32.
+   */
+  refused?: ReadonlySet<number>;
 }
 
 /**
@@ -28,7 +33,7 @@ export async function readProcCwdsSnapshot(
   const uniq = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
   if (uniq.length === 0) return { cwds: new Map(), unknownReason: null };
 
-  const { cwds, result: res } = await inspector.readCwds(uniq);
+  const { cwds, result: res, refused } = await inspector.readCwds(uniq);
   // lsof exits 1 when one PID vanishes during a batched read, while still printing the
   // survivors. A partial answer is usable evidence, but omission is not proof of exit;
   // destructive callers compare unresolved PIDs against a fresh process snapshot.
@@ -41,7 +46,7 @@ export async function readProcCwdsSnapshot(
     res.outcomeUnknown || res.overflowed || (res.code !== 0 && cwds.size === 0)
       ? `cwd listing failed: ${failure}`
       : null;
-  return { cwds, unknownReason: unknown };
+  return refused && refused.size > 0 ? { cwds, unknownReason: unknown, refused } : { cwds, unknownReason: unknown };
 }
 
 export async function readProcCwds(pids: number[]): Promise<Map<number, string>> {

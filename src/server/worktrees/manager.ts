@@ -25,6 +25,7 @@ import {
   inspectWorktreeOccupancy,
   pathContains,
   type WorktreeOccupancy,
+  type WorktreeOccupancyOptions,
 } from "./occupancy.ts";
 import {
   WORKTREE_SLOT_STATES,
@@ -125,7 +126,10 @@ interface SetupResult {
 
 export interface WorktreeManagerDeps {
   git: WorktreeGit;
-  occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
+  occupancy: (
+    paths: readonly string[],
+    options?: WorktreeOccupancyOptions,
+  ) => Promise<Map<string, WorktreeOccupancy>>;
   resolvePolicy: (commonDirectory: string) => WorktreePolicy;
   ownerReferenced: (reference: WorktreeOwnerReference) => Promise<boolean>;
   runSetup: (argv: readonly string[], cwd: string) => Promise<SetupResult>;
@@ -137,7 +141,7 @@ export interface WorktreeManagerDeps {
 
 const DEFAULT_DEPS: WorktreeManagerDeps = {
   git: new NativeWorktreeGit(),
-  occupancy: inspectWorktreeOccupancy,
+  occupancy: (paths, options) => inspectWorktreeOccupancy(paths, {}, options),
   resolvePolicy: resolveWorktreePolicy,
   // Focused callers may have no domain tables. Production injects the durable task/check
   // resolver so reconciliation never treats this permissive test seam as authority.
@@ -386,9 +390,29 @@ export class WorktreeManager {
     this.quarantine(slot, reason, error, true);
   }
 
-  private async occupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
+  /**
+   * `checkSlots` are slots a workflow Check holds, or held last before they went back to the
+   * pool. For those alone, a same-user process the system refused to open at all is not
+   * counted as a possible occupant (`refusedCwdsUnoccupied`).
+   *
+   * Without this, a win32 desktop running any elevated or self-hardened program (a password
+   * manager, a GPU tuner) leaves every slot's occupancy unknown, so no Check could ever hand
+   * its tree back or reuse one, and the pool ran dry after a few runs. The judgment is that
+   * such a program does not sit inside a Check slot: nobody works in one, and the Check's own
+   * processes are already proven gone, through its process group or job, before its lease is
+   * released. Everything else still fails closed: a process that is read and sits in the slot
+   * occupies it, an unread process the system did NOT refuse leaves occupancy unknown, and a
+   * task or manual slot is judged exactly as before. Only win32 reports refusals, so no other
+   * platform changes. Decided by the operator on #345.
+   */
+  private async occupancy(
+    paths: readonly string[],
+    checkSlots: readonly string[] = [],
+  ): Promise<Map<string, WorktreeOccupancy>> {
     try {
-      return await this.deps.occupancy(paths);
+      return checkSlots.length > 0
+        ? await this.deps.occupancy(paths, { refusedCwdsUnoccupied: new Set(checkSlots) })
+        : await this.deps.occupancy(paths);
     } catch (error) {
       const reason = `slot occupancy query failed: ${bounded(String(error))}`;
       return new Map(paths.map((path) => [path, { status: "unknown" as const, reason }]));
@@ -398,6 +422,7 @@ export class WorktreeManager {
   private async releaseBlocker(
     reference: WorktreeOwnerReference,
     path: string,
+    checkSlot = false,
   ): Promise<string | null> {
     try {
       if (await this.ownerReferenced(reference)) {
@@ -406,16 +431,20 @@ export class WorktreeManager {
     } catch (error) {
       return `domain ownership is unknown: ${bounded(String(error))}`;
     }
-    return this.occupancyBlocker(path);
+    return this.occupancyBlocker(path, checkSlot);
   }
 
   /**
    * A point check before a mutation. Only the process read itself takes the observation
    * lock, so it cannot overlap an inventory observation's Git reads inside this slot; the
    * mutation around it runs unlocked, so a slow removal never holds up a preview.
+   *
+   * `checkSlot` marks a slot a workflow Check holds: see `occupancy`.
    */
-  private async occupancyBlocker(path: string): Promise<string | null> {
-    const occupancy = (await this.withObservation(() => this.occupancy([path]))).get(path);
+  private async occupancyBlocker(path: string, checkSlot = false): Promise<string | null> {
+    const occupancy = (
+      await this.withObservation(() => this.occupancy([path], checkSlot ? [path] : []))
+    ).get(path);
     if (!occupancy || occupancy.status === "unknown") {
       return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
     }
@@ -549,8 +578,11 @@ export class WorktreeManager {
       for (const slot of available) this.quarantine(slot, "Git registrations could not be read", reason);
       return { outcome: "notAcquired", reason };
     }
+    const lastHeldByCheck = new Set(
+      available.filter((slot) => slot.lastReleasedOwnerKind === "check").map((slot) => slot.path),
+    );
     const occupancy = available.length > 0
-      ? await this.occupancy(available.map((slot) => slot.path))
+      ? await this.occupancy(available.map((slot) => slot.path), [...lastHeldByCheck])
       : new Map<string, WorktreeOccupancy>();
     const eligible: WorktreeSlotRow[] = [];
 
@@ -678,7 +710,12 @@ export class WorktreeManager {
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
-          const freshOccupancy = (await this.occupancy([reservation.path])).get(reservation.path);
+          const freshOccupancy = (
+            await this.occupancy(
+              [reservation.path],
+              lastHeldByCheck.has(reservation.path) ? [reservation.path] : [],
+            )
+          ).get(reservation.path);
           if (!freshOccupancy || freshOccupancy.status === "unknown") {
             const reason = freshOccupancy?.status === "unknown"
               ? freshOccupancy.reason
@@ -869,9 +906,10 @@ export class WorktreeManager {
       if (!reference || reference === "invalid") {
         return { outcome: "refused", reason: "active lease identity is incomplete or invalid" };
       }
+      const checkSlot = lease.owner.kind === "check";
       const initialBlocker = options.ownerAuthorized
-        ? await this.occupancyBlocker(slot.path)
-        : await this.releaseBlocker(reference, slot.path);
+        ? await this.occupancyBlocker(slot.path, checkSlot)
+        : await this.releaseBlocker(reference, slot.path, checkSlot);
       if (initialBlocker) return { outcome: "refused", reason: initialBlocker };
 
       const identity = this.identity(pool.mainCheckoutRoot);
@@ -902,8 +940,8 @@ export class WorktreeManager {
       // Fetch and target validation may take long enough for a process or domain reference
       // to appear. Re-read both immediately before persisting the destructive reset intent.
       const freshBlocker = options.ownerAuthorized
-        ? await this.occupancyBlocker(slot.path)
-        : await this.releaseBlocker(reference, slot.path);
+        ? await this.occupancyBlocker(slot.path, checkSlot)
+        : await this.releaseBlocker(reference, slot.path, checkSlot);
       if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
       if (options.requireClean) {
         let clean: Awaited<ReturnType<WorktreeGit["inspect"]>>;
