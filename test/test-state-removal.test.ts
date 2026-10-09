@@ -25,7 +25,11 @@ const { openDb, TEST_STATE_REMOVAL_EVENT } = await import("../src/server/db.ts")
 const preloadPath = "./setup-state.mjs";
 const preload = (await import(preloadPath)) as {
   TEST_STATE_REMOVAL_EVENT: string;
-  releaseBeforeRemoval(target?: { rmSync(path: unknown, options?: unknown): unknown }): void;
+  REMOVAL_ATTEMPTS: number;
+  releaseBeforeRemoval(
+    target?: { rmSync(path: unknown, options?: unknown): unknown },
+    wait?: (ms: number) => void,
+  ): void;
 };
 // Installed once for the whole file, as the preload does on win32, so every case below stands
 // on its own however it is selected or ordered. On win32 this wraps a second time, which only
@@ -57,6 +61,38 @@ test("the wrapped rmSync announces the absolute path before it removes anything"
   } finally {
     process.off(TEST_STATE_REMOVAL_EVENT, listener);
   }
+});
+
+test("the wrapped rmSync waits out a handle another process holds, and only that", () => {
+  const held = (code: string) => Object.assign(new Error(`${code}: rm`), { code });
+  const removal = (failures: Error[]) => {
+    const waits: number[] = [];
+    let attempts = 0;
+    const fake = {
+      rmSync(_path: unknown) {
+        attempts++;
+        const failure = failures.shift();
+        if (failure) throw failure;
+        return "removed";
+      },
+    };
+    preload.releaseBeforeRemoval(fake, (ms) => waits.push(ms));
+    return { fake, waits, attempts: () => attempts };
+  };
+
+  const brief = removal([held("EPERM"), held("EACCES"), held("EBUSY")]);
+  assert.equal(brief.fake.rmSync(join(home, "held")), "removed");
+  assert.deepEqual(brief.waits, [100, 200, 300]);
+
+  const lasting = Array.from({ length: preload.REMOVAL_ATTEMPTS }, () => held("EPERM"));
+  const stuck = removal([...lasting]);
+  assert.throws(() => stuck.fake.rmSync(join(home, "held")), (error) => error === lasting.at(-1));
+  assert.equal(stuck.attempts(), preload.REMOVAL_ATTEMPTS);
+
+  const missing = held("ENOTDIR");
+  const other = removal([missing]);
+  assert.throws(() => other.fake.rmSync(join(home, "held")), (error) => error === missing);
+  assert.deepEqual(other.waits, [], "any other failure is reported at once");
 });
 
 test("removing an unrelated directory, even one sharing the home's prefix, keeps the connection", () => {

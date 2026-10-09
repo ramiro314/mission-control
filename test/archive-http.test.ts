@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import type { Hono } from "hono";
 import type { ServerEvent } from "../src/shared/types.ts";
 import { writeScoutBundle } from "./helpers/archive-fixture.ts";
+// The rename the product uses by default, so a fixture that wraps it still waits out a handle
+// win32 holds briefly on a directory it is moving.
+import { renameAllowingHeldHandles as renamePath } from "../src/server/platform/held-handle-rename.ts";
 
 /** The loopback Host every data endpoint requires. See `hostIsLoopback` in routes.ts. */
 const LOOPBACK = { host: "127.0.0.1:7317" };
