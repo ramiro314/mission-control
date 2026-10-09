@@ -307,6 +307,15 @@ POSIX implementation issues the same commands it did before.
    read them. **The rename probe from task `90865459` therefore stays as a second check**, run
    for exactly the slots the cwd read leaves unknown: a slot directory that renames away and
    back is held by no process, the unreadable ones included. Neither check replaces the other.
+   Scope where Windows will not name an owner was decided by the human in review, against the
+   issue's stricter "outside scope only when another user is proven". On the measured session,
+   156 processes (System, csrss, services, svchost and the like) refuse even `OpenProcess`.
+   Windows reports no SID for any of them, so counting them would leave occupancy unknown for
+   every daemon that is not elevated. They are out of scope, and the residual risk is a process
+   of this user that hardens its own DACL against limited information. A process that opens
+   but refuses its token counts as this user's in the daemon's own logon session (two such
+   `SamsungMagician.exe` processes were measured beside two this user owned). It counts as
+   another user's in any other session (`audiodg.exe`, LOCAL SERVICE, session 0).
 5. **State home and paths** (D22): resolve `%USERPROFILE%\.mission-control`, and audit for
    string-concatenated `/` paths, `/tmp`, and POSIX file modes on that branch.
 6. **Harness availability** (D10, D20): on win32, Claude Code is available. Codex and Pi report

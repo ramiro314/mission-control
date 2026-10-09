@@ -244,8 +244,10 @@ function missingNative(): never {
 }
 
 /** A CIM listing that answered these rows. */
-function cimListing(rows: Array<{ pid: number; ppid?: number; start?: string; command?: string }>): RunResult {
-  const json = JSON.stringify(rows.map((row) => ({ ppid: 1, start: "Fri Jul 3 15:15:37 2026", command: "cmd.exe", ...row })));
+function cimListing(
+  rows: Array<{ pid: number; ppid?: number; session?: number | null; start?: string; command?: string }>,
+): RunResult {
+  const json = JSON.stringify(rows.map((row) => ({ ppid: 1, session: 1, start: "Fri Jul 3 15:15:37 2026", command: "cmd.exe", ...row })));
   return stubRun({ stdout: json, stderr: "", code: 0 });
 }
 
@@ -268,6 +270,7 @@ test("the win32 inspector issues one encoded PowerShell script per asynchronous 
 
 test("the win32 scripts ask CIM and the TCP/IP module the questions ps and lsof answered", () => {
   assert.match(WIN32_LIST_PROCESSES_SCRIPT, /Get-CimInstance -ClassName Win32_Process/);
+  assert.match(WIN32_LIST_PROCESSES_SCRIPT, /session = \$p\.SessionId/, "the logon session, which scope reads");
   // `lstart`'s shape, in invariant English, so `Date.parse` and the occupancy recheck read it as they read ps.
   assert.match(WIN32_LIST_PROCESSES_SCRIPT, /\$p\.CreationDate\.ToString\('ddd MMM d HH:mm:ss yyyy', \[Globalization\.CultureInfo\]::InvariantCulture\)/);
   assert.match(WIN32_LIST_PROCESSES_SCRIPT, /ConvertTo-Json -InputObject \$rows -Compress/);
@@ -355,30 +358,73 @@ test("without the native addon, win32 owners and cwds answer as failed reads, ne
 });
 
 test("win32 scope is the processes whose token carries the daemon's own user SID", async () => {
+  const DAEMON = 900;
+  const refusedToken = { failed: "OpenProcessToken", code: 5 };
   const native = fakeNative({
     owners: {
       100: { sameUser: true },
       200: { sameUser: false }, // another user, signed in to this machine
       300: { failed: "OpenProcess", code: 5 }, // SYSTEM or a service account
-      400: { failed: "OpenProcessToken", code: 5 },
+      400: refusedToken, // in the daemon's session: nothing proves another user owns it
+      410: refusedToken, // in the services session, like audiodg.exe under LOCAL SERVICE
+      420: refusedToken, // CIM gave no session, so nothing proves it is elsewhere
       500: { failed: "exited", code: 0 }, // exited, kept alive only by someone's handle
       600: { failed: "OpenProcess", code: 87 }, // gone between the listing and this read
       700: { failed: "GetTokenInformation", code: 8 }, // a failure the policy does not recognize
       800: {} as NativeProcessOwner,
+      [DAEMON]: { sameUser: true },
     },
   });
-  const listing = cimListing([100, 200, 300, 400, 500, 600, 700, 800].map((pid) => ({ pid })));
-  const inspector = createWin32ProcessInspector(powerShellRunner({ [WIN32_LIST_PROCESSES_SCRIPT]: listing }).runner, () => native);
+  const listing = cimListing([
+    ...[100, 200, 300, 400].map((pid) => ({ pid })),
+    { pid: 410, session: 0 },
+    { pid: 420, session: null },
+    ...[500, 600, 700, 800, DAEMON].map((pid) => ({ pid })),
+  ]);
+  const inspector = createWin32ProcessInspector(
+    powerShellRunner({ [WIN32_LIST_PROCESSES_SCRIPT]: listing }).runner,
+    () => native,
+    DAEMON,
+  );
 
   assert.equal(inspector.userScopeUnavailable(), null);
   const snapshot = await listProcessesSnapshot(inspector);
   assert.equal(snapshot.unknownReason, null);
   // An unrecognized answer stays in scope, so its cwd read decides and a failure there leaves
   // occupancy unknown instead of quietly dropping the process.
-  assert.deepEqual(snapshot.cwdScopePids, [100, 700, 800]);
-  assert.deepEqual(native.calls, [{ read: "owners", pids: [100, 200, 300, 400, 500, 600, 700, 800] }], "one owner read per listing");
+  assert.deepEqual(snapshot.cwdScopePids, [100, 400, 420, 700, 800, DAEMON]);
+  assert.deepEqual(
+    native.calls,
+    [{ read: "owners", pids: [100, 200, 300, 400, 410, 420, 500, 600, 700, 800, DAEMON] }],
+    "one owner read per listing",
+  );
 
-  assert.equal(win32OwnerInScope(undefined), true, "a missing answer is not proof of another owner");
+  // Without the daemon's own row there is no session to compare with, so a refused token stays.
+  const headless = createWin32ProcessInspector(
+    powerShellRunner({ [WIN32_LIST_PROCESSES_SCRIPT]: cimListing([{ pid: 410, session: 0 }]) }).runner,
+    () => native,
+    DAEMON,
+  );
+  assert.deepEqual((await listProcessesSnapshot(headless)).cwdScopePids, [410]);
+});
+
+test("the win32 owner policy drops a process only where another owner, an exit or a refused open says so", () => {
+  const cases: Array<[unknown, boolean | null, boolean, string]> = [
+    [{ sameUser: true }, null, true, "this user's"],
+    [{ sameUser: false }, true, false, "another user's, even in this session"],
+    [{ failed: "exited", code: 0 }, true, false, "exited"],
+    [{ failed: "OpenProcess", code: 87 }, true, false, "gone"],
+    [{ failed: "OpenProcess", code: 5 }, true, false, "refused at open: SYSTEM or a service"],
+    [{ failed: "OpenProcessToken", code: 5 }, true, true, "token refused in this session"],
+    [{ failed: "OpenProcessToken", code: 5 }, null, true, "token refused, session unknown"],
+    [{ failed: "OpenProcessToken", code: 5 }, false, false, "token refused in another session"],
+    [{ failed: "OpenProcessToken", code: 6 }, false, true, "a token failure that is not a refusal"],
+    [{ failed: "OpenProcess", code: 1450 }, false, true, "an open failure that is not a refusal"],
+    [undefined, null, true, "no answer"],
+  ];
+  for (const [owner, sameSession, inScope, label] of cases) {
+    assert.equal(win32OwnerInScope(owner, sameSession), inScope, label);
+  }
 });
 
 test("a win32 owner read that throws is the listing's failure, and no row is in scope", async () => {

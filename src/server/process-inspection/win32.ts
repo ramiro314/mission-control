@@ -18,7 +18,9 @@ import { defaultCommandRunner, type CommandRunner } from "./runner.ts";
  * - **Owners.** Windows has no uid. The addon compares each process token's user SID with the
  *   daemon's own (`OpenProcessToken`, `GetTokenInformation(TokenUser)`, `EqualSid`), and that is
  *   the `ownedByDaemonUser` POSIX gets from comparing a uid with `geteuid()`. `win32OwnerInScope`
- *   is the policy over its answers.
+ *   is the policy over its answers, including the ones where Windows refuses to say: it uses the
+ *   logon session the listing reports to tell a service's refused token from a refusal in the
+ *   daemon's own session.
  * - **Working directories.** `Win32_Process` carries no cwd. The addon reads it out of the
  *   process's own memory, PEB -> RTL_USER_PROCESS_PARAMETERS -> CurrentDirectory.DosPath, the
  *   route psutil's `Process.cwd()` takes, with the 32-bit layout for a WOW64 process. Those
@@ -70,30 +72,44 @@ const ERROR_INVALID_PARAMETER = 87;
 const SHOWN_CWD_FAILURES = 8;
 
 /**
- * Whether one process belongs in the daemon's cwd scope, from the addon's owner read.
+ * Whether one process belongs in the daemon's cwd scope, from the addon's owner read and whether
+ * the process runs in the daemon's own logon session (`null` when the listing could not say).
  *
  * In scope: a process this user owns, and any answer this policy does not recognize, so that
  * its cwd read decides and a failure there leaves occupancy unknown rather than empty.
  *
  * Out of scope, as another uid is on POSIX:
  * - a process another user owns;
- * - one the system refuses to let this user open or query the token of (`ERROR_ACCESS_DENIED`).
- *   Limited information is granted across integrity levels, so this is a process of SYSTEM, a
- *   service account or another user, outside the boundary the daemon can observe;
  * - one that has exited (`exited`, or `ERROR_INVALID_PARAMETER` for a pid that no longer
- *   names a process), which holds no working directory, as a zombie holds none on POSIX.
+ *   names a process), which holds no working directory, as a zombie holds none on POSIX;
+ * - one the system refuses to open at all (`OpenProcess` and `ERROR_ACCESS_DENIED`). Windows
+ *   grants a user limited information on its own processes across integrity levels, elevated
+ *   ones included, so a refusal is a process of SYSTEM, a service account or another user. That
+ *   cannot be proven, because Windows names no owner for a process it will not open, so this is
+ *   the one judgment call: a process of this user that hardens its own DACL against even
+ *   limited information would be missed. On a measured desktop session the refusals were 156
+ *   system and service processes, and counting them would leave occupancy unknown for every
+ *   daemon that is not elevated;
+ * - one that opens but refuses its token (`OpenProcessToken` and `ERROR_ACCESS_DENIED`) and runs
+ *   in another logon session than the daemon's, such as `audiodg.exe` under LOCAL SERVICE in
+ *   the services session.
  *
- * A same-user process whose cwd cannot be read (an elevated process, or one whose own DACL
- * refuses memory reads) is in scope: it stays unresolved and occupancy stays unknown.
+ * A process that refuses its token in the daemon's own session stays in scope: nothing proves
+ * another user owns it, and on the measured session two such processes ran beside two copies of
+ * the same program this user owned. So does a same-user process whose cwd cannot be read (an
+ * elevated process, or one whose own DACL refuses memory reads): it stays unresolved and
+ * occupancy stays unknown.
  */
-export function win32OwnerInScope(owner: unknown): boolean {
+export function win32OwnerInScope(owner: unknown, sameSession: boolean | null = null): boolean {
   if (!owner || typeof owner !== "object") return true;
   const answer = owner as Record<string, unknown>;
   if (typeof answer.sameUser === "boolean") return answer.sameUser;
   if (answer.failed === "exited") return false;
-  if (answer.failed === "OpenProcess" && answer.code === ERROR_INVALID_PARAMETER) return false;
-  const refused = answer.failed === "OpenProcess" || answer.failed === "OpenProcessToken";
-  return !(refused && answer.code === ERROR_ACCESS_DENIED);
+  if (answer.failed === "OpenProcess") {
+    return !(answer.code === ERROR_INVALID_PARAMETER || answer.code === ERROR_ACCESS_DENIED);
+  }
+  if (answer.failed === "OpenProcessToken" && answer.code === ERROR_ACCESS_DENIED) return sameSession !== false;
+  return true;
 }
 
 /**
@@ -136,13 +152,14 @@ type NativeLoad = { binding: NativeProcessInspectionBinding } | { unavailable: s
  * One `Win32_Process` as a row. `CreationDate` is printed the way macOS prints `lstart`
  * (`Fri Jul 3 15:15:37 2026`, local time), so discovery's `Date.parse` and the occupancy
  * recheck's start comparison read it exactly as they read `ps`. `CommandLine` is null for a process this user
- * may not inspect, which becomes "" like a pid `ps` did not cover.
+ * may not inspect, which becomes "" like a pid `ps` did not cover. `SessionId` is the logon
+ * session, which CIM reports for every process, opened or not; `win32OwnerInScope` uses it.
  */
 const ROW_FUNCTION = [
   "function ConvertTo-MissionRow($p) {",
   "  $start = ''",
   "  if ($p.CreationDate) { $start = $p.CreationDate.ToString('ddd MMM d HH:mm:ss yyyy', [Globalization.CultureInfo]::InvariantCulture) }",
-  "  [pscustomobject]@{ pid = [int64]$p.ProcessId; ppid = [int64]$p.ParentProcessId; start = $start; command = [string]$p.CommandLine }",
+  "  [pscustomobject]@{ pid = [int64]$p.ProcessId; ppid = [int64]$p.ParentProcessId; session = $p.SessionId; start = $start; command = [string]$p.CommandLine }",
   "}",
 ].join("\n");
 
@@ -163,6 +180,8 @@ export function win32ListeningPidScript(port: number): string {
 interface Win32Row {
   pid: number;
   ppid: number;
+  /** The logon session, or null when CIM did not report one. */
+  session: number | null;
   start: string;
   command: string;
 }
@@ -176,9 +195,11 @@ function asRow(value: unknown): Win32Row | null {
   const row = value as Record<string, unknown>;
   if (!positiveInteger(row.pid)) return null;
   const ppid = typeof row.ppid === "number" && Number.isSafeInteger(row.ppid) && row.ppid >= 0 ? row.ppid : 0;
+  const session = typeof row.session === "number" && Number.isSafeInteger(row.session) && row.session >= 0 ? row.session : null;
   return {
     pid: row.pid,
     ppid,
+    session,
     start: typeof row.start === "string" ? row.start : "",
     command: typeof row.command === "string" ? row.command : "",
   };
@@ -206,6 +227,7 @@ function unreadable(reason: string): RunResult {
 export function createWin32ProcessInspector(
   runner: CommandRunner = defaultCommandRunner,
   loadNative: () => NativeProcessInspectionBinding = loadNativeProcessInspectionBinding,
+  daemonPid: number = process.pid,
 ): ProcessInspector {
   let loaded: NativeLoad | undefined;
   const native = (): NativeLoad => {
@@ -231,9 +253,11 @@ export function createWin32ProcessInspector(
       });
       const parsed = result.code === 0 ? parseJson(result.stdout) : undefined;
       const rows: ProcessRow[] = [];
+      const sessions: Array<number | null> = [];
       for (const value of Array.isArray(parsed) ? parsed : []) {
         const row = asRow(value);
         if (!row) continue;
+        sessions.push(row.session);
         // Windows has no process state letter and no controlling terminal. `?` is the
         // "no terminal" `normTty` already knows. Ownership is filled in below.
         rows.push({
@@ -258,8 +282,13 @@ export function createWin32ProcessInspector(
       if ("binding" in load && rows.length > 0) {
         try {
           const owners = load.binding.owners(rows.map((row) => row.pid));
+          // The daemon is in its own listing. Without its row, or a session for either side,
+          // nothing proves a process is in another session.
+          const daemonSession = sessions[rows.findIndex((row) => row.pid === daemonPid)] ?? null;
           rows.forEach((row, index) => {
-            row.ownedByDaemonUser = win32OwnerInScope(owners[index]);
+            const session = sessions[index] ?? null;
+            const sameSession = daemonSession === null || session === null ? null : session === daemonSession;
+            row.ownedByDaemonUser = win32OwnerInScope(owners[index], sameSession);
           });
         } catch (error) {
           failure ??= unreadable(`the process owner read failed: ${firstLine(error)}`);

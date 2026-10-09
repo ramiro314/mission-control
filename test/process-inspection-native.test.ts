@@ -70,14 +70,14 @@ test("the addon reads the owner and working directory of real native and WOW64 p
   const pids = [shell.pid!, wow.pid!];
 
   assert.deepEqual(native.owners([process.pid, ...pids]), [{ sameUser: true }, { sameUser: true }, { sameUser: true }]);
-  // pid 4 is the System process: SYSTEM's, refused or another SID, and never in scope.
-  assert.equal(win32OwnerInScope(native.owners([4])[0]), false);
 
   const inspector = createWin32ProcessInspector();
   assert.equal(inspector.userScopeUnavailable(), null);
   const snapshot = await listProcessesSnapshot(inspector);
   assert.equal(snapshot.unknownReason, null);
   for (const pid of [process.pid, ...pids]) assert.ok(snapshot.cwdScopePids.includes(pid), `${pid} is in scope`);
+  // pid 4 is the System process, in the services session: refused or another SID, never in scope.
+  assert.ok(!snapshot.cwdScopePids.includes(4), "the System process is out of scope");
 
   const occupancy = await inspectWorktreeOccupancy([slot, wowSlot, idle], {
     listProcesses: async () => only(snapshot, pids),
