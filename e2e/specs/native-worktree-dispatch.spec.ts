@@ -5,8 +5,6 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { WIN32_OCCUPANCY_UNPROVABLE } from "../fixtures/win32-occupancy.ts";
-import { skipSpecOnWin32 } from "../../test/helpers/win32-skip.ts";
 
 const EVIDENCE = artifactsDir("native-worktree-dispatch");
 
@@ -102,14 +100,17 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   dashboard,
   daemon,
 }) => {
-  // The confirmed Clean up below must release both slots, and its reuse depends on that.
-  skipSpecOnWin32(test, WIN32_OCCUPANCY_UNPROVABLE);
   // Three native dispatches, a kill, and a confirmed cleanup, each of them real git work on
   // real trees. The default thirty seconds covers the browser, not the disk underneath it.
   test.setTimeout(240_000);
   const firstIntent = "Prepare the first native multi repo change";
   const concurrentIntent = "Keep a concurrent native checkout active";
   const reusedIntent = "Reuse the released native multi repo slots";
+  // On win32 Clean up is refused, for the reason `WIN32_OCCUPANCY_UNPROVABLE` gives
+  // (`fixtures/win32-occupancy.ts`): the daemon cannot prove a checkout idle there, so both
+  // slots stay leased. Everything else runs on every platform, and the third dispatch still
+  // proves a slot is never shared: where nothing was released it must be given other slots.
+  const releases = process.platform !== "win32";
 
   await dispatch(dashboard, daemon, firstIntent, [daemon.secondRepo]);
   await expect.poll(() => taskFor(daemon, firstIntent), { timeout: DISPATCH_SETTLES_MS }).toMatchObject({
@@ -174,22 +175,43 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   const currentFirst = (await taskFor(daemon, firstIntent))!;
   const firstRow = sitrep.locator(".report-row", { hasText: currentFirst.title });
   await firstRow.getByRole("button", { name: "Clean up" }).click();
+  const reclaim = releases
+    ? null
+    : dashboard.waitForResponse((response) => response.url().endsWith(`/api/tasks/${currentFirst.id}/reclaim`));
   await firstRow.getByRole("button", { name: "Clean up" }).click();
-  await expect.poll(() => taskFor(daemon, firstIntent), { timeout: RECLAIM_SETTLES_MS })
-    .toMatchObject({
+  if (releases) {
+    await expect.poll(() => taskFor(daemon, firstIntent), { timeout: RECLAIM_SETTLES_MS })
+      .toMatchObject({
+        status: "failed",
+        worktreePath: null,
+        worktreeLeaseId: null,
+        extraRepos: [{ worktreePath: null, worktreeLeaseId: null }],
+      });
+    await expect(sitrep.locator(".report-row", { hasText: currentFirst.title })).toContainText("failed");
+    await expect(firstRow).toContainText("for any retained worktrees");
+    await expect(firstRow).not.toContainText("its worktree was kept");
+    await expect(
+      sitrep.locator(".report-row", { hasText: currentFirst.title }).getByRole("button", { name: "Clean up" }),
+    ).toHaveCount(0);
+  } else {
+    const refused = await reclaim!;
+    expect(refused.ok()).toBe(false);
+    expect(await refused.text()).toContain("native worktree release refused");
+    expect(await taskFor(daemon, firstIntent)).toMatchObject({
       status: "failed",
-      worktreePath: null,
-      worktreeLeaseId: null,
-      extraRepos: [{ worktreePath: null, worktreeLeaseId: null }],
+      worktreePath: first.worktreePath,
+      worktreeLeaseId: first.worktreeLeaseId,
+      extraRepos: [{ worktreePath: first.extraRepos[0]!.worktreePath, worktreeLeaseId: first.extraRepos[0]!.worktreeLeaseId }],
     });
-  await expect(sitrep.locator(".report-row", { hasText: currentFirst.title })).toContainText("failed");
-  await expect(firstRow).toContainText("for any retained worktrees");
-  await expect(firstRow).not.toContainText("its worktree was kept");
-  await expect(
-    sitrep.locator(".report-row", { hasText: currentFirst.title }).getByRole("button", { name: "Clean up" }),
-  ).toHaveCount(0);
-  expect(slot(first.worktreePath!, daemon)).toMatchObject({ state: "available", leaseId: null });
-  expect(slot(first.extraRepos[0]!.worktreePath!, daemon)).toMatchObject({ state: "available", leaseId: null });
+  }
+  expect(slot(first.worktreePath!, daemon)).toMatchObject(
+    releases ? { state: "available", leaseId: null } : { state: "leased", leaseId: first.worktreeLeaseId },
+  );
+  expect(slot(first.extraRepos[0]!.worktreePath!, daemon)).toMatchObject(
+    releases
+      ? { state: "available", leaseId: null }
+      : { state: "leased", leaseId: first.extraRepos[0]!.worktreeLeaseId },
+  );
   await dashboard.keyboard.press("Escape");
 
   await dispatch(dashboard, daemon, reusedIntent, [daemon.secondRepo]);
@@ -199,8 +221,14 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
     extraRepos: [{ provider: "mission" }],
   });
   const reused = (await taskFor(daemon, reusedIntent))!;
-  expect(reused.worktreePath).toBe(first.worktreePath);
-  expect(reused.extraRepos[0]?.worktreePath).toBe(first.extraRepos[0]?.worktreePath);
+  if (releases) {
+    expect(reused.worktreePath).toBe(first.worktreePath);
+    expect(reused.extraRepos[0]?.worktreePath).toBe(first.extraRepos[0]?.worktreePath);
+  } else {
+    expect(reused.worktreePath).not.toBe(first.worktreePath);
+    expect(reused.extraRepos[0]?.worktreePath).not.toBe(first.extraRepos[0]?.worktreePath);
+  }
+  expect(reused.worktreePath).not.toBe(concurrent.worktreePath);
   expect(reused.worktreeLeaseId).not.toBe(first.worktreeLeaseId);
   expect(reused.extraRepos[0]?.worktreeLeaseId).not.toBe(first.extraRepos[0]?.worktreeLeaseId);
   expect(slot(concurrent.worktreePath!, daemon)).toMatchObject({
