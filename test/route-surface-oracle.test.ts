@@ -106,7 +106,8 @@ function fieldNames(text: string): string {
 /** Values that differ per run or per host, replaced by a token so the rest can be asserted. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})/;
-const ABSOLUTE_PATH = /^(~|\/)[^\s]*\//;
+// POSIX, home-relative, or a win32 drive path (`C:\Users\...`), which carries backslashes.
+const ABSOLUTE_PATH = /^(~|\/|[A-Za-z]:[\\/])[^\s]*[\\/]/;
 /**
  * Keys carrying authored copy rather than route behavior.
  *
@@ -215,6 +216,10 @@ function concrete(path: string): string {
 
 /** A machine that never changes, so setup rows record the route rather than the host. */
 const SETUP_PROBES = {
+  // Setup reports a family of rows only on the hosts it is scoped to, so a win32 run adds the
+  // Windows prerequisites, whose own status then reads that machine's toolchain. Those rows are
+  // intended and covered by the setup tests; here the host is fixed like everything else.
+  hostPlatform: () => "darwin",
   environment: {
     homeDir: home,
     readText: async () => ({ ok: false, missing: true, reason: "missing" }),

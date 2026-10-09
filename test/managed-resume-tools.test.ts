@@ -17,9 +17,9 @@ process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 process.env.MISSION_CODEX_BIN = process.execPath;
 process.env.MISSION_PI_BIN = process.execPath;
-// Managed resume relaunches a session into a terminal, and its lease directories are guarded by
-// POSIX owner and mode bits. win32 has neither, so only the cases that never touch a lease run.
-const RESUME = { skip: skipOnWin32("the terminal runtime is unavailable on win32; managed resume launches into a terminal and its lease guard checks POSIX owner and mode bits") };
+// Managed resume relaunches a session into a terminal, and win32 has no terminal runtime, so only
+// the cases that never prepare a resume run there.
+const RESUME = { skip: skipOnWin32("the terminal runtime is unavailable on win32; managed resume launches into a terminal") };
 if (!RESUME.skip) await managedResumeFixture(home);
 const { prepareTerminalResume, managedResumeRoot } = await import("../src/server/harness/resume.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");

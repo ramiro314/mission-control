@@ -45,9 +45,9 @@ export function recheckManagedResumes() {
 
 /**
  * The daemon's periodic reconcile, or null on a host without the terminal runtime. A managed
- * resume reopens a conversation in that runtime, so there is nothing to reconcile there, and on
- * win32 the journal's POSIX owner and mode checks cannot pass: reading it only reported a
- * journal "requiring inspection" at boot and every 30 seconds.
+ * resume reopens a conversation in that runtime, so there is nothing to reconcile there. The
+ * launch recheck route and session transfers still read the journal on such a host, and
+ * `platform/private-storage.ts` is what lets its privacy checks pass on win32.
  */
 export function reconcileManagedResumesOnHost(platform: NodeJS.Platform = process.platform) {
   return runtimeUnavailableWhy("terminal", platform) ? null : recheckManagedResumes();

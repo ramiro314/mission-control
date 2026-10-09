@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ownedByCurrentUser, privateToCurrentUser } from "../server/platform/private-storage.ts";
 
 const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
 
@@ -14,12 +15,12 @@ function recoveryDirectory(path: string, nonce: string): string {
 
 function privateDirectory(path: string): void {
   const stat = lstatSync(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) throw new Error("Integration recovery storage has unexpected ownership or permissions.");
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !privateToCurrentUser(stat)) throw new Error("Integration recovery storage has unexpected ownership or permissions.");
 }
 
 function fileText(path: string): string {
   const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid())) throw new Error("An integration changed its file type or ownership during repair.");
+  if (!stat.isFile() || stat.isSymbolicLink() || !ownedByCurrentUser(stat)) throw new Error("An integration changed its file type or ownership during repair.");
   return readFileSync(path, "utf8");
 }
 
