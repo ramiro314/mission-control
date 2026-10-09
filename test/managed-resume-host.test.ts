@@ -13,15 +13,14 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { reconcileManagedResumesOnHost } = await import("../src/server/harness/resume.ts");
 
 // Managed resumes reopen a conversation in the terminal runtime. On win32 that runtime is
-// refused, and the journal's POSIX owner and mode checks can never pass there, so the daemon
-// reported a journal needing inspection at boot and every 30 seconds after.
+// refused, so there is nothing to reconcile there.
 test("a host without the terminal runtime has no managed resumes to reconcile", () => {
   assert.equal(reconcileManagedResumesOnHost("win32"), null);
 });
 
 test(
   "a host with the terminal runtime reconciles its managed resumes",
-  { skip: skipOnWin32("the journal pins POSIX uid and mode bits; the terminal runtime is unavailable on win32") },
+  { skip: skipOnWin32("the terminal runtime is unavailable on win32, so the host reconciles nothing") },
   () => {
     assert.deepEqual(reconcileManagedResumesOnHost(process.platform), []);
   },
