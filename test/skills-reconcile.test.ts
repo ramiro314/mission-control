@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -20,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
+import { denyDirectory } from "./helpers/denied-directory.ts";
 import { osHomeEnv } from "./helpers/os-home.ts";
 
 // The reconciler writes into ~/.claude/skills - the operator's own directory, next to
@@ -240,7 +240,7 @@ test("a re-point we cannot even start is blocked, and nothing claims to have cha
   // moved, so `changed` must stay false - and the id must land in `blocked`, or the
   // operator's toggle would look applied while the skill is still pointing nowhere.
   symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "mission-alpha"), "dir");
-  chmodSync(claudeSkills, 0o500);
+  const restore = denyDirectory(claudeSkills, "write");
   try {
     const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
@@ -248,7 +248,7 @@ test("a re-point we cannot even start is blocked, and nothing claims to have cha
     assert.deepEqual(r.blocked, ["alpha"]);
     assert.match(r.problems[0] ?? "", /couldn't remove/);
   } finally {
-    chmodSync(claudeSkills, 0o700);
+    restore();
   }
 });
 
@@ -336,14 +336,14 @@ test("a skills dir we CAN'T READ is not an empty one - nothing is reported as do
   // "empty, so nothing to unlink", switching a skill off would report a clean success
   // while the symlink sat there and every session kept using it.
   reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
-  chmodSync(claudeSkills, 0o200); // write-only: readdir fails with EACCES
+  const restore = denyDirectory(claudeSkills, "list"); // readdir fails with EACCES
   try {
     const r = reconcileSkillLinks(mkCfg({ skills: { alpha: false } }), CATALOG, onlyClaude);
 
     assert.equal(r.changed, false, "we know nothing, so we changed nothing");
     assert.match(r.problems[0] ?? "", /couldn't read/);
   } finally {
-    chmodSync(claudeSkills, 0o700);
+    restore();
   }
   assert.deepEqual(entries(), ["mission-alpha"], "and the link really is still there");
 });

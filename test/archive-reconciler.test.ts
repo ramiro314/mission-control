@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import { archiveKey } from "../src/shared/archives.ts";
 import { validReportHtml, writeScoutBundle } from "./helpers/archive-fixture.ts";
+import { denyDirectory } from "./helpers/denied-directory.ts";
 
 /**
  * Discovery: the loop that makes the filesystem the library and SQLite a cache of it.
@@ -26,21 +26,6 @@ const { ArchiveReconciler } = await import("../src/server/archives/reconciler.ts
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => clearArchiveTables(db));
-
-/**
- * Make a library root unreadable without making it absent, by the means each platform has.
- * win32 has no permission bits for `chmod` to clear, so an ACL entry denying everyone the
- * right to list the directory stands in for `chmod 000` there.
- */
-function denyListing(root: string): void {
-  if (process.platform === "win32") execFileSync("icacls", [root, "/deny", "*S-1-1-0:(RD)"], { stdio: "pipe" });
-  else chmodSync(root, 0o000);
-}
-
-function allowListing(root: string): void {
-  if (process.platform === "win32") execFileSync("icacls", [root, "/remove:d", "*S-1-1-0"], { stdio: "pipe" });
-  else chmodSync(root, 0o700);
-}
 
 let libraries = 0;
 function newLibrary(): string {
@@ -192,8 +177,8 @@ test("a root that cannot be read holds back only its own rows, and prunes the re
 
   // The legacy root becomes unreadable in a way that is not "absent": EACCES rather than
   // ENOENT, which is the case the old code treated as fatal to the whole pass.
-  denyListing(legacyRoot);
-  after(() => allowListing(legacyRoot));
+  const allowListing = denyDirectory(legacyRoot, "list");
+  after(allowListing);
   rmSync(join(writeRoot, doomed.producerId), { recursive: true, force: true });
 
   const pass = await reconciler.settle();
@@ -206,7 +191,7 @@ test("a root that cannot be read holds back only its own rows, and prunes the re
   );
 
   // And it recovers by itself: once the root is readable again, its rows reconcile normally.
-  allowListing(legacyRoot);
+  allowListing();
   const after1 = await reconciler.settle();
   assert.equal(after1.failed, null);
   assert.ok(store.get(legacy.key), "the legacy archive is still there once its root comes back");
