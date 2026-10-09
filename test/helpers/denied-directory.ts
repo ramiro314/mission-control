@@ -1,4 +1,4 @@
-import fs, { chmodSync } from "node:fs";
+import fs, { chmodSync, lstatSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, resolve } from "node:path";
 import { mock } from "node:test";
@@ -8,12 +8,17 @@ import { mock } from "node:test";
  *
  * - `list`: reading its entries fails with EACCES, so "unreadable" and "absent" can be told
  *   apart. Creating, removing and opening entries by name still works.
- * - `write`: creating or removing an entry directly inside it fails with EACCES. Listing it
- *   still works.
+ * - `write`: creating or removing an entry directly inside it fails with EACCES. Listing it,
+ *   and overwriting a file that is already there, still work.
  */
 export type DirectoryRight = "list" | "write";
 
-/** The fs functions a `write` denial refuses, and which arguments name the entry they touch. */
+/**
+ * The fs functions a `write` denial refuses, and which arguments name the entry they touch.
+ *
+ * Writing a directory's entry list is what POSIX `0o500` takes away, not writing the files in
+ * it, so the functions in `CREATES_ONLY` are refused only when their target is not there yet.
+ */
 const WRITE_OPERATIONS = {
   symlinkSync: [1],
   linkSync: [1],
@@ -25,6 +30,9 @@ const WRITE_OPERATIONS = {
   writeFileSync: [0],
   copyFileSync: [1],
 } as const;
+
+/** The `WRITE_OPERATIONS` that change the entry list only when their target is new. */
+const CREATES_ONLY: ReadonlySet<string> = new Set(["writeFileSync", "copyFileSync"]);
 
 /** The fs functions a `list` denial refuses. Each names the directory as its first argument. */
 const LIST_OPERATIONS = {
@@ -83,7 +91,7 @@ export function denyDirectory(
   if (right === "write") {
     for (const [name, positions] of Object.entries(WRITE_OPERATIONS)) {
       mocks.push(refuseWhen(fs, name, (args) => {
-        const hit = positions.find((i) => inside(args[i]));
+        const hit = positions.find((i) => inside(args[i]) && !(CREATES_ONLY.has(name) && present(args[i])));
         return hit === undefined ? null : refusal(name.replace(/Sync$/, ""), args[hit]);
       }));
     }
@@ -139,4 +147,14 @@ function refuseWhen(
     }
     return original.apply(this, args);
   });
+}
+
+/** Whether `path` already names an entry, a dangling link included. */
+function present(path: unknown): boolean {
+  try {
+    lstatSync(String(path));
+    return true;
+  } catch {
+    return false;
+  }
 }

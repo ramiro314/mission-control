@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,8 +43,15 @@ test("a write denial refuses creating and removing entries inside it, and nothin
     assert.throws(() => mkdirSync(join(dir, "nested")), { code: "EACCES" });
     assert.throws(() => rmSync(join(dir, "present")), { code: "EACCES" });
     assert.deepEqual(readdirSync(dir), ["present"], "listing still works and nothing moved");
-    writeFileSync(join(sibling, "created"), "");
+    // POSIX 0o500 guards the entry list, not the files in it, and win32 has to agree.
+    writeFileSync(join(dir, "present"), "rewritten");
+    assert.equal(readFileSync(join(dir, "present"), "utf8"), "rewritten", "an existing file can still be rewritten");
+    writeFileSync(join(sibling, "created"), "copied");
     assert.deepEqual(readdirSync(sibling), ["created"], "another directory still takes writes");
+    copyFileSync(join(sibling, "created"), join(dir, "present"));
+    assert.equal(readFileSync(join(dir, "present"), "utf8"), "copied", "and copied over");
+    assert.throws(() => copyFileSync(join(sibling, "created"), join(dir, "copy")), { code: "EACCES" });
+    assert.deepEqual(readdirSync(dir), ["present"], "still nothing new in it");
   } finally {
     restore();
   }
