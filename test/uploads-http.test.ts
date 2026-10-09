@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 // Isolate the daemon's state dir (db, token, uploads) before config is read.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-upload-http-"));
@@ -54,7 +54,7 @@ test("POST /api/uploads: stores the image and returns a path that exists", async
   const res = await upload(PNG, "screenshot.png");
   assert.equal(res.status, 200);
   const body = (await res.json()) as { path: string; name: string; uploadId: string; bytes: number };
-  assert.ok(body.path.startsWith(UPLOADS_DIR + "/"), body.path);
+  assert.ok(body.path.startsWith(UPLOADS_DIR + sep), body.path);
   assert.equal(body.bytes, PNG.byteLength);
   assert.equal(body.uploadId, body.name);
   assert.equal(resolveImageUpload(body.uploadId)?.path, body.path);
@@ -77,8 +77,8 @@ test("POST /api/uploads: the client cannot choose where the file lands", async (
   const res = await upload(PNG, "../../../../tmp/pwned.png");
   assert.equal(res.status, 200);
   const body = (await res.json()) as { path: string; name: string };
-  assert.ok(body.path.startsWith(UPLOADS_DIR + "/"), body.path);
-  assert.ok(!body.name.includes("/"), body.name);
+  assert.ok(body.path.startsWith(UPLOADS_DIR + sep), body.path);
+  assert.ok(!/[\\/]/.test(body.name), body.name);
   assert.equal(existsSync("/tmp/pwned.png"), false);
 });
 

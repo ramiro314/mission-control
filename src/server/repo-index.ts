@@ -18,6 +18,7 @@ import {
   expandHome,
   getRepoIndexConfig,
   indexedDirectories,
+  namesFilesystemRoot,
   repositoryIndexEnvironmentOverride,
   resolvesAtOrAboveHome,
   validateIndexedDirectories,
@@ -115,7 +116,7 @@ async function directoryView(
     };
   }
 
-  if (enforceSavedSafety && resolvesAtOrAboveHome(resolved)) {
+  if (enforceSavedSafety && (resolvesAtOrAboveHome(resolved) || namesFilesystemRoot(path))) {
     return {
       path,
       resolved,
@@ -173,6 +174,7 @@ export {
   expandHome,
   getRepoIndexConfig,
   indexedDirectories,
+  namesFilesystemRoot,
   resolvesAtOrAboveHome,
   validateIndexedDirectories,
 };

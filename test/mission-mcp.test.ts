@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { mcpFixtureSpawns, writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
 
@@ -99,7 +99,7 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   assert.equal(d.env.MISSION_PORT, String(daemonPort));
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
-  assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);
+  assert.ok(isAbsolute(d.command), `runtime should be absolute, got ${d.command}`);
 });
 
 /**

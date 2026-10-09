@@ -38,6 +38,7 @@ export { workflowIntentFingerprint };
 import { computeSessionDiff } from "../diff.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
+import { nativeGitPath } from "../util/git-path.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
 import { sessionMessages } from "../harness/index.ts";
 import { attributeTranscript } from "../transcript-attribution.ts";
@@ -1455,7 +1456,7 @@ export async function readWorkflowRepositoryHead(
 ): Promise<WorkflowRepositoryHead | null> {
   if (!cwd) return null;
   const top = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 15_000 });
-  const root = top.code === 0 ? top.stdout.trim() : "";
+  const root = top.code === 0 ? nativeGitPath(top.stdout.trim()) : "";
   if (!root) return null;
   const repositoryId = await readWorkflowRepositoryId(cwd);
   if (!repositoryId) return null;

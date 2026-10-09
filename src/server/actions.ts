@@ -47,6 +47,7 @@ import type {
   TerminalResult,
 } from "./terminal/types.ts";
 import { run, type RunResult } from "./util/exec.ts";
+import { nativeGitPath } from "./util/git-path.ts";
 import { sleep } from "./util/timers.ts";
 import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
 
@@ -2444,7 +2445,7 @@ export async function resetWouldDestroyWork(session: Session): Promise<string | 
   if (!session.cwd) return "the session has no working directory";
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return "it is not a git repository";
-  const root = top.stdout.trim();
+  const root = nativeGitPath(top.stdout.trim());
 
   // Tracked edits and untracked files alike: `reset --hard` takes the first, `clean -fd`
   // takes the second. Ignored files (node_modules, .env) are not listed and survive.
@@ -2480,7 +2481,7 @@ export async function branchReleasedByReset(session: Session): Promise<string | 
   if (!session.cwd) return null;
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return null;
-  const root = top.stdout.trim();
+  const root = nativeGitPath(top.stdout.trim());
   // `symbolic-ref` is the exact question, failing precisely when HEAD is detached - see
   // `resetToOrigin`, which reads the branch the same way for the same reason.
   const held = await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
@@ -2520,7 +2521,7 @@ export async function resetPreview(
   // untracked files elsewhere in the repo that the reset would otherwise strip.
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return { ...base, error: "not a git repository" };
-  const root = top.stdout.trim();
+  const root = nativeGitPath(top.stdout.trim());
 
   const fetched = await git(root, ["fetch", "origin"], 30000);
   if (fetched.code !== 0) {
@@ -2600,7 +2601,7 @@ export async function resetToOrigin(
   if (top.code !== 0 || !top.stdout.trim()) {
     return { ok: false, error: "not a git repository", root: null, cleared: false, detached: false };
   }
-  const root = top.stdout.trim();
+  const root = nativeGitPath(top.stdout.trim());
 
   // The branch this checkout holds, or null when HEAD already names a commit.
   // `symbolic-ref` is the exact question, failing precisely when HEAD is detached;
@@ -2749,7 +2750,7 @@ export async function resetToCommit(
   if (top.code !== 0 || !top.stdout.trim()) {
     return { ok: false, error: "not a git repository", root: null, cleared: false, detached: false };
   }
-  const root = top.stdout.trim();
+  const root = nativeGitPath(top.stdout.trim());
 
   try {
     await resetWorktreeToCommit(root, commit);

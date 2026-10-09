@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import path, { basename, dirname, join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -45,6 +45,7 @@ for (const name of WORKSPACE_ENV_NAMES) delete process.env[name];
 const { openDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { invalidateReposCache } = await import("../src/server/repos.ts");
+const { isFilesystemRoot } = await import("../src/server/repo-index-config.ts");
 
 const app = buildApp({
   registry: {} as Registry,
@@ -164,7 +165,9 @@ test("validation refuses empty, relative, broad, duplicate, and oversized lists"
   const refused: Array<{ paths: string[]; message: RegExp }> = [
     { paths: ["   "], message: /Directory paths cannot be empty/ },
     { paths: ["relative/code"], message: /not an absolute path/ },
-    { paths: ["/"], message: /at or above your home directory/ },
+    // `/` is at or above home on POSIX. On win32 it is the current drive's root, which is
+    // above home only when home is on that drive (a CI checkout on `D:` has home on `C:`).
+    { paths: ["/"], message: /at or above your home directory|is the root of a drive/ },
     { paths: [operatorHome], message: /at or above your home directory/ },
     { paths: ["~/.."], message: /at or above your home directory/ },
     { paths: [`${operatorHome}/..`], message: /at or above your home directory/ },
@@ -189,6 +192,16 @@ test("validation refuses empty, relative, broad, duplicate, and oversized lists"
 
   const accepted = await putDirectories([sibling]);
   assert.equal(accepted.status, 200, "a sibling whose name shares the home prefix is safe");
+});
+
+test("every filesystem root is broad, whichever drive or share it names", () => {
+  assert.equal(isFilesystemRoot("/", path.posix), true);
+  assert.equal(isFilesystemRoot("/home/me/code", path.posix), false);
+  assert.equal(isFilesystemRoot("C:\\", path.win32), true);
+  assert.equal(isFilesystemRoot("D:\\", path.win32), true);
+  assert.equal(isFilesystemRoot("\\\\server\\share\\", path.win32), true);
+  assert.equal(isFilesystemRoot("D:\\code", path.win32), false);
+  assert.equal(isFilesystemRoot("\\\\server\\share\\code", path.win32), false);
 });
 
 test("a removed default and an intentionally empty list survive a re-read", async () => {

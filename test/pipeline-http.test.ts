@@ -836,7 +836,7 @@ test("installer routes use the workspace catalog, reject browser commands, and r
   const command = opened[0]?.argv.at(-1) ?? "";
   assert.ok(command.includes("'/usr/bin/env'"));
   assert.ok(command.includes(`'PATH=${realpathSync(nodeBinDir)}${delimiter}`));
-  assert.ok(command.includes(`'${repo}/bin/install'`));
+  assert.ok(command.includes(`'${join(repo, "bin", "install")}'`), command);
   assert.match(command, /read -r _/);
   assert.doesNotMatch(command, /allow-worktree-root|--update|--provider/);
   assert.deepEqual(getPipelinesConfig(), {

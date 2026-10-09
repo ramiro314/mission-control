@@ -1,4 +1,5 @@
 import { run, type RunResult } from "./util/exec.ts";
+import { nativeGitPath } from "./util/git-path.ts";
 import { clipUtf8Bytes, utf8Bytes } from "./util/utf8.ts";
 import type { SessionDiff } from "@shared/types.ts";
 
@@ -65,7 +66,7 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
   if (top.code !== 0) return { ...base0, error: "not a git repository" };
   // Paths in the patch are toplevel-relative, so the viewer needs the root they
   // hang off - same contract computeSessionDiff makes.
-  const repoRoot = top.stdout.trim() || null;
+  const repoRoot = nativeGitPath(top.stdout.trim()) || null;
 
   // Resolve and type-check in one step: `^{commit}` fails for a tag/tree/missing
   // object, so a caller can't get a confusing empty diff out of a valid-looking ref.
@@ -288,7 +289,7 @@ export async function changedPathsSince(
   if (!cwd) return { ok: false, reason: "there is no working directory to read" };
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
-  const repoRoot = top.stdout.trim();
+  const repoRoot = nativeGitPath(top.stdout.trim());
 
   const resolved = await changedPathsBase(cwd, baseBranch);
   if (!resolved.ok) return resolved;
@@ -351,7 +352,7 @@ export async function deletedPathsSince(
   if (!cwd) return { ok: false, reason: "there is no working directory to read" };
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
-  const repoRoot = top.stdout.trim();
+  const repoRoot = nativeGitPath(top.stdout.trim());
   const resolved = await changedPathsBase(cwd, baseBranch);
   if (!resolved.ok) return resolved;
   const diffBase = resolved.base;
@@ -381,7 +382,7 @@ function countAdded(patch: string): number {
 export async function repoRootOf(cwd: string | null): Promise<string | null> {
   if (!cwd) return null;
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
-  return top.code === 0 && top.stdout.trim() ? top.stdout.trim() : null;
+  return top.code === 0 && top.stdout.trim() ? nativeGitPath(top.stdout.trim()) : null;
 }
 
 /**
@@ -411,7 +412,7 @@ export async function computeSessionDiff(
   // Reported, not discarded: `patch`'s paths are relative to the toplevel, so a
   // caller resolving them against the session's cwd would be wrong for any session
   // that isn't sitting at the repo root - the ordinary case in a monorepo.
-  const repoRoot = top.stdout.trim() || null;
+  const repoRoot = nativeGitPath(top.stdout.trim()) || null;
 
   const branchRes = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : null;
