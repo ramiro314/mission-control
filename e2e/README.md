@@ -60,7 +60,7 @@ for the few specs that need to assert that build's behavior:
 ```ts
 const dev = await startDevDashboard(daemon);
 await page.goto(`${dev.origin}/#/fleet`);
-// … and `dev.stop()` in an `afterEach`, which kills the process group.
+// … and `dev.stop()` in an `afterEach`, which ends its process tree (`taskkill /T` on win32).
 ```
 
 It aims the dev server's `/api` and `/events` proxy at the fixture daemon by setting

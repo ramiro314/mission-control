@@ -38,6 +38,46 @@ async function observeTransferStream(page: Page) {
   });
 }
 
+type SourceLookupWindow = Window & { sourceLookups: { started: number; answered: number } };
+
+/**
+ * Count the dashboard's source-transfer lookups, and hand each answer to the app late.
+ *
+ * `answered` counts a lookup only once the app has read its body, so every continuation the
+ * app chained onto it has run before a later `evaluate` can see the count. Playwright's own
+ * `requestfinished` is not that: it is the network finishing, and a loaded renderer reads
+ * the answer later. The delay reproduces that lateness on every run instead of on a busy
+ * Windows runner only.
+ */
+async function observeSourceLookups(page: Page) {
+  await page.addInitScript(() => {
+    const state = window as SourceLookupWindow;
+    state.sourceLookups = { started: 0, answered: 0 };
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (!url.includes("/api/session-transfers?sourceSessionId=")) return nativeFetch(input, init);
+      state.sourceLookups.started++;
+      let response: Response;
+      try {
+        response = await nativeFetch(input, init);
+      } catch (error) {
+        state.sourceLookups.answered++;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      // The app reads no body from a refusal, so a refusal is answered as it arrives.
+      if (!response.ok) {
+        state.sourceLookups.answered++;
+        return response;
+      }
+      const json = response.json.bind(response);
+      response.json = () => json().finally(() => { state.sourceLookups.answered++; });
+      return response;
+    };
+  });
+}
+
 async function transferEvent(page: Page, event: ServerEvent) {
   await page.evaluate((message) => {
     const stream = (window as TransferTestWindow).transferTestStream;
@@ -359,6 +399,7 @@ test.describe("Sitrep pagination", () => {
 
   for (const boundary of ["ended event", "reconnect snapshot"] as const) test(`a ${boundary} releases selection of a missing transfer source`, async ({ dashboard, daemon }) => {
     await observeTransferStream(dashboard);
+    await observeSourceLookups(dashboard);
     await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }) });
     await dashboard.reload();
     const source = await dispatch(dashboard, daemon);
@@ -373,22 +414,19 @@ test.describe("Sitrep pagination", () => {
     await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toHaveCount(0);
     // The selection is released only once the source's durable transfer history answers, and
     // a source rediscovered while that lookup is in flight legitimately keeps its drill-in. So
-    // rediscovery waits for every lookup the boundary starts to settle, not for a frame count
-    // that a loaded runner outlasts.
-    const lookup = `/api/session-transfers?sourceSessionId=${encodeURIComponent(source.id)}`;
-    let lookupsStarted = 0;
-    let lookupsSettled = 0;
-    dashboard.on("request", (request) => { if (request.url().endsWith(lookup)) lookupsStarted++; });
-    const settled = (request: { url(): string }) => { if (request.url().endsWith(lookup)) lookupsSettled++; };
-    dashboard.on("requestfinished", settled);
-    dashboard.on("requestfailed", settled);
+    // rediscovery waits for the app to have READ every lookup the boundary starts - counted in
+    // the page by `observeSourceLookups` - not for the network to finish them, which a loaded
+    // renderer reads later, and not for a frame count that a loaded runner outlasts.
     if (boundary === "ended event") {
       await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [], overflow: 0 }, changed: { ...transfer, state: "failed" } });
     } else {
       await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [], overflow: 0 }, changed: { ...transfer, state: "adopted", successorSessionId: "absent-successor" } });
       await transferEvent(dashboard, { ...snapshot, sessions: [], sessionTransfers: { transfers: [], overflow: 0 } });
     }
-    await expect.poll(() => lookupsStarted > 0 && lookupsSettled === lookupsStarted, {
+    await expect.poll(() => dashboard.evaluate(() => {
+      const { started, answered } = (window as SourceLookupWindow).sourceLookups;
+      return started > 0 && answered === started;
+    }), {
       message: "the source's transfer lookup should be answered before rediscovery",
     }).toBe(true);
     // Flush the release's effects before rediscovery; otherwise React can batch both
