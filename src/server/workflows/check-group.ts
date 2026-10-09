@@ -117,7 +117,19 @@ const PLATFORM_GROUPS: Partial<Record<NodeJS.Platform, CheckGroupPlatform>> = {
   win32: createWin32CheckGroups(),
 };
 
-const groups: CheckGroupPlatform = PLATFORM_GROUPS[process.platform] ?? posixGroups;
+const platformGroups: CheckGroupPlatform = PLATFORM_GROUPS[process.platform] ?? posixGroups;
+let groups: CheckGroupPlatform = platformGroups;
+
+/**
+ * Test-only: run with this platform's mechanisms wrapped, for example an `establish` that
+ * refuses, so a caller's reaction to a refusal can be driven on any platform. `null` restores
+ * them.
+ */
+export function overrideCheckGroupPlatform(
+  wrap: ((platform: CheckGroupPlatform) => CheckGroupPlatform) | null,
+): void {
+  groups = wrap ? wrap(platformGroups) : platformGroups;
+}
 
 /**
  * Make a just-started supervisor the root of its check group, before its gate opens. Null once

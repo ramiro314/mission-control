@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { spawnCheckProcess } from "../src/server/workflows/check-spawn.ts";
-import { checkGroupAnswers } from "../src/server/workflows/check-group.ts";
+import { checkGroupAnswers, overrideCheckGroupPlatform } from "../src/server/workflows/check-group.ts";
 import { processInspector } from "../src/server/process-inspection/index.ts";
 import { onPath } from "../src/server/util/exec.ts";
 import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
@@ -381,4 +381,84 @@ test("an unusable working directory is infrastructure, not a missing executable"
   });
   assert.equal(result.kind, "infrastructure");
   assert.equal(supervisor, null, "nothing ran, so there is no owner to record");
+});
+
+test("a supervisor its check group refuses starts nothing, and leaves no held shim behind", async (t) => {
+  const dir = workspace();
+  const marker = join(dir, "branch-ran");
+  const attemptId = `attempt-group-refused-${process.pid}`;
+  const abandoned: number[] = [];
+  // The win32 shape is a job that will not take the supervisor; forced here so every platform
+  // drives the spawner's reaction to it.
+  overrideCheckGroupPlatform((platform) => ({
+    ...platform,
+    establish: () => "the check supervisor could not be placed in a job object: AssignProcessToJobObject failed with code 5",
+    abandon: (pid) => {
+      abandoned.push(pid);
+      platform.abandon(pid);
+    },
+  }));
+  t.after(() => overrideCheckGroupPlatform(null));
+
+  const outcome = await spawnCheckProcess({
+    attemptId,
+    command: [NODE, "-e", "require('node:fs').writeFileSync(process.argv[1], '')", marker],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "" },
+    timeoutMs: 20_000,
+    onSupervisorReady: () => assert.fail("an owner was persisted for a supervisor outside its group"),
+  });
+
+  assert.deepEqual(outcome.result, {
+    kind: "infrastructure",
+    reason:
+      "the check supervisor could not be placed in a job object: AssignProcessToJobObject failed with code 5, "
+      + "so it could not be proven finished afterwards and no command was started",
+  });
+  assert.equal(outcome.supervisor, null, "the gate never opened, so there is no owner to report");
+  assert.equal(existsSync(marker), false, "and no branch code may run");
+  assert.deepEqual(abandoned, [], "no group was established, so there is none to give up");
+  assert.deepEqual(await processesCarrying(attemptId), [], "a supervisor was left holding its gate");
+});
+
+test("a supervisor abandoned after its group was established gives the group up", async (t) => {
+  const dir = workspace();
+  const marker = join(dir, "branch-ran");
+  const attemptId = `attempt-group-abandoned-${process.pid}`;
+  const established: number[] = [];
+  const abandoned: number[] = [];
+  // The real mechanisms, observed: a job on win32, nothing to hold on POSIX.
+  overrideCheckGroupPlatform((platform) => ({
+    ...platform,
+    establish: (pid) => {
+      const refused = platform.establish(pid);
+      if (refused === null) established.push(pid);
+      return refused;
+    },
+    abandon: (pid) => {
+      abandoned.push(pid);
+      platform.abandon(pid);
+    },
+  }));
+  t.after(() => overrideCheckGroupPlatform(null));
+
+  const outcome = await spawnCheckProcess({
+    attemptId,
+    command: [NODE, "-e", "require('node:fs').writeFileSync(process.argv[1], '')", marker],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "" },
+    timeoutMs: 20_000,
+    onSupervisorReady: () => {
+      throw new Error("the durable write failed");
+    },
+  });
+
+  assert.equal(outcome.result.kind, "infrastructure");
+  assert.match(outcome.result.kind === "infrastructure" ? outcome.result.reason : "", /could not be persisted/);
+  assert.equal(outcome.supervisor, null);
+  assert.equal(existsSync(marker), false, "the gate never opened, so no branch code ran");
+  assert.equal(established.length, 1, "the group was established before the persist step");
+  assert.deepEqual(abandoned, established, "and given up when the attempt was abandoned");
+  assert.equal(checkGroupAnswers(established[0]!), false, "nothing is left holding the group");
+  assert.deepEqual(await processesCarrying(attemptId), [], "a supervisor was left holding its gate");
 });
