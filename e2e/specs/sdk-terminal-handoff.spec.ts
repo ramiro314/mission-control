@@ -371,15 +371,29 @@ test.describe("Sitrep pagination", () => {
     await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [transfer], overflow: 0 }, changed: transfer });
     await transferEvent(dashboard, { type: "session_remove", id: source.id });
     await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toHaveCount(0);
+    // The selection is released only once the source's durable transfer history answers, and
+    // a source rediscovered while that lookup is in flight legitimately keeps its drill-in. So
+    // rediscovery waits for every lookup the boundary starts to settle, not for a frame count
+    // that a loaded runner outlasts.
+    const lookup = `/api/session-transfers?sourceSessionId=${encodeURIComponent(source.id)}`;
+    let lookupsStarted = 0;
+    let lookupsSettled = 0;
+    dashboard.on("request", (request) => { if (request.url().endsWith(lookup)) lookupsStarted++; });
+    const settled = (request: { url(): string }) => { if (request.url().endsWith(lookup)) lookupsSettled++; };
+    dashboard.on("requestfinished", settled);
+    dashboard.on("requestfailed", settled);
     if (boundary === "ended event") {
       await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [], overflow: 0 }, changed: { ...transfer, state: "failed" } });
     } else {
       await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [], overflow: 0 }, changed: { ...transfer, state: "adopted", successorSessionId: "absent-successor" } });
       await transferEvent(dashboard, { ...snapshot, sessions: [], sessionTransfers: { transfers: [], overflow: 0 } });
     }
-    // Flush the removal's effects before rediscovery; otherwise React can batch both
+    await expect.poll(() => lookupsStarted > 0 && lookupsSettled === lookupsStarted, {
+      message: "the source's transfer lookup should be answered before rediscovery",
+    }).toBe(true);
+    // Flush the release's effects before rediscovery; otherwise React can batch both
     // frames into a session that never disappeared from the rendered collection.
-    await dashboard.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await dashboard.evaluate(() => new Promise<void>((resolve) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
     // Rediscovery must not reopen an old drill-in whose owner disappeared while offline.
     await transferEvent(dashboard, { type: "session_upsert", session: source });
     await expect(dashboard.locator(".tile").filter({ hasText: source.name })).toBeVisible();
