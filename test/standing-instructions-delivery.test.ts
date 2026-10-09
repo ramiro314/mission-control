@@ -33,9 +33,9 @@ const home = mkdtempSync(join(tmpdir(), "mission-standing-delivery-"));
 process.env.HARNESS_HOME = home;
 // Binaries that exist, so bin resolution can never be what fails a launch. The terminal home
 // is faked through the dispatcher's `spawn` seam.
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_CODEX_BIN = "/bin/echo";
-process.env.MISSION_PI_BIN = "/bin/echo";
+process.env.MISSION_CLAUDE_BIN = process.execPath;
+process.env.MISSION_CODEX_BIN = process.execPath;
+process.env.MISSION_PI_BIN = process.execPath;
 // No MCP bundle. That is not incidental: with the ask channel off, the ONLY thing that can
 // put `--append-system-prompt` on a Claude command line is this feature, which is what makes
 // the argv difference below a clean measurement - and it is also Finding 2's case, where the

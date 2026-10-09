@@ -33,8 +33,8 @@ process.env.HARNESS_HOME = home;
 // these tests dispatch need one: `resolveBinPath` runs at the top of `dispatch`, before any
 // of the behaviour under test, and a runner without the real CLI installed would otherwise
 // fail every case here for a reason none of them are about.
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_PI_BIN = "/bin/echo";
+process.env.MISSION_CLAUDE_BIN = process.execPath;
+process.env.MISSION_PI_BIN = process.execPath;
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, provisionWorktree } = await import("../src/server/dispatcher.ts");

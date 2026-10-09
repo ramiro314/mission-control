@@ -24,7 +24,7 @@ process.env.HARNESS_HOME = join(home, "state");
 // real CLI installed - every CI runner - would otherwise fail the base-freezing case below
 // with "agent binary not found" and never reach the refusal it is about. The same reason
 // multi-repo-dispatch.test.ts sets these.
-process.env.MISSION_CLAUDE_BIN = "/bin/echo";
+process.env.MISSION_CLAUDE_BIN = process.execPath;
 
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 const {
@@ -547,9 +547,10 @@ test("a repository whose base cannot be frozen returns to backlog before any tre
     }),
   );
   const dispatcher = new Dispatcher(registry, async () => {}, {
-    // Terminal, so no embedded supervisor is required. Nothing spawns either way: the
-    // refusal lands before provisioning, which is the whole assertion.
-    resolveRuntime: () => "terminal",
+    // Agent SDK, the runtime every host offers: win32 refuses the terminal runtime before
+    // the base is ever frozen. No supervisor is needed, because nothing spawns: the refusal
+    // lands before provisioning and the embedded arm, which is the whole assertion.
+    resolveRuntime: () => "sdk",
   });
 
   await dispatcher.dispatch("frozen-first");

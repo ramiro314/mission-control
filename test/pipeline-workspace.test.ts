@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { writeFakeExecutable } from "./helpers/fake-executable.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-workspace-"));
@@ -28,10 +28,13 @@ const {
 const { projectPipelineWorkspace, resolvePipelineWorkspace } = await import(
   "../src/server/pipelines/workspace.ts"
 );
+const { resolveBinPath } = await import("../src/server/util/exec.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
-const gitBin = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+const resolvedGit = await resolveBinPath("git");
+assert.ok(resolvedGit, "these tests drive a real git");
+const gitBin = resolvedGit;
 
 function git(repo: string, ...args: string[]): string {
   return execFileSync(gitBin, ["-C", repo, ...args], { encoding: "utf8" }).trim();
@@ -316,13 +319,17 @@ test("Git validation yields to the event loop instead of blocking registry work"
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "base");
   git(repo, "worktree", "add", "-qb", "spec/slow", worktree);
-  const slowGit = join(bin, "git");
   const slowGitInvoked = join(home, "slow-git-invoked");
-  writeFileSync(
-    slowGit,
-    '#!/bin/sh\n: > "$MISSION_TEST_SLOW_GIT_INVOKED"\nsleep 0.2\nexec "$MISSION_TEST_REAL_GIT" "$@"\n',
+  const slowGit = writeFakeExecutable(
+    join(bin, "git"),
+    `const { spawnSync } = require("node:child_process");
+require("node:fs").writeFileSync(process.env.MISSION_TEST_SLOW_GIT_INVOKED, "");
+setTimeout(() => {
+  const real = spawnSync(process.env.MISSION_TEST_REAL_GIT, process.argv.slice(2), { stdio: "inherit" });
+  process.exit(real.status ?? 1);
+}, 200);
+`,
   );
-  chmodSync(slowGit, 0o700);
 
   const previousGitBin = process.env.MISSION_GIT_BIN;
   const previousSlowGitInvoked = process.env.MISSION_TEST_SLOW_GIT_INVOKED;
