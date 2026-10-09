@@ -3,6 +3,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectDaemonHides } from "../fixtures/display-items.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -186,6 +187,7 @@ test("a Board card states a run's progress by default and its reasons only when 
   // The panel's own preview card answers immediately, with no reload and no daemon round trip.
   const previewCard = dashboard.locator(".board-card-preview-stage");
   await expect(previewCard.getByRole("button", { name: "Show full workflow" })).toBeVisible();
+  await expectDaemonHides(daemon, ["workflowDetails"], false);
   // The item's own row rather than the whole checklist: the customizer is taller than any
   // sensible viewport, and an element screenshot taken across a scroll is stitched rather
   // than photographed - the seam reads as a rendering fault in a frame meant for review.
@@ -230,8 +232,11 @@ test("a Board card states a run's progress by default and its reasons only when 
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   await setting.uncheck();
   await expect(previewCard.getByRole("button", { name: "Show full workflow" })).toHaveCount(0);
+  // Saved before the next toggle, so two saves in flight cannot land out of order.
+  await expectDaemonHides(daemon, ["workflowDetails"], true);
   await setting.check();
   await expect(previewCard.getByRole("button", { name: "Show full workflow" })).toBeVisible();
+  await expectDaemonHides(daemon, ["workflowDetails"], false);
 
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();
@@ -246,6 +251,7 @@ test("a Board card states a run's progress by default and its reasons only when 
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   await setting.uncheck();
   await expect(previewCard.getByRole("button", { name: "Show full workflow" })).toHaveCount(0);
+  await expectDaemonHides(daemon, ["workflowDetails"], true);
 
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();

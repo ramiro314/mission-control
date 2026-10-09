@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -9,6 +9,7 @@ import {
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { fakeExecutablePath } from "../../test/helpers/fake-executable.ts";
 
 test.use({
   daemonEnv: {
@@ -212,8 +213,12 @@ test("typed failure refuses task completion and retries once on a fresh host", a
   const recovery = dashboard.getByRole("region", { name: "Provider lifecycle" });
   await expect(recovery.getByRole("button", { name: "Retry Engineer" })).toBeVisible();
   const oldSessionId = sessionId;
-  const claudeBin = join(daemon.home, "fake-bin", "fake-claude");
-  chmodSync(claudeBin, 0o644);
+  // The launch fails because the binary `MISSION_CLAUDE_BIN` names is gone, not because it
+  // lost its mode bits: win32 has no execute bit, so a chmod never fails a launch there. On
+  // win32 the path the daemon starts is the `.exe` launcher beside the script.
+  const claudeBin = fakeExecutablePath(join(daemon.home, "fake-bin", "fake-claude"));
+  const claudeBinAway = `${claudeBin}.unavailable`;
+  renameSync(claudeBin, claudeBinAway);
   await recovery.getByRole("button", { name: "Retry Engineer" }).click();
   await expect(recovery.getByText("Recovery host launch failed", { exact: true })).toBeVisible();
   await expect(recovery).toContainText(
@@ -223,7 +228,7 @@ test("typed failure refuses task completion and retries once on a fresh host", a
   await expect(recovery.getByRole("button", { name: "Start Engineer" })).toHaveCount(0);
   await dashboard.mouse.move(0, 0);
   await dashboard.screenshot({ path: join(evidenceDir, "retry-host-launch-failed.png") });
-  chmodSync(claudeBin, 0o755);
+  renameSync(claudeBinAway, claudeBin);
   await recovery.getByRole("button", { name: "Resume Engineer" }).click();
   await expect.poll(async () => {
     const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
