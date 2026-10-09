@@ -12,7 +12,7 @@ import {
 test("the daemon holds idle connections past an ordinary pause, and advertises it", async () => {
   const server = http.createServer((_req, res) => res.end("ok"));
   holdIdleConnections(server);
-  // Node's own five seconds is the window a pooled client raced in Windows CI.
+  // Node's own five seconds is the window a pooled http.Agent client raced under load.
   assert.ok(server.keepAliveTimeout >= 60_000);
   assert.equal(server.keepAliveTimeout, DAEMON_KEEP_ALIVE_TIMEOUT_MS);
   // Shorter headers timeout would cut an idle keep-alive connection as a stalled request.

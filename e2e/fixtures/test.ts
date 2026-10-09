@@ -2,6 +2,7 @@ import { test as base, expect, type Page } from "@playwright/test";
 
 import { startBrowserCoverage } from "./coverage.ts";
 import { startDaemon, type DaemonHandle } from "./daemon.ts";
+import { withSocketDiagnostics } from "./socket-diagnostics.ts";
 
 /**
  * The suite's own `test`, with a daemon attached.
@@ -136,7 +137,8 @@ export const test = base.extend<{
         }),
       });
       expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
-      await page.goto(`${daemon.baseURL}/#/fleet`);
+      // A network-layer refusal here carries the host's sockets with it - see the helper.
+      await withSocketDiagnostics(() => page.goto(`${daemon.baseURL}/#/fleet`));
       await page.evaluate(() => window.localStorage.clear());
       await page.evaluate(() =>
         window.localStorage.setItem(
@@ -149,7 +151,7 @@ export const test = base.extend<{
           }),
         ),
       );
-      await page.reload();
+      await withSocketDiagnostics(() => page.reload());
       // Exact: a spec that switches discovery on (`session-driven-by-engine.spec.ts`) adopts
       // whatever agents the machine is running, and a rail row whose title merely mentions
       // "dispatch" would otherwise make this ready check a strict-mode violation.

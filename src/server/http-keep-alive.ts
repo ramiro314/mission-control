@@ -8,12 +8,13 @@ import type { Server } from "node:http";
 // keep an idle socket with no timeout of their own, so the next request after a pause near five
 // seconds is written to a socket the daemon is closing at that moment, and the client reads
 // ECONNRESET. On an idle machine the window is a few milliseconds. On a loaded one the
-// client's event loop is late to see the close, and it was a `fetch failed` and a failed
-// `PUT /api/ui/config` in Windows CI.
+// client's event loop is late to see the close: a Playwright `request.put` to
+// `/api/ui/config` failed that way in an e2e run on a loaded Windows machine.
 //
 // Holding idle connections for a minute moves that boundary past any ordinary pause. Clients
-// that read the advertised `Keep-Alive: timeout` hint, as Node's `fetch` does, still close
-// first. `headersTimeout` must stay longer than the keep-alive window, or Node would cut an idle
+// that read the advertised `Keep-Alive: timeout` hint, as Node's `fetch` does, close first
+// either way; under load `fetch` was not seen to race the five-second window at all.
+// `headersTimeout` must stay longer than the keep-alive window, or Node would cut an idle
 // connection as a request that never finished its headers.
 
 export const DAEMON_KEEP_ALIVE_TIMEOUT_MS = 65_000;
