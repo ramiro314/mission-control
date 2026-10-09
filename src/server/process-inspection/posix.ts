@@ -47,8 +47,17 @@ function parseLsofNames(text: string): Map<number, string[]> {
   return found;
 }
 
-export function createPosixProcessInspector(runner: CommandRunner = defaultCommandRunner): ProcessInspector {
+const NO_EFFECTIVE_UID = "effective user identity is unavailable";
+
+export function createPosixProcessInspector(
+  runner: CommandRunner = defaultCommandRunner,
+  geteuid: (() => number) | null = process.geteuid ?? null,
+): ProcessInspector {
   return {
+    userScopeUnavailable() {
+      return typeof geteuid === "function" ? null : NO_EFFECTIVE_UID;
+    },
+
     /**
      * Two `ps` passes because macOS `ps` has no field delimiter: pass A puts the
      * multi-token `lstart` at the tail (uid, pid, ppid, state, and tty are single tokens
@@ -67,6 +76,7 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
         commands.set(Number(m[1]), (m[2] ?? "").trim());
       }
 
+      const effectiveUid = typeof geteuid === "function" ? geteuid() : null;
       const rows: ProcessRow[] = [];
       for (const line of a.stdout.split("\n")) {
         // uid pid ppid state tty <lstart: Www Mmm DD HH:MM:SS YYYY>
@@ -74,7 +84,7 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
         if (!m) continue;
         const pid = Number(m[2]);
         rows.push({
-          uid: Number(m[1]),
+          ownedByDaemonUser: effectiveUid !== null && Number(m[1]) === effectiveUid,
           pid,
           ppid: Number(m[3]),
           state: m[4] ?? "",

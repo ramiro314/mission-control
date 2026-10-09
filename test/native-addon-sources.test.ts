@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { nativeBuildTarget } from "../scripts/build-keep-awake-native.mjs";
+import { processInspectionBuildTarget } from "../scripts/build-process-inspection-native.mjs";
 import { stateLockBuildTarget } from "../scripts/build-state-lock-native.mjs";
 import {
   gypSourcesArgs,
@@ -38,6 +39,16 @@ test("win32 builds power-request Keep Awake from its own source", () => {
   assert.throws(() => nativeBuildTarget("win32", "ia32"), /Windows ia32/);
 });
 
+test("process inspection builds on win32 only, where no ps or lsof answers", () => {
+  assert.deepEqual(nativeAddonSources("process-inspection", "win32"), ["process_inspection_win.cc"]);
+  assert.deepEqual(processInspectionBuildTarget("win32", "x64"), { kind: "build", arch: "x64" });
+  assert.deepEqual(processInspectionBuildTarget("win32", "arm64"), { kind: "build", arch: "arm64" });
+  assert.throws(() => processInspectionBuildTarget("win32", "ia32"), /win32 ia32/);
+  for (const platform of ["darwin", "linux"]) {
+    assert.deepEqual(processInspectionBuildTarget(platform, "x64"), { kind: "skip", platform });
+  }
+});
+
 test("a platform without its own sources never borrows another platform's", () => {
   for (const platform of ["aix", "freebsd"]) {
     for (const addon of ADDONS) {
@@ -46,12 +57,14 @@ test("a platform without its own sources never borrows another platform's", () =
         new RegExp(`${addon} native addon declares no sources for ${platform}`),
       );
     }
-    // The state lock is required, so it refuses; Keep Awake is optional, so it skips.
+    // The state lock is required, so it refuses; Keep Awake and process inspection are
+    // optional, so they skip.
     assert.throws(
       () => stateLockBuildTarget(platform, "x64"),
       new RegExp(`does not support ${platform} x64`),
     );
     assert.deepEqual(nativeBuildTarget(platform, "x64"), { kind: "skip", platform });
+    assert.deepEqual(processInspectionBuildTarget(platform, "x64"), { kind: "skip", platform });
   }
 });
 

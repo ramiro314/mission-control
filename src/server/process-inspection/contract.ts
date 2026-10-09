@@ -13,8 +13,14 @@ import type { RunResult } from "../util/exec.ts";
  * rather than being decided here.
  */
 export interface ProcessInspector {
-  /** Every process on the system: identity, parentage, state, terminal, start and argv. */
+  /** Every process on the system: identity, owner, parentage, state, terminal, start and argv. */
   listProcesses(): Promise<ProcessTable>;
+  /**
+   * Why this inspector cannot tell which processes the daemon's own user owns, or null when it
+   * can. Known without listing anything, so a caller that needs owners can refuse before paying
+   * for a system-wide listing whose `ownedByDaemonUser` would all be false.
+   */
+  userScopeUnavailable(): string | null;
   /** The working directory of each pid. Omission is not proof a pid exited. */
   readCwds(pids: readonly number[]): Promise<{ cwds: Map<number, string>; result: RunResult }>;
   /** Every path each pid has open, in the order the system reported them. */
@@ -31,7 +37,12 @@ export interface ProcessInspector {
 }
 
 export interface ProcessRow {
-  uid: number;
+  /**
+   * Whether the user this daemon runs as owns the process: the boundary whose working
+   * directories the daemon can observe. A uid compared with `geteuid()` on POSIX, the process
+   * token's user SID compared with the daemon's own on win32. False when it cannot be told.
+   */
+  ownedByDaemonUser: boolean;
   pid: number;
   ppid: number;
   state: string;

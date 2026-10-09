@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
+import { hasNativeAddonSources } from "./native-addon-sources.mjs";
 // Boot the built bundles and prove they actually RUN.
 //
 // What is at stake: `npm run build` succeeding while the artifact it produced cannot start.
@@ -248,6 +249,41 @@ async function smokeNativeKeepAwake() {
     return;
   }
   console.log("[smoke] native Keep Awake addon loads without creating an assertion");
+}
+
+/**
+ * On a platform that builds it, the process inspection addon must load and recognize this
+ * process as its own user's. Both reads are side-effect free, and without the addon win32
+ * worktree occupancy is unknown for every slot.
+ */
+async function smokeNativeProcessInspection() {
+  if (!hasNativeAddonSources("process-inspection", process.platform)) {
+    console.log(`[smoke] native process inspection addon deliberately skipped on ${process.platform}`);
+    return;
+  }
+  const addonPath = resolve("dist/native/process-inspection.node");
+  if (!existsSync(addonPath)) {
+    fail(`the ${process.platform} build is missing ${addonPath}`);
+    return;
+  }
+  let binding;
+  try {
+    binding = createRequire(import.meta.url)(addonPath);
+  } catch (err) {
+    fail(`the native process inspection addon could not load (${err instanceof Error ? err.message : err})`);
+    return;
+  }
+  if (typeof binding?.owners !== "function" || typeof binding?.cwds !== "function") {
+    fail("the native process inspection addon does not export owners and cwds functions");
+    return;
+  }
+  const [owner] = binding.owners([process.pid]);
+  const [cwd] = binding.cwds([process.pid]);
+  if (owner?.sameUser !== true || typeof cwd?.cwd !== "string") {
+    fail(`the native process inspection addon misread this process (${JSON.stringify({ owner, cwd })})`);
+    return;
+  }
+  console.log("[smoke] native process inspection addon reads this process's owner and cwd");
 }
 
 /**
@@ -813,6 +849,7 @@ async function smokeDetachedUpdateHelper() {
 
 await smokeDetachedUpdateHelper();
 await smokeNativeKeepAwake();
+await smokeNativeProcessInspection();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
