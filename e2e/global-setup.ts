@@ -5,8 +5,16 @@ import {
   assertE2eWorkerLimit,
   E2E_MAX_WORKERS,
 } from "./host-lease.ts";
+import { scrubLauncherSession } from "./launcher-env.ts";
 
 export default async function globalSetup(config: FullConfig): Promise<() => Promise<void>> {
+  // First, before anything here can refuse: Playwright forks every worker from this
+  // environment, so this is the one place the launching session can be kept out of all of
+  // them. Names only - a value can be a credential. See `launcher-env.ts`.
+  const scrubbed = scrubLauncherSession(process.env);
+  if (scrubbed.length > 0) {
+    console.log(`[e2e] cleared ${scrubbed.length} launching-session variables: ${scrubbed.join(", ")}`);
+  }
   assertE2eWorkerLimit(config.workers);
   const lease = await acquireE2eHostLease({
     workers: config.workers,
