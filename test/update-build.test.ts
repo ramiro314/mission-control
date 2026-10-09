@@ -117,7 +117,7 @@ console.log("${UPDATE_STAGED_MARKER} 1.2.4 one " + process.cwd() + "/app");
   }
 });
 
-test("a staged build reports every stage it reaches and the bundle it produced", async () => {
+test("a staged build reports every stage it reaches and the bundle it produced", { skip: skipOnWin32("the macOS updater is unavailable on win32; its install script reports a POSIX bundle path") }, async () => {
   const clone = fakeClone(`
 const bundle = process.cwd() + "/${BUNDLE}";
 // Written without a trailing newline first, so the reader has to buffer a partial line.
@@ -760,7 +760,7 @@ test("the bar advances monotonically and never sits at the end while work remain
 });
 
 
-test("the build's own output reaches the real update log redacted", async () => {
+test("the build's own output reaches the real update log redacted", { skip: skipOnWin32("the macOS updater is unavailable on win32; its install script reports a POSIX bundle path") }, async () => {
   // The one channel in the whole update whose text this app did not write. `npm` and
   // `electron-builder` print absolute paths as a matter of course, and a registry line can
   // carry a credential; both would otherwise sit in the state directory in clear.
