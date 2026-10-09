@@ -20,6 +20,7 @@ import {
 } from "../src/server/workflows/check-supervisor.ts";
 import {
   checkGroupAnswers,
+  establishCheckGroup,
   liveCheckGroupCount,
   terminateCheckGroup,
 } from "../src/server/workflows/check-group.ts";
@@ -28,6 +29,12 @@ import {
   resetCheckRuntimeSupportCache,
 } from "../src/server/workflows/check-identity.ts";
 import type { CheckProcessRegistry } from "../src/server/workflows/check-lease.ts";
+import { processLifetime } from "../src/server/platform/process-lifetime.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+// On win32 a check's identity and its job come from the native process inspection addon.
+provisionNativeProcessInspection();
 
 // The gate, and the rules that decide whether a signal may be sent.
 //
@@ -41,6 +48,13 @@ import type { CheckProcessRegistry } from "../src/server/workflows/check-lease.t
 
 const NODE = process.execPath;
 const dirs: string[] = [];
+
+/**
+ * Why the zero-budget cases cannot run on win32: they need a group still answering just after
+ * it was told to end, and a job counts no processes from the moment TerminateJobObject returns.
+ */
+const JOB_ENDS_AT_ONCE =
+  "a win32 job counts no processes once TerminateJobObject returns, so a zero budget never sees it still answering";
 /** Raw process groups a case started outside the supervisor, so the suite can clean up. */
 const raw: number[] = [];
 
@@ -52,11 +66,7 @@ function workspace(): string {
 
 /** Wait, bounded, for a process group to actually be gone. */
 async function waitForGroupGone(pid: number): Promise<void> {
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // already gone
-  }
+  killRaw(pid);
   for (let i = 0; i < 100 && checkGroupAnswers(pid); i += 1) {
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -81,6 +91,26 @@ async function waitForStartIdentity(pid: number): Promise<string | null> {
   return null;
 }
 
+/**
+ * `SIGKILL` a group a case started outside the supervisor: `kill(-pid)` on POSIX, the tree
+ * `taskkill /T` walks on win32. Either way, already gone is fine.
+ */
+function killRaw(pid: number): void {
+  try {
+    processLifetime.signalTree(pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Make a process this file started by hand the root of a check group, as the supervisor's own
+ * gate does: nothing to do where `detached` made it a process-group leader, a job on win32.
+ */
+function establish(pid: number): void {
+  assert.equal(establishCheckGroup(pid), null, "the bystander could not be made a check group");
+}
+
 /** A long-lived detached group we control, for the cases that must NOT be signalled. */
 async function bystander(): Promise<{ pid: number; identity: string }> {
   const child = spawn(NODE, ["-e", "setInterval(() => {}, 1000)"], {
@@ -89,19 +119,14 @@ async function bystander(): Promise<{ pid: number; identity: string }> {
   });
   const pid = child.pid!;
   raw.push(pid);
+  establish(pid);
   const identity = await waitForStartIdentity(pid);
   assert.notEqual(identity, null, "this platform must be able to read its own start identities");
   return { pid, identity: identity! };
 }
 
 after(() => {
-  for (const pid of raw) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  }
+  for (const pid of raw) killRaw(pid);
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   assert.equal(liveCheckGroupCount(), 0, "the suite left a group registered for the exit hook");
 });
@@ -258,6 +283,14 @@ test("the identity survives the gate release - the regression an exec-ing shim w
  */
 const COMMAND_TIMEOUT_MS = 15_000;
 
+/**
+ * The shell step that writes the pid of the process just started with `&` to `$1`, as a pid
+ * this file can probe. `$!` is one everywhere but Git Bash on win32, where it is the MSYS pid
+ * and the Windows one is in `/proc/$!/winpid`; nothing else has that file, so the fallback is
+ * the plain `$!` every POSIX shell prints.
+ */
+const RECORD_BACKGROUND_PID = '{ cat /proc/$!/winpid 2>/dev/null || echo $!; } > "$1"';
+
 test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", async () => {
   const dir = workspace();
   const pidFile = join(dir, "grandchild.pid");
@@ -268,7 +301,7 @@ test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", as
       attemptId: "attempt-grandchild",
       // The branch command backgrounds a second process and waits: two descendants of the
       // supervisor, only one of which a naive kill of the leader would reach.
-      command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", pidFile],
+      command: ["sh", "-c", `sleep 30 & ${RECORD_BACKGROUND_PID}; wait`, "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
       timeoutMs: COMMAND_TIMEOUT_MS,
@@ -303,7 +336,7 @@ test("a command that EXITS leaving a background process still has its group torn
   const outcome = await runSupervisedCheck(
     {
       attemptId: "attempt-background-survivor",
-      command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; exit 0', "sh", pidFile],
+      command: ["sh", "-c", `sleep 30 & ${RECORD_BACKGROUND_PID}; exit 0`, "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
     },
@@ -330,7 +363,9 @@ test("a command that EXITS leaving a background process still has its group torn
 const STUBBORN_TIMEOUT_MS = COMMAND_TIMEOUT_MS;
 const STUBBORN_GRACE_MS = 400;
 
-test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
+test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", {
+  skip: skipOnWin32("win32 has no catchable SIGTERM: a check's job ends at once, so there is no grace to wait out"),
+}, async () => {
   const dir = workspace();
   const pidFile = join(dir, "stubborn.pid");
   // The grandchild has to be RUNNING before STUBBORN_TIMEOUT_MS starts tearing the group
@@ -438,7 +473,9 @@ test("a sentinel pid is never signalled, whatever it would have named", async ()
   assert.equal(await terminateCheckGroup(4_194_305, ""), "empty", "an empty identity is the sentinel too");
 });
 
-test("a group still answering at the bound is not reported empty", async () => {
+test("a group still answering at the bound is not reported empty", {
+  skip: skipOnWin32(JOB_ENDS_AT_ONCE),
+}, async () => {
   const { pid, identity } = await bystander();
   // Zero budgets: the ladder runs but every probe gives up immediately, which is the only
   // deterministic way to reach the "we asked and it was still there" branch.
@@ -489,13 +526,14 @@ test("an unsupported platform reports unavailable and starts nothing", async () 
   const dir = workspace();
   const marker = join(dir, "branch-ran");
   const original = process.platform;
-  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  // Neither a POSIX group nor a job object: a platform `check-group.ts` has no way to hold one on.
+  Object.defineProperty(process, "platform", { value: "freebsd", configurable: true });
   resetCheckRuntimeSupportCache();
   try {
     const { registry, records } = recordingRegistry();
     const outcome = await runSupervisedCheck(
       {
-        attemptId: "attempt-win32",
+        attemptId: "attempt-freebsd",
         command: ["sh", "-c", 'touch "$1"', "sh", marker],
         leasePath: dir,
         workingSubpath: "",
@@ -505,7 +543,7 @@ test("an unsupported platform reports unavailable and starts nothing", async () 
     assert.equal(outcome.result.kind, "unavailable");
     // Naming the platform is the point: this is the "a gate no runtime can serve" outcome, and
     // an operator has to be able to tell it from a command they configured wrongly.
-    assert.match(outcome.result.kind === "unavailable" ? outcome.result.note : "", /win32/);
+    assert.match(outcome.result.kind === "unavailable" ? outcome.result.note : "", /freebsd/);
     assert.equal(existsSync(marker), false);
     assert.deepEqual(records, []);
   } finally {
@@ -634,7 +672,7 @@ function daemonFixture(dir: string): string {
     path,
     [
       `import { spawn } from "node:child_process";`,
-      `import { watchCheckGroup } from ${JSON.stringify(join(repo, "src/server/workflows/check-group.ts"))};`,
+      `import { establishCheckGroup, watchCheckGroup } from ${JSON.stringify(join(repo, "src/server/workflows/check-group.ts"))};`,
       `import { processStartIdentity } from ${JSON.stringify(join(repo, "src/server/workflows/check-identity.ts"))};`,
       `async function waitForStartIdentity(pid: number): Promise<string | null> {`,
       `  for (let i = 0; i < 100; i += 1) {`,
@@ -648,6 +686,8 @@ function daemonFixture(dir: string): string {
       `const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });`,
       `const victimIdentity = await waitForStartIdentity(victim.pid!);`,
       `if (victimIdentity === null) throw new Error("victim process identity remained unreadable");`,
+      `const established = establishCheckGroup(victim.pid!);`,
+      `if (established !== null) throw new Error(established);`,
       `watchCheckGroup(victim.pid!, victimIdentity);`,
       // Exactly `index.ts`: SIGINT/SIGTERM -> shutdown() -> process.exit(0).
       `if (process.argv[2] === "handled") process.on("SIGTERM", () => process.exit(0));`,
@@ -702,7 +742,11 @@ test("a daemon that handles SIGTERM the way ours does kills its live check group
   );
 });
 
-test("and Node's DEFAULT signal handling would leak them - which is why the daemon's handler matters", async () => {
+test("and Node's DEFAULT signal handling would leak them - which is why the daemon's handler matters", {
+  skip: skipOnWin32(
+    "win32 delivers no signals: ending the daemon closes its job handles, and the kernel ends every check with them",
+  ),
+}, async () => {
   // The control, and the reason the comment on `killLiveCheckGroups` names its dependency
   // explicitly. If someone ever removes the daemon's signal handlers, or makes `shutdown()`
   // return without exiting, this is the behaviour that comes back.
@@ -713,7 +757,9 @@ test("and Node's DEFAULT signal handling would leak them - which is why the daem
   );
 });
 
-test("a group that could NOT be proven empty stays watched for the exit hook", async () => {
+test("a group that could NOT be proven empty stays watched for the exit hook", {
+  skip: skipOnWin32(JOB_ENDS_AT_ONCE),
+}, async () => {
   const dir = workspace();
   const pidFile = join(dir, "lingering.pid");
   const { registry, cleared } = recordingRegistry();
@@ -723,7 +769,7 @@ test("a group that could NOT be proven empty stays watched for the exit hook", a
   const outcome = await runSupervisedCheck(
     {
       attemptId: "attempt-unproven",
-      command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", pidFile],
+      command: ["sh", "-c", `sleep 30 & ${RECORD_BACKGROUND_PID}; wait`, "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
       timeoutMs: COMMAND_TIMEOUT_MS,
@@ -767,14 +813,19 @@ test("a surviving descendant whose LEADER is gone is never signalled", async () 
     [
       "-e",
       // A child in the same process group, then the leader leaves. Not detached, so `sleep`
-      // stays in the group and is merely reparented when its parent goes.
-      "require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore' });" +
+      // stays in the group and is merely reparented when its parent goes. On win32 the group is
+      // a job, which no child leaves, while a child that is NOT detached is also put in the
+      // leader's own Node job and ended with the leader; so there it is detached instead.
+      `require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore', windowsHide: true, detached: ${process.platform === "win32"} });` +
         "setTimeout(() => process.exit(0), 200);",
     ],
     { detached: true, stdio: "ignore" },
   );
   const pid = leader.pid!;
   raw.push(pid);
+  // At once, while node is still starting and long before it reaches `spawn`, so the child it
+  // starts is created inside the group on every platform.
+  establish(pid);
   // Captured while the leader is alive - the only moment it can be read.
   const identity = await waitForStartIdentity(pid);
   assert.notEqual(identity, null);

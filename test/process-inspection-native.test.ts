@@ -109,6 +109,7 @@ test("the addon reads the owner and working directory of real native and WOW64 p
 
 /** Win32 errors the addon reports. */
 const ERROR_ACCESS_DENIED = 5;
+const ERROR_ALREADY_EXISTS = 183;
 const ERROR_INVALID_DATA = 13;
 const ERROR_PARTIAL_COPY = 299;
 const ERROR_NOACCESS = 998;
@@ -252,4 +253,89 @@ test("the addon refuses an impossible pid, and reports a refused open and an exi
   assert.deepEqual(owner, { failed: "exited", code: 0 });
   assert.deepEqual(native.cwds([pid]), [{ failed: "exited", code: 0 }]);
   assert.equal(win32OwnerInScope(owner), false, "an exited process is out of scope");
+});
+
+test("the identity read answers a creation time and a command line, and nothing for an exited process", { skip: noAddon, timeout: 60_000 }, async (t) => {
+  const native = ensureNativeProcessInspectionAddon();
+  for (const pid of [0, -1, 1.5, 2 ** 32, Number.NaN]) {
+    assert.throws(() => native.identity(pid), /expected one pid, a positive 32-bit integer/, `pid ${pid}`);
+  }
+
+  const own = native.identity(process.pid) as { start: string; command: string };
+  assert.match(own.start, /^[1-9]\d*$/, "100-nanosecond ticks, not a printed time");
+  assert.match(own.command, /node/i);
+  assert.deepEqual(native.identity(process.pid), own, "the same process reads the same both times");
+
+  const child = spawn(join(SYSTEM_ROOT, "System32", "cmd.exe"), ["/d", "/q", "/k"], { stdio: ["pipe", "ignore", "ignore"] });
+  await once(child, "spawn");
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+  });
+  const pid = child.pid!;
+  const started = native.identity(pid) as { start: string; command: string };
+  assert.ok(BigInt(started.start) > BigInt(own.start), "a process started later was created later");
+  assert.match(started.command, /cmd\.exe/i);
+
+  // Held and polled synchronously, as in the exited-process case above, so the pid cannot be
+  // reused while the addon looks at it: a handle outliving its process never reads as alive.
+  child.kill();
+  const deadline = Date.now() + 10_000;
+  let answer = native.identity(pid);
+  while ((answer as { failed?: string }).failed !== "exited" && Date.now() < deadline) answer = native.identity(pid);
+  assert.deepEqual(answer, { failed: "exited", code: 0 });
+});
+
+test("a check job holds what its process starts, outlives the process, and ends with one call", { skip: noAddon, timeout: 60_000 }, async (t) => {
+  const native = ensureNativeProcessInspectionAddon();
+  // Waits to be told, then starts a grandchild that outlives it: the `server & exit 0` shape a
+  // parent-pid tree forgets the moment its parent goes. Detached, or Node's own job would end it
+  // with the leader; detaching leaves Node's job and never the check's, which allows no breakaway.
+  const leader = spawn(
+    process.execPath,
+    [
+      "-e",
+      "process.stdin.once('data', () => {" +
+        " const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true });" +
+        " process.stdout.write(String(c.pid), () => process.exit(0)); })",
+    ],
+    { stdio: ["pipe", "pipe", "ignore"], windowsHide: true },
+  );
+  await once(leader, "spawn");
+  const pid = leader.pid!;
+  t.after(() => {
+    native.jobRelease(pid);
+  });
+
+  assert.equal(native.jobAssign(pid), true);
+  assert.equal(native.jobActive(pid), 1);
+  assert.deepEqual(native.jobAssign(pid), { failed: "existing job", code: ERROR_ALREADY_EXISTS }, "one job per pid");
+
+  let printed = "";
+  leader.stdout!.setEncoding("utf8").on("data", (text: string) => {
+    printed += text;
+  });
+  const exited = once(leader, "exit");
+  leader.stdin!.end("go");
+  await exited;
+  const grandchild = Number(printed);
+  assert.ok(grandchild > 0, `the leader reported its child: ${JSON.stringify(printed)}`);
+  // The job counts the leader out a moment after its exit is signalled, so wait for that.
+  const counted = Date.now() + 10_000;
+  while (native.jobActive(pid) !== 1 && Date.now() < counted) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(native.jobActive(pid), 1, "the grandchild is still in the job its parent left");
+  assert.doesNotThrow(() => process.kill(grandchild, 0));
+
+  assert.equal(native.jobTerminate(pid), true);
+  const deadline = Date.now() + 10_000;
+  while (native.jobActive(pid) !== 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(native.jobActive(pid), 0);
+  assert.throws(() => process.kill(grandchild, 0), { code: "ESRCH" }, "terminating the job ended the grandchild");
+
+  assert.equal(native.jobRelease(pid), true);
+  assert.equal(native.jobActive(pid), null, "a released job is no longer held");
+  assert.equal(native.jobTerminate(pid), false);
+  assert.equal(native.jobRelease(pid), false);
+
+  // pid 4 is the System process, which no job may take.
+  assert.deepEqual(native.jobAssign(4), { failed: "OpenProcess", code: ERROR_ACCESS_DENIED });
 });

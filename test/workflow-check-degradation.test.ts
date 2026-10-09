@@ -5,7 +5,7 @@
  * verdict, and removes the tree.
  */
 import { after, afterEach, test } from "node:test";
-import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -16,6 +16,9 @@ import { join } from "node:path";
 // assignments, so every module below arrives through a dynamic import (see db-isolation.test.ts).
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-degrade-")));
 process.env.HARNESS_HOME = home;
+
+// On win32 a check's identity and its job come from the native process inspection addon.
+provisionNativeProcessInspection();
 
 const { openDb } = await import("../src/server/db.ts");
 const { CheckLeaseManager, CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
@@ -32,7 +35,7 @@ const leaseRows = new CheckLeaseStore(db);
 setWorktreesConfig({ enabled: false });
 
 /** A real process is started only by the case that gets that far; the rest are platform-free. */
-const UNSUPPORTED = skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported;
+const UNSUPPORTED = !checkRuntimeSupport().supported;
 
 const liveRows = (): unknown[] =>
   db

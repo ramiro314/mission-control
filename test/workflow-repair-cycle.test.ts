@@ -24,7 +24,7 @@
  * separately - the observer in `workflow-resumption.test.ts`, the completion claim here.
  */
 import { after, test } from "node:test";
-import { skipOnWin32 } from "./helpers/win32-skip.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,6 +43,9 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "workflow-repair-cycle-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
+
+// On win32 a check's identity and its job come from the native process inspection addon.
+provisionNativeProcessInspection();
 
 const { Registry } = await import("../src/server/registry.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
@@ -816,7 +819,7 @@ test("a changed fingerprint resets the unchanged-evidence count", async () => {
  * so round 1 would never have parked at all and there would have been no cycle to drive.
  */
 test("a failing check drives the same repair cycle, and round 2 runs it again and passes", {
-  skip: skipOnWin32("check commands run only on Linux and macOS, through POSIX process groups") || !checkRuntimeSupport().supported,
+  skip: !checkRuntimeSupport().supported,
 }, async () => {
   writeFileSync(marker, "broken\n");
   const h = await harness("check-cycle", { gate: "check" });

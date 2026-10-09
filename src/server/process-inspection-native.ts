@@ -10,15 +10,34 @@ export interface NativeProcessReadFailure {
 
 export type NativeProcessOwner = { sameUser: boolean } | NativeProcessReadFailure;
 export type NativeProcessCwd = { cwd: string } | NativeProcessReadFailure;
+/** A creation time in 100-nanosecond ticks since 1601, in decimal, and the raw command line. */
+export type NativeProcessIdentity = { start: string; command: string } | NativeProcessReadFailure;
 
 /**
- * `native/process-inspection`, built on win32 only. Each function answers one entry per pid, in
- * the order given, and decides nothing: `process-inspection/win32.ts` owns what each failure
- * means.
+ * `native/process-inspection`, built on win32 only. `owners` and `cwds` answer one entry per
+ * pid, in the order given, and `identity` answers one pid. None of them decides anything:
+ * `process-inspection/win32.ts` owns what each failure means.
  */
 export interface NativeProcessInspectionBinding {
   owners(pids: readonly number[]): NativeProcessOwner[];
   cwds(pids: readonly number[]): NativeProcessCwd[];
+  identity(pid: number): NativeProcessIdentity;
+}
+
+/**
+ * The same addon's job objects, the win32 stand-in for a workflow Check's process group. Every
+ * job is keyed by the pid of the process it was created for and lives only in this process:
+ * `workflows/check-group-win32.ts` owns what each answer means.
+ */
+export interface NativeCheckJobBinding {
+  /** Put `pid` in a fresh job that ends with its last handle; `true`, or why not. */
+  jobAssign(pid: number): true | NativeProcessReadFailure;
+  /** How many processes the job still holds, null when this process holds no job for `pid`. */
+  jobActive(pid: number): number | null | NativeProcessReadFailure;
+  /** End every process in the job; false when this process holds no job for `pid`. */
+  jobTerminate(pid: number): boolean | NativeProcessReadFailure;
+  /** Close the job's handle, which also ends anything still in it. */
+  jobRelease(pid: number): boolean;
 }
 
 /**
@@ -42,23 +61,42 @@ export function nativeProcessInspectionAddonPath(moduleUrl = import.meta.url): s
   return resolve(dirname(fileURLToPath(moduleUrl)), "../../dist/native/process-inspection.node");
 }
 
+function exportsFunctions(value: unknown, names: readonly string[]): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    names.every((name) => typeof (value as Record<string, unknown>)[name] === "function")
+  );
+}
+
+/**
+ * Every export is required, so an addon built before one was added fails here and is rebuilt
+ * (`npm run build:native`), rather than loading with a read missing.
+ */
 export function validateNativeProcessInspectionBinding(value: unknown): NativeProcessInspectionBinding {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("owners" in value) ||
-    typeof value.owners !== "function" ||
-    !("cwds" in value) ||
-    typeof value.cwds !== "function"
-  ) {
-    throw new Error("native process inspection addon must export owners and cwds functions");
+  if (!exportsFunctions(value, ["owners", "cwds", "identity"])) {
+    throw new Error("native process inspection addon must export owners, cwds and identity functions");
   }
   return value as NativeProcessInspectionBinding;
 }
 
-/** Load and validate the side-effect-free native module. */
+export function validateNativeCheckJobBinding(value: unknown): NativeCheckJobBinding {
+  if (!exportsFunctions(value, ["jobAssign", "jobActive", "jobTerminate", "jobRelease"])) {
+    throw new Error("native process inspection addon must export jobAssign, jobActive, jobTerminate and jobRelease");
+  }
+  return value as NativeCheckJobBinding;
+}
+
+/** Load and validate the native module. Loading it has no side effects. */
 export function loadNativeProcessInspectionBinding(
   requireFn: RequireFn = createRequire(import.meta.url),
 ): NativeProcessInspectionBinding {
   return validateNativeProcessInspectionBinding(requireFn(nativeProcessInspectionAddonPath()));
+}
+
+/** The job half of the same module. Node loads an addon once, so both halves share its jobs. */
+export function loadNativeCheckJobBinding(
+  requireFn: RequireFn = createRequire(import.meta.url),
+): NativeCheckJobBinding {
+  return validateNativeCheckJobBinding(requireFn(nativeProcessInspectionAddonPath()));
 }

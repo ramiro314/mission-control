@@ -4,7 +4,7 @@ import {
   type NativeProcessInspectionBinding,
 } from "../process-inspection-native.ts";
 import type { RunResult } from "../util/exec.ts";
-import type { ProcessInspector, ProcessRow } from "./contract.ts";
+import { flattenProcessText, type ProcessInspector, type ProcessRow } from "./contract.ts";
 import { defaultCommandRunner, type CommandRunner } from "./runner.ts";
 
 /**
@@ -40,14 +40,15 @@ import { defaultCommandRunner, type CommandRunner } from "./runner.ts";
  * an elevated handle enumeration. Only Codex rollout discovery reads them, and Codex is
  * unavailable on win32.
  *
- * And the two SYNCHRONOUS reads answer "unreadable" without running anything. A synchronous
- * read blocks the daemon's event loop for as long as it runs, and the only source is starting
- * Windows PowerShell, which alone takes most of a second: every call would freeze the dashboard.
- * A per-pid cache is no way out, because Windows reuses pids and a stale start time is a wrong
- * identity. Unreadable is the answer both callers already handle. `processStartIdentity`
- * (`workflows/check-identity.ts`) refuses every platform but Linux and macOS before reading, and
- * a Pi generation lease (`pi/generation-lease.ts`) exists only where Pi runs, which win32
- * refuses (plan D20). A win32 caller that needs a start identity needs an asynchronous read.
+ * The two SYNCHRONOUS reads come from the addon too, one `OpenProcess` each: the creation time
+ * (`GetProcessTimes`) and the command line (`ProcessCommandLineInformation`). A synchronous read
+ * blocks the daemon's event loop for as long as it runs, so starting Windows PowerShell, which
+ * alone takes most of a second, was never an option for them. The start time is the creation
+ * time in 100-nanosecond ticks rather than a printed one: `processStartIdentity`
+ * (`workflows/check-identity.ts`) compares it as an opaque string, and a whole-second time would
+ * throw away the resolution that tells a reused pid apart. Without the addon both answer
+ * "unreadable", which both callers handle, and a process that has exited answers "unreadable"
+ * even while a handle to it keeps its pid from being reused.
  */
 
 /** The system-wide listing, sized like the POSIX `ps` it replaces: see `PS_TIMEOUT_MS`. */
@@ -241,6 +242,23 @@ export function createWin32ProcessInspector(
     return loaded;
   };
 
+  /** The addon's identity read for one pid, or null for any pid or answer it cannot vouch for. */
+  const identity = (pid: number): { start: string; command: string } | null => {
+    if (!positiveInteger(pid) || pid > 0xffff_ffff) return null;
+    const load = native();
+    if ("unavailable" in load) return null;
+    let answer: unknown;
+    try {
+      answer = load.binding.identity(pid);
+    } catch {
+      return null;
+    }
+    const { start, command } = (answer ?? {}) as Record<string, unknown>;
+    return typeof start === "string" && /^[1-9]\d*$/.test(start) && typeof command === "string"
+      ? { start, command }
+      : null;
+  };
+
   return {
     userScopeUnavailable() {
       const load = native();
@@ -339,13 +357,16 @@ export function createWin32ProcessInspector(
       return { files: new Map<number, string[]>(), result: unreadable(WIN32_OPEN_FILES_UNAVAILABLE) };
     },
 
-    // Unreadable without running anything: see the synchronous reads above.
-    readStartAndCommandSync() {
-      return null;
+    // From the addon, without running anything: see the synchronous reads above.
+    readStartAndCommandSync(pid) {
+      const read = identity(pid);
+      if (!read) return null;
+      const command = flattenProcessText(read.command);
+      return command ? { start: read.start, command } : null;
     },
 
-    readStartTimeSync() {
-      return null;
+    readStartTimeSync(pid) {
+      return identity(pid)?.start ?? null;
     },
 
     async findListeningPid(port) {

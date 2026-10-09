@@ -37,6 +37,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -373,6 +375,21 @@ bool ReadPids(napi_env env, napi_callback_info info, std::vector<DWORD>* pids) {
   return true;
 }
 
+// The one argument `identity` and the job functions take: a pid, a positive 32-bit integer.
+bool ReadOnePid(napi_env env, napi_callback_info info, DWORD* pid) {
+  size_t argc = 1;
+  napi_value argv[1];
+  double value = 0;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_double(env, argv[0], &value) != napi_ok || !(value >= 1) || value > 4294967295.0 ||
+      value != static_cast<double>(static_cast<DWORD>(value))) {
+    ThrowTypeError(env, "expected one pid, a positive 32-bit integer");
+    return false;
+  }
+  *pid = static_cast<DWORD>(value);
+  return true;
+}
+
 bool SetString(napi_env env, napi_value object, const char* key, const char* value) {
   napi_value string;
   return napi_create_string_utf8(env, value, NAPI_AUTO_LENGTH, &string) == napi_ok &&
@@ -519,6 +536,197 @@ napi_value ReadCwdFromImages(napi_env env, napi_callback_info info) {
   return CwdObject(env, read, cwd, failure);
 }
 
+// ---- start identity ----
+
+// `ProcessCommandLineInformation`, Windows 8.1 and later: the command line as a UNICODE_STRING
+// followed by its buffer, readable with limited information, so no PEB walk is needed.
+constexpr PROCESSINFOCLASS kProcessCommandLineInformation = static_cast<PROCESSINFOCLASS>(60);
+constexpr NTSTATUS kStatusInfoLengthMismatch = static_cast<NTSTATUS>(0xC0000004L);
+constexpr NTSTATUS kStatusBufferTooSmall = static_cast<NTSTATUS>(0xC0000023L);
+constexpr NTSTATUS kStatusBufferOverflow = static_cast<NTSTATUS>(0x80000005L);
+
+bool ReadCommandLine(HANDLE process, std::u16string* command, Failure* failure) {
+  const auto query = QueryInformationProcess();
+  if (query == nullptr) {
+    *failure = {"GetProcAddress", ERROR_PROC_NOT_FOUND};
+    return false;
+  }
+  ULONG size = 0;
+  NTSTATUS status = query(process, kProcessCommandLineInformation, nullptr, 0, &size);
+  if (status != kStatusInfoLengthMismatch && status != kStatusBufferTooSmall && status != kStatusBufferOverflow) {
+    *failure = {"NtQueryInformationProcess", static_cast<DWORD>(status)};
+    return false;
+  }
+  if (size < sizeof(UNICODE_STRING)) return InvalidLayout(failure);
+  // Aligned for the UNICODE_STRING at its head.
+  std::vector<uint64_t> buffer((size + sizeof(uint64_t) - 1) / sizeof(uint64_t), 0);
+  status = query(process, kProcessCommandLineInformation, buffer.data(), size, &size);
+  if (status < 0) {
+    *failure = {"NtQueryInformationProcess", static_cast<DWORD>(status)};
+    return false;
+  }
+  const auto* text = reinterpret_cast<const UNICODE_STRING*>(buffer.data());
+  const auto* begin = reinterpret_cast<const char*>(buffer.data());
+  const auto* data = reinterpret_cast<const char*>(text->Buffer);
+  // The buffer must lie inside what was returned, or this is not the structure we asked for.
+  if (text->Length % 2 != 0 || (text->Length > 0 && (data < begin || data + text->Length > begin + size))) {
+    return InvalidLayout(failure);
+  }
+  command->assign(reinterpret_cast<const char16_t*>(text->Buffer), text->Length / 2);
+  return true;
+}
+
+// The creation time as 100-nanosecond ticks since 1601, in decimal: the full resolution
+// Windows keeps, rather than the whole second a printed start time would round it to.
+bool ReadCreationTicks(HANDLE process, std::string* ticks, Failure* failure) {
+  FILETIME creation = {};
+  FILETIME exit = {};
+  FILETIME kernel = {};
+  FILETIME user = {};
+  if (!GetProcessTimes(process, &creation, &exit, &kernel, &user)) {
+    *failure = {"GetProcessTimes", GetLastError()};
+    return false;
+  }
+  const uint64_t value = (static_cast<uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+  if (value == 0) return InvalidLayout(failure);
+  *ticks = std::to_string(value);
+  return true;
+}
+
+// `identity(pid)`: `{ start, command }` from one open of the process, or `{ failed, code }`. An
+// exited process answers `exited`, so a handle that outlives its process never reads as alive.
+napi_value Identity(napi_env env, napi_callback_info info) {
+  DWORD pid = 0;
+  if (!ReadOnePid(env, info, &pid)) return nullptr;
+  Failure failure = {};
+  std::string start;
+  std::u16string command;
+  Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+  bool read = false;
+  if (!process) {
+    failure = {"OpenProcess", GetLastError()};
+  } else {
+    read = ReadCreationTicks(process.get(), &start, &failure) &&
+           ReadCommandLine(process.get(), &command, &failure);
+    if (Exited(process.get())) {
+      failure = {"exited", 0};
+      read = false;
+    }
+  }
+  if (!read) return FailureObject(env, failure);
+  napi_value entry;
+  napi_value text;
+  if (napi_create_object(env, &entry) != napi_ok || !SetString(env, entry, "start", start.c_str()) ||
+      napi_create_string_utf16(env, command.data(), command.size(), &text) != napi_ok ||
+      napi_set_named_property(env, entry, "command", text) != napi_ok) {
+    return nullptr;
+  }
+  return entry;
+}
+
+// ---- check jobs ----
+//
+// A workflow Check's process group, which Windows does not have, is a job object here. The
+// supervisor is assigned to a fresh job before it is allowed to start the check command, and
+// everything that command starts is created inside the job, whatever its parent pid says later.
+//
+// The job is created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and its handle lives only in this
+// process (unnamed, not inheritable). So the job can end in exactly two ways: this process
+// terminates it, or this process goes away, and the kernel closes the handle and terminates
+// every process still in it. A daemon that crashes therefore takes its checks with it, which is
+// what lets the next daemon prove a recorded group empty without having a handle to it.
+//
+// Jobs are keyed by the supervisor's pid. One process can hold one live job per pid, which is
+// the same rule a process group id obeys, and a pid reused while its old job still has members
+// is refused rather than shared.
+
+std::mutex& JobsLock() {
+  static std::mutex lock;
+  return lock;
+}
+
+std::map<DWORD, HANDLE>& Jobs() {
+  static std::map<DWORD, HANDLE> jobs;
+  return jobs;
+}
+
+napi_value Boolean(napi_env env, bool value) {
+  napi_value result;
+  return napi_get_boolean(env, value, &result) == napi_ok ? result : nullptr;
+}
+
+// `jobAssign(pid)`: `true`, or `{ failed, code }` with nothing left behind.
+napi_value JobAssign(napi_env env, napi_callback_info info) {
+  DWORD pid = 0;
+  if (!ReadOnePid(env, info, &pid)) return nullptr;
+  std::lock_guard<std::mutex> guard(JobsLock());
+  if (Jobs().count(pid) != 0) return FailureObject(env, {"existing job", ERROR_ALREADY_EXISTS});
+
+  Handle process(OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+  if (!process) return FailureObject(env, {"OpenProcess", GetLastError()});
+  if (Exited(process.get())) return FailureObject(env, {"exited", 0});
+
+  HANDLE job = CreateJobObjectW(nullptr, nullptr);
+  if (job == nullptr) return FailureObject(env, {"CreateJobObject", GetLastError()});
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    const DWORD code = GetLastError();
+    CloseHandle(job);
+    return FailureObject(env, {"SetInformationJobObject", code});
+  }
+  if (!AssignProcessToJobObject(job, process.get())) {
+    const DWORD code = GetLastError();
+    CloseHandle(job);
+    return FailureObject(env, {"AssignProcessToJobObject", code});
+  }
+  Jobs()[pid] = job;
+  return Boolean(env, true);
+}
+
+// `jobActive(pid)`: how many processes the job still holds, or `null` when this process holds
+// no job for that pid.
+napi_value JobActive(napi_env env, napi_callback_info info) {
+  DWORD pid = 0;
+  if (!ReadOnePid(env, info, &pid)) return nullptr;
+  std::lock_guard<std::mutex> guard(JobsLock());
+  const auto found = Jobs().find(pid);
+  napi_value result;
+  if (found == Jobs().end()) return napi_get_null(env, &result) == napi_ok ? result : nullptr;
+  JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting = {};
+  if (!QueryInformationJobObject(found->second, JobObjectBasicAccountingInformation, &accounting,
+                                 sizeof(accounting), nullptr)) {
+    return FailureObject(env, {"QueryInformationJobObject", GetLastError()});
+  }
+  return napi_create_double(env, static_cast<double>(accounting.ActiveProcesses), &result) == napi_ok ? result
+                                                                                                       : nullptr;
+}
+
+// `jobTerminate(pid)`: `true` once every process in the job has been told to end, `false` when
+// this process holds no job for that pid, or `{ failed, code }`.
+napi_value JobTerminate(napi_env env, napi_callback_info info) {
+  DWORD pid = 0;
+  if (!ReadOnePid(env, info, &pid)) return nullptr;
+  std::lock_guard<std::mutex> guard(JobsLock());
+  const auto found = Jobs().find(pid);
+  if (found == Jobs().end()) return Boolean(env, false);
+  if (!TerminateJobObject(found->second, 1)) return FailureObject(env, {"TerminateJobObject", GetLastError()});
+  return Boolean(env, true);
+}
+
+// `jobRelease(pid)`: close this process's handle to the job. Closing it terminates anything
+// still inside, so the caller releases a job only once it has proven it empty.
+napi_value JobRelease(napi_env env, napi_callback_info info) {
+  DWORD pid = 0;
+  if (!ReadOnePid(env, info, &pid)) return nullptr;
+  std::lock_guard<std::mutex> guard(JobsLock());
+  const auto found = Jobs().find(pid);
+  if (found == Jobs().end()) return Boolean(env, false);
+  CloseHandle(found->second);
+  Jobs().erase(found);
+  return Boolean(env, true);
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
@@ -526,8 +734,13 @@ NAPI_MODULE_INIT() {
       {"owners", nullptr, Owners, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"cwds", nullptr, Cwds, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readCwdFromImages", nullptr, ReadCwdFromImages, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"identity", nullptr, Identity, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"jobAssign", nullptr, JobAssign, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"jobActive", nullptr, JobActive, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"jobTerminate", nullptr, JobTerminate, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"jobRelease", nullptr, JobRelease, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  if (napi_define_properties(env, exports, 3, properties) != napi_ok) {
+  if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native process inspection addon");
     return nullptr;
   }

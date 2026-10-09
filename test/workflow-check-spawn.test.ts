@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -15,7 +16,13 @@ import { join } from "node:path";
 
 import { spawnCheckProcess } from "../src/server/workflows/check-spawn.ts";
 import { checkGroupAnswers } from "../src/server/workflows/check-group.ts";
+import { processInspector } from "../src/server/process-inspection/index.ts";
 import { onPath } from "../src/server/util/exec.ts";
+import { provisionNativeProcessInspection } from "./helpers/native-process-inspection.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
+
+// On win32 a check's identity and its job come from the native process inspection addon.
+provisionNativeProcessInspection();
 
 // The streaming adapter, against REAL short-lived processes and no mocks.
 //
@@ -46,6 +53,25 @@ after(() => {
 });
 
 const NODE = process.execPath;
+
+/**
+ * The variables libuv adds on win32 to a child environment that lacks them, copied from the
+ * parent, because Windows programs fail without them (`required_vars` in libuv's
+ * `src/win/process.c`).
+ */
+const LIBUV_WIN32_REQUIRED_ENV = new Set([
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOGONSERVER",
+  "PATH",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "USERDOMAIN",
+  "USERNAME",
+  "USERPROFILE",
+  "WINDIR",
+]);
 /** The argv separator in `/proc/<pid>/cmdline`, built from its code point so that no
  *  invisible byte ends up sitting in this file. */
 const NUL = String.fromCharCode(0);
@@ -172,16 +198,26 @@ test("a missing executable is `unavailable`, and nothing else here is", async ()
 
 test("a relative ./script in the working directory is found - the onPath trap", async () => {
   const dir = workspace();
-  writeFileSync(join(dir, "check"), "#!/bin/sh\necho ran-relative\n");
-  chmodSync(join(dir, "check"), 0o755);
+  // win32 starts only executables, never a `#!` script, so there the relative command is a copy
+  // of this runtime under a name nothing else has. Either way it exists only in `dir`.
+  const command =
+    process.platform === "win32"
+      ? ["./check.exe", "-e", "process.stdout.write('ran-relative' + String.fromCharCode(10))"]
+      : ["./check"];
+  if (process.platform === "win32") {
+    copyFileSync(NODE, join(dir, "check.exe"));
+  } else {
+    writeFileSync(join(dir, "check"), "#!/bin/sh\necho ran-relative\n");
+    chmodSync(join(dir, "check"), 0o755);
+  }
 
   // The trap itself, asserted rather than described: `onPath` answers this question against
   // the DAEMON's cwd, so it calls a script that plainly exists "missing". Anything that
   // prechecked a check command with it would refuse to run `./scripts/check` and
   // `node_modules/.bin/tsc` in every repository on the machine.
-  assert.equal(onPath("./check"), false, "onPath resolves relative names against the wrong directory");
+  assert.equal(onPath(command[0]!), false, "onPath resolves relative names against the wrong directory");
 
-  const { result } = await run(["./check"], { cwd: dir });
+  const { result } = await run(command, { cwd: dir });
   assert.deepEqual(result, {
     kind: "exited",
     exitCode: 0,
@@ -204,7 +240,11 @@ test("a timeout is infrastructure, never a non-zero exit", async () => {
   assert.equal(emptiness, "empty");
 });
 
-test("a command killed by a signal is infrastructure, never a fail", async () => {
+test("a command killed by a signal is infrastructure, never a fail", {
+  skip: skipOnWin32(
+    "win32 has no signals: a process ended by TerminateProcess reports only the exit code its killer chose",
+  ),
+}, async () => {
   const { result } = await run([NODE, "-e", "process.kill(process.pid, 'SIGKILL')"]);
   assert.equal(result.kind, "infrastructure");
   assert.match(result.kind === "infrastructure" ? result.reason : "", /killed by SIGKILL/);
@@ -226,16 +266,22 @@ test("shell: false - metacharacters are literal arguments, not syntax", async ()
 test("the command inherits the handed environment and nothing of the daemon's", async () => {
   process.env.MISSION_CHECK_SPAWN_SENTINEL = "the daemon's own environment";
   try {
+    const handed = { PATH: process.env.PATH ?? "", KEPT: "1" };
     const { result } = await run(
       [NODE, "-e", "process.stdout.write(JSON.stringify(Object.keys(process.env).sort()))"],
-      { env: { PATH: process.env.PATH ?? "", KEPT: "1" } },
+      { env: handed },
     );
     assert.equal(result.kind, "exited");
     const seen = JSON.parse(result.kind === "exited" ? result.output : "[]") as string[];
-    // `__CF_USER_TEXT_ENCODING` is added by CoreFoundation to every process macOS starts, so
-    // "exactly the handed set" is not a claim any spawn on this platform can make. Filtering
-    // it names the platform quirk rather than weakening the assertion to a subset check.
-    assert.deepEqual(seen.filter((name) => !name.startsWith("__CF")), ["KEPT", "PATH"]);
+    // `__CF_USER_TEXT_ENCODING` is added by CoreFoundation to every process macOS starts, and on
+    // win32 libuv copies the variables Windows programs cannot start without from the parent
+    // into any environment that lacks them, so "exactly the handed set" is not a claim any spawn
+    // on either platform can make. Filtering them names the platform quirk rather than
+    // weakening the assertion to a subset check.
+    const platformAdded = (name: string): boolean =>
+      name.startsWith("__CF") ||
+      (process.platform === "win32" && LIBUV_WIN32_REQUIRED_ENV.has(name.toUpperCase()) && !Object.hasOwn(handed, name));
+    assert.deepEqual(seen.filter((name) => !platformAdded(name)), ["KEPT", "PATH"]);
     assert.equal(
       seen.includes("MISSION_CHECK_SPAWN_SENTINEL"),
       false,
@@ -268,9 +314,15 @@ test("stdin is closed, so a command that reads it fails rather than hanging", as
  * no `ps` - the production code has the same split for the same reason, and a test helper that
  * needed a binary the code under test does not would fail on images where the subject works
  * perfectly. `-ww` on the macOS side because it otherwise clips the line, and the id sits after
- * the shim's own source in the argv.
+ * the shim's own source in the argv. win32 has no `ps` of its own, and the one Git Bash ships
+ * lists only its own processes, so it asks process inspection, as the daemon does.
  */
-function processesCarrying(attemptId: string): string[] {
+async function processesCarrying(attemptId: string): Promise<string[]> {
+  if (process.platform === "win32") {
+    const table = await processInspector().listProcesses();
+    assert.equal(table.failure, null, table.failure?.stderr);
+    return table.rows.filter((row) => row.command.includes(attemptId)).map((row) => `${row.pid} ${row.command}`);
+  }
   if (process.platform === "linux") {
     const found: string[] = [];
     for (const entry of readdirSync("/proc")) {
@@ -314,7 +366,7 @@ test("a timeout before the supervisor is ready leaves no held shim behind", asyn
   assert.equal(outcome.supervisor, null, "the gate never opened, so there is no owner to report");
   assert.equal(existsSync(marker), false, "and no branch code may run");
   assert.deepEqual(
-    processesCarrying(attemptId),
+    await processesCarrying(attemptId),
     [],
     "a supervisor was left holding its gate after the call returned",
   );
