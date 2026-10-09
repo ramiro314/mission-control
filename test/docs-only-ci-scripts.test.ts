@@ -7,6 +7,9 @@
  * `src/` into `docs/` lists both paths, and without it only the new `docs/` path. Dropping the
  * flag from the script therefore turns the rename case `true` and fails it.
  *
+ * `ci-result.sh` reads its input with the machine's own `jq`. Its cases skip without it, saying
+ * so, and a CI run without it fails instead (`jqSkip`).
+ *
  * The last case feeds `decideWaitForCi` the check list a docs-only run produces.
  */
 import { after, test } from "node:test";
@@ -17,11 +20,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ciCheckRunsFromRollup, decideWaitForCi, initialWaitForCiState } from "../src/shared/wait-for-ci.ts";
 import { FLAKY_TESTS_CHECK_NAME, parseFlakeSummary, renderFlakeSummary } from "../src/shared/flake-report.ts";
-import { runBashScript } from "./helpers/script-bash.ts";
+import { jqSkip, runBashScript } from "./helpers/script-bash.ts";
 
 const ASSETS = fileURLToPath(new URL("../skills/docs-only-ci/assets/", import.meta.url));
 const DETECT = join(ASSETS, "detect-docs-only.sh");
 const CI_RESULT = join(ASSETS, "ci-result.sh");
+/** `ci-result.sh` reads `NEEDS_JSON` with `jq`. */
+const JQ = { skip: jqSkip() };
 
 const dir = mkdtempSync(join(tmpdir(), "mission-docs-only-ci-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -134,13 +139,13 @@ function ciResult(results: Record<string, string>, docsOnly: string) {
   return run(CI_RESULT, { NEEDS_JSON: needs(results), DOCS_ONLY: docsOnly, SKIPPABLE });
 }
 
-test("ci-result: passes when every need succeeded", () => {
+test("ci-result: passes when every need succeeded", JQ, () => {
   const r = ciResult({}, "false");
   assert.equal(r.code, 0, r.stdout);
   assert.match(r.stdout, /CI result: passed/);
 });
 
-test("ci-result: passes when only SKIPPABLE jobs were skipped on a docs-only run", () => {
+test("ci-result: passes when only SKIPPABLE jobs were skipped on a docs-only run", JQ, () => {
   const r = ciResult(DOCS_ONLY_SKIPS, "true");
   assert.equal(r.code, 0, r.stdout);
   assert.match(r.stdout, /^gates: skipped \(docs-only change\)$/m);
@@ -172,7 +177,7 @@ const FAILS: Array<{ name: string; results: Record<string, string>; docsOnly: st
 ];
 
 for (const c of FAILS) {
-  test(`ci-result: fails, naming each offending job, for ${c.name}`, () => {
+  test(`ci-result: fails, naming each offending job, for ${c.name}`, JQ, () => {
     const r = ciResult(c.results, c.docsOnly);
     assert.equal(r.code, 1, r.stdout);
     const errors = r.stdout.split("\n").filter((l) => l.startsWith("::error::")).map((l) => l.slice(9));
@@ -181,7 +186,7 @@ for (const c of FAILS) {
   });
 }
 
-test("ci-result: an unreadable or empty NEEDS_JSON fails", () => {
+test("ci-result: an unreadable or empty NEEDS_JSON fails", JQ, () => {
   for (const json of ["", "not json", "{}"]) {
     const r = run(CI_RESULT, { NEEDS_JSON: json, DOCS_ONLY: "true", SKIPPABLE });
     assert.equal(r.code, 1, `${JSON.stringify(json)}: ${r.stdout}`);

@@ -162,10 +162,22 @@ export function tourTargetOwner(id: string): TourId | null {
 export interface TourTargetRegistry {
   get(id: TourTargetId): HTMLElement | null;
   register(id: TourTargetId, element: HTMLElement): () => void;
+  /**
+   * Hear about every change to which element a target resolves to.
+   *
+   * A target's owner can be replaced while its stop is on screen - a pane that drops to a
+   * loading placeholder and comes back is a new element - and the running tour has to learn
+   * that, because Driver keeps framing the element it was handed even once it is detached.
+   */
+  subscribe(listener: () => void): () => void;
 }
 
 export function createTourTargetRegistry(): TourTargetRegistry {
   const targets = new Map<TourTargetId, { element: HTMLElement; token: symbol }>();
+  const listeners = new Set<() => void>();
+  const changed = (): void => {
+    for (const listener of [...listeners]) listener();
+  };
 
   return {
     get(id) {
@@ -174,8 +186,17 @@ export function createTourTargetRegistry(): TourTargetRegistry {
     register(id, element) {
       const token = Symbol(id);
       targets.set(id, { element, token });
+      changed();
       return () => {
-        if (targets.get(id)?.token === token) targets.delete(id);
+        if (targets.get(id)?.token !== token) return;
+        targets.delete(id);
+        changed();
+      };
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
       };
     },
   };

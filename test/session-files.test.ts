@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { expectedMode } from "./helpers/posix-mode.ts";
 import {
   listSessionFiles,
   listGitTreeFiles,
@@ -293,7 +294,7 @@ test("matching revisions save atomically, preserve mode, and leave no temp file"
   const saved = await saveSessionFile(dir, "script.sh", "echo after\n", before.revision);
   assert.equal(saved.ok, true);
   assert.equal(await readFile(target, "utf8"), "echo after\n");
-  assert.equal((await stat(target)).mode & 0o777, 0o751);
+  assert.equal((await stat(target)).mode & 0o777, expectedMode(0o751));
   assert.deepEqual((await readdir(dir)).filter((name) => name.startsWith(".mission-control-")), []);
 });
 

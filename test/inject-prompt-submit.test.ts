@@ -14,6 +14,8 @@ import { stubRun } from "../src/server/util/exec.ts";
 import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
 
+const WEZTERM_SOCKET = skipOnWin32("the terminal runtime is unavailable on win32; this case drives its WezTerm adapter over a WezTerm socket fixture whose Unix-socket listen aborts Node there");
+
 // Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, read, Enter, read
 // back - and the ORDER is the whole fix, so these tests assert the sequence rather than the
 // outcome alone.
@@ -321,7 +323,7 @@ test("a paste that never left the buffer is still reported as retryable", async 
   assert.equal(r.pasted, false, "nothing reached the pane, so this is safe to retry");
 });
 
-test("wezterm settles before its Enter too", async (t) => {
+test("wezterm settles before its Enter too", { skip: WEZTERM_SOCKET }, async (t) => {
   // The same TUI is on the other end of the wezterm handle, so it has the same window.
   const socket = await weztermSocketFixture();
   t.after(() => socket.close());

@@ -1,7 +1,7 @@
 import { verifyArchiveBundle } from "./bundle.ts";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rm, rmdir, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
@@ -23,6 +23,7 @@ import { SCOUT_REPORT_PATH_SHAPE, scoutReportDirectory, scoutReportSlug, type Sc
 import type { Session } from "@shared/types.ts";
 import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
+import { renameAllowingHeldHandles } from "../platform/held-handle-rename.ts";
 import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
 import {
   archiveOperationKey,
@@ -194,7 +195,7 @@ export class ArchiveManager {
     this.titleStore = options.titleStore ?? new ArchiveTitleStore(this.libraryPath);
     this.captureStore = options.captureStore ?? new ArchiveCaptureStore();
     this.tasks = options.tasks ?? null;
-    this.renameDir = options.rename ?? ((from, to) => rename(from, to));
+    this.renameDir = options.rename ?? ((from, to) => renameAllowingHeldHandles(from, to));
     this.afterSubmissionAttribution = options.afterSubmissionAttribution;
     this.handToTarget = options.openTarget ?? openFile;
     this.log =

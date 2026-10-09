@@ -215,6 +215,12 @@ The e2e suite drives the built dashboard and built daemon, so build first. It us
 fake agents and does not spend model tokens. See [e2e/README.md](../e2e/README.md) for
 focused commands, traces, and its isolation rules.
 
+A few unit tests run the CI scripts that read and write JSON with `jq`. GitHub's runners ship
+it; macOS and Git for Windows do not. Install it with `brew install jq` or
+`winget install jqlang.jq`. Without it those tests skip with the reason "jq is not installed".
+Where `CI` is set, a missing `jq` fails them instead, so a runner without it never passes on
+skips.
+
 ## Explore without real agent sessions
 
 After building, launch the isolated demo:
@@ -325,6 +331,12 @@ the shell differs on Windows.
 
 The state directory is `%USERPROFILE%\.mission-control`, with the same layout as on macOS, and
 `MISSION_HOME` overrides it the same way.
+
+To run the Windows CI steps locally, install `jq` as [Verify the checkout](#verify-the-checkout)
+describes. `npm run verify:keep-awake-native`, the native-probes job's Keep Awake check, reads
+the power request back through `powercfg /requests`, which Windows answers only in an elevated
+shell. GitHub's Windows runners are elevated; from an ordinary terminal the probe fails and
+says to rerun it from a terminal opened with **Run as administrator**.
 
 This replaces `make init`, because the `make` targets do not run on Windows yet. It also
 leaves out the Claude status hooks that `make init` installs: `npm run install-hooks` has not

@@ -105,10 +105,24 @@ test("development remounts do not repeat entry and a copied report records compl
   const { startDevDashboard } = await import("../fixtures/dev-dashboard.ts");
   await enable(daemon);
   const dev = await startDevDashboard(daemon);
+  // The development server's proxy answers ingress slowly while it is still serving the app's
+  // modules on a loaded machine - 5.7s was measured - so the settings entry is answered that
+  // slowly on every run. Each slow answer has to be waited for: one abandoned per attempt
+  // spent all three, and the entry this test counts was never recorded.
+  let settingsEntryAttempts = 0;
+  await dashboard.route(`${dev.origin}/api/telemetry/ingress`, async (route) => {
+    const records = (route.request().postDataJSON()?.records ?? []) as { facts?: { feature?: string; action?: string } }[];
+    if (!records.some((r) => r.facts?.feature === "settings" && r.facts.action === "enter")) return route.continue();
+    settingsEntryAttempts++;
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    // An attempt the page has already abandoned has nothing left to continue.
+    await route.continue().catch(() => {});
+  });
   try {
     await dashboard.goto(`${dev.origin}/#/settings/telemetry`);
     await expect(dashboard.getByLabel("Collect Mission Control telemetry on this machine")).toBeChecked();
     await expect.poll(() => captured(daemon, "mission.feature.entry").filter((e) => e.facts.feature === "settings" && e.facts.action === "enter").length).toBe(1);
+    expect(settingsEntryAttempts, "the slow answer was waited for, not abandoned and retried").toBe(1);
     // A settings status event causes a render, not another visit.
     await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { richText: false } });
     await dashboard.getByLabel("Collect Mission Control telemetry on this machine").focus();

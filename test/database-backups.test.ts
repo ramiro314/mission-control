@@ -21,6 +21,7 @@ import {
 import { startDatabaseBackupLoop } from "../src/server/database-backups/loop.ts";
 import { verifyDatabaseBackupForRestore } from "../src/server/database-backups/restore.ts";
 import { CURRENT_DATABASE_SCHEMA_VERSION } from "../src/server/db.ts";
+import { expectedMode } from "./helpers/posix-mode.ts";
 
 function fixture(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -41,10 +42,10 @@ function openWalDatabase(path: string): DatabaseSync {
 
 test("online snapshots include committed WAL pages that a main-file copy loses", async (t) => {
   const root = fixture("mission-database-backup-wal-");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   const sourcePath = join(root, "harness.db");
   const source = openWalDatabase(sourcePath);
   t.after(() => source.close());
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   assert.equal(existsSync(`${sourcePath}-wal`), true);
   const sourceBefore = statSync(sourcePath);
 
@@ -69,15 +70,15 @@ test("online snapshots include committed WAL pages that a main-file copy loses",
   const sourceAfter = statSync(sourcePath);
   assert.equal(sourceAfter.uid, sourceBefore.uid);
   assert.equal(sourceAfter.mode & 0o777, sourceBefore.mode & 0o777);
-  assert.equal(statSync(snapshot.path).mode & 0o777, 0o600);
-  assert.equal(statSync(join(root, "backups")).mode & 0o777, 0o700);
+  assert.equal(statSync(snapshot.path).mode & 0o777, expectedMode(0o600));
+  assert.equal(statSync(join(root, "backups")).mode & 0o777, expectedMode(0o700));
 });
 
 test("scheduled and pre-migration generations have independent bounded retention", async (t) => {
   const root = fixture("mission-database-backup-retention-");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = new DatabaseSync(join(root, "harness.db"));
   t.after(() => source.close());
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
   let now = Date.UTC(2026, 7, 30, 12, 0, 0);
   const service = new DatabaseBackupService(source, {
@@ -100,9 +101,9 @@ test("scheduled and pre-migration generations have independent bounded retention
 
 test("restore validation rejects corruption without changing healthy live state", async (t) => {
   const root = fixture("mission-database-backup-corrupt-");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = new DatabaseSync(join(root, "harness.db"));
   t.after(() => source.close());
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL); INSERT INTO recovery_probe VALUES ('before')");
   const service = new DatabaseBackupService(source, { root: join(root, "backups") });
   const snapshot = await service.captureScheduled();
@@ -121,9 +122,9 @@ test("restore validation rejects corruption without changing healthy live state"
 
 test("restore validation forward-migrates a disposable copy and leaves the candidate read-only", async (t) => {
   const root = fixture("mission-database-backup-restore-");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = new DatabaseSync(join(root, "harness.db"));
   t.after(() => source.close());
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL); INSERT INTO recovery_probe VALUES ('recoverable')");
   const service = new DatabaseBackupService(source, { root: join(root, "backups") });
   const snapshot = await service.captureScheduled();
@@ -139,10 +140,10 @@ test("restore validation forward-migrates a disposable copy and leaves the candi
 
 test("startup captures the WAL-consistent database before schema creation and migration", (t) => {
   const home = fixture("mission-database-backup-startup-");
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const sourcePath = join(home, "harness.db");
   const source = openWalDatabase(sourcePath);
   t.after(() => source.close());
+  t.after(() => rmSync(home, { recursive: true, force: true }));
 
   const openArgs = [
     "--import",

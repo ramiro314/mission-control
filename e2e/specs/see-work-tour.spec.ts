@@ -379,7 +379,20 @@ test("Exit during the live demo leaves the task done and no session behind", asy
   await dispatchTourTask(dashboard);
   const working = step(dashboard, "Working");
   await expect(working).toBeVisible({ timeout: 30_000 });
+  // Windows CI once never showed the cleanup dialog, and nothing local reproduced it. Record
+  // what Exit set in motion, so that failure explains itself in the job log the next time.
+  const exitTrail: string[] = [];
+  dashboard.on("response", (response) => {
+    if (response.url().includes("/api/tours/see-work/tasks/")) {
+      exitTrail.push(`${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`);
+    }
+  });
+  dashboard.on("console", (message) => {
+    if (message.type() === "error" && /tour/i.test(message.text())) exitTrail.push(`console: ${message.text()}`);
+  });
+  let refusalServed = false;
   await dashboard.route("**/api/tours/see-work/tasks/*/complete", async (route) => {
+    refusalServed = true;
     await route.fulfill({
       status: 500,
       contentType: "application/json",
@@ -389,7 +402,16 @@ test("Exit during the live demo leaves the task done and no session behind", asy
   await working.getByRole("button", { name: "Exit tour" }).click();
 
   const cleanup = step(dashboard, "Tour cleanup needs attention");
-  await expect(cleanup).toContainText("simulated cleanup refusal");
+  try {
+    await expect(cleanup).toContainText("simulated cleanup refusal");
+  } catch (error) {
+    const popovers = await dashboard.locator(".driver-popover").allInnerTexts().catch(() => []);
+    const hash = await dashboard.evaluate(() => location.hash).catch(() => "?");
+    (error as Error).message += `\n\nExit diagnostics: refusal served: ${refusalServed}; `
+      + `route: ${hash}; tour popovers: ${JSON.stringify(popovers)}; `
+      + `tour task calls and errors: ${JSON.stringify(exitTrail)}`;
+    throw error;
+  }
   await expect(cleanup).toContainText("restored where you started");
   await expect.poll(() => dashboard.evaluate(() => location.hash)).toBe("#/settings/display");
   const retry = cleanup.getByRole("button", { name: "Retry cleanup" });

@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-activity-home-"));
 process.env.HARNESS_HOME = home;
@@ -142,7 +143,11 @@ test("deleting a tracked file moves the fingerprint", async () => {
   await assertMoves(dir, "a deletion", () => rmSync(join(dir, "tracked.txt")));
 });
 
-test("chmod +x with no content change moves the fingerprint", async () => {
+test("chmod +x with no content change moves the fingerprint", {
+  skip: skipOnWin32(
+    "win32 has no executable bit and git for Windows sets core.fileMode=false, so no worktree change can flip a mode",
+  ),
+}, async () => {
   const dir = mkRepo("mode");
   await assertMoves(dir, "a mode change", () => chmodSync(join(dir, "tracked.txt"), 0o755));
 });
@@ -182,7 +187,11 @@ test("ignored churn never moves the fingerprint", async () => {
   );
 });
 
-test("odd filenames - newline, quote, unicode - are handled without merging paths", async () => {
+test("odd filenames - newline, quote - are handled without merging paths", {
+  skip: skipOnWin32(
+    "NTFS forbids a newline and a '\"' in a filename, so no win32 worktree can hold one for git to report",
+  ),
+}, async () => {
   const dir = mkRepo("odd");
   const clean = await digest(dir);
   // A newline in a filename is exactly what defeats a line-splitting parser: two paths merge
@@ -191,12 +200,27 @@ test("odd filenames - newline, quote, unicode - are handled without merging path
   const withNewline = await digest(dir);
   assert.notEqual(withNewline, clean);
   writeFileSync(join(dir, 'quo"te.txt'), "two\n");
-  writeFileSync(join(dir, "ünïcode-\u{1F600}.txt"), "three\n");
   const withAll = await digest(dir);
   assert.notEqual(withAll, withNewline);
   // And editing only the newline-named file still registers, which is the proof the entry was
   // parsed as its own record rather than glued to its neighbour.
   writeFileSync(join(dir, "line\nbreak.txt"), "one changed\n");
+  assert.notEqual(await digest(dir), withAll);
+});
+
+test("unicode and spaced filenames are handled without merging paths", async () => {
+  // Outside `-z`, git quotes and octal-escapes a non-ASCII name, so a parser that kept the
+  // quoted form would read a path that does not exist on disk. Every filesystem accepts these,
+  // so this half of the claim holds on win32 too.
+  const dir = mkRepo("unicode");
+  const clean = await digest(dir);
+  writeFileSync(join(dir, "ünïcode-\u{1F600}.txt"), "one\n");
+  const withUnicode = await digest(dir);
+  assert.notEqual(withUnicode, clean);
+  writeFileSync(join(dir, "two words.txt"), "two\n");
+  const withAll = await digest(dir);
+  assert.notEqual(withAll, withUnicode);
+  writeFileSync(join(dir, "ünïcode-\u{1F600}.txt"), "one changed\n");
   assert.notEqual(await digest(dir), withAll);
 });
 
@@ -491,7 +515,11 @@ test("a task's fingerprint spans every repository and is ordered by position", a
   );
 });
 
-test("a filename that is not valid UTF-8 is fingerprinted as its own bytes", async (t) => {
+test("a filename that is not valid UTF-8 is fingerprinted as its own bytes", {
+  skip: skipOnWin32(
+    "NTFS stores names as UTF-16, so a name that is not valid UTF-8 cannot exist in a win32 worktree",
+  ),
+}, async (t) => {
   // POSIX filenames are byte strings. Decoding `git status -z` as UTF-8 folds every invalid
   // byte to U+FFFD, so a checkout holding BOTH `x-\xff.txt` and a real `x-<U+FFFD>.txt` decodes
   // to one path twice - the probe then read the second file's bytes for both records, and every
@@ -503,7 +531,7 @@ test("a filename that is not valid UTF-8 is fingerprinted as its own bytes", asy
   try {
     writeFileSync(raw, "aaa");
   } catch (err) {
-    // APFS and NTFS reject a name that is not valid UTF-8 outright (EILSEQ/EINVAL), so on a
+    // APFS rejects a name that is not valid UTF-8 outright (EILSEQ/EINVAL), so on a
     // developer's Mac there is nothing to test. On Linux - CI, and every daemon host that is
     // not a Mac - it creates fine and the assertions below run for real.
     const code = (err as { code?: string }).code;

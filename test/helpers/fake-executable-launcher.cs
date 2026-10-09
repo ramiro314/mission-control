@@ -10,6 +10,10 @@
 // the script, as killing a fake kills the script itself on POSIX. Processes the script starts
 // leave the job, so they outlive it as they would on POSIX.
 //
+// The script always starts with `SystemRoot` naming the real Windows directory. A fixture moves
+// `SystemRoot` to point the product at a fake system tool (the PowerShell that reads PATH), and
+// Node aborts at startup, before the script runs, when `SystemRoot` names anything else.
+//
 // Written for the C# 5 compiler that ships with the .NET Framework in every Windows install.
 using System;
 using System.ComponentModel;
@@ -172,6 +176,11 @@ static class FakeExecutableLauncher
         }
         string rest = ArgumentsAfterProgramName(Marshal.PtrToStringUni(GetCommandLineW()));
         if (rest.Length > 0) commandLine.Append(' ').Append(rest);
+
+        // The Windows directory as the system reports it, not as `SystemRoot` says. The child
+        // inherits this process's environment, so setting it here is enough.
+        Environment.SetEnvironmentVariable("SystemRoot",
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows));
 
         STARTUPINFO startup = new STARTUPINFO();
         startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
