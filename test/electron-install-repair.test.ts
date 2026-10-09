@@ -19,6 +19,7 @@ import {
   ensureElectronFramework,
   restoreElectronPayload,
 } from "../scripts/ensure-electron-framework.mjs";
+import { skipOnWin32 } from "./helpers/win32-skip.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-electron-install-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -29,6 +30,13 @@ const frameworkDir = join(
 );
 const payload = join(frameworkDir, "Versions/Current/Electron Framework");
 const link = join(frameworkDir, "Electron Framework");
+
+/**
+ * The darwin repair restores the framework's POSIX symlinks by their exact relative targets.
+ * win32 writes and reads a symlink target with backslashes, so the canonical link it creates is
+ * one the repair then refuses as unexpected.
+ */
+const MACOS_FRAMEWORK_LINKS = skipOnWin32("pins the macOS Electron framework's POSIX symlink targets, which win32 rewrites with backslashes; the repair only runs on darwin");
 
 test("both published Electron test commands run both preflights in order", () => {
   const packageJson = JSON.parse(
@@ -50,7 +58,7 @@ test("both published Electron test commands run both preflights in order", () =>
   assert.equal(packageJson.scripts["pretest:electron"], preflight);
 });
 
-test("the macOS pretest restores a missing Electron framework link", () => {
+test("the macOS pretest restores a missing Electron framework link", { skip: MACOS_FRAMEWORK_LINKS }, () => {
   mkdirSync(join(frameworkDir, "Versions/Current"), { recursive: true });
   writeFileSync(payload, "framework payload");
 
@@ -61,7 +69,7 @@ test("the macOS pretest restores a missing Electron framework link", () => {
   assert.equal(ensureElectronFramework(root, "darwin"), "present");
 });
 
-test("the macOS pretest restores a missing current-version link", () => {
+test("the macOS pretest restores a missing current-version link", { skip: MACOS_FRAMEWORK_LINKS }, () => {
   const copiedRoot = mkdtempSync(join(tmpdir(), "mission-electron-current-"));
   const copiedFramework = join(
     copiedRoot,
@@ -149,7 +157,7 @@ test("payload presence is reported per platform, and healing is refused without 
   }
 });
 
-test("a complete payload is reported present and needs no healing", () => {
+test("a complete payload is reported present and needs no healing", { skip: MACOS_FRAMEWORK_LINKS }, () => {
   // `root` was given a real payload by the restore test above, so this also pins that the
   // presence probe and the framework check agree about the same tree.
   assert.equal(electronPayloadPresent(root, "darwin"), true);

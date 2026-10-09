@@ -216,6 +216,32 @@ test("win32 OS defaults are System32, Windows, Windows PowerShell and Git for Wi
   ]);
 });
 
+/**
+ * What is at stake: a daemon started from Git Bash inherits `SYSTEMROOT`, and the locator reads
+ * PATH through a plain-object copy of `process.env`, which is case-sensitive. Read by its
+ * Windows spelling, the variable was missed and the PATH read ran the PowerShell under
+ * `C:\Windows` whatever the environment named.
+ */
+test("win32 reads its Windows variables without regard to case, as Windows does", () => {
+  const shouting = { SYSTEMROOT: "D:\\Windows", PROGRAMFILES: "D:\\Program Files", localappdata: "E:\\Local" };
+  assert.deepEqual(win32ExecutableEnvironment.osDefaultDirectories(shouting), [
+    "D:\\Windows\\System32",
+    "D:\\Windows",
+    "D:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+    "D:\\Program Files\\Git\\bin",
+  ]);
+  assert.equal(windowsPowerShellPath(shouting), "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  assert.deepEqual(win32ExecutableEnvironment.applicationDirectories(WIN_HOME, shouting), [
+    "D:\\Program Files",
+    "E:\\Local\\Programs",
+  ]);
+  assert.equal(
+    windowsPowerShellPath({ SYSTEMROOT: "C:\\Windows", SystemRoot: "D:\\Windows" }),
+    "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "the name as written wins when an object carries both spellings",
+  );
+});
+
 test("win32 looks a bare command up by each PATHEXT name, never as the extensionless file", () => {
   const names = (command: string, env: NodeJS.ProcessEnv = {}) =>
     win32ExecutableEnvironment.executableNames(command, env);
