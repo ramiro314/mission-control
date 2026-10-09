@@ -15,6 +15,8 @@ if ! results=$(printf '%s' "${NEEDS_JSON:-}" | jq -r 'to_entries[] | "\(.key) \(
   echo "::error::CI result: NEEDS_JSON could not be read."
   exit 1
 fi
+# jq on Windows ends its lines with CRLF; drop the CRs so a result reads the same everywhere.
+results=${results//$'\r'/}
 if [ -z "$results" ]; then
   echo "::error::CI result: NEEDS_JSON lists no jobs."
   exit 1
