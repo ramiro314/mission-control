@@ -128,7 +128,7 @@ export function prListArgs(branch: string, repo: GitHubRepositoryIdentity | null
  * `"error"` when `gh` is missing/unauthenticated/timed out - which the reconciler
  * treats as "unknown, leave the existing chip alone" rather than a reason to clear.
  */
-async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
+export async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   const [res, head] = await Promise.all([
     originGitHubRepository(cwd).then((repo) =>
       run(ghBin(), prListArgs(branch, repo), { cwd, timeoutMs: 8000 }),
