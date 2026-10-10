@@ -2214,7 +2214,7 @@ test("a Pull Request action names the base branch of the task its session runs",
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
       const { payload } = h.store.listDeliveries(runId)[0]!;
-      assert.equal(/gh pr create --base release\/windows/.test(payload), baseBranch !== null);
+      assert.equal(/-f base=release\/windows /.test(payload), baseBranch !== null);
       assert.equal(/Base branch:/.test(payload), baseBranch !== null);
     } finally {
       await h.stop();

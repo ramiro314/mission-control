@@ -54,11 +54,16 @@ panel shows the count and links there), the same list `mode` is checked against 
 
 This is the whole consent model, so it is worth being precise about. Mission Control
 learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
-`gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
+`gh pr list --repo <origin> --head <branch>` - and neither can tell a PR you opened from one a colleague
 opened on the same branch. Neither adopts anything.
 
-A PR is adopted for review when the hook saw the agent run **`gh pr create`**. It is matched
-on the command, not the output, because `gh pr view` prints the same URL. A projected external
+A PR is adopted for review when the hook saw the agent run **`gh pr create`**, or the REST
+create Mission Control's instructions give instead: `gh api` POSTing to
+`repos/<owner>/<repo>/pulls` with `--jq .html_url`, so it prints the new PR's URL and nothing
+else. It is matched on the command, not the output, because `gh pr view` prints the same URL.
+The instructions use REST because `gh pr create` always reads the repository's parent, which
+an organization enforcing SAML SSO refuses to a login it has not authorized, so a fork of such
+a repository could not open pull requests at all. A projected external
 pipeline supplies the other proof: the engine writes `pr_url` into that run's own state, and
 Mission Control adopts it with source `pipeline` on first sight only when its owner and
 repository match a GitHub remote configured in the projected checkout. Missing, unreadable,

@@ -14,6 +14,7 @@ import type {
 import type { InspectorComment } from "@shared/types.ts";
 import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
+import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import { executionAuthorizationContract } from "../execution-authorization.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
 import {
@@ -99,7 +100,7 @@ export interface PrHandoffInput {
  */
 function baseBranchLines(baseBranch: string | null | undefined): string[] {
   return baseBranch
-    ? [`Base branch: ${sanitizeWorkflowFeedback(baseBranch)} - open the pull request against it (gh pr create --base ${sanitizeWorkflowFeedback(baseBranch)}), not the default branch.`]
+    ? [`Base branch: ${sanitizeWorkflowFeedback(baseBranch)} - open the pull request against it (${openPullRequestCommand(sanitizeWorkflowFeedback(baseBranch))}), not the default branch.`]
     : [];
 }
 

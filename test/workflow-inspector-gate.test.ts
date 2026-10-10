@@ -1798,7 +1798,7 @@ test("the PR handoff names the base branch of the task its session runs", async 
       assert.equal(handoff.ok, true);
       if (handoff.ok) {
         assert.equal(handoff.value.kind, "pr_handoff");
-        assert.equal(/gh pr create --base release\/windows/.test(handoff.value.payload), baseBranch !== null);
+        assert.equal(/-f base=release\/windows /.test(handoff.value.payload), baseBranch !== null);
         assert.equal(/Base branch:/.test(handoff.value.payload), baseBranch !== null);
       }
     } finally {

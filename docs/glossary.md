@@ -51,7 +51,7 @@ status evidence, runtime options, and terminal integration.
 ## [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review)
 
 GitHub Inspector is the opt-in automated reviewer for pull requests Mission Control adopted from
-observed `gh pr create` activity. It only comments in repositories you explicitly trust.
+an observed pull-request create command. It only comments in repositories you explicitly trust.
 
 ## [The Library](library-and-line.md)
 
