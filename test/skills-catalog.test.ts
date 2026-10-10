@@ -417,7 +417,10 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(text, /gitignored/i);
   assert.match(text, /2\.100\.0/);
   // The pull request is opened through REST, by the exact command Mission Control adopts from.
-  assert.ok(text.includes(openPullRequestCommand("main")), "the skill gives the REST open command");
+  // With the base as a placeholder: REST has no default branch, and a literal `main` would open
+  // against the wrong base, or fail, in a repository whose default is something else.
+  assert.ok(text.includes(openPullRequestCommand("<base>")), "the skill gives the REST open command");
+  assert.doesNotMatch(text, /-f base=(?!<base>)/);
   assert.doesNotMatch(text, /gh pr create --/);
   for (const command of ["gh pr edit", "gh pr comment"]) {
     assert.match(text, new RegExp(command));
