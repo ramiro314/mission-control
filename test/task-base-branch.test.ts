@@ -225,7 +225,7 @@ test("dispatch starts a task with a base branch from origin/<base>, and tells th
   assert.notEqual(releaseTip, mainTip);
   const prompt = launched[0]!.argv.join("\n");
   assert.match(prompt, /## Base branch/);
-  assert.match(prompt, /gh pr create --base release\/windows/);
+  assert.match(prompt, /-f base=release\/windows /);
 });
 
 test("dispatch refuses a base branch origin no longer has, before anything is provisioned", async () => {
@@ -568,7 +568,7 @@ test("handing a shelved task with a base branch to a running agent resets its ch
 test("the delivered contract names the base branch only when the task has one", () => {
   const based = withTaskKindContract(mkTask({ kind: "ship", baseBranch: "release/windows" }), "Build it");
   assert.match(based, /This task's base branch is `release\/windows`/);
-  assert.match(based, /gh pr create --base release\/windows/);
+  assert.match(based, /-f base=release\/windows /);
   assert.doesNotMatch(based, /primary repository only/);
   const plain = withTaskKindContract(mkTask({ kind: "ship" }), "Build it");
   assert.doesNotMatch(plain, /Base branch/);
@@ -589,7 +589,7 @@ test("the workflow pull-request packets name the base branch the PR opens agains
     skillCommand: "/mission-pull-request", workflowEvidence: false, repoRoot: null,
     baseBranch: "release/windows",
   });
-  assert.match(handoff.payload, /Base branch: release\/windows - open the pull request against it \(gh pr create --base release\/windows\)/);
+  assert.match(handoff.payload, /Base branch: release\/windows - open the pull request against it \(repo=.* gh api "repos\/\$repo\/pulls" .* -f base=release\/windows /);
   const plain = renderPrHandoff({
     workflowName: "Review", workflowVersion: 1, runId: "run-1", originalGoal: "Port it",
     skillCommand: "/mission-pull-request", workflowEvidence: false, repoRoot: null,
@@ -602,7 +602,7 @@ test("the workflow pull-request packets name the base branch the PR opens agains
     workflowEvidence: false, pullRequestGrant: true, baseBranch: "release/windows",
   });
   assert.ok(action.ok);
-  assert.match(action.payload, /gh pr create --base release\/windows/);
+  assert.match(action.payload, /-f base=release\/windows /);
   const other = renderSessionAction({
     origin: { kind: "run", workflowName: "Review", workflowVersion: 1, runId: "run-1", repoRoot: null },
     actionName: "Tidy", promptMarkdown: "Tidy up.", skillCommand: null,

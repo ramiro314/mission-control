@@ -1,5 +1,6 @@
 import type { PlanningTaskKind } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
+import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import {
   deferredImperativeList,
   taskCompletionContract,
@@ -176,7 +177,7 @@ function requirePlanningSkills<K extends PlanningTaskKind>(
  *
  * Told to the agent rather than enforced by the daemon because the agent is what opens the
  * pull request: every publication path (the workflow's Pull Request action, Foreman's
- * wrap-up, a direct request) ends in the session running `gh pr create`, and their shared
+ * wrap-up, a direct request) ends in the session opening one, and their shared
  * wording says "the default branch". Delivered once, with the task, so it governs each of
  * them for the rest of the session without changing their fixed texts.
  */
@@ -186,7 +187,7 @@ export function baseBranchContract(task: Pick<Task, "baseBranch" | "extraRepos">
   return [
     "## Base branch",
     `This task's base branch is \`${base}\`, not the repository's default branch. Your worktree started from \`origin/${base}\`.`,
-    `Open this task's pull request against it (\`gh pr create --base ${base}\`). Wherever an instruction says the default branch - merging it into yours, diffing against it, resolving conflicts with it - use \`origin/${base}\` instead.`,
+    `Open this task's pull request against it (\`${openPullRequestCommand(base)}\`). Wherever an instruction says the default branch - merging it into yours, diffing against it, resolving conflicts with it - use \`origin/${base}\` instead.`,
     ...(task.extraRepos.length > 0
       ? ["This applies to the primary repository only. The other repositories attached to this task keep their own default branch."]
       : []),

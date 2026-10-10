@@ -26,7 +26,8 @@ PR. Their Git facts are instead read directly from their working directory at la
 restoration and refreshed on the same cadence.
 This keeps the **PR chip** honest without a terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
-`gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
+`gh pr list --repo <origin> --head <branch>`, naming the repository the checkout's `origin` points
+at so `gh` never falls back to a fork's parent. Capturing either fact only once would leave live changes invisible.
 
 The chip is that one pull request: the one on the branch of the checkout the session is
 standing in. A session running a
@@ -558,7 +559,8 @@ looking up, and everything below follows from that or from what Pi itself has.
   state and one turn completion drive the shared queue. `/skill:<name>` invokes a Pi skill.
   Terminal Pi remains ineligible for Work Queue, including sessions reporting extension hooks.
 - **PR attribution requires tool evidence.** A successful, correlated `bash` tool result must
-  follow an observed `gh pr create` command and contain a PR URL for a configured GitHub remote
+  follow an observed pull-request create command (`gh pr create`, or the REST create in
+  [Only our pull requests](inspector-and-shipping.md#only-our-pull-requests)) and contain a PR URL for a configured GitHub remote
   of the checkout. Assistant prose, failed tools and unrelated repositories do not count.
   No configured GitHub remote means no PR provenance is emitted.
 - **Terminal presentation is unavailable.** Notifications and status text produce bounded

@@ -189,6 +189,19 @@ export async function configuredGitHubRepositories(
   return [...repositories.values()];
 }
 
+/**
+ * The GitHub repository this checkout's `origin` names, or null when it names none.
+ *
+ * What a `gh` command run here should say with `--repo`. Left to itself, `gh` picks the base
+ * repository from the remotes - outside a terminal it prefers one named `upstream` - and on a
+ * fork that is the parent, which an org enforcing SAML SSO refuses to an unauthorized login.
+ */
+export async function originGitHubRepository(cwd: string): Promise<GitHubRepositoryIdentity | null> {
+  const result = await run("git", ["remote", "get-url", "origin"], { cwd, timeoutMs: 8000 });
+  if (result.outcomeUnknown || result.code !== 0) return null;
+  return parseGitHubRemoteUrl(result.stdout);
+}
+
 export interface PrSnapshot {
   state: "OPEN" | "CLOSED" | "MERGED";
   headSha: string;

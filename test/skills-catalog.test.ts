@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { frontmatterBlock, parseFrontmatter, parseSkill, readCatalog } from "../src/server/skills/catalog.ts";
+import { openPullRequestCommand } from "../src/shared/pr-command.mjs";
 
 // The catalog reader. Its frontmatter parser is deliberately narrow - the files are
 // authored in this repo and reviewed with it - so what matters is that anything it
@@ -415,7 +416,10 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(text, /never committed/i);
   assert.match(text, /gitignored/i);
   assert.match(text, /2\.100\.0/);
-  for (const command of ["gh pr create", "gh pr edit", "gh pr comment"]) {
+  // The pull request is opened through REST, by the exact command Mission Control adopts from.
+  assert.ok(text.includes(openPullRequestCommand("main")), "the skill gives the REST open command");
+  assert.doesNotMatch(text, /gh pr create --/);
+  for (const command of ["gh pr edit", "gh pr comment"]) {
     assert.match(text, new RegExp(command));
   }
   assert.match(text, /--attach/);

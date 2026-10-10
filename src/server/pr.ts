@@ -7,6 +7,7 @@ import type { ConflictObservation, PrConflictTracker } from "./pr-conflicts.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
+import { originGitHubRepository, type GitHubRepositoryIdentity } from "./inspector/github.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
@@ -98,8 +99,30 @@ async function forEachConcurrent<T>(
 }
 
 /**
- * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
- * resolves the repo from that checkout's `origin`. Prefers a still-open PR, else
+ * The `gh pr list` arguments for the pull requests whose head is `branch`. `--repo` names the
+ * checkout's `origin` whenever it is a GitHub remote, because `gh`'s own choice outside a
+ * terminal is a remote named `upstream` - on a fork, the parent, which an org enforcing SAML
+ * SSO refuses. A non-GitHub `origin` leaves the choice to `gh`, as before.
+ */
+export function prListArgs(branch: string, repo: GitHubRepositoryIdentity | null): string[] {
+  return [
+    "pr",
+    "list",
+    ...(repo ? ["--repo", `${repo.owner}/${repo.repo}`] : []),
+    "--head",
+    branch,
+    "--state",
+    "all",
+    "--json",
+    "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid,mergeable,baseRefName",
+    "--limit",
+    "20",
+  ];
+}
+
+/**
+ * Ask `gh` for the pull request whose head is `branch`, on the repository `cwd`'s
+ * `origin` names (`prListArgs`). Prefers a still-open PR, else
  * falls back to a merged one (so a landed PR keeps showing). Returns `null` when
  * the branch has provably no open/merged PR (only closed-unmerged, or none), or
  * `"error"` when `gh` is missing/unauthenticated/timed out - which the reconciler
@@ -107,21 +130,8 @@ async function forEachConcurrent<T>(
  */
 async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   const [res, head] = await Promise.all([
-    run(
-      ghBin(),
-      [
-        "pr",
-        "list",
-        "--head",
-        branch,
-        "--state",
-        "all",
-        "--json",
-        "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid,mergeable,baseRefName",
-        "--limit",
-        "20",
-      ],
-      { cwd, timeoutMs: 8000 },
+    originGitHubRepository(cwd).then((repo) =>
+      run(ghBin(), prListArgs(branch, repo), { cwd, timeoutMs: 8000 }),
     ),
     run("git", ["rev-parse", "HEAD"], { cwd, timeoutMs: 8000 }),
   ]);

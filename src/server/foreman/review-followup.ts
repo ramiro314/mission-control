@@ -533,21 +533,6 @@ function describe(pr: FollowupPr, fb: Feedback): string {
 }
 
 /**
- * The `--repo owner/repo` a `gh` command needs when the pull request is NOT in the checkout
- * the agent is standing in, or "" when it is.
- *
- * Derived from the adoption key, which is `owner/repo#123` precisely so a pull request can be
- * named without a checkout. An unadopted pull request has no such key, and then the bare
- * command is still right for the session's own repository and merely unscoped for a sibling -
- * where the numbered step also names the repository to go and stand in.
- */
-function ghScope(pr: FollowupPr): string {
-  if (pr.repoRoot === null) return "";
-  const slug = /^([^/\s]+\/[^#\s]+)#\d+$/.exec(pr.prKey)?.[1];
-  return slug ? ` --repo ${slug}` : "";
-}
-
-/**
  * The instruction typed back at the session. Harness-neutral - it is plain text that
  * lands in whatever composer the session has - and it names the concrete PR so the agent
  * does not have to rediscover which one it is.
@@ -562,13 +547,14 @@ function ghScope(pr: FollowupPr): string {
  * and an unqualified "do not open a new pull request" would read as a ban on the sibling it
  * has not opened yet. So when the pull request belongs to an attached repository the
  * instruction names it - which repository to stand in, which pull request to push to, and
- * which one to leave alone. A single-repo session's payload is unchanged, byte for byte:
- * `repoRoot` is null there and every qualifier below collapses to nothing.
+ * which one to leave alone. A single-repo session's payload names no repository: `repoRoot`
+ * is null there and every qualifier below collapses to nothing.
  */
 export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   const ref = pr.number !== null ? `PR #${pr.number}` : "your open pull request";
-  const num = pr.number !== null ? ` ${pr.number}` : "";
-  const scope = ghScope(pr);
+  // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
+  // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
+  const target = ` ${pr.url}`;
 
   const problems: string[] = [];
   if (fb.findings) {
@@ -596,13 +582,13 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   }
   if (fb.findings) {
     steps.push(
-      `Read GitHub Inspector's review comments (\`gh pr view${num}${scope} --comments\`, and the ` +
+      `Read GitHub Inspector's review comments (\`gh pr view${target} --comments\`, and the ` +
         `line threads under Files changed) and address every one.`,
     );
   }
   if (fb.ciFailing) {
     steps.push(
-      `Look at the failing CI (\`gh pr checks${num}${scope}\`), reproduce it locally, and fix it.`,
+      `Look at the failing CI (\`gh pr checks${target}\`), reproduce it locally, and fix it.`,
     );
   }
   // The merge-in method has one owner, shared with the workflow's conflict repair round.

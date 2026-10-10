@@ -176,7 +176,8 @@ one starts from origin's default branch and targets it, exactly as before.
   agent's checkout onto the task's base, and the card's reset control and its preview do the
   same for a session running a task with a base branch.
 - **The pull request** is opened by the agent, so the agent is told. The task's first prompt
-  carries a "Base branch" section naming the branch and `gh pr create --base <base>`, and saying
+  carries a "Base branch" section naming the branch and the REST command that opens the pull
+  request with `-f base=<base>`, and saying
   that wherever an instruction says the default branch it means `origin/<base>`. The workflow's
   pull-request handoff and a Pull Request session action name the base again.
 - **Checks, review and the Diff view measure from it.** The diff a workflow captures for its
@@ -251,8 +252,8 @@ Two consequences worth knowing:
   already running. The extra worktrees, and the agent's write access to them, are granted
   when a session launches, and neither harness can widen a running session's write scope.
 
-**Every repository's pull request is tracked separately.** All the urls a `gh pr create`
-prints are read, not just the first, and the branch poller asks `gh` inside each attached
+**Every repository's pull request is tracked separately.** All the urls a pull-request create
+command prints are read, not just the first, and the branch poller asks `gh` inside each attached
 worktree as well as the primary's - so a pull request opened in the second repository is
 adopted for review and counted for completion exactly like the primary's. The card and the
 console show one line per repository, naming that repo's pull request and whether it is open
