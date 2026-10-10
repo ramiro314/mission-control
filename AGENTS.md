@@ -15,6 +15,8 @@ Read the [documentation index](docs/README.md) for product behavior and setup. B
 
 Run commands from the repository root with Node.js 24 or newer.
 
+Package manager: npm (bun migration declined - don't re-ask). The fork tracks `teamupstart/mission-control`, and a second lockfile would conflict on every upstream sync.
+
 ```sh
 npm install
 npm run dev
