@@ -356,7 +356,7 @@ import { renameDriverSession } from "./sdk/rename.ts";
 import { interruptSession, requestSessionStop } from "./sdk/control.ts";
 import { spawnManagedResume } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
-import { taskSourceKinds } from "./task-sources/index.ts";
+import { sourceRepositories, taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask, type PushTaskOutcome } from "./task-sources/push.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
 import {
@@ -7176,7 +7176,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // `src/shared/task-source.ts`.
 
   /** The whole panel in one read: what is configured, how it is doing, what is on offer. */
-  const taskSourcesView = (): TaskSourcesView => {
+  const taskSourcesView = async (): Promise<TaskSourcesView> => {
     const cfg = getTaskSourcesConfig();
     return {
       sources: cfg.sources,
@@ -7190,11 +7190,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // queue against a source nobody has any more would be a count with no control beside
       // it.
       writeback: cfg.sources.map((s) => countWritebacks(s.id)),
+      // Resolved on every read, never stored, so the editor's "Resolves to" hint follows the
+      // checkout's remotes and gh default pin exactly as the next sweep will.
+      repositories: await sourceRepositories(cfg.sources),
       kinds: taskSourceKinds(),
     };
   };
 
-  app.get("/api/task-sources/config", (c) => c.json(taskSourcesView()));
+  app.get("/api/task-sources/config", async (c) => c.json(await taskSourcesView()));
 
   app.post("/api/task-sources/:id/sync/:taskId/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveSourceSyncSchema);
@@ -7203,7 +7206,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!inst) return c.json({ error: "no such task source" }, 404);
     const result = await resolveSourceSync(inst, c.req.param("taskId"), parsed.data.version, parsed.data.choice, tasks);
     if (!result.ok) return c.json(result, 409);
-    return c.json({ ok: true, view: taskSourcesView() });
+    return c.json({ ok: true, view: await taskSourcesView() });
   });
 
   /**
@@ -7255,7 +7258,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // reads. `noteTaskSourceConfigChange` has already cleared health for a just-paused
     // source, so this recompose sees the new count.
     publishSettingsStatus(registry);
-    return c.json(taskSourcesView());
+    return c.json(await taskSourcesView());
   });
 
   /**
@@ -7318,7 +7321,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // browser's request helper stamps the HTTP status onto every reply under that same name -
     // so a spread would hand the panel `status: 200` where it expected the per-source health
     // array, and the source lookup would fail on a 200 response.
-    return c.json({ retried, view: taskSourcesView() });
+    return c.json({ retried, view: await taskSourcesView() });
   });
 
   /**
@@ -7330,13 +7333,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * comment that has already been posted - nothing here can - which is why the panel asks
    * before it calls this.
    */
-  app.delete("/api/task-sources/:id/writeback", (c) => {
+  app.delete("/api/task-sources/:id/writeback", async (c) => {
     const id = c.req.param("id");
     if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
     const discarded = discardWritebacks(id);
     publishSettingsStatus(registry);
     // Nested, for the collision `retry` above explains.
-    return c.json({ discarded, view: taskSourcesView() });
+    return c.json({ discarded, view: await taskSourcesView() });
   });
 
   // --- Pipelines: observing an external SDLC engine (localhost only) ---

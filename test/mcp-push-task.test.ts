@@ -36,6 +36,8 @@ const { setTaskSourcesConfig } = await import("../src/server/task-sources/config
 const repo = join(repos, "demo");
 mkdirSync(repo, { recursive: true });
 execFileSync("git", ["-C", repo, "init", "-q"]);
+// The GitHub source's blank Repository resolves to this origin, the repository the fake files on.
+execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/acme/demo.git"]);
 const root = realpathSync(repo);
 const bin = mkdtempSync(join(tmpdir(), "mission-mcp-push-task-bin-"));
 const record = join(bin, "gh-calls.jsonl");

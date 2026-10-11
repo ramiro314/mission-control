@@ -131,8 +131,8 @@ export function writeGhPullRequests(home: string, prs: readonly FakePullRequest[
 }
 
 /** The issue `FAKE_GH` says it created, and the id the daemon derives from it. */
-export const FAKE_GH_ISSUE_URL = "https://github.com/acme/demo-repo/issues/123";
-export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
+export const FAKE_GH_ISSUE_URL = "https://github.com/mc-e2e-fixture/demo-repo/issues/123";
+export const FAKE_GH_ISSUE_ID = "mc-e2e-fixture/demo-repo#123";
 
 /**
  * How `FAKE_GH` should behave for the public product-report path.
@@ -727,8 +727,9 @@ if (argv[0] === "--version") {
   }
 } else if (command.startsWith("issue create")) {
   // What the real gh prints on success: the URL of the issue in the requested repository,
-  // and nothing else. An omitted --repo means gh derives the repository from the cwd; the
-  // fake's seeded checkout represents acme/demo-repo.
+  // and nothing else. Task sources always pass --repo (a blank Repository resolves to the
+  // fixture checkout's origin, mc-e2e-fixture/<name>); the acme/demo-repo fallback only
+  // answers a create that names none.
   const repoIndex = argv.indexOf("--repo");
   const requested = repoIndex >= 0 ? argv[repoIndex + 1] : "acme/demo-repo";
   const parts = requested.split("/");

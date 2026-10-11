@@ -1344,7 +1344,7 @@ works in that checkout, the source works.
 
 | Filter | Meaning |
 |---|---|
-| **Repository** | `owner/repo`; blank uses the checkout's own `origin` |
+| **Repository** | `owner/repo`; blank resolves from the checkout, see [Which repository a source names](#which-repository-a-source-names) |
 | **Labels (any of)** | match issues carrying **any** of these. Blank matches all |
 | **Labels (all of)** | match only issues carrying **every one** of these. Blank adds no filter |
 | **Labels (none of)** | skip issues carrying **any** of these. A label also listed under any of or all of selects nothing, so it is refused |
@@ -1353,6 +1353,30 @@ works in that checkout, the source works.
 | **Issues per sweep** | how many `gh` is asked for |
 | **Copy labels** | put the issue's GitHub labels on the task, case intact |
 | **Priority from a label** | map a GitHub label to a [priority](#priority-and-labels), e.g. `P0` → Blocker. The first mapped label the issue carries wins |
+
+#### Which repository a source names
+
+Every `gh` call the source makes names its repository with `--repo`: the sweep, **Check it
+works**, **Create GitHub issue**, and a write-back to an item that carries neither an
+`owner/repo#123` id nor a URL. A filled-in **Repository** is used as written. A blank one is
+resolved again on every one of those calls, in this order:
+
+1. The checkout's gh default, the pin `gh repo set-default` writes, when it names a GitHub
+   remote.
+2. Otherwise the checkout's `origin`, when it is on GitHub.
+3. Otherwise an error naming the checkout and its remotes, which becomes the sweep's, the
+   check's or the create's error. Nothing runs against a repository nobody chose.
+
+`gh`'s own choice is never used. Left to choose, `gh` prefers a remote called `upstream`, so in
+a fork checkout it would sweep the parent repository, and an organization that enforces SAML
+SSO refuses that with "Resource protected by organization SAML enforcement". A blank stored
+value stays blank, so it follows the checkout's remotes and pin with no migration.
+
+While **Repository** is blank, the editor shows what it resolves to under the field:
+"Resolves to `owner/name` (from origin)", "(from gh default)" when the pin names a different
+repository than `origin`, or the resolver's error. The daemon computes it with the same
+resolver on every read of the panel, so it is what the next sweep will name. A filled-in
+**Repository** shows nothing extra.
 
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
@@ -1385,7 +1409,9 @@ of silence.
 
 The one thing that goes **outward**. Open a shelved task in [its own
 editor](#edit-a-shelved-task) and, above the fields, **Create GitHub issue** files it as an
-issue in the repo a configured GitHub source points at. The task **stays in the backlog**;
+issue in the repository a configured GitHub source names ([resolved the same way as its
+sweep](#which-repository-a-source-names) when **Repository** is blank). Only an issue URL on
+exactly that repository counts as created. The task **stays in the backlog**;
 what changes is that it now carries a link to the issue, shown in that same spot - which is
 also where a task that was *swept in* shows the issue it came from.
 

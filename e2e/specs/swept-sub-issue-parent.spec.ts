@@ -57,7 +57,7 @@ test("the editor shows the parent of a swept sub-issue beside its upstream link"
   const config = await dashboard.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
       sources: [
-        { id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { labelsAny: ["mission"] } },
+        { id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { repo: "acme/demo-repo", labelsAny: ["mission"] } },
       ],
     },
   });
@@ -108,7 +108,7 @@ test("a pushed ticket shows its parent issue the moment the push answers", async
     ]),
   );
   const config = await dashboard.request.put(`${daemon.baseURL}/api/task-sources/config`, {
-    data: { sources: [{ id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { labelsAny: ["mission"] } }] },
+    data: { sources: [{ id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { repo: "acme/demo-repo", labelsAny: ["mission"] } }] },
   });
   expect(config.ok(), await config.text()).toBe(true);
   expect((await dashboard.request.post(`${daemon.baseURL}/api/task-sources/gh-e2e/sweep`)).ok()).toBe(true);
