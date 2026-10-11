@@ -7,6 +7,9 @@
  *
  *   node scripts/fork-report.mjs [--out <path>] [--repo <owner/name>]
  *
+ * Without `--repo` or `GH_REPO`, it reads the checkout's own repository (its gh default pin,
+ * else `origin`) rather than letting `gh` pick the fork's parent.
+ *
  * `--out` defaults to `.tmp/fork-report.md`, which is gitignored. It fetches `origin/main` and
  * `upstream/main` first, so the counts describe the remotes as they stand now.
  *
@@ -28,6 +31,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { scriptRepository } from "./checkout-repository.mjs";
 import { parseIssueBody } from "./fork-delta.mjs";
 
 export const WINDOWS_SLUG = "windows-support";
@@ -205,7 +209,7 @@ function run(bin, args) {
 }
 
 function gh(args, repo) {
-  return JSON.parse(run(process.env.MISSION_GH_BIN || "gh", repo ? [...args, "--repo", repo] : args));
+  return JSON.parse(run(process.env.MISSION_GH_BIN || "gh", [...args, "--repo", repo]));
 }
 
 const git = (...args) => run("git", args);
@@ -250,7 +254,7 @@ function main(argv) {
     args: argv,
     options: { out: { type: "string", default: ".tmp/fork-report.md" }, repo: { type: "string" } },
   });
-  const report = renderForkReport(fetchData(values.repo));
+  const report = renderForkReport(fetchData(scriptRepository(values.repo)));
   mkdirSync(dirname(resolve(values.out)), { recursive: true });
   writeFileSync(values.out, report);
   process.stdout.write(`wrote ${values.out}\n`);

@@ -5,7 +5,8 @@
 // per Node release (`junitFileTimes`), and averages the releases the run covered (a pull request
 // runs Node 24 only, a push to `main` both). Only files that exist in this checkout are written, so a deleted test drops out and a
 // new one is weighted by `scripts/unit-shard.mjs` until the next regeneration. `GH_REPO`
-// selects another repository, as it does for every `gh` command.
+// selects another repository; without it the run is read from the checkout's own repository
+// (its gh default pin, else `origin`), never the fork's parent that `gh` would pick.
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -13,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { junitFileTimes } from "../src/shared/junit.ts";
+import { scriptRepository } from "./checkout-repository.mjs";
 import { SHARD_TIMINGS_PATH, unitTestFiles } from "./unit-shard.mjs";
 
 const ARTIFACT = /^unit-junit-node-(\d+)-shard-\d+$/;
@@ -53,9 +55,10 @@ function main(): void {
   const runId = process.argv[2];
   if (!runId || !/^\d+$/.test(runId)) throw new Error("usage: npm run test:timings -- <run-id>");
   const root = join(fileURLToPath(import.meta.url), "..", "..");
+  const repo = scriptRepository();
   const dir = mkdtempSync(join(tmpdir(), "unit-shard-timings-"));
   try {
-    execFileSync("gh", ["run", "download", runId, "--pattern", "unit-junit-node-*", "--dir", dir], { stdio: "inherit" });
+    execFileSync("gh", ["run", "download", runId, "--repo", repo, "--pattern", "unit-junit-node-*", "--dir", dir], { stdio: "inherit" });
     const reports = readdirSync(dir).filter((name) => ARTIFACT.test(name)).sort().map((artifact) => ({
       artifact,
       xml: readFileSync(join(dir, artifact, "junit.xml"), "utf8"),
