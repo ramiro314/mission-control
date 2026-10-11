@@ -253,12 +253,14 @@ write-back fallback and the PR poller.</p>
 <code>pr-command.mjs</code>). It is pure and browser-safe, so the daemon, Electron main and <code>scripts/</code>
 all use one copy. It holds:</p>
 <ul>
-<li><code>parseGitHubRemoteUrl(url)</code>, moved from <code>src/server/inspector/github.ts:143</code>. The inspector
-re-imports it.</li>
-<li><code>pickCheckoutRepository(remotes)</code>. Its input is the parsed output of
+<li><p><code>parseGitHubRemoteUrl(url)</code>, moved from <code>src/server/inspector/github.ts:143</code>. The inspector
+re-imports it.</p>
+</li>
+<li><p><code>pickCheckoutRepository(remotes)</code>. Its input is the parsed output of
 <code>git config --get-regexp &#39;^remote\..*\.(url|gh-resolved)$&#39;</code>. It returns
 <code>{ ok: true, repo: &quot;owner/name&quot;, source: &quot;gh-default&quot; | &quot;origin&quot; }</code> or
-<code>{ ok: false, error }</code>. Precedence follows decision 6:<ol>
+<code>{ ok: false, error }</code>. Precedence follows decision 6:</p>
+<ol>
 <li><p>The remote whose <code>gh-resolved</code> is <code>base</code>, when its URL is on GitHub. A <code>gh-resolved</code>
 value of the form <code>owner/name</code> is also accepted; gh stores that form when a remote&#39;s
 URL names a renamed or moved repository.</p>
@@ -271,6 +273,12 @@ Set Repository on this source, or run `gh repo set-default`.
 </code></pre>
 </li>
 </ol>
+<p><code>source</code> reports where the answer differs from what the operator would expect, not who
+wrote the pin. A pin on <code>origin</code> itself (including the one section 3 writes) resolves to
+the same repository as rule 2, so it reports <code>source: &quot;origin&quot;</code>. <code>source: &quot;gh-default&quot;</code>
+means the pin names a different repository than <code>origin</code> does: a pin on another remote, or
+an <code>owner/name</code> value that differs from origin&#39;s. The label therefore never changes when
+Mission Control writes its own pin.</p>
 </li>
 </ul>
 <p><code>src/server/github/repository.ts</code> wraps the <code>git config</code> read as
@@ -432,7 +440,9 @@ memoized.</li>
 <li><strong>E2E (<code>e2e/specs/</code>):</strong> a spec on the task source editor, using the fake <code>gh</code> the existing
 task-source specs already use. It asserts:<ul>
 <li>A blank Repository shows &quot;Resolves to ramiro314/mission-control (from origin)&quot; for a
-fixture checkout with both remotes.</li>
+fixture checkout with both remotes, both before and after the source is saved (the save
+writes the pin on <code>origin</code>, which still reports origin).</li>
+<li>With the fixture&#39;s pin moved to <code>upstream</code>, the same field shows &quot;(from gh default)&quot;.</li>
 <li>A fake <code>gh</code> that prints the SAML stderr makes the source show the classified message with
 the authorize link, not the raw GraphQL line.</li>
 </ul>

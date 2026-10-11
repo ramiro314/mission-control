@@ -124,6 +124,13 @@ all use one copy. It holds:
      Set Repository on this source, or run `gh repo set-default`.
      ```
 
+  `source` reports where the answer differs from what the operator would expect, not who
+  wrote the pin. A pin on `origin` itself (including the one section 3 writes) resolves to
+  the same repository as rule 2, so it reports `source: "origin"`. `source: "gh-default"`
+  means the pin names a different repository than `origin` does: a pin on another remote, or
+  an `owner/name` value that differs from origin's. The label therefore never changes when
+  Mission Control writes its own pin.
+
 `src/server/github/repository.ts` wraps the `git config` read as
 `checkoutGitHubRepository(repoRoot)`. It replaces `originGitHubRepository`
 (`inspector/github.ts:199`) and `configuredGitHubRepositories` moves beside it. `pr.ts:133`
@@ -272,7 +279,9 @@ error exits with the resolver's message, not an uncaught `execFileSync` throw.
 - **E2E (`e2e/specs/`):** a spec on the task source editor, using the fake `gh` the existing
   task-source specs already use. It asserts:
   - A blank Repository shows "Resolves to ramiro314/mission-control (from origin)" for a
-    fixture checkout with both remotes.
+    fixture checkout with both remotes, both before and after the source is saved (the save
+    writes the pin on `origin`, which still reports origin).
+  - With the fixture's pin moved to `upstream`, the same field shows "(from gh default)".
   - A fake `gh` that prints the SAML stderr makes the source show the classified message with
     the authorize link, not the raw GraphQL line.
 - **Manual:** after deploy, the two failing mission-control sources sweep green with no edit.
