@@ -107,12 +107,17 @@ export function wrapupTriggerOn(
  * and a bare `gh pr checks` resolve through gh's base-repository choice, which on a fork
  * reaches the parent, and fail there when the parent's org enforces SAML SSO.
  *
+ * The command carries placeholders, and the text says the AGENT fills them in. It is also
+ * the editable default of the work queue's composer, and a person who fills them in there
+ * sends text `isWrapupPayload` no longer recognises, which re-arms the prompted trigger.
+ *
  * One line because `sendText` submits on every embedded newline, so a wrapped string
  * would otherwise become several half-instructions typed in sequence.
  */
 export const WRAPUP_PR =
   "Use git and gh directly: commit this work, push the branch, and open a PR against the" +
-  ` default branch with \`${openPullRequestCommand("<default-branch>")}\`. Then merge the` +
+  ` default branch with \`${openPullRequestCommand("<default-branch>")}\`, filling in its` +
+  " <placeholders> yourself. Then merge the" +
   " default branch into yours and resolve any conflicts, and follow the PR's CI to completion" +
   " with `gh pr checks <pr-url> --watch` - fix whatever fails and push again until every" +
   " check passes and the PR has no merge conflicts.";

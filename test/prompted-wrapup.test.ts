@@ -447,6 +447,9 @@ test("the PR wrap-up opens the PR through the REST command, never gh's repositor
   assert.ok(WRAPUP_PR.includes(openPullRequestCommand("<default-branch>")));
   assert.doesNotMatch(WRAPUP_PR, /gh pr create/);
   assert.match(WRAPUP_PR, /gh pr checks <pr-url>/);
+  // The text is also the composer's editable default. It says the agent fills the
+  // placeholders, so a person sends it as-is and the loop guard still recognises it.
+  assert.match(WRAPUP_PR, /filling in its <placeholders> yourself/);
 });
 
 test("THE RE-ARM: consumption is per completed work cycle, not per intent revision", () => {
