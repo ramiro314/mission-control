@@ -25,18 +25,19 @@ and stop. Once this task's pull request exists, updating it needs no new grant.
 ## Opening the pull request
 
 Open it through GitHub's REST API, on the repository your checkout's `origin` names, never with
-`gh pr create`. `gh pr create` always looks up the repository's parent, so on a fork of an
-organization that enforces SAML SSO it fails for a login not authorized there, with or without
-`--repo`. Run this from the repository's worktree, after pushing the branch, with `<base>`,
-`<title>` and `<body-file>` filled in:
+gh's own pull request creation subcommand. That subcommand always looks up the repository's
+parent, so on a fork of an organization that enforces SAML SSO it fails for a login not authorized
+there, with or without `--repo`. Run this from the repository's worktree, after pushing the branch,
+with `<base>`, `<title>` and `<body-file>` filled in:
 
 ```sh
 repo=$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##') && gh api "repos/$repo/pulls" -f head="$(git branch --show-current)" -f base=<base> -f title="<title>" -F body=@<body-file> --jq .html_url
 ```
 
 `<base>` is the task's base branch when it has one, and otherwise the repository's default branch,
-which `gh api "repos/$repo" --jq .default_branch` prints. Unlike `gh pr create`, this command has
-no default: name it, and check it for each repository a task attached, since each keeps its own.
+which `gh api "repos/$repo" --jq .default_branch` prints. Unlike gh's own creation subcommand, this
+command has no default: name it, and check it for each repository a task attached, since each keeps
+its own.
 
 Keep `--jq .html_url`: Mission Control adopts the pull request for review from that command and
 the one URL it prints. For anything else about an existing pull request, pass its URL rather

@@ -100,9 +100,9 @@ the parent, and a parent organization that enforces SAML SSO refuses it. So a ne
 `src/` or `scripts/` names its repository: `--repo` from `checkoutGitHubRepository` (or
 `scriptRepository` in a script), a GitHub URL, or an explicit `repos/<owner>/<repo>` path. Only
 `auth status`, `--version` and `api user` may name none. Agent instructions follow the same rule:
-open a pull request with `openPullRequestCommand`, never `gh pr create`; name a pull request or
-issue by URL, never by number; and read origin with an exact copy of `originRepositoryShell`
-rather than gh's `{owner}/{repo}` placeholders.
+open a pull request with `openPullRequestCommand` and never name `gh pr create`, even in prose;
+name a pull request or issue by URL, never by number; and read origin, or set `$repo`, only with an
+exact copy of `originRepositoryShell` rather than gh's `{owner}/{repo}` placeholders.
 
 `test/github-repo-targeting.test.ts` holds both halves. It finds `gh` calls by syntax tree,
 starting from a `"gh"` literal, a `ghBin()` call, a function or method that passes its argv

@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 
-import { PR_CREATE_RE, originRepositoryShell } from "../src/shared/pr-command.mjs";
+import { originRepositoryShell } from "../src/shared/pr-command.mjs";
 
 // The regression guard for the SAML refusal (docs/plans/saml-safe-github-calls, section 7).
 //
@@ -1225,15 +1225,28 @@ function agentStrings(file: string, source: string): string[] {
 const URL_TARGET_RE = /^["'(]?(?:https:\/\/github\.com\/|<[\w-]*url>|\$\{?[\w.]*url[\w.]*\}?)/i;
 const BY_NUMBER_RE = /(?:^|[\s;&|(`])gh\s+(?:issue|pr)\s+(?:view|checks|comment|edit|close|reopen|merge|diff|review)\b((?:\s+--?[\w-]+(?=\s|$|`))*)(\s+[^\s`]+)?/g;
 const PLACEHOLDER_RE = /(?<!\$)\{(?:owner|repo)\}/g;
-const ORIGIN_READ_RE = /git\s+remote\s+get-url\s+origin|remote\.origin\.url/g;
+/**
+ * `gh pr create` in any spelling - flags between the words included, named in prose or given as
+ * a command. It always reads the fork's parent, so agent text never names it at all: the only
+ * place the string belongs is the open-PR recognizer itself (`src/shared/pr-command.mjs`), which
+ * is code that detects it, not text an agent reads.
+ */
+const PR_CREATE_ANY_RE = /(?<![\w-])gh(?:[ \t]+[^\s`;|&]+)*?[ \t]+pr(?:[ \t]+-[^\s`;|&]*)*[ \t]+create(?![\w-])/g;
+/**
+ * Anything that reads a remote's URL, and any `repo=$(...)` assignment, which is how every
+ * instruction sets the repository it names. Each must sit inside an exact copy of
+ * `originRepositoryShell`, so no other spelling of the read - `git -C <dir> remote get-url`,
+ * `--push`, a quoted `"origin"`, `ls-remote --get-url`, `git config remote.origin.url` - and no
+ * other way of filling `$repo` gets past unread.
+ */
+const ORIGIN_READ_RE = /get-url|ls-remote|remote\s+(?:show|-v)(?![\w-])|remote\.[\w.-]*\.?url|(?<![\w$])repo=\$\(/g;
 
 /** Where `text` lets gh choose the repository, one line per refusal. */
 function agentTextProblems(where: string, text: string): string[] {
   const problems: string[] = [];
   const at = (index: number): string => `${where}:${text.slice(0, index).split("\n").length}`;
-  const pr = new RegExp(PR_CREATE_RE.source, "g");
-  for (const match of text.matchAll(pr)) {
-    problems.push(`${at(match.index)} gives \`gh pr create\`, which always reads the fork's parent; give openPullRequestCommand`);
+  for (const match of text.matchAll(PR_CREATE_ANY_RE)) {
+    problems.push(`${at(match.index)} names \`gh pr create\`, which always reads the fork's parent; give openPullRequestCommand`);
   }
   for (const match of text.matchAll(PLACEHOLDER_RE)) {
     problems.push(`${at(match.index)} uses gh's ${match[0]} placeholder; read $repo from origin with originRepositoryShell`);
@@ -1249,11 +1262,11 @@ function agentTextProblems(where: string, text: string): string[] {
   for (let i = text.indexOf(originRepositoryShell); i !== -1; i = text.indexOf(originRepositoryShell, i + 1)) {
     copies.push([i, i + originRepositoryShell.length]);
   }
+  const drifted = new Set<string>();
   for (const match of text.matchAll(ORIGIN_READ_RE)) {
-    if (!copies.some(([start, end]) => match.index >= start && match.index < end)) {
-      problems.push(`${at(match.index)} reads origin with a line that is not originRepositoryShell`);
-    }
+    if (!copies.some(([start, end]) => match.index >= start && match.index < end)) drifted.add(at(match.index));
   }
+  for (const where of drifted) problems.push(`${where} reads origin with a line that is not originRepositoryShell`);
   return problems;
 }
 
@@ -1292,9 +1305,21 @@ test("agent text that leaves the repository to gh is refused", () => {
     "fixture.md:1 uses gh's {owner} placeholder; read $repo from origin with originRepositoryShell",
     "fixture.md:1 uses gh's {repo} placeholder; read $repo from origin with originRepositoryShell",
   ]);
-  assert.deepEqual(agentTextProblems("fixture.md", "Open it with `gh pr create --fill`."), [
-    "fixture.md:1 gives `gh pr create`, which always reads the fork's parent; give openPullRequestCommand",
-  ]);
+  // Every spelling of the open command is refused, named or given: an agent reading "open it
+  // with `gh pr create`" runs it.
+  for (const pr of [
+    "Open it with `gh pr create --fill`.",
+    "Open the pull request with `gh pr create`.",
+    "```sh\ngh pr create\n```",
+    "`gh --repo me/fork pr create --fill`",
+    "`gh pr --draft create`",
+    "never with `gh pr create`.",
+  ]) {
+    const line = pr.startsWith("```") ? 2 : 1;
+    assert.deepEqual(agentTextProblems("fixture.md", pr), [
+      `fixture.md:${line} names \`gh pr create\`, which always reads the fork's parent; give openPullRequestCommand`,
+    ], pr);
+  }
   // The names are fine: by URL in every form the instructions use, and `${repo}` is a shell variable.
   for (const ok of [
     "`gh issue view <issue-url> --comments`",
@@ -1303,7 +1328,8 @@ test("agent text that leaves the repository to gh is refused", () => {
     'gh pr comment "$PR_URL" --body-file x',
     "`gh pr view ${pr.url} --comments`",
     '`gh api "repos/${repo}/pulls"`',
-    "never with `gh pr create`.",
+    "never with gh's own pull request creation subcommand.",
+    "`gh pr view <url>`, then `gh pr checks <url>`; create nothing",
   ]) {
     assert.deepEqual(agentTextProblems("fixture.md", ok), [], ok);
   }
@@ -1315,9 +1341,21 @@ test("a drifted origin-reading line is refused", () => {
   assert.deepEqual(agentTextProblems("fixture.md", drifted), [
     "fixture.md:1 reads origin with a line that is not originRepositoryShell",
   ]);
-  assert.deepEqual(agentTextProblems("fixture.md", "`git config --get remote.origin.url`"), [
-    "fixture.md:1 reads origin with a line that is not originRepositoryShell",
-  ]);
+  for (const other of [
+    "`git config --get remote.origin.url`",
+    `\`repo=$(git -C "$dir" remote get-url origin | sed -E 's#^.*github\\.com[:/]##; s#\\.git$##')\``,
+    "`git remote get-url \"origin\"`",
+    "`git remote get-url --push origin`",
+    "`git ls-remote --get-url origin`",
+    "`git remote -v`",
+    "`repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)`",
+  ]) {
+    assert.deepEqual(agentTextProblems("fixture.md", other), [
+      "fixture.md:1 reads origin with a line that is not originRepositoryShell",
+    ], other);
+  }
+  // A copy followed by more of the command is still the copy: the open command starts with one.
+  assert.deepEqual(agentTextProblems("fixture.md", `\`${originRepositoryShell} && gh api "repos/$repo"\``), []);
 });
 
 test("TypeScript agent text is read through concatenation and templates, not comments", () => {
