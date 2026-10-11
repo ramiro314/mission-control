@@ -11,7 +11,7 @@ th{color:var(--muted)}tr:last-child td{border-bottom:0}td ul{margin:0;padding-le
 blockquote h3{font-size:17px;margin:18px 0 8px}
 </style></head><body><main>
 <h1 id="pause-windows-support-and-bring-the-platform-neutral-work-from-releasewindows-to-main">Pause Windows support, and bring the platform-neutral work from <code>release/windows</code> to <code>main</code></h1>
-<p>Status: approved 2026-10-11 after a three-round interview with the human (decisions D1 to D21 below) and a plan review that approved it as written. Follow-up chosen in the review: Create tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up task once this plan&#39;s pull request merges. Not implemented.</p>
+<p>Status: approved 2026-10-11 after a three-round interview with the human (decisions D1 to D21 below) and a plan review that approved it as written. Amended the same day in plan-validation repair round 1 (R1 to R4). Follow-up chosen in the review: Create tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up task once this plan&#39;s pull request merges. Not implemented.</p>
 <h2 id="goal">Goal</h2>
 <p>Windows support for Mission Control is <strong>paused</strong>. Getting Mission Control on Windows to an
 acceptable performance standard would take too much work. This plan:</p>
@@ -64,9 +64,25 @@ Three comments name <code>release/windows</code>:</p>
 <li><code>src/server/platform/executable-environment.ts:65</code></li>
 </ul>
 </li>
-<li><p><strong>The weekly &quot;Sync main into release/windows&quot; mission</strong> lives on the operator&#39;s daemon, not in
-this repository. The daemon removes a mission by archiving it, through
-<code>POST /api/schedules/:id/archive</code> (<code>src/server/routes.ts</code>).</p>
+<li><p><strong>The weekly &quot;Sync main into release/windows&quot; mission</strong> lives on an operator&#39;s daemon, not in
+this repository. The daemon removes a mission by archiving it:</p>
+<ul>
+<li><strong>Archive route:</strong> <code>POST /api/schedules/:id/archive</code> (<code>src/server/routes.ts:8691</code>). It takes
+an empty JSON body (<code>ArchiveScheduleSchema = z.object({}).strict()</code>,
+<code>src/shared/protocol.ts:7773</code>). It answers 404 for an unknown id and 503 when the schedule
+service is unavailable.</li>
+<li><strong>List route:</strong> <code>GET /api/schedules</code> (<code>src/server/routes.ts:8573</code>) lists only non-archived
+missions.</li>
+<li><strong>Auth:</strong> only <code>requireLoopback</code> (<code>src/server/routes.ts:1595-1599</code>), which refuses a request
+whose <code>Host</code> header is not loopback. There is no token.</li>
+<li><strong>Reaching it from a task:</strong> a dispatched session gets the daemon&#39;s port in <code>MISSION_PORT</code>.
+This shaping session reached it that way: <code>GET http://127.0.0.1:$MISSION_PORT/api/health</code>
+answered from the operator&#39;s daemon (v1.26.0).</li>
+<li><strong>But that daemon lists no live missions.</strong> <code>GET /api/schedules</code> answered <code>200 []</code> on
+2026-10-11. It holds neither &quot;Sync main into release/windows&quot; nor &quot;Refresh fork status&quot;. Each
+is either already archived or lives on another machine&#39;s daemon, so W step 3 carries a
+fallback, and so does the #304 refresh (see <a href="#human-steps">Human steps</a>).</li>
+</ul>
 </li>
 <li><p><strong>Two leftover remote branches</strong> each hold one commit that never merged. Both commits are
 Windows-only:</p>
@@ -74,6 +90,12 @@ Windows-only:</p>
 <li><code>fix/win32-e2e-fast-assertions</code> at <code>87e78b6e</code>: a win32 skip</li>
 <li><code>fix/win32-ensemble-cancel-tracked</code> at <code>c90054b2</code>: a docs note</li>
 </ul>
+</li>
+<li><p><strong>Markdown links to the runbook.</strong> Besides the three in <code>docs/</code> that W removes,
+<code>docs/plans/fork-tracking/plan.md</code> links <code>../../windows-branch-sync.md</code> at lines 30 and 347.
+Its <code>plan.html</code> carries the same two links at lines 31 and 504.
+<code>npm run docs:links</code> checks every Markdown file&#39;s intra-repository links, plans included, so
+deleting the runbook would fail it unless those two links change (R2).</p>
 </li>
 <li><p><strong><code>release/windows</code> references on <code>main</code>, outside <code>docs/plans/</code>:</strong></p>
 <ul>
@@ -209,7 +231,7 @@ parameterized titles, which hides that.</li>
 <tr>
 <td>D16</td>
 <td>Who archives the sync mission</td>
-<td><strong>The wind-down ticket</strong>, through <code>POST /api/schedules/:id/archive</code> on the operator&#39;s daemon.</td>
+<td><strong>The wind-down ticket</strong>, through <code>POST /api/schedules/:id/archive</code> on the operator&#39;s daemon. Fallback added in repair round 1 (R1).</td>
 <td>2</td>
 </tr>
 <tr>
@@ -244,6 +266,39 @@ parameterized titles, which hides that.</li>
 </tr>
 </tbody></table>
 </div>
+<h3 id="repair-round-1-clarifications">Repair round 1 clarifications</h3>
+<p>Added after the plan-validation review on 2026-10-11. These were not put to the human again.
+Each one either keeps a human decision workable or adds a check, and none reverses one.</p>
+<div class="wide"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Clarification</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>R1</td>
+<td>W step 3 has a fallback. If the ticket cannot find or archive the mission, it says so in its PR and the archive becomes a human step. It is never silently skipped.</td>
+<td>The daemon this session reached lists no live missions, so the archive may be impossible from a task (see Where things stand).</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>D17 has one narrow exception. The two links in <code>docs/plans/fork-tracking/plan.md</code> (lines 30 and 347) and the matching two in its <code>plan.html</code> (lines 31 and 504) change target, from <code>../../windows-branch-sync.md</code> to the permalink <code>https://github.com/ramiro314/mission-control/blob/d44bda68/docs/windows-branch-sync.md</code>. Their text stays as written.</td>
+<td>D7 deletes the runbook, and <code>docs:links</code> then fails on those two links (shown on 2026-10-11 in a scratch run). A permalink keeps the record pointing at the exact text it cited, which is D17&#39;s intent.</td>
+</tr>
+<tr>
+<td>R3</td>
+<td>P4 has a Done-when with observable checks for the keep-alive, the telemetry timeout and daemon shutdown.</td>
+<td>P4 changes production behavior on every platform.</td>
+</tr>
+<tr>
+<td>R4</td>
+<td>P2&#39;s #273 port tests what the pruner deletes, not only the encoding.</td>
+<td>Fixing the encoding switches on deletion where the pruner deleted nothing before.</td>
+</tr>
+</tbody></table>
+</div>
 <h2 id="work">Work</h2>
 <p>Seven independent units: one wind-down (W) and six ports (P1 to P6). Each port re-applies its
 hunks on the current <code>main</code>, not on the <code>main</code> the branch last synced. Two rules hold for every
@@ -268,9 +323,18 @@ issue: #369 belongs to P3, and #319 stays open (D15).</li>
 <li><strong>Delete the two remote branches</strong>, <code>fix/win32-e2e-fast-assertions</code> (<code>87e78b6e</code>) and
 <code>fix/win32-ensemble-cancel-tracked</code> (<code>c90054b2</code>). Record both SHAs in the PR body so they can
 be recovered while GitHub still holds the objects.</li>
-<li><strong>Archive the &quot;Sync main into release/windows&quot; mission</strong> on the operator&#39;s daemon, through
-<code>POST /api/schedules/:id/archive</code>. Find its id by its name, then confirm it no longer appears
-among active missions.</li>
+<li><strong>Archive the &quot;Sync main into release/windows&quot; mission</strong> (D16, R1):<ul>
+<li>List live missions with <code>GET http://127.0.0.1:$MISSION_PORT/api/schedules</code>.</li>
+<li>If one is named &quot;Sync main into release/windows&quot;, archive it with
+<code>POST http://127.0.0.1:$MISSION_PORT/api/schedules/&lt;id&gt;/archive</code> and the body <code>{}</code>. Then
+confirm it is gone from a second <code>GET</code>.</li>
+<li>If no such mission is listed, or any call fails (unreachable, 403, 404 or 503), do not
+retry it some other way. Record the exact response in the PR body under &quot;Known gaps&quot;. The
+archive then becomes the first <a href="#human-steps">human step</a>: check Missions on every machine
+that runs a Mission Control daemon.</li>
+<li>The ticket must not report this step done unless the second <code>GET</code> proves it.</li>
+</ul>
+</li>
 </ol>
 <p><strong>The scrub PR:</strong></p>
 <ul>
@@ -280,6 +344,12 @@ among active missions.</li>
 <li>Remove its links from <code>docs/README.md</code> and <code>docs/upstream-sync.md</code>.</li>
 <li>Remove the <code>release/windows</code> passages from <code>docs/fork/README.md</code>: the &quot;PRs into
 <code>release/windows</code>&quot; note and the status-snapshot sentence.</li>
+<li>Point the two runbook links in <code>docs/plans/fork-tracking/plan.md</code> (lines 30 and 347) and the
+two in its <code>plan.html</code> (lines 31 and 504) at the <code>d44bda68</code> permalink (R2). Leave their text
+as is.</li>
+<li>Before deleting, run <code>git grep -n &#39;windows-branch-sync&#39; -- &#39;*.md&#39; &#39;*.html&#39;</code> and handle every
+link it finds the same way. On 2026-10-11 it found only those, plus the three links above
+and plain-text mentions that are not links.</li>
 </ul>
 </li>
 <li><p><strong>The Windows plan:</strong> add a Paused note under the title of
@@ -347,7 +417,11 @@ body under <code>### fork:platform-seams</code> instead.</li>
 mission is archived.</li>
 <li><code>git grep -n &#39;release/windows&#39; -- . &#39;:!docs/plans&#39; &#39;:!CHANGELOG.md&#39;</code> prints nothing.</li>
 <li><code>fork-delta.mjs check</code> passes on the PR.</li>
+<li><code>npm run docs:links</code> passes.</li>
+<li>Every docs-reading unit test passes: the files <code>grep -l &#39;\.\./docs/&#39; test/*.test.ts</code> finds,
+each run with <code>node --test --import ./test/setup-state.mjs --import tsx &lt;file&gt;</code>.</li>
 <li>The touched unit tests, the placeholder e2e spec, <code>npm run typecheck</code> and <code>npm run lint</code> pass.</li>
+<li>Step 3 is either proven by the second <code>GET</code>, or recorded under &quot;Known gaps&quot; as a human step.</li>
 <li>After merge, the daily refresh closes #304 as <code>removed</code>. The refresh&#39;s own run, not this
 ticket, is what closes it.</li>
 </ul>
@@ -392,7 +466,38 @@ nothing.</p>
 <li>Re-check the rule against the installed <code>@anthropic-ai/claude-agent-sdk</code> before porting.</li>
 </ul>
 </li>
+<li><p><strong>The pruner starts deleting (R4).</strong> <code>pruneHeadlessTranscripts</code> (<code>src/server/goal/prune.ts</code>)
+removes <code>*.jsonl</code> files older than 24 h from the one directory <code>headlessTranscriptDir()</code>
+derives from <code>HEADLESS_CWD</code>. With today&#39;s encoding, a temp dir containing <code>_</code>, <code>+</code> or a space
+yields a name Claude never writes, so the sweep deletes nothing. After the fix it reaches
+Claude&#39;s real directory:</p>
+<ul>
+<li><strong>First sweep.</strong> The first sweep after upgrade removes the backlog of headless transcripts
+older than a day. That is the intended behavior; the PR says so.</li>
+<li><strong>Shared directories.</strong> Claude Code&#39;s encoding is lossy: <code>/tmp/a_b</code>, <code>/tmp/a-b</code> and
+<code>/tmp/a b</code> all map to <code>-tmp-a-b</code>. Claude itself stores those cwds&#39; transcripts in one
+directory, so the sweep cannot tell them apart. That is the same accepted risk <code>prune.ts</code>
+already documents for a human who runs <code>claude</code> from <code>$TMPDIR</code>, now including any cwd that
+encodes to the same name. The port extends that comment to say so, and changes nothing else
+about what the sweep may touch.</li>
+<li><strong>New test</strong> in <code>test/claude-project-dir.test.ts</code> or a pruner test beside it:<ul>
+<li>In the file body above the imports, set <code>HOME</code> to a temp dir and <code>TMPDIR</code> to an existing
+directory whose path contains <code>_</code>, <code>+</code> and a space. <code>HEADLESS_CWD</code> is <code>tmpdir()</code> at import
+(<code>src/server/claude-cli.ts:74</code>), so it takes that path.</li>
+<li>Seed Claude&#39;s encoded directory with an old <code>.jsonl</code>, a fresh <code>.jsonl</code> and an old non-JSONL
+file.</li>
+<li>Seed two neighbors: the directory today&#39;s buggy encoding names, and the directory of a
+cwd that does not encode the same.</li>
+<li>Assert that <code>headlessTranscriptDir()</code> equals <code>claudeProjectDir(realpath(HEADLESS_CWD))</code>.</li>
+<li>Assert that one sweep removes exactly the old <code>.jsonl</code> and leaves the other two files and
+both neighbors untouched.</li>
 </ul>
+</li>
+</ul>
+</li>
+</ul>
+<p><strong>P2 done when:</strong> the new encoding test and the pruner test pass, and so do #336&#39;s ensemble
+tests, #308&#39;s <code>test/repo-root-unanswered.test.ts</code>, and the e2e spec #308 changes.</p>
 <p><strong>#336 (<code>1d8ba7b9</code>): an ensemble member settles once its task is no longer live.</strong></p>
 <ul>
 <li><strong>Today:</strong> <code>TaskManager.cancel</code> can return not-ok with the task already <code>cancelled</code>. That
@@ -469,7 +574,30 @@ and the Playwright worker change. They are Windows-only or need #196 and #197.</
 <code>headersTimeout</code> at 66 s. Today Node&#39;s default 5 s close races pooled-socket clients, such as
 Node&#39;s <code>http.Agent</code> and Playwright&#39;s request client, into ECONNRESET.</li>
 <li><strong>Telemetry ingress timeout.</strong> <code>INGRESS_ATTEMPT_TIMEOUT_MS</code> in <code>src/web/lib/experience.ts</code>
-rises from 2 s to 10 s per attempt.</li>
+rises from 2 s to 10 s per attempt. A retry carries the same operation id, so waiting longer
+never duplicates a record.</li>
+</ul>
+<p><strong>P4 done when (R3):</strong></p>
+<ul>
+<li><strong>Setup checks:</strong> the new <code>test/setup-checks-route.test.ts</code> case shows two overlapping
+requests running one probe round, each with its own snapshot token.</li>
+<li><strong>Listener limit:</strong> <code>test/registry-subscriber-limit.test.ts</code> passes. The PR shows <code>main</code>
+printing the <code>MaxListenersExceededWarning</code> before the change, or drops this hunk if it does
+not.</li>
+<li><strong>Keep-alive on the real server:</strong> port #380&#39;s <code>test/http-keep-alive.test.ts</code> (the helper
+sets <code>keepAliveTimeout</code> 65 s and <code>headersTimeout</code> 66 s, <code>headersTimeout &gt; keepAliveTimeout</code>,
+and the response advertises <code>Keep-Alive: timeout=65</code>). Also assert it on the daemon&#39;s own
+server: a test that starts the real daemon, the way the suite&#39;s daemon-spawning tests do,
+reads <code>GET /api/health</code> and asserts the <code>keep-alive: timeout=65</code> header. That proves
+<code>src/server/index.ts</code> applies it to the server it serves from.</li>
+<li><strong>Shutdown is not held:</strong> the same daemon test opens a keep-alive connection with
+<code>new http.Agent({ keepAlive: true })</code>, leaves it idle, sends <code>SIGTERM</code>, and asserts the
+process exits well inside 65 s (for example within 10 s). Node 24&#39;s <code>server.close()</code>, which
+<code>shutdown()</code> awaits (<code>src/server/index.ts:929</code>), closes idle connections. The test makes that
+dependency explicit instead of assumed.</li>
+<li><strong>Telemetry timeout:</strong> port #380&#39;s <code>test/telemetry-browser-experience.test.ts</code> case (&quot;a slow
+ingress answer is waited for, not abandoned as a failed attempt&quot;). It answers after 2.5 s and
+must count as answered, not aborted. Also assert that <code>INGRESS_ATTEMPT_TIMEOUT_MS</code> is <code>10_000</code>.</li>
 </ul>
 <h3 id="p5-e2e-race-fixes">P5. e2e race fixes</h3>
 <p>All test-only. Each race below is a step that runs before the daemon has answered:</p>
@@ -670,6 +798,9 @@ synthetically. Each port&#39;s &quot;re-verify, then prove it on <code>main</cod
 sockets longer, and the 10 s telemetry timeout keeps a slow ingress attempt open longer. The
 keep-alive reset was observed only on Windows, though the race is ordinary Node behavior.</li>
 <li><strong>#308&#39;s 15 s timeout</strong> makes a truly hung git take 15 s to fail instead of 4 s.</li>
+<li><strong>#273 switches the pruner on</strong> where it deleted nothing before. Its first sweep removes old
+headless transcripts, and any cwd that encodes the same as the temp dir shares the swept
+directory. Bounded by the existing <code>*.jsonl</code>-only, 24 h rule and by R4&#39;s test.</li>
 <li><strong>#332 touches <code>db.ts</code>.</strong> The upgrade path is unchanged, because <code>migrate</code> stays outside the
 transaction. The PR must still show an existing database opening safely.</li>
 <li><strong>Conflicts between units.</strong> W&#39;s fixture rename, P2&#39;s <code>ensemble-fixture.ts</code> change, and P6&#39;s
@@ -680,9 +811,19 @@ into <code>release/windows</code>. It also means restoring the sync runbook and 
 logic on <code>main</code>; both survive in git history.</li>
 </ul>
 <h2 id="human-steps">Human steps</h2>
-<p>None. The mission archive moved to the wind-down ticket (D16). After the wind-down PR merges,
-the daily &quot;Refresh fork status&quot; run closes #304 and adds <code>fork-status:removed</code>. Press <strong>Run now</strong>
-on that mission to apply it the same day.</p>
+<p>The mission archive belongs to the wind-down ticket (D16). Two steps may still fall to the human,
+because the daemon this session reached on 2026-10-11 listed no live missions:</p>
+<ol>
+<li><strong>Only if the wind-down PR lists it under &quot;Known gaps&quot;</strong> (R1): archive &quot;Sync main into
+release/windows&quot; in Missions on whichever machine&#39;s daemon still runs it. If no daemon lists
+it, nothing is left to do.</li>
+<li><strong>After the wind-down PR merges:</strong> #304 closes, and <code>fork-status:removed</code> is applied, only
+when the &quot;Refresh fork status&quot; procedure runs (<a href="../../fork/README.md">docs/fork/README.md</a>,
+&quot;Refreshing the issues&quot;). If a daemon runs that mission, press <strong>Run now</strong> on it, or let its
+daily run apply it. If none does, run the procedure once by hand or dispatch it as a task.
+Until then #304 stays open as <code>in-progress</code>, and the <code>fork:platform-seams</code> issue already
+carries the seam contracts.</li>
+</ol>
 <h2 id="ticket-slicing">Ticket slicing</h2>
 <p>Mission Control slices this plan after its pull request merges. The natural tickets are the
 seven units above: W and P1 to P6. They have no blocking edges between them (D20).</p>
