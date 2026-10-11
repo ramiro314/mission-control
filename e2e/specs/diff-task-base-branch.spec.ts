@@ -43,6 +43,11 @@ test("a task with a non-default base branch shows only its own changes in the Di
   await dialog.getByRole("button", { name: /^Backlog details/ }).click();
   const baseBranch = dialog.getByLabel("Base branch");
   await expect(baseBranch).toHaveAttribute("placeholder", "e.g. release/2.0");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await baseBranch.scrollIntoViewIfNeeded();
+    await dashboard.screenshot({ path: `${EVIDENCE}base-branch-placeholder.png`, animations: "disabled" });
+  }
   await baseBranch.fill("release/2.0");
   await dialog
     .locator("select")
