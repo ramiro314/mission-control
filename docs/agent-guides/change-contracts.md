@@ -108,10 +108,12 @@ rather than gh's `{owner}/{repo}` placeholders.
 starting from a `"gh"` literal, a `ghBin()` call, a function or method that passes its argv
 straight to `gh` (`runGh`), and a `gh` command in a shell command line (`exec`, a literal
 shell's `-c`, `shell: true`). It fails on a call missing from its inventory, which names how each
-call targets a repository. Every read of a `gh` binary it follows must reach a call, only test the
-binary, or be declared by hand, so a shape it cannot follow fails rather than passing unread. A
-program it never sees as `gh` - a shell named by a variable, or a binary imported as a value from
-another file - is outside a syntax scan's reach.
+call targets a repository. Every reference it follows - to a `gh` binary, `ghBin`, a wrapper or a
+shell runner, including through an import alias, a namespace, an exported binding or
+`promisify` - must reach a call, only test the binary, be followed in turn, or be declared by
+hand, so a shape it cannot follow fails rather than passing unread. A program it never sees as
+`gh` - a shell named by a variable, or a value produced by code it does not read - is outside a
+syntax scan's reach.
 
 ## Database changes
 

@@ -201,12 +201,29 @@ interface Site {
 }
 
 /**
- * A function that runs `gh` with an argv it was handed, so its callers are the call sites. A
- * method is called through a property (`this.gh(...)`), a function by its name.
+ * A name that runs `gh` when called, so every reference to it is followed like a `gh` binary.
+ *
+ * - `binary`: the call returns the gh program (`ghBin`).
+ * - `wrapper`: a function or method that runs gh with the argv it was handed at `arg` (`runGh`),
+ *   so each caller is a site.
+ * - `shell`: a child_process shell-string runner (`exec`, `execSync`) or a binding of one
+ *   (`promisify(exec)`), so its first argument is a command line.
+ *
+ * A `method` entry is reached only as a property (`this.gh(...)`); any other is reached by its
+ * name, by an import alias, or as a property (`ns.runGh(...)`, `deps.ghBin()`).
  */
-interface Wrapper {
+interface Entry {
   name: string;
+  kind: "binary" | "wrapper" | "shell";
+  arg: number;
   method: boolean;
+}
+
+/** The entry every scan starts from; wrappers and exported aliases are found from it. */
+const GH_BIN: Entry = { name: "ghBin", kind: "binary", arg: 0, method: false };
+
+function sameEntry(a: Entry, b: Entry): boolean {
+  return a.name === b.name && a.kind === b.kind && a.arg === b.arg && a.method === b.method;
 }
 
 function codeFiles(directory: string): string[] {
@@ -279,15 +296,17 @@ function parameterOwner(node: ts.Node, name: string): ts.SignatureDeclaration | 
   return null;
 }
 
-/** How callers reach `fn`, or null when it is anonymous and nothing can call it by name. */
-function wrapperOf(fn: ts.SignatureDeclaration): Wrapper | null {
-  if (ts.isFunctionDeclaration(fn) && fn.name) return { name: fn.name.text, method: false };
-  if (ts.isMethodDeclaration(fn) && ts.isIdentifier(fn.name)) return { name: fn.name.text, method: true };
+/** How callers reach `fn`, which runs gh with its parameter `param`, or null when it is anonymous. */
+function wrapperOf(fn: ts.SignatureDeclaration, param: string): Entry | null {
+  const arg = fn.parameters.findIndex((p) => ts.isIdentifier(p.name) && p.name.text === param);
+  const entry = (name: string, method: boolean): Entry => ({ name, kind: "wrapper", arg, method });
+  if (ts.isFunctionDeclaration(fn) && fn.name) return entry(fn.name.text, false);
+  if (ts.isMethodDeclaration(fn) && ts.isIdentifier(fn.name)) return entry(fn.name.text, true);
   if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
     const parent = fn.parent;
-    if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return { name: parent.name.text, method: false };
+    if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return entry(parent.name.text, false);
     if ((ts.isPropertyDeclaration(parent) || ts.isPropertyAssignment(parent)) && ts.isIdentifier(parent.name)) {
-      return { name: parent.name.text, method: true };
+      return entry(parent.name.text, true);
     }
   }
   return null;
@@ -308,6 +327,7 @@ function isDeclarationName(id: ts.Identifier): boolean {
     || ts.isImportSpecifier(parent)
     || ts.isExportSpecifier(parent)
     || ts.isImportClause(parent)
+    || ts.isNamespaceImport(parent)
   );
 }
 
@@ -416,29 +436,36 @@ function shellRunnerNames(tree: ts.SourceFile): { names: Set<string>; namespaces
   return { names, namespaces };
 }
 
+/** Calls that hand back the function they are given, still runnable: `promisify(exec)`. */
+const RESHAPERS = new Set(["promisify"]);
+
 /**
  * Every `gh` invocation in one file, as the inventory names it.
  *
- * It starts from the ways a `gh` program appears - a `"gh"` literal, a `ghBin()` call, a call
- * to a wrapper that passes its argv straight through (`runGh`), and a `gh` command inside a
+ * It starts from the ways a `gh` program appears - a `"gh"` literal, an entry (`ghBin`, a
+ * pass-through wrapper such as `runGh`, a child_process shell runner), and a `gh` command in a
  * shell command line - and follows each to the call that runs it: as a runner's first argument,
- * through a `const` binding and any rebinding of it, through an executable lookup, and from a
- * pass-through wrapper (a function or a method) to each of its callers in any file.
+ * through a `const` binding and any rebinding of it, through an executable lookup, through an
+ * import alias or `promisify`, and from a wrapper to each of its callers in any file.
  *
- * Every reference it follows ends in one of three places: a runner call (a site), a pure test
- * of the binary (`!exe`, `status.state !== "x"`), or `argv: null` - which no call row matches,
- * so a shape it cannot follow fails until a person reads it and either declares it a mention or
- * rewrites it into one this reads. A shell command line it cannot read as text fails the same
- * way. The boundary: a program reached only through something this never sees as `gh` - a
- * shell whose name is not a literal, or a value computed in another file and imported - is out
- * of a syntax scan's reach, as it is for `test/executable-contracts.test.ts`.
+ * One rule holds for every reference it follows, binary or entry: it ends in a call (a site), a
+ * pure test of a binary (`!exe`, `status.state !== "x"`), a binding or alias that is followed in
+ * turn, or `argv: null` - which no call row matches, so a shape it cannot follow fails until a
+ * person reads it and either declares it a mention or rewrites it into one this reads. A shell
+ * command line it cannot read as text fails the same way. The boundary: a program reached only
+ * through something this never sees as `gh` - a shell whose name is not a literal, or a value
+ * produced by code it does not read - is out of a syntax scan's reach, as it is for
+ * `test/executable-contracts.test.ts`.
+ *
+ * `found` is what this file adds to the entries every file follows: wrappers it declares, and
+ * bindings or aliases of an entry it exports. `repositorySites` runs to a fixpoint over them.
  */
-function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []): { sites: Site[]; wrappers: Wrapper[] } {
+function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_BIN]): { sites: Site[]; found: Entry[] } {
   const tree = parse(file, source);
   const sites: Site[] = [];
-  const found: Wrapper[] = [];
-  const seen = new Set<ts.Node>();
-  const shellRunners = shellRunnerNames(tree);
+  const found: Entry[] = [];
+  const invoked = new Set<ts.Node>();
+  const globalNames = new Set(entries.map((e) => e.name));
 
   function lineOf(node: ts.Node): number {
     return tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
@@ -451,21 +478,21 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
   function site(node: ts.Node, argv: string): void {
     sites.push({ file, fn: enclosingName(node), line: lineOf(node), argv, text: "" });
   }
-  function call(runnerCall: ts.CallExpression): void {
-    if (seen.has(runnerCall)) return;
-    seen.add(runnerCall);
-    const argv = runnerCall.arguments[1];
-    if (!argv || ts.isSpreadElement(argv)) return unread(runnerCall);
+  function discover(entry: Entry): void {
+    if (!found.some((f) => sameEntry(f, entry))) found.push(entry);
+  }
+  // The argv handed to gh at `index`: a site, or - when it is the caller's own parameter - a new wrapper.
+  function argvSite(at: ts.CallExpression, index: number): void {
+    const argv = at.arguments[index];
+    if (!argv || at.arguments.slice(0, index + 1).some(ts.isSpreadElement)) return unread(at);
     if (ts.isIdentifier(argv)) {
-      const owner = parameterOwner(runnerCall, argv.text);
+      const owner = parameterOwner(at, argv.text);
       if (owner) {
-        const wrapper = wrapperOf(owner);
-        if (!wrapper) return unread(runnerCall);
-        found.push(wrapper);
-        return;
+        const wrapper = wrapperOf(owner, argv.text);
+        return wrapper ? discover(wrapper) : unread(at);
       }
     }
-    site(runnerCall, normalize(argv.getText(tree)));
+    site(at, normalize(argv.getText(tree)));
   }
   function runnerArgument(node: ts.Node): ts.CallExpression | null {
     const parent = node.parent;
@@ -479,12 +506,36 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     }
     return tree;
   }
+  /** The names `name`, declared at `declaration`, is exported under from this file. */
+  function exportedAs(declaration: ts.VariableDeclaration, name: string): string[] {
+    const names: string[] = [];
+    const statement = declaration.parent.parent;
+    if (ts.isVariableStatement(statement) && statement.parent === tree
+      && statement.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) {
+      names.push(name);
+    }
+    return [...names, ...exportAliases(name)];
+  }
+  function exportAliases(name: string): string[] {
+    const names: string[] = [];
+    for (const statement of tree.statements) {
+      if (!ts.isExportDeclaration(statement) || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+      for (const spec of statement.exportClause.elements) {
+        if ((spec.propertyName ?? spec.name).getText() === name) names.push(spec.name.text);
+      }
+    }
+    return names;
+  }
 
   // Where a `gh` binary (or a read of a binding holding one) ends up: run, rebound, or unread.
   function place(node: ts.Node, throughProperty: boolean): void {
     const at = climb(node, throughProperty);
     const runner = runnerArgument(at);
-    if (runner) return call(runner);
+    if (runner) {
+      if (invoked.has(runner)) return;
+      invoked.add(runner);
+      return argvSite(runner, 1);
+    }
     if (throughProperty && passive(at)) return;
     const parent = at.parent;
     if (ts.isVariableDeclaration(parent) && parent.initializer === at && ts.isIdentifier(parent.name)) {
@@ -494,40 +545,53 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     unread(at);
   }
 
-  function followWrapper(wrapper: Wrapper): void {
-    if (wrapper.method) {
-      for (const read of propertyReadsIn(tree, wrapper.name)) {
-        if (ts.isCallExpression(read.parent) && read.parent.expression === read) recordCall(read.parent);
-        else unread(read);
-      }
+  // Calling an entry: a binary is placed, a wrapper's argv is a site, a shell's command is read.
+  function invoke(at: ts.CallExpression, entry: Entry): void {
+    if (invoked.has(at)) return;
+    invoked.add(at);
+    if (entry.kind === "binary") return place(at, false);
+    if (entry.kind === "shell") return commandLine(at.arguments[0], at);
+    argvSite(at, entry.arg);
+  }
+
+  /** One reference to an entry: called, carried under its own global name, followed, or unread. */
+  function onRef(ref: ts.Identifier | ts.PropertyAccessExpression, entry: Entry): void {
+    const parent = ref.parent;
+    if (ts.isCallExpression(parent) && parent.expression === ref) return invoke(parent, entry);
+    // Carried into an object under a name every file already follows (`{ ghBin }`): its calls
+    // are found as that property.
+    if (ts.isShorthandPropertyAssignment(parent) && entry.kind !== "shell" && globalNames.has(parent.name.text)) return;
+    if (ts.isPropertyAssignment(parent) && parent.initializer === ref && entry.kind !== "shell"
+      && globalNames.has(parent.name.getText())) {
       return;
     }
-    for (const ref of identifiersIn(tree, wrapper.name)) {
-      const parent = ref.parent;
-      if (ts.isCallExpression(parent) && parent.expression === ref) {
-        recordCall(parent);
-        continue;
+    // Handed to a function in this file: its parameter is the entry there.
+    if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression) && !RESHAPERS.has(parent.expression.text)) {
+      const index = parent.arguments.indexOf(ref as ts.Expression);
+      const target = functionDeclaration(parent.expression.text);
+      const param = target?.parameters[index]?.name;
+      if (target?.body && param && ts.isIdentifier(param)) {
+        for (const use of identifiersIn(target.body, param.text)) onRef(use, { ...entry, name: param.text, method: false });
+        return;
       }
-      // Handed to a function in this file: its parameter is the wrapper there.
-      if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression)) {
-        const index = parent.arguments.indexOf(ref as ts.Expression);
-        const target = functionDeclaration(parent.expression.text);
-        const param = target?.parameters[index]?.name;
-        if (target?.body && param && ts.isIdentifier(param)) {
-          for (const use of identifiersIn(target.body, param.text)) {
-            if (ts.isCallExpression(use.parent) && use.parent.expression === use) recordCall(use.parent);
-            else unread(use);
-          }
-          continue;
-        }
-      }
-      unread(ref);
     }
-  }
-  function recordCall(wrapperCall: ts.CallExpression): void {
-    const argv = wrapperCall.arguments[0];
-    if (!argv || ts.isSpreadElement(argv)) return unread(wrapperCall);
-    site(wrapperCall, normalize(argv.getText(tree)));
+    let at: ts.Node = ref;
+    for (;;) {
+      const up = at.parent;
+      if (ts.isParenthesizedExpression(up) || ts.isAwaitExpression(up) || ts.isNonNullExpression(up) || ts.isAsExpression(up)) at = up;
+      else if (ts.isCallExpression(up) && up.arguments[0] === at && RESHAPERS.has(calleeName(up) ?? "")) at = up;
+      else if (ts.isPropertyAccessExpression(up) && up.expression === at && up.name.text === "bind"
+        && ts.isCallExpression(up.parent) && up.parent.expression === up) at = up.parent;
+      else break;
+    }
+    const declaration = at.parent;
+    if (ts.isVariableDeclaration(declaration) && declaration.initializer === at && ts.isIdentifier(declaration.name)) {
+      const name = declaration.name.text;
+      for (const alias of exportedAs(declaration, name)) discover({ ...entry, name: alias, method: false });
+      for (const use of identifiersIn(scopeOf(declaration), name)) onRef(use, { ...entry, name, method: false });
+      return;
+    }
+    unread(at);
   }
   function functionDeclaration(name: string): ts.FunctionDeclaration | null {
     let match: ts.FunctionDeclaration | null = null;
@@ -540,7 +604,7 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
 
   // A shell command line: a `gh` command in its text is a site; text it cannot see is unread.
   function commandLine(command: ts.Expression | undefined, at: ts.Node): void {
-    if (!command) return unread(at);
+    if (!command || ts.isSpreadElement(command)) return unread(at);
     const text = ts.isStringLiteral(command) || ts.isNoSubstitutionTemplateLiteral(command)
       ? command.text
       : ts.isTemplateExpression(command)
@@ -550,12 +614,6 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     if (GH_COMMAND_RE.test(text)) site(command, normalize(text));
   }
   function shellCall(node: ts.CallExpression): void {
-    const callee = node.expression;
-    const viaShellRunner = (ts.isIdentifier(callee) && shellRunners.names.has(callee.text))
-      || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
-        && shellRunners.namespaces.has(callee.expression.text)
-        && (callee.name.text === "exec" || callee.name.text === "execSync"));
-    if (viaShellRunner) return commandLine(node.arguments[0], node);
     const program = node.arguments[0];
     const argv = node.arguments[1];
     if (program && (ts.isStringLiteral(program) || ts.isNoSubstitutionTemplateLiteral(program)) && SHELLS.test(program.text)) {
@@ -577,19 +635,55 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text === "gh") {
       if (!ts.isImportDeclaration(node.parent) && !ts.isLiteralTypeNode(node.parent)) place(node, false);
     } else if (ts.isCallExpression(node)) {
-      if (calleeName(node) === "ghBin") place(node, false);
       shellCall(node);
     }
     ts.forEachChild(node, visit);
   }
   visit(tree);
 
-  // Pass-through wrappers, this file's and every other file's: a caller is a site wherever it is.
-  for (const wrapper of [...found, ...wrappers.filter((w) => !found.some((f) => f.name === w.name && f.method === w.method))]) {
-    followWrapper(wrapper);
+  // Every entry every file follows, under its own name, an import alias, or as a property.
+  for (const entry of entries) {
+    if (!entry.method) {
+      for (const ref of identifiersIn(tree, entry.name)) onRef(ref, entry);
+      for (const alias of exportAliases(entry.name)) if (alias !== entry.name) discover({ ...entry, name: alias });
+    }
+    for (const read of propertyReadsIn(tree, entry.name)) onRef(read, entry);
+  }
+  for (const statement of tree.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      const imported = element.propertyName?.text;
+      const entry = imported ? entries.find((e) => !e.method && e.name === imported) : undefined;
+      if (!entry || element.name.text === imported) continue;
+      for (const ref of identifiersIn(tree, element.name.text)) onRef(ref, { ...entry, name: element.name.text });
+    }
+  }
+  // child_process's shell runners, under whatever this file calls them.
+  const shellRunners = shellRunnerNames(tree);
+  for (const name of shellRunners.names) {
+    for (const ref of identifiersIn(tree, name)) onRef(ref, { name, kind: "shell", arg: 0, method: false });
+  }
+  for (const namespace of shellRunners.namespaces) {
+    for (const ref of identifiersIn(tree, namespace)) {
+      const parent = ref.parent;
+      if (ts.isPropertyAccessExpression(parent) && parent.expression === ref) {
+        if (parent.name.text === "exec" || parent.name.text === "execSync") {
+          onRef(parent, { name: parent.name.text, kind: "shell", arg: 0, method: false });
+        }
+      } else {
+        unread(ref); // the whole module handed on: its `exec` can no longer be followed
+      }
+    }
+  }
+  // Wrappers this file declares are followed here too, so its own callers are not left to the next pass.
+  for (const wrapper of found.filter((f) => !entries.some((e) => sameEntry(e, f)))) {
+    if (!wrapper.method) for (const ref of identifiersIn(tree, wrapper.name)) onRef(ref, wrapper);
+    for (const read of propertyReadsIn(tree, wrapper.name)) onRef(read, wrapper);
   }
 
-  return { sites, wrappers: found };
+  return { sites, found };
 }
 
 /** `gh` commands in a shell script: one site per command, its text up to `;`, `|`, `)` or `&`. */
@@ -614,12 +708,21 @@ function shellSites(file: string, source: string): Site[] {
   return sites;
 }
 
+/** The sites in `sources`, read to a fixpoint: a wrapper of a wrapper, or an exported alias, is an entry for every file. */
+function scanSources(sources: readonly { file: string; source: string }[]): Site[] {
+  const entries: Entry[] = [GH_BIN];
+  for (;;) {
+    const scans = sources.map(({ file, source }) => ghSites(file, source, entries));
+    const added = scans.flatMap((scan) => scan.found).filter((f) => !entries.some((e) => sameEntry(e, f)));
+    if (added.length === 0) return scans.flatMap((scan) => scan.sites);
+    for (const entry of added) if (!entries.some((e) => sameEntry(e, entry))) entries.push(entry);
+  }
+}
+
 function repositorySites(): Site[] {
   const files = [...codeFiles(join(ROOT, "src")), ...codeFiles(join(ROOT, "scripts"))];
-  const sources = files.map((path) => ({ file: relative(ROOT, path), source: readFileSync(path, "utf8") }));
-  const wrappers = sources.flatMap(({ file, source }) => ghSites(file, source).wrappers);
   return [
-    ...sources.flatMap(({ file, source }) => ghSites(file, source, wrappers).sites),
+    ...scanSources(files.map((path) => ({ file: relative(ROOT, path), source: readFileSync(path, "utf8") }))),
     ...shellFiles(join(ROOT, "scripts")).flatMap((path) =>
       shellSites(relative(ROOT, path), readFileSync(path, "utf8"))),
   ];
@@ -667,6 +770,12 @@ test("every gh call in the daemon, app and scripts names how it targets a reposi
   assert.deepEqual(inventoryProblems(repositorySites(), GH_CALLS, GH_MENTIONS), []);
 });
 
+/** Problems in source order, for fixtures whose sites the scan reaches in a different order. */
+function byLine(a: string, b: string): number {
+  const line = (p: string): number => Number(/:(\d+) /.exec(p)?.[1] ?? 0);
+  return line(a) - line(b);
+}
+
 test("the scanner follows bindings, lookups and pass-through wrappers to the call", () => {
   const source = [
     'import { execFile } from "node:child_process";',
@@ -687,8 +796,8 @@ test("the scanner follows bindings, lookups and pass-through wrappers to the cal
     '  return execFileSync(bin, [...args, "--repo", repo]);',
     "}",
   ].join("\n");
-  const { sites, wrappers } = ghSites("fixture.mjs", source);
-  assert.deepEqual(wrappers, [{ name: "runGh", method: false }]);
+  const { sites, found } = ghSites("fixture.mjs", source);
+  assert.deepEqual(found, [{ name: "runGh", kind: "wrapper", arg: 0, method: false }]);
   assert.deepEqual(
     sites.map(({ fn, argv }) => ({ fn, argv })),
     [
@@ -734,8 +843,11 @@ test("a pass-through wrapper written as a method makes each of its callers a sit
     "  handOff() { return later(this.gh); }",
     "}",
   ].join("\n");
-  const { sites, wrappers } = ghSites("src/server/fixture.ts", source);
-  assert.deepEqual(wrappers, [{ name: "gh", method: true }, { name: "runner", method: true }]);
+  const { sites, found } = ghSites("src/server/fixture.ts", source);
+  assert.deepEqual(found, [
+    { name: "gh", kind: "wrapper", arg: 0, method: true },
+    { name: "runner", kind: "wrapper", arg: 0, method: true },
+  ]);
   assert.deepEqual(inventoryProblems(sites, {}, {}), [
     'src/server/fixture.ts:4 unclassified gh call in Issues.list: ["issue", "list"]',
     "src/server/fixture.ts:6 the scanner cannot read this gh binary in Issues.handOff: handOff() { return later(this.gh); }",
@@ -759,7 +871,7 @@ test("a gh command handed to a shell is a site, and a command line the scanner c
     "}",
   ].join("\n");
   const { sites } = ghSites("scripts/fixture.mjs", source);
-  assert.deepEqual(inventoryProblems(sites, {}, {}), [
+  assert.deepEqual(inventoryProblems(sites, {}, {}).sort(byLine), [
     "scripts/fixture.mjs:4 unclassified gh call in shellCalls: gh issue list --json number",
     "scripts/fixture.mjs:5 unclassified gh call in shellCalls: gh issue view ${n}",
     "scripts/fixture.mjs:7 the scanner cannot read this gh binary in shellCalls: exec(cmd);",
@@ -767,6 +879,78 @@ test("a gh command handed to a shell is a site, and a command line the scanner c
     'scripts/fixture.mjs:9 the scanner cannot read this gh binary in shellCalls: spawn("sh", ["-c", cmd]);',
     'scripts/fixture.mjs:10 unclassified gh call in shellCalls: gh pr list',
     "scripts/fixture.mjs:11 the scanner cannot read this gh binary in shellCalls: run(cmd, [], { shell: true });",
+  ]);
+});
+
+test("a shell runner rebound through promisify or a namespace still has its command read", () => {
+  const source = [
+    'import { exec } from "node:child_process";',
+    'import * as cp from "node:child_process";',
+    'import { promisify } from "node:util";',
+    "const execAsync = promisify(exec);",
+    "const syncRun = promisify(cp.exec);",
+    "export async function issues(cmd) {",
+    '  await execAsync("gh issue list --json number");',
+    '  syncRun("gh pr checks --watch");',
+    "  later(exec);",
+    "  return execAsync(cmd);",
+    "}",
+  ].join("\n");
+  assert.deepEqual(inventoryProblems(scanSources([{ file: "scripts/fixture.mjs", source }]), {}, {}).sort(byLine), [
+    "scripts/fixture.mjs:7 unclassified gh call in issues: gh issue list --json number",
+    "scripts/fixture.mjs:8 unclassified gh call in issues: gh pr checks --watch",
+    "scripts/fixture.mjs:9 the scanner cannot read this gh binary in issues: later(exec);",
+    "scripts/fixture.mjs:10 the scanner cannot read this gh binary in issues: return execAsync(cmd);",
+  ]);
+});
+
+test("ghBin and wrappers are followed through aliases, namespaces, exports and argv position", () => {
+  const sources = [
+    {
+      file: "src/server/aliases.ts",
+      source: [
+        'import { ghBin as gh } from "./config.ts";',
+        "export const bin = ghBin;",
+        "export { runIn as runGhIn };",
+        "export function runIn(cwd, args) {",
+        "  return run(gh(), args, { cwd });",
+        "}",
+        "export function issues(cwd) {",
+        '  return run(gh(), ["issue", "list"], { cwd });',
+        "}",
+      ].join("\n"),
+    },
+    {
+      file: "src/server/callers.ts",
+      source: [
+        'import { bin, runGhIn } from "./aliases.ts";',
+        'import * as updater from "../main/updater.ts";',
+        "function viaExport(dir) {",
+        '  run(bin(), ["pr", "list"]);',
+        '  runGhIn(dir, ["pr", "view", "12"]);',
+        '  return updater.runGh(["issue", "view", "3"]);',
+        "}",
+        "function listed(args) {",
+        "  return runGhIn(process.cwd(), args);",
+        "}",
+        "function leaks() {",
+        '  listed(["run", "list"]);',
+        "  return { bin: ghBin, other: later(ghBin) };",
+        "}",
+      ].join("\n"),
+    },
+    {
+      file: "src/main/updater.ts",
+      source: 'export async function runGh(args) { const exe = await locateExecutable("gh"); return execFile(exe.path, args); }',
+    },
+  ];
+  assert.deepEqual(inventoryProblems(scanSources(sources), {}, {}).sort(), [
+    'src/server/aliases.ts:8 unclassified gh call in issues: ["issue", "list"]',
+    'src/server/callers.ts:12 unclassified gh call in leaks: ["run", "list"]',
+    "src/server/callers.ts:13 the scanner cannot read this gh binary in leaks: return { bin: ghBin, other: later(ghBin) };",
+    'src/server/callers.ts:4 unclassified gh call in viaExport: ["pr", "list"]',
+    'src/server/callers.ts:5 unclassified gh call in viaExport: ["pr", "view", "12"]',
+    'src/server/callers.ts:6 unclassified gh call in viaExport: ["issue", "view", "3"]',
   ]);
 });
 
