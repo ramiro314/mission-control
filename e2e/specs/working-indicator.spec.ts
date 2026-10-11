@@ -6,6 +6,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectDaemonHides } from "../fixtures/display-items.ts";
 
 /**
  * The conversation's working indicator (issue #1116): a clock on every working row, and two
@@ -335,6 +336,7 @@ test("Display offers both marks checked, spaced like the groups above, and the p
   await shot(dashboard, customizer, "display-both-unchecked", "both marks unchecked, the preview shows only the row and its clock");
 
   // The choice is the operator's and survives a reload.
+  await expectDaemonHides(daemon, ["workingPinned", "workingProgressBar"], true);
   await dashboard.reload();
   await expect(panel.getByRole("checkbox", { name: PIN, exact: true })).not.toBeChecked();
   await expect(panel.getByRole("checkbox", { name: BAR, exact: true })).not.toBeChecked();

@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectDaemonHides } from "../fixtures/display-items.ts";
 
 const NO_MISTAKES = "builtin-workflow:no-mistakes-review";
 const EVIDENCE = artifactsDir("board-card-workflow-progress");
@@ -181,6 +182,7 @@ test("the Board card shows the whole No-Mistakes pipeline by default and preserv
   const preview = dashboard.locator(".board-card-preview-stage .wf-tile-peek");
   await expect(preview.locator(".wf-repair-meter")).toHaveCount(0);
   await expect(preview.locator(".wf-tile-peek-round")).toHaveText("R3 / 5");
+  await expectDaemonHides(daemon, ["workflowProgressBar"], true);
 
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();
@@ -207,6 +209,7 @@ test("the Board card shows the whole No-Mistakes pipeline by default and preserv
   await setting.check();
   await expect(preview.locator(".wf-repair-meter")).toBeVisible();
   await expect(preview.locator(".wf-tile-peek-round")).toHaveCount(0);
+  await expectDaemonHides(daemon, ["workflowProgressBar"], false);
 
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();
