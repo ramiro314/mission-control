@@ -11,7 +11,8 @@
  *   node scripts/fork-delta.mjs pending                       every unapplied PR, apply or held
  *
  * Every command also takes `--repo <owner/name>` (passed to `gh`) and `--since <YYYY-MM-DD>`,
- * which ignores PRs merged before the cut-over.
+ * which ignores PRs merged before the cut-over. Without `--repo` or `GH_REPO`, `gh` is told the
+ * checkout's own repository (its gh default pin, else `origin`), never left to pick the parent.
  *
  * A block's base is the first 12 hex characters of the SHA-256 of the issue section it replaces,
  * or `new` when that section or the issue does not exist. A `#### Status` block hashes the
@@ -40,6 +41,8 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+
+import { scriptRepository } from "./checkout-repository.mjs";
 
 export const APPLIED_LABEL = "fork-delta:applied";
 export const STATUSES = ["active", "in-progress", "superseded", "removed", "upstreamed"];
@@ -447,7 +450,7 @@ export function formatPlan(entries) {
 
 function gh(args, repo) {
   const bin = process.env.MISSION_GH_BIN || "gh";
-  const out = execFileSync(bin, repo ? [...args, "--repo", repo] : args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const out = execFileSync(bin, [...args, "--repo", repo], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   return JSON.parse(out);
 }
 
@@ -496,7 +499,10 @@ function main(argv) {
     options: { pr: { type: "string" }, repo: { type: "string" }, since: { type: "string" } },
   });
   const [command, ...rest] = positionals;
-  const { repo, since } = values;
+  const { since } = values;
+  // Resolved on the first `gh` call, so a usage error is reported before a checkout error.
+  let resolved;
+  const repo = () => (resolved ??= scriptRepository(values.repo));
   const slugArg = (value) => {
     const slug = (value ?? "").replace(/^fork:/, "");
     if (!SLUG.test(slug)) throw new UsageError(`expected a feature slug, got ${JSON.stringify(value)}`);
@@ -504,20 +510,20 @@ function main(argv) {
   };
 
   if (command === "check" && rest.length === 1) {
-    const target = fetchPr(prNumber(rest[0]), repo);
-    const result = checkPr(target, fetchIssues(repo), fetchPendingCandidates(repo, since));
+    const target = fetchPr(prNumber(rest[0]), repo());
+    const result = checkPr(target, fetchIssues(repo()), fetchPendingCandidates(repo(), since));
     const { text, code } = formatCheck(result);
     process.stdout.write(`${text}\n`);
     return code;
   }
   if (command === "pending" && rest.length === 0) {
-    process.stdout.write(`${formatPlan(planRefresh(fetchIssues(repo), fetchPendingCandidates(repo, since)).entries)}\n`);
+    process.stdout.write(`${formatPlan(planRefresh(fetchIssues(repo()), fetchPendingCandidates(repo(), since)).entries)}\n`);
     return 0;
   }
   if ((command === "base" && rest.length === 2) || (command === "show" && rest.length === 1)) {
     const slug = slugArg(rest[0]);
-    const cutoff = values.pr === undefined ? null : fetchPr(prNumber(values.pr), repo);
-    const { features, skipped } = overlayFor(fetchIssues(repo), fetchPendingCandidates(repo, since), cutoff);
+    const cutoff = values.pr === undefined ? null : fetchPr(prNumber(values.pr), repo());
+    const { features, skipped } = overlayFor(fetchIssues(repo()), fetchPendingCandidates(repo(), since), cutoff);
     if (skipped.length) {
       process.stderr.write(`warning: not overlaid, their sections do not parse: ${skipped.map((n) => `#${n}`).join(", ")}\n`);
     }

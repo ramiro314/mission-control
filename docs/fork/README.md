@@ -100,6 +100,9 @@ active
   `upstreamed`, plus an optional note. Its base comes from
   `node scripts/fork-delta.mjs base <slug> Status`.
 - `node scripts/fork-delta.mjs check <pr>` validates a PR's section and reports a stale base.
+- `fork-delta.mjs` and `fork-report.mjs` read the checkout's own repository, its gh default pin
+  else `origin`, never the parent `gh` would pick. `--repo <owner/name>` or `GH_REPO` names
+  another.
 
 **A new feature.** The PR creates the `fork:<slug>` label and its tracking issue with the full
 body when it opens, and labels itself. Its section is then `none`, unless it changed the issue
