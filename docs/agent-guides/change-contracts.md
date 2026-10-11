@@ -93,6 +93,21 @@ but neither a source comment nor a file-level exemption can grant that boundary.
 must be absolute entries in `FIXED_OS_EXECUTABLES`; a command that can vary by installation does
 not belong there.
 
+### GitHub CLI calls name their repository
+
+A `gh` call that names no repository resolves through gh's own choice, which on a fork reaches
+the parent, and a parent organization that enforces SAML SSO refuses it. So a new `gh` call in
+`src/` or `scripts/` names its repository: `--repo` from `checkoutGitHubRepository` (or
+`scriptRepository` in a script), a GitHub URL, or an explicit `repos/<owner>/<repo>` path. Only
+`auth status`, `--version` and `api user` may name none. Agent instructions follow the same rule:
+open a pull request with `openPullRequestCommand`, never `gh pr create`; name a pull request or
+issue by URL, never by number; and read origin with an exact copy of `originRepositoryShell`
+rather than gh's `{owner}/{repo}` placeholders.
+
+`test/github-repo-targeting.test.ts` holds both halves. It finds every `gh` call by syntax tree
+and fails on one missing from its inventory, which names how each call targets a repository; a
+call shape it cannot follow fails too, rather than passing unread.
+
 ## Database changes
 
 For a new column on an existing table:
