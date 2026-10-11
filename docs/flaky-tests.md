@@ -130,10 +130,11 @@ slowest unit shard drifts well above the others, pick a recent green run and reg
 npm run test:timings -- <run-id>
 ```
 
-It downloads that run's `unit-junit-*` artifacts with `gh run download` (set `GH_REPO` to read
-another repository), sums each file's top-level suite and test times per Node release (a
-`describe` suite counts at its own time, so its hooks are included), averages the releases
-the run covered, keeps only files that exist in the checkout, and rewrites the file. Commit the
+It downloads that run's `unit-junit-*` artifacts with `gh run download` from the checkout's own
+repository, its gh default pin else `origin` (set `GH_REPO` to read another repository), sums
+each file's top-level suite and test times per Node release (a `describe` suite counts at its
+own time, so its hooks are included), averages the releases the run covered, keeps only files
+that exist in the checkout, and rewrites the file. Commit the
 result on its own.
 
 ## The "Flaky tests" check
