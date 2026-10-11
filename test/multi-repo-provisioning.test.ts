@@ -39,6 +39,13 @@ const {
 const { Registry } = await import("../src/server/registry.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
+const { resolveTaskRepoSet } = await import("../src/server/repos.ts");
+const { DispatchSchema, UpdateTaskSchema, isAnnotationOnlyUpdate } = await import(
+  "@shared/protocol.ts"
+);
+// Every top-level `await` stays above the first `test()`. node:test runs the root `after` below
+// as soon as the tests registered so far have finished, so an `await` between two tests lets it
+// remove this home while the rest of the file is still importing.
 
 openDb();
 
@@ -315,11 +322,6 @@ test("a repo with no worktree is left out of the manifest", () => {
 
 // ---- resolving the repo set ------------------------------------------------------------
 
-const { resolveTaskRepoSet } = await import("../src/server/repos.ts");
-const { DispatchSchema, UpdateTaskSchema, isAnnotationOnlyUpdate } = await import(
-  "@shared/protocol.ts"
-);
-
 test("the whole repo set is resolved through one door", async () => {
   const api = mkRepo("resolve-api");
   const web = mkRepo("resolve-web");
@@ -367,7 +369,7 @@ test("a secondary that is not a repo is refused, naming itself", async () => {
   // The path that was actually rejected, so a caller can fix the entry rather than guess
   // which of several was the problem.
   assert.match(refused.ok === false ? refused.error : "", /not a git repository/);
-  assert.match(refused.ok === false ? refused.error : "", new RegExp(notARepo.replace(/\+/g, "\\+")));
+  assert.ok(refused.ok === false && refused.error.includes(notARepo), refused.ok === false ? refused.error : "accepted");
 });
 
 test("the wire shape defaults to no attached repos, and an edit to them is provisioning", () => {

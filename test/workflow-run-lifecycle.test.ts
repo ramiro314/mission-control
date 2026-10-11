@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -222,6 +222,67 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     kind: "opaque",
   },
 };
+
+// The store section's setup, and the position is load-bearing: every top-level `await` in this
+// file must come before the first `test()`. node:test runs a root `after` hook as soon as the
+// tests registered so far have finished, so a test queued above an `await` lets the hook below
+// run while the module is still importing. It used to sit between the model tests and the store
+// tests, and the hook removed this home before a single store test ran, so the connection quietly
+// kept writing to an unlinked file. The first store test below pins that the home is still there.
+const home = mkdtempSync(join(tmpdir(), "mission-workflow-lifecycle-"));
+process.env.MISSION_HOME = home;
+after(() => rmSync(home, { recursive: true, force: true }));
+
+/**
+ * A run stranded in the phase the gate's old string interpolation invented, written into the
+ * database BEFORE the daemon opens it - which is the only way to prove the migration ran.
+ *
+ * `inspector_${waitReason}` produced `inspector_inspector_disabled` when the reason was itself
+ * `inspector_disabled`, and both routes back into a blocked gate test for `inspector_disabled`
+ * exactly. Re-enabling GitHub Inspector never re-evaluated the run and Recheck refused it, so
+ * nothing on the machine would ever have looked at this row again.
+ */
+const STRANDED_GATE: WorkflowInspectorGateState = { ...gate, waitReason: "inspector_disabled" };
+{
+  const raw = new DatabaseSync(join(home, "harness.db"));
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id                    TEXT PRIMARY KEY,
+      binding_id            TEXT NOT NULL,
+      workflow_version_id   TEXT NOT NULL,
+      status                TEXT NOT NULL,
+      current_phase         TEXT NOT NULL,
+      max_repair_rounds     INTEGER NOT NULL,
+      trigger_source        TEXT NOT NULL,
+      trigger_key           TEXT NOT NULL,
+      inspector_pr_key      TEXT,
+      inspector_head_sha    TEXT,
+      gate_state_json       TEXT,
+      started_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      completed_at          INTEGER
+    );
+  `);
+  raw.prepare(
+    `INSERT INTO workflow_runs (
+       id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
+       trigger_source, trigger_key, gate_state_json, started_at, updated_at
+     ) VALUES ('stranded', 'binding', 'version', 'blocked', 'inspector_inspector_disabled', 3,
+               'manual', 'trigger-stranded', ?, 1, 1)`,
+  ).run(JSON.stringify(STRANDED_GATE));
+  raw.close();
+}
+
+const { openDb } = await import("../src/server/db.ts");
+const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
+const db = openDb();
+const store = new WorkflowStore(db);
+// Read immediately after the daemon's own open has migrated the seeded row, before any test
+// can write to `workflow_runs`.
+const migratedStrandedRun = store.getRun("stranded");
+
+const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { Registry } = await import("../src/server/registry.ts");
 
 test("every registered lifecycle state decodes to exactly one variant", () => {
   let checked = 0;
@@ -606,63 +667,6 @@ test("the sticky gate rides beside a phase detail without becoming it", () => {
 // The two defects the model above exists to close, through the real store.
 // ---------------------------------------------------------------------------
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-lifecycle-"));
-process.env.MISSION_HOME = home;
-after(() => rmSync(home, { recursive: true, force: true }));
-
-/**
- * A run stranded in the phase the gate's old string interpolation invented, written into the
- * database BEFORE the daemon opens it - which is the only way to prove the migration ran.
- *
- * `inspector_${waitReason}` produced `inspector_inspector_disabled` when the reason was itself
- * `inspector_disabled`, and both routes back into a blocked gate test for `inspector_disabled`
- * exactly. Re-enabling GitHub Inspector never re-evaluated the run and Recheck refused it, so
- * nothing on the machine would ever have looked at this row again.
- */
-const STRANDED_GATE: WorkflowInspectorGateState = { ...gate, waitReason: "inspector_disabled" };
-{
-  const raw = new DatabaseSync(join(home, "harness.db"));
-  raw.exec(`
-    CREATE TABLE IF NOT EXISTS workflow_runs (
-      id                    TEXT PRIMARY KEY,
-      binding_id            TEXT NOT NULL,
-      workflow_version_id   TEXT NOT NULL,
-      status                TEXT NOT NULL,
-      current_phase         TEXT NOT NULL,
-      max_repair_rounds     INTEGER NOT NULL,
-      trigger_source        TEXT NOT NULL,
-      trigger_key           TEXT NOT NULL,
-      inspector_pr_key      TEXT,
-      inspector_head_sha    TEXT,
-      gate_state_json       TEXT,
-      started_at            INTEGER NOT NULL,
-      updated_at            INTEGER NOT NULL,
-      completed_at          INTEGER
-    );
-  `);
-  raw.prepare(
-    `INSERT INTO workflow_runs (
-       id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
-       trigger_source, trigger_key, gate_state_json, started_at, updated_at
-     ) VALUES ('stranded', 'binding', 'version', 'blocked', 'inspector_inspector_disabled', 3,
-               'manual', 'trigger-stranded', ?, 1, 1)`,
-  ).run(JSON.stringify(STRANDED_GATE));
-  raw.close();
-}
-
-const { openDb } = await import("../src/server/db.ts");
-const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
-const db = openDb();
-const store = new WorkflowStore(db);
-// Read HERE, and the position is load-bearing: immediately after the daemon's own open has
-// migrated the seeded row, and before the manager and registry modules below are imported.
-// Importing those two BEFORE this read leaves `workflow_runs` empty, so the capture must come
-// first for this test to be measuring the migration at all rather than an empty table.
-const migratedStrandedRun = store.getRun("stranded");
-
-const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-const { Registry } = await import("../src/server/registry.ts");
-
 function seedRun(id: string, status: string, phase: string, gateState: unknown): void {
   db.prepare(
     `INSERT INTO workflow_runs (
@@ -671,6 +675,10 @@ function seedRun(id: string, status: string, phase: string, gateState: unknown):
      ) VALUES (?, 'binding', 'version', ?, ?, 3, 'manual', ?, ?, 1, 1)`,
   ).run(id, status, phase, `trigger-${id}`, gateState === null ? null : JSON.stringify(gateState));
 }
+
+test("the store tests still have the home this file opened its database in", () => {
+  assert.ok(existsSync(join(home, "harness.db")), `${home} was removed before the store tests ran`);
+});
 
 test("a run that spends its budget while gated keeps the pull request it was gated on", () => {
   clearWorkflowTables(db);

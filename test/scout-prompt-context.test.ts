@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 
@@ -207,7 +208,7 @@ test("a second open of the migrated database migrates again without damage", () 
        console.log(JSON.stringify({ tables: names.map((r) => r.name), jobs: jobs.n }));`,
     ],
     {
-      cwd: new URL("..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
       env: { ...process.env, MISSION_HOME: home, HARNESS_HOME: home, FLEET_HOME: undefined },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

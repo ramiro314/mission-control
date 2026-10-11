@@ -27,6 +27,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 
 const home = mkdtempSync(join(tmpdir(), "mission-archive-migration-"));
@@ -281,7 +282,7 @@ test("a second open of the migrated database migrates again without damage", () 
        console.log(JSON.stringify({ jobs: jobs.n, kinds: kinds.map((row) => row.k) }));`,
     ],
     {
-      cwd: new URL("..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
       env: { ...process.env, MISSION_HOME: home, HARNESS_HOME: home, FLEET_HOME: undefined },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
