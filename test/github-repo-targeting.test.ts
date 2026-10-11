@@ -208,13 +208,17 @@ interface Site {
  *   so each caller is a site.
  * - `shell`: a child_process shell-string runner (`exec`, `execSync`) or a binding of one
  *   (`promisify(exec)`), so its first argument is a command line.
+ * - `value`: an exported binding that holds the gh program itself
+ *   (`export const GH_BIN = process.env.MISSION_GH_BIN || "gh"`). Unlike the others it is reached
+ *   only where it is imported - by name, alias, namespace or destructuring - and each read is
+ *   placed like a `"gh"` literal.
  *
  * A `method` entry is reached only as a property (`this.gh(...)`); any other is reached by its
  * name, by an import alias, or as a property (`ns.runGh(...)`, `deps.ghBin()`).
  */
 interface Entry {
   name: string;
-  kind: "binary" | "wrapper" | "shell";
+  kind: "binary" | "wrapper" | "shell" | "value";
   arg: number;
   method: boolean;
 }
@@ -328,6 +332,7 @@ function isDeclarationName(id: ts.Identifier): boolean {
     || ts.isExportSpecifier(parent)
     || ts.isImportClause(parent)
     || ts.isNamespaceImport(parent)
+    || (ts.isBindingElement(parent) && (parent.name === id || parent.propertyName === id))
   );
 }
 
@@ -396,9 +401,28 @@ function passive(node: ts.Node): boolean {
 }
 
 /** The local names `node:child_process`'s shell-string runners (`exec`, `execSync`) go by. */
-function shellRunnerNames(tree: ts.SourceFile): { names: Set<string>; namespaces: Set<string> } {
+/** `require("child_process")` or `import("node:child_process")`, awaited or not. */
+function childProcessLoad(node: ts.Node): boolean {
+  while (ts.isAwaitExpression(node) || ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isCallExpression(node)) return false;
+  const loader = node.expression;
+  const isLoader = (ts.isIdentifier(loader) && loader.text === "require") || loader.kind === ts.SyntaxKind.ImportKeyword;
+  const from = node.arguments[0];
+  return isLoader && !!from && ts.isStringLiteral(from) && (from.text === "child_process" || from.text === "node:child_process");
+}
+
+/**
+ * The local names `node:child_process`'s shell-string runners (`exec`, `execSync`) go by, the
+ * names the module itself is bound to, and `require("child_process").exec`-style reads.
+ */
+function shellRunnerNames(tree: ts.SourceFile): {
+  names: Set<string>;
+  namespaces: Set<string>;
+  direct: ts.PropertyAccessExpression[];
+} {
   const names = new Set<string>();
   const namespaces = new Set<string>();
+  const direct: ts.PropertyAccessExpression[] = [];
   const isChildProcess = (text: string): boolean => text === "child_process" || text === "node:child_process";
   function bindFrom(pattern: ts.BindingName): void {
     if (ts.isIdentifier(pattern)) namespaces.add(pattern.text);
@@ -422,18 +446,15 @@ function shellRunnerNames(tree: ts.SourceFile): { names: Set<string>; namespaces
         }
       }
     }
-    if (
-      ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)
-      && ts.isIdentifier(node.initializer.expression) && node.initializer.expression.text === "require"
-      && node.initializer.arguments[0] && ts.isStringLiteral(node.initializer.arguments[0])
-      && isChildProcess(node.initializer.arguments[0].text)
-    ) {
-      bindFrom(node.name);
+    if (ts.isVariableDeclaration(node) && node.initializer && childProcessLoad(node.initializer)) bindFrom(node.name);
+    if (ts.isPropertyAccessExpression(node) && childProcessLoad(node.expression)
+      && (node.name.text === "exec" || node.name.text === "execSync")) {
+      direct.push(node);
     }
     ts.forEachChild(node, visit);
   }
   visit(tree);
-  return { names, namespaces };
+  return { names, namespaces, direct };
 }
 
 /** Calls that hand back the function they are given, still runnable: `promisify(exec)`. */
@@ -539,6 +560,8 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
     if (throughProperty && passive(at)) return;
     const parent = at.parent;
     if (ts.isVariableDeclaration(parent) && parent.initializer === at && ts.isIdentifier(parent.name)) {
+      // Exported, it is read in files this one never sees: every importer places it in turn.
+      for (const alias of exportedAs(parent, parent.name.text)) discover({ name: alias, kind: "value", arg: 0, method: false });
       for (const ref of identifiersIn(scopeOf(parent), parent.name.text)) place(ref, true);
       return;
     }
@@ -556,6 +579,7 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
 
   /** One reference to an entry: called, carried under its own global name, followed, or unread. */
   function onRef(ref: ts.Identifier | ts.PropertyAccessExpression, entry: Entry): void {
+    if (entry.kind === "value") return place(ref, true);
     const parent = ref.parent;
     if (ts.isCallExpression(parent) && parent.expression === ref) return invoke(parent, entry);
     // Carried into an object under a name every file already follows (`{ ghBin }`): its calls
@@ -602,6 +626,47 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
     return match;
   }
 
+  /** Names bound to a whole module: namespace and default imports, `require(...)`, `await import(...)`. */
+  function moduleObjects(): Set<string> {
+    const names = new Set<string>();
+    tree.forEachChild(function visit(node) {
+      if (ts.isImportDeclaration(node)) {
+        const clause = node.importClause;
+        if (clause?.name) names.add(clause.name.text);
+        if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) names.add(clause.namedBindings.name.text);
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        let init: ts.Node = node.initializer;
+        while (ts.isAwaitExpression(init) || ts.isParenthesizedExpression(init)) init = init.expression;
+        if (ts.isCallExpression(init) && ((ts.isIdentifier(init.expression) && init.expression.text === "require")
+          || init.expression.kind === ts.SyntaxKind.ImportKeyword)) {
+          names.add(node.name.text);
+        }
+      }
+      ts.forEachChild(node, visit);
+    });
+    return names;
+  }
+  /** `{ name }` or `{ name: local }` destructured anywhere in this file. */
+  function bindingElementsNamed(name: string): ts.BindingElement[] {
+    const elements: ts.BindingElement[] = [];
+    tree.forEachChild(function visit(node) {
+      if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)
+        && (node.propertyName ?? node.name).getText() === name) {
+        elements.push(node);
+      }
+      ts.forEachChild(node, visit);
+    });
+    return elements;
+  }
+  /** Where a destructured name is visible: its declaration's block, or its function's body. */
+  function bindingScope(element: ts.BindingElement): ts.Node | null {
+    const holder = element.parent.parent;
+    if (ts.isVariableDeclaration(holder)) return scopeOf(holder);
+    if (ts.isParameter(holder) && ts.isFunctionLike(holder.parent)) return holder.parent;
+    return null;
+  }
+
   // A shell command line: a `gh` command in its text is a site; text it cannot see is unread.
   function commandLine(command: ts.Expression | undefined, at: ts.Node): void {
     if (!command || ts.isSpreadElement(command)) return unread(at);
@@ -641,22 +706,35 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
   }
   visit(tree);
 
-  // Every entry every file follows, under its own name, an import alias, or as a property.
+  // Every entry every file follows: under its own name, an import alias, a namespace, as a
+  // property, or destructured. A `value` is a plain binding, so only its imports reach it.
+  const modules = moduleObjects();
   for (const entry of entries) {
+    if (entry.kind !== "value") {
+      if (!entry.method) for (const ref of identifiersIn(tree, entry.name)) onRef(ref, entry);
+      for (const read of propertyReadsIn(tree, entry.name)) onRef(read, entry);
+    } else {
+      for (const read of propertyReadsIn(tree, entry.name)) {
+        if (ts.isIdentifier(read.expression) && modules.has(read.expression.text)) onRef(read, entry);
+      }
+    }
     if (!entry.method) {
-      for (const ref of identifiersIn(tree, entry.name)) onRef(ref, entry);
       for (const alias of exportAliases(entry.name)) if (alias !== entry.name) discover({ ...entry, name: alias });
     }
-    for (const read of propertyReadsIn(tree, entry.name)) onRef(read, entry);
+    for (const element of bindingElementsNamed(entry.name)) {
+      const scope = bindingScope(element);
+      if (!scope || !ts.isIdentifier(element.name)) unread(element);
+      else for (const ref of identifiersIn(scope, element.name.text)) onRef(ref, { ...entry, name: element.name.text, method: false });
+    }
   }
   for (const statement of tree.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const bindings = statement.importClause?.namedBindings;
     if (!bindings || !ts.isNamedImports(bindings)) continue;
     for (const element of bindings.elements) {
-      const imported = element.propertyName?.text;
-      const entry = imported ? entries.find((e) => !e.method && e.name === imported) : undefined;
-      if (!entry || element.name.text === imported) continue;
+      const imported = (element.propertyName ?? element.name).text;
+      const entry = entries.find((e) => !e.method && e.name === imported);
+      if (!entry || (entry.kind !== "value" && element.name.text === imported)) continue;
       for (const ref of identifiersIn(tree, element.name.text)) onRef(ref, { ...entry, name: element.name.text });
     }
   }
@@ -665,6 +743,7 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
   for (const name of shellRunners.names) {
     for (const ref of identifiersIn(tree, name)) onRef(ref, { name, kind: "shell", arg: 0, method: false });
   }
+  for (const read of shellRunners.direct) onRef(read, { name: read.name.text, kind: "shell", arg: 0, method: false });
   for (const namespace of shellRunners.namespaces) {
     for (const ref of identifiersIn(tree, namespace)) {
       const parent = ref.parent;
@@ -951,6 +1030,70 @@ test("ghBin and wrappers are followed through aliases, namespaces, exports and a
     'src/server/callers.ts:4 unclassified gh call in viaExport: ["pr", "list"]',
     'src/server/callers.ts:5 unclassified gh call in viaExport: ["pr", "view", "12"]',
     'src/server/callers.ts:6 unclassified gh call in viaExport: ["issue", "view", "3"]',
+  ]);
+});
+
+test("an exported gh binary is placed wherever it is imported", () => {
+  const sources = [
+    {
+      file: "scripts/lib/gh.mjs",
+      source: [
+        'export const GH_BIN = process.env.MISSION_GH_BIN || "gh";',
+        "export const GH = ghBin();",
+        'const GH_LITERAL = "gh";',
+        "export { GH_LITERAL };",
+        'const hidden = "gh";',
+        "export default hidden;",
+      ].join("\n"),
+    },
+    {
+      file: "scripts/fork-x.mjs",
+      source: [
+        'import { GH_BIN, GH as G } from "./lib/gh.mjs";',
+        'import * as lib from "./lib/gh.mjs";',
+        "export async function main() {",
+        '  execFileSync(GH_BIN, ["issue", "list"]);',
+        '  run(G, ["pr", "list"]);',
+        '  spawn(lib.GH_LITERAL, ["issue", "view", "1"]);',
+        '  const { GH_BIN: bin } = await import("./lib/gh.mjs");',
+        '  spawnSync(bin, ["run", "list"]);',
+        "  return later(GH_BIN);",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(inventoryProblems(scanSources(sources), {}, {}).sort(), [
+    "scripts/fork-x.mjs:4 unclassified gh call in main: [\"issue\", \"list\"]",
+    "scripts/fork-x.mjs:5 unclassified gh call in main: [\"pr\", \"list\"]",
+    "scripts/fork-x.mjs:6 unclassified gh call in main: [\"issue\", \"view\", \"1\"]",
+    "scripts/fork-x.mjs:8 unclassified gh call in main: [\"run\", \"list\"]",
+    "scripts/fork-x.mjs:9 the scanner cannot read this gh binary in main: return later(GH_BIN);",
+    "scripts/lib/gh.mjs:6 the scanner cannot read this gh binary in <module>: export default hidden;",
+  ]);
+});
+
+test("child_process loaded through require or import(), and a method destructured off this, are followed", () => {
+  const source = [
+    "class Issues {",
+    "  gh(args) { return run(ghBin(), args); }",
+    "  list() {",
+    "    const { gh } = this;",
+    '    return gh(["issue", "list"]);',
+    "  }",
+    "}",
+    "export async function shells() {",
+    '  require("child_process").execSync("gh issue list --json number");',
+    '  const cp = await import("node:child_process");',
+    '  cp.exec("gh pr list");',
+    '  const { exec: run2 } = await import("node:child_process");',
+    '  run2("gh run list");',
+    "}",
+  ].join("\n");
+  assert.deepEqual(inventoryProblems(scanSources([{ file: "scripts/fixture.mjs", source }]), {}, {}).sort(byLine), [
+    'scripts/fixture.mjs:5 unclassified gh call in Issues.list: ["issue", "list"]',
+    "scripts/fixture.mjs:9 unclassified gh call in shells: gh issue list --json number",
+    "scripts/fixture.mjs:11 unclassified gh call in shells: gh pr list",
+    "scripts/fixture.mjs:13 unclassified gh call in shells: gh run list",
   ]);
 });
 
