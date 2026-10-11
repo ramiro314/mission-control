@@ -12,13 +12,13 @@ const { Registry } = await import("../src/server/registry.ts");
 
 // The daemon subscribes about a dozen services at boot and one more per open dashboard tab.
 // Node's default of ten made every boot print a leak warning that was not a leak.
-test("the daemon's boot subscribers and a few dashboard tabs raise no leak warning", async () => {
+test("a hundred subscribers, the daemon's boot set and its dashboard tabs, raise no leak warning", async () => {
   const warnings: Error[] = [];
   const onWarning = (warning: Error) => warnings.push(warning);
   process.on("warning", onWarning);
   try {
     const registry = new Registry();
-    const unsubscribes = Array.from({ length: 16 }, () => registry.subscribe(() => {}));
+    const unsubscribes = Array.from({ length: 100 }, () => registry.subscribe(() => {}));
     await new Promise((resolve) => setImmediate(resolve));
     for (const unsubscribe of unsubscribes) unsubscribe();
   } finally {
@@ -27,13 +27,13 @@ test("the daemon's boot subscribers and a few dashboard tabs raise no leak warni
   assert.deepEqual(warnings.filter((w) => w.name === "MaxListenersExceededWarning").map((w) => w.message), []);
 });
 
-test("a subscriber leak still warns", async () => {
+test("the hundred-and-first subscriber warns, so a leak still does", async () => {
   const warnings: Error[] = [];
   const onWarning = (warning: Error) => warnings.push(warning);
   process.on("warning", onWarning);
   try {
     const registry = new Registry();
-    for (let i = 0; i < 200; i++) registry.subscribe(() => {});
+    for (let i = 0; i < 101; i++) registry.subscribe(() => {});
     await new Promise((resolve) => setImmediate(resolve));
   } finally {
     process.off("warning", onWarning);

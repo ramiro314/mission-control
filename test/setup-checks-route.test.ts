@@ -284,3 +284,33 @@ test("overlapping reads share one probe round, and each still gets its own token
   await app.request("/api/setup/checks", { headers: LOOPBACK });
   assert.equal(rounds, 2);
 });
+
+test("a shared round that fails fails every joined read, and the next read probes afresh", async (t) => {
+  // Hono's default error handler logs the thrown error before answering 500.
+  t.mock.method(console, "error", () => {});
+  const setupDeps = deps("Finish setup.", null);
+  let rounds = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setupDeps.refreshPath = async () => {
+    rounds += 1;
+    if (rounds === 1) {
+      await gate;
+      throw new Error("login shell did not answer");
+    }
+  };
+  const app = appFor(setupDeps);
+
+  const first = app.request("/api/setup/checks", { headers: LOOPBACK });
+  const second = app.request("/api/setup/checks", { headers: LOOPBACK });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.deepEqual((await Promise.all([first, second])).map((response) => response.status), [500, 500]);
+  assert.equal(rounds, 1);
+
+  // A failed round is not left behind for later reads to join.
+  const retry = await app.request("/api/setup/checks", { headers: LOOPBACK });
+  assert.equal(retry.status, 200);
+  assert.equal(typeof (await retry.json() as { snapshotToken: unknown }).snapshotToken, "string");
+  assert.equal(rounds, 2);
+});
