@@ -9,7 +9,10 @@ export interface GitHubRepositoryIdentity {
 /** One remote from `git config --get-regexp`, as `parseRemoteConfig` reads it. */
 export interface CheckoutRemote {
   name: string;
+  /** As configured. */
   urls: string[];
+  /** After `insteadOf` rewriting, as `git remote get-url` prints them. */
+  effectiveUrls: string[];
   ghResolved: string | null;
 }
 

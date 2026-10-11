@@ -29,7 +29,8 @@ all, and the PR poller finds a session's pull request by asking
 `gh pr list --repo <owner/name> --head <branch>`. The repository comes from the shared checkout
 resolver (`checkoutGitHubRepository`): a gh default pin (`remote.<name>.gh-resolved`, which
 `gh repo set-default` writes) when one names a GitHub remote, otherwise `origin` when it is on
-GitHub. A checkout with neither reads as a failed lookup that leaves the chip as it was, so `gh`
+GitHub. A remote is on GitHub when its URL is, either after git's `insteadOf` rewriting (so an
+alias such as `gh:me/fork` counts) or as configured. A checkout with neither reads as a failed lookup that leaves the chip as it was, so `gh`
 never chooses for itself and falls back to a fork's parent. Capturing either fact only once would leave live changes invisible.
 
 The chip is that one pull request: the one on the branch of the checkout the session is

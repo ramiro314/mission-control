@@ -30,10 +30,48 @@ test("parseRemoteConfig groups url and gh-resolved entries by remote, in config 
       ].join("\n"),
     ),
     [
-      { name: "origin", urls: ["git@github.com:me/fork.git", "https://github.com/me/second.git"], ghResolved: "base" },
-      { name: "my.fork", urls: ["https://github.com/me/other.git"], ghResolved: null },
+      {
+        name: "origin",
+        urls: ["git@github.com:me/fork.git", "https://github.com/me/second.git"],
+        effectiveUrls: ["git@github.com:me/fork.git", "https://github.com/me/second.git"],
+        ghResolved: "base",
+      },
+      {
+        name: "my.fork",
+        urls: ["https://github.com/me/other.git"],
+        effectiveUrls: ["https://github.com/me/other.git"],
+        ghResolved: null,
+      },
     ],
   );
+});
+
+test("a pin set twice keeps the last value, as git does", () => {
+  const config = `${FORK}\nremote.upstream.gh-resolved base\nremote.upstream.gh-resolved me/fork`;
+  assert.equal(parseRemoteConfig(config)[1]!.ghResolved, "me/fork");
+});
+
+// `git remote get-url`, which the poller used before, applies these; the raw config does not.
+test("an origin that is a GitHub alias through insteadOf resolves, and the longest prefix wins", () => {
+  const alias = "url.git@github.com:.insteadof gh:\nurl.git@github.com:me/.insteadof gh:mine/\n";
+  assert.deepEqual(pick(`${alias}remote.origin.url gh:org/parent`), { ok: true, repo: "org/parent", source: "origin" });
+  assert.deepEqual(pick(`${alias}remote.origin.url gh:mine/fork.git`), { ok: true, repo: "me/fork", source: "origin" });
+  // The rewrite makes a pin on the aliased remote count too.
+  const pinned = `${alias}remote.origin.url gh:mine/fork\nremote.up.url gh:org/parent\nremote.up.gh-resolved base`;
+  assert.deepEqual(pick(pinned), { ok: true, repo: "org/parent", source: "gh-default" });
+});
+
+test("a GitHub origin rewritten to a local mirror still names its GitHub repository", () => {
+  const config = "remote.origin.url https://github.com/me/fork.git\nurl./srv/mirror.git.insteadof https://github.com/me/fork.git";
+  assert.equal(parseRemoteConfig(config)[0]!.effectiveUrls[0], "/srv/mirror.git");
+  assert.deepEqual(pick(config), { ok: true, repo: "me/fork", source: "origin" });
+});
+
+test("the error never repeats a URL's credentials", () => {
+  const result = pick("remote.origin.url https://me:s3cret@gitlab.com/me/fork.git");
+  assert.ok(!result.ok);
+  assert.match(result.error, /origin is https:\/\/gitlab\.com\/me\/fork\.git/);
+  assert.doesNotMatch(result.error, /s3cret/);
 });
 
 test("a gh default pin on origin resolves to origin and reports origin", () => {
@@ -100,6 +138,15 @@ test("checkoutGitHubRepository reads the checkout's git config", async (t) => {
 
   repo.git("config", "remote.upstream.gh-resolved", "base");
   assert.deepEqual(await checkoutGitHubRepository(repo.dir), { ok: true, repo: "org/parent", source: "gh-default" });
+});
+
+test("checkoutGitHubRepository applies the checkout's insteadOf rewrites", async (t) => {
+  const repo = checkout();
+  t.after(() => rmSync(repo.dir, { recursive: true, force: true }));
+  repo.git("config", "url.git@github.com:.insteadOf", "gh:");
+  repo.git("remote", "add", "origin", "gh:me/fork");
+  repo.git("remote", "add", "upstream", "gh:org/parent");
+  assert.deepEqual(await checkoutGitHubRepository(repo.dir), { ok: true, repo: "me/fork", source: "origin" });
 });
 
 test("checkoutGitHubRepository fails with the checkout's path when nothing is on GitHub", async (t) => {

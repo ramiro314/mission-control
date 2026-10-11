@@ -10,8 +10,15 @@
 // Nothing here runs git. The caller does, with `REMOTE_CONFIG_ARGS`, so the daemon can use its
 // own subprocess runner and a script can use `execFileSync`.
 
-/** The `git` arguments whose stdout `parseRemoteConfig` reads. Exits 1 when nothing matches. */
-export const REMOTE_CONFIG_ARGS = ["config", "--get-regexp", "^remote\\..*\\.(url|gh-resolved)$"];
+/**
+ * The `git` arguments whose stdout `parseRemoteConfig` reads: every remote's `url` and
+ * `gh-resolved`, and every `url.<base>.insteadOf` rewrite. Exits 1 when nothing matches.
+ */
+export const REMOTE_CONFIG_ARGS = [
+  "config",
+  "--get-regexp",
+  "^(remote\\..*\\.(url|gh-resolved)|url\\..*\\.insteadof)$",
+];
 
 /** Read a GitHub repository identity from one configured git remote URL, or null. */
 export function parseGitHubRemoteUrl(url) {
@@ -35,32 +42,66 @@ export function parseGitHubRemoteUrl(url) {
   return { owner, repo };
 }
 
+/** `url` after git's `insteadOf` rewriting: the longest matching prefix wins, as in git. */
+function rewriteUrl(url, rewrites) {
+  let best = null;
+  for (const rewrite of rewrites) {
+    if (url.startsWith(rewrite.prefix) && (!best || rewrite.prefix.length > best.prefix.length)) best = rewrite;
+  }
+  return best ? best.base + url.slice(best.prefix.length) : url;
+}
+
 /**
  * The remotes in `git config --get-regexp` output for `REMOTE_CONFIG_ARGS`, in config order.
  *
- * `urls` keeps every `url` entry, because git allows several and the first is the one fetched.
- * `ghResolved` is what `gh repo set-default` wrote (`base`, or an `owner/name`), else null.
+ * `urls` keeps every `url` entry as configured, because git allows several and the first is
+ * the one fetched; `effectiveUrls` are the same after `insteadOf` rewriting, which is what
+ * `git remote get-url` prints. `ghResolved` is what `gh repo set-default` wrote (`base`, or an
+ * `owner/name`), else null; the last value wins, as it does for git.
  */
 export function parseRemoteConfig(stdout) {
   const remotes = new Map();
+  const rewrites = [];
   for (const line of stdout.split("\n")) {
     const separator = line.search(/\s/);
     if (separator < 0) continue;
-    const key = /^remote\.(.+)\.(url|gh-resolved)$/.exec(line.slice(0, separator));
-    if (!key) continue;
-    const [, name, variable] = key;
+    const key = line.slice(0, separator);
     const value = line.slice(separator).trim();
-    const remote = remotes.get(name) ?? { name, urls: [], ghResolved: null };
+    const rewrite = /^url\.(.+)\.insteadof$/i.exec(key);
+    if (rewrite) {
+      rewrites.push({ base: rewrite[1], prefix: value });
+      continue;
+    }
+    const entry = /^remote\.(.+)\.(url|gh-resolved)$/.exec(key);
+    if (!entry) continue;
+    const [, name, variable] = entry;
+    const remote = remotes.get(name) ?? { name, urls: [], effectiveUrls: [], ghResolved: null };
     if (variable === "url") remote.urls.push(value);
-    else remote.ghResolved ??= value;
+    else remote.ghResolved = value;
     remotes.set(name, remote);
   }
+  // Applied after the whole read, because global rewrites print before a checkout's remotes.
+  for (const remote of remotes.values()) remote.effectiveUrls = remote.urls.map((url) => rewriteUrl(url, rewrites));
   return [...remotes.values()];
 }
 
+/**
+ * The GitHub repository a remote fetches from: its rewritten URL when that is on GitHub (an
+ * alias such as `gh:me/fork`), else its URL as configured (a GitHub URL rewritten to a local
+ * mirror still names that repository).
+ */
 function githubRepositoryOf(remote) {
-  const url = remote?.urls[0];
-  return url === undefined ? null : parseGitHubRemoteUrl(url);
+  const effective = remote?.effectiveUrls[0];
+  const configured = remote?.urls[0];
+  return (
+    (effective === undefined ? null : parseGitHubRemoteUrl(effective)) ??
+    (configured === undefined ? null : parseGitHubRemoteUrl(configured))
+  );
+}
+
+/** A URL fit for an error message: any `user:password@` dropped. */
+function redactUrl(url) {
+  return url.replace(/^([a-z][\w+.-]*:\/\/)[^/@\s]*@/i, "$1");
 }
 
 /** The repository a `gh-resolved` pin names, or null when the pin is unset or unusable. */
@@ -80,6 +121,9 @@ const slug = ({ owner, repo }) => `${owner}/${repo}`;
  * 1. A gh default pin: the first remote whose `gh-resolved` is `base`, or an `owner/name` gh
  *    stored for a renamed repository. Honoured only when that remote's URL is on GitHub.
  * 2. Otherwise `origin`, when its URL is on GitHub.
+ *
+ * A URL is on GitHub when it parses as one either after `insteadOf` rewriting or as
+ * configured (`githubRepositoryOf`).
  * 3. Otherwise an error that names the checkout and lists its remotes. Never `gh`'s own
  *    choice: that is the implicit fallback that lands on a fork's parent.
  *
@@ -100,7 +144,7 @@ export function pickCheckoutRepository(remotes, checkout) {
   if (originRepository) return { ok: true, repo: slug(originRepository), source: "origin" };
 
   const listed = remotes.length
-    ? remotes.map((remote) => `${remote.name} is ${remote.urls[0] ?? "(no url)"}`).join(", ")
+    ? remotes.map((remote) => `${remote.name} is ${remote.urls[0] === undefined ? "(no url)" : redactUrl(remote.urls[0])}`).join(", ")
     : "it has no remotes";
   const pin = remotes.some((remote) => remote.ghResolved) ? "the gh default is not a GitHub remote" : "no gh default is set";
   return {
