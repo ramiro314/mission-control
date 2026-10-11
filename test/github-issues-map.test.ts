@@ -13,6 +13,7 @@ import {
   priorityFor,
   pushResultFrom,
   sweepResultFrom,
+  type GhTarget,
 } from "../src/server/task-sources/github-issues.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 
@@ -28,6 +29,9 @@ import { stubRun } from "../src/server/util/exec.ts";
 
 const cfg = (over: Partial<GithubIssuesConfig> = {}): GithubIssuesConfig =>
   GithubIssuesConfigSchema.parse(over);
+
+/** The repository every mapped run named, configured on the source. */
+const TARGET: GhTarget = { repo: "acme/widgets", source: "named" };
 
 const ctx: SweepContext = {
   sourceId: "src-1",
@@ -262,15 +266,15 @@ test("an enormous body is truncated, and says so", () => {
 // alike. Every failure below has to carry a reason; none may come back as `items: []`
 // with `error: null`, which is what "there is no work" means.
 test("a non-zero gh exit is an error, never an empty success", () => {
-  const r = sweepResultFrom({ stdout: "", stderr: "gh: not authenticated", code: 1 }, cfg(), ctx);
+  const r = sweepResultFrom({ stdout: "", stderr: "gh: not authenticated", code: 1 }, cfg(), ctx, TARGET);
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /gh issue list failed: gh: not authenticated/);
 });
 
 test("gh output that is not JSON, or not a list, is an error too", () => {
-  assert.match(sweepResultFrom({ stdout: "<html>", stderr: "", code: 0 }, cfg(), ctx).error!, /not JSON/);
+  assert.match(sweepResultFrom({ stdout: "<html>", stderr: "", code: 0 }, cfg(), ctx, TARGET).error!, /not JSON/);
   assert.match(
-    sweepResultFrom({ stdout: '{"issues":[]}', stderr: "", code: 0 }, cfg(), ctx).error!,
+    sweepResultFrom({ stdout: '{"issues":[]}', stderr: "", code: 0 }, cfg(), ctx, TARGET).error!,
     /unexpected shape/,
   );
 });
@@ -278,7 +282,7 @@ test("gh output that is not JSON, or not a list, is an error too", () => {
 // The one shape that IS an empty success: gh ran, and the repo genuinely has nothing
 // matching. Reporting an error here would make a healthy quiet source look broken.
 test("a clean run with no matching issues is an empty SUCCESS", () => {
-  const r = sweepResultFrom({ stdout: "[]", stderr: "", code: 0 }, cfg(), ctx);
+  const r = sweepResultFrom({ stdout: "[]", stderr: "", code: 0 }, cfg(), ctx, TARGET);
   assert.deepEqual(r.items, []);
   assert.equal(r.error, null);
 });
@@ -288,6 +292,7 @@ test("a clean run maps every issue it can name", () => {
     { stdout: JSON.stringify([ISSUE, { ...ISSUE, url: undefined }]), stderr: "", code: 0 },
     cfg(),
     ctx,
+    TARGET,
   );
   assert.equal(r.error, null);
   assert.equal(r.items.length, 1, "the unlinkable row was dropped, the good one kept");
@@ -300,7 +305,7 @@ test("an abandoned sweep says so rather than filing what it had", () => {
   const r = sweepResultFrom({ stdout: JSON.stringify([ISSUE]), stderr: "", code: 0 }, cfg(), {
     ...ctx,
     signal: AbortSignal.abort(),
-  });
+  }, TARGET);
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /abandoned/);
 });
@@ -394,7 +399,7 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   const r = pushResultFrom(
     stubRun({ stdout: "https://github.com/acme/widgets/issues/42\n", stderr: "", code: 0 }),
     ctx,
-    "acme/widgets",
+    TARGET,
     DRAFT,
   );
   assert.equal(r.error, null);
@@ -414,13 +419,13 @@ test("a clean create reports the blockers it wrote; a partial failure vouches fo
   const draft = { title: "t", intent: "b", blockedBy: [blocker(3, "https://github.com/acme/widgets/issues/3"), blocker(4, null)] };
   const out = "https://github.com/acme/widgets/issues/42\n";
   // The URL-less blocker never went out as `--blocked-by`.
-  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets", draft);
+  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, TARGET, draft);
   assert.deepEqual(clean.blockedBy, [draft.blockedBy[0]]);
-  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not link", code: 1 }), ctx, "acme/widgets", draft);
+  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not link", code: 1 }), ctx, TARGET, draft);
   assert.equal(partial.ref?.externalId, "acme/widgets#42");
   assert.equal(partial.blockedBy, undefined);
   // A clean create with no blockers vouches for "none written", which is not "unknown".
-  const none = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets", DRAFT);
+  const none = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, TARGET, DRAFT);
   assert.deepEqual(none.blockedBy, []);
 });
 
@@ -434,7 +439,7 @@ test("progress chatter above the URL is not mistaken for it", () => {
       code: 0,
     }),
     ctx,
-    "acme/widgets",
+    TARGET,
     DRAFT,
   );
   assert.equal(r.ref!.url, "https://github.com/acme/widgets/issues/9");
@@ -447,7 +452,7 @@ test("a non-zero gh exit is a refusal that names itself, and is retry-safe", () 
   const r = pushResultFrom(
     stubRun({ stdout: "", stderr: "could not add label: 'triage' not found\n", code: 1 }),
     ctx,
-    "acme/widgets",
+    TARGET,
     DRAFT,
   );
   assert.equal(r.ref, null);
@@ -462,7 +467,7 @@ test("a gh that never reported back is an UNKNOWN outcome, not a refusal", () =>
   const r = pushResultFrom(
     { stdout: "", stderr: "timed out", code: null, outcomeUnknown: true, overflowed: false },
     ctx,
-    "acme/widgets",
+    TARGET,
     DRAFT,
   );
   assert.equal(r.ref, null);
@@ -478,7 +483,7 @@ test("exit 0 with no URL is an unknown outcome - the issue exists and cannot be 
   const r = pushResultFrom(
     stubRun({ stdout: "done\n", stderr: "", code: 0 }),
     ctx,
-    "acme/widgets",
+    TARGET,
     DRAFT,
   );
   assert.equal(r.ref, null);
@@ -500,7 +505,7 @@ test("an unknown outcome outranks whatever exit code came with it", () => {
         overflowed: false,
       },
       ctx,
-      "acme/widgets",
+      TARGET,
       DRAFT,
     );
     assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);

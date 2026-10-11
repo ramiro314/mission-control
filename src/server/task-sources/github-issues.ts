@@ -15,6 +15,7 @@ import type {
 } from "@shared/task-source.ts";
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
 import type { TaskPriority, TaskSourceItemState } from "@shared/types.ts";
+import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "@shared/github-sso.mjs";
 import { ghBin } from "../config.ts";
 import { githubIssueCreateOutcome } from "../github/issue-create.ts";
 import { checkoutGitHubRepository, type CheckoutRepository } from "../github/repository.ts";
@@ -55,6 +56,15 @@ const JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt,state,stat
 const BODY_LIMIT = 4000;
 
 /**
+ * A repository a `gh` call named, and where it came from: written down (the Repository
+ * field, or the item's own id), or resolved from the checkout's gh default pin or `origin`.
+ */
+export interface GhTarget {
+  repo: string;
+  source: "named" | "gh-default" | "origin";
+}
+
+/**
  * The repository this source's `gh` calls name: the configured Repository, else the
  * checkout's gh default pin, else its `origin`. Resolved on every call rather than stored,
  * so a blank Repository follows the checkout and needs no migration.
@@ -62,9 +72,37 @@ const BODY_LIMIT = 4000;
 export async function sourceRepository(
   cfg: GithubIssuesConfig,
   repoRoot: string,
-): Promise<{ ok: true; repo: string } | { ok: false; error: string }> {
-  if (cfg.repo) return { ok: true, repo: cfg.repo };
+): Promise<({ ok: true } & GhTarget) | { ok: false; error: string }> {
+  if (cfg.repo) return { ok: true, repo: cfg.repo, source: "named" };
   return checkoutGitHubRepository(repoRoot);
+}
+
+/** What a source refused by SAML SSO changes so its calls stop reaching that organization. */
+const SSO_REMEDY = "To use your fork instead, set Repository on this source or pin `gh repo set-default`.";
+
+/**
+ * The SAML SSO refusal sentence for one failed `gh` call against `target`, or null when it
+ * was refused for any other reason, which keeps the caller's own wording.
+ *
+ * Every failure path asks here BEFORE keeping gh's first line: gh prints the refusal on its
+ * first line and the authorize link on a later one, so the first line alone drops the one
+ * thing the operator needs. The sentence is built from what the classifier extracts (the
+ * organization and gh's link), never from the rest of gh's output. It says when a gh default
+ * pin on another remote chose the repository, since that pin is then what sends the call to
+ * the refusing organization.
+ */
+export function ssoRefusal(res: Pick<RunResult, "stderr">, target: GhTarget): string | null {
+  const refusal = classifyGitHubSsoRefusal(res.stderr);
+  if (!refusal) return null;
+  const named = target.source === "gh-default"
+    ? `${target.repo} (this checkout's gh default pin, not origin)`
+    : target.repo;
+  return ssoRefusalMessage({ target: named, refusal, remedy: SSO_REMEDY });
+}
+
+/** The repository half of an `owner/repo#123` external id, else the id itself. */
+function repositoryOf(externalId: string): string {
+  return externalId.replace(/#\d+$/, "");
 }
 
 /** What a blank Repository resolves to, for the editor's hint. Null when one is configured. */
@@ -271,9 +309,10 @@ export function sweepResultFrom(
   res: Pick<RunResult, "stdout" | "stderr" | "code">,
   cfg: GithubIssuesConfig,
   ctx: SweepContext,
+  target: GhTarget,
 ): SweepResult {
   if (res.code !== 0) {
-    const why = (res.stderr || res.stdout).trim().split("\n")[0] ?? "";
+    const why = ssoRefusal(res, target) ?? (res.stderr || res.stdout).trim().split("\n")[0] ?? "";
     return { items: [], error: `gh issue list failed${why ? `: ${why}` : ""}` };
   }
   if (ctx.signal.aborted) return { items: [], error: "the sweep was abandoned" };
@@ -301,7 +340,7 @@ async function sweep(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<SweepR
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return sweepResultFrom(res, cfg, ctx);
+  return sweepResultFrom(res, cfg, ctx, target);
 }
 
 /**
@@ -327,7 +366,7 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
     timeoutMs: GH_TIMEOUT_MS,
   });
   if (probe.code !== 0) {
-    const why = (probe.stderr || probe.stdout).trim().split("\n")[0] ?? "";
+    const why = ssoRefusal(probe, target) ?? (probe.stderr || probe.stdout).trim().split("\n")[0] ?? "";
     return `gh cannot list issues here${why ? ` - ${why}` : ""}`;
   }
   return null;
@@ -430,10 +469,10 @@ function writtenBlockers(draft: PushDraft): TaskSourceRef[] {
 export function pushResultFrom(
   res: RunResult,
   ctx: PushContext,
-  expectedRepo: string,
+  target: GhTarget,
   draft: PushDraft,
 ): PushResult {
-  const outcome = githubIssueCreateOutcome(res, expectedRepo);
+  const outcome = githubIssueCreateOutcome(res, target.repo);
   switch (outcome.kind) {
     case "created":
       return {
@@ -448,12 +487,14 @@ export function pushResultFrom(
         // so a partial failure may have created it without them.
         ...(outcome.partialFailure ? {} : { blockedBy: writtenBlockers(draft) }),
       };
-    case "refused":
+    case "refused": {
+      const detail = ssoRefusal(res, target) ?? outcome.detail;
       return {
         ref: null,
-        error: `gh issue create failed${outcome.detail ? `: ${outcome.detail}` : ""}`,
+        error: `gh issue create failed${detail ? `: ${detail}` : ""}`,
         outcomeUnknown: false,
       };
+    }
     case "unknown":
       return {
         ref: null,
@@ -492,7 +533,7 @@ async function push(
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return pushResultFrom(res, ctx, target.repo, draft);
+  return pushResultFrom(res, ctx, target, draft);
 }
 
 // ---- the write-back half: a note onto the issue a task was swept from ----
@@ -541,10 +582,15 @@ export async function writebackConfig(
   cfg: GithubIssuesConfig,
   notice: WritebackNotice,
   repoRoot: string,
-): Promise<{ ok: true; cfg: GithubIssuesConfig } | { ok: false; error: string }> {
-  if (cfg.repo || EXTERNAL_ID.test(notice.externalId) || notice.externalUrl) return { ok: true, cfg };
+): Promise<{ ok: true; cfg: GithubIssuesConfig; target: GhTarget } | { ok: false; error: string }> {
+  if (cfg.repo || EXTERNAL_ID.test(notice.externalId) || notice.externalUrl) {
+    const target = issueTargetFor(cfg, notice);
+    // A URL target carries no `--repo`; the id its URL composes names the repository.
+    return { ok: true, cfg, target: { repo: target.repo || repositoryOf(externalIdFor(target.arg)), source: "named" } };
+  }
   const target = await sourceRepository(cfg, repoRoot);
-  return target.ok ? { ok: true, cfg: { ...cfg, repo: target.repo } } : target;
+  if (!target.ok) return target;
+  return { ok: true, cfg: { ...cfg, repo: target.repo }, target: { repo: target.repo, source: target.source } };
 }
 
 /**
@@ -632,7 +678,7 @@ export function ghIssueCloseArgs(cfg: GithubIssuesConfig, notice: WritebackNotic
  * not there: `gh` error text can carry local filesystem paths. The caller's `detail` is
  * what the panel shows instead.
  */
-export function writebackResultFrom(res: RunResult, detail: string): WritebackResult {
+export function writebackResultFrom(res: RunResult, detail: string, target: GhTarget): WritebackResult {
   if (res.outcomeUnknown) {
     return {
       error: "gh did not report back - the write may have landed; check GitHub before retrying",
@@ -645,7 +691,7 @@ export function writebackResultFrom(res: RunResult, detail: string): WritebackRe
     if (/already closed/i.test(said)) {
       return { error: null, outcomeUnknown: false, detail: "already closed" };
     }
-    const why = (said.split("\n")[0] ?? "").slice(0, 1_000);
+    const why = ssoRefusal(res, target) ?? (said.split("\n")[0] ?? "").slice(0, 1_000);
     return {
       error: `gh refused${why ? `: ${why}` : ""}`,
       outcomeUnknown: false,
@@ -675,7 +721,7 @@ async function annotate(
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return writebackResultFrom(res, "commented");
+  return writebackResultFrom(res, "commented", ready.target);
 }
 
 /** Close the issue, with the reason this source is configured for. */
@@ -690,7 +736,7 @@ async function resolve(
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return writebackResultFrom(res, `closed as ${ghCloseReason(cfg.closeReason)}`);
+  return writebackResultFrom(res, `closed as ${ghCloseReason(cfg.closeReason)}`, ready.target);
 }
 
 /** A linked issue remains readable after closure or leaving the source's search filter. */
@@ -716,8 +762,14 @@ async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: S
       const res = await run(ghBin(), args, { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
       // Sync errors are persisted and served to the dashboard. Never copy command output
       // or parser exceptions, which can contain credentials, paths, or account details.
+      // An SSO refusal is safe to name: its sentence carries only what the classifier
+      // extracted, the organization and gh's authorize link.
       if (res.code !== 0) {
-        errors.push([ref.externalId, "The linked GitHub issue could not be read. Check access and authentication, then sweep again."]);
+        errors.push([
+          ref.externalId,
+          ssoRefusal(res, { repo: repositoryOf(ref.externalId), source: "named" })
+            ?? "The linked GitHub issue could not be read. Check access and authentication, then sweep again.",
+        ]);
         return;
       }
       const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx);

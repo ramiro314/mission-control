@@ -13,6 +13,7 @@ import {
 } from "../src/shared/task-source.ts";
 import { githubIssues, writebackConfig } from "../src/server/task-sources/github-issues.ts";
 import { sourceRepositories } from "../src/server/task-sources/index.ts";
+import { GRAPHQL_SSO_STDERR, REST_SSO_STDERR, SSO_AUTHORIZE_URL } from "./helpers/github-sso-stderr.ts";
 
 // Which repository a GitHub issues source's `gh` calls name. A blank Repository used to leave
 // the choice to `gh`, which prefers a remote called `upstream`: on a fork, the parent, and an
@@ -22,6 +23,8 @@ import { sourceRepositories } from "../src/server/task-sources/index.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "mission-gh-issues-repo-"));
 const calls = join(dir, "calls.jsonl");
+/** While this file exists, every `gh issue` call prints its contents to stderr and fails. */
+const refusal = join(dir, "refusal.txt");
 const fork = join(dir, "fork");
 const gitlab = join(dir, "gitlab");
 const previousGh = process.env.MISSION_GH_BIN;
@@ -40,6 +43,10 @@ before(() => {
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(argv) + "\\n");
+if (argv[0] === "issue" && fs.existsSync(${JSON.stringify(refusal)})) {
+  process.stderr.write(fs.readFileSync(${JSON.stringify(refusal)}, "utf8"));
+  process.exit(1);
+}
 if (argv[0] === "issue" && argv[1] === "list") process.stdout.write("[]");
 if (argv[0] === "issue" && argv[1] === "create") {
   process.stdout.write("https://github.com/" + argv[argv.indexOf("--repo") + 1] + "/issues/5\\n");
@@ -187,4 +194,100 @@ test("the editor's hint resolves blank Repositories and skips configured ones", 
   } finally {
     execFileSync("git", ["-C", fork, "config", "--unset", "remote.upstream.gh-resolved"]);
   }
+});
+
+// ---- a SAML SSO refusal, on every surface that keeps gh's first line ----
+
+const SSO_REMEDY = "To use your fork instead, set Repository on this source or pin `gh repo set-default`.";
+
+/** Run `body` with every `gh issue` call refused by SAML SSO, printing `stderr`. */
+async function refusedBySso(stderr: string, body: () => Promise<void>): Promise<void> {
+  writeFileSync(refusal, stderr);
+  try {
+    await body();
+  } finally {
+    rmSync(refusal, { force: true });
+  }
+}
+
+/** The classified sentence for `target`, which the raw first line never carried. */
+function assertClassified(message: string | null | undefined, target: string): void {
+  assert.ok(message, "the failure carried no message");
+  assert.ok(
+    message.includes(`GitHub refused ${target}: the teamupstart organization requires SAML SSO`),
+    message,
+  );
+  assert.ok(message.includes(`Authorize: ${SSO_AUTHORIZE_URL}.`), message);
+  assert.ok(message.includes(SSO_REMEDY), message);
+  assert.equal(message.includes("GraphQL:"), false, "the raw GraphQL line leaked through");
+}
+
+// The fixture's own repository when nothing is pinned, and the pin named as the cause when a
+// gh default on `upstream` sends the call to the parent: the case that actually happens.
+test("sweep, preflight, create and the write-back fallback classify the refusal", async () => {
+  const pinnedNote = "teamupstart/mission-control (this checkout's gh default pin, not origin)";
+  for (const [pin, target] of [
+    [null, "ramiro314/mission-control"],
+    ["upstream", pinnedNote],
+  ] as const) {
+    if (pin) execFileSync("git", ["-C", fork, "config", `remote.${pin}.gh-resolved`, "base"]);
+    try {
+      await refusedBySso(GRAPHQL_SSO_STDERR, async () => {
+        const sweep = await githubIssues.sweep(cfg(), sweepCtx(fork));
+        assert.deepEqual(sweep.items, []);
+        assert.match(sweep.error!, /^gh issue list failed: GitHub refused /);
+        assertClassified(sweep.error, target);
+        const preflight = await githubIssues.preflight(cfg(), sweepCtx(fork));
+        assert.match(preflight!, /^gh cannot list issues here - GitHub refused /);
+        assertClassified(preflight, target);
+        const push = await githubIssues.push!(cfg(), { title: "t", intent: "i" }, sweepCtx(fork));
+        assert.equal(push.outcomeUnknown, false, "a refusal published nothing");
+        assert.match(push.error!, /^gh issue create failed: GitHub refused /);
+        assertClassified(push.error, target);
+        const writeback = await githubIssues.annotate!(cfg(), notice(), sweepCtx(fork));
+        assert.match(writeback.error!, /^gh refused: GitHub refused /);
+        assertClassified(writeback.error, target);
+      });
+    } finally {
+      if (pin) execFileSync("git", ["-C", fork, "config", "--unset", `remote.${pin}.gh-resolved`]);
+    }
+  }
+});
+
+// A configured Repository, and an item whose own id or URL names one, are what the operator
+// wrote down: the message names that repository and no pin.
+test("a named repository and an item's own repository are named as written", async () => {
+  await refusedBySso(REST_SSO_STDERR, async () => {
+    const sweep = await githubIssues.sweep(cfg({ repo: "teamupstart/mission-control" }), sweepCtx(fork));
+    assertClassified(sweep.error, "teamupstart/mission-control");
+    const close = await githubIssues.resolve!(
+      cfg(),
+      notice({ externalId: "x", externalUrl: "https://github.com/teamupstart/mission-control/issues/7" }),
+      sweepCtx(fork),
+    );
+    assertClassified(close.error, "teamupstart/mission-control");
+    const linked = await githubIssues.readLinked!(
+      cfg(),
+      [{ sourceId: "s1", externalId: "teamupstart/mission-control#3", url: "https://github.com/teamupstart/mission-control/issues/3" }],
+      sweepCtx(fork),
+    );
+    assertClassified(linked.itemErrors?.["teamupstart/mission-control#3"], "teamupstart/mission-control");
+  });
+});
+
+// Anything that is not an SSO refusal keeps exactly the wording it had.
+test("a failure that is not an SSO refusal keeps its first line", async () => {
+  await refusedBySso("HTTP 404: Not Found (https://api.github.com/graphql)\nsecond line\n", async () => {
+    const sweep = await githubIssues.sweep(cfg(), sweepCtx(fork));
+    assert.equal(sweep.error, "gh issue list failed: HTTP 404: Not Found (https://api.github.com/graphql)");
+    const linked = await githubIssues.readLinked!(
+      cfg(),
+      [{ sourceId: "s1", externalId: "acme/demo#3", url: "https://github.com/acme/demo/issues/3" }],
+      sweepCtx(fork),
+    );
+    assert.equal(
+      linked.itemErrors?.["acme/demo#3"],
+      "The linked GitHub issue could not be read. Check access and authentication, then sweep again.",
+    );
+  });
 });
