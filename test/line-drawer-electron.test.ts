@@ -180,10 +180,13 @@ const QUEUE_PLAN: BacklogPlan = {
   generatedAt: 1000,
 };
 
+// The error copy must be far wider than the notice column on every platform's fonts, not just
+// the one it was written on: at 79 characters it fit exactly on Linux and never clipped.
 const NOTICED_QUEUE = QUEUE.map((task, index) => ({
   ...task,
   error: index === 0
-    ? "Dispatch stopped before provisioning, so launch this task manually when ready."
+    ? "Dispatch stopped before provisioning its worktree, so launch this task manually once the"
+      + " repository and its base branch are ready again."
     : task.error,
 }));
 
