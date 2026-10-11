@@ -44,6 +44,9 @@ function config(dir: string, key: string): string | null {
 function checkout(...remotes: [string, string][]): string {
   const dir = mkdtempSync(join(home, "checkout-"));
   execFileSync("git", ["init", "-q", dir]);
+  // CI runners have no global identity, and two tests commit.
+  git(dir, "config", "user.email", "t@test");
+  git(dir, "config", "user.name", "t");
   for (const [name, url] of remotes) git(dir, "remote", "add", name, url);
   return dir;
 }
