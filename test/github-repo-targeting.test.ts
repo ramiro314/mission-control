@@ -235,7 +235,7 @@ function codeFiles(directory: string): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...codeFiles(path));
-    else if (/\.(?:[cm]?[jt]s|tsx)$/.test(entry.name) && !/\.d\.[cm]?ts$/.test(entry.name)) files.push(path);
+    else if (/\.(?:[cm]?[jt]s|[jt]sx)$/.test(entry.name) && !/\.d\.[cm]?ts$/.test(entry.name)) files.push(path);
   }
   return files;
 }
@@ -261,7 +261,9 @@ function normalize(text: string): string {
 function parse(file: string, source: string): ts.SourceFile {
   const kind = file.endsWith(".tsx")
     ? ts.ScriptKind.TSX
-    : /\.[cm]?js$/.test(file)
+    : file.endsWith(".jsx")
+      ? ts.ScriptKind.JSX
+      : /\.[cm]?js$/.test(file)
       ? ts.ScriptKind.JS
       : ts.ScriptKind.TS;
   return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, kind);
@@ -765,11 +767,17 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
   return { sites, found };
 }
 
-/** `gh` commands in a shell script: one site per command, its text up to `;`, `|`, `)` or `&`. */
+/**
+ * `gh` commands in a shell script: one site per command, its text up to `;`, `|`, `)` or `&`.
+ *
+ * Any other `gh` on a line - `"${MISSION_GH_BIN:-gh}" issue list`, `$GH`, a `GH_BIN` - names the
+ * program in a way this cannot read as a command, so it is reported unread rather than skipped.
+ */
 function shellSites(file: string, source: string): Site[] {
   const sites: Site[] = [];
   source.split("\n").forEach((raw, index) => {
     const line = raw.replace(/(^|\s)#.*$/, "");
+    const spans: [number, number][] = [];
     for (const match of line.matchAll(/(?:^|[\s;&|(!`])gh\s+/g)) {
       const start = match.index + match[0].indexOf("gh");
       let end = start;
@@ -781,7 +789,13 @@ function shellSites(file: string, source: string): Site[] {
         } else if (c === '"' || c === "'") quote = c;
         else if (";|)&".includes(c)) break;
       }
+      spans.push([start, end]);
       sites.push({ file, fn: "<shell>", line: index + 1, argv: line.slice(start, end).trim(), text: "" });
+    }
+    for (const match of line.matchAll(/(?<![\w-])gh(?![\w-])|gh_bin/gi)) {
+      if (spans.some(([start, end]) => match.index >= start && match.index < end)) continue;
+      sites.push({ file, fn: "<shell>", line: index + 1, argv: null, text: raw.trim() });
+      break;
     }
   });
   return sites;
@@ -1097,6 +1111,22 @@ test("child_process loaded through require or import(), and a method destructure
   ]);
 });
 
+test("a shell script's gh commands are sites, and a gh it cannot read as one fails", () => {
+  const source = [
+    "#!/bin/sh",
+    "# gh in a comment is not a command",
+    'if ! out=$(gh api "repos/$REPO/pulls"); then exit 1; fi',
+    'GH="${MISSION_GH_BIN:-gh}"',
+    '"$GH" issue list',
+    'echo "see github.com and gh-resolved"',
+  ].join("\n");
+  assert.deepEqual(inventoryProblems(shellSites("scripts/fixture.sh", source), {}, {}), [
+    'scripts/fixture.sh:3 unclassified gh call in <shell>: gh api "repos/$REPO/pulls"',
+    'scripts/fixture.sh:4 the scanner cannot read this gh binary in <shell>: GH="${MISSION_GH_BIN:-gh}"',
+    'scripts/fixture.sh:5 the scanner cannot read this gh binary in <shell>: "$GH" issue list',
+  ]);
+});
+
 test("an unclassified gh call fails the inventory", () => {
   const source = [
     'import { ghBin } from "./config.ts";',
@@ -1226,12 +1256,13 @@ const URL_TARGET_RE = /^["'(]?(?:https:\/\/github\.com\/|<[\w-]*url>|\$\{?[\w.]*
 const BY_NUMBER_RE = /(?:^|[\s;&|(`])gh\s+(?:issue|pr)\s+(?:view|checks|comment|edit|close|reopen|merge|diff|review)\b((?:\s+--?[\w-]+(?=\s|$|`))*)(\s+[^\s`]+)?/g;
 const PLACEHOLDER_RE = /(?<!\$)\{(?:owner|repo)\}/g;
 /**
- * `gh pr create` in any spelling - flags between the words included, named in prose or given as
- * a command. It always reads the fork's parent, so agent text never names it at all: the only
+ * `gh pr create` in any spelling - flags between the words included, wrapped across a line as
+ * hard-wrapped markdown does, named in prose or given as a command. At most four words may sit
+ * between `gh` and `pr` (`--repo o/r`), so a match never spans a paragraph. It always reads the fork's parent, so agent text never names it at all: the only
  * place the string belongs is the open-PR recognizer itself (`src/shared/pr-command.mjs`), which
  * is code that detects it, not text an agent reads.
  */
-const PR_CREATE_ANY_RE = /(?<![\w-])gh(?:[ \t]+[^\s`;|&]+)*?[ \t]+pr(?:[ \t]+-[^\s`;|&]*)*[ \t]+create(?![\w-])/g;
+const PR_CREATE_ANY_RE = /(?<![\w-])gh(?:\s+[^\s`;|&]+){0,4}?\s+pr(?:\s+-[^\s`;|&]*)*\s+create(?![\w-])/g;
 /**
  * Anything that reads a remote's URL, and any `repo=$(...)` assignment, which is how every
  * instruction sets the repository it names. Each must sit inside an exact copy of
@@ -1314,8 +1345,11 @@ test("agent text that leaves the repository to gh is refused", () => {
     "`gh --repo me/fork pr create --fill`",
     "`gh pr --draft create`",
     "never with `gh pr create`.",
+    "Open the pull request with `gh pr\ncreate --fill`.",
+    "Open it with `gh\npr create`.",
+    "Open it with gh pr\ncreate.",
   ]) {
-    const line = pr.startsWith("```") ? 2 : 1;
+    const line = pr.startsWith("```") ? 2 : 1; // the line `gh` starts on
     assert.deepEqual(agentTextProblems("fixture.md", pr), [
       `fixture.md:${line} names \`gh pr create\`, which always reads the fork's parent; give openPullRequestCommand`,
     ], pr);
@@ -1330,6 +1364,8 @@ test("agent text that leaves the repository to gh is refused", () => {
     '`gh api "repos/${repo}/pulls"`',
     "never with gh's own pull request creation subcommand.",
     "`gh pr view <url>`, then `gh pr checks <url>`; create nothing",
+    "`gh pr view <url>`, then\nonce the checks pass, create nothing",
+    "Ask gh about it. A pull request can\nbe created later; do not create one.",
   ]) {
     assert.deepEqual(agentTextProblems("fixture.md", ok), [], ok);
   }
