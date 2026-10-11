@@ -524,6 +524,17 @@ test("resolveTranscriptPath falls back to the cwd-derived path when no hook path
   assert.equal(resolveTranscriptPath(session({ cwd }), root), file);
 });
 
+test("resolveTranscriptPath finds the transcript of a cwd with an underscore, a space and a plus", () => {
+  // The directory name is the one Claude writes, as a literal: `encode` above would agree with
+  // whatever rule the resolver used.
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const dir = join(root, "-Users-me-my-app-v2-x");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${UUID}.jsonl`);
+  writeFileSync(file, "{}\n");
+  assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/my_app v2+x" }), root), file);
+});
+
 test("resolveTranscriptPath returns null when neither locates a file", () => {
   const root = mkdtempSync(join(tmpdir(), "proj-"));
   // A stale hook path that no longer exists, and no cwd-derived file either.

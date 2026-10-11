@@ -31,6 +31,13 @@ test("the name is one directory under the projects root", () => {
   assert.equal(claudeProjectDir("/Users/me/my_app", "/projects"), join("/projects", "-Users-me-my-app"));
 });
 
+test("a name of exactly 200 characters is kept whole, and one more is cut and hashed", () => {
+  const exact = "/" + "a".repeat(199);
+  assert.equal(name(exact), "-" + "a".repeat(199));
+  const over = "/" + "a".repeat(200);
+  assert.equal(name(over), `-${"a".repeat(199)}-b6ymvl`);
+});
+
 test("a name past 200 characters is cut and suffixed with Claude's hash of the cwd", () => {
   const long = "/" + "deep/".repeat(60) + "app";
   const encoded = long.replace(/[^a-zA-Z0-9]/g, "-");
