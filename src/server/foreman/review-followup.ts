@@ -552,9 +552,6 @@ function describe(pr: FollowupPr, fb: Feedback): string {
  */
 export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   const ref = pr.number !== null ? `PR #${pr.number}` : "your open pull request";
-  // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
-  // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
-  const target = ` ${pr.url}`;
 
   const problems: string[] = [];
   if (fb.findings) {
@@ -580,15 +577,17 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   } else {
     steps.push("Do NOT open a new pull request - push your fixes to this same branch.");
   }
+  // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
+  // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
   if (fb.findings) {
     steps.push(
-      `Read GitHub Inspector's review comments (\`gh pr view${target} --comments\`, and the ` +
+      `Read GitHub Inspector's review comments (\`gh pr view ${pr.url} --comments\`, and the ` +
         `line threads under Files changed) and address every one.`,
     );
   }
   if (fb.ciFailing) {
     steps.push(
-      `Look at the failing CI (\`gh pr checks${target}\`), reproduce it locally, and fix it.`,
+      `Look at the failing CI (\`gh pr checks ${pr.url}\`), reproduce it locally, and fix it.`,
     );
   }
   // The merge-in method has one owner, shared with the workflow's conflict repair round.
