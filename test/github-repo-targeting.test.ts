@@ -188,20 +188,25 @@ const LOOKUPS = new Set(["locateExecutable", "locateExecutableSync", "resolveBin
 const SHELLS = /^(?:\/(?:usr\/)?bin\/)?(?:sh|bash|zsh|dash)$/;
 
 /**
- * A `gh` that is not the start of a `gh` command: a `${VAR:-gh}` default, `$GH`, `"gh"`, a
- * `GH_BIN` or `ghBin`. Only a kebab-case word (`foo-gh`, `gh-resolved`) and longer words
- * (`github`) are not it.
+ * A `gh` that is not the start of a `gh` command: a `${VAR:-gh}` or `${VAR-gh}` default, `$GH`,
+ * `"gh"`, a `GH_BIN` or `ghBin`. Only a longer word (`github`, `ghost`) and a `gh-` prefix
+ * (`gh-resolved`) are not it; a `-gh` suffix is, since that is how a default is written.
  */
-const GH_WORD_RE = /(?<!\w-)(?<!\w)gh(?![\w-])|gh_?bin/gi;
+const GH_WORD_RE = /(?<!\w)gh(?![\w-])|gh_?bin/gi;
+
+/** A command that forwards its caller's whole argv (`"$@"`): its real argv is at the callers. */
+const FORWARDED_ARGV_RE = /\$(?:[@*]|\{[@*]\})/;
 
 /**
  * One shell command line, read for `gh`: each `gh` command, as its text up to an unquoted `;`,
  * `|`, `)`, `&` or newline, and whether any other `gh` in it names the program in a way that
- * cannot be read as a command - which fails as unread rather than passing.
+ * cannot be read as a command - which fails as unread rather than passing. So does a `gh` command
+ * that forwards `"$@"`: a shell wrapper whose callers this cannot follow.
  */
 function readShellLine(text: string): { commands: string[]; unreadable: boolean } {
   const commands: string[] = [];
   const spans: [number, number][] = [];
+  let forwarded = false;
   for (const match of text.matchAll(/(?:^|[\s;&|(!`])gh\s+/g)) {
     const start = match.index + match[0].indexOf("gh");
     let end = start;
@@ -214,9 +219,11 @@ function readShellLine(text: string): { commands: string[]; unreadable: boolean 
       else if (";|)&\n".includes(c)) break;
     }
     spans.push([start, end]);
-    commands.push(text.slice(start, end).trim());
+    const command = text.slice(start, end).trim().replace(/\s+/g, " ");
+    if (FORWARDED_ARGV_RE.test(command)) forwarded = true;
+    else commands.push(command);
   }
-  const unreadable = [...text.matchAll(GH_WORD_RE)]
+  const unreadable = forwarded || [...text.matchAll(GH_WORD_RE)]
     .some((match) => !spans.some(([start, end]) => match.index >= start && match.index < end));
   return { commands, unreadable };
 }
@@ -290,7 +297,7 @@ function shellFiles(directory: string): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...shellFiles(path));
-    else if (entry.name.endsWith(".sh")) files.push(path);
+    else if (/\.(?:sh|bash)$/.test(entry.name)) files.push(path);
   }
   return files;
 }
@@ -820,11 +827,16 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
  */
 function shellSites(file: string, source: string): Site[] {
   const sites: Site[] = [];
-  source.split("\n").forEach((raw, index) => {
-    const read = readShellLine(stripShellComment(raw));
-    for (const gh of read.commands) sites.push({ file, fn: "<shell>", line: index + 1, argv: gh, text: "" });
-    if (read.unreadable) sites.push({ file, fn: "<shell>", line: index + 1, argv: null, text: raw.trim() });
-  });
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    // A `\` continuation is one command: read the logical line, reported at its first line.
+    const first = index;
+    let logical = stripShellComment(lines[index]!);
+    while (logical.endsWith("\\") && index + 1 < lines.length) logical = `${logical.slice(0, -1)} ${stripShellComment(lines[++index]!)}`;
+    const read = readShellLine(logical);
+    for (const gh of read.commands) sites.push({ file, fn: "<shell>", line: first + 1, argv: gh, text: "" });
+    if (read.unreadable) sites.push({ file, fn: "<shell>", line: first + 1, argv: null, text: lines[first]!.trim() });
+  }
   return sites;
 }
 
@@ -843,7 +855,8 @@ function repositorySites(): Site[] {
   const files = [...codeFiles(join(ROOT, "src")), ...codeFiles(join(ROOT, "scripts"))];
   return [
     ...scanSources(files.map((path) => ({ file: relative(ROOT, path), source: readFileSync(path, "utf8") }))),
-    ...shellFiles(join(ROOT, "scripts")).flatMap((path) =>
+    // Skills ship shell assets that agents install and run, so they are read with the scripts.
+    ...[...shellFiles(join(ROOT, "scripts")), ...shellFiles(join(ROOT, "skills"))].flatMap((path) =>
       shellSites(relative(ROOT, path), readFileSync(path, "utf8"))),
   ];
 }
@@ -990,6 +1003,7 @@ test("a gh command handed to a shell is a site, and a command line the scanner c
     "  run(cmd, [], { shell: true });",
     `  sh('"\${GH_CMD:-gh}" issue list');`,
     "  exec(`${GH} issue list`);",
+    `  sh('"\${GH_CMD-gh}" issue list');`,
     "}",
   ].join("\n");
   const { sites } = ghSites("scripts/fixture.mjs", source);
@@ -1003,6 +1017,7 @@ test("a gh command handed to a shell is a site, and a command line the scanner c
     "scripts/fixture.mjs:11 the scanner cannot read this gh binary in shellCalls: run(cmd, [], { shell: true });",
     `scripts/fixture.mjs:12 the scanner cannot read this gh binary in shellCalls: sh('"\${GH_CMD:-gh}" issue list');`,
     "scripts/fixture.mjs:13 the scanner cannot read this gh binary in shellCalls: exec(`${GH} issue list`);",
+    `scripts/fixture.mjs:14 the scanner cannot read this gh binary in shellCalls: sh('"\${GH_CMD-gh}" issue list');`,
   ]);
 });
 
@@ -1152,6 +1167,12 @@ test("a shell script's gh commands are sites, and a gh it cannot read as one fai
     'echo "see github.com and gh-resolved"',
     '"${GH_CMD:-gh}" issue list',
     'echo "a # inside quotes is not a comment"; gh pr list',
+    '"${GH_CMD-gh}" issue list',
+    '"${GH-gh}" issue list',
+    "gh issue \\",
+    '  list --repo "$REPO"',
+    'ghx() { gh api "$@"; }',
+    'echo "kebab-gh-not words: ghost github gh-resolved"',
   ].join("\n");
   assert.deepEqual(inventoryProblems(shellSites("scripts/fixture.sh", source), {}, {}), [
     'scripts/fixture.sh:3 unclassified gh call in <shell>: gh api "repos/$REPO/pulls"',
@@ -1159,6 +1180,10 @@ test("a shell script's gh commands are sites, and a gh it cannot read as one fai
     'scripts/fixture.sh:5 the scanner cannot read this gh binary in <shell>: "$GH" issue list',
     'scripts/fixture.sh:7 the scanner cannot read this gh binary in <shell>: "${GH_CMD:-gh}" issue list',
     "scripts/fixture.sh:8 unclassified gh call in <shell>: gh pr list",
+    'scripts/fixture.sh:9 the scanner cannot read this gh binary in <shell>: "${GH_CMD-gh}" issue list',
+    'scripts/fixture.sh:10 the scanner cannot read this gh binary in <shell>: "${GH-gh}" issue list',
+    'scripts/fixture.sh:11 unclassified gh call in <shell>: gh issue list --repo "$REPO"',
+    'scripts/fixture.sh:13 the scanner cannot read this gh binary in <shell>: ghx() { gh api "$@"; }',
   ]);
 });
 

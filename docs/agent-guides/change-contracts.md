@@ -111,9 +111,10 @@ shell's `-c`, `shell: true`). It fails on a call missing from its inventory, whi
 call targets a repository. Every reference it follows - to a `gh` binary, `ghBin`, a wrapper or a
 shell runner, including through an import alias, a namespace, destructuring, an exported binding
 or `promisify` - must reach a call, only test the binary, be followed in turn, or be declared by
-hand, so a shape it cannot follow fails rather than passing unread. In `scripts/*.sh`, and in any
-shell command line in code, each `gh` command is a call, and any other `gh` (a `"${GH_CMD:-gh}"`
-default, `"$GH"`) fails the same way. A
+hand, so a shape it cannot follow fails rather than passing unread. In the shell scripts under
+`scripts/` and `skills/`, and in any shell command line in code, each `gh` command is a call, and
+any other `gh` (a `"${GH_CMD:-gh}"` or `"${GH-gh}"` default, `"$GH"`) or a `gh` command that
+forwards `"$@"` fails the same way. A
 program it never sees as `gh` - a shell named by a variable, or a value produced by code it does
 not read - is outside a syntax scan's reach.
 
