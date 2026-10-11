@@ -505,6 +505,18 @@ test("the stream is adopted only when it is newer than what the editor holds", (
     commandSync({ selected: at(3), baseline: at(2), conflict: null, dirty: true }),
     { kind: "conflict", view: at(3) },
   );
+  // A draft edited before the snapshot was edited against a fresh slot. A first delivery that
+  // IS a fresh slot is its baseline, not a newer revision; one that is configured is a slot
+  // the operator never saw, so it is still held.
+  assert.deepEqual(
+    commandSync({ selected: at(1), baseline: null, conflict: null, dirty: true }),
+    { kind: "rebase", view: at(1) },
+  );
+  const configured = view({ revision: 2, defaultCommand: ["npm", "test"] });
+  assert.deepEqual(
+    commandSync({ selected: configured, baseline: null, conflict: null, dirty: true }),
+    { kind: "conflict", view: configured },
+  );
 });
 
 test("a refusal's conflict outlives a stream that has not caught up to it", () => {

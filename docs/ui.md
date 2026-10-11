@@ -375,7 +375,7 @@ tours** footer draws one row per registered tour, the palette's **Do** group dra
 row per registered tour, and both hand the engine a tour id. There is no per-tour Settings
 row, palette provider, overlay, controller, or target registry.
 
-Three engine properties are worth stating because tours are written against them:
+Four engine properties are worth stating because tours are written against them:
 
 - **The engine's cursor is a stable stop id plus a beat, not an index.** Driver's own active
   index updates only after a transition commits, and React state can arrive inside that
@@ -388,6 +388,11 @@ Three engine properties are worth stating because tours are written against them
   they walk stops, while the progress rail counts stops - so a two-look stop reads as one step.
 - **A stop may deliberately have no target at all**, which renders a centered card that still
   offers Back, Next, and Exit tour.
+- **The spotlight follows a target that is replaced.** A target's owner can unmount and mount a
+  new element while its stop is on screen - a session's stage ladder drops to a loading
+  placeholder whenever its run updates. The target registry tells the engine, which moves
+  Driver onto the new element once Driver has settled on the intended stop, instead of leaving
+  the frame on the detached one.
 
 Semantic targets are namespaced by the tour that owns them (`see-work:line`), so two tours can
 want the same target name without either one spotlighting the other's. Each target declares

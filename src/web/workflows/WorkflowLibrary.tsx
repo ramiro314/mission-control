@@ -91,11 +91,18 @@ export function workflowSelectionRestore(
   all: WorkflowSummary[] = active,
   explicitlyRequestedId: string | null = null,
 ): string | undefined {
-  if (initialized || selectedId !== null || all.length === 0) return undefined;
-  if (rememberedId === explicitlyRequestedId) {
-    const requested = all.find((workflow) => workflow.id === explicitlyRequestedId);
-    if (requested) return requested.id;
+  if (initialized || selectedId !== null) return undefined;
+  // An explicit request is opened even when the list does not hold it yet. The list is the
+  // event stream's, and a workflow created a moment before its link was followed reaches it
+  // one `workflow_upsert` later - so "not listed" means "not announced yet", not "not there".
+  // Falling back would open another workflow and rewrite the address bar to name it. The
+  // draft loads by id either way, and an id that really is gone shows its load error.
+  // That holds before the snapshot too: waiting for a non-empty list left nothing selected,
+  // the empty selection was reported, and the address bar lost the id it was opened with.
+  if (explicitlyRequestedId !== null && rememberedId === explicitlyRequestedId) {
+    return explicitlyRequestedId;
   }
+  if (all.length === 0) return undefined;
   return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]?.id;
 }
 
@@ -290,6 +297,11 @@ export function WorkflowLibrary({
   // `startNew` decides the first selection by creating one, so the restore below must stand
   // down rather than flash the first workflow in the list on the way there.
   const selectionInitialized = useRef(startNew);
+  // Set when the restore below chooses an id, consumed by the next selection report. In the
+  // commit that chose it the selection still reads `null`, and reporting that would replace a
+  // deep link with the bare shelf for one commit: a reload landing there opened the empty shelf
+  // instead of the link. Only that one `null` is held back; the id is reported when it commits.
+  const restoringId = useRef<string | undefined>(undefined);
   const observedWorkflowIds = useRef(new Set<string>());
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
@@ -404,6 +416,7 @@ export function WorkflowLibrary({
   const [mobileDrawer, setMobileDrawer] = useState<"library" | "properties" | null>(null);
   const openWorkflow = useCallback((id: string | null): void => {
     selectionInitialized.current = true;
+    restoringId.current = undefined;
     rememberWorkflowId(id);
     setSelection(null);
     // A surface choice belongs to the workflow it was made on, so the next one opens on
@@ -432,16 +445,23 @@ export function WorkflowLibrary({
     );
     if (next === undefined) return;
     selectionInitialized.current = true;
+    restoringId.current = next;
     rememberWorkflowId(next);
-    if (ordered.find((workflow) => workflow.id === next)?.archivedAt !== null) {
+    if ((ordered.find((workflow) => workflow.id === next)?.archivedAt ?? null) !== null) {
       setShowArchived(true);
     }
     setSelectedId(next);
   }, [active, initialWorkflowId, ordered, selectedId]);
   // What is open, reported back so the address bar can name it. One effect on the id rather
   // than a call inside `openWorkflow`, because the restore above and the removal handler
-  // below both set it without going through there.
-  useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
+  // below both set it without going through there. A restore still on its way is not
+  // reported as "nothing open" (see `restoringId`).
+  useEffect(() => {
+    const restoring = restoringId.current;
+    restoringId.current = undefined;
+    if (restoring !== undefined && selectedId === null) return;
+    onSelectionChange?.(selectedId);
+  }, [onSelectionChange, selectedId]);
   useEffect(() => {
     if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(

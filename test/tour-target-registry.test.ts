@@ -59,6 +59,26 @@ test("registration identity survives Strict Mode replay of the same element", ()
   assert.equal(registry.get(LINE_TARGET), null);
 });
 
+test("a subscriber hears an owner replaced, and not a stale unmount that changed nothing", () => {
+  const registry = createTourTargetRegistry();
+  let heard = 0;
+  const unsubscribe = registry.subscribe(() => heard++);
+  const unregisterFirst = registry.register(LINE_TARGET, element("first"));
+  assert.equal(heard, 1);
+
+  // A remount: the new owner commits, then the old one's cleanup runs against a newer token.
+  const unregisterReplacement = registry.register(LINE_TARGET, element("replacement"));
+  unregisterFirst();
+  assert.equal(heard, 2);
+
+  unregisterReplacement();
+  assert.equal(heard, 3);
+
+  unsubscribe();
+  registry.register(LINE_TARGET, element("unheard"));
+  assert.equal(heard, 3);
+});
+
 test("the Dispatch modal fields and submit owner remain independent targets", () => {
   const registry = createTourTargetRegistry();
   const modal = element("dispatch-modal");

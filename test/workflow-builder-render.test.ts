@@ -358,6 +358,18 @@ test("last workflow restoration excludes archived history unless a version link 
     ),
     "workflow-archived",
   );
+  // A route-named workflow the stream has not announced yet is still the one opened: falling
+  // back to the first row is how a slow daemon's deep link landed on the wrong workflow.
+  assert.equal(
+    workflowSelectionRestore(false, null, active, "workflow-new", active, "workflow-new"),
+    "workflow-new",
+  );
+  // Nor does it wait for the list: a link followed before the snapshot opens at once, where
+  // waiting reported no selection and the address bar dropped the id it was opened with.
+  assert.equal(workflowSelectionRestore(false, null, [], "workflow-new", [], "workflow-new"), "workflow-new");
+  assert.equal(workflowSelectionRestore(false, null, [], "workflow-1"), undefined);
+  // Only an explicit request is trusted that far; a remembered id that is gone still falls back.
+  assert.equal(workflowSelectionRestore(false, null, active, "workflow-gone"), "workflow-1");
 });
 
 // The run page's version BADGE is what carries this now - it absorbed the `Open version`

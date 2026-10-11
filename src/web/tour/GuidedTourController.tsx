@@ -532,6 +532,26 @@ export function GuidedTourController<Runtime, Navigation>({
       },
     };
 
+    // Follow a target that is replaced while its stop is on screen. Driver frames the element
+    // it was handed and never asks again, so a ladder that dropped to "Loading…" and came back
+    // left the frame on a detached node and the real one unframed. Only once Driver has settled
+    // on the intended screen: mid-transition it is still waiting for that screen's element,
+    // and a second move would race its own. Coalesced, because one commit unregisters the old
+    // owner and registers the new one.
+    let followQueued = false;
+    const unsubscribe = registry.subscribe(() => {
+      if (followQueued) return;
+      followQueued = true;
+      queueMicrotask(() => {
+        followQueued = false;
+        const active = driverRef.current;
+        if (disposed || stopping || cleanupBlocked || !active?.isActive()) return;
+        if (active.getActiveIndex() !== intendedIndex()) return;
+        const element = contextAt(intended).element;
+        if (element && element !== active.getActiveElement()) run({ kind: "refresh" });
+      });
+    });
+
     try {
       const start = cursorAt(screens, 0);
       const first = contextAt(start);
@@ -545,6 +565,7 @@ export function GuidedTourController<Runtime, Navigation>({
 
     return () => {
       disposed = true;
+      unsubscribe();
       actionsRef.current = null;
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("scroll", onScroll, true);

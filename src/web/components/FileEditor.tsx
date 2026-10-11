@@ -131,6 +131,9 @@ const commentModel = StateField.define<FileEditorComments | null>({
   },
 });
 
+/** Which widget each marker button currently draws, so its click follows `updateDOM`. */
+const markerWidgets = new WeakMap<HTMLElement, CommentMarkerWidget>();
+
 /**
  * A line's marker: a real button, with a name that says which comment it is, which line it
  * is on and what state it is in.
@@ -146,8 +149,11 @@ const commentModel = StateField.define<FileEditorComments | null>({
  * the marker where the reader already is. An inline widget at the end of the anchored line
  * is in the accessibility tree, is reachable by Tab, and sits closer to the text it is
  * about than a gutter dot does.
+ *
+ * Exported for `test/file-editor-comment-marker.test.ts`, which pins `updateDOM` without a
+ * browser.
  */
-class CommentMarkerWidget extends WidgetType {
+export class CommentMarkerWidget extends WidgetType {
   constructor(
     private readonly marker: FileEditorCommentMarker,
     private readonly onSelect: (line: number) => void,
@@ -164,11 +170,8 @@ class CommentMarkerWidget extends WidgetType {
   override toDOM(): HTMLElement {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `cm-file-comment-marker ${this.marker.tone}`;
-    // The accessible name is the whole content: the glyph is decorative, and a marker that
-    // announced itself as "●" would say nothing about which line or what state.
-    button.setAttribute("aria-label", this.marker.label);
     button.textContent = "●";
+    this.paint(button);
     // The widget is not part of the document being edited. Without this the button sits
     // inside `.cm-content`'s `contenteditable` region, where a browser treats it as text
     // rather than as a control - which is what keeps it out of the tab order.
@@ -185,12 +188,39 @@ class CommentMarkerWidget extends WidgetType {
       event.preventDefault();
       event.stopPropagation();
     });
+    // Through `markerWidgets`, not `this`: `updateDOM` hands this button to later widgets,
+    // and a click has to reach the one drawn now.
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      this.onSelect(this.marker.line);
+      markerWidgets.get(button)?.select();
     });
     return button;
+  }
+
+  /**
+   * A state change repaints the same button rather than replacing it.
+   *
+   * Without this, "sent" becoming "no answer" while a keyboard user sits on the marker
+   * swaps in a new `<button>` and their focus drops to the page. Only a different LINE
+   * rebuilds - CodeMirror may offer any marker's button here, not just this line's.
+   */
+  override updateDOM(dom: HTMLElement, _view: EditorView, from: CommentMarkerWidget): boolean {
+    if (from.marker.line !== this.marker.line) return false;
+    this.paint(dom);
+    return true;
+  }
+
+  private paint(button: HTMLElement): void {
+    button.className = `cm-file-comment-marker ${this.marker.tone}`;
+    // The accessible name is the whole content: the glyph is decorative, and a marker that
+    // announced itself as "●" would say nothing about which line or what state.
+    button.setAttribute("aria-label", this.marker.label);
+    markerWidgets.set(button, this);
+  }
+
+  private select(): void {
+    this.onSelect(this.marker.line);
   }
 
   /** The button has its own click; the editor must not claim it. */
