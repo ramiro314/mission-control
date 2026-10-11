@@ -43,13 +43,13 @@ import {
   parseMarker,
 } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
+import { configuredGitHubRepositories } from "../github/repository.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
   cleanReviewExists,
-  configuredGitHubRepositories,
   hasBodyOnlyFindings,
   fetchDiff,
   fetchPr,

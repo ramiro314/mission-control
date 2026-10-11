@@ -54,7 +54,8 @@ panel shows the count and links there), the same list `mode` is checked against 
 
 This is the whole consent model, so it is worth being precise about. Mission Control
 learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
-`gh pr list --repo <origin> --head <branch>` - and neither can tell a PR you opened from one a colleague
+`gh pr list --repo <owner/name> --head <branch>`, on the repository the checkout resolves to
+(its gh default pin, else `origin`; see [sessions](sessions.md)) - and neither can tell a PR you opened from one a colleague
 opened on the same branch. Neither adopts anything.
 
 A PR is adopted for review when the hook saw the agent run **`gh pr create`**, or the REST

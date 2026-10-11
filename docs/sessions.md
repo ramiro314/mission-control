@@ -26,8 +26,11 @@ PR. Their Git facts are instead read directly from their working directory at la
 restoration and refreshed on the same cadence.
 This keeps the **PR chip** honest without a terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
-`gh pr list --repo <origin> --head <branch>`, naming the repository the checkout's `origin` points
-at so `gh` never falls back to a fork's parent. Capturing either fact only once would leave live changes invisible.
+`gh pr list --repo <owner/name> --head <branch>`. The repository comes from the shared checkout
+resolver (`checkoutGitHubRepository`): a gh default pin (`remote.<name>.gh-resolved`, which
+`gh repo set-default` writes) when one names a GitHub remote, otherwise `origin` when it is on
+GitHub. A checkout with neither reads as a failed lookup that leaves the chip as it was, so `gh`
+never chooses for itself and falls back to a fork's parent. Capturing either fact only once would leave live changes invisible.
 
 The chip is that one pull request: the one on the branch of the checkout the session is
 standing in. A session running a
