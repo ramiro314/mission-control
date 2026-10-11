@@ -144,7 +144,7 @@ control that saves a preference and visibly does nothing. Settings is its durabl
 ## Start a task from another branch
 
 A task can carry a **base branch**: a branch on the primary repository's `origin`, such as
-`release/windows`, that the task starts from and opens its pull request against. A task without
+`release/2.0`, that the task starts from and opens its pull request against. A task without
 one starts from origin's default branch and targets it, exactly as before.
 
 - **Where it is set.** In the dashboard, the **Base branch** field under the dispatch form's
@@ -161,7 +161,7 @@ one starts from origin's default branch and targets it, exactly as before.
   does not have it or cannot answer. A repository with no `origin` cannot take a base branch.
   Naming origin's own default branch stores no base branch at all, so a task created or edited
   from now on carries one only when it is not origin's default at the time of the write.
-- **The card** names a stored base branch ("base release/windows") on the backlog card. A task
+- **The card** names a stored base branch ("base release/2.0") on the backlog card. A task
   on the default branch shows nothing extra. The rule above holds when the base is written, so
   the daemon also checks once at startup: a backlog task still storing a branch that origin now
   calls its default (one filed with `main` before this normalization existed, or one whose

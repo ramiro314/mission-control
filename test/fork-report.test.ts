@@ -47,7 +47,6 @@ function data(extra: Partial<ReportData> = {}): ReportData {
   return {
     issues: [],
     prs: [],
-    windowsPrs: [],
     git: { mergeBase: MERGE_BASE, mergeBaseVersion: "1.26.0", upstreamTip: MERGE_BASE, ahead: 341, aheadNoMerges: 247, behind: 0 },
     measuredAt: { sha: ORIGIN, time: "2026-10-07T15:00Z" },
     ...extra,
@@ -195,41 +194,9 @@ test("a merged PR whose fork label no tracking issue carries is listed, not drop
   assert.doesNotMatch(renderForkReport(data({ issues: [issue(300, "Decision forms", "decision-forms", "Ask once.")], prs: [pr(6, { labels: ["fork:decision-forms"] })] })), /Unmatched/);
 });
 
-test("each release/windows merge PR counts only the branch PRs that merge brought into main", () => {
-  const branch = (number: number, mergedAt: string) => ({ number, mergedAt });
+test("open PRs and PRs merged only into another branch never appear", () => {
   const report = renderForkReport(
     data({
-      windowsPrs: [
-        branch(147, "2026-10-01T00:00:00Z"),
-        branch(265, "2026-10-20T00:00:00Z"),
-        branch(273, "2026-11-01T09:00:00Z"),
-        branch(410, "2026-11-10T00:00:00Z"),
-        branch(420, "2026-11-20T00:00:00Z"),
-        branch(460, "2026-12-05T00:00:00Z"),
-        branch(470, "2026-12-06T00:00:00Z"),
-      ],
-      issues: [issue(310, "Windows support", "windows-support", "Run on Windows.")],
-      prs: [
-        pr(128, { labels: ["fork:windows-support"] }),
-        pr(450, { labels: ["fork:windows-support"], headRefName: "release/windows", mergedAt: "2026-12-01T00:00:00Z" }),
-        pr(400, { labels: ["fork:windows-support"], headRefName: "release/windows", mergedAt: "2026-11-01T09:00:00Z" }),
-        pr(480, { labels: ["fork:windows-support"], headRefName: "release/windows", mergedAt: null }),
-      ],
-    }),
-  );
-  // #273 merged into the branch at the same instant as #400 and is counted there; #460 and
-  // #470 landed after the last merge into main, so no row counts them.
-  assert.equal(
-    section(report, "Features").split("\n").find((l) => l.startsWith("| [Windows")),
-    `| [Windows support](${REPO}/issues/310) | active | Run on Windows. | [#128](${REPO}/pull/128), ` +
-      `[#400](${REPO}/pull/400) (includes 3 release/windows PRs), [#450](${REPO}/pull/450) (includes 2 release/windows PRs) |`,
-  );
-});
-
-test("open PRs and PRs merged only into release/windows never appear", () => {
-  const report = renderForkReport(
-    data({
-      windowsPrs: [{ number: 265, mergedAt: "2026-09-20T00:00:00Z" }],
       issues: [
         issue(310, "Windows support", "windows-support", "Run on Windows.", {
           labels: ["fork-feature", "fork:windows-support", "fork-status:in-progress"],
@@ -237,8 +204,8 @@ test("open PRs and PRs merged only into release/windows never appear", () => {
       ],
       prs: [
         pr(128, { labels: ["fork:windows-support"] }),
-        pr(265, { labels: ["fork:windows-support"], baseRefName: "release/windows" }),
-        pr(273, { baseRefName: "release/windows" }),
+        pr(265, { labels: ["fork:windows-support"], baseRefName: "release/2.0" }),
+        pr(273, { baseRefName: "release/2.0" }),
         pr(290, { labels: ["fork:windows-support"], mergedAt: null }),
         pr(291, { mergedAt: null }),
         pr(292, { mergedAt: null, headRefName: "sync/upstream-2026-10-12" }),
@@ -246,7 +213,6 @@ test("open PRs and PRs merged only into release/windows never appear", () => {
     }),
   );
   for (const n of [265, 273, 290, 291, 292]) assert.doesNotMatch(report, new RegExp(`#${n}\\b`));
-  assert.doesNotMatch(report, /includes/);
   assert.match(report, /\| in-progress \| Run on Windows\. \| \[#128\]/);
   assert.equal(row(report, "Last sync PR"), "| Last sync PR | none merged yet |");
 });

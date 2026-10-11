@@ -7,8 +7,8 @@ export { flattenProcessText, type ProcessInspector, type ProcessRow, type Proces
  * The platform-selection point. A platform without `ps` and `lsof` registers its own
  * inspector here; every other platform, macOS and Linux included, gets the POSIX one.
  *
- * Deliberately empty on `main`: the win32 inspector is registered on `release/windows`
- * (plan M2), and until then Windows behaves exactly as it always has.
+ * No platform registers an override on `main`, so every platform resolves to the POSIX
+ * inspector.
  */
 const PLATFORM_INSPECTORS: Partial<Record<NodeJS.Platform, ProcessInspector>> = {};
 

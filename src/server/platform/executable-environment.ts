@@ -62,8 +62,8 @@ export const posixExecutableEnvironment: ExecutableEnvironmentPlatform = {
 };
 
 /**
- * The platform-selection point. `release/windows` registers `win32` here; `main` registers
- * nothing, so every platform, Windows included, resolves to the POSIX row.
+ * The platform-selection point. No platform registers an override on `main`; every platform
+ * resolves to the POSIX row.
  */
 const byPlatform: Partial<Record<NodeJS.Platform, ExecutableEnvironmentPlatform>> = {};
 

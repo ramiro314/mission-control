@@ -21,7 +21,7 @@ import { TaskSourcesConfigSchema } from "../src/shared/task-source.ts";
 // A task's optional base branch: stored on the row, accepted by the task API and MCP, checked
 // against origin, followed by the worktree start point at dispatch and at reset, and named to
 // the agent wherever it is asked to open a pull request. Every fixture repository has a
-// second branch on its origin, `release/windows`, one commit apart from `main`, so a start
+// second branch on its origin, `release/2.0`, one commit apart from `main`, so a start
 // point on the wrong branch is a different commit rather than an accident of equal tips.
 
 const home = mkdtempSync(join(tmpdir(), "mission-base-branch-home-"));
@@ -68,9 +68,9 @@ interface Fixture {
 }
 
 /**
- * A checkout with a bare origin carrying `main` and `release/windows`, the checkout itself
+ * A checkout with a bare origin carrying `main` and `release/2.0`, the checkout itself
  * on `main`. Lives under the workspace dir so the task routes accept it as a repository.
- * `release: false` leaves `release/windows` off origin, for a repository that lacks the base.
+ * `release: false` leaves `release/2.0` off origin, for a repository that lacks the base.
  */
 function mkRepo(name: string, { release = true }: { release?: boolean } = {}): Fixture {
   const repo = join(repos, name);
@@ -87,16 +87,16 @@ function mkRepo(name: string, { release = true }: { release?: boolean } = {}): F
   git(repo, "push", "-qu", "origin", "main");
   git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
   if (release) {
-    git(repo, "checkout", "-qb", "release/windows");
+    git(repo, "checkout", "-qb", "release/2.0");
     writeFileSync(join(repo, "file.txt"), "windows\n");
     git(repo, "commit", "-qam", "windows");
-    git(repo, "push", "-q", "origin", "release/windows");
+    git(repo, "push", "-q", "origin", "release/2.0");
     git(repo, "checkout", "-q", "main");
   }
   return {
     repo: realpathSync(repo),
     mainTip: git(repo, "rev-parse", "main"),
-    releaseTip: release ? git(repo, "rev-parse", "release/windows") : "",
+    releaseTip: release ? git(repo, "rev-parse", "release/2.0") : "",
   };
 }
 
@@ -104,7 +104,7 @@ function mkRepo(name: string, { release = true }: { release?: boolean } = {}): F
 
 test("the task API and MCP schemas accept a base branch and refuse a malformed one", () => {
   const dispatch = { repoRoot: "/r", intent: "do it" };
-  assert.equal(DispatchSchema.parse({ ...dispatch, baseBranch: " release/windows " }).baseBranch, "release/windows");
+  assert.equal(DispatchSchema.parse({ ...dispatch, baseBranch: " release/2.0 " }).baseBranch, "release/2.0");
   assert.equal(DispatchSchema.parse(dispatch).baseBranch, undefined, "omitted stays omitted");
   assert.equal(UpdateTaskSchema.parse({ baseBranch: null }).baseBranch, null, "null clears it");
   for (const bad of ["-delete", "refs/heads/main", "a..b", "has space", "x.lock", "a/", "feat:x", ""]) {
@@ -113,19 +113,19 @@ test("the task API and MCP schemas accept a base branch and refuse a malformed o
   }
 
   const mcp = { env: {}, cwd: "/r", repoRoot: "/r" };
-  const ticket = McpCreateTaskV3Schema.parse({ ...mcp, title: "T", intent: "I", baseBranch: "release/windows" });
-  assert.equal("baseBranch" in ticket && ticket.baseBranch, "release/windows");
+  const ticket = McpCreateTaskV3Schema.parse({ ...mcp, title: "T", intent: "I", baseBranch: "release/2.0" });
+  assert.equal("baseBranch" in ticket && ticket.baseBranch, "release/2.0");
   // The adoption half is strict and creates nothing, so a base branch beside it is refused.
-  assert.equal(McpCreateTaskV3Schema.safeParse({ ...mcp, adoptTaskId: "t", baseBranch: "release/windows" }).success, false);
+  assert.equal(McpCreateTaskV3Schema.safeParse({ ...mcp, adoptTaskId: "t", baseBranch: "release/2.0" }).success, false);
   const push = { env: {}, cwd: "/r", taskId: "t" };
-  assert.equal(McpPushTaskSchema.parse({ ...push, baseBranch: "release/windows" }).baseBranch, "release/windows");
+  assert.equal(McpPushTaskSchema.parse({ ...push, baseBranch: "release/2.0" }).baseBranch, "release/2.0");
 });
 
 // --- origin probes ---
 
 test("a base branch is accepted only when it exists on the repository's origin", async () => {
   const { repo, releaseTip } = mkRepo("probe");
-  assert.deepEqual(await resolveBaseBranch(repo, "release/windows"), { ok: true, baseBranch: "release/windows" });
+  assert.deepEqual(await resolveBaseBranch(repo, "release/2.0"), { ok: true, baseBranch: "release/2.0" });
   // Origin's own default is stored as null, so a set base always means a non-default one.
   assert.deepEqual(await resolveBaseBranch(repo, "main"), { ok: true, baseBranch: null });
   const gone = await resolveBaseBranch(repo, "release/gone");
@@ -135,7 +135,7 @@ test("a base branch is accepted only when it exists on the repository's origin",
   const originless = await resolveBaseBranch(local, "main");
   assert.match(originless.ok ? "" : originless.error, /needs an origin remote/);
 
-  const fresh = await freshRemoteBranchSha(repo, "release/windows");
+  const fresh = await freshRemoteBranchSha(repo, "release/2.0");
   assert.deepEqual(fresh, { ok: true, value: releaseTip });
   const freshGone = await freshRemoteBranchSha(repo, "release/gone");
   assert.equal(freshGone.ok, false);
@@ -152,7 +152,7 @@ test("ls-remote parsing takes the exact branch, not one that merely ends with it
 test("resolveTaskBases starts the primary from its base branch and leaves attached repos on their default", async () => {
   const branchCalls: Array<[string, string]> = [];
   const bases = await resolveTaskBases(
-    { primary: "/a", primaryBranch: "release/windows", extras: ["/b"] },
+    { primary: "/a", primaryBranch: "release/2.0", extras: ["/b"] },
     null,
     async (root) => `default:${root}`,
     async (root, branch) => {
@@ -160,8 +160,8 @@ test("resolveTaskBases starts the primary from its base branch and leaves attach
       return `branch:${root}:${branch}`;
     },
   );
-  assert.deepEqual(bases, { primary: "branch:/a:release/windows", extras: ["default:/b"] });
-  assert.deepEqual(branchCalls, [["/a", "release/windows"]]);
+  assert.deepEqual(bases, { primary: "branch:/a:release/2.0", extras: ["default:/b"] });
+  assert.deepEqual(branchCalls, [["/a", "release/2.0"]]);
   // No base branch: exactly the default, as before.
   const plain = await resolveTaskBases({ primary: "/a", extras: [] }, null, async (root) => `default:${root}`);
   assert.deepEqual(plain, { primary: "default:/a", extras: [] });
@@ -170,7 +170,7 @@ test("resolveTaskBases starts the primary from its base branch and leaves attach
 test("a pinned base commit outranks the task's base branch, which is then never resolved", async () => {
   const resolved: string[] = [];
   const bases = await resolveTaskBases(
-    { primary: "/a", primaryBranch: "release/windows", extras: [] },
+    { primary: "/a", primaryBranch: "release/2.0", extras: [] },
     "f".repeat(40),
     async (root) => {
       resolved.push(`default:${root}`);
@@ -214,7 +214,7 @@ function piDispatcher(registry: InstanceType<typeof Registry>, launched: { cwd: 
 test("dispatch starts a task with a base branch from origin/<base>, and tells the agent where to open its PR", async () => {
   const { repo, mainTip, releaseTip } = mkRepo("dispatch-base");
   const registry = new Registry();
-  registry.upsertTask(dispatchingTask("based", repo, "release/windows"));
+  registry.upsertTask(dispatchingTask("based", repo, "release/2.0"));
   const launched: { cwd: string; argv: string[] }[] = [];
   await piDispatcher(registry, launched).dispatch("based");
 
@@ -225,7 +225,7 @@ test("dispatch starts a task with a base branch from origin/<base>, and tells th
   assert.notEqual(releaseTip, mainTip);
   const prompt = launched[0]!.argv.join("\n");
   assert.match(prompt, /## Base branch/);
-  assert.match(prompt, /-f base=release\/windows /);
+  assert.match(prompt, /-f base=release\/2\.0 /);
 });
 
 test("dispatch refuses a base branch origin no longer has, before anything is provisioned", async () => {
@@ -254,11 +254,11 @@ test("a reset for a task with a base branch lands on origin/<base>; without one,
   const wt = join(repos, "reset-base-wt");
   git(repo, "worktree", "add", "-q", "--detach", wt, mainTip);
 
-  const preview = await resetPreview(sessionAt(wt), "release/windows");
+  const preview = await resetPreview(sessionAt(wt), "release/2.0");
   assert.equal(preview.ok, true, preview.error ?? "");
-  assert.equal(preview.target, "origin/release/windows");
+  assert.equal(preview.target, "origin/release/2.0");
 
-  const based = await resetToOrigin(sessionAt(wt), false, undefined, undefined, undefined, "release/windows");
+  const based = await resetToOrigin(sessionAt(wt), false, undefined, undefined, undefined, "release/2.0");
   assert.equal(based.ok, true, based.error ?? "");
   assert.equal(git(wt, "rev-parse", "HEAD"), releaseTip);
 
@@ -293,11 +293,11 @@ function appFor(registry = new Registry()) {
 test("creating a task stores its base branch, and one origin lacks is refused with nothing created", async () => {
   const { repo } = mkRepo("route-create");
   const { api } = appFor();
-  const ok = await api("/api/tasks", { repoRoot: repo, title: "Port it", intent: "Port it", backlog: true, workflowId: null, baseBranch: "release/windows" });
+  const ok = await api("/api/tasks", { repoRoot: repo, title: "Port it", intent: "Port it", backlog: true, workflowId: null, baseBranch: "release/2.0" });
   assert.equal(ok.status, 200, await ok.clone().text());
   const created = (await ok.json()) as Task;
-  assert.equal(created.baseBranch, "release/windows");
-  assert.equal(getTask(created.id)?.baseBranch, "release/windows", "persisted on the row");
+  assert.equal(created.baseBranch, "release/2.0");
+  assert.equal(getTask(created.id)?.baseBranch, "release/2.0", "persisted on the row");
 
   const plain = (await (await api("/api/tasks", { repoRoot: repo, title: "Plain", intent: "Plain", backlog: true, workflowId: null })).json()) as Task;
   assert.equal(plain.baseBranch, null, "no base branch means origin's default");
@@ -317,20 +317,20 @@ test("editing a task sets, refuses, and clears its base branch", async () => {
   const { api } = appFor();
   const task = (await (await api("/api/tasks", { repoRoot: repo, title: "Edit me", intent: "Edit me", backlog: true, workflowId: null })).json()) as Task;
 
-  const set = await api(`/api/tasks/${task.id}/update`, { baseBranch: "release/windows" });
+  const set = await api(`/api/tasks/${task.id}/update`, { baseBranch: "release/2.0" });
   assert.equal(set.status, 200, await set.clone().text());
-  assert.equal(getTask(task.id)?.baseBranch, "release/windows");
+  assert.equal(getTask(task.id)?.baseBranch, "release/2.0");
 
   const refused = await api(`/api/tasks/${task.id}/update`, { baseBranch: "release/gone" });
   assert.equal(refused.status, 400);
   assert.match(((await refused.json()) as { error: string }).error, /does not exist/);
-  assert.equal(getTask(task.id)?.baseBranch, "release/windows", "a refused edit changes nothing");
+  assert.equal(getTask(task.id)?.baseBranch, "release/2.0", "a refused edit changes nothing");
 
   const cleared = await api(`/api/tasks/${task.id}/update`, { baseBranch: null });
   assert.equal(cleared.status, 200);
   assert.equal(getTask(task.id)?.baseBranch, null);
 
-  await api(`/api/tasks/${task.id}/update`, { baseBranch: "release/windows" });
+  await api(`/api/tasks/${task.id}/update`, { baseBranch: "release/2.0" });
   const toDefault = await api(`/api/tasks/${task.id}/update`, { baseBranch: "main" });
   assert.equal(toDefault.status, 200, await toDefault.clone().text());
   assert.equal(getTask(task.id)?.baseBranch, null, "editing it to origin's default clears it");
@@ -341,15 +341,15 @@ test("the startup pass returns a legacy row stored with origin's default to the 
   const { api, tasks } = appFor();
   const filed = async (title: string, baseBranch: string) =>
     (await (await api("/api/tasks", { repoRoot: repo, title, intent: title, backlog: true, workflowId: null, baseBranch })).json()) as Task;
-  const legacy = await filed("Legacy", "release/windows");
-  const kept = await filed("Kept", "release/windows");
+  const legacy = await filed("Legacy", "release/2.0");
+  const kept = await filed("Kept", "release/2.0");
   // Written past the route, the way a row from before the normalization reads.
   assert.equal((await tasks.update(legacy.id, { baseBranch: "main" })).ok, true);
   assert.equal(getTask(legacy.id)?.baseBranch, "main");
 
   assert.deepEqual(await clearStoredDefaultBaseBranches(tasks), [legacy.id]);
   assert.equal(getTask(legacy.id)?.baseBranch, null);
-  assert.equal(getTask(kept.id)?.baseBranch, "release/windows");
+  assert.equal(getTask(kept.id)?.baseBranch, "release/2.0");
 });
 
 test("moving a task that keeps a base branch to a repository whose origin lacks it is refused", async () => {
@@ -359,15 +359,15 @@ test("moving a task that keeps a base branch to a repository whose origin lacks 
   const { api } = appFor();
   const task = (await (await api("/api/tasks", {
     repoRoot: repo, title: "Move me", intent: "Move me", backlog: true, workflowId: null,
-    baseBranch: "release/windows",
+    baseBranch: "release/2.0",
   })).json()) as Task;
 
   // The patch names only the repository; the base it keeps is what has to exist there.
   const refused = await api(`/api/tasks/${task.id}/update`, { repoRoot: bare });
   assert.equal(refused.status, 400);
-  assert.match(((await refused.json()) as { error: string }).error, /base branch release\/windows does not exist/);
+  assert.match(((await refused.json()) as { error: string }).error, /base branch release\/2\.0 does not exist/);
   assert.equal(getTask(task.id)?.repoRoot, repo, "a refused move changes nothing");
-  assert.equal(getTask(task.id)?.baseBranch, "release/windows");
+  assert.equal(getTask(task.id)?.baseBranch, "release/2.0");
 
   const moved = await api(`/api/tasks/${task.id}/update`, { repoRoot: also });
   assert.equal(moved.status, 200, await moved.clone().text());
@@ -378,10 +378,10 @@ test("MCP create_task files a task with a base branch through the v3 route, and 
   const { repo } = mkRepo("route-mcp");
   const { mcp } = appFor();
   const body = { cwd: repo, repoRoot: repo, title: "Windows ticket", intent: "Port it" };
-  const ok = await mcp("/mcp/v3/tasks", { ...body, baseBranch: "release/windows" });
+  const ok = await mcp("/mcp/v3/tasks", { ...body, baseBranch: "release/2.0" });
   assert.equal(ok.status, 200, await ok.clone().text());
   const created = (await ok.json()) as Task;
-  assert.equal(created.baseBranch, "release/windows");
+  assert.equal(created.baseBranch, "release/2.0");
   assert.equal(created.status, "backlog");
 
   const refused = await mcp("/mcp/v3/tasks", { ...body, baseBranch: "release/gone" });
@@ -443,10 +443,10 @@ test("MCP push_task sets the task's base branch before mirroring it, and refuses
     assert.equal(refused.status, 400);
     assert.equal(getTask(ticket.id)?.source, null, "a refused base publishes nothing");
 
-    const ok = await push("release/windows");
+    const ok = await push("release/2.0");
     assert.equal(ok.status, 200, await ok.clone().text());
     const pushed = getTask(ticket.id)!;
-    assert.equal(pushed.baseBranch, "release/windows");
+    assert.equal(pushed.baseBranch, "release/2.0");
     assert.equal(pushed.source?.sourceId, "src-gh");
 
     // Naming origin's default returns the task to it: stored as null, not as "main".
@@ -476,7 +476,7 @@ test("the reset route and its preview land on the base branch of the task the se
   }]);
   const session = registry.snapshot().sessions.find((s) => s.name === "runner")!;
   registry.upsertTask(mkTask({
-    id: "running-based", status: "running", repoRoot: repo, baseBranch: "release/windows",
+    id: "running-based", status: "running", repoRoot: repo, baseBranch: "release/2.0",
     sessionId: session.id, worktreePath: realpathSync(wt),
   }));
   const { app } = appFor(registry);
@@ -485,7 +485,7 @@ test("the reset route and its preview land on the base branch of the task the se
   });
   const preview = (await res.json()) as { ok: boolean; target: string | null; error: string | null };
   assert.equal(preview.ok, true, preview.error ?? "");
-  assert.equal(preview.target, "origin/release/windows");
+  assert.equal(preview.target, "origin/release/2.0");
 
   assert.equal(git(wt, "rev-parse", "HEAD"), mainTip);
   const reset = await app.request(`/api/sessions/${session.id}/reset`, {
@@ -511,7 +511,7 @@ test("the Diff view measures a task's work from its base branch, and from origin
   }]);
   const session = registry.snapshot().sessions.find((s) => s.name === "differ")!;
   const task = mkTask({
-    id: "running-diff", status: "running", repoRoot: repo, baseBranch: "release/windows",
+    id: "running-diff", status: "running", repoRoot: repo, baseBranch: "release/2.0",
     sessionId: session.id, worktreePath: realpathSync(wt),
   });
   registry.upsertTask(task);
@@ -522,7 +522,7 @@ test("the Diff view measures a task's work from its base branch, and from origin
 
   const based = await diffOf();
   assert.equal(based.ok, true, based.error ?? "");
-  assert.equal(based.base, "release/windows");
+  assert.equal(based.base, "release/2.0");
   assert.equal(based.filesChanged, 1);
   assert.match(based.patch, /feature\.txt/);
   assert.doesNotMatch(based.patch, /file\.txt/, "the base branch's own change is not this task's");
@@ -549,7 +549,7 @@ test("handing a shelved task with a base branch to a running agent resets its ch
   const session = registry.snapshot().sessions.find((s) => s.name === "idle-agent")!;
   assert.equal(session.state, "idle");
   registry.upsertTask(mkTask({
-    id: "assign-based", status: "backlog", repoRoot: repo, baseBranch: "release/windows",
+    id: "assign-based", status: "backlog", repoRoot: repo, baseBranch: "release/2.0",
   }));
   assert.equal(git(repo, "rev-parse", "HEAD"), mainTip);
 
@@ -568,18 +568,18 @@ test("handing a shelved task with a base branch to a running agent resets its ch
 // --- what the agent is told ---
 
 test("the delivered contract names the base branch only when the task has one", () => {
-  const based = withTaskKindContract(mkTask({ kind: "ship", baseBranch: "release/windows" }), "Build it");
-  assert.match(based, /This task's base branch is `release\/windows`/);
-  assert.match(based, /-f base=release\/windows /);
+  const based = withTaskKindContract(mkTask({ kind: "ship", baseBranch: "release/2.0" }), "Build it");
+  assert.match(based, /This task's base branch is `release\/2\.0`/);
+  assert.match(based, /-f base=release\/2\.0 /);
   assert.doesNotMatch(based, /primary repository only/);
   const plain = withTaskKindContract(mkTask({ kind: "ship" }), "Build it");
   assert.doesNotMatch(plain, /Base branch/);
 });
 
 test("a workflow binding's PR base is the task's for its primary repository, and the default for an attached one", () => {
-  const task = { baseBranch: "release/windows", repoRoot: "/repo" };
-  assert.equal(prBaseBranchFor(task, ""), "release/windows", "an empty root is the session's own checkout");
-  assert.equal(prBaseBranchFor(task, "/repo"), "release/windows");
+  const task = { baseBranch: "release/2.0", repoRoot: "/repo" };
+  assert.equal(prBaseBranchFor(task, ""), "release/2.0", "an empty root is the session's own checkout");
+  assert.equal(prBaseBranchFor(task, "/repo"), "release/2.0");
   assert.equal(prBaseBranchFor(task, "/attached"), null);
   assert.equal(prBaseBranchFor({ baseBranch: null, repoRoot: "/repo" }, ""), null);
   assert.equal(prBaseBranchFor(undefined, ""), null);
@@ -589,9 +589,9 @@ test("the workflow pull-request packets name the base branch the PR opens agains
   const handoff = renderPrHandoff({
     workflowName: "Review", workflowVersion: 1, runId: "run-1", originalGoal: "Port it",
     skillCommand: "/mission-pull-request", workflowEvidence: false, repoRoot: null,
-    baseBranch: "release/windows",
+    baseBranch: "release/2.0",
   });
-  assert.match(handoff.payload, /Base branch: release\/windows - open the pull request against it \(repo=.* gh api "repos\/\$repo\/pulls" .* -f base=release\/windows /);
+  assert.match(handoff.payload, /Base branch: release\/2\.0 - open the pull request against it \(repo=.* gh api "repos\/\$repo\/pulls" .* -f base=release\/2\.0 /);
   const plain = renderPrHandoff({
     workflowName: "Review", workflowVersion: 1, runId: "run-1", originalGoal: "Port it",
     skillCommand: "/mission-pull-request", workflowEvidence: false, repoRoot: null,
@@ -601,14 +601,14 @@ test("the workflow pull-request packets name the base branch the PR opens agains
   const action = renderSessionAction({
     origin: { kind: "run", workflowName: "Review", workflowVersion: 1, runId: "run-1", repoRoot: null },
     actionName: "Pull Request", promptMarkdown: "Open the PR.", skillCommand: null,
-    workflowEvidence: false, pullRequestGrant: true, baseBranch: "release/windows",
+    workflowEvidence: false, pullRequestGrant: true, baseBranch: "release/2.0",
   });
   assert.ok(action.ok);
-  assert.match(action.payload, /-f base=release\/windows /);
+  assert.match(action.payload, /-f base=release\/2\.0 /);
   const other = renderSessionAction({
     origin: { kind: "run", workflowName: "Review", workflowVersion: 1, runId: "run-1", repoRoot: null },
     actionName: "Tidy", promptMarkdown: "Tidy up.", skillCommand: null,
-    workflowEvidence: false, pullRequestGrant: false, baseBranch: "release/windows",
+    workflowEvidence: false, pullRequestGrant: false, baseBranch: "release/2.0",
   });
   assert.ok(other.ok);
   assert.doesNotMatch(other.payload, /Base branch/, "an action that opens no PR is not told where one goes");

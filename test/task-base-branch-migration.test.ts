@@ -80,8 +80,8 @@ test("a database from before base branches opens, gains the column, and reads it
 
 test("a base branch written to an upgraded database reads back, and clears back to null", () => {
   const existing = getTask("before-base-branch")!;
-  upsertTask({ ...existing, baseBranch: "release/windows" });
-  assert.equal(getTask("before-base-branch")?.baseBranch, "release/windows");
+  upsertTask({ ...existing, baseBranch: "release/2.0" });
+  assert.equal(getTask("before-base-branch")?.baseBranch, "release/2.0");
   upsertTask({ ...existing, baseBranch: null });
   assert.equal(getTask("before-base-branch")?.baseBranch, null);
 });

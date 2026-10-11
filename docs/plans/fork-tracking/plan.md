@@ -27,7 +27,7 @@ PRs open at the same time therefore conflict on the same lines, and whichever me
 needs another round of conflict solving and CI. The ledger has 88 commits on `main`.
 
 `release/windows` makes this worse. Its PRs edit the ledger too (for example #265 and #273),
-even though [docs/windows-branch-sync.md](../../windows-branch-sync.md) says the ledger is not
+even though [docs/windows-branch-sync.md](https://github.com/ramiro314/mission-control/blob/d44bda68/docs/windows-branch-sync.md) says the ledger is not
 updated there. The weekly main-into-release/windows sync then conflicts on the same file.
 
 The ledger has two readers, and both must keep working:
@@ -344,7 +344,7 @@ mission's task body. Each refresh replaces its full content, so nothing in it is
 
 ### `release/windows`
 
-- **Now (in this PR, on `main`):** [docs/windows-branch-sync.md](../../windows-branch-sync.md)
+- **Now (in this PR, on `main`):** [docs/windows-branch-sync.md](https://github.com/ramiro314/mission-control/blob/d44bda68/docs/windows-branch-sync.md)
   gains the rule that PRs into `release/windows` carry `fork:windows-support` and never edit
   `docs/fork/`. The line-168 note is rewritten to match. The Windows tracking issue is created
   open, with `fork-status:in-progress`, from `main`'s version of the entry.

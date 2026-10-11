@@ -55,7 +55,6 @@ Mission Control's product reference is organized by feature below.
 - [Contributing](../CONTRIBUTING.md)
 - [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
 - [Syncing the fork with upstream](upstream-sync.md): the runbook for merging `teamupstart/mission-control` into this fork.
-- [Syncing `release/windows` with `main`](windows-branch-sync.md): the weekly runbook for merging `main` into the Windows support branch.
 - [Tracking the fork's features](fork/README.md): the GitHub tracking issues and `fork:<slug>` labels that record every feature this fork changes against upstream, the "Fork feature changes" PR section, and the daily refresh.
 
 ## Support

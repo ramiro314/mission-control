@@ -247,14 +247,20 @@ test("the wired shell launches nothing at all for an ordinary managed app", () =
   assert.equal(decision.updateBlock, null);
 });
 
-test("the real Launch Services call reports a bundle that is not there, without launching it", () => {
-  // The production default runner, against the real `/usr/bin/open`. Nothing is launched: the
-  // path does not exist, which is exactly why it is safe to run here and still proves the
-  // executable, the argument, and the failure mapping are what the rest of this file assumes.
-  const missing = "/private/tmp/mission-control-absent-fixture/Nowhere.app";
-  const attempt = openInstalledApp(missing);
+test(
+  "the real Launch Services call reports a bundle that is not there, without launching it",
+  // macOS only: elsewhere `/usr/bin/open` is missing or, on Debian and Ubuntu, `openvt`, which
+  // is not Launch Services and so proves nothing about the mapping this test pins.
+  { skip: process.platform !== "darwin" },
+  () => {
+    // The production default runner, against the real `/usr/bin/open`. Nothing is launched: the
+    // path does not exist, which is exactly why it is safe to run here and still proves the
+    // executable, the argument, and the failure mapping are what the rest of this file assumes.
+    const missing = "/private/tmp/mission-control-absent-fixture/Nowhere.app";
+    const attempt = openInstalledApp(missing);
 
-  assert.equal(attempt.ok, false);
-  assert.ok(attempt.detail, "a failure has to carry something a person can act on");
-  assert.match(String(attempt.detail), /Nowhere\.app|does not exist|Unable to find/i);
-});
+    assert.equal(attempt.ok, false);
+    assert.ok(attempt.detail, "a failure has to carry something a person can act on");
+    assert.match(String(attempt.detail), /Nowhere\.app|does not exist|Unable to find/i);
+  },
+);

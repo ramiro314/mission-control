@@ -21,7 +21,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 // What follows a task's base branch once it has one, after dispatch: the diff its checks and
 // Personas measure, the tests its affected-tests check selects, the conflict fix its reactions
 // ask for, and the merge watcher that completes it and releases its dependents. Every fixture
-// has `release/windows` one change apart from `main`, so measuring from the wrong one shows.
+// has `release/2.0` one change apart from `main`, so measuring from the wrong one shows.
 
 const home = mkdtempSync(join(tmpdir(), "mission-base-branch-followers-home-"));
 const repos = mkdtempSync(join(tmpdir(), "mission-base-branch-followers-repos-"));
@@ -62,7 +62,7 @@ function write(root: string, files: Record<string, string>): void {
 }
 
 /**
- * A feature worktree cut from `origin/release/windows`, which carries a source file, a test and
+ * A feature worktree cut from `origin/release/2.0`, which carries a source file, a test and
  * a file the feature then deletes that `main` never had. The feature adds one source file and
  * one test, and deletes `src/legacy.ts`.
  */
@@ -78,7 +78,7 @@ function featureOnRelease(name: string): string {
   git(repo, "remote", "add", "origin", origin);
   git(repo, "push", "-qu", "origin", "main");
   git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
-  git(repo, "checkout", "-qb", "release/windows");
+  git(repo, "checkout", "-qb", "release/2.0");
   write(repo, {
     "src/windows.ts": "export const win = 1;\n",
     "test/windows.test.ts": "import '../src/windows.ts';\n",
@@ -86,13 +86,13 @@ function featureOnRelease(name: string): string {
   });
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "windows");
-  git(repo, "push", "-q", "origin", "release/windows");
+  git(repo, "push", "-q", "origin", "release/2.0");
   git(repo, "checkout", "-q", "main");
   git(repo, "fetch", "-q", "origin");
   git(repo, "remote", "set-head", "origin", "main");
 
   const wt = join(repos, `${name}-wt`);
-  git(repo, "worktree", "add", "-q", "-b", "feat/port", wt, "origin/release/windows");
+  git(repo, "worktree", "add", "-q", "-b", "feat/port", wt, "origin/release/2.0");
   write(wt, {
     "src/feature.ts": "export const feature = 1;\n",
     "test/feature.test.ts": "import '../src/feature.ts';\n",
@@ -108,9 +108,9 @@ function featureOnRelease(name: string): string {
 test("a task's changes are measured from origin/<base>, and from origin's default without one", async () => {
   const wt = featureOnRelease("diff-base");
 
-  const based = await changedPathsSince(wt, "release/windows");
+  const based = await changedPathsSince(wt, "release/2.0");
   assert.deepEqual(based, { ok: true, repoRoot: wt, paths: ["src/feature.ts", "test/feature.test.ts"] });
-  const deleted = await deletedPathsSince(wt, "release/windows");
+  const deleted = await deletedPathsSince(wt, "release/2.0");
   assert.deepEqual(deleted.ok && deleted.paths, ["src/legacy.ts"]);
 
   // Unchanged without a base: origin's default, which counts the release branch's own commits.
@@ -119,9 +119,9 @@ test("a task's changes are measured from origin/<base>, and from origin's defaul
   const plainDeleted = await deletedPathsSince(wt);
   assert.deepEqual(plainDeleted.ok && plainDeleted.paths, [], "main never had src/legacy.ts");
 
-  const diff = await computeSessionDiff(wt, undefined, "release/windows");
+  const diff = await computeSessionDiff(wt, undefined, "release/2.0");
   assert.equal(diff.ok, true);
-  assert.equal(diff.base, "release/windows");
+  assert.equal(diff.base, "release/2.0");
   assert.equal(diff.filesChanged, 3);
   assert.doesNotMatch(diff.patch, /windows\.ts/);
   const plainDiff = await computeSessionDiff(wt);
@@ -147,7 +147,7 @@ test("affected tests are selected from the change against origin/<base>", async 
   const parsed = parseTestingConfig(JSON.stringify({ tests: { patterns: ["test/*.test.ts"] } }));
   assert.ok(parsed.ok);
 
-  const based = await selectAffectedTests(wt, parsed.config, {}, "release/windows");
+  const based = await selectAffectedTests(wt, parsed.config, {}, "release/2.0");
   assert.deepEqual(based.ok && based.files, [{ path: "test/feature.test.ts", reason: "changed" }]);
   const plain = await selectAffectedTests(wt, parsed.config);
   assert.deepEqual(
@@ -196,9 +196,9 @@ test("an affected-tests check hands its base branch to test selection", async ()
       baseBranch,
     }, { execute, checkoutSubpath: async () => "" });
 
-  await check("release/windows");
+  await check("release/2.0");
   await check(null);
-  assert.deepEqual(asked, ["release/windows", "release/windows", null, null]);
+  assert.deepEqual(asked, ["release/2.0", "release/2.0", null, null]);
 });
 
 // --- the base a workflow resolves for its binding ---
@@ -237,7 +237,7 @@ test("the diff a workflow captures for its Personas is measured from the bound t
   const wt = featureOnRelease("capture-base");
   const repo = realpathSync(join(repos, "capture-base"));
 
-  const based = sessionRunning("capture-based", wt, repo, "release/windows");
+  const based = sessionRunning("capture-based", wt, repo, "release/2.0");
   const captured = await readWorkflowContextRaw(based.registry, based.binding);
   assert.match(captured.raw.evidence.diff, /src\/feature\.ts/);
   assert.doesNotMatch(captured.raw.evidence.diff, /src\/windows\.ts/, "the base branch's own commit is not this change");
@@ -378,10 +378,10 @@ async function checkBaseFor(id: string, baseBranch: string | null, bindingRepoRo
 }
 
 test("a workflow check is handed the bound task's base branch by the manager's own wiring", async () => {
-  assert.equal(await checkBaseFor("check-based", "release/windows"), "release/windows");
+  assert.equal(await checkBaseFor("check-based", "release/2.0"), "release/2.0");
   assert.equal(await checkBaseFor("check-plain", null), null, "a task with no base measures from the default");
   assert.equal(
-    await checkBaseFor("check-attached", "release/windows", "/attached"),
+    await checkBaseFor("check-attached", "release/2.0", "/attached"),
     null,
     "an attached repository keeps its own default branch",
   );
@@ -390,18 +390,18 @@ test("a workflow check is handed the bound task's base branch by the manager's o
 // --- merge-conflict reactions ---
 
 test("the workflow PR action asks for the conflict fix against the task's base branch", () => {
-  const based = workflowPullRequestConflictContract("release/windows");
-  assert.match(based, /merge conflicts with its base branch `release\/windows`/);
-  assert.match(based, /git fetch origin release\/windows`, then `git merge origin\/release\/windows`/);
+  const based = workflowPullRequestConflictContract("release/2.0");
+  assert.match(based, /merge conflicts with its base branch `release\/2\.0`/);
+  assert.match(based, /git fetch origin release\/2\.0`, then `git merge origin\/release\/2\.0`/);
   assert.match(workflowPullRequestConflictContract(), /git merge origin\/<base>/, "unchanged without a base");
 
   const action = renderSessionAction({
     origin: { kind: "run", workflowName: "Review", workflowVersion: 1, runId: "run-1", repoRoot: null },
     actionName: "Pull Request", promptMarkdown: "Open the PR.", skillCommand: null,
-    workflowEvidence: false, pullRequestGrant: true, pullRequestConflicts: true, baseBranch: "release/windows",
+    workflowEvidence: false, pullRequestGrant: true, pullRequestConflicts: true, baseBranch: "release/2.0",
   });
   assert.ok(action.ok);
-  assert.match(action.payload, /git merge origin\/release\/windows/);
+  assert.match(action.payload, /git merge origin\/release\/2\.0/);
 });
 
 // --- the merge watcher ---
@@ -426,10 +426,10 @@ function discovered(id: string, cwd: string): DiscoveredSession {
 }
 
 /**
- * A task with base branch `release/windows` bound to its agent's work episode, with a backlog
+ * A task with base branch `release/2.0` bound to its agent's work episode, with a backlog
  * task declaring a dependency on it.
  */
-function withDependent(id: string, baseBranch: string | null = "release/windows") {
+function withDependent(id: string, baseBranch: string | null = "release/2.0") {
   setShippingConfig({ closeSessionAfterMerge: false });
   const registry = new Registry();
   const tasks = taskManager(registry);
@@ -505,12 +505,12 @@ function withDependent(id: string, baseBranch: string | null = "release/windows"
 test("a task's PR merged into its non-default base completes it, and its dependent becomes dispatchable", async () => {
   const url = "https://github.com/example/repo/pull/900";
   const f = withDependent("lands-on-base");
-  f.branchPoll(url, "open", "release/windows");
+  f.branchPoll(url, "open", "release/2.0");
   f.depart();
   assert.equal(f.registry.getTask(f.taskId)?.status, "failed", "no outcome recorded yet");
   assert.equal(f.tasks.dependencyBlockers(f.dependent())[0]?.state, "stopped");
 
-  await f.urlPoll(url, "release/windows");
+  await f.urlPoll(url, "release/2.0");
 
   const done = f.registry.getTask(f.taskId)!;
   assert.equal(done.status, "done");
@@ -522,7 +522,7 @@ test("a task's PR merged into its non-default base completes it, and its depende
 test("a task's PR merged into some other branch completes nothing and releases no dependent", async () => {
   const url = "https://github.com/example/repo/pull/901";
   const f = withDependent("lands-elsewhere");
-  f.branchPoll(url, "open", "release/windows");
+  f.branchPoll(url, "open", "release/2.0");
   f.depart();
 
   await f.urlPoll(url, "main");
@@ -540,7 +540,7 @@ test("the branch poller records a merge only into the task's base branch", () =>
   assert.equal(wrong.dependent().dependencies[0]?.satisfiedAt, null);
 
   const right = withDependent("branch-on-base");
-  right.branchPoll("https://github.com/example/repo/pull/903", "merged", "release/windows");
+  right.branchPoll("https://github.com/example/repo/pull/903", "merged", "release/2.0");
   assert.equal(taskWorkEpisodeForTask(right.taskId)?.mergedAt, NOW);
   assert.notEqual(right.dependent().dependencies[0]?.satisfiedAt, null, "stamped on the edge");
   assert.deepEqual(right.tasks.dependencyBlockers(right.dependent()), []);
@@ -549,7 +549,7 @@ test("the branch poller records a merge only into the task's base branch", () =>
 test("a merge gh reports with no base branch does not count for a task that names one", async () => {
   const url = "https://github.com/example/repo/pull/905";
   const f = withDependent("lands-unnamed");
-  f.branchPoll(url, "open", "release/windows");
+  f.branchPoll(url, "open", "release/2.0");
   f.depart();
 
   await f.urlPoll(url, null);

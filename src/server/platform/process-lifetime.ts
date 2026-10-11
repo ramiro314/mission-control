@@ -68,8 +68,8 @@ export function createPosixProcessLifetime(deps: ProcessLifetimeDeps = nodeDeps)
 const posix = createPosixProcessLifetime();
 
 /**
- * The platform-selection point. `release/windows` registers `win32` here; `main` registers
- * nothing, so every platform, Windows included, resolves to the POSIX implementation.
+ * The platform-selection point. No platform registers an override on `main`; every platform
+ * resolves to the POSIX implementation.
  */
 const byPlatform: Partial<Record<NodeJS.Platform, ProcessLifetime>> = {};
 

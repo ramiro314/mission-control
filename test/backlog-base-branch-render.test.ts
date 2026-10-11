@@ -28,8 +28,8 @@ function column(tasks: Task[]): string {
 }
 
 test("a backlog card shows a set base branch and nothing for the default", () => {
-  const based = column([mkTask({ id: "t-based", baseBranch: "release/windows" })]);
-  assert.match(based, /<span class="bl-base"[^>]*>base release\/windows<\/span>/);
+  const based = column([mkTask({ id: "t-based", baseBranch: "release/2.0" })]);
+  assert.match(based, /<span class="bl-base"[^>]*>base release\/2\.0<\/span>/);
 
   for (const baseBranch of [null, undefined]) {
     const plain = column([mkTask({ id: "t-plain", baseBranch })]);
