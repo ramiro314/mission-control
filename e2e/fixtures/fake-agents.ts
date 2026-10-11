@@ -273,6 +273,18 @@ export function writeGhIssueCreateScript(home: string, script: FakeGhIssueCreate
 }
 
 /**
+ * What `FAKE_GH` prints to stderr, failing, for every `gh issue list`: how a spec shows what a
+ * refused sweep and preflight read like on the source. Absent or empty, lists answer as usual.
+ */
+export function ghIssueListRefusalPath(home: string): string {
+  return join(home, "gh-issue-list-refusal.txt");
+}
+
+export function writeGhIssueListRefusal(home: string, stderr: string): void {
+  writeFileSync(ghIssueListRefusalPath(home), stderr);
+}
+
+/**
  * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
  *
  * cmux, not tmux, and the choice is structural. tmux availability is a question about a
@@ -766,6 +778,12 @@ if (argv[0] === "--version") {
   const here = scriptedPrs().filter((pr) => pr.cwd === process.cwd());
   process.stdout.write(JSON.stringify(here) + "\\n");
 } else if (command.startsWith("issue list") || command.startsWith("issue view")) {
+  let refusal = "";
+  try { refusal = require("node:fs").readFileSync(process.env.MC_E2E_GH_ISSUE_LIST_REFUSAL, "utf8"); } catch {}
+  if (refusal && command.startsWith("issue list")) {
+    process.stderr.write(refusal);
+    process.exit(1);
+  }
   let items = [];
   try { items = JSON.parse(require("node:fs").readFileSync(process.env.MC_E2E_GH_ISSUES, "utf8")); } catch {}
   if (command.startsWith("issue list")) {

@@ -19,6 +19,7 @@ import {
   ghProductScriptPath,
   ghWritebackScriptPath,
   ghIssueCreateScriptPath,
+  ghIssueListRefusalPath,
   productAuthorizationBinPath,
   productAuthorizationScriptPath,
   writeProductAuthorizationBin,
@@ -522,6 +523,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // And its scripted task-source issue creates. Absent content means every create prints
     // issue 123, which is what every push spec before ticket mirroring already expects.
     MC_E2E_GH_ISSUE_CREATE: ghIssueCreateScriptPath(home),
+    // And the stderr a refused `gh issue list` prints. Absent means every list answers.
+    MC_E2E_GH_ISSUE_LIST_REFUSAL: ghIssueListRefusalPath(home),
     // The public repository product reports would target. Pointed at a fixture owner/name so
     // no run - not even one whose `gh` override somehow failed - names the real tracker. The
     // blast dam is `MISSION_GH_BIN` above; this is the second lock on the same door.
