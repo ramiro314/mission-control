@@ -41,8 +41,19 @@ function argAfter(args: string[], flag: string): string | undefined {
   return i === -1 ? undefined : args[i + 1];
 }
 
+// A blank Repository is resolved before the argv is built, so every list names its
+// repository: left to `gh`, a fork checkout's sweep goes to the parent behind an `upstream`
+// remote, which an organization enforcing SAML SSO refuses.
+test("every issue list carries --repo, whatever the config", () => {
+  for (const c of [cfg(), cfg({ repo: "acme/configured" }), cfg({ labelsAny: ["a", "b"], unassignedOnly: true })]) {
+    const args = ghIssueListArgs(c, "acme/resolved");
+    assert.equal(args.filter((a) => a === "--repo").length, 1);
+    assert.equal(argAfter(args, "--repo"), "acme/resolved");
+  }
+});
+
 test("the base sweep asks only for open issues, and only for the fields we map", () => {
-  const args = ghIssueListArgs(cfg());
+  const args = ghIssueListArgs(cfg(), "acme/w");
   assert.ok(args.slice(0, 2).join(" ") === "issue list");
   assert.equal(argAfter(args, "--state"), "open");
   assert.equal(argAfter(args, "--limit"), "50");
@@ -56,7 +67,7 @@ test("the base sweep asks only for open issues, and only for the fields we map",
 // One label needs no search syntax, which also means no quoting rules - a label with a
 // comma in it survives here where `label:a,b` would split it in half.
 test("one label goes through --label", () => {
-  const args = ghIssueListArgs(cfg({ labelsAny: ["Type: Bug, maybe"] }));
+  const args = ghIssueListArgs(cfg({ labelsAny: ["Type: Bug, maybe"] }), "acme/w");
   assert.equal(argAfter(args, "--label"), "Type: Bug, maybe");
   assert.equal(args.includes("--search"), false);
 });
@@ -64,7 +75,7 @@ test("one label goes through --label", () => {
 // The one that matters: `--label a --label b` is AND, and the config says ANY. Passing
 // both flags would quietly select only issues carrying every label at once.
 test("several labels become an OR search, not repeated --label flags", () => {
-  const args = ghIssueListArgs(cfg({ labelsAny: ["bug", "good first issue"] }));
+  const args = ghIssueListArgs(cfg({ labelsAny: ["bug", "good first issue"] }), "acme/w");
   assert.equal(args.includes("--label"), false);
   assert.equal(argAfter(args, "--search"), 'label:bug,"good first issue"');
 });
@@ -76,6 +87,7 @@ test("several labels become an OR search, not repeated --label flags", () => {
 test("all-of labels are separate AND terms and none-of labels are exclusions", () => {
   const args = ghIssueListArgs(
     cfg({ labelsAll: ["flaky-test", "flaky-test:actionable"], labelsNone: ["wontfix"] }),
+    "acme/w",
   );
   assert.equal(args.includes("--label"), false);
   assert.equal(
@@ -85,13 +97,14 @@ test("all-of labels are separate AND terms and none-of labels are exclusions", (
 });
 
 test("all-of and none-of labels are quoted like any-of labels", () => {
-  const args = ghIssueListArgs(cfg({ labelsAll: ["good first issue"], labelsNone: ['say "no"'] }));
+  const args = ghIssueListArgs(cfg({ labelsAll: ["good first issue"], labelsNone: ['say "no"'] }), "acme/w");
   assert.equal(argAfter(args, "--search"), 'label:"good first issue" -label:"say \\"no\\""');
 });
 
 test("all-of and none-of combine with several any-of labels in one search", () => {
   const args = ghIssueListArgs(
     cfg({ labelsAny: ["bug", "regression"], labelsAll: ["P1"], labelsNone: ["wontfix"], unassignedOnly: true }),
+    "acme/w",
   );
   assert.equal(args.filter((a) => a === "--search").length, 1);
   assert.equal(argAfter(args, "--search"), "label:bug,regression label:P1 -label:wontfix no:assignee");
@@ -100,7 +113,7 @@ test("all-of and none-of combine with several any-of labels in one search", () =
 // One any-of label keeps its `--label` flag, which gh ANDs with the search terms - exactly
 // the meaning "this label, and all of those, and none of these" asks for.
 test("one any-of label keeps --label alongside all-of and none-of terms", () => {
-  const args = ghIssueListArgs(cfg({ labelsAny: ["mission"], labelsNone: ["wontfix"] }));
+  const args = ghIssueListArgs(cfg({ labelsAny: ["mission"], labelsNone: ["wontfix"] }), "acme/w");
   assert.equal(argAfter(args, "--label"), "mission");
   assert.equal(argAfter(args, "--search"), "-label:wontfix");
 });
@@ -109,11 +122,11 @@ test("one any-of label keeps --label alongside all-of and none-of terms", () => 
 // empty and sends gh byte-for-byte the argv it always did.
 test("configs without all-of or none-of produce exactly the argv they always did", () => {
   const json = "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent";
-  assert.deepEqual(ghIssueListArgs(cfg({ repo: "acme/w", labelsAny: ["mission"] })), [
+  assert.deepEqual(ghIssueListArgs(cfg({ repo: "acme/w", labelsAny: ["mission"] }), "acme/w"), [
     "issue", "list", "--state", "open", "--limit", "50", "--repo", "acme/w", "--label", "mission", "--json", json,
   ]);
-  assert.deepEqual(ghIssueListArgs(cfg({ labelsAny: ["a", "b c"], assignedToMe: true, milestone: "v2" })), [
-    "issue", "list", "--state", "open", "--limit", "50", "--assignee", "@me", "--milestone", "v2",
+  assert.deepEqual(ghIssueListArgs(cfg({ labelsAny: ["a", "b c"], assignedToMe: true, milestone: "v2" }), "acme/w"), [
+    "issue", "list", "--state", "open", "--limit", "50", "--repo", "acme/w", "--assignee", "@me", "--milestone", "v2",
     "--search", 'label:a,"b c"', "--json", json,
   ]);
 });
@@ -136,13 +149,13 @@ test("the schema refuses a label that is both required and excluded", () => {
 });
 
 test("assignedToMe and unassignedOnly reach gh by their own routes", () => {
-  assert.equal(argAfter(ghIssueListArgs(cfg({ assignedToMe: true })), "--assignee"), "@me");
+  assert.equal(argAfter(ghIssueListArgs(cfg({ assignedToMe: true }), "acme/w"), "--assignee"), "@me");
   // `--assignee` has no "nobody" spelling, so this is a search term.
-  assert.equal(argAfter(ghIssueListArgs(cfg({ unassignedOnly: true })), "--search"), "no:assignee");
+  assert.equal(argAfter(ghIssueListArgs(cfg({ unassignedOnly: true }), "acme/w"), "--search"), "no:assignee");
 });
 
 test("a milestone is passed through", () => {
-  assert.equal(argAfter(ghIssueListArgs(cfg({ milestone: "v2" })), "--milestone"), "v2");
+  assert.equal(argAfter(ghIssueListArgs(cfg({ milestone: "v2" }), "acme/w"), "--milestone"), "v2");
 });
 
 // A filter that silently matches nothing is the worst possible failure for a background
@@ -304,7 +317,7 @@ test("the created issue carries the task's title and intent, the repo, and every
   const args = ghIssueCreateArgs(cfg({ repo: "acme/widgets", labelsAny: ["mission", "triage"] }), {
     title: "Widgets leak on resize",
     intent: "Steps: resize the window twice.",
-  });
+  }, "acme/widgets");
   assert.deepEqual(args, [
     "issue",
     "create",
@@ -330,6 +343,7 @@ test("a pushed issue carries the all-of labels and none of the none-of labels", 
   const args = ghIssueCreateArgs(
     cfg({ labelsAny: ["mission"], labelsAll: ["flaky-test", "mission"], labelsNone: ["wontfix"] }),
     { title: "t", intent: "i" },
+    "acme/widgets",
   );
   const labels = args.flatMap((a, i) => (a === "--label" ? [args[i + 1]] : []));
   assert.deepEqual(labels, ["mission", "flaky-test"]);
@@ -348,7 +362,7 @@ test("a draft's relations become --blocked-by and --parent, by URL", () => {
     // A ref with no URL is skipped rather than guessed at.
     blockedBy: [ref(3), ref(4), ref(5, null)],
     parent: ref(1),
-  });
+  }, "acme/widgets");
   assert.deepEqual(args.slice(-4), [
     "--blocked-by",
     "https://github.com/acme/widgets/issues/3,https://github.com/acme/widgets/issues/4",
@@ -356,19 +370,19 @@ test("a draft's relations become --blocked-by and --parent, by URL", () => {
     "https://github.com/acme/widgets/issues/1",
   ]);
   // No relations, no flags: an empty list never reaches gh as an empty `--blocked-by`.
-  assert.ok(!ghIssueCreateArgs(cfg(), { title: "t", intent: "i", blockedBy: [] }).includes("--blocked-by"));
+  assert.ok(!ghIssueCreateArgs(cfg(), { title: "t", intent: "i", blockedBy: [] }, "acme/widgets").includes("--blocked-by"));
 });
 
-test("an unconfigured repo and no labels pass no flags at all", () => {
-  const args = ghIssueCreateArgs(cfg(), { title: "t", intent: "i" });
-  assert.deepEqual(args, ["issue", "create", "--title", "t", "--body", "i"]);
+test("no labels and no relations pass only the resolved repository", () => {
+  const args = ghIssueCreateArgs(cfg(), { title: "t", intent: "i" }, "acme/resolved");
+  assert.deepEqual(args, ["issue", "create", "--title", "t", "--body", "i", "--repo", "acme/resolved"]);
 });
 
 // An argv array handed to `execFile` - no shell parses it - so text that would be a
 // command injection anywhere else is just a title.
 test("shell metacharacters in a title or body are arguments, not syntax", () => {
   const nasty = "$(rm -rf /) `whoami` && echo";
-  const args = ghIssueCreateArgs(cfg(), { title: nasty, intent: nasty });
+  const args = ghIssueCreateArgs(cfg(), { title: nasty, intent: nasty }, "acme/widgets");
   assert.equal(args[3], nasty);
   assert.equal(args[5], nasty);
 });

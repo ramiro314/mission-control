@@ -17,15 +17,20 @@ import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-so
 import type { TaskPriority, TaskSourceItemState } from "@shared/types.ts";
 import { ghBin } from "../config.ts";
 import { githubIssueCreateOutcome } from "../github/issue-create.ts";
+import { checkoutGitHubRepository, type CheckoutRepository } from "../github/repository.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 
 // The first task source, and the proof the interface is the right shape.
 //
-// Auth is the `gh` CLI, run with `cwd` set to the repo - exactly what `src/server/pr.ts`
-// already does, which lets `gh` resolve both the repo and the operator's existing
-// `gh auth`. This feature therefore adds NO token storage, no OAuth flow and no new
+// Auth is the `gh` CLI, run with `cwd` set to the repo, which picks up the operator's
+// existing `gh auth`. This feature therefore adds NO token storage, no OAuth flow and no new
 // secret that can leak, which is worth more than the flexibility of an API client.
+//
+// The repository is never left to `gh`: every call names one, either the configured
+// Repository or, when that is blank, what `checkoutGitHubRepository` resolves for the
+// checkout. Left to choose, `gh` prefers a remote called `upstream`, which on a fork is the
+// parent, and an organization enforcing SAML SSO refuses it to a token not authorized there.
 //
 // Nothing here writes to OUR database: `sweep` returns candidates for `ingest.ts` to
 // decide on, `push` returns the ref GitHub minted for its own chokepoint to record, and
@@ -48,6 +53,27 @@ const JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt,state,stat
 
 /** Longest issue body carried into an intent, so one enormous issue can't fill a card. */
 const BODY_LIMIT = 4000;
+
+/**
+ * The repository this source's `gh` calls name: the configured Repository, else the
+ * checkout's gh default pin, else its `origin`. Resolved on every call rather than stored,
+ * so a blank Repository follows the checkout and needs no migration.
+ */
+export async function sourceRepository(
+  cfg: GithubIssuesConfig,
+  repoRoot: string,
+): Promise<{ ok: true; repo: string } | { ok: false; error: string }> {
+  if (cfg.repo) return { ok: true, repo: cfg.repo };
+  return checkoutGitHubRepository(repoRoot);
+}
+
+/** What a blank Repository resolves to, for the editor's hint. Null when one is configured. */
+async function resolveRepository(
+  cfg: GithubIssuesConfig,
+  repoRoot: string,
+): Promise<CheckoutRepository | null> {
+  return cfg.repo ? null : checkoutGitHubRepository(repoRoot);
+}
 
 /** One issue, as much of `gh`'s JSON as we read. Everything is optional: it is a wire shape. */
 interface GhIssue {
@@ -99,7 +125,10 @@ export function issueState(issue: Pick<GhIssue, "state" | "stateReason">): TaskS
 }
 
 /**
- * The `gh issue list` argv for this config.
+ * The `gh issue list` argv for this config, against `repo`.
+ *
+ * `repo` is required and always becomes `--repo`, so no sweep or preflight leaves the
+ * repository to `gh`'s own choice (see `sourceRepository`).
  *
  * Split out and exported because it is the half worth testing: a filter that quietly
  * matches nothing looks exactly like a repo with no open issues, and a background sweep
@@ -107,9 +136,8 @@ export function issueState(issue: Pick<GhIssue, "state" | "stateReason">): TaskS
  * must carry every one you pass), while the config asks for ANY - so more than one label
  * has to go through `--search`, where GitHub's comma is OR.
  */
-export function ghIssueListArgs(cfg: GithubIssuesConfig): string[] {
-  const args = ["issue", "list", "--state", "open", "--limit", String(cfg.limit)];
-  if (cfg.repo) args.push("--repo", cfg.repo);
+export function ghIssueListArgs(cfg: GithubIssuesConfig, repo: string): string[] {
+  const args = ["issue", "list", "--state", "open", "--limit", String(cfg.limit), "--repo", repo];
 
   const search: string[] = [];
   if (cfg.labelsAny.length === 1) {
@@ -267,7 +295,9 @@ export function sweepResultFrom(
 
 /** Ask `gh` for the open issues this config selects, from inside the repo's checkout. */
 async function sweep(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<SweepResult> {
-  const res = await run(ghBin(), ghIssueListArgs(cfg), {
+  const target = await sourceRepository(cfg, ctx.repoRoot);
+  if (!target.ok) return { items: [], error: target.error };
+  const res = await run(ghBin(), ghIssueListArgs(cfg, target.repo), {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -288,9 +318,11 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
       ? "the gh CLI is not installed - install it and run `gh auth login`"
       : "gh is not authenticated - run `gh auth login`";
   }
-  // Ask for zero issues: this proves the repo resolves and is readable under that auth
-  // without spending a page of results, and it exercises the same filters the sweep will.
-  const probe = await run(ghBin(), [...ghIssueListArgs({ ...cfg, limit: 1 })], {
+  const target = await sourceRepository(cfg, ctx.repoRoot);
+  if (!target.ok) return target.error;
+  // Ask for one issue: this proves the repo is readable under that auth without spending
+  // a page of results, and it exercises the same filters the sweep will.
+  const probe = await run(ghBin(), ghIssueListArgs({ ...cfg, limit: 1 }, target.repo), {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -304,7 +336,10 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
 // ---- the outward half: one of our tasks, filed as an issue ----
 
 /**
- * The `gh issue create` argv for this config and draft.
+ * The `gh issue create` argv for this config and draft, against `repo`.
+ *
+ * `repo` is required, for the reason `ghIssueListArgs` requires it: an issue filed where
+ * `gh` chose could land on a fork's parent.
  *
  * The labels are the source's OWN sweep filter (`labelsAny` and `labelsAll`), which is
  * the point rather than a convenience: an issue created without them would not match the filter this
@@ -321,7 +356,7 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
  * an unlabelled issue, and that is the behaviour we want - nothing was published, the
  * error names the label, and the operator fixes either the repo or the source's filter.
  */
-export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): string[] {
+export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft, repo: string): string[] {
   return [
     "issue",
     "create",
@@ -329,7 +364,8 @@ export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): st
     draft.title,
     "--body",
     draft.intent,
-    ...(cfg.repo ? ["--repo", cfg.repo] : []),
+    "--repo",
+    repo,
     ...pushLabels(cfg).flatMap((l) => ["--label", l]),
     ...relationArgs(draft),
   ];
@@ -449,11 +485,14 @@ async function push(
   draft: PushDraft,
   ctx: PushContext,
 ): Promise<PushResult> {
-  const res = await run(ghBin(), ghIssueCreateArgs(cfg, draft), {
+  // A resolver error means no subprocess ran, so nothing was published and a retry is safe.
+  const target = await sourceRepository(cfg, ctx.repoRoot);
+  if (!target.ok) return { ref: null, error: target.error, outcomeUnknown: false };
+  const res = await run(ghBin(), ghIssueCreateArgs(cfg, draft, target.repo), {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return pushResultFrom(res, ctx, cfg.repo, draft);
+  return pushResultFrom(res, ctx, target.repo, draft);
 }
 
 // ---- the write-back half: a note onto the issue a task was swept from ----
@@ -471,22 +510,41 @@ interface IssueTarget {
   repo: string;
 }
 
+/** An `owner/repo#123` external id, split into its repository and number. */
+const EXTERNAL_ID = /^([^/\s]+\/[^#\s]+)#(\d+)$/;
+
 /**
  * Address the issue this notice is about.
  *
  * From the ITEM's own id in preference to the source's `repo`, and for the reason
  * `externalIdFor` composes that id from the URL rather than from the config: the id is
- * stable, and a `repo` that was reconfigured (or left empty to resolve from origin) after
- * the sweep would otherwise send a comment at a different repository than the one the
- * issue is in. The configured `repo` is the fallback for the shape that carries none, and
- * a bare URL is left to `gh` to resolve - passing `--repo` alongside a URL is the one
- * combination `gh` refuses outright.
+ * stable, and a `repo` that was reconfigured (or left blank to resolve) after the sweep
+ * would otherwise send a comment at a different repository than the one the issue is in.
+ * A bare URL names its own repository - passing `--repo` alongside a URL is the one
+ * combination `gh` refuses outright. The source's repository is the last fallback, for the
+ * shape that carries neither, and `cfg.repo` must already be resolved by then
+ * (`writebackConfig`), so it is never blank and never left to `gh`.
  */
 export function issueTargetFor(cfg: GithubIssuesConfig, notice: WritebackNotice): IssueTarget {
-  const m = /^([^/\s]+\/[^#\s]+)#(\d+)$/.exec(notice.externalId);
+  const m = EXTERNAL_ID.exec(notice.externalId);
   if (m) return { arg: m[2]!, repo: m[1]! };
   if (notice.externalUrl) return { arg: notice.externalUrl, repo: "" };
   return { arg: notice.externalId, repo: cfg.repo };
+}
+
+/**
+ * `cfg` ready for a write-back's argv: a blank Repository resolved through the checkout when
+ * the notice names no repository of its own, which is the one case `issueTargetFor` reads
+ * it. Otherwise unchanged, so a write-back that never needs the fallback never fails on it.
+ */
+export async function writebackConfig(
+  cfg: GithubIssuesConfig,
+  notice: WritebackNotice,
+  repoRoot: string,
+): Promise<{ ok: true; cfg: GithubIssuesConfig } | { ok: false; error: string }> {
+  if (cfg.repo || EXTERNAL_ID.test(notice.externalId) || notice.externalUrl) return { ok: true, cfg };
+  const target = await sourceRepository(cfg, repoRoot);
+  return target.ok ? { ok: true, cfg: { ...cfg, repo: target.repo } } : target;
 }
 
 /**
@@ -610,7 +668,10 @@ async function annotate(
   notice: WritebackNotice,
   ctx: WritebackContext,
 ): Promise<WritebackResult> {
-  const res = await run(ghBin(), ghIssueCommentArgs(cfg, notice), {
+  const ready = await writebackConfig(cfg, notice, ctx.repoRoot);
+  // No subprocess ran, so nothing was written and the row may be retried.
+  if (!ready.ok) return { error: ready.error, outcomeUnknown: false, detail: null };
+  const res = await run(ghBin(), ghIssueCommentArgs(ready.cfg, notice), {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -623,7 +684,9 @@ async function resolve(
   notice: WritebackNotice,
   ctx: WritebackContext,
 ): Promise<WritebackResult> {
-  const res = await run(ghBin(), ghIssueCloseArgs(cfg, notice), {
+  const ready = await writebackConfig(cfg, notice, ctx.repoRoot);
+  if (!ready.ok) return { error: ready.error, outcomeUnknown: false, detail: null };
+  const res = await run(ghBin(), ghIssueCloseArgs(ready.cfg, notice), {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -683,6 +746,7 @@ export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   preflight,
   sweep,
   readLinked,
+  resolveRepository,
   // Present because the kind's `canPush` says so - the contract test holds the two
   // together in both directions.
   push,

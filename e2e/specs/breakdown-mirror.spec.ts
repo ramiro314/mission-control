@@ -118,7 +118,7 @@ async function startShape(daemon: DaemonHandle, fromIssue: boolean): Promise<Ses
       await api(daemon, `/api/tasks/${shape.id}/push`, "POST", { sourceId: "gh-mirror" }),
       "shape task's own issue",
     );
-    expect(pushed.source?.externalId).toBe("acme/demo-repo#1");
+    expect(pushed.source?.externalId).toBe("mc-e2e-fixture/demo-repo#1");
     await json(await api(daemon, `/api/tasks/${shape.id}/dispatch`, "POST", {}), "shape dispatch");
   }
 
@@ -254,17 +254,17 @@ test("with a source that can push, mirroring opens on yes and each ticket become
     urls.push(pushed.source.url);
   }
   expect(urls).toEqual([
-    "https://github.com/acme/demo-repo/issues/2",
-    "https://github.com/acme/demo-repo/issues/3",
+    "https://github.com/mc-e2e-fixture/demo-repo/issues/2",
+    "https://github.com/mc-e2e-fixture/demo-repo/issues/3",
   ]);
 
   // What GitHub was asked: ticket 2 blocked by ticket 1's issue, both under the shape's issue.
   const [, first, second] = issueCreates(daemon);
   expect(first).not.toContain("--blocked-by");
-  expect(first!.slice(first!.indexOf("--parent"))).toEqual(["--parent", "https://github.com/acme/demo-repo/issues/1"]);
+  expect(first!.slice(first!.indexOf("--parent"))).toEqual(["--parent", "https://github.com/mc-e2e-fixture/demo-repo/issues/1"]);
   expect(second!.slice(second!.indexOf("--blocked-by"))).toEqual([
-    "--blocked-by", "https://github.com/acme/demo-repo/issues/2",
-    "--parent", "https://github.com/acme/demo-repo/issues/1",
+    "--blocked-by", "https://github.com/mc-e2e-fixture/demo-repo/issues/2",
+    "--parent", "https://github.com/mc-e2e-fixture/demo-repo/issues/1",
   ]);
 
   // A retry files nothing new.
@@ -283,9 +283,9 @@ test("with a source that can push, mirroring opens on yes and each ticket become
   const card = dashboard.locator(".bl-card").filter({ has: dashboard.getByRole("button", { name: TICKETS[1]!.title, exact: true }) });
   await card.getByRole("button", { name: TICKETS[1]!.title, exact: true }).click();
   const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
-  await expect(editor.getByRole("link", { name: "acme/demo-repo#3" })).toHaveAttribute(
+  await expect(editor.getByRole("link", { name: "mc-e2e-fixture/demo-repo#3" })).toHaveAttribute(
     "href",
-    "https://github.com/acme/demo-repo/issues/3",
+    "https://github.com/mc-e2e-fixture/demo-repo/issues/3",
   );
   await shoot(dashboard, editor, "02-ticket-linked-issue");
 });
