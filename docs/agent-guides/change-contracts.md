@@ -104,9 +104,14 @@ open a pull request with `openPullRequestCommand`, never `gh pr create`; name a 
 issue by URL, never by number; and read origin with an exact copy of `originRepositoryShell`
 rather than gh's `{owner}/{repo}` placeholders.
 
-`test/github-repo-targeting.test.ts` holds both halves. It finds every `gh` call by syntax tree
-and fails on one missing from its inventory, which names how each call targets a repository; a
-call shape it cannot follow fails too, rather than passing unread.
+`test/github-repo-targeting.test.ts` holds both halves. It finds `gh` calls by syntax tree,
+starting from a `"gh"` literal, a `ghBin()` call, a function or method that passes its argv
+straight to `gh` (`runGh`), and a `gh` command in a shell command line (`exec`, a literal
+shell's `-c`, `shell: true`). It fails on a call missing from its inventory, which names how each
+call targets a repository. Every read of a `gh` binary it follows must reach a call, only test the
+binary, or be declared by hand, so a shape it cannot follow fails rather than passing unread. A
+program it never sees as `gh` - a shell named by a variable, or a binary imported as a value from
+another file - is outside a syntax scan's reach.
 
 ## Database changes
 

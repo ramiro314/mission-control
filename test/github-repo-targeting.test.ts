@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 
@@ -28,7 +28,8 @@ const ROOT = join(import.meta.dirname, "..");
  * - `explicit`: the repository is spelled out - a `repos/<owner>/<repo>` REST path, GraphQL
  *   `owner`/`name` variables, or `--repo` with a configured or canonical repository.
  * - `node-id`: a GraphQL mutation on a global node id, which names one object and no repository
- *   gh could choose.
+ *   gh could choose. Restricted like `none` (`NODE_ID_ARGV`): it names no repository, so each
+ *   call that uses it is listed there and called out in the pull request that adds it.
  * - `none`: no repository at all. Only `auth status`, `--version` and `api user` may say so
  *   (`NO_REPOSITORY_ARGV`); any other call that names no repository is fixed, not classified.
  */
@@ -59,6 +60,11 @@ const NO_REPOSITORY_ARGV = new Set([
   '["api", "user", "--jq", ".login"]',
   // `scripts/install-app.mjs`: `authStatus: () => ["auth", "status"]`.
   "GH_ARGS.authStatus()",
+]);
+
+/** The only argv a `node-id` row may carry: the Inspector resolving a thread it read off the PR. */
+const NODE_ID_ARGV = new Set([
+  '["api", "graphql", "-f", `query=${RESOLVE_MUTATION}`, "-F", `threadId=${threadId}`]',
 ]);
 
 /**
@@ -133,6 +139,9 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
 
 /** Each `gh` binary the scanner cannot follow to a call, and why it runs nothing unclassified. */
 const GH_MENTIONS: Readonly<Record<string, readonly GhMention[]>> = {
+  "src/main/updater.ts": [
+    { fn: "runGh", line: "env: executable.env,", why: "the located gh's child environment, handed to the same `execFile` that runs it" },
+  ],
   "src/server/config.ts": [
     { fn: "ghBin", line: 'return envVar("GH_BIN") || "gh";', why: "`ghBin()` itself; its calls are scanned" },
   ],
@@ -141,6 +150,7 @@ const GH_MENTIONS: Readonly<Record<string, readonly GhMention[]>> = {
   ],
   "src/server/setup/index.ts": [
     { fn: "ghCliStatus", line: 'if (status.state !== "satisfied") return status;', why: "returns the setup status; the only run is the `--version` probe" },
+    { fn: "ghCliStatus", line: "evidence: status.evidence,", why: "the resolved path, shown as setup evidence; the only run is the `--version` probe" },
     { fn: "ghCliStatus", line: "return status;", why: "returns the setup status; the only run is the `--version` probe" },
   ],
   "src/shared/executables.ts": [
@@ -174,6 +184,12 @@ const RUNNERS = new Set([
 /** Calls that turn a binary name into the binary itself: transparent to the scan. */
 const LOOKUPS = new Set(["locateExecutable", "locateExecutableSync", "resolveBinPath", "present"]);
 
+/** A program named by literal that runs its `-c` argument as a shell command line. */
+const SHELLS = /^(?:\/(?:usr\/)?bin\/)?(?:sh|bash|zsh|dash)$/;
+
+/** A `gh` command inside a shell command line. */
+const GH_COMMAND_RE = /(?:^|[\s;&|(`])gh\s/;
+
 interface Site {
   file: string;
   fn: string;
@@ -184,9 +200,13 @@ interface Site {
   text: string;
 }
 
+/**
+ * A function that runs `gh` with an argv it was handed, so its callers are the call sites. A
+ * method is called through a property (`this.gh(...)`), a function by its name.
+ */
 interface Wrapper {
-  file: string;
   name: string;
+  method: boolean;
 }
 
 function codeFiles(directory: string): string[] {
@@ -243,7 +263,7 @@ function enclosingName(node: ts.Node): string {
     }
     if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) {
       if (ts.isVariableDeclaration(n.parent) && ts.isIdentifier(n.parent.name)) return n.parent.name.text;
-      if (ts.isPropertyAssignment(n.parent)) return n.parent.name.getText();
+      if (ts.isPropertyAssignment(n.parent) || ts.isPropertyDeclaration(n.parent)) return n.parent.name.getText();
     }
   }
   return "<module>";
@@ -259,13 +279,16 @@ function parameterOwner(node: ts.Node, name: string): ts.SignatureDeclaration | 
   return null;
 }
 
-function functionName(fn: ts.SignatureDeclaration): string | null {
-  if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name && ts.isIdentifier(fn.name)) {
-    return fn.name.text;
-  }
-  if ((ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))
-    && ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name)) {
-    return fn.parent.name.text;
+/** How callers reach `fn`, or null when it is anonymous and nothing can call it by name. */
+function wrapperOf(fn: ts.SignatureDeclaration): Wrapper | null {
+  if (ts.isFunctionDeclaration(fn) && fn.name) return { name: fn.name.text, method: false };
+  if (ts.isMethodDeclaration(fn) && ts.isIdentifier(fn.name)) return { name: fn.name.text, method: true };
+  if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+    const parent = fn.parent;
+    if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return { name: parent.name.text, method: false };
+    if ((ts.isPropertyDeclaration(parent) || ts.isPropertyAssignment(parent)) && ts.isIdentifier(parent.name)) {
+      return { name: parent.name.text, method: true };
+    }
   }
   return null;
 }
@@ -278,6 +301,7 @@ function isDeclarationName(id: ts.Identifier): boolean {
     || (ts.isParameter(parent) && parent.name === id)
     || (ts.isPropertyAccessExpression(parent) && parent.name === id)
     || (ts.isPropertyAssignment(parent) && parent.name === id)
+    || (ts.isPropertyDeclaration(parent) && parent.name === id)
     || (ts.isMethodDeclaration(parent) && parent.name === id)
     || (ts.isMethodSignature(parent) && parent.name === id)
     || (ts.isPropertySignature(parent) && parent.name === id)
@@ -291,6 +315,16 @@ function identifiersIn(scope: ts.Node, name: string): ts.Identifier[] {
   const found: ts.Identifier[] = [];
   function visit(node: ts.Node): void {
     if (ts.isIdentifier(node) && node.text === name && !isDeclarationName(node)) found.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(scope);
+  return found;
+}
+
+function propertyReadsIn(scope: ts.Node, name: string): ts.PropertyAccessExpression[] {
+  const found: ts.PropertyAccessExpression[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isPropertyAccessExpression(node) && node.name.text === name) found.push(node);
     ts.forEachChild(node, visit);
   }
   visit(scope);
@@ -319,9 +353,20 @@ function climb(node: ts.Node, throughProperty: boolean): ts.Node {
   }
 }
 
-/** A read of a bound `gh` binary that cannot run it: `!bin`, `if (bin)`, `typeof bin`. */
+/**
+ * A read of a bound `gh` binary that only TESTS it - `!exe`, `if (exe)`, `typeof exe`,
+ * `status.state !== "satisfied"` - and so cannot hand it to anything that runs it.
+ */
 function passive(node: ts.Node): boolean {
   const parent = node.parent;
+  if (ts.isBinaryExpression(parent)) {
+    return [
+      ts.SyntaxKind.EqualsEqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsEqualsToken,
+      ts.SyntaxKind.EqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsToken,
+    ].includes(parent.operatorToken.kind);
+  }
   return (
     (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken)
     || (ts.isIfStatement(parent) && parent.expression === node)
@@ -330,21 +375,70 @@ function passive(node: ts.Node): boolean {
   );
 }
 
+/** The local names `node:child_process`'s shell-string runners (`exec`, `execSync`) go by. */
+function shellRunnerNames(tree: ts.SourceFile): { names: Set<string>; namespaces: Set<string> } {
+  const names = new Set<string>();
+  const namespaces = new Set<string>();
+  const isChildProcess = (text: string): boolean => text === "child_process" || text === "node:child_process";
+  function bindFrom(pattern: ts.BindingName): void {
+    if (ts.isIdentifier(pattern)) namespaces.add(pattern.text);
+    else if (ts.isObjectBindingPattern(pattern)) {
+      for (const element of pattern.elements) {
+        const imported = element.propertyName?.getText() ?? element.name.getText();
+        if ((imported === "exec" || imported === "execSync") && ts.isIdentifier(element.name)) names.add(element.name.text);
+      }
+    }
+  }
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && isChildProcess(node.moduleSpecifier.text)) {
+      const clause = node.importClause;
+      if (clause?.name) namespaces.add(clause.name.text);
+      const bindings = clause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) namespaces.add(bindings.name.text);
+      else if (bindings) {
+        for (const element of bindings.elements) {
+          const imported = element.propertyName?.text ?? element.name.text;
+          if (imported === "exec" || imported === "execSync") names.add(element.name.text);
+        }
+      }
+    }
+    if (
+      ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)
+      && ts.isIdentifier(node.initializer.expression) && node.initializer.expression.text === "require"
+      && node.initializer.arguments[0] && ts.isStringLiteral(node.initializer.arguments[0])
+      && isChildProcess(node.initializer.arguments[0].text)
+    ) {
+      bindFrom(node.name);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return { names, namespaces };
+}
+
 /**
  * Every `gh` invocation in one file, as the inventory names it.
  *
- * It starts from the three ways a `gh` binary appears - a `"gh"` literal, a `ghBin()` call, and
- * a call to a wrapper that passes its argv straight through (`runGh`) - and follows each to the
- * call that runs it: as a runner's first argument, through a `const` binding, through an
- * executable lookup, and from a pass-through wrapper to each of its callers. Anything else it
- * cannot follow comes back with `argv: null`, which no call row matches, so a new shape fails
- * until a person reads it and either declares it a mention or rewrites it into one this reads.
+ * It starts from the ways a `gh` program appears - a `"gh"` literal, a `ghBin()` call, a call
+ * to a wrapper that passes its argv straight through (`runGh`), and a `gh` command inside a
+ * shell command line - and follows each to the call that runs it: as a runner's first argument,
+ * through a `const` binding and any rebinding of it, through an executable lookup, and from a
+ * pass-through wrapper (a function or a method) to each of its callers in any file.
+ *
+ * Every reference it follows ends in one of three places: a runner call (a site), a pure test
+ * of the binary (`!exe`, `status.state !== "x"`), or `argv: null` - which no call row matches,
+ * so a shape it cannot follow fails until a person reads it and either declares it a mention or
+ * rewrites it into one this reads. A shell command line it cannot read as text fails the same
+ * way. The boundary: a program reached only through something this never sees as `gh` - a
+ * shell whose name is not a literal, or a value computed in another file and imported - is out
+ * of a syntax scan's reach, as it is for `test/executable-contracts.test.ts`.
  */
 function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []): { sites: Site[]; wrappers: Wrapper[] } {
   const tree = parse(file, source);
   const sites: Site[] = [];
   const found: Wrapper[] = [];
   const seen = new Set<ts.Node>();
+  const shellRunners = shellRunnerNames(tree);
 
   function lineOf(node: ts.Node): number {
     return tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
@@ -354,6 +448,9 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     if (sites.some((s) => s.argv === null && s.line === line)) return;
     sites.push({ file, fn: enclosingName(node), line, argv: null, text: source.split("\n")[line - 1]!.trim() });
   }
+  function site(node: ts.Node, argv: string): void {
+    sites.push({ file, fn: enclosingName(node), line: lineOf(node), argv, text: "" });
+  }
   function call(runnerCall: ts.CallExpression): void {
     if (seen.has(runnerCall)) return;
     seen.add(runnerCall);
@@ -362,13 +459,13 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     if (ts.isIdentifier(argv)) {
       const owner = parameterOwner(runnerCall, argv.text);
       if (owner) {
-        const name = functionName(owner);
-        if (!name) return unread(runnerCall);
-        found.push({ file, name });
+        const wrapper = wrapperOf(owner);
+        if (!wrapper) return unread(runnerCall);
+        found.push(wrapper);
         return;
       }
     }
-    sites.push({ file, fn: enclosingName(runnerCall), line: lineOf(runnerCall), argv: normalize(argv.getText(tree)), text: "" });
+    site(runnerCall, normalize(argv.getText(tree)));
   }
   function runnerArgument(node: ts.Node): ts.CallExpression | null {
     const parent = node.parent;
@@ -376,35 +473,36 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
       ? parent
       : null;
   }
-
-  // A binary followed this far: run, bound, or unreadable.
-  function place(binary: ts.Node): void {
-    const at = climb(binary, false);
-    const runner = runnerArgument(at);
-    if (runner) return call(runner);
-    const parent = at.parent;
-    if (ts.isVariableDeclaration(parent) && parent.initializer === at && ts.isIdentifier(parent.name)) {
-      return follow(parent.name.text, scopeOf(parent));
-    }
-    unread(at);
-  }
   function scopeOf(declaration: ts.Node): ts.Node {
     for (let n = declaration.parent; n; n = n.parent) {
       if (ts.isBlock(n) || ts.isSourceFile(n) || ts.isModuleBlock(n)) return n;
     }
     return tree;
   }
-  function follow(name: string, scope: ts.Node): void {
-    for (const ref of identifiersIn(scope, name)) {
-      const at = climb(ref, true);
-      const runner = runnerArgument(at);
-      if (runner) call(runner);
-      else if (at !== ref || passive(ref)) continue; // a property read (`bin.env`) or a test
-      else unread(ref);
+
+  // Where a `gh` binary (or a read of a binding holding one) ends up: run, rebound, or unread.
+  function place(node: ts.Node, throughProperty: boolean): void {
+    const at = climb(node, throughProperty);
+    const runner = runnerArgument(at);
+    if (runner) return call(runner);
+    if (throughProperty && passive(at)) return;
+    const parent = at.parent;
+    if (ts.isVariableDeclaration(parent) && parent.initializer === at && ts.isIdentifier(parent.name)) {
+      for (const ref of identifiersIn(scopeOf(parent), parent.name.text)) place(ref, true);
+      return;
     }
+    unread(at);
   }
-  function followWrapper(name: string): void {
-    for (const ref of identifiersIn(tree, name)) {
+
+  function followWrapper(wrapper: Wrapper): void {
+    if (wrapper.method) {
+      for (const read of propertyReadsIn(tree, wrapper.name)) {
+        if (ts.isCallExpression(read.parent) && read.parent.expression === read) recordCall(read.parent);
+        else unread(read);
+      }
+      return;
+    }
+    for (const ref of identifiersIn(tree, wrapper.name)) {
       const parent = ref.parent;
       if (ts.isCallExpression(parent) && parent.expression === ref) {
         recordCall(parent);
@@ -429,7 +527,7 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
   function recordCall(wrapperCall: ts.CallExpression): void {
     const argv = wrapperCall.arguments[0];
     if (!argv || ts.isSpreadElement(argv)) return unread(wrapperCall);
-    sites.push({ file, fn: enclosingName(wrapperCall), line: lineOf(wrapperCall), argv: normalize(argv.getText(tree)), text: "" });
+    site(wrapperCall, normalize(argv.getText(tree)));
   }
   function functionDeclaration(name: string): ts.FunctionDeclaration | null {
     let match: ts.FunctionDeclaration | null = null;
@@ -440,33 +538,56 @@ function ghSites(file: string, source: string, wrappers: readonly Wrapper[] = []
     return match;
   }
 
+  // A shell command line: a `gh` command in its text is a site; text it cannot see is unread.
+  function commandLine(command: ts.Expression | undefined, at: ts.Node): void {
+    if (!command) return unread(at);
+    const text = ts.isStringLiteral(command) || ts.isNoSubstitutionTemplateLiteral(command)
+      ? command.text
+      : ts.isTemplateExpression(command)
+        ? command.getText(tree).slice(1, -1)
+        : null;
+    if (text === null) return unread(command);
+    if (GH_COMMAND_RE.test(text)) site(command, normalize(text));
+  }
+  function shellCall(node: ts.CallExpression): void {
+    const callee = node.expression;
+    const viaShellRunner = (ts.isIdentifier(callee) && shellRunners.names.has(callee.text))
+      || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
+        && shellRunners.namespaces.has(callee.expression.text)
+        && (callee.name.text === "exec" || callee.name.text === "execSync"));
+    if (viaShellRunner) return commandLine(node.arguments[0], node);
+    const program = node.arguments[0];
+    const argv = node.arguments[1];
+    if (program && (ts.isStringLiteral(program) || ts.isNoSubstitutionTemplateLiteral(program)) && SHELLS.test(program.text)) {
+      if (!argv) return;
+      if (!ts.isArrayLiteralExpression(argv)) return unread(node);
+      const flag = argv.elements.findIndex((e) => ts.isStringLiteral(e) && /^-[a-z]*c$/.test(e.text));
+      if (flag !== -1) commandLine(argv.elements[flag + 1], node);
+      return;
+    }
+    // `shell: true` hands the program and its arguments to a shell as one line.
+    const options = node.arguments.find(ts.isObjectLiteralExpression);
+    const shell = options?.properties.find((p) =>
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && p.name.getText() === "shell");
+    if (!shell || (ts.isPropertyAssignment(shell) && shell.initializer.kind === ts.SyntaxKind.FalseKeyword)) return;
+    if (program && !(ts.isCallExpression(program) && calleeName(program) === "ghBin")) commandLine(program, node);
+  }
+
   function visit(node: ts.Node): void {
     if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text === "gh") {
-      if (!ts.isImportDeclaration(node.parent) && !ts.isLiteralTypeNode(node.parent)) place(node);
-    } else if (ts.isCallExpression(node) && calleeName(node) === "ghBin") {
-      place(node);
+      if (!ts.isImportDeclaration(node.parent) && !ts.isLiteralTypeNode(node.parent)) place(node, false);
+    } else if (ts.isCallExpression(node)) {
+      if (calleeName(node) === "ghBin") place(node, false);
+      shellCall(node);
     }
     ts.forEachChild(node, visit);
   }
   visit(tree);
 
-  // Pass-through wrappers: this file's own, and any imported from the file that declares one.
-  const local = new Map<string, string>();
-  for (const wrapper of [...found, ...wrappers]) {
-    if (wrapper.file === file) local.set(wrapper.name, wrapper.name);
+  // Pass-through wrappers, this file's and every other file's: a caller is a site wherever it is.
+  for (const wrapper of [...found, ...wrappers.filter((w) => !found.some((f) => f.name === w.name && f.method === w.method))]) {
+    followWrapper(wrapper);
   }
-  for (const statement of tree.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const from = basename(statement.moduleSpecifier.text).replace(/\.[^.]+$/, "");
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      const imported = element.propertyName?.text ?? element.name.text;
-      const wrapper = wrappers.find((w) => w.name === imported && basename(w.file).replace(/\.[^.]+$/, "") === from);
-      if (wrapper && wrapper.file !== file) local.set(element.name.text, imported);
-    }
-  }
-  for (const name of local.keys()) followWrapper(name);
 
   return { sites, wrappers: found };
 }
@@ -530,6 +651,9 @@ function inventoryProblems(
     if (hows.includes("none") && !NO_REPOSITORY_ARGV.has(row.argv)) {
       problems.push(`${file} ${row.fn}: ${row.argv} names no repository and is not auth status, --version or api user`);
     }
+    if (hows.includes("node-id") && !NODE_ID_ARGV.has(row.argv)) {
+      problems.push(`${file} ${row.fn}: ${row.argv} is not a reviewed node-id mutation; name its repository`);
+    }
     if (!row.why.trim()) problems.push(`${file} ${row.fn}: ${row.argv} needs a reason`);
   }
   for (const { file, row, used } of mentionRows) {
@@ -549,7 +673,7 @@ test("the scanner follows bindings, lookups and pass-through wrappers to the cal
     "async function runGh(args) {",
     '  const executable = await locateExecutable("gh");',
     "  if (!executable) return null;",
-    "  return execFile(executable.path, args, { env: executable.env });",
+    "  return execFile(executable.path, args);",
     "}",
     "async function latest(run) {",
     '  return run(["release", "list", "--repo", CANONICAL_REPO]);',
@@ -564,7 +688,7 @@ test("the scanner follows bindings, lookups and pass-through wrappers to the cal
     "}",
   ].join("\n");
   const { sites, wrappers } = ghSites("fixture.mjs", source);
-  assert.deepEqual(wrappers, [{ file: "fixture.mjs", name: "runGh" }]);
+  assert.deepEqual(wrappers, [{ name: "runGh", method: false }]);
   assert.deepEqual(
     sites.map(({ fn, argv }) => ({ fn, argv })),
     [
@@ -573,6 +697,77 @@ test("the scanner follows bindings, lookups and pass-through wrappers to the cal
       { fn: "check", argv: '["auth", "status"]' },
     ],
   );
+});
+
+test("a bound gh binary read into a call the scanner does not know fails loudly", () => {
+  const source = [
+    "async function listIssues() {",
+    '  const exe = await locateExecutable("gh");',
+    "  if (!exe) return null;",
+    '  return execFileAsync(exe.path, ["issue", "list"]);',
+    "}",
+    "function ghPath() {",
+    '  const exe = locateExecutableSync("gh");',
+    "  return exe.path;",
+    "}",
+    "async function rebound(cwd) {",
+    "  const bin = ghBin();",
+    "  const exe = await locateExecutable(bin);",
+    '  return execFile(exe.path, ["pr", "list"], { cwd });',
+    "}",
+  ].join("\n");
+  const { sites } = ghSites("src/server/fixture.ts", source);
+  assert.deepEqual(inventoryProblems(sites, {}, {}), [
+    'src/server/fixture.ts:4 the scanner cannot read this gh binary in listIssues: return execFileAsync(exe.path, ["issue", "list"]);',
+    "src/server/fixture.ts:8 the scanner cannot read this gh binary in ghPath: return exe.path;",
+    'src/server/fixture.ts:13 unclassified gh call in rebound: ["pr", "list"]',
+  ]);
+});
+
+test("a pass-through wrapper written as a method makes each of its callers a site", () => {
+  const source = [
+    "class Issues {",
+    "  private gh(args) { return run(ghBin(), args); }",
+    "  private runner = (args) => run(ghBin(), args);",
+    '  list() { return this.gh(["issue", "list"]); }',
+    '  view(url) { return this.runner(["issue", "view", url]); }',
+    "  handOff() { return later(this.gh); }",
+    "}",
+  ].join("\n");
+  const { sites, wrappers } = ghSites("src/server/fixture.ts", source);
+  assert.deepEqual(wrappers, [{ name: "gh", method: true }, { name: "runner", method: true }]);
+  assert.deepEqual(inventoryProblems(sites, {}, {}), [
+    'src/server/fixture.ts:4 unclassified gh call in Issues.list: ["issue", "list"]',
+    "src/server/fixture.ts:6 the scanner cannot read this gh binary in Issues.handOff: handOff() { return later(this.gh); }",
+    'src/server/fixture.ts:5 unclassified gh call in Issues.view: ["issue", "view", url]',
+  ]);
+});
+
+test("a gh command handed to a shell is a site, and a command line the scanner cannot see fails", () => {
+  const source = [
+    'import { exec, execSync as sh } from "node:child_process";',
+    'import * as cp from "node:child_process";',
+    "function shellCalls(cmd, n) {",
+    '  sh("gh issue list --json number");',
+    "  exec(`gh issue view ${n}`);",
+    '  cp.execSync("git status");',
+    "  exec(cmd);",
+    '  spawn("bash", ["-lc", "gh pr checks --watch"]);',
+    '  spawn("sh", ["-c", cmd]);',
+    '  run("gh pr list", [], { shell: true });',
+    "  run(cmd, [], { shell: true });",
+    "}",
+  ].join("\n");
+  const { sites } = ghSites("scripts/fixture.mjs", source);
+  assert.deepEqual(inventoryProblems(sites, {}, {}), [
+    "scripts/fixture.mjs:4 unclassified gh call in shellCalls: gh issue list --json number",
+    "scripts/fixture.mjs:5 unclassified gh call in shellCalls: gh issue view ${n}",
+    "scripts/fixture.mjs:7 the scanner cannot read this gh binary in shellCalls: exec(cmd);",
+    "scripts/fixture.mjs:8 unclassified gh call in shellCalls: gh pr checks --watch",
+    'scripts/fixture.mjs:9 the scanner cannot read this gh binary in shellCalls: spawn("sh", ["-c", cmd]);',
+    'scripts/fixture.mjs:10 unclassified gh call in shellCalls: gh pr list',
+    "scripts/fixture.mjs:11 the scanner cannot read this gh binary in shellCalls: run(cmd, [], { shell: true });",
+  ]);
 });
 
 test("an unclassified gh call fails the inventory", () => {
@@ -611,6 +806,15 @@ test("a gh binary the scanner cannot follow fails loudly rather than passing", (
   assert.deepEqual(inventoryProblems(sites, {}, {}), [
     'src/server/fixture.ts:2 the scanner cannot read this gh binary in listIssues: const argv = [ghBin(), "issue", "list"];',
     "src/server/fixture.ts:6 the scanner cannot read this gh binary in viaSpread: return run(ghBin(), ...args);",
+  ]);
+});
+
+test("a node-id row is limited to the reviewed mutation", () => {
+  const source = 'async function close(id) { return run(ghBin(), ["api", "graphql", "-F", `id=${id}`]); }';
+  const { sites } = ghSites("src/server/fixture.ts", source);
+  const calls = { "src/server/fixture.ts": [{ fn: "close", argv: '["api", "graphql", "-F", `id=${id}`]', how: "node-id" as const, why: "an id" }] };
+  assert.deepEqual(inventoryProblems(sites, calls, {}), [
+    'src/server/fixture.ts close: ["api", "graphql", "-F", `id=${id}`] is not a reviewed node-id mutation; name its repository',
   ]);
 });
 
