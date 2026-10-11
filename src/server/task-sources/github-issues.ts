@@ -56,12 +56,13 @@ const JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt,state,stat
 const BODY_LIMIT = 4000;
 
 /**
- * A repository a `gh` call named, and where it came from: written down (the Repository
- * field, or the item's own id), or resolved from the checkout's gh default pin or `origin`.
+ * A repository a `gh` call named, and where it came from: the source's Repository field
+ * (`configured`), the item's own `owner/repo#n` id or URL (`item`), or resolved from the
+ * checkout's gh default pin or `origin`.
  */
 export interface GhTarget {
   repo: string;
-  source: "named" | "gh-default" | "origin";
+  source: "configured" | "item" | "gh-default" | "origin";
 }
 
 /**
@@ -73,7 +74,7 @@ export async function sourceRepository(
   cfg: GithubIssuesConfig,
   repoRoot: string,
 ): Promise<({ ok: true } & GhTarget) | { ok: false; error: string }> {
-  if (cfg.repo) return { ok: true, repo: cfg.repo, source: "named" };
+  if (cfg.repo) return { ok: true, repo: cfg.repo, source: "configured" };
   return checkoutGitHubRepository(repoRoot);
 }
 
@@ -90,6 +91,9 @@ const SSO_REMEDY = "To use your fork instead, set Repository on this source or p
  * organization and gh's link), never from the rest of gh's output. It says when a gh default
  * pin on another remote chose the repository, since that pin is then what sends the call to
  * the refusing organization.
+ *
+ * An `item` target offers no remedy beyond authorizing: the item's own id or URL outranks both
+ * Repository and the pin (`issueTargetFor`), so neither would move the call.
  */
 export function ssoRefusal(res: Pick<RunResult, "stderr">, target: GhTarget): string | null {
   const refusal = classifyGitHubSsoRefusal(res.stderr);
@@ -97,7 +101,11 @@ export function ssoRefusal(res: Pick<RunResult, "stderr">, target: GhTarget): st
   const named = target.source === "gh-default"
     ? `${target.repo} (this checkout's gh default pin, not origin)`
     : target.repo;
-  return ssoRefusalMessage({ target: named, refusal, remedy: SSO_REMEDY });
+  return ssoRefusalMessage({
+    target: named,
+    refusal,
+    ...(target.source === "item" ? {} : { remedy: SSO_REMEDY }),
+  });
 }
 
 /** The repository half of an `owner/repo#123` external id, else the id itself. */
@@ -585,8 +593,10 @@ export async function writebackConfig(
 ): Promise<{ ok: true; cfg: GithubIssuesConfig; target: GhTarget } | { ok: false; error: string }> {
   if (cfg.repo || EXTERNAL_ID.test(notice.externalId) || notice.externalUrl) {
     const target = issueTargetFor(cfg, notice);
+    const fromItem = EXTERNAL_ID.test(notice.externalId) || Boolean(notice.externalUrl);
     // A URL target carries no `--repo`; the id its URL composes names the repository.
-    return { ok: true, cfg, target: { repo: target.repo || repositoryOf(externalIdFor(target.arg)), source: "named" } };
+    const repo = target.repo || repositoryOf(externalIdFor(target.arg));
+    return { ok: true, cfg, target: { repo, source: fromItem ? "item" : "configured" } };
   }
   const target = await sourceRepository(cfg, repoRoot);
   if (!target.ok) return target;
@@ -767,7 +777,7 @@ async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: S
       if (res.code !== 0) {
         errors.push([
           ref.externalId,
-          ssoRefusal(res, { repo: repositoryOf(ref.externalId), source: "named" })
+          ssoRefusal(res, { repo: repositoryOf(ref.externalId), source: "item" })
             ?? "The linked GitHub issue could not be read. Check access and authentication, then sweep again.",
         ]);
         return;

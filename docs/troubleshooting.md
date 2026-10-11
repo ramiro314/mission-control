@@ -192,7 +192,10 @@ origin](dispatch-and-backlog.md#mission-control-pins-ghs-default-repository-to-o
 - **A GitHub issues task source**: its sweep, **Check it works**, **Create GitHub issue**,
   write-back and linked-issue reads. "To use your fork instead, set Repository on this source
   or pin `gh repo set-default`." A filled-in **Repository** is used as written. A blank one
-  follows the pin, so `gh repo set-default <your fork>` in the checkout moves it.
+  follows the pin, so `gh repo set-default <your fork>` in the checkout moves it. A write-back
+  or linked-issue read whose issue names its own repository, by its `owner/repo#123` id or its
+  URL, goes to that repository whatever Repository or the pin say, so its message offers only
+  the authorize link.
 - **Product reports** from the Feedback form: "Forks: set `MISSION_PRODUCT_ISSUES_REPO`." See
   [Configuration](configuration.md).
 - **The updater** and `scripts/install-app.mjs`: updates always come from

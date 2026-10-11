@@ -1375,8 +1375,10 @@ value stays blank, so it follows the checkout's remotes and pin with no migratio
 A call that SAML SSO refuses anyway says so on the source, in place of gh's raw GraphQL line:
 the repository it named, the refusing organization, gh's authorize link, and "To use your fork
 instead, set Repository on this source or pin `gh repo set-default`." When a gh default pin on
-another remote chose that repository, the message names the pin. Every other failure keeps
-gh's first line. See [Resource protected by organization SAML
+another remote chose that repository, the message names the pin. When the issue's own id or URL
+named it, as it does for most write-backs and every linked-issue read, neither setting would
+move the call, so the message offers only the authorize link. Every other failure keeps gh's
+first line. See [Resource protected by organization SAML
 enforcement](troubleshooting.md#resource-protected-by-organization-saml-enforcement).
 
 While **Repository** is blank, the editor shows what it resolves to under the field:

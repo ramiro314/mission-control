@@ -210,15 +210,20 @@ async function refusedBySso(stderr: string, body: () => Promise<void>): Promise<
   }
 }
 
-/** The classified sentence for `target`, which the raw first line never carried. */
-function assertClassified(message: string | null | undefined, target: string): void {
+/**
+ * The classified sentence for `target`, which the raw first line never carried. `remedy` is
+ * false where the item's own id or URL chose the repository: neither Repository nor the pin
+ * moves that call, so only authorizing is offered.
+ */
+function assertClassified(message: string | null | undefined, target: string, remedy = true): void {
   assert.ok(message, "the failure carried no message");
   assert.ok(
     message.includes(`GitHub refused ${target}: the teamupstart organization requires SAML SSO`),
     message,
   );
   assert.ok(message.includes(`Authorize: ${SSO_AUTHORIZE_URL}.`), message);
-  assert.ok(message.includes(SSO_REMEDY), message);
+  assert.equal(message.includes(SSO_REMEDY), remedy, message);
+  if (!remedy) assert.ok(message.endsWith(`Authorize: ${SSO_AUTHORIZE_URL}.`), message);
   assert.equal(message.includes("GraphQL:"), false, "the raw GraphQL line leaked through");
 }
 
@@ -254,24 +259,41 @@ test("sweep, preflight, create and the write-back fallback classify the refusal"
   }
 });
 
-// A configured Repository, and an item whose own id or URL names one, are what the operator
-// wrote down: the message names that repository and no pin.
-test("a named repository and an item's own repository are named as written", async () => {
+// A configured Repository is the operator's to change, so it keeps the remedy, on the sweep
+// and on a write-back whose item names no repository of its own. Either way no pin is named.
+test("a configured Repository is named as written and keeps the remedy", async () => {
+  const upstream = cfg({ repo: "teamupstart/mission-control" });
   await refusedBySso(REST_SSO_STDERR, async () => {
-    const sweep = await githubIssues.sweep(cfg({ repo: "teamupstart/mission-control" }), sweepCtx(fork));
+    const sweep = await githubIssues.sweep(upstream, sweepCtx(fork));
     assertClassified(sweep.error, "teamupstart/mission-control");
+    const comment = await githubIssues.annotate!(upstream, notice(), sweepCtx(fork));
+    assertClassified(comment.error, "teamupstart/mission-control");
+  });
+});
+
+// The item's own `owner/repo#n` id or URL outranks Repository and the pin, so offering either
+// as the fix would send the operator into the same refusal on the next retry.
+test("an item's own repository is named as written, with only authorizing offered", async () => {
+  await refusedBySso(REST_SSO_STDERR, async () => {
+    // A configured Repository and a pin elsewhere change nothing: the item's id wins.
+    const comment = await githubIssues.annotate!(
+      cfg({ repo: "ramiro314/mission-control" }),
+      notice({ externalId: "teamupstart/mission-control#7" }),
+      sweepCtx(fork),
+    );
+    assertClassified(comment.error, "teamupstart/mission-control", false);
     const close = await githubIssues.resolve!(
       cfg(),
       notice({ externalId: "x", externalUrl: "https://github.com/teamupstart/mission-control/issues/7" }),
       sweepCtx(fork),
     );
-    assertClassified(close.error, "teamupstart/mission-control");
+    assertClassified(close.error, "teamupstart/mission-control", false);
     const linked = await githubIssues.readLinked!(
       cfg(),
       [{ sourceId: "s1", externalId: "teamupstart/mission-control#3", url: "https://github.com/teamupstart/mission-control/issues/3" }],
       sweepCtx(fork),
     );
-    assertClassified(linked.itemErrors?.["teamupstart/mission-control#3"], "teamupstart/mission-control");
+    assertClassified(linked.itemErrors?.["teamupstart/mission-control#3"], "teamupstart/mission-control", false);
   });
 });
 

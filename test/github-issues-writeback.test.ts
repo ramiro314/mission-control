@@ -28,7 +28,7 @@ import type { RunResult } from "../src/server/util/exec.ts";
 //      reported failure about an issue that is closed.
 
 /** The repository each read run named: the one the item's own id carries. */
-const TARGET: GhTarget = { repo: "acme/demo", source: "named" };
+const TARGET: GhTarget = { repo: "acme/demo", source: "item" };
 
 const cfg = (over: Partial<GithubIssuesConfig> = {}): GithubIssuesConfig => ({
   ...GithubIssuesConfigSchema.parse({}),

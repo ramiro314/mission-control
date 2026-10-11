@@ -31,7 +31,7 @@ const cfg = (over: Partial<GithubIssuesConfig> = {}): GithubIssuesConfig =>
   GithubIssuesConfigSchema.parse(over);
 
 /** The repository every mapped run named, configured on the source. */
-const TARGET: GhTarget = { repo: "acme/widgets", source: "named" };
+const TARGET: GhTarget = { repo: "acme/widgets", source: "configured" };
 
 const ctx: SweepContext = {
   sourceId: "src-1",
