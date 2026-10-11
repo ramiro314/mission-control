@@ -162,7 +162,7 @@ test("decide: anything but a push to main never reuses, and never calls the API"
     ["pull_request", "refs/pull/7/merge"],
     ["workflow_dispatch", "refs/heads/main"],
     ["push", "refs/tags/v1.2.3"],
-    ["push", "refs/heads/release/windows"],
+    ["push", "refs/heads/release/2.0"],
     ["", "refs/heads/main"],
   ];
   for (const [event, ref] of cases) {

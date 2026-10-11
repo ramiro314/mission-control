@@ -28,7 +28,7 @@ test("a backlog base that origin now calls its default is cleared, and nothing e
   const rows = [
     mkTask({ id: "stale", status: "backlog", repoRoot: "/r", baseBranch: "main" }),
     mkTask({ id: "stale-twin", status: "backlog", repoRoot: "/r", baseBranch: "main" }),
-    mkTask({ id: "real", status: "backlog", repoRoot: "/r", baseBranch: "release/windows" }),
+    mkTask({ id: "real", status: "backlog", repoRoot: "/r", baseBranch: "release/2.0" }),
     mkTask({ id: "gone", status: "backlog", repoRoot: "/r", baseBranch: "release/gone" }),
     mkTask({ id: "offline", status: "backlog", repoRoot: "/offline", baseBranch: "main" }),
     mkTask({ id: "running", status: "running", repoRoot: "/r", baseBranch: "main" }),
@@ -45,13 +45,13 @@ test("a backlog base that origin now calls its default is cleared, and nothing e
 
   assert.deepEqual(cleared, ["stale", "stale-twin"]);
   assert.deepEqual(tasks.updates, [["stale", { baseBranch: null }], ["stale-twin", { baseBranch: null }]]);
-  assert.equal(rows.find((t) => t.id === "real")?.baseBranch, "release/windows");
+  assert.equal(rows.find((t) => t.id === "real")?.baseBranch, "release/2.0");
   assert.equal(rows.find((t) => t.id === "gone")?.baseBranch, "release/gone", "a refusal is not a default");
   assert.equal(rows.find((t) => t.id === "offline")?.baseBranch, "main", "an unreachable origin changes nothing");
   assert.equal(rows.find((t) => t.id === "running")?.baseBranch, "main", "only backlog tasks are rewritten");
   assert.deepEqual(
     asked.sort(),
-    ["/offline main", "/r main", "/r release/gone", "/r release/windows"],
+    ["/offline main", "/r main", "/r release/2.0", "/r release/gone"],
     "origin is asked once per repository and branch",
   );
 });
@@ -60,9 +60,9 @@ test("a row edited while origin answered is left to the edit", async () => {
   const rows = [mkTask({ id: "t", status: "backlog", repoRoot: "/r", baseBranch: "main" })];
   const tasks = store(rows);
   const cleared = await clearStoredDefaultBaseBranches(tasks, async () => {
-    rows[0]!.baseBranch = "release/windows";
+    rows[0]!.baseBranch = "release/2.0";
     return { ok: true, baseBranch: null };
   });
   assert.deepEqual(cleared, []);
-  assert.equal(rows[0]!.baseBranch, "release/windows");
+  assert.equal(rows[0]!.baseBranch, "release/2.0");
 });

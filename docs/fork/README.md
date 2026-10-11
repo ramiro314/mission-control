@@ -117,9 +117,6 @@ rewrite the block in the merged PR's body against `node scripts/fork-delta.mjs s
 <n>`, keeping both changes, and set its base from `node scripts/fork-delta.mjs base <slug>
 "<section>" --pr <n>`. The next refresh applies it, then the PRs held behind it.
 
-PRs into `release/windows` carry `fork:windows-support` too, but they are not `main` changes
-and are never applied; see [docs/windows-branch-sync.md](../windows-branch-sync.md).
-
 ## Refreshing the issues
 
 Issue bodies have one writer: the refresh, which applies merged PRs' sections in merge order.
@@ -192,8 +189,7 @@ and `git` alone. The refresh publishes it as the
 - **Standalone fixes**: PRs merged into `main` with no `fork:*` label, apart from upstream-sync
   and bot-authored PRs. A feature PR that forgot its label shows up here; label it to fix that.
 
-It shows only PRs merged into `main`: no open PRs, and nothing that is only on
-`release/windows`.
+It shows only PRs merged into `main`, and no open PRs.
 
 ## Pull requests open across the cut-over
 

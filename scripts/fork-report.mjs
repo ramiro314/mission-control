@@ -18,9 +18,8 @@
  * reports as synced. `upstream/main` keeps moving between syncs, so its tip is used only for the
  * behind count, and named beside it when it differs from the merge-base.
  *
- * Only PRs merged into `main` are shown. Open PRs and PRs merged into `release/windows` never
- * appear; the one exception is a count of the latter, carried on the row of each PR that merges
- * `release/windows` into `main` and counting only the branch PRs that merge brought in.
+ * Only PRs merged into `main` are shown. Open PRs and PRs merged into any other branch never
+ * appear.
  *
  * `renderForkReport` is pure, and `test/fork-report.test.ts` covers it from fixture data.
  */
@@ -33,9 +32,6 @@ import { parseArgs } from "node:util";
 
 import { scriptRepository } from "./checkout-repository.mjs";
 import { parseIssueBody } from "./fork-delta.mjs";
-
-export const WINDOWS_SLUG = "windows-support";
-export const WINDOWS_BRANCH = "release/windows";
 
 const FEATURE_LABEL = "fork:";
 const STATUS_LABEL = "fork-status:";
@@ -72,7 +68,7 @@ export function intentSentence(body) {
   return /^.*?[.!?](?=\s|$)/.exec(text)?.[0] ?? text;
 }
 
-/** Only PRs that merged into `main`: the report never shows open or `release/windows` PRs. */
+/** Only PRs that merged into `main`: the report never shows open PRs or another branch's. */
 function mergedIntoMain(prs) {
   return prs.filter((pr) => pr.mergedAt && pr.baseRefName === "main");
 }
@@ -89,53 +85,32 @@ function byNumber(a, b) {
   return a.number - b.number;
 }
 
-/**
- * For each PR that merged `release/windows` into `main`, how many `fork:windows-support` PRs
- * merged into the branch after the previous such merge and no later than this one. A branch PR
- * merged after the last merge has not reached `main` and is not counted anywhere.
- */
-export function windowsIncludes(prs, windowsPrs) {
-  const time = (pr) => Date.parse(pr.mergedAt);
-  const merges = prs.filter((pr) => pr.headRefName === WINDOWS_BRANCH).sort((a, b) => time(a) - time(b));
-  const counts = new Map();
-  merges.forEach((merge, i) => {
-    const after = i ? time(merges[i - 1]) : -Infinity;
-    counts.set(merge.number, windowsPrs.filter((w) => w.mergedAt && time(w) > after && time(w) <= time(merge)).length);
-  });
-  return counts;
-}
-
 /** Features in display order: open issues first, then closed, each by issue number. */
-function featureRows(issues, prs, includes) {
+function featureRows(issues, prs) {
   const open = (issue) => (issue.state.toLowerCase() === "closed" ? 1 : 0);
   return [...issues]
     .sort((a, b) => open(a) - open(b) || byNumber(a, b))
     .map((issue) => {
       const slugs = featureSlugs(issue.labels);
       const linked = prs.filter((pr) => featureSlugs(pr.labels).some((s) => slugs.includes(s))).sort(byNumber);
-      const links = linked.map((pr) => {
-        const windowsMerge = slugs.includes(WINDOWS_SLUG) && includes.has(pr.number);
-        return windowsMerge ? `${prLink(pr)} (includes ${includes.get(pr.number)} ${WINDOWS_BRANCH} PRs)` : prLink(pr);
-      });
       return {
         open: !open(issue),
         name: `[${cell(issue.title.replace(ISSUE_TITLE_PREFIX, ""))}](${issue.url})`,
         status: featureStatus(issue),
         intent: cell(intentSentence(issue.body)),
-        prs: links.join(", ") || "none yet",
+        prs: linked.map(prLink).join(", ") || "none yet",
       };
     });
 }
 
 /**
  * The report's markdown. `data` holds every `fork-feature` issue, the merged PRs (anything not
- * merged into `main` is dropped here), the `fork:windows-support` PRs merged into
- * `release/windows` with their merge times, and the git measurements.
+ * merged into `main` is dropped here), and the git measurements.
  */
 export function renderForkReport(data) {
   const { git, measuredAt } = data;
   const prs = mergedIntoMain(data.prs);
-  const features = featureRows(data.issues, prs, windowsIncludes(prs, data.windowsPrs));
+  const features = featureRows(data.issues, prs);
   const fixes = prs.filter((pr) => !featureSlugs(pr.labels).length && !isSync(pr) && !isBot(pr)).sort(byNumber);
   // A fork:* label keeps a PR out of the fixes, so one no tracking issue carries (a typo, or a
   // feature whose issue the refresh has not created yet) would otherwise vanish from the report.
@@ -229,14 +204,9 @@ function fetchData(repo) {
     ...pr,
     labels: labelNames(pr.labels),
   }));
-  const windowsPrs = gh(
-    ["pr", "list", "--state", "merged", "--base", WINDOWS_BRANCH, "--label", `${FEATURE_LABEL}${WINDOWS_SLUG}`, "--limit", "1000", "--json", "number,mergedAt"],
-    repo,
-  );
   return {
     issues,
     prs,
-    windowsPrs,
     git: {
       mergeBase,
       mergeBaseVersion: JSON.parse(git("show", `${mergeBase}:package.json`)).version,

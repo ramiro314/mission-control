@@ -13,7 +13,7 @@ import { CreateScheduleSchema } from "../src/shared/protocol.ts";
 // A recurring mission's task template can name a base branch. It is checked against the
 // repository's real origin when the mission is saved, carried by every task a run files, and
 // absent from every template saved before the field existed. The fixture repository has a
-// bare origin carrying `main` and `release/windows`, and the default origin check runs for
+// bare origin carrying `main` and `release/2.0`, and the default origin check runs for
 // real against it, so a refusal here is git's answer and not a stub's.
 
 const home = mkdtempSync(join(tmpdir(), "mission-schedule-base-home-"));
@@ -49,7 +49,7 @@ function mkRepo(name: string): string {
   const origin = join(repos, `${name}.git`);
   execFileSync("git", ["init", "-q", "--bare", origin]);
   git(repo, "remote", "add", "origin", origin);
-  git(repo, "push", "-qu", "origin", "main", "main:release/windows");
+  git(repo, "push", "-qu", "origin", "main", "main:release/2.0");
   git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
   return realpathSync(repo);
 }
@@ -83,7 +83,7 @@ beforeEach(() => {
   openDb().exec("DELETE FROM tasks");
 });
 
-function definition(template: Record<string, unknown> = {}, name = "Windows sync"): Record<string, unknown> {
+function definition(template: Record<string, unknown> = {}, name = "Release sync"): Record<string, unknown> {
   return {
     name,
     expression: "0 9 * * *",
@@ -91,8 +91,8 @@ function definition(template: Record<string, unknown> = {}, name = "Windows sync
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
     template: {
-      title: "Sync release/windows",
-      intent: "Merge main into release/windows.",
+      title: "Sync release/2.0",
+      intent: "Merge main into release/2.0.",
       repoRoot: REPO,
       kind: "ship",
       agent: "claude",
@@ -118,8 +118,8 @@ async function created(body: Record<string, unknown>): Promise<MissionSchedule> 
 test("the template schema takes a base branch, defaults it to none, and refuses a malformed one", () => {
   assert.equal(CreateScheduleSchema.parse(definition()).template.baseBranch, null);
   assert.equal(
-    CreateScheduleSchema.parse(definition({ baseBranch: " release/windows " })).template.baseBranch,
-    "release/windows",
+    CreateScheduleSchema.parse(definition({ baseBranch: " release/2.0 " })).template.baseBranch,
+    "release/2.0",
   );
   for (const bad of ["-x", "refs/heads/main", "a..b", "has space", ""]) {
     assert.equal(CreateScheduleSchema.safeParse(definition({ baseBranch: bad })).success, false, bad);
@@ -127,8 +127,8 @@ test("the template schema takes a base branch, defaults it to none, and refuses 
 });
 
 test("saving a mission checks its base branch against origin and refuses one origin lacks", async () => {
-  const saved = await created(definition({ baseBranch: "release/windows" }));
-  assert.equal(saved.template?.baseBranch, "release/windows");
+  const saved = await created(definition({ baseBranch: "release/2.0" }));
+  assert.equal(saved.template?.baseBranch, "release/2.0");
 
   const missing = await post("/api/schedules", definition({ baseBranch: "release/nope" }, "Doomed"));
   assert.equal(missing.status, 400);
@@ -141,13 +141,13 @@ test("saving a mission checks its base branch against origin and refuses one ori
   const edit = await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: "release/nope" }));
   assert.equal(edit.status, 400);
   assert.equal(((await edit.json()) as { field: string }).field, "baseBranch");
-  assert.equal(manager.get(saved.id)?.template?.baseBranch, "release/windows");
+  assert.equal(manager.get(saved.id)?.template?.baseBranch, "release/2.0");
 
   const cleared = await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: null }));
   assert.equal(cleared.status, 200);
   assert.equal(manager.get(saved.id)?.template?.baseBranch, null);
   // Naming origin's default is the same as leaving it empty, so its runs file default tasks.
-  await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: "release/windows" }));
+  await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: "release/2.0" }));
   const toDefault = await post(`/api/schedules/${saved.id}/update`, definition({ baseBranch: "main" }));
   assert.equal(toDefault.status, 200, await toDefault.clone().text());
   assert.equal(manager.get(saved.id)?.template?.baseBranch, null, "origin's default is stored as null");
@@ -162,12 +162,12 @@ test("preview leaves the origin question to save", async () => {
 });
 
 test("every task a mission files carries the template's base branch, scheduled or Run now", async () => {
-  const mission = await created(definition({ baseBranch: "release/windows" }));
+  const mission = await created(definition({ baseBranch: "release/2.0" }));
 
   const run = await post(`/api/schedules/${mission.id}/run-now`, {});
   assert.equal(run.status, 200);
   const { occurrence } = (await run.json()) as { occurrence: { taskId: string } };
-  assert.equal(getTask(occurrence.taskId)?.baseBranch, "release/windows", "Run now");
+  assert.equal(getTask(occurrence.taskId)?.baseBranch, "release/2.0", "Run now");
   // Out of the way, so `skip-active` lets the scheduled instant file its own task.
   openDb().exec("DELETE FROM tasks");
 
@@ -176,7 +176,7 @@ test("every task a mission files carries the template's base branch, scheduled o
   assert.equal(summary.created, 1);
   const scheduled = listTasks().filter((t) => t.scheduleId === mission.id);
   assert.equal(scheduled.length, 1);
-  assert.equal(scheduled[0]!.baseBranch, "release/windows", "scheduled instant");
+  assert.equal(scheduled[0]!.baseBranch, "release/2.0", "scheduled instant");
 });
 
 test("a mission with no base branch files tasks on origin's default branch, as it always has", async () => {

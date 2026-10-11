@@ -142,12 +142,12 @@ test("repo and kind and agent each travel alone", () => {
 
 test("a base branch is set, cleared with an explicit null, and blank means unchanged default", () => {
   const plain = mkTask();
-  assert.deepEqual(taskUpdatePatch(plain, edited(plain, { baseBranch: " release/windows " }), plain.intent), {
-    baseBranch: "release/windows",
+  assert.deepEqual(taskUpdatePatch(plain, edited(plain, { baseBranch: " release/2.0 " }), plain.intent), {
+    baseBranch: "release/2.0",
   });
   assert.equal(taskUpdatePatch(plain, edited(plain, { baseBranch: "  " }), plain.intent), null);
-  const based = mkTask({ baseBranch: "release/windows" });
-  assert.equal(draftFromTask(based).baseBranch, "release/windows");
+  const based = mkTask({ baseBranch: "release/2.0" });
+  assert.equal(draftFromTask(based).baseBranch, "release/2.0");
   assert.equal(taskUpdatePatch(based, draftFromTask(based), based.intent), null);
   assert.deepEqual(taskUpdatePatch(based, edited(based, { baseBranch: "" }), based.intent), {
     baseBranch: null,
@@ -185,7 +185,7 @@ test("every field on the form reaches the patch", () => {
   } = {
     repoRoot: "/Users/dev/work/elsewhere",
     extraRepoRoots: ["/Users/dev/work/sibling"],
-    baseBranch: "release/windows",
+    baseBranch: "release/2.0",
     intent: "something else entirely",
     title: "Another name",
     kind: "scout",

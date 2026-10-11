@@ -3143,7 +3143,7 @@ function DispatchModal({
                   <Tooltip label="The branch on origin this task starts from and opens its pull request against">
                     <input
                       className="field-input"
-                      placeholder="e.g. release/windows"
+                      placeholder="e.g. release/2.0"
                       spellCheck={false}
                       value={draft.baseBranch}
                       onChange={(e) => update({ baseBranch: e.target.value })}

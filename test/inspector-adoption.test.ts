@@ -351,7 +351,7 @@ test("everything that merely mentions or prints a PR is not opening one", () => 
 test("a REST create that prints only the URL reads as opening a pull request", () => {
   for (const cmd of [
     openPullRequestCommand("main"),
-    openPullRequestCommand("release/windows"),
+    openPullRequestCommand("release/2.0"),
     "gh api repos/o/r/pulls -f head=b -f base=main -f title=t --jq .html_url",
     "gh api /repos/o/r/pulls -F body=@body.md -f head=b -f base=main --jq '.html_url'",
     'gh api "repos/$repo/pulls" --method POST --input pr.json -q .html_url',

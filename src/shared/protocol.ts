@@ -769,7 +769,7 @@ export const ProductIssuePreflightSchema = z.object({
 export const MAX_TASK_EXTRA_REPOS = 8;
 
 /**
- * A task's base branch: a plain branch name on `origin`, such as `release/windows`.
+ * A task's base branch: a plain branch name on `origin`, such as `release/2.0`.
  *
  * Only the SHAPE is checked here, because this module is browser-safe and cannot ask git.
  * Whether the branch exists on the repository's origin is the daemon's question, asked when

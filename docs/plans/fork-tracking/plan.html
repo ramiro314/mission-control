@@ -28,7 +28,7 @@ a feature edit both files in the same PR. Two parts of the ledger are shared by 
 PRs open at the same time therefore conflict on the same lines, and whichever merges second
 needs another round of conflict solving and CI. The ledger has 88 commits on <code>main</code>.</p>
 <p><code>release/windows</code> makes this worse. Its PRs edit the ledger too (for example #265 and #273),
-even though <a href="../../windows-branch-sync.md">docs/windows-branch-sync.md</a> says the ledger is not
+even though <a href="https://github.com/ramiro314/mission-control/blob/d44bda68/docs/windows-branch-sync.md">docs/windows-branch-sync.md</a> says the ledger is not
 updated there. The weekly main-into-release/windows sync then conflicts on the same file.</p>
 <p>The ledger has two readers, and both must keep working:</p>
 <ul>
@@ -501,7 +501,7 @@ updated to match.</li>
 </ul>
 <h3><code>release/windows</code></h3>
 <ul>
-<li><strong>Now (in this PR, on <code>main</code>):</strong> <a href="../../windows-branch-sync.md">docs/windows-branch-sync.md</a>
+<li><strong>Now (in this PR, on <code>main</code>):</strong> <a href="https://github.com/ramiro314/mission-control/blob/d44bda68/docs/windows-branch-sync.md">docs/windows-branch-sync.md</a>
 gains the rule that PRs into <code>release/windows</code> carry <code>fork:windows-support</code> and never edit
 <code>docs/fork/</code>. The line-168 note is rewritten to match. The Windows tracking issue is created
 open, with <code>fork-status:in-progress</code>, from <code>main</code>&#39;s version of the entry.</li>

@@ -1783,7 +1783,7 @@ test("restart recovery skips packets after the current submission advances past 
 test("the PR handoff names the base branch of the task its session runs", async () => {
   // The manager chooses the base from the session's task and passes it to the handoff. A task
   // with no base branch gets exactly the handoff it always did.
-  for (const baseBranch of ["release/windows", null]) {
+  for (const baseBranch of ["release/2.0", null]) {
     const seeded = await seed({ withHint: false, adopted: false });
     try {
       seeded.registry.upsertTask(mkTask({
@@ -1798,7 +1798,7 @@ test("the PR handoff names the base branch of the task its session runs", async 
       assert.equal(handoff.ok, true);
       if (handoff.ok) {
         assert.equal(handoff.value.kind, "pr_handoff");
-        assert.equal(/-f base=release\/windows /.test(handoff.value.payload), baseBranch !== null);
+        assert.equal(/-f base=release\/2\.0 /.test(handoff.value.payload), baseBranch !== null);
         assert.equal(/Base branch:/.test(handoff.value.payload), baseBranch !== null);
       }
     } finally {

@@ -425,7 +425,7 @@ server.registerTool(
         .min(1)
         .optional()
         .describe(
-          "Branch on the primary repository's origin, such as release/windows, that the task " +
+          "Branch on the primary repository's origin, such as release/2.0, that the task " +
             "starts from and opens its pull request against. Omit it for origin's default branch. " +
             "Refused beside adoptTaskId",
         ),
@@ -607,7 +607,7 @@ server.registerTool(
         .min(1)
         .optional()
         .describe(
-          "Branch on the task's origin, such as release/windows, that the task starts from and " +
+          "Branch on the task's origin, such as release/2.0, that the task starts from and " +
             "opens its pull request against. Omit it to leave the task's base branch as it is",
         ),
       sourceId: z

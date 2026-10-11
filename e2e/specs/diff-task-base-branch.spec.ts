@@ -8,7 +8,7 @@ import { expect, test } from "../fixtures/test.ts";
 /**
  * The Diff view of a task with a non-default base branch shows that task's own changes only.
  *
- * The fixture repo's origin gets a `release/windows` branch carrying a commit `main` never had,
+ * The fixture repo's origin gets a `release/2.0` branch carrying a commit `main` never had,
  * and the task is dispatched from it. Measured against origin's default, the Diff view would
  * list the release branch's own file as this task's work; measured against `origin/<base>`, it
  * lists only the file the task changed.
@@ -27,11 +27,11 @@ test("a task with a non-default base branch shows only its own changes in the Di
   dashboard,
   daemon,
 }) => {
-  git(daemon.repo, "checkout", "-qb", "release/windows");
+  git(daemon.repo, "checkout", "-qb", "release/2.0");
   writeFileSync(join(daemon.repo, "release-only.txt"), "carried by the release branch\n");
   git(daemon.repo, "add", "-A");
   git(daemon.repo, "commit", "-qm", "release work");
-  git(daemon.repo, "push", "-q", "origin", "release/windows");
+  git(daemon.repo, "push", "-q", "origin", "release/2.0");
   git(daemon.repo, "checkout", "-q", "main");
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -41,7 +41,9 @@ test("a task with a non-default base branch shows only its own changes in the Di
   await dashboard.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
   await dialog.getByRole("button", { name: /^Backlog details/ }).click();
-  await dialog.getByLabel("Base branch").fill("release/windows");
+  const baseBranch = dialog.getByLabel("Base branch");
+  await expect(baseBranch).toHaveAttribute("placeholder", "e.g. release/2.0");
+  await baseBranch.fill("release/2.0");
   await dialog
     .locator("select")
     .filter({ hasText: "finish without a Workflow" })
@@ -75,7 +77,7 @@ test("a task with a non-default base branch shows only its own changes in the Di
   await dashboard.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Diff$/ }).click();
 
   const pane = dashboard.getByLabel("Diff pane");
-  await expect(pane.getByText(/vs\s*release\/windows/)).toBeVisible();
+  await expect(pane.getByText(/vs\s*release\/2\.0/)).toBeVisible();
   const changed = dashboard.getByRole("navigation", { name: "Changed files" });
   await expect(changed.getByRole("button", { name: /own-change\.txt/ })).toBeVisible();
   await expect(changed.getByRole("button")).toHaveCount(1);

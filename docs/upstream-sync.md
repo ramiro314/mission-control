@@ -205,8 +205,8 @@ issues (section 2); the highlights are:
   Inspector (`src/shared/wait-for-ci.ts`).
 - **The fork-only `package.json` entries** in section 5.
 - **Fork-only docs**: this runbook, [docs/fork/README.md](fork/README.md),
-  [docs/windows-branch-sync.md](windows-branch-sync.md), `.agents/memory/upstream-sync.md`, and
-  the plans under `docs/plans/` that upstream does not have.
+  `.agents/memory/upstream-sync.md`, and the plans under `docs/plans/` that upstream does not
+  have.
 - **Fork tracking scripts**: `scripts/fork-delta.mjs`, `scripts/fork-report.mjs` and
   `scripts/fork-migrate.mjs`, with their tests.
 

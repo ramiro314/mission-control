@@ -2197,7 +2197,7 @@ test("Wait for CI watches the pushed head, not a stale head the Inspector last r
 test("a Pull Request action names the base branch of the task its session runs", async () => {
   // The manager chooses the base from the session's task and passes it to the packet. A task
   // with no base branch gets exactly the packet it always did.
-  for (const baseBranch of ["release/windows", null]) {
+  for (const baseBranch of ["release/2.0", null]) {
     const h = await harness(`pr-base-${baseBranch ? "based" : "default"}`, {
       pullRequest: true,
       deliveryMode: "preview",
@@ -2214,7 +2214,7 @@ test("a Pull Request action names the base branch of the task its session runs",
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
       const { payload } = h.store.listDeliveries(runId)[0]!;
-      assert.equal(/-f base=release\/windows /.test(payload), baseBranch !== null);
+      assert.equal(/-f base=release\/2\.0 /.test(payload), baseBranch !== null);
       assert.equal(/Base branch:/.test(payload), baseBranch !== null);
     } finally {
       await h.stop();
