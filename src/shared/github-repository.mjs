@@ -113,6 +113,17 @@ function pinnedRepository(remote) {
   return named ? { owner: named[1], repo: named[2] } : null;
 }
 
+/**
+ * Whether Mission Control should pin gh's default repository to `origin`: no remote carries a
+ * `gh-resolved` pin, more than one remote is on GitHub (so `gh` would have to choose, and
+ * outside a terminal it prefers `upstream`), and `origin` is one of them.
+ */
+export function needsGhDefaultPin(remotes) {
+  if (remotes.some((remote) => remote.ghResolved)) return false;
+  if (!githubRepositoryOf(remotes.find((remote) => remote.name === "origin"))) return false;
+  return remotes.filter((remote) => githubRepositoryOf(remote)).length > 1;
+}
+
 const slug = ({ owner, repo }) => `${owner}/${repo}`;
 
 /**
