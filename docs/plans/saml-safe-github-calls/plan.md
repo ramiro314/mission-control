@@ -117,9 +117,12 @@ all use one copy. It holds:
      value of the form `owner/name` is also accepted; gh stores that form when a remote's
      URL names a renamed or moved repository.
   2. Otherwise `origin`, when its URL is on GitHub.
-  3. Otherwise an error. It names the checkout and lists its remotes, for example: "No GitHub
-     repository for ~/Dev/x: origin is git@gitlab.com:..., no gh default is set. Set
-     Repository on this source, or run `gh repo set-default`."
+  3. Otherwise an error. It names the checkout and lists its remotes, for example:
+
+     ```
+     No GitHub repository for ~/Dev/x: origin is git@gitlab.com:..., no gh default is set.
+     Set Repository on this source, or run `gh repo set-default`.
+     ```
 
 `src/server/github/repository.ts` wraps the `git config` read as
 `checkoutGitHubRepository(repoRoot)`. It replaces `originGitHubRepository`
@@ -177,10 +180,13 @@ New module `src/shared/github-sso.mjs` (pure; used by the server, Electron main 
   enforcement" and "has enabled or enforced SAML SSO". It reads the organization from
   `The 'X' organization` or from `/orgs/X/sso`, and the authorize URL from the
   `https://github.com/orgs/<org>/sso?...` link that gh prints.
-- `ssoRefusalMessage({ target, refusal, remedy })` builds the message, for example: "GitHub
-  refused teamupstart/mission-control: the teamupstart organization requires SAML SSO and
-  this gh token is not authorized for it. Authorize: <link>. <remedy>". Each caller supplies
-  its own `remedy`.
+- `ssoRefusalMessage({ target, refusal, remedy })` builds the message. Each caller supplies
+  its own `remedy`. For example:
+
+  ```
+  GitHub refused teamupstart/mission-control: the teamupstart organization requires SAML SSO
+  and this gh token is not authorized for it. Authorize: <link>. <remedy>
+  ```
 
 Every call site that currently keeps only the first stderr line runs the classifier on the
 full stderr before truncating:
@@ -226,6 +232,9 @@ error exits with the resolver's message, not an uncaught `execFileSync` throw.
   `opensPullRequest`'s recognizer), `{owner}/{repo}` placeholders, and
   `gh (issue|pr) (view|checks|comment) <number>`. It exempts `actions/pull-request.md`, whose
   shipped text is frozen.
+- **Origin-reading line.** Every skill line that reads the repository from origin (section 5)
+  must equal `originRepositoryShell` exported from `src/shared/pr-command.mjs`, character for
+  character, so the copies cannot drift from the export.
 
 ## Operator steps (outside this repository's pull request)
 
@@ -258,7 +267,8 @@ error exits with the resolver's message, not an uncaught `execFileSync` throw.
   - `ssoRefusalMessage` keeps the authorize link.
   - Updater classification.
   - Fork scripts default to origin.
-  - The guard test itself.
+  - The guard test itself, including that each skill's origin-reading line matches
+    `originRepositoryShell`.
 - **E2E (`e2e/specs/`):** a spec on the task source editor, using the fake `gh` the existing
   task-source specs already use. It asserts:
   - A blank Repository shows "Resolves to ramiro314/mission-control (from origin)" for a

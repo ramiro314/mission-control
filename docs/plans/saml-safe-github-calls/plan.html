@@ -259,13 +259,17 @@ re-imports it.</li>
 <code>git config --get-regexp &#39;^remote\..*\.(url|gh-resolved)$&#39;</code>. It returns
 <code>{ ok: true, repo: &quot;owner/name&quot;, source: &quot;gh-default&quot; | &quot;origin&quot; }</code> or
 <code>{ ok: false, error }</code>. Precedence follows decision 6:<ol>
-<li>The remote whose <code>gh-resolved</code> is <code>base</code>, when its URL is on GitHub. A <code>gh-resolved</code>
+<li><p>The remote whose <code>gh-resolved</code> is <code>base</code>, when its URL is on GitHub. A <code>gh-resolved</code>
 value of the form <code>owner/name</code> is also accepted; gh stores that form when a remote&#39;s
-URL names a renamed or moved repository.</li>
-<li>Otherwise <code>origin</code>, when its URL is on GitHub.</li>
-<li>Otherwise an error. It names the checkout and lists its remotes, for example: &quot;No GitHub
-repository for ~/Dev/x: origin is <a href="mailto:git@gitlab.com">git@gitlab.com</a>:..., no gh default is set. Set
-Repository on this source, or run <code>gh repo set-default</code>.&quot;</li>
+URL names a renamed or moved repository.</p>
+</li>
+<li><p>Otherwise <code>origin</code>, when its URL is on GitHub.</p>
+</li>
+<li><p>Otherwise an error. It names the checkout and lists its remotes, for example:</p>
+<pre><code>No GitHub repository for ~/Dev/x: origin is git@gitlab.com:..., no gh default is set.
+Set Repository on this source, or run `gh repo set-default`.
+</code></pre>
+</li>
 </ol>
 </li>
 </ul>
@@ -316,15 +320,18 @@ it, because gh always reads the parent, which is why decision 8 still applies.</
 <p>New module <code>src/shared/github-sso.mjs</code> (pure; used by the server, Electron main and
 <code>scripts/install-app.mjs</code>):</p>
 <ul>
-<li><code>classifyGitHubSsoRefusal(stderr)</code> reads the <strong>full</strong> stderr. It returns
+<li><p><code>classifyGitHubSsoRefusal(stderr)</code> reads the <strong>full</strong> stderr. It returns
 <code>{ org, authorizeUrl }</code> or <code>null</code>. It matches &quot;Resource protected by organization SAML
 enforcement&quot; and &quot;has enabled or enforced SAML SSO&quot;. It reads the organization from
 <code>The &#39;X&#39; organization</code> or from <code>/orgs/X/sso</code>, and the authorize URL from the
-<code>https://github.com/orgs/&lt;org&gt;/sso?...</code> link that gh prints.</li>
-<li><code>ssoRefusalMessage({ target, refusal, remedy })</code> builds the message, for example: &quot;GitHub
-refused teamupstart/mission-control: the teamupstart organization requires SAML SSO and
-this gh token is not authorized for it. Authorize: <link>. <remedy>&quot;. Each caller supplies
-its own <code>remedy</code>.</li>
+<code>https://github.com/orgs/&lt;org&gt;/sso?...</code> link that gh prints.</p>
+</li>
+<li><p><code>ssoRefusalMessage({ target, refusal, remedy })</code> builds the message. Each caller supplies
+its own <code>remedy</code>. For example:</p>
+<pre><code>GitHub refused teamupstart/mission-control: the teamupstart organization requires SAML SSO
+and this gh token is not authorized for it. Authorize: &lt;link&gt;. &lt;remedy&gt;
+</code></pre>
+</li>
 </ul>
 <p>Every call site that currently keeps only the first stderr line runs the classifier on the
 full stderr before truncating:</p>
@@ -383,6 +390,9 @@ and <code>src/server/workflows/feedback.ts</code>. It refuses <code>gh pr create
 <code>opensPullRequest</code>&#39;s recognizer), <code>{owner}/{repo}</code> placeholders, and
 <code>gh (issue|pr) (view|checks|comment) &lt;number&gt;</code>. It exempts <code>actions/pull-request.md</code>, whose
 shipped text is frozen.</li>
+<li><strong>Origin-reading line.</strong> Every skill line that reads the repository from origin (section 5)
+must equal <code>originRepositoryShell</code> exported from <code>src/shared/pr-command.mjs</code>, character for
+character, so the copies cannot drift from the export.</li>
 </ul>
 <h2>Operator steps (outside this repository&#39;s pull request)</h2>
 <ul>
@@ -415,7 +425,8 @@ memoized.</li>
 <li><code>ssoRefusalMessage</code> keeps the authorize link.</li>
 <li>Updater classification.</li>
 <li>Fork scripts default to origin.</li>
-<li>The guard test itself.</li>
+<li>The guard test itself, including that each skill&#39;s origin-reading line matches
+<code>originRepositoryShell</code>.</li>
 </ul>
 </li>
 <li><strong>E2E (<code>e2e/specs/</code>):</strong> a spec on the task source editor, using the fake <code>gh</code> the existing
