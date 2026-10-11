@@ -414,7 +414,9 @@ test("MCP push_task sets the task's base branch before mirroring it, and refuses
   chmodSync(gh, 0o755);
   process.env.MISSION_GH_BIN = gh;
   setTaskSourcesConfig(TaskSourcesConfigSchema.parse({
-    sources: [{ id: "src-gh", kind: "github-issues", label: "demo issues", repoRoot: repo, config: {} }],
+    // Named, because this checkout's origin is a local bare repository (the base-branch probes
+    // need one), so a blank Repository has no GitHub remote to resolve through.
+    sources: [{ id: "src-gh", kind: "github-issues", label: "demo issues", repoRoot: repo, config: { repo: "acme/demo" } }],
   }));
   try {
     const registry = new Registry();
