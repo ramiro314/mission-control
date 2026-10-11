@@ -28,6 +28,7 @@ import { locateExecutable } from "../server/executables/locator.ts";
 import { processLifetime } from "../server/platform/process-lifetime.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
+import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "../shared/github-sso.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
@@ -300,6 +301,21 @@ function ghFailure(result: CommandResult): UpdateError {
       "GitHub's API rate limit is reached, so updates cannot be checked right now. It resets within the hour and Mission Control will check again on its own.",
       true,
       "gh-rate-limited",
+    );
+  }
+  // Read off the full stderr, because the authorize link is on a later line than `detail`.
+  // A token not authorized for the organization's SSO is a standing credential condition only
+  // the operator can clear, so it is `gh-auth` and a background check may surface it.
+  const refusal = classifyGitHubSsoRefusal(result.stderr);
+  if (refusal) {
+    return new UpdateError(
+      ssoRefusalMessage({
+        target: CANONICAL_REPO,
+        refusal,
+        remedy: `Updates come from ${CANONICAL_REPO}; authorize to check for them.`,
+      }),
+      true,
+      "gh-auth",
     );
   }
   // Narrower than it was. The old test matched a bare `login` or `auth` anywhere in the line,

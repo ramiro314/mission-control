@@ -8,6 +8,7 @@ import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
 import { parseFlakeSummary, type FlakeReport } from "@shared/flake-report.ts";
 import { ciCheckRunsFromRollup, type CiCheckRun } from "@shared/wait-for-ci.ts";
+import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "@shared/github-sso.mjs";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -61,8 +62,15 @@ export function wasRefused(res: GhResult<unknown>): boolean {
   return !res.ok && res.outcomeUnknown === false && !res.tooLarge;
 }
 
-function fail<T>(what: string, res: RunResult): GhResult<T> {
-  const detail = (res.stderr || res.stdout || "").trim().slice(0, 300);
+/**
+ * `target` is the `owner/repo` the call addressed, named in an SSO refusal. No remedy is
+ * offered there: the PR URL chose the repository, so the only fix is authorizing the token.
+ */
+function fail<T>(what: string, res: RunResult, target?: string): GhResult<T> {
+  const refusal = classifyGitHubSsoRefusal(res.stderr);
+  const detail = refusal
+    ? ssoRefusalMessage({ target: target ?? "the pull request's repository", refusal })
+    : (res.stderr || res.stdout || "").trim().slice(0, 300);
   return {
     ok: false,
     error: `${what} failed (exit ${res.code}): ${detail}`,
@@ -369,7 +377,7 @@ export async function fetchPr(
     // of them, so this read gets more room than the default before it would fail the poll.
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: PR_QUERY_MAX_BUFFER },
   );
-  if (res.code !== 0) return fail("gh api graphql", res);
+  if (res.code !== 0) return fail("gh api graphql", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -557,7 +565,7 @@ async function fetchReviewPage(
     ],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api graphql (reviews)", res);
+  if (res.code !== 0) return fail("gh api graphql (reviews)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -589,7 +597,7 @@ async function fetchThreadPage(
     ],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api graphql (review threads)", res);
+  if (res.code !== 0) return fail("gh api graphql (review threads)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -807,7 +815,7 @@ export async function fetchDiff(
       error: `the diff is larger than ${Math.round(MAX_DIFF_BUFFER_BYTES / 1024 / 1024)}MB, which is too large to review`,
     };
   }
-  if (res.code !== 0) return fail("gh api (diff)", res);
+  if (res.code !== 0) return fail("gh api (diff)", res, `${owner}/${repo}`);
   const full = res.stdout;
   // BYTES, not code units: `full.slice(0, maxBytes)` charged one unit for a character
   // costing three or four on the wire, so a diff of CJK, emoji or box-drawing content
@@ -846,7 +854,7 @@ export async function postReview(
     ["api", "--method", "POST", `repos/${owner}/${repo}/pulls/${number}/reviews`, "--input", "-"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: payload },
   );
-  if (res.code !== 0) return fail("gh api (create review)", res);
+  if (res.code !== 0) return fail("gh api (create review)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 
@@ -876,7 +884,7 @@ export async function replyToComment(
     ],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: JSON.stringify({ body }) },
   );
-  if (res.code !== 0) return fail("gh api (reply)", res);
+  if (res.code !== 0) return fail("gh api (reply)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 
@@ -954,7 +962,7 @@ export async function mergePr(
       input: JSON.stringify({ sha, merge_method: method }),
     },
   );
-  if (res.code !== 0) return fail("gh api (merge)", res);
+  if (res.code !== 0) return fail("gh api (merge)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 
