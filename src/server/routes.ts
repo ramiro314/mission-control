@@ -355,6 +355,7 @@ import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { interruptSession, requestSessionStop } from "./sdk/control.ts";
 import { spawnManagedResume } from "./dispatcher.ts";
+import { ensureGhDefaultRepository } from "./github/repository.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { sourceRepositories, taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask, type PushTaskOutcome } from "./task-sources/push.ts";
@@ -7254,6 +7255,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     setTaskSourcesConfig({ sources });
     noteTaskSourceConfigChange(before.sources, sources);
+    for (const s of sources) await ensureGhDefaultRepository(s.repoRoot);
     // Removing a failing source, or pausing one, changes the failing count the red dot
     // reads. `noteTaskSourceConfigChange` has already cleared health for a just-paused
     // source, so this recompose sees the new count.

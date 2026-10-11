@@ -18,8 +18,10 @@ import { expect, test } from "../fixtures/test.ts";
  * only this layer connects the view route's read-only field to the text under the input, and
  * that text to the `--repo` a sweep actually runs with.
  *
- * The fixture checkout gets an `upstream` beside its GitHub `origin`, which is the fork shape.
- * Nothing reaches GitHub: `MISSION_GH_BIN` points every `gh` call at `FAKE_GH`, which records
+ * The fixture checkout gets an `upstream` beside its GitHub `origin`, which is the fork shape,
+ * so saving the source also pins gh's default repository to `origin` for bare `gh` calls
+ * (`test/gh-default-pin.test.ts` pins when). That pin names origin's own repository, so the
+ * hint still says "(from origin)". Nothing reaches GitHub: `MISSION_GH_BIN` points every `gh` call at `FAKE_GH`, which records
  * its argv. No agent is dispatched.
  */
 
@@ -43,6 +45,15 @@ function listedRepos(daemon: DaemonHandle): string[] {
     .map((r) => r.argv[r.argv.indexOf("--repo") + 1]!);
 }
 
+/** A git config value in the fixture checkout, or null when it is unset. */
+function gitConfig(daemon: DaemonHandle, key: string): string | null {
+  try {
+    return execFileSync("git", ["-C", daemon.repo, "config", "--get", key]).toString().trim();
+  } catch {
+    return null;
+  }
+}
+
 /** The stored config of the one source, as the daemon holds it. */
 async function storedConfig(page: Page, daemon: DaemonHandle): Promise<Record<string, unknown>> {
   const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
@@ -61,12 +72,16 @@ test("a blank Repository shows what it resolves to, and the sweep names that rep
   await page.getByRole("combobox", { name: "What kind of source to add" }).selectOption("github-issues");
   await page.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
+  expect(gitConfig(daemon, "remote.origin.gh-resolved")).toBeNull();
   await page.getByRole("button", { name: "Add", exact: true }).click();
+  // Saving the source pinned gh's default to origin, and only origin.
+  await expect.poll(() => gitConfig(daemon, "remote.origin.gh-resolved")).toBe("base");
+  expect(gitConfig(daemon, "remote.upstream.gh-resolved")).toBeNull();
 
   const repository = page.getByLabel("Repository (optional)");
   await expect(repository).toHaveValue("");
   const fromOrigin = `Resolves to ${ORIGIN} (from origin)`;
-  // Before any edit to the source: origin, not the `upstream` gh itself would have picked.
+  // Origin, not the `upstream` gh itself would have picked, and still origin with the pin.
   await expect(repository).toHaveAccessibleDescription(fromOrigin);
   await expect(page.getByText(fromOrigin)).toBeVisible();
   await shoot(page, "01-blank-resolves-to-origin");
@@ -94,8 +109,10 @@ test("a blank Repository shows what it resolves to, and the sweep names that rep
   await expect(page.getByLabel("Repository (optional)")).toHaveAccessibleDescription(fromOrigin);
   await shoot(page, "02-after-save-still-origin");
 
-  // The operator moves gh's default to `upstream`. Nothing is stored on the source, so the
-  // next view resolves the pin, and the hint names it as the gh default.
+  // The operator moves gh's default to `upstream`, as `gh repo set-default` does: unset the
+  // pin, then set the new one. Nothing is stored on the source, so the next view resolves the
+  // pin, and the hint names it as the gh default.
+  execFileSync("git", ["-C", daemon.repo, "config", "--unset", "remote.origin.gh-resolved"]);
   execFileSync("git", ["-C", daemon.repo, "config", "remote.upstream.gh-resolved", "base"]);
   const fromPin = `Resolves to ${UPSTREAM} (from gh default)`;
   await expect(page.getByText(fromPin)).toBeVisible({ timeout: 15_000 });
@@ -104,4 +121,10 @@ test("a blank Repository shows what it resolves to, and the sweep names that rep
 
   await page.getByRole("button", { name: "Sweep now" }).click();
   await expect.poll(() => listedRepos(daemon)).toEqual([ORIGIN, UPSTREAM]);
+  // The operator's pin is never overwritten, by that sweep or by another save.
+  await page.getByLabel("Repository (optional)").fill("acme/chosen");
+  await page.keyboard.press("Tab");
+  await expect.poll(() => storedConfig(page, daemon)).toMatchObject({ repo: "acme/chosen" });
+  expect(gitConfig(daemon, "remote.origin.gh-resolved")).toBeNull();
+  expect(gitConfig(daemon, "remote.upstream.gh-resolved")).toBe("base");
 });

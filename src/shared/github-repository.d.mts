@@ -27,3 +27,5 @@ export function parseGitHubRemoteUrl(url: string): GitHubRepositoryIdentity | nu
 export function parseRemoteConfig(stdout: string): CheckoutRemote[];
 
 export function pickCheckoutRepository(remotes: readonly CheckoutRemote[], checkout: string): CheckoutRepository;
+
+export function needsGhDefaultPin(remotes: readonly CheckoutRemote[]): boolean;

@@ -1378,6 +1378,31 @@ repository than `origin`, or the resolver's error. The daemon computes it with t
 resolver on every read of the panel, so it is what the next sweep will name. A filled-in
 **Repository** shows nothing extra.
 
+#### Mission Control pins gh's default repository to origin
+
+The daemon's own calls name their repository, but an agent's improvised `gh issue view 12`,
+or a bare `gh` in the operator's terminal, still lets `gh` choose, and in a fork checkout that
+is the parent. So Mission Control writes the pin itself, `remote.origin.gh-resolved base`,
+the same entry `gh repo set-default` writes, when all of these hold:
+
+- no remote already carries a `gh-resolved` pin, so an existing pin is never overwritten;
+- the checkout has more than one remote on GitHub;
+- `origin` is one of them.
+
+It checks every repository a task is prepared with, before its session starts, and a task
+source's checkout when the source is saved and on its first sweep. The write goes into the
+clone's shared config, so it covers every worktree of that clone, and the daemon logs it
+once per clone. A failed write is logged and blocks nothing, because the daemon's own calls
+never depend on the pin. The pin names `origin`'s own repository, so the editor's hint still
+reads "(from origin)".
+
+Undo it with `gh repo set-default --unset` in the checkout, or pin another remote with
+`gh repo set-default`. Mission Control also records `mission.ghDefaultPinned` in the clone's
+config, which that command leaves in place, so it never writes the pin back after an undo.
+Remove that key (`git config --unset mission.ghDefaultPinned`) to let it pin again.
+`gh pr create` ignores the pin and always targets a fork's parent, which is why Mission
+Control's own pull request command opens through the REST API with an explicit repository.
+
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
 
