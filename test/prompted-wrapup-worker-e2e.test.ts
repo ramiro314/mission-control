@@ -125,6 +125,14 @@ interface Stub {
 }
 
 /**
+ * Every stub still listening. A test closes its own after its worker stops, but one that fails
+ * before that line would otherwise leave a listening server holding this file's process open
+ * after its last test, so the file never finishes.
+ */
+const openStubs = new Set<() => Promise<void>>();
+after(() => Promise.all([...openStubs].map((close) => close())));
+
+/**
  * The daemon surface the worker actually reaches on this path, and nothing else.
  *
  * `route` gets first refusal on every request, which is how a test injects the one
@@ -156,15 +164,18 @@ async function startStub(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
+  const close = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      openStubs.delete(close);
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    });
+  openStubs.add(close);
   return {
     port,
     calls,
     to: (method, path) => calls.filter((c) => c.method === method && c.path === path),
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections?.();
-        server.close(() => resolve());
-      }),
+    close,
   };
 }
 
@@ -320,6 +331,9 @@ async function runWorker(
       },
     },
   );
+  // Listened for from the spawn on: a worker that exits by itself before the SIGTERM below has
+  // already emitted `close`, and a listener added after it would wait forever.
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
   /**
@@ -363,14 +377,10 @@ async function runWorker(
     if (overslept > asked) deadline = Math.min(deadline + overslept, ceiling);
   } while (Date.now() < deadline && !opts.until?.());
   child.kill("SIGTERM");
-  await new Promise<void>((resolve) => {
-    const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
-    hard.unref?.();
-    child.on("close", () => {
-      clearTimeout(hard);
-      resolve();
-    });
-  });
+  const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
+  hard.unref?.();
+  await closed;
+  clearTimeout(hard);
   return out;
 }
 

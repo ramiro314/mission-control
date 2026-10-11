@@ -45,6 +45,10 @@ const { checkRuntimeSupport } = await import("../src/server/workflows/check-iden
 const { claudeRunner, configureClaudeRunnerTransport } = await import(
   "../src/server/llm/claude.ts"
 );
+const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
+// Every top-level `await` stays above the first `test()`. node:test runs the root `after` above
+// as soon as the tests registered so far have finished, so an `await` between two tests lets it
+// remove this home while the rest of the file is still importing.
 
 function persona(
   id: string,
@@ -1710,8 +1714,6 @@ test("a check does not spend a review slot, and a review does not spend a check 
 // about a graph a test drew, so this drives the real catalog entry - if a future edit
 // reordered the stages or wired the gate's pass route past the reviewers, every assertion
 // above would still pass and this one would not.
-
-const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 
 const shippedV3 = () => {
   const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === "builtin-workflow:no-mistakes-review")!;
