@@ -296,6 +296,8 @@ test("the poller asks gh for mergeable, baseRefName and headRefOid on both paths
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
   git("init", "-q");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  // The branch path names its repository from the checkout, and refuses one that names none.
+  git("remote", "add", "origin", "https://github.com/acme/demo.git");
   process.env.HARNESS_GH_BIN = join(bin, "gh");
   try {
     // Branch path: a live session on a feature branch whose PR conflicts.
@@ -338,7 +340,7 @@ test("the poller asks gh for mergeable, baseRefName and headRefOid on both paths
   }
   const { readFileSync } = await import("node:fs");
   const calls = readFileSync(argsLog, "utf8");
-  assert.match(calls, /pr list .*--json \S*mergeable\S*/);
+  assert.match(calls, /pr list --repo acme\/demo .*--json \S*mergeable\S*/);
   assert.match(calls, /pr list .*--json \S*baseRefName/);
   assert.match(calls, /pr view \S+ --json \S*mergeable/);
   assert.match(calls, /pr view \S+ --json \S*baseRefName/);

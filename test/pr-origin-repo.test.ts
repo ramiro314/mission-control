@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -17,7 +17,6 @@ writeFileSync(
 process.env.MISSION_GH_BIN = join(fakeGhDir, "gh");
 process.on("exit", () => rmSync(fakeGhDir, { recursive: true, force: true }));
 
-const { originGitHubRepository } = await import("../src/server/inspector/github.ts");
 const { prListArgs, queryPr } = await import("../src/server/pr.ts");
 const { openPullRequestCommand, originRepositoryShell } = await import("../src/shared/pr-command.mjs");
 
@@ -31,38 +30,44 @@ function forkCheckout(origin: string | null): { dir: string; done: () => void } 
   return { dir, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test("the checkout's origin names the repository, never its upstream", async (t) => {
-  for (const url of ["https://github.com/me/fork.git", "git@github.com:me/fork.git"]) {
-    const repo = forkCheckout(url);
-    t.after(repo.done);
-    assert.deepEqual(await originGitHubRepository(repo.dir), { owner: "me", repo: "fork" });
-  }
-});
+function commit(dir: string): void {
+  execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+}
 
-test("no origin, or a non-GitHub one, names no repository", async (t) => {
-  const none = forkCheckout(null);
-  t.after(none.done);
-  assert.equal(await originGitHubRepository(none.dir), null);
-  const other = forkCheckout("https://gitlab.com/me/fork.git");
-  t.after(other.done);
-  assert.equal(await originGitHubRepository(other.dir), null);
-});
-
-test("the branch lookup pins --repo to origin, and leaves gh to choose without one", () => {
-  const pinned = prListArgs("feat/x", { owner: "me", repo: "fork" });
-  assert.deepEqual(pinned.slice(0, 6), ["pr", "list", "--repo", "me/fork", "--head", "feat/x"]);
-  const unpinned = prListArgs("feat/x", null);
-  assert.deepEqual(unpinned.slice(0, 4), ["pr", "list", "--head", "feat/x"]);
-  assert.ok(!unpinned.includes("--repo"));
+test("the branch lookup always names its repository", () => {
+  assert.deepEqual(prListArgs("feat/x", "me/fork").slice(0, 6), ["pr", "list", "--repo", "me/fork", "--head", "feat/x"]);
 });
 
 test("the poller's branch lookup asks gh about origin's repository, not upstream's", async (t) => {
   const repo = forkCheckout("https://github.com/me/fork.git");
   t.after(repo.done);
-  execFileSync("git", ["-C", repo.dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+  commit(repo.dir);
   assert.equal(await queryPr(repo.dir, "feat/x"), null);
   const argv = JSON.parse(readFileSync(fakeGhArgv, "utf8")) as string[];
   assert.deepEqual(argv.slice(0, 6), ["pr", "list", "--repo", "me/fork", "--head", "feat/x"]);
+});
+
+test("the poller follows a gh default pin on another remote", async (t) => {
+  const repo = forkCheckout("https://github.com/me/fork.git");
+  t.after(repo.done);
+  commit(repo.dir);
+  execFileSync("git", ["-C", repo.dir, "config", "remote.upstream.gh-resolved", "base"]);
+  assert.equal(await queryPr(repo.dir, "feat/x"), null);
+  const argv = JSON.parse(readFileSync(fakeGhArgv, "utf8")) as string[];
+  assert.deepEqual(argv.slice(0, 4), ["pr", "list", "--repo", "org/parent"]);
+});
+
+// Without a resolvable repository the old poller ran a bare `gh pr list`, and gh's own choice
+// was the fork's parent. Now it never asks: "error" leaves the chip as it was.
+test("a checkout with no GitHub origin and no pin answers error without running gh", async (t) => {
+  for (const origin of [null, "https://gitlab.com/me/fork.git"]) {
+    const repo = forkCheckout(origin);
+    t.after(repo.done);
+    commit(repo.dir);
+    rmSync(fakeGhArgv, { force: true });
+    assert.equal(await queryPr(repo.dir, "feat/x"), "error", String(origin));
+    assert.equal(existsSync(fakeGhArgv), false, "gh must not run");
+  }
 });
 
 // PR creation depends on this snippet alone, so run it rather than read it: a sed that left

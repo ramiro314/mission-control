@@ -239,7 +239,13 @@ export function seedRepo(workspace: string, name: string): string {
   const origin = join(origins, `${name}.git`);
   mkdirSync(origins, { recursive: true });
   execFileSync("git", ["init", "-q", "--bare", origin], { stdio: "pipe" });
-  git("remote", "add", "origin", origin);
+  // `origin` reads as a GitHub repository, because every `gh` call resolves its `--repo` from
+  // it (`checkoutGitHubRepository`) and refuses a checkout that names none; `insteadOf` sends
+  // git's own fetches and pushes to the bare repository. The owner matches no spec's PR URLs,
+  // so no repository-provenance gate starts accepting one.
+  const githubUrl = `https://github.com/mc-e2e-fixture/${name}.git`;
+  git("config", `url.${origin}.insteadOf`, githubUrl);
+  git("remote", "add", "origin", githubUrl);
   git("push", "-qu", "origin", "main");
   execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"], { stdio: "pipe" });
   return realpathSync(repo);
