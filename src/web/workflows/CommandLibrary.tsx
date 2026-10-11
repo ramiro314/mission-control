@@ -227,6 +227,8 @@ export type CommandSync =
   | { kind: "idle" }
   /** Follow the stream: replace the baseline and the draft with this view. */
   | { kind: "adopt"; view: WorkflowCommandView }
+  /** Take this view as the baseline and keep the draft edited against it. */
+  | { kind: "rebase"; view: WorkflowCommandView }
   /** Hold this newer view for the operator to decide about. */
   | { kind: "conflict"; view: WorkflowCommandView }
   /** The conflict is over - the stream reached the revision it named. */
@@ -244,6 +246,13 @@ export function commandSync({ selected, baseline, conflict, dirty }: CommandSync
       : { kind: "idle" };
   }
   if (!dirty) return { kind: "adopt", view: selected };
+  // The first delivery under a draft edited before the snapshot. That draft opened as
+  // `commandDraftFrom(null)`, the slot as a fresh one carries it, so a delivery saying exactly
+  // that is what the operator was editing: it becomes the baseline under their typing. Held as
+  // a conflict instead, Save stayed disabled behind a "newer revision" nobody had written.
+  if (!baseline && !commandDraftDirty(commandDraftFrom(null), selected)) {
+    return { kind: "rebase", view: selected };
+  }
   // Whichever committed view is newer. A refusal can name a revision two saves ahead of the
   // one the stream has managed to deliver, and offering the older of the two as "the newer
   // revision" would hand the operator a Load newer that still cannot be saved over.
@@ -513,6 +522,7 @@ export function CommandLibrary({
   useEffect(() => {
     const next = commandSync({ selected, baseline, conflict, dirty });
     if (next.kind === "adopt") adopt(next.view);
+    else if (next.kind === "rebase") setBaseline(next.view);
     else if (next.kind === "conflict") setConflict(next.view);
     else if (next.kind === "resolved") setConflict(null);
   }, [adopt, baseline, conflict, dirty, selected]);

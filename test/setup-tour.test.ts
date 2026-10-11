@@ -26,7 +26,7 @@ function prepare(stop: SetupStop, navigation: SetupTourNavigation): boolean | un
   return stop.prepare?.({
     runtime: null,
     navigation,
-    registry: { get: () => null, register: () => () => {} },
+    registry: { get: () => null, register: () => () => {}, subscribe: () => () => {} },
     stop,
     beat: 0,
     element: null,
@@ -92,7 +92,7 @@ test("each hand-over stop names its own label, and the tour finishes on the add 
   const labels = SETUP_TOUR.steps.map((stop) => stop.nextLabel?.({
     runtime: null,
     navigation,
-    registry: { get: () => null, register: () => () => {} },
+    registry: { get: () => null, register: () => () => {}, subscribe: () => () => {} },
     stop,
     beat: 0,
     element: null,
