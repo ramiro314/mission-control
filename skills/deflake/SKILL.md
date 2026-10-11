@@ -29,10 +29,10 @@ A flake issue written by Mission Control's CI action looks like this:
   `<!-- mission-flake-run:v1 url=<run URL> -->`, then the PR or branch, the commit, the run
   link, the jobs and the error snippet.
 
-Read all of it: `gh issue view <n> --comments`. Collect every error snippet, and note which
-branches, jobs and dates they came from. Different snippets for one test often mean two races,
-not one. A flake seen only in one shard or one runtime version is a clue about what it shares
-with its neighbours.
+Read all of it: `gh issue view <issue-url> --comments`, naming the issue by its URL so gh never
+chooses the repository. Collect every error snippet, and note which branches, jobs and dates
+they came from. Different snippets for one test often mean two races, not one. A flake seen
+only in one shard or one runtime version is a clue about what it shares with its neighbours.
 
 Then read the test and the code it exercises. Look for the usual suspects: a fixed `sleep` or
 timeout standing in for "wait until ready", a poll that assumes an order, a port, file, temp

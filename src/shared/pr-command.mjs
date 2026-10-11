@@ -86,15 +86,21 @@ export function opensPullRequest(command) {
 }
 
 /**
- * The command every Mission Control instruction gives for opening a pull request on `base`.
+ * The shell line that sets `$repo` to the checkout's `origin` as `owner/name`.
  *
- * The repository comes from the checkout's `origin` rather than gh's `{owner}/{repo}`
- * placeholders: those resolve through gh's base-repository choice, which outside a terminal
- * prefers a remote named `upstream` - on a fork, the parent this exists to avoid.
+ * Every instruction that names a repository reads it this way rather than through gh's
+ * `{owner}/{repo}` placeholders or a bare `gh` call: those resolve through gh's
+ * base-repository choice, which outside a terminal prefers a remote named `upstream` - on a
+ * fork, the parent this exists to avoid. Skills are markdown and copy this line verbatim;
+ * `test/skills-catalog.test.ts` holds each copy to it.
  */
+export const originRepositoryShell =
+  "repo=$(git remote get-url origin | sed -E 's#^.*github\\.com[:/]##; s#\\.git$##')";
+
+/** The command every Mission Control instruction gives for opening a pull request on `base`. */
 export function openPullRequestCommand(base) {
   return (
-    `repo=$(git remote get-url origin | sed -E 's#^.*github\\.com[:/]##; s#\\.git$##') && ` +
+    `${originRepositoryShell} && ` +
     `gh api "repos/$repo/pulls" -f head="$(git branch --show-current)" -f base=${base} ` +
     `-f title="<title>" -F body=@<body-file> --jq .html_url`
   );
