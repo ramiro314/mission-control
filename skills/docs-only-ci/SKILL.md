@@ -66,9 +66,10 @@ Read the repository; change nothing yet. Record a finding for each item, with th
    that runs them on every run; if none do, propose none.
 5. **Existing path filters.** Any `paths` or `paths-ignore` on a pull request trigger. The gate
    replaces it.
-6. **Required checks.** Read them with
-   `gh api repos/{owner}/{repo}/branches/{default}/protection/required_status_checks`, and the
-   rulesets that apply to the default branch with `gh api repos/{owner}/{repo}/rules/branches/{default}`.
+6. **Required checks.** Set `$repo` from origin with
+   `repo=$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')`, then read them with
+   `gh api "repos/$repo/branches/{default}/protection/required_status_checks"`, and the rulesets
+   that apply to the default branch with `gh api "repos/$repo/rules/branches/{default}"`.
    A 403 or 404 means "could not read branch protection", never "no required checks".
 7. **The testing-setup `flake-report` job.** When the repository has one, it is **never gated**:
    Mission Control's Wait for CI needs its "Flaky tests" check on every run, docs-only included,
@@ -202,7 +203,7 @@ jobs of audit item 8 too: `CI result` does not cover them, so a requirement on o
 ## 5. Verify
 
 Once Mission Control's publish instruction has opened the setup pull request, wait for its CI
-(`gh pr checks <pr> --watch`) and confirm:
+(`gh pr checks <pr-url> --watch`) and confirm:
 
 - `changes` ran and logged `docs_only=false`: the setup pull request edits a workflow, which is
   not a docs path.
@@ -211,7 +212,7 @@ Once Mission Control's publish instruction has opened the setup pull request, wa
 
 When the operator wants proof of the skip, open a throwaway pull request based on the setup
 branch that changes one docs file, confirm `changes` logged `docs_only=true`, the gated jobs
-were skipped and `CI result` passed, record its `gh pr checks` output, and close it unmerged.
+were skipped and `CI result` passed, record its `gh pr checks <pr-url>` output, and close it unmerged.
 
 ## The report
 

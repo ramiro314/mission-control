@@ -19,7 +19,7 @@ process.on("exit", () => rmSync(fakeGhDir, { recursive: true, force: true }));
 
 const { originGitHubRepository } = await import("../src/server/inspector/github.ts");
 const { prListArgs, queryPr } = await import("../src/server/pr.ts");
-const { openPullRequestCommand } = await import("../src/shared/pr-command.mjs");
+const { openPullRequestCommand, originRepositoryShell } = await import("../src/shared/pr-command.mjs");
 
 // A fork of an org that enforces SAML SSO: `gh` left to choose prefers the `upstream` remote
 // outside a terminal, and asking about that parent fails for a login not authorized there.
@@ -67,9 +67,21 @@ test("the poller's branch lookup asks gh about origin's repository, not upstream
 
 // PR creation depends on this snippet alone, so run it rather than read it: a sed that left
 // the scp prefix or the `.git` in place, or a JS-to-shell escaping slip, would name no repo.
+test("the open command reads its repository through the exported origin line", () => {
+  // Skills copy `originRepositoryShell` verbatim; the open command must be built on the same
+  // line, so the run below proves every copy. The full text is pinned too: the Inspector adopts
+  // a pull request from this exact command, and every instruction already shipped gives it.
+  assert.ok(openPullRequestCommand("main").startsWith(`${originRepositoryShell} && `));
+  assert.equal(
+    openPullRequestCommand("main"),
+    String.raw`repo=$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##') && ` +
+      String.raw`gh api "repos/$repo/pulls" -f head="$(git branch --show-current)" -f base=main ` +
+      String.raw`-f title="<title>" -F body=@<body-file> --jq .html_url`,
+  );
+});
+
 test("the open command's origin snippet resolves owner/repo from every GitHub URL form", async (t) => {
-  const command = openPullRequestCommand("main");
-  const prefix = command.slice(0, command.indexOf(" && "));
+  const prefix = originRepositoryShell;
   for (const url of [
     "https://github.com/me/fork.git",
     "https://github.com/me/fork",

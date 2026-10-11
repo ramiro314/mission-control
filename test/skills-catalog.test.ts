@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { frontmatterBlock, parseFrontmatter, parseSkill, readCatalog } from "../src/server/skills/catalog.ts";
-import { openPullRequestCommand } from "../src/shared/pr-command.mjs";
+import { openPullRequestCommand, originRepositoryShell } from "../src/shared/pr-command.mjs";
 
 // The catalog reader. Its frontmatter parser is deliberately narrow - the files are
 // authored in this repo and reviewed with it - so what matters is that anything it
@@ -565,4 +565,21 @@ test("the shipped docs-only-ci skill audits, asks once, applies only what was ap
   assert.match(text, /could not read branch protection", never "no required checks"/);
   // Verified on the setup pull request's own CI.
   assert.match(text, /## 5\. Verify[\s\S]*`CI result` passed/);
+});
+
+test("the deflake, testing-setup and docs-only-ci skills name their repository, never leave it to gh", () => {
+  // gh resolves a bare number, a `{owner}/{repo}` placeholder or no repository at all through
+  // its base-repository choice, which outside a terminal prefers a remote named `upstream`. On
+  // a fork of an org that enforces SAML SSO that is the parent, and the call is refused.
+  for (const id of ["deflake", "testing-setup", "docs-only-ci"]) {
+    const text = readFileSync(new URL(`../skills/${id}/SKILL.md`, import.meta.url), "utf8");
+    assert.doesNotMatch(text, /\{owner\}|\{repo\}/, id);
+    assert.doesNotMatch(text, /gh (?:issue|pr) (?:view|checks|comment)(?! <(?:issue|pr)-url>)/, id);
+    assert.doesNotMatch(text, /gh run watch(?! <id> --repo "\$repo")/, id);
+    // Every copy of the origin-reading line is the export, character for character, so a
+    // fix to the line cannot leave a skill reading origin the old way.
+    const lines = [...text.matchAll(/`(repo=[^`]*)`/g)].map((m) => m[1]);
+    for (const line of lines) assert.equal(line, originRepositoryShell, id);
+    if (id !== "deflake") assert.ok(lines.length > 0, `${id} reads $repo from origin`);
+  }
 });

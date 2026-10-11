@@ -211,7 +211,8 @@ request, so it comes once Mission Control's publish instruction has opened it:
    Report the exact command, the exit code, and the test count.
 2. **The "Flaky tests" check on the setup pull request's own CI.** After the publish
    instruction opens the pull request, it runs the new CI, so wait for its run
-   (`gh pr checks <pr> --watch`, or `gh run watch`) and confirm a check named
+   (`gh pr checks <pr-url> --watch`, or `gh run watch <id> --repo "$repo"` after setting
+   `$repo` from origin with `repo=$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')`) and confirm a check named
    **Flaky tests** appears on the pull request's head commit, with conclusion `success` or
    `neutral`. Report its link. If it does not appear, read the publish job's log: a missing
    `checks: write` or `issues: write` (GitHub answers 403), a publish job skipped because a test
