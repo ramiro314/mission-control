@@ -187,8 +187,53 @@ const LOOKUPS = new Set(["locateExecutable", "locateExecutableSync", "resolveBin
 /** A program named by literal that runs its `-c` argument as a shell command line. */
 const SHELLS = /^(?:\/(?:usr\/)?bin\/)?(?:sh|bash|zsh|dash)$/;
 
-/** A `gh` command inside a shell command line. */
-const GH_COMMAND_RE = /(?:^|[\s;&|(`])gh\s/;
+/**
+ * A `gh` that is not the start of a `gh` command: a `${VAR:-gh}` default, `$GH`, `"gh"`, a
+ * `GH_BIN` or `ghBin`. Only a kebab-case word (`foo-gh`, `gh-resolved`) and longer words
+ * (`github`) are not it.
+ */
+const GH_WORD_RE = /(?<!\w-)(?<!\w)gh(?![\w-])|gh_?bin/gi;
+
+/**
+ * One shell command line, read for `gh`: each `gh` command, as its text up to an unquoted `;`,
+ * `|`, `)`, `&` or newline, and whether any other `gh` in it names the program in a way that
+ * cannot be read as a command - which fails as unread rather than passing.
+ */
+function readShellLine(text: string): { commands: string[]; unreadable: boolean } {
+  const commands: string[] = [];
+  const spans: [number, number][] = [];
+  for (const match of text.matchAll(/(?:^|[\s;&|(!`])gh\s+/g)) {
+    const start = match.index + match[0].indexOf("gh");
+    let end = start;
+    let quote: string | null = null;
+    for (; end < text.length; end++) {
+      const c = text[end]!;
+      if (quote) {
+        if (c === quote) quote = null;
+      } else if (c === '"' || c === "'") quote = c;
+      else if (";|)&\n".includes(c)) break;
+    }
+    spans.push([start, end]);
+    commands.push(text.slice(start, end).trim());
+  }
+  const unreadable = [...text.matchAll(GH_WORD_RE)]
+    .some((match) => !spans.some(([start, end]) => match.index >= start && match.index < end));
+  return { commands, unreadable };
+}
+
+/** A shell line without its comment: an unquoted `#` at the start of a word. */
+function stripShellComment(line: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === "\\" && quote !== "'") i++;
+    else if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "#" && (i === 0 || /\s/.test(line[i - 1]!))) return line.slice(0, i);
+  }
+  return line;
+}
 
 interface Site {
   file: string;
@@ -678,7 +723,9 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
         ? command.getText(tree).slice(1, -1)
         : null;
     if (text === null) return unread(command);
-    if (GH_COMMAND_RE.test(text)) site(command, normalize(text));
+    const read = readShellLine(text);
+    for (const gh of read.commands) site(command, normalize(gh));
+    if (read.unreadable) unread(command);
   }
   function shellCall(node: ts.CallExpression): void {
     const program = node.arguments[0];
@@ -768,35 +815,15 @@ function ghSites(file: string, source: string, entries: readonly Entry[] = [GH_B
 }
 
 /**
- * `gh` commands in a shell script: one site per command, its text up to `;`, `|`, `)` or `&`.
- *
- * Any other `gh` on a line - `"${MISSION_GH_BIN:-gh}" issue list`, `$GH`, a `GH_BIN` - names the
- * program in a way this cannot read as a command, so it is reported unread rather than skipped.
+ * `gh` commands in a shell script: one site per command (`readShellLine`), and an unread report
+ * for a line with any other `gh` - `"${GH_CMD:-gh}" issue list`, `"$GH" issue list`.
  */
 function shellSites(file: string, source: string): Site[] {
   const sites: Site[] = [];
   source.split("\n").forEach((raw, index) => {
-    const line = raw.replace(/(^|\s)#.*$/, "");
-    const spans: [number, number][] = [];
-    for (const match of line.matchAll(/(?:^|[\s;&|(!`])gh\s+/g)) {
-      const start = match.index + match[0].indexOf("gh");
-      let end = start;
-      let quote: string | null = null;
-      for (; end < line.length; end++) {
-        const c = line[end]!;
-        if (quote) {
-          if (c === quote) quote = null;
-        } else if (c === '"' || c === "'") quote = c;
-        else if (";|)&".includes(c)) break;
-      }
-      spans.push([start, end]);
-      sites.push({ file, fn: "<shell>", line: index + 1, argv: line.slice(start, end).trim(), text: "" });
-    }
-    for (const match of line.matchAll(/(?<![\w-])gh(?![\w-])|gh_bin/gi)) {
-      if (spans.some(([start, end]) => match.index >= start && match.index < end)) continue;
-      sites.push({ file, fn: "<shell>", line: index + 1, argv: null, text: raw.trim() });
-      break;
-    }
+    const read = readShellLine(stripShellComment(raw));
+    for (const gh of read.commands) sites.push({ file, fn: "<shell>", line: index + 1, argv: gh, text: "" });
+    if (read.unreadable) sites.push({ file, fn: "<shell>", line: index + 1, argv: null, text: raw.trim() });
   });
   return sites;
 }
@@ -961,6 +988,8 @@ test("a gh command handed to a shell is a site, and a command line the scanner c
     '  spawn("sh", ["-c", cmd]);',
     '  run("gh pr list", [], { shell: true });',
     "  run(cmd, [], { shell: true });",
+    `  sh('"\${GH_CMD:-gh}" issue list');`,
+    "  exec(`${GH} issue list`);",
     "}",
   ].join("\n");
   const { sites } = ghSites("scripts/fixture.mjs", source);
@@ -972,6 +1001,8 @@ test("a gh command handed to a shell is a site, and a command line the scanner c
     'scripts/fixture.mjs:9 the scanner cannot read this gh binary in shellCalls: spawn("sh", ["-c", cmd]);',
     'scripts/fixture.mjs:10 unclassified gh call in shellCalls: gh pr list',
     "scripts/fixture.mjs:11 the scanner cannot read this gh binary in shellCalls: run(cmd, [], { shell: true });",
+    `scripts/fixture.mjs:12 the scanner cannot read this gh binary in shellCalls: sh('"\${GH_CMD:-gh}" issue list');`,
+    "scripts/fixture.mjs:13 the scanner cannot read this gh binary in shellCalls: exec(`${GH} issue list`);",
   ]);
 });
 
@@ -1119,11 +1150,15 @@ test("a shell script's gh commands are sites, and a gh it cannot read as one fai
     'GH="${MISSION_GH_BIN:-gh}"',
     '"$GH" issue list',
     'echo "see github.com and gh-resolved"',
+    '"${GH_CMD:-gh}" issue list',
+    'echo "a # inside quotes is not a comment"; gh pr list',
   ].join("\n");
   assert.deepEqual(inventoryProblems(shellSites("scripts/fixture.sh", source), {}, {}), [
     'scripts/fixture.sh:3 unclassified gh call in <shell>: gh api "repos/$REPO/pulls"',
     'scripts/fixture.sh:4 the scanner cannot read this gh binary in <shell>: GH="${MISSION_GH_BIN:-gh}"',
     'scripts/fixture.sh:5 the scanner cannot read this gh binary in <shell>: "$GH" issue list',
+    'scripts/fixture.sh:7 the scanner cannot read this gh binary in <shell>: "${GH_CMD:-gh}" issue list',
+    "scripts/fixture.sh:8 unclassified gh call in <shell>: gh pr list",
   ]);
 });
 
@@ -1258,9 +1293,10 @@ const PLACEHOLDER_RE = /(?<!\$)\{(?:owner|repo)\}/g;
 /**
  * `gh pr create` in any spelling - flags between the words included, wrapped across a line as
  * hard-wrapped markdown does, named in prose or given as a command. At most four words may sit
- * between `gh` and `pr` (`--repo o/r`), so a match never spans a paragraph. It always reads the fork's parent, so agent text never names it at all: the only
- * place the string belongs is the open-PR recognizer itself (`src/shared/pr-command.mjs`), which
- * is code that detects it, not text an agent reads.
+ * between `gh` and `pr` (`--repo o/r`), so a match stays within a few words. It always reads the
+ * fork's parent, so agent text never names it at all: the only place the string belongs is the
+ * open-PR recognizer itself (`src/shared/pr-command.mjs`), which is code that detects it, not
+ * text an agent reads.
  */
 const PR_CREATE_ANY_RE = /(?<![\w-])gh(?:\s+[^\s`;|&]+){0,4}?\s+pr(?:\s+-[^\s`;|&]*)*\s+create(?![\w-])/g;
 /**
@@ -1273,7 +1309,10 @@ const PR_CREATE_ANY_RE = /(?<![\w-])gh(?:\s+[^\s`;|&]+){0,4}?\s+pr(?:\s+-[^\s`;|
 const ORIGIN_READ_RE = /get-url|ls-remote|remote\s+(?:show|-v)(?![\w-])|remote\.[\w.-]*\.?url|(?<![\w$])repo=\$\(/g;
 
 /** Where `text` lets gh choose the repository, one line per refusal. */
-function agentTextProblems(where: string, text: string): string[] {
+function agentTextProblems(where: string, quoted: string): string[] {
+  // Blockquote markers read as spaces, so a command wrapped inside a quote is still one command;
+  // same length, so every index and line number still points at the source.
+  const text = quoted.replace(/^([ \t]*)(>[ \t>]*)/gm, (_m, lead: string, marks: string) => lead + " ".repeat(marks.length));
   const problems: string[] = [];
   const at = (index: number): string => `${where}:${text.slice(0, index).split("\n").length}`;
   for (const match of text.matchAll(PR_CREATE_ANY_RE)) {
@@ -1348,6 +1387,7 @@ test("agent text that leaves the repository to gh is refused", () => {
     "Open the pull request with `gh pr\ncreate --fill`.",
     "Open it with `gh\npr create`.",
     "Open it with gh pr\ncreate.",
+    "> Open it with `gh pr\n> create --fill`.",
   ]) {
     const line = pr.startsWith("```") ? 2 : 1; // the line `gh` starts on
     assert.deepEqual(agentTextProblems("fixture.md", pr), [
