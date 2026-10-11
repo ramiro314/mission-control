@@ -6,6 +6,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectDaemonHides } from "../fixtures/display-items.ts";
 
 /**
  * The console detail's `PATH`/`BRANCH` band is the operator's to switch off, and switching
@@ -226,6 +227,7 @@ test("both band cells ship visible, switch off together, and give the conversati
   await path.uncheck();
   await branch.uncheck();
   await expect(cardBranch).toBeChecked();
+  await expectDaemonHides(daemon, ["detailPath", "detailBranch"], true);
 
   // (2) Back to the console. The band is ABSENT, not emptied - a count, which an empty `<dl>`
   // with its padding and border would fail.
@@ -258,6 +260,7 @@ test("both band cells ship visible, switch off together, and give the conversati
   await expect(restored.branch).not.toBeChecked();
   await restored.path.check();
   await restored.branch.check();
+  await expectDaemonHides(daemon, ["detailPath", "detailBranch"], false);
 
   const back = await openConsoleDetail(
     dashboard,
@@ -284,6 +287,7 @@ test("hiding one cell leaves the band standing for the other", async ({ dashboar
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   await bandBoxes(dashboard).path.uncheck();
+  await expectDaemonHides(daemon, ["detailPath"], true);
 
   const detail = await openConsoleDetail(dashboard, daemon, /Keep the Branch When the Path Goes/i);
   const band = detail.locator(".detail-sub");

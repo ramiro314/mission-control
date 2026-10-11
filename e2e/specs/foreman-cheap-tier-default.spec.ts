@@ -36,8 +36,14 @@ test("a new installation runs the cheap tier On, and can still be moved to Shado
   // Advice to promote to On has no place under On.
   await expect(tier.getByText(/Promote it to/)).toHaveCount(0);
 
+  // The radio flips optimistically, before the daemon has the write. Reloading on that alone
+  // aborts the PUT in flight, so the reload waits for the daemon's answer, not the paint.
+  const saved = dashboard.waitForResponse(
+    (r) => r.url().endsWith("/api/foreman/config") && r.request().method() === "PUT",
+  );
   await tier.getByRole("radio", { name: "Shadow" }).check();
   await expect(tier.getByText(/Promote it to/)).toBeVisible();
+  expect((await saved).ok(), "the daemon should accept the Shadow posture").toBe(true);
 
   await dashboard.reload();
   const afterReload = dashboard.getByRole("group", { name: "Cheap tier" });
