@@ -4928,7 +4928,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    *
    *  - it may push only a task that waits on the calling session - a ticket it filed or
    *    adopted - so a session cannot publish somebody else's backlog. A tickets follow-up's
-   *    tickets wait on its source shape task instead (`shapeTicketSourceEdge`), so from that
+   *    tickets are also linked to its source shape task (`shapeTicketSourceEdge`), so from that
    *    session an edge to the source counts too;
    *  - a task already linked to that source answers 200 with `alreadyPushed: true`, so a
    *    retry after a lost reply is idempotent instead of a 409 the agent has to interpret.

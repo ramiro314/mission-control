@@ -2668,13 +2668,18 @@ export class TaskManager {
           throw new TaskDependencyError("dependency session is no longer active");
         }
         // A tickets follow-up gating a ticket on itself means "linked to the merged shape
-        // task": the follow-up opens no PR, so an edge on it would never be released.
+        // task" and "held until the follow-up finishes filing": the follow-up opens no PR,
+        // so its edge is released by `completeShapeTickets` instead of by a merge.
         const followup = session.task ? shapeTicketFollowupForTask(session.task.id) : null;
         if (followup) {
-          dependency = this.shapeTicketSourceEdge(followup, existing.get(`task:${followup.sourceTaskId}`), selectedAt);
-          const key = dependencyKey(dependency);
-          if (!seen.has(key)) resolved.push(dependency);
-          seen.add(key);
+          for (const edge of [
+            this.shapeTicketSourceEdge(followup, existing.get(`task:${followup.sourceTaskId}`), selectedAt),
+            this.shapeTicketFollowupEdge(followup, session, existing.get(`task:${followup.followupTaskId}`), selectedAt),
+          ]) {
+            const key = dependencyKey(edge);
+            if (!seen.has(key)) resolved.push(edge);
+            seen.add(key);
+          }
           continue;
         }
         const episode = this.registry.workEpisodeForSession(session.id);
@@ -2767,8 +2772,40 @@ export class TaskManager {
   }
 
   /**
-   * The edge a ticket filed from a tickets follow-up carries instead of one on the follow-up:
-   * a task edge to the source shape task, pinned to its merged episode and already satisfied.
+   * The edge that holds a ticket filed from a tickets follow-up until the follow-up finishes:
+   * a task edge to the follow-up itself, unsatisfied until `completeShapeTickets` reports
+   * `filed`. Without it a ticket with no blockers of its own is eligible the moment it is
+   * filed, so the autopilot can launch it while its siblings, its edges and its mirrored
+   * item are still being written.
+   *
+   * Built here rather than through a `task` input for the same reason as the source edge: the
+   * follow-up is running, and only its own session reaches this.
+   */
+  private shapeTicketFollowupEdge(
+    followup: ShapeTicketFollowupRelation,
+    session: Session,
+    previous: TaskDependency | undefined,
+    selectedAt: number,
+  ): TaskDependency {
+    const target = this.registry.getTask(followup.followupTaskId);
+    const episode = this.registry.workEpisodeForSession(session.id);
+    return {
+      type: "task",
+      taskId: followup.followupTaskId,
+      title: target?.title ?? previous?.title ?? followup.followupTaskId,
+      sessionId: session.id,
+      episodeId: episode?.episodeId ?? null,
+      agentSessionId: session.agentSessionId ?? null,
+      branch: session.gitBranch ?? null,
+      prUrl: null,
+      selectedAt: previous?.selectedAt ?? selectedAt,
+      satisfiedAt: previous?.satisfiedAt ?? null,
+    };
+  }
+
+  /**
+   * The edge that links a ticket filed from a tickets follow-up to its plan: a task edge to
+   * the source shape task, pinned to its merged episode and already satisfied.
    *
    * Built here rather than through a `task` input because `newTaskEdgeRefusal` refuses a new
    * edge to a task that is done, and the source always is. Only the follow-up's own session
@@ -3191,7 +3228,8 @@ export class TaskManager {
         error: `this tickets follow-up is ${task.status}, so it cannot report an outcome`,
       };
     }
-    const completed = await this.complete(task.id, text);
+    // Filed releases the tickets, which wait on this follow-up (`shapeTicketFollowupEdge`).
+    const completed = await this.complete(task.id, text, undefined, outcome === "filed");
     if (!completed) {
       return { ok: false, status: 404, error: "the tickets follow-up no longer exists" };
     }

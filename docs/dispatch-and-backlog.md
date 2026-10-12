@@ -492,8 +492,10 @@ Tickets skill against the merged plan; when that pull request does not show exac
 `docs/plans/<name>/plan.md`, the agent asks you which plan to slice. The breakdown review is
 the same, but no tickets file is written or committed: the tasks, and any mirrored issues, are
 the record. Each ticket is linked to the merged shape task with an edge that is already
-satisfied, so it waits only on its own blockers, and mirrored tickets stay sub-issues of the
-shape task's issue. The follow-up finishes itself through `complete_shape_tickets` once the
+satisfied, and mirrored tickets stay sub-issues of the shape task's issue. Each ticket is also
+held on the follow-up itself until the follow-up completes with its tickets filed, so the
+autopilot never starts one while its siblings, its blocking edges or its mirrored issue are
+still being written; after that it waits only on its own blockers. The follow-up finishes itself through `complete_shape_tickets` once the
 tickets are filed, or once you dismiss the breakdown, and its session closes. A failed
 `create_task` or `push_task` leaves it open for you instead. When its launch is refused, the
 follow-up waits in the backlog with the reason, for you to launch. After a cancelled or failed

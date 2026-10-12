@@ -724,42 +724,65 @@ async function followupHarness(name: string) {
   return { ...harness, sourceId, followupId, relation };
 }
 
-test("a tickets follow-up's own gate links the ticket to the merged shape task, already satisfied", async () => {
-  const { tasks, sourceId, followupId, relation, file } = await followupHarness("followup-gate");
+test("a tickets follow-up's own gate links the ticket to the merged shape task and holds it until filing ends", async () => {
+  const { tasks, sessionId, sourceId, followupId, relation, file } = await followupHarness("followup-gate");
 
   const first = await file({ title: "Refactor the export seam", intent: "The seam." });
   assert.equal(first.status, 200, JSON.stringify(first.body));
-  assert.deepEqual(edgesOf(first.body), [`task:${sourceId}`], "no edge to the follow-up");
-  const [edge] = first.body.dependencies;
+  assert.deepEqual(edgesOf(first.body), [`task:${sourceId}`, `task:${followupId}`]);
+  const [edge, hold] = first.body.dependencies;
   assert.equal(edge.episodeId, relation.sourceEpisodeId, "pinned to the merged episode");
   assert.equal(edge.sessionId, relation.sourceSessionId);
   assert.equal(edge.prUrl, relation.sourcePrUrl);
   assert.equal(typeof edge.satisfiedAt, "number", "already satisfied");
+  assert.equal(hold.sessionId, sessionId);
+  assert.equal(hold.prUrl, null);
+  assert.equal(hold.satisfiedAt, null, "held while the follow-up is still filing");
   assert.equal(first.body.status, "backlog");
-  assert.deepEqual(tasks.dependencyBlockers(tasks.get(first.body.id)!), [], "eligible at once");
+  assert.deepEqual(
+    tasks.dependencyBlockers(tasks.get(first.body.id)!).map((blocker) => blocker.taskId),
+    [followupId],
+    "the autopilot cannot launch it mid-filing",
+  );
 
-  // Its own blockers still hold it back, and nothing else does.
+  // Its own blockers hold it back too.
   const second = await file({ title: "Export UI", intent: "UI.", dependsOnTaskIds: [first.body.id] });
-  assert.deepEqual(edgesOf(second.body), [`task:${first.body.id}`, `task:${sourceId}`]);
+  assert.deepEqual(edgesOf(second.body), [`task:${first.body.id}`, `task:${sourceId}`, `task:${followupId}`]);
+
+  // Completing as filed releases every ticket at once, leaving only their own blockers.
+  const completed = await tasks.completeShapeTickets(sessionId, null, "filed");
+  assert.equal(completed.ok, true, JSON.stringify(completed));
+  assert.deepEqual(tasks.dependencyBlockers(tasks.get(first.body.id)!), [], "eligible once filing ended");
   assert.deepEqual(
     tasks.dependencyBlockers(tasks.get(second.body.id)!).map((blocker) => blocker.taskId),
     [first.body.id],
   );
-  assert.ok(tasks.list().every((task) =>
-    task.dependencies.every((dependency) => dependency.type !== "task" || dependency.taskId !== followupId)));
 });
 
-test("adopting from a tickets follow-up adds the satisfied edge to the merged shape task", async () => {
-  const { repo, tasks, sourceId, adopt } = await followupHarness("followup-adopt");
+test("a dismissed tickets follow-up releases nothing it held", async () => {
+  const { tasks, sessionId, followupId, file } = await followupHarness("followup-dismissed-hold");
+  const ticket = await file({ title: "Stray", intent: "s" });
+  assert.equal(ticket.status, 200, JSON.stringify(ticket.body));
+  const completed = await tasks.completeShapeTickets(sessionId, null, "dismissed");
+  assert.equal(completed.ok, true, JSON.stringify(completed));
+  assert.deepEqual(
+    tasks.dependencyBlockers(tasks.get(ticket.body.id)!).map((blocker) => blocker.taskId),
+    [followupId],
+  );
+});
+
+test("adopting from a tickets follow-up adds the satisfied edge to the merged shape task and the hold", async () => {
+  const { repo, tasks, sourceId, followupId, adopt } = await followupHarness("followup-adopt");
   const existing = tasks.create({
     repoRoot: repo, intent: "Existing work.", title: "Existing", kind: "ship", agent: "claude", backlog: true,
   });
   const adopted = await adopt(existing.id);
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
-  assert.deepEqual(edgesOf(adopted.body), [`task:${sourceId}`]);
+  assert.deepEqual(edgesOf(adopted.body), [`task:${sourceId}`, `task:${followupId}`]);
   assert.equal(typeof adopted.body.dependencies[0].satisfiedAt, "number");
+  assert.equal(adopted.body.dependencies[1].satisfiedAt, null);
 
-  // Adopting again keeps the one edge, and when it was first linked.
+  // Adopting again keeps the same edges, and when they were first linked.
   const again = await adopt(existing.id);
   assert.equal(again.status, 200);
   assert.deepEqual(again.body.dependencies, adopted.body.dependencies);
