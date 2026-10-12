@@ -2850,7 +2850,7 @@ test("a scout dependency waits for its merged PR, while dependency cycles are re
   assert.match(cycle.error ?? "", /cycle/);
 });
 
-test("a tickets follow-up session gates on its merged shape task, not on itself", async () => {
+test("a tickets follow-up session gates on its merged shape task, and holds on itself until filing ends", async () => {
   const { reserveShapeTicketFollowup } = await import("../src/server/db.ts");
   const registry = new Registry();
   const tasks = taskManager(registry);
@@ -2886,8 +2886,9 @@ test("a tickets follow-up session gates on its merged shape task, not on itself"
     backlog: true,
     dependencies: [{ type: "session", sessionId: "fu-tickets-session" }],
   });
-  assert.equal(ticket.dependencies.length, 1);
+  assert.equal(ticket.dependencies.length, 2);
   const edge = ticket.dependencies[0]!;
+  const hold = ticket.dependencies[1]!;
   assert.equal(edge.type, "task");
   assert.equal(edge.type === "task" && edge.taskId, "fu-shape");
   assert.equal(edge.sessionId, "fu-shape-session");
@@ -2895,12 +2896,20 @@ test("a tickets follow-up session gates on its merged shape task, not on itself"
   assert.equal(edge.agentSessionId, merged.agentSessionId, "read from the merged episode's binding");
   assert.equal(edge.prUrl, "https://github.com/example/repo/pull/41");
   assert.ok(edge.satisfiedAt, "already satisfied");
-  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(ticket.id)!), []);
+  assert.equal(hold.type, "task");
+  assert.equal(hold.taskId, "fu-tickets");
+  assert.equal(hold.sessionId, "fu-tickets-session");
+  assert.equal(hold.prUrl, null, "no merge can release it");
+  assert.equal(hold.satisfiedAt, null);
+  assert.deepEqual(
+    tasks.dependencyBlockers(registry.getTask(ticket.id)!).map((blocker) => blocker.taskId),
+    ["fu-tickets"],
+  );
 
-  // An edit that keeps the edge keeps it satisfied, though its target is done.
+  // An edit that keeps the edges keeps them as they were, though the shape task is done.
   const edited = await tasks.update(ticket.id, {
     title: "A ticket, renamed",
-    dependencies: [{ type: "task", taskId: "fu-shape" }],
+    dependencies: [{ type: "task", taskId: "fu-shape" }, { type: "task", taskId: "fu-tickets" }],
   });
   assert.equal(edited.ok, true, edited.ok ? "" : edited.error);
   assert.deepEqual(registry.getTask(ticket.id)!.dependencies, ticket.dependencies);

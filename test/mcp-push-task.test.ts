@@ -314,7 +314,7 @@ test("list_backlog_tasks naming a repository reports that repository's mirror ch
 
 /**
  * The shape task has merged and is done, and a tickets follow-up runs in a second live
- * session. A ticket that follow-up files waits on the shape task, not on the follow-up.
+ * session. A ticket that follow-up files is linked to the shape task and held on the follow-up.
  */
 function followupSetup() {
   const base = setup();
@@ -357,8 +357,9 @@ test("a tickets follow-up pushes the tickets it filed, each under the merged sha
   });
   assert.equal(filed.status, 200, await filed.clone().text());
   const ticket = await filed.json() as Task;
-  assert.deepEqual(ticket.dependencies.map((edge) => edge.type === "task" && edge.taskId), ["shape"]);
+  assert.deepEqual(ticket.dependencies.map((edge) => edge.type === "task" && edge.taskId), ["shape", "tickets"]);
   assert.ok(ticket.dependencies[0]!.satisfiedAt, "linked to the merged shape task, already satisfied");
+  assert.equal(ticket.dependencies[1]!.satisfiedAt, null, "held until the follow-up finishes filing");
 
   const pushed = await asFollowup("/mcp/push-task", { taskId: ticket.id });
   assert.equal(pushed.status, 200, await pushed.clone().text());

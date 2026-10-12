@@ -139,8 +139,10 @@ The tool blocks until the human submits or dismisses:
 **In follow-up mode, skip steps 1, 2 and 5**: write no tickets file, commit and push nothing, and
 record no ids in a file. The plan the tickets point at has already merged. File and mirror the
 tickets (steps 3 and 4) exactly as below, with one difference: `dependsOnCurrentSession: true`
-links each ticket to the **merged shape task** with an edge that is already satisfied, so a
-ticket waits only on its own blockers. Your final report (step 6) is the record.
+links each ticket to the **merged shape task** with an edge that is already satisfied, and holds
+it on this follow-up until `complete_shape_tickets` reports `filed`, so no ticket starts while
+you are still filing or mirroring. After that a ticket waits only on its own blockers. Your
+final report (step 6) is the record.
 
 1. **Write** `docs/plans/<name>/tickets.md` beside the plan: every ticket in dependency order with
    its title, kind, labels, blocked-by and full body, and a **Task** column that will hold its
