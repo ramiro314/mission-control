@@ -182,6 +182,7 @@ function builtinPersonaSnapshot(
 function publishBuiltinGraph(
   graph: WorkflowDraftGraph,
   personaExecution: BuiltinPersonaExecutionRouting | null,
+  sessionActionPrompts: BuiltinSessionActionPrompts | undefined,
 ): PublishedWorkflowGraph {
   return {
     nodes: graph.nodes.map((node): PublishedWorkflowNode => {
@@ -206,7 +207,7 @@ function publishBuiltinGraph(
           id: node.id,
           kind: "session_action" as const,
           position: node.position,
-          action: builtinSessionActionSnapshot(node.sessionActionId),
+          action: builtinSessionActionSnapshot(node.sessionActionId, sessionActionPrompts),
         };
       }
       return node;
@@ -215,15 +216,23 @@ function publishBuiltinGraph(
   };
 }
 
+/** Prompt text that a historical built-in version must keep after its source action changes. */
+type BuiltinSessionActionPrompts = Readonly<Partial<Record<SessionActionId, string>>>;
+
 /** The action half of `builtinPersonaSnapshot`, refusing an id this build does not ship. */
-function builtinSessionActionSnapshot(sessionActionId: SessionActionId): SessionActionSnapshot {
+function builtinSessionActionSnapshot(
+  sessionActionId: SessionActionId,
+  prompts: BuiltinSessionActionPrompts | undefined,
+): SessionActionSnapshot {
   const action = BUILTIN_SESSION_ACTIONS.find((candidate) => candidate.id === sessionActionId);
   if (!action) {
     throw new Error(
       `built-in workflow references session action ${sessionActionId}, which this build does not ship`,
     );
   }
-  return sessionActionSnapshotOf(action);
+  const snapshot = sessionActionSnapshotOf(action);
+  const promptMarkdown = prompts?.[sessionActionId];
+  return promptMarkdown === undefined ? snapshot : { ...snapshot, promptMarkdown };
 }
 
 interface BuiltinWorkflowSource {
@@ -248,6 +257,8 @@ interface BuiltinWorkflowSource {
     evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicy;
     bindingDefaults: WorkflowBindingDefaults;
     sourceDraftRevision: number;
+    /** Absent snapshots each action as this build ships it. */
+    sessionActionPrompts?: BuiltinSessionActionPrompts;
   }[];
 }
 
@@ -286,6 +297,31 @@ function appendGpt6Version(
   }];
 }
 
+/**
+ * Publish the current Pull Request action without changing any previously bound version.
+ *
+ * Every version before this one keeps the action text it shipped with, so a binding pinned to
+ * it is not rewritten by an edit to `actions/pull-request.md`.
+ */
+function appendIssueClosingLineVersion(
+  versions: BuiltinWorkflowSource["versions"],
+): BuiltinWorkflowSource["versions"] {
+  const previous = versions.at(-1);
+  if (!previous) throw new Error("the issue closing line version requires a previous version");
+  const frozen = versions.map((version) => ({
+    ...version,
+    sessionActionPrompts: {
+      [PULL_REQUEST_SESSION_ACTION_ID]: PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE,
+      ...version.sessionActionPrompts,
+    },
+  }));
+  return [...frozen, {
+    ...previous,
+    sessionActionPrompts: undefined,
+    sourceDraftRevision: previous.sourceDraftRevision + 1,
+  }];
+}
+
 function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
   if (source.versions.length === 0) {
     throw new Error(`built-in workflow ${source.slug} ships no published version`);
@@ -296,7 +332,11 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     workflowId: builtinWorkflowId(source.slug),
     version: index + 1,
     sourceDraftRevision: source.versions[index]!.sourceDraftRevision,
-    graph: publishBuiltinGraph(graph, source.versions[index]!.personaExecution),
+    graph: publishBuiltinGraph(
+      graph,
+      source.versions[index]!.personaExecution,
+      source.versions[index]!.sessionActionPrompts,
+    ),
     completionPolicy: source.versions[index]!.completionPolicy,
     resumptionPolicy: source.versions[index]!.resumptionPolicy,
     evidenceReadinessPolicy: source.versions[index]!.evidenceReadinessPolicy,
@@ -1089,6 +1129,65 @@ const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
 };
 
 /**
+ * The Pull Request action as every version before the issue closing line shipped it.
+ *
+ * Deliberately the exact text rather than a reconstruction from `actions/pull-request.md`: a
+ * binding pinned to one of those versions keeps the instruction it was published with.
+ */
+const PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE = `# Pull Request
+
+Prepare the reviewed work as a reviewer-ready pull request.
+
+## What to do
+
+Use the invoked pull-request skill to turn the work this workflow just reviewed into one open
+pull request. Commit everything that was reviewed, push the branch, and open the pull request.
+
+This is about one repository and one branch: the repository named in the packet above, or the
+one you are standing in when it names none. If an open pull request already exists for that
+branch and its head matches the work you just pushed, update that pull request rather than
+opening a second one for it.
+
+A task that changed several repositories gets one review, and one of these, per repository -
+so a second packet naming a different repository is not a repeat of this one. Answer each in
+its own repository, and leave the others to theirs.
+
+## What the description has to contain
+
+Write for a reviewer who has not been in this session and will not read the transcript.
+
+The skill owns the shape, and it is two top-level sections. \`## For Humans\` carries the why,
+a concise description of the total feature, the tradeoffs, the known gaps, the durable evidence,
+and the recommended follow-up work, each under its own heading. For every UI-based change, attach
+screenshots of the working feature to the pull request description or a comment for human review.
+Evidence files are never committed to the repository: produce them in a gitignored location and
+upload them to the pull request. Inspect screenshots before upload and redact secrets, credentials,
+and personal data. When a screenshot cannot be safely redacted, do not upload it; report that
+evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image attachments;
+use \`gh pr create --attach\` or \`gh pr edit --attach\` for the pull request description, or
+\`gh pr comment --attach\` for a comment, whenever that version floor is met, and include useful alt
+text for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
+published description or comment renders the attachments before treating the evidence handoff as
+complete. \`## For Agents\` carries the design decisions and the implementation detail. Follow that
+contract exactly rather than inventing a shape here.
+
+Every claim in the evidence subsection is something that was run and reported, not something
+assumed. A list of changed files is not a description. Neither is a restatement of the diff.
+
+## What not to do
+
+- Do not open a pull request from work that does not build, does not pass its tests, or was
+  never run.
+- Do not claim evidence that was not produced. "Should work" is not proof.
+- Do not merge, and do not ask for the pull request to be merged. Follow any runtime CI
+  follow-through policy supplied with this packet before ending the turn. Without that policy,
+  opening the pull request is the stopping point; this run's final gate reviews it afterwards.
+- Do not fold another repository's changes into this pull request, and do not skip a repository
+  because this one is open. Each is reviewed, gated and merged on its own.
+- Do not add an agent as a commit co-author.
+`;
+
+/**
  * The resumption posture every version shipped before the engine could resume itself.
  *
  * Written out rather than derived from `LEGACY_WORKFLOW_RESUMPTION_POLICY` for the reason
@@ -1115,7 +1214,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
     // a human click; versions 1-6 keep the `manual` posture they were published with.
-    versions: appendGpt6Version([
+    versions: appendIssueClosingLineVersion(appendGpt6Version([
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
@@ -1407,13 +1506,13 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 18,
       },
-    ]),
+    ])),
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,
     name: "General Review",
     description: "Typecheck, test, and lint, then balanced review for ordinary changes: Intent, Risk, Quality, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
-    versions: appendGpt6Version([{
+    versions: appendIssueClosingLineVersion(appendGpt6Version([{
       pipeline: {
         sessionId: "gr-session",
         endId: "gr-end",
@@ -1506,13 +1605,13 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
-    }]),
+    }])),
   }),
   builtinWorkflow({
     slug: BUG_FIX_REVIEW_WORKFLOW_SLUG,
     name: "Bug Fix Review",
     description: "Typecheck, test, and lint, then focused bug review: Intent, Root Cause & Regression, Risk, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
-    versions: appendGpt6Version([{
+    versions: appendIssueClosingLineVersion(appendGpt6Version([{
       pipeline: {
         sessionId: "bfr-session",
         endId: "bfr-end",
@@ -1605,13 +1704,13 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
-    }]),
+    }])),
   }),
   builtinWorkflow({
     slug: PLAN_VALIDATION_WORKFLOW_SLUG,
     name: "Plan Validation",
     description: "Reviews intent, consistency across plan files, phase dependencies, and technical feasibility. Validates single-phase and multi-phase plans, then opens a verified pull request without code checks.",
-    versions: appendGpt6Version([{
+    versions: appendIssueClosingLineVersion(appendGpt6Version([{
       pipeline: {
         sessionId: "pv-session",
         endId: "pv-end",
@@ -1672,7 +1771,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "off",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
-    }]),
+    }])),
   }),
   builtinWorkflow({
     slug: NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG,
@@ -1683,7 +1782,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       + "Wait for CI then holds the run until the pull request's full CI suite is green, passing "
       + "when the only failures were flakes that passed on rerun and returning real failures for "
       + "repair, before the final GitHub Inspector gate.",
-    versions: appendGpt6Version([{
+    versions: appendIssueClosingLineVersion(appendGpt6Version([{
       pipeline: NO_MISTAKES_REVIEW_AFFECTED_TESTS_V1,
       personaExecution: {
         default: { runner: "codex", model: "gpt-5.6-terra" },
@@ -1696,6 +1795,6 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
       sourceDraftRevision: 1,
-    }]),
+    }])),
   }),
 ];

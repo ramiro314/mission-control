@@ -16,6 +16,7 @@ import type {
   PublishedWorkflowGraph,
   WorkflowDraftGraph,
   WorkflowDraftNode,
+  WorkflowVersion,
 } from "../src/shared/workflow.ts";
 import { taskDefaultWorkflowId } from "../src/shared/task.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
@@ -238,7 +239,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 20),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 21),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -279,7 +280,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review (High Rigor)");
-  assert.equal(builtin.versions.length, 20);
+  assert.equal(builtin.versions.length, 21);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -405,7 +406,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 20, "one workflow, twenty versions");
+  assert.equal(builtin.versions.length, 21, "one workflow, twenty-one versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -597,7 +598,7 @@ test("version 8 opens the pull request as a stage, and waits rather than prepari
   const shipped = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
   assert.equal(node.action.sourceSessionActionId, "builtin:pull-request");
   assert.equal(node.action.sourceRevision, shipped.revision);
-  assert.equal(node.action.promptMarkdown, shipped.promptMarkdown);
+  assert.equal(sha256(node.action.promptMarkdown), PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256);
   assert.equal(node.action.requiredSkillId, "pull-request");
   assert.deepEqual(node.action.completion, { kind: "pull_request" });
 
@@ -680,8 +681,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
   const pullRequest = version.graph.nodes.find((node) => node.id === "nmr-pull-request");
   assert.ok(pullRequest && pullRequest.kind === "session_action");
-  const shippedAction = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
-  assert.equal(pullRequest.action.promptMarkdown, shippedAction.promptMarkdown);
+  assert.equal(sha256(pullRequest.action.promptMarkdown), PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256);
   assert.deepEqual(pullRequest.action.completion, { kind: "pull_request" });
 
   const route = (source: string, port: string) => version.graph.edges
@@ -700,7 +700,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 20);
+  assert.equal(builtin.versions.length, 21);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -873,7 +873,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 20);
+  assert.equal(builtin.versions.length, 21);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1268,10 +1268,10 @@ test("the review presets ship the agreed judges and delivery boundaries", () => 
 
 test("Plan Validation appends publication without changing its existing version", () => {
   const builtin = BUILTIN_WORKFLOWS.find((entry) => entry.definition.id === builtinWorkflowId("plan-validation"))!;
-  assert.equal(builtin.versions.length, 3);
+  assert.equal(builtin.versions.length, 4);
   assert.equal(createHash("sha256").update(JSON.stringify(builtin.versions[0])).digest("hex"),
     "a58d4a956619419b693461dffd9e48f42110a69545b2b2d39b216d6ef8995899");
-  assert.equal(builtin.definition.currentVersionId, builtinWorkflowVersionId("plan-validation", 3));
+  assert.equal(builtin.definition.currentVersionId, builtinWorkflowVersionId("plan-validation", 4));
   const graph = builtin.versions[1]!.graph;
   assert.ok(graph.nodes.some((node) => node.id === "pv-pull-request" && node.kind === "session_action"));
   assert.ok(graph.edges.some((edge) => edge.source === "pv-pull-request" && edge.sourcePort === "complete" && edge.target === "pv-end"));
@@ -1356,13 +1356,61 @@ for (const [slug, versionNumber, lintId, historicalDigest] of [
   });
 }
 
-test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", () => {
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** The Pull Request action's text as every version before the issue closing line shipped it. */
+const PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256 =
+  "031b3fef42055cd8bba573a547cd9b27b9615b7bbe15c78240720496d51dbb4c";
+
+/**
+ * The Pull Request action's text as the issue closing line versions shipped it. Pinned rather
+ * than compared with the live action, which is the source an edit would move: editing
+ * `actions/pull-request.md` fails here until a version is appended and these are frozen.
+ */
+const PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE_SHA256 =
+  "38a31167eead7cd3ffaf0b501ee95113c10adff06f3dc86db1e08426799621fb";
+
+test("the issue closing line version changes only the Pull Request action's prompt", () => {
+  const prompts = (version: WorkflowVersion) => version.graph.nodes.flatMap((node) =>
+    node.kind === "session_action" ? [node.action.promptMarkdown] : []);
   for (const builtin of BUILTIN_WORKFLOWS) {
     const previous = builtin.versions.at(-2)!;
     const current = builtin.versions.at(-1)!;
     assert.equal(current.version, previous.version + 1);
     assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
     assert.equal(builtin.definition.currentVersionId, current.id);
+    assert.deepEqual(prompts(current).map(sha256), [PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE_SHA256],
+      builtin.definition.id);
+    assert.match(prompts(current)[0]!, /"Closing the issue the work came from" rule/);
+    // Everything else is the previous version's, byte for byte.
+    assert.deepEqual({
+      ...current,
+      id: previous.id,
+      version: previous.version,
+      sourceDraftRevision: previous.sourceDraftRevision,
+      graph: {
+        ...current.graph,
+        nodes: current.graph.nodes.map((node) => node.kind === "session_action"
+          ? { ...node, action: { ...node.action, promptMarkdown: prompts(previous)[0]! } }
+          : node),
+      },
+    }, previous);
+    // Every earlier version keeps the action text it was published with.
+    for (const historical of builtin.versions.slice(0, -1)) {
+      for (const prompt of prompts(historical)) {
+        assert.equal(sha256(prompt), PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256, historical.id);
+      }
+    }
+  }
+});
+
+test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", () => {
+  for (const builtin of BUILTIN_WORKFLOWS) {
+    // The GPT-6 version is the one the issue closing line version was appended to.
+    const previous = builtin.versions.at(-3)!;
+    const current = builtin.versions.at(-2)!;
+    assert.equal(current.version, previous.version + 1);
+    assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
     assert.deepEqual(asDraft(current.graph), asDraft(previous.graph));
     assert.deepEqual(current.graph.edges, previous.graph.edges);
     assert.deepEqual(current.completionPolicy, previous.completionPolicy);
@@ -1390,10 +1438,11 @@ test("No-Mistakes Review (Affected tests) is No-Mistakes Review with affected te
   assert.ok(builtin, "the slug is append-only; later phases rely on this id");
   assert.equal(builtin.definition.id, "builtin-workflow:no-mistakes-review-affected-tests");
   assert.equal(builtin.definition.name, "No-Mistakes Review (Affected tests)");
-  // One authored version plus the GPT-6 routing version appended on top of it.
+  // One authored version, the GPT-6 routing version, and the issue closing line version.
   assert.deepEqual(builtin.versions.map((version) => version.id), [
     builtinWorkflowVersionId(NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG, 1),
     builtinWorkflowVersionId(NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG, 2),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_SLUG, 3),
   ]);
 
   const flagship = noMistakesReview();

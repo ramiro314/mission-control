@@ -72,7 +72,9 @@ concise, bullet-forward **For Humans** for the why, feature description, tradeof
 evidence, and recommended follow-ups; and **For Agents** for direct links to the plan and
 technical documentation, technical context those documents do not cover, and deliberately
 handled failure modes. It does not inventory changed tests or repeat design detail already
-covered by the linked documents. The full contract lives in
+covered by the linked documents. Work that comes from a GitHub issue carries `Closes #<n>` in
+the body, or `Part of #<n>` when a human step remains, because a title's `(#<n>)` closes
+nothing. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
 The **Retro** row carries the retrospective procedure: read a finished session back
