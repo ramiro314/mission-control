@@ -4,7 +4,8 @@ Status: approved 2026-10-12 after a three-round interview with the human (decisi
 below) and a plan review that approved it as written. Follow-up chosen in the review: Create
 tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up
 task once this plan's pull request merges. Amended the same day in plan-validation repair
-round 1 (R1 to R5) and repair round 2 (R6 to R11), both below. Not implemented.
+round 1 (R1 to R5), repair round 2 (R6 to R11) and repair round 3 (R12 to R14), all below.
+Not implemented.
 
 ## Goal
 
@@ -114,6 +115,18 @@ R11, come from the judge's summary. None changes a human decision.
 | R9 | The moved state root had no single resolver, refusal behavior or upgrade path | F2: one `agentRuntimeRoot()` with an env override the daemon hands every child; fail-closed refusal with a named message; dual write to an owned legacy capability root while it exists |
 | R10 | The tray-host probe mechanism was unspecified | F8: `busctl --user ... NameHasOwner org.kde.StatusNotifierWatcher`, at startup and on each close; any failure counts as no tray |
 | R11 | F1's headless cwd might fall inside an F2 deny rule | F1's cwd is never an Inspector cwd. Checking found a real interaction instead: pooled worktrees live in the state dir. F2's Linux state-dir rule excludes `worktree-pools`, macOS stays unchanged, and the existing macOS effect is recorded as S13 |
+
+### Repair round 3 clarifications
+
+These come from the third plan-validation review on 2026-10-12. The packet arrived truncated
+inside its third requested change; the visible text was enough to act on. None changes a human
+decision.
+
+| ID | Issue | Resolution |
+|---|---|---|
+| R12 | R7's exit 75 and the `MainPID` check assumed the unit's main process is the daemon, with no citation | Cited: `scripts/start-service.mjs` imports the daemon into its own process after a child native build, so its exit status reaches systemd directly and its pid is `MainPID`. Nothing changes |
+| R13 | `graphicalSessionEnv()` preferred the daemon's own display, which goes stale under the unit after re-login or with linger | Under the unit the manager's environment comes first; outside it the daemon's own does. The variables come as one set from a single source, and a source whose display socket is gone is skipped, so the named error fires. Tests cover a stale own display |
+| R14 | GUI programs the daemon spawns directly (terminal raises, `xdg-open`) stayed in the unit's cgroup, so a restart closed them | F7's scope wrapper now covers every `graphicalSessionEnv()` spawn as well as the tmux and Herdr servers. The restart check now includes a Focus-opened terminal window and an open-target browser |
 
 ## Severity tiers
 
@@ -384,7 +397,10 @@ flowchart LR
 
 - A **spawn-only Linux Ghostty adapter**: on Linux the `ghostty` emulator raises a multiplexer
   session by running `ghostty +new-window -e <attachArgv>` (Ghostty 1.3 supports `+new-window`
-  on Linux; the ticket verifies `-e` and falls back to `ghostty -e`). Its list, write and
+  on Linux). During shaping, `ghostty +new-window --help` printed nothing and may have opened a
+  plain window, which suggests `+new-window` can ignore arguments it does not take. The ticket
+  therefore verifies that `-e` reaches the new window before relying on it, and otherwise uses
+  `ghostty -e <attachArgv>`. Both run through F7's scope wrapper. Its list, write and
   capture capabilities are `null`; the multiplexer already provides them. On macOS the
   AppleScript adapter is unchanged.
 - A **generic Linux emulator**, appended to `EMULATOR_IDS` (append-only, per the change
@@ -474,32 +490,58 @@ flowchart LR
   - Every GUI program the daemon spawns goes through one `graphicalSessionEnv()` helper. That
     covers `xdg-open` and `gtk-launch` in `open-targets/browser.ts`, F5's `ghostty` and
     `xdg-terminal-exec` / `$TERMINAL` adapters, and WezTerm on Linux.
-  - The helper uses the daemon's own `WAYLAND_DISPLAY` or `DISPLAY` when set. Otherwise it reads
-    `systemctl --user show-environment` at that spawn and takes `WAYLAND_DISPLAY`, `DISPLAY`,
-    `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE` from it.
+  - **Two sources, chosen per spawn (R13).** One source is the user manager's current
+    environment, read with `systemctl --user show-environment` at that spawn. The other is the
+    daemon's own environment. Each spawn takes `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`,
+    `DBUS_SESSION_BUS_ADDRESS`, `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE` **as one set from a
+    single source**, never mixing the two, so a stale `XAUTHORITY` cannot pair with a live
+    `DISPLAY`. The order:
+    - Under the user manager (the unit; systemd sets `INVOCATION_ID`), the manager's current
+      environment comes first and the daemon's own is the fallback. A service started or
+      restarted mid-session inherits the manager's values at that moment, and only the manager
+      learns about a later login, so its own copy goes stale.
+    - Outside the manager (`make start`, `make up`), the daemon's own environment comes first
+      and the manager's is the fallback.
+  - **A dead display counts as absent.** A source is usable only when its display socket
+    exists:
+    - `WAYLAND_DISPLAY` resolves to `$XDG_RUNTIME_DIR/<name>`, or the absolute path it names;
+    - a local `DISPLAY` `:N` resolves to `/tmp/.X11-unix/XN`;
+    - a remote `host:N` display is taken as present.
+
+    A source whose socket is gone is skipped, so after a logout with linger on, neither source
+    is usable and the named error below fires instead of a client connection error.
   - Reading at spawn time covers a unit that started before the desktop imported its
     environment into the user manager. KDE Plasma and GNOME import it at login; other sessions
-    run `dbus-update-activation-environment --systemd`, which F13 documents. It also covers a
-    later login with a new display.
-  - When neither source has a display, the action fails with "No graphical session is reachable
-    from the Mission Control daemon: WAYLAND_DISPLAY and DISPLAY are unset in the daemon and in
-    the systemd user manager. Log in to a desktop session, or start the daemon from one." This
-    appears where Focus and open-target errors appear today.
+    run `dbus-update-activation-environment --systemd`, which F13 documents. Because the manager
+    comes first under the unit, it also covers a later login with a new display.
+  - When neither source has a usable display, the action fails with "No graphical session is
+    reachable from the Mission Control daemon: neither the daemon nor the systemd user manager
+    has a WAYLAND_DISPLAY or DISPLAY whose socket exists. Log in to a desktop session, or start
+    the daemon from one." This appears where Focus and open-target errors appear today.
   - The helper is Linux-only; macOS spawns are unchanged.
 - **Lifetime at logout.**
   - Without linger (the default), the user manager stops when the user's last session ends.
     That stops the unit and every `systemd-run --user --scope` server with its agents, which
     matches macOS, where logout ends the LaunchAgent and the session's processes.
   - With linger (`loginctl enable-linger`), the unit and the scoped servers keep running after
-    logout. GUI actions fail with the message above until the next graphical login, when the
-    spawn-time read picks up the new display.
+    logout. The old display sockets disappear with the session, so GUI actions fail with the
+    message above until the next graphical login. After that login, the manager's environment,
+    read first under the unit, holds the new display.
   - F13 documents both.
-- **Multiplexer servers leave the launcher's cgroup (S10).** On Linux, tmux and Herdr servers
-  that Mission Control starts run under `systemd-run --user --scope` when `systemd-run`
-  resolves; without it, they start as today. This lands in F7 with the unit, never after it:
-  `systemctl --user stop`, or a `Restart=always` restart, would otherwise kill every server the
-  daemon started and every agent inside it. The same wrapper also takes them out of a
-  terminal's surface scope when the daemon runs under `make start`.
+- **Long-lived children leave the launcher's cgroup (S10, R14).** On Linux, when
+  `systemd-run` resolves, the following run under `systemd-run --user --scope` in `app.slice`,
+  each in its own scope:
+  - tmux and Herdr servers that Mission Control starts;
+  - every GUI program spawned through `graphicalSessionEnv()`: the `ghostty` raise (both
+    `+new-window -e` and the `ghostty -e` fallback), `xdg-terminal-exec`, `$TERMINAL -e`, WezTerm,
+    and `xdg-open` / `gtk-launch`, which can start the browser itself when it is not already
+    running.
+
+  Without `systemd-run`, they start as today. This lands in F7 with the unit, never after it.
+  Otherwise `systemctl --user stop`, or a `Restart=always` restart after a crash, would kill
+  every server the daemon started with every agent inside it, and close every terminal window
+  Focus opened and any browser an open target started. The same wrapper also takes them out of
+  a terminal's surface scope when the daemon runs under `make start`.
 - **Desktop entry (D19).** A new Make target builds `dist/` and installs
   `~/.local/share/applications/mission-control.desktop`, which runs the checkout's Electron
   against the built bundles with no `MISSION_DEV_SERVER_URL`. It uses `build/icon.png` from F4.
@@ -516,6 +558,12 @@ flowchart LR
       answering, and names `journalctl --user -u mission-control`.
     - On anything else (inactive, failed, not installed, or no `systemctl`), supervise its own
       daemon and Foreman as today.
+  - **The unit's main process is the daemon (R12).** `scripts/start-service.mjs` builds the
+    native addons in a child process, then imports `src/server/index.ts` into its own process
+    (`scripts/start-service.mjs:3-5,57-60`: "load the daemon into this process so launchd owns
+    and signals its exact PID"). The exit status 75 below is therefore the main process's exit
+    status, which `RestartPreventExitStatus` acts on, with no wrapper status to propagate. The
+    daemon's `process.pid`, which `/api/health` reports, is the unit's `MainPID`.
   - **State-lock contention gets exit status 75** (EX_TEMPFAIL) instead of today's uncaught
     `contentionError` from `acquireStateOwnership` (`src/server/index.ts:134`). The unit's
     `RestartPreventExitStatus=75` makes a unit daemon that loses the lock stop instead of
@@ -534,13 +582,18 @@ flowchart LR
 - **Tests:**
   - `install-service` unit tests for the Linux unit text and the `systemctl` calls through a
     fake (twin of the launchd test);
-  - the scope wrapper's argv with and without `systemd-run`, and macOS unchanged;
   - desktop-entry and autostart file contents;
   - refusal messages per platform;
   - the adopt / wait / supervise decision with `systemctl` and the health probe injected, and
     the supervisor's handling of exit 75, on both platforms;
-  - `graphicalSessionEnv()`: own env wins, manager env fills a missing display, and the
-    no-display message, on Linux only;
+  - `graphicalSessionEnv()` on Linux:
+    - under `INVOCATION_ID` the manager's environment wins over a set own environment;
+    - outside the manager the own environment wins;
+    - a stale own-environment display (socket missing) falls through to the manager's;
+    - both sources stale gives the no-display message;
+    - the variables come as one set from one source;
+  - the scope wrapper's argv for each GUI spawn path and for the tmux and Herdr servers, with and
+    without `systemd-run`, and macOS unchanged;
   - manual, on the operator's box:
     - the entry launches from the KDE menu and adopts a systemd daemon;
     - with the unit disabled and no daemon running, the entry supervises its own daemon and
@@ -549,8 +602,9 @@ flowchart LR
       health `pid` equals the unit's `MainPID` from `systemctl --user show -p MainPID`;
     - after a fresh login, with the daemon running only under the unit, Focus raises Ghostty on
       a tmux session;
-    - `systemctl --user restart mission-control` leaves running tmux and Herdr sessions and their
-      agents alive;
+    - `systemctl --user restart mission-control` leaves running tmux and Herdr sessions, their
+      agents, a terminal window opened by Focus, and a browser started by an open target, all
+      alive and open;
     - with linger off, logging out ends the unit and the scoped servers.
 
 ```mermaid
@@ -704,8 +758,9 @@ F12 lands first. Then T1, T2, T3 and T4 follow in order. Within that order:
   Ghostty's Linux detection (to mark an installed Ghostty satisfied).
 - **F5 before F7.** F7's `graphicalSessionEnv()` wraps F5's Linux emulator spawns as well as the
   existing open target.
-- **F7 carries the multiplexer scope wrapper**, so no systemd unit ships while a unit restart
-  could still kill the tmux and Herdr servers.
+- **F7 carries the scope wrapper** for the tmux and Herdr servers and for every GUI spawn, so no
+  systemd unit ships while a unit restart could still kill those servers or close the windows
+  the daemon opened.
 - F8's close-to-quit only matters once F4's native frame gives Linux a close button.
 - F13's matrix is written last, from what the other groups shipped.
 - F10's Setup row for `lsof` uses F6's platform-aware catalog rows.
