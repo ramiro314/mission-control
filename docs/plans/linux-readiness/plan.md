@@ -4,8 +4,8 @@ Status: approved 2026-10-12 after a three-round interview with the human (decisi
 below) and a plan review that approved it as written. Follow-up chosen in the review: Create
 tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up
 task once this plan's pull request merges. Amended the same day in plan-validation repair
-round 1 (R1 to R5), repair round 2 (R6 to R11) and repair round 3 (R12 to R14), all below.
-Not implemented.
+round 1 (R1 to R5), repair round 2 (R6 to R11) and repair round 3 (R12 to R14), all below, and
+after GitHub Inspector's review of PR #438 (R15). Not implemented.
 
 ## Goal
 
@@ -114,7 +114,7 @@ R11, come from the judge's summary. None changes a human decision.
 | R8 | Makefile kill paths had no PID source once `lsof` went away | F10: daemon PIDs come from `/api/health`'s `pid` and the existing `pkill` patterns; Vite keeps `lsof` with an explicit message when it is missing; one manual check per target |
 | R9 | The moved state root had no single resolver, refusal behavior or upgrade path | F2: one `agentRuntimeRoot()` with an env override the daemon hands every child; fail-closed refusal with a named message; dual write to an owned legacy capability root while it exists |
 | R10 | The tray-host probe mechanism was unspecified | F8: `busctl --user ... NameHasOwner org.kde.StatusNotifierWatcher`, at startup and on each close; any failure counts as no tray |
-| R11 | F1's headless cwd might fall inside an F2 deny rule | F1's cwd is never an Inspector cwd. Checking found a real interaction instead: pooled worktrees live in the state dir. F2's Linux state-dir rule excludes `worktree-pools`, macOS stays unchanged, and the existing macOS effect is recorded as S13 |
+| R11 | F1's headless cwd might fall inside an F2 deny rule | F1's cwd is never an Inspector cwd. Checking found a real interaction instead: pooled worktrees live in the state dir. F2's Linux state-dir rule excludes `worktree-pools` (refined by R15: named entries, built at each spawn, `worktrees` also excluded), macOS stays unchanged, and the existing macOS effect is recorded as S13 |
 
 ### Repair round 3 clarifications
 
@@ -127,6 +127,14 @@ decision.
 | R12 | R7's exit 75 and the `MainPID` check assumed the unit's main process is the daemon, with no citation | Cited: `scripts/start-service.mjs` imports the daemon into its own process after a child native build, so its exit status reaches systemd directly and its pid is `MainPID`. Nothing changes |
 | R13 | `graphicalSessionEnv()` preferred the daemon's own display, which goes stale under the unit after re-login or with linger | Under the unit the manager's environment comes first; outside it the daemon's own does. The variables come as one set from a single source, and a source whose display socket is gone is skipped, so the named error fires. Tests cover a stale own display |
 | R14 | GUI programs the daemon spawns directly (terminal raises, `xdg-open`) stayed in the unit's cgroup, so a restart closed them | F7's scope wrapper now covers every `graphicalSessionEnv()` spawn as well as the tmux and Herdr servers. The restart check now includes a Focus-opened terminal window and an open-target browser |
+
+### PR review clarifications
+
+From GitHub Inspector's review of PR #438 on 2026-10-12. None changes a human decision.
+
+| ID | Issue | Resolution |
+|---|---|---|
+| R15 | F2's Linux state-dir rule enumerated whatever entries existed, so an entry it did not list, or one created after the list was built, was readable by the Inspector | F2 now names every secret- or data-holding entry the code defines and denies it whether or not it exists. Any other entry present at spawn is denied too, except the carve-outs. The rule is built at each Inspector spawn rather than at module load. The `worktrees` fallback joins `worktree-pools` as a carve-out. Tests cover an empty state dir and an entry created after load, and a source guard test makes every new state-dir entry be classified |
 
 ## Severity tiers
 
@@ -157,7 +165,7 @@ tier, and the fix group that resolves it.
 | S9 | `src/server/platform/executable-environment.ts:34,49-59` | One POSIX row: `/Applications`, `/opt/homebrew/*`, and `/bin/zsh` when `SHELL` is unset | Under systemd or a launcher without `SHELL`, the login-shell PATH read tries zsh, which may not exist. No linuxbrew, nix, snap, cargo or bun dirs | T3 | F10 |
 | S10 | `src/server/terminal/*` (multiplexer server spawn) | A detached, `setsid` process outlives its launcher | systemd kills by cgroup. This box's Herdr server lives in a Ghostty surface scope, so closing that terminal, or stopping a future systemd unit, can kill the server and every agent in it | T3 | F7 |
 | S11 | `src/server/discovery/processes.ts:47-52` | Wrapper list includes `caffeinate` and `gtimeout` | No `systemd-run`, `systemd-inhibit`, `setsid`, `flatpak-spawn`; native matching still finds the agent | T4 | F11 |
-| S13 | `src/server/inspector/worker.ts:309-312`, `src/server/config.ts:26` | The `//Users/*/.mission-control/**` deny rule covers the whole state dir | The default worktree pool lives inside the state dir, so on **macOS** the Inspector is denied the files of a pooled worktree it reviews. This is a macOS observation; Linux avoids it through F2's carve-out (R11) | n/a | Out of scope (macOS unchanged, D3) |
+| S13 | `src/server/inspector/worker.ts:309-312`, `src/server/config.ts:26` | The `//Users/*/.mission-control/**` deny rule covers the whole state dir | Dispatched worktrees (`worktree-pools`, and the `worktrees` fallback) live inside the state dir, so on **macOS** the Inspector is denied the files of the worktree it reviews. This is a macOS observation; Linux avoids it through F2's carve-outs (R11, R15) | n/a | Out of scope (macOS unchanged, D3) |
 | S12 | `src/server/keep-awake.ts:73`, `src/server/index.ts:924-926`, `src/shared/update-copy.ts:26-59`, `src/server/open-targets/browser.ts:168-171`, `src/server/discovery/tty.ts:10` | Copy and comments say "this Mac", "Dock", "personal Applications folder", "desktop build is macOS-only", "ttysNNN" | Misleading text | T4 | F11 |
 
 ### Terminals (`src/server/terminal/`, `src/shared/terminal.ts`)
@@ -288,16 +296,33 @@ flowchart LR
   - The `.ssh`, `.aws` and `.claude` rules are built from `os.homedir()`
     (`//${home}/.ssh/**`) instead of `//Users/*`, and `**/.credentials.json` is added. On macOS
     these resolve to the same paths, so they apply everywhere (D13).
-  - **The state-dir rule differs by platform (R11).** The Inspector's cwd is the PR's worktree or
-    repo root (`liveDir`, `src/server/inspector/worker.ts:340-344`), and the default worktree pool
-    lives inside the state dir (`WORKTREE_POOLS_DIR`, `src/server/config.ts:26`). A blanket
+  - **The state-dir rule differs by platform (R11).** The Inspector's cwd is the PR's worktree
+    or repo root (`liveDir`, `src/server/inspector/worker.ts:340-344`). Dispatched worktrees live
+    inside the state dir: `worktree-pools` (`WORKTREE_POOLS_DIR`) and the git-worktree fallback
+    `worktrees` (`WORKTREES_DIR`), both in `src/server/config.ts:23-26`. A blanket
     `//${home}/.mission-control/**` rule would therefore deny the Linux Inspector the worktree it
     is reviewing, which today's inert Linux rules do not.
-  - On Linux the state-dir rule is built from the resolved state dir (`stateDir()`, which honors
-    `MISSION_HOME`). It has one rule per top-level entry of that dir **except `worktree-pools`**.
-  - On macOS the rule stays `//Users/*/.mission-control/**`, unchanged, because a carve-out
-    would change macOS behavior (D13). That rule also covers macOS pooled worktrees today; this
-    is recorded as S13 and left out of scope.
+  - **On Linux the state-dir rule must fail closed, not depend on what happens to exist (R15).**
+    It is rooted at the resolved state dir (`stateDir()`, which honors `MISSION_HOME`) and has
+    two parts:
+    1. **A named list, always denied whether or not the entry exists.** These are the entries
+       the code defines at `b030421d`:
+       - files: `harness.db`, `harness.db-wal`, `harness.db-shm`, `token`,
+         `scout-submission.key`, `scout-producer.json`, `install-receipt.json`,
+         `pi-extension.json`, `daemon.lock`, `daemon.log`, `foreman.log`, `update.log`;
+       - directories, each with `/**`: `backups`, `archives`, `uploads`, `workflow-evidence`,
+         `scouts`, `scout-submission-credentials`, `ask-channel`, `installers`, `bin`,
+         `check-worktrees`, `pi-extension.lock.d`.
+    2. **Every other top-level entry present when the Inspector spawns**, apart from the two
+       carve-outs, `worktrees` and `worktree-pools`. This catches entries the named list does
+       not know about yet.
+
+    The list is computed **at each Inspector spawn**, where the grant is built
+    (`worker.ts:208`), not once at module load as the `DENY_PATHS` constant is today. An entry
+    created after the daemon starts is therefore covered from the next spawn.
+  - On macOS the rule stays `//Users/*/.mission-control/**` and `DENY_PATHS` stays a constant,
+    unchanged, because a carve-out would change macOS behavior (D13). That rule also covers
+    macOS's dispatched worktrees today; this is recorded as S13 and left out of scope.
   - F1's headless cwd (`<state dir>/headless`) is never an Inspector cwd. A grant always carries
     the worktree or repo root (`src/server/llm/claude-sdk.ts:186` falls back to `HEADLESS_CWD`
     only without a grant), and headless runs hold no tools. That it sits under the state-dir
@@ -339,8 +364,14 @@ flowchart LR
     file to both roots. The legacy root disappears at reboot on tmpfs `/tmp` (Arch), or through
     `systemd-tmpfiles` ageing elsewhere, and the dual write stops when it is gone.
 - **Tests:**
-  - deny-rule rendering per platform, including that the Linux rules do not cover
-    `worktree-pools`;
+  - deny-rule rendering per platform, including that the Linux rules never cover `worktrees`
+    or `worktree-pools`;
+  - with an **empty** state dir, every named entry is still denied (R15);
+  - an entry created in the state dir after module load is denied at the next Inspector spawn;
+  - a source guard test finds every state-dir entry name the code defines
+    (`join(STATE_DIR, "...")` and `join(stateDir(), "...")`) and fails unless each one is in the
+    named deny list or is one of the two carve-outs, so a later change that adds a state-dir
+    entry has to classify it;
   - the resolver order (env override, `XDG_RUNTIME_DIR`, temp dir) on both platforms;
   - an MCP child given `MISSION_AGENT_RUNTIME_DIR` reads the credential the daemon wrote;
   - the ownership check refuses a foreign-uid, group-writable or symlinked root with the
@@ -799,5 +830,6 @@ F12 lands first. Then T1, T2, T3 and T4 follow in order. Within that order:
   there, and F8 covers GNOME's missing tray.
 - A macOS CI shard or manual Mac checks (D22).
 - Pruning or deleting existing `~/.claude/projects/-tmp/` transcripts (D21).
-- Changing macOS's state-dir deny rule so the macOS Inspector can read pooled worktrees (S13).
+- Changing macOS's state-dir deny rule so the macOS Inspector can read dispatched worktrees
+  (S13).
   It changes macOS behavior, so it needs its own decision (D3, D13).
