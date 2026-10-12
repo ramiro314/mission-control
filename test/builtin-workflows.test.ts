@@ -1362,9 +1362,15 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 const PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256 =
   "031b3fef42055cd8bba573a547cd9b27b9615b7bbe15c78240720496d51dbb4c";
 
+/**
+ * The Pull Request action's text as the issue closing line versions shipped it. Pinned rather
+ * than compared with the live action, which is the source an edit would move: editing
+ * `actions/pull-request.md` fails here until a version is appended and these are frozen.
+ */
+const PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE_SHA256 =
+  "38a31167eead7cd3ffaf0b501ee95113c10adff06f3dc86db1e08426799621fb";
+
 test("the issue closing line version changes only the Pull Request action's prompt", () => {
-  const shipped = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
-  assert.match(shipped.promptMarkdown, /"Closing the issue the work came from" rule/);
   const prompts = (version: WorkflowVersion) => version.graph.nodes.flatMap((node) =>
     node.kind === "session_action" ? [node.action.promptMarkdown] : []);
   for (const builtin of BUILTIN_WORKFLOWS) {
@@ -1373,7 +1379,9 @@ test("the issue closing line version changes only the Pull Request action's prom
     assert.equal(current.version, previous.version + 1);
     assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
     assert.equal(builtin.definition.currentVersionId, current.id);
-    assert.deepEqual(prompts(current), [shipped.promptMarkdown], builtin.definition.id);
+    assert.deepEqual(prompts(current).map(sha256), [PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE_SHA256],
+      builtin.definition.id);
+    assert.match(prompts(current)[0]!, /"Closing the issue the work came from" rule/);
     // Everything else is the previous version's, byte for byte.
     assert.deepEqual({
       ...current,
