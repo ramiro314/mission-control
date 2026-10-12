@@ -4,7 +4,7 @@ import { parse, type ParseError } from "jsonc-parser";
 
 import { ENVIRONMENT_CHECK_INFO } from "@shared/environment-checks.ts";
 
-import { missionHookScriptPath } from "../harness/claude/hooks.ts";
+import { isMissionHookShimCommand, MISSION_HOOK_SHIM, missionHookScriptPath } from "../harness/claude/hooks.ts";
 import type {
   EnvironmentCheckImpl,
   EnvironmentCheckResult,
@@ -126,11 +126,21 @@ function hookCommands(settings: unknown): { event: string; command: string }[] {
   return found;
 }
 
-/** Our scripts named by the file, each with the events it was installed for. */
-function scriptsInUse(settings: unknown): Map<string, Set<string>> {
+/**
+ * Our scripts named by the file, each with the events it was installed for.
+ *
+ * A shim command names no script, so it is read through `shimText`, the shim's own
+ * `exec` line. No shim (null) is a machine that shares the settings file without running
+ * Mission Control, where the command exits 0 by design, so it reports nothing.
+ */
+function scriptsInUse(settings: unknown, shimText: string | null): Map<string, Set<string>> {
   const byScript = new Map<string, Set<string>>();
   for (const { event, command } of hookCommands(settings)) {
-    const script = missionHookScriptPath(command);
+    const script = isMissionHookShimCommand(command)
+      ? shimText === null
+        ? null
+        : missionHookScriptPath(shimText)
+      : missionHookScriptPath(command);
     if (script === null) continue;
     const events = byScript.get(script);
     if (events) events.add(event);
@@ -181,8 +191,13 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
       read.truncated && error.offset + error.length >= read.text.length;
     if (errors.some((error) => !fromOurCut(error))) return { warning: null, detail: null };
 
+    const shimRead = hookCommands(settings).some(({ command }) => isMissionHookShimCommand(command))
+      ? await deps.readText(join(deps.homeDir, MISSION_HOOK_SHIM))
+      : null;
+    const shimText = shimRead?.ok ? shimRead.text : null;
+
     const missing: { script: string; events: number }[] = [];
-    for (const [script, events] of scriptsInUse(settings)) {
+    for (const [script, events] of scriptsInUse(settings, shimText)) {
       const probe = await deps.readText(script);
       // Only absence counts. A script that is present but unreadable is a permission
       // problem this check cannot distinguish from a race, and `readText` already folds the

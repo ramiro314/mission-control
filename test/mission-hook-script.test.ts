@@ -4,8 +4,10 @@ import { join } from "node:path";
 
 import {
   MISSION_HOOK_SCRIPTS,
+  MISSION_HOOK_SHIM,
   isMissionHookCommand,
   missionHookScriptPath,
+  missionHookShimCommand,
 } from "../src/server/harness/claude/hooks.ts";
 import { ENVIRONMENT_ROW_METADATA } from "../src/shared/setup-catalog.ts";
 import { environmentCheckViews } from "../src/server/environment/index.ts";
@@ -315,4 +317,48 @@ test("two dead paths are read once each and both reported", async () => {
   assert.ok(warning.includes(SATELLITE), warning);
   assert.equal(reads.filter((p) => p === STALE).length, 1, "the same dead path is probed once");
   assert.equal(reads.filter((p) => p === SATELLITE).length, 1);
+});
+
+// --- the shim the repo installer writes, for a settings.json shared between machines ---
+
+const SHIM = join(HOME, MISSION_HOOK_SHIM);
+
+/** A settings file whose every event runs the shim, as the repo installer now writes it. */
+function shimSettings(): string {
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of EVENTS) hooks[event] = [{ hooks: [{ type: "command", command: missionHookShimCommand(event) }] }];
+  return JSON.stringify({ hooks }, null, 2);
+}
+
+/** The shim's text, as `hooks/install.mjs` writes it, naming `script`. */
+const shimFor = (script: string): string => `#!/bin/sh\nexec "/opt/homebrew/bin/node" "${script}" "$@"\n`;
+
+test("a shim command is ours to remove, and names no path of its own", () => {
+  const command = missionHookShimCommand("Stop");
+  assert.equal(isMissionHookCommand(command), true);
+  assert.equal(missionHookScriptPath(command), null);
+});
+
+test("a shim pointing at a moved checkout is reported through the shim", async () => {
+  const view = await hookCheck({ [SETTINGS]: text(shimSettings()), [SHIM]: text(shimFor(STALE)) });
+  assert.ok(view.warning);
+  assert.ok(view.warning.includes(STALE), view.warning);
+  assert.match(view.warning, /9 hook events/);
+});
+
+test("a shim pointing at a live checkout hears nothing", async () => {
+  const view = await hookCheck({
+    [SETTINGS]: text(shimSettings()),
+    [SHIM]: text(shimFor(LIVE)),
+    [LIVE]: text("#!/usr/bin/env node\n"),
+  });
+  assert.equal(view.warning, null);
+});
+
+// A machine that shares the settings file and does not run Mission Control: the command
+// exits 0 there by design, so there is nothing to report.
+test("no shim at all hears nothing", async () => {
+  const view = await hookCheck({ [SETTINGS]: text(shimSettings()) });
+  assert.equal(view.warning, null);
+  assert.equal(view.detail, null);
 });

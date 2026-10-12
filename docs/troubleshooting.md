@@ -44,8 +44,10 @@ Error: Cannot find module '/Users/you/workspace/ai-harness/hooks/harness-hook.mj
 code: 'MODULE_NOT_FOUND'
 ```
 
-`npm run install-hooks` and the desktop app's **Install Claude integrations** both bake an
-absolute path into `~/.claude/settings.json`. The path does not follow a checkout that is
+The desktop app's **Install Claude integrations** bakes an absolute path into
+`~/.claude/settings.json`, and `npm run install-hooks` bakes one into the shim
+`~/.mission-control/bin/harness-hook` that the settings file runs (older versions wrote it
+into the settings file directly). The path does not follow a checkout that is
 later renamed, moved, or deleted, so Claude Code goes on running it for every event, in
 every session on the machine, and every one of them fails. Nothing in the stack names
 Mission Control or the settings file, and the sessions report no state while it lasts.
