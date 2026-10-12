@@ -7,8 +7,6 @@ import { _electron as electron, type Page } from "playwright";
 import { expect, test } from "../fixtures/test.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
-test.skip(process.platform !== "darwin", "the desktop shell requires the macOS GUI");
-
 async function gatedDaemon(target: string) {
   let ready = false;
   let failDashboard = false;
@@ -74,6 +72,8 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
     const application = await electron.launch({ args: [
       fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)),
       gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario,
+      // After the fixture's positional arguments, which it reads by index from `process.argv`.
+      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
     ] });
     try {
       const page = await application.firstWindow();

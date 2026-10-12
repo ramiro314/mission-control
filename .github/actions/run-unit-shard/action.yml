@@ -51,6 +51,14 @@ runs:
       shell: bash
       run: npm run pretest
 
+    # tmux, for the unit cases that drive a real tmux server (`test/tmux-kill.test.ts`, the
+    # capture-pane case in `test/inject-prompt-submit.test.ts`). They skip when tmux is absent
+    # so a contributor without it is not blocked; this stops that skip from applying here.
+    # Installed the way the e2e job installs it, and only when missing.
+    - name: Install tmux for the real-tmux unit cases
+      shell: bash
+      run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
+
     # Shards are balanced by each file's recorded duration in `test/shard-timings.json`, not by
     # file index (`--test-shard`). The partitioner expands the unit glob itself, so stale or
     # missing timings only unbalance the shards: every file still runs in exactly one of them.

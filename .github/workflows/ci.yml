@@ -630,6 +630,23 @@ jobs:
       - name: Install tmux for the terminal-runtime e2e specs
         run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
 
+      # The Electron runtime, for the specs that boot the real desktop main process
+      # (`desktop-startup.spec.ts`, `product-issue-preload.spec.ts`). Electron 42+ downloads
+      # it on first use rather than during `npm ci`, so the restored `node_modules` does not
+      # carry it. Same cache and same preflight as the unit shards' Electron tests.
+      - name: Resolve Electron version
+        id: electron
+        run: echo "v=$(node -p "require('./node_modules/electron/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Electron runtime
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
+
+      - name: Provision the Electron runtime
+        run: npm run pretest:electron
+
       - name: Download dist
         uses: actions/download-artifact@v4
         with:
@@ -640,9 +657,14 @@ jobs:
 
       # Playwright retries once in CI and reports a test that failed and then passed as
       # `flaky` in its JSON report; the flake report action reads that instead of rerunning.
+      #
+      # `xvfb-run -a` gives the Electron specs a display; the browser specs run headless and
+      # ignore it. Those specs pass `--no-sandbox` on Linux themselves, as the unit Electron
+      # tests do, because this image restricts the unprivileged user namespaces Chromium's
+      # sandbox needs.
       - name: End-to-end tests
         id: e2e
-        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        run: xvfb-run -a npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           MISSION_PLAYWRIGHT_JSON: ${{ runner.temp }}/flake/playwright.json
 
