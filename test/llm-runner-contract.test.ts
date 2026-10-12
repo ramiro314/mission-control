@@ -154,6 +154,7 @@ const { LLM_RUNNER_IDS, grantRefusal } = await import("../src/shared/llm.ts");
 // shape fits. Imported for its real constants: an equality asserted against a copy of them
 // would prove only that the copy matches itself.
 const { DENY_PATHS, DENY_SETTINGS, REVIEW_TOOLS } = await import("../src/server/inspector/worker.ts");
+const { denySettings, renderDenyPaths } = await import("../src/server/inspector/deny-paths.ts");
 
 const { providerJsonSchema } = await import("../src/server/llm/json-schema.ts");
 const { InspectorVerdictSchema, InspectorReplySchema } = await import(
@@ -813,6 +814,46 @@ test("a tool grant renders exactly the deny rules the Inspector ships today", ()
     claudeGrantSettings({ tools: ["Read", "Grep"], cwd: "/tmp/checkout", denyPaths: ["**/.env"] }),
     JSON.stringify({ permissions: { deny: ["Read(**/.env)", "Grep(**/.env)"] } }),
   );
+});
+
+test("the Inspector's deny rules render exactly, per platform", () => {
+  const secrets = [
+    "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/id_rsa*", "**/id_ed25519*",
+    "**/.git/config", "**/.npmrc", "**/.netrc", "**/credentials*", "**/.credentials.json",
+  ];
+  const darwin = renderDenyPaths("darwin", "/Users/op", "/Users/op/.mission-control");
+  assert.deepEqual(darwin, [
+    ...secrets,
+    "//Users/op/.aws/**",
+    "//Users/op/.ssh/**",
+    "//Users/op/.claude/**",
+    "//Users/*/.mission-control/**",
+  ]);
+  // A state dir that does not exist yet still renders every named entry, and nothing for
+  // `worktrees` or `worktree-pools`, which hold the worktree under review.
+  const state = "//home/op/.mission-control";
+  const linux = renderDenyPaths("linux", "/home/op", "/home/op/.mission-control");
+  assert.deepEqual(linux, [
+    ...secrets,
+    "//home/op/.aws/**",
+    "//home/op/.ssh/**",
+    "//home/op/.claude/**",
+    ...[
+      "harness.db*", "token*", "scout-submission.key*", "scout-producer.json*",
+      "install-receipt.json*", "pi-extension.json*", "daemon.lock*", "daemon.log*", "foreman.log*",
+      "update.log*", "update-outcome.json*", "foreman-spend-outbox.*", "foreman-spend-quarantine.*",
+      "backups/**", "archives/**", "uploads/**", "workflow-evidence/**", "scouts/**",
+      "scout-submission-credentials/**", "ask-channel/**", "installers/**", "bin/**",
+      "check-worktrees/**", "pi-extension.lock.d/**", "integrations/**", "app-src/**",
+      "staged-install-*/**", ".pi-extension-*/**", "database-recovery/**",
+    ].map((entry) => `${state}/${entry}`),
+  ]);
+  for (const rendered of [darwin, linux]) {
+    assert.equal(
+      claudeGrantSettings({ tools: REVIEW_TOOLS.split(","), cwd: "/tmp/checkout", denyPaths: rendered }),
+      denySettings(rendered),
+    );
+  }
 });
 
 test("a granted run is scoped to the grant's directory", async () => {

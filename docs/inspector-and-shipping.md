@@ -112,9 +112,14 @@ that can read the filesystem, whose output is published publicly.
 Five things stand in the way of that:
 
 1. **Tool allowlist** - reading only. No `Bash`, no `Write`/`Edit`, no `WebFetch`, no MCP.
-2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys, `.ssh`,
-   `.aws`, `.git/config`, and Mission Control's own state - denied for all three of
-   `Read`, `Grep` and `Glob`, since `Grep` prints the lines of any path it is given.
+2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys,
+   `.credentials.json`, the home directory's `.ssh`, `.aws` and `.claude`, `.git/config`,
+   and Mission Control's own state - denied for all three of `Read`, `Grep` and `Glob`,
+   since `Grep` prints the lines of any path it is given. On macOS the whole state dir is
+   denied. On Linux the rules are rebuilt at every review from the resolved state dir
+   (`MISSION_HOME` included): every state entry the code defines is denied whether or not
+   it exists yet, and so is any other entry present at that moment, except `worktrees` and
+   `worktree-pools`, which hold the worktree under review.
 3. **Working directory** is the reviewed worktree; under `-p` a read outside it has nobody
    to approve it, so it fails.
 4. **Every finding must name a file the PR changed.** One that doesn't is discarded - so
