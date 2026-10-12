@@ -3,7 +3,8 @@
 Status: approved 2026-10-12 after a three-round interview with the human (decisions D1 to D22
 below) and a plan review that approved it as written. Follow-up chosen in the review: Create
 tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up
-task once this plan's pull request merges. Not implemented.
+task once this plan's pull request merges. Amended the same day in plan-validation repair
+round 1 (R1 to R5 below). Not implemented.
 
 ## Goal
 
@@ -72,7 +73,7 @@ ticket that adds a Linux row also changes #422 (see [Fork tracking](#fork-tracki
 | D6 | Plan shape | One plan; findings grouped by subsystem; fixes ordered by severity tier | 1 |
 | D7 | Install on Linux | The source checkout is the Linux install; no packaged Linux app. `install-service` gains a systemd `--user` unit; "Start at login" writes XDG autostart; `make install`, `make app`, `make install-app`, the updater and `recover-database` refuse Linux with a clear "macOS packaged app only" message. Updating is `git pull` | 2 |
 | D8 | ⌘ shortcuts on Linux | The `cmd` token means the platform primary modifier: Command on macOS, Ctrl elsewhere. Keycaps show "Ctrl" off macOS. Stored bindings keep working | 2 |
-| D9 | Focus and "open a terminal" on Linux | A spawn-only Linux Ghostty adapter plus a generic `xdg-terminal-exec` / `$TERMINAL` fallback. iTerm, cmux and AppleScript Ghostty are marked macOS-only | 2 |
+| D9 | Focus and "open a terminal" on Linux | A spawn-only Linux Ghostty adapter plus a generic `xdg-terminal-exec` / `$TERMINAL` fallback. iTerm, cmux and AppleScript Ghostty are marked macOS-only. Per R2, iTerm and cmux are marked through `unsupportedReason`. AppleScript Ghostty is macOS-only because it is the macOS adapter, and Ghostty itself stays supported on Linux through the spawn adapter | 2 |
 | D10 | Keep Awake on Linux | A `systemd-inhibit --what=idle:sleep` child tied to the daemon's lifetime, behind the existing provider interface | 2 |
 | D11 | Electron window on Linux | Native window-manager frame; auto-hidden menu bar (Alt reveals) with a Linux menu template; the traffic-light inset is removed | 2 |
 | D12 | Setup remedies on Linux | Instruction rows, no one-click install. macOS-only rows (iTerm2, cask installs) are hidden. The install allowlist is unchanged | 2 |
@@ -86,6 +87,18 @@ ticket that adds a Linux row also changes #422 (see [Fork tracking](#fork-tracki
 | D20 | "Reset checkout" (⌃R) on Linux | No default binding off macOS; it stays in the session's action menu and can be bound in Keyboard settings | 3 |
 | D21 | Existing `~/.claude/projects/-tmp/` transcripts | Leave them alone; stop pruning `-tmp` on Linux; docs say old headless transcripts can be removed by hand | 3 |
 | D22 | Verifying "macOS unchanged" | Injected-platform unit tests on ubuntu CI only; no Mac and no macOS CI shard | 3 |
+
+### Repair round 1 clarifications
+
+These come from the plan-validation review on 2026-10-12. None changes a human decision.
+
+| ID | Issue | Resolution |
+|---|---|---|
+| R1 | F5 expected a Setup row reading "macOS only" for iTerm2 on Linux, while D12 and F6 hide it | The rule now follows D12. Setup omits rows for a backend unsupported on the platform (F6). Terminal pickers keep their existing disabled-with-reason display (F5). DOC9 is about the troubleshooting doc entry, not the Setup row |
+| R2 | No group owned Linux detection of an installed Ghostty (TM2), and F5 put `unsupportedReason` on Ghostty, which would have disabled its own Linux adapter | F5 owns the detection: a bare `ghostty` candidate with PATH search on Linux, and macOS unchanged. Ghostty gets no `unsupportedReason`; iTerm and cmux do |
+| R3 | F4 (T1) named F12's (T3) un-skipped spec as its test | F12 lands first, ahead of its tier. A spec blocked only by an F4 defect keeps a Linux skip that names F4, and F4 removes it |
+| R4 | F7's systemd unit (T2) shipped before F10's (T3) cgroup escape, so a unit restart could kill every agent | The `systemd-run --user --scope` wrapper moves from F10 into F7 and ships with the unit |
+| R5 | F4 (T1) needs PNGs that only the F11 (T4) `gen-icons` fix can render | The `gen-icons` Linux fix (I7) moves from F11 into F4 |
 
 ## Severity tiers
 
@@ -114,7 +127,7 @@ tier, and the fix group that resolves it.
 | S7 | `src/server/process-inspection/posix.ts:144-150` | Every `n` record from `lsof` is a path | For same-user unreadable processes `lsof` prints `n/proc/<pid>/cwd (readlink: Permission denied)` with exit 0, which is stored as a cwd and fails open | T3 | F10 |
 | S8 | `src/server/process-inspection/posix.ts:95-96,171,188`, `src/server/discovery/processes.ts:191-194` | `ps lstart` parsed with `Date.parse` and no `LC_ALL=C` | A non-English `LC_TIME` yields start time 0 and launch verification fails | T3 | F10 |
 | S9 | `src/server/platform/executable-environment.ts:34,49-59` | One POSIX row: `/Applications`, `/opt/homebrew/*`, and `/bin/zsh` when `SHELL` is unset | Under systemd or a launcher without `SHELL`, the login-shell PATH read tries zsh, which may not exist. No linuxbrew, nix, snap, cargo or bun dirs | T3 | F10 |
-| S10 | `src/server/terminal/*` (multiplexer server spawn) | A detached, `setsid` process outlives its launcher | systemd kills by cgroup. This box's Herdr server lives in a Ghostty surface scope, so closing that terminal, or stopping a future systemd unit, can kill the server and every agent in it | T3 | F10 |
+| S10 | `src/server/terminal/*` (multiplexer server spawn) | A detached, `setsid` process outlives its launcher | systemd kills by cgroup. This box's Herdr server lives in a Ghostty surface scope, so closing that terminal, or stopping a future systemd unit, can kill the server and every agent in it | T3 | F7 |
 | S11 | `src/server/discovery/processes.ts:47-52` | Wrapper list includes `caffeinate` and `gtimeout` | No `systemd-run`, `systemd-inhibit`, `setsid`, `flatpak-spawn`; native matching still finds the agent | T4 | F11 |
 | S12 | `src/server/keep-awake.ts:73`, `src/server/index.ts:924-926`, `src/shared/update-copy.ts:26-59`, `src/server/open-targets/browser.ts:168-171`, `src/server/discovery/tty.ts:10` | Copy and comments say "this Mac", "Dock", "personal Applications folder", "desktop build is macOS-only", "ttysNNN" | Misleading text | T4 | F11 |
 
@@ -151,7 +164,7 @@ tier, and the fix group that resolves it.
 | I4 | `scripts/recover-database.mjs:373-458,728-730` | Managed-install receipt, `PlistBuddy`, `osascript`, `open` | Refuses: "supported only on macOS" | T2 | F7 (guard) |
 | I5 | `Makefile:47,71,88,94` | `lsof -ti tcp:PORT` | Without `lsof`: `make status` says "not running", `make up` reports a false bind failure, `make claude` restarts a live daemon, `make stop-all` leaves Vite up | T3 | F10 |
 | I6 | `scripts/init.mjs:88-96`, `scripts/init-prerequisites.mjs:33,62-69` | Toolchain check only where Keep Awake compiles (darwin); "Xcode command line tools" wording | The required state-lock addon compiles on Linux too. With no C++ toolchain, `make init` prints "✓ Xcode command line tools available", `node-gyp` fails with a warning, and the daemon later refuses to start | T3 | F10 |
-| I7 | `scripts/gen-icons.mjs:6,36,60` | `iconutil`; "brew install librsvg" | Throws after the iconset, leaves `build/icon.iconset/` behind, never renders tray PNGs | T4 | F11 |
+| I7 | `scripts/gen-icons.mjs:6,36,60` | `iconutil`; "brew install librsvg" | Throws after the iconset, leaves `build/icon.iconset/` behind, never renders tray PNGs | T4 | F4 |
 | I8 | `scripts/demo/launch.mjs:646-647` | Opens the browser only on darwin | Prints the URL only | T4 | F11 |
 | I9 | `scripts/lib.mjs:9` | `which` exists | Not in Arch `base`; `worktree-setup.mjs` silently skips `npm ci` | T3 | F10 |
 
@@ -200,7 +213,7 @@ tier, and the fix group that resolves it.
 | DOC6 | `docs/desktop-and-packaging.md:3` | "or as a macOS Electron app" | T4 | F13 |
 | DOC7 | `docs/harnesses-and-terminals.md:18,48,169-195,263,369` | Says Linux shares the POSIX row without saying it is macOS-shaped; Focus on Linux needs WezTerm | T4 | F13 |
 | DOC8 | `docs/ui.md:304-312,1572,1606-1645` | ⌘K and ⌘1 to ⌘= described as the app's in the desktop app | T4 | F13 |
-| DOC9 | `docs/troubleshooting.md` | No Linux entries (Electron sandbox and user namespaces, toolchain, no display, lsof); iTerm2 entry unlabeled | T4 | F13 |
+| DOC9 | `docs/troubleshooting.md` | No Linux entries (Electron sandbox and user namespaces, toolchain, no display, lsof); the iTerm2 troubleshooting entry is not marked macOS-only | T4 | F13 |
 | DOC10 | `docs/setup-guide.html:365-366,387` | "The browser version runs anywhere"; "an install command on every row" | T4 | F13 |
 
 ## Fix groups
@@ -276,7 +289,7 @@ flowchart LR
   platforms; e2e specs switch `Meta+` to Playwright's `ControlOrMeta+`, which now exercises the
   Linux path on CI; a spec asserting a "Ctrl" keycap and that Ctrl+K opens Settings search.
 
-#### F4. Electron window and tray on Linux (E1 to E5)
+#### F4. Electron window and tray on Linux (E1 to E5, I7)
 
 - Off macOS the window uses the native frame (`titleBarStyle: "default"`, no
   `trafficLightPosition`) with `autoHideMenuBar: true`, so Alt reveals the menu (D11). macOS
@@ -286,13 +299,18 @@ flowchart LR
   page's 108px margin gets the same split.
 - A Linux menu template: File (Settings, Quit), Edit, View, Help; no `about`, `services`, `hide`, `hideOthers`, `unhide` or `zoom` roles.
   The macOS template is untouched.
-- Default fix: a 512px `build/icon.png`, passed as the window `icon` on Linux.
-- Default fix: a light Linux tray PNG chosen by platform (template images stay on macOS), and a
-  badged tray image swapped in when the needs-you count is above zero, since `setTitle` is
-  darwin-only.
-- **Tests:** menu-template and window-options unit tests for both platforms; the un-skipped
-  `desktop-startup` spec (F12) boots this shell on Linux; manual verification on KDE Wayland
-  with a screenshot of the framed window and the tray.
+- Default fix: `scripts/gen-icons.mjs` renders `build/icon.png` (512px) and the Linux tray PNGs
+  (light, and badged) from SVG sources in `build/` first, and skips `iconutil` off macOS with a
+  distro-neutral hint (I7). The PNGs come out of the generator, never by hand, so F4 owns this
+  fix: it is the group that needs them.
+- Default fix: `build/icon.png` is passed as the window `icon` on Linux.
+- Default fix: the light Linux tray PNG is chosen by platform (template images stay on macOS),
+  and the badged tray image is swapped in when the needs-you count is above zero, since
+  `setTitle` is darwin-only.
+- **Tests:** menu-template and window-options unit tests for both platforms; `desktop-startup`,
+  which F12 (landing before F4, see [Order and dependencies](#order-and-dependencies)) runs on
+  Linux, boots this shell there; if F12 had to leave it skipped pending F4, F4 removes that skip;
+  manual verification on KDE Wayland with a screenshot of the framed window and the tray.
 
 ### T2: features missing or broken on Linux
 
@@ -305,16 +323,33 @@ flowchart LR
   AppleScript adapter is unchanged.
 - A **generic Linux emulator**, appended to `EMULATOR_IDS` (append-only, per the change
   contracts, so `TERMINAL_BACKEND_IDS` grows at its end): it raises through
-  `xdg-terminal-exec <attachArgv>`, then `$TERMINAL -e <attachArgv>`. It is unsupported on macOS.
-  It comes after Ghostty in the attempt order; the terminal preference picker still wins.
-- Default fix: `unsupportedReason` on iTerm, cmux and AppleScript Ghostty ("requires macOS"),
-  following `herdr.ts:24-28`, so Setup and the pickers say "macOS only" instead of "not
-  installed". The dispatch error list in `home.ts:313-314` and cmux services are filtered by
-  the same reason.
-- **Tests:** adapter argv and capability declarations on both platforms; the targets view
-  reports "raised in Ghostty" on Linux with Ghostty present and no WezTerm; a Setup e2e row
-  reading "macOS only" for iTerm2 on Linux; manual Focus on a Herdr and a tmux session on the
-  operator's box.
+  `xdg-terminal-exec <attachArgv>`, then `$TERMINAL -e <attachArgv>`. It is unsupported on macOS
+  and is not listed there at all, in Setup or in the pickers, so the macOS UI is unchanged. It
+  comes after Ghostty in the attempt order; the terminal preference picker still wins.
+- **Ghostty detection on Linux (TM2).** `GHOSTTY_BIN`'s executable spec gains a Linux
+  resolution: a bare `ghostty` candidate with PATH search, so `/usr/bin/ghostty` resolves. The
+  comment in `src/server/terminal/bin.ts` withholds that candidate only because no Linux
+  adapter could use it; the spawn-only adapter can. On macOS the `.app` candidate and
+  `searchPath: false` are unchanged. An installed Ghostty therefore resolves as present on
+  Linux, and Setup marks its row satisfied instead of missing.
+- Default fix: `unsupportedReason` on iTerm and cmux off macOS ("requires macOS"), following
+  `herdr.ts:24-28`. Ghostty gets none: it is supported on both platforms, through the
+  AppleScript adapter on macOS and the spawn-only adapter on Linux.
+- What `unsupportedReason` does in each surface, as one rule:
+  - **Setup** omits the row on Linux (D12; F6 implements it).
+  - **Terminal pickers** keep their fixed list and show iTerm and cmux disabled with
+    "requires macOS". This is the pickers' existing pattern for a target with an `unavailable`
+    reason (`TerminalPreferencePicker.tsx:115-131`).
+  - The **dispatch error list** in `home.ts:313-314` and the cmux services in
+    `setup/service.ts:45` are filtered by the same reason.
+- **Tests:**
+  - adapter argv and capability declarations on both platforms;
+  - executable-resolution unit tests: on Linux a `ghostty` on PATH resolves as present, and on
+    macOS PATH is still not searched;
+  - the targets view reports "raised in Ghostty" on Linux with Ghostty present and no WezTerm;
+  - an e2e assertion that the terminal picker shows iTerm2 disabled with "requires macOS" on
+    Linux;
+  - manual Focus on a Herdr and a tmux session on the operator's box.
 
 ```mermaid
 flowchart LR
@@ -334,13 +369,19 @@ flowchart LR
   shows an instruction row (package name, "install it with your distribution's package
   manager", and a docs link) with no "Run in a terminal" button (D12). `npm install -g` rows
   stay where they already work.
-- macOS-only rows (iTerm2, cask installs) are hidden on Linux; the Ghostty and WezTerm rows show
-  Linux instructions.
+- Rows for a backend that is unsupported on the platform are omitted from Setup on Linux
+  instead of shown as needs-setup (D12). Today that is iTerm2 and cmux, through F5's
+  `unsupportedReason`. No cask remedy is offered on Linux.
+- The Ghostty row resolves through F5's Linux detection: satisfied when Ghostty is installed,
+  otherwise a Linux instruction row. The WezTerm row works the same way.
 - The install grammar in `setup/install.ts` is unchanged (D12).
 - The "(requires Homebrew)" Node guidance and the Jira `brew install` messages become
   platform-aware copy.
-- **Tests:** catalog unit tests per platform; `setup-install-argv` keeps its brew cases under
-  `darwin`; the Setup e2e specs assert the Linux instruction rows on Linux CI.
+- **Tests:**
+  - catalog unit tests per platform;
+  - `setup-install-argv` keeps its brew cases under `darwin`;
+  - the Setup e2e specs assert on Linux CI that there is no iTerm2 row and that the Linux
+    instruction rows show for missing tools.
 
 #### F7. The source checkout as the Linux install (E6, E8, I1 to I4, W7)
 
@@ -350,6 +391,12 @@ flowchart LR
   `WorkingDirectory=<checkout>`, `Restart=always`, and the resolved Node. It runs
   `systemctl --user daemon-reload` and `enable --now`; `--uninstall` reverses it. Logs go to
   journald. macOS keeps launchd.
+- **Multiplexer servers leave the launcher's cgroup (S10).** On Linux, tmux and Herdr servers
+  that Mission Control starts run under `systemd-run --user --scope` when `systemd-run`
+  resolves; without it, they start as today. This lands in F7 with the unit, never after it:
+  `systemctl --user stop`, or a `Restart=always` restart, would otherwise kill every server the
+  daemon started and every agent inside it. The same wrapper also takes them out of a
+  terminal's surface scope when the daemon runs under `make start`.
 - **Desktop entry (D19).** A new Make target builds `dist/` and installs
   `~/.local/share/applications/mission-control.desktop`, which runs the checkout's Electron
   against the built bundles with no `MISSION_DEV_SERVER_URL`. That shell adopts a daemon already
@@ -364,10 +411,16 @@ flowchart LR
   packaged app is macOS only; on Linux run from a checkout (see docs/setup.md)". `make help`
   marks them "[macOS]". The updater's Linux reason says the same. The bundle-path code in E8
   stays darwin-only and is guarded rather than ported.
-- **Tests:** `install-service` unit tests for the Linux unit text and the `systemctl` calls
-  through a fake (twin of the launchd test); desktop-entry and autostart file contents;
-  refusal messages per platform; manual verification that the entry launches from the KDE
-  menu, adopts a systemd daemon, and starts at login.
+- **Tests:**
+  - `install-service` unit tests for the Linux unit text and the `systemctl` calls through a
+    fake (twin of the launchd test);
+  - the scope wrapper's argv with and without `systemd-run`, and macOS unchanged;
+  - desktop-entry and autostart file contents;
+  - refusal messages per platform;
+  - manual verification that the entry launches from the KDE menu, adopts a systemd daemon,
+    and starts at login;
+  - manual verification that `systemctl --user restart mission-control` leaves running tmux and
+    Herdr sessions and their agents alive.
 
 ```mermaid
 flowchart LR
@@ -409,7 +462,7 @@ flowchart LR
 
 ### T3: degraded on a minimal or differently configured Linux
 
-#### F10. Prerequisites and environment (S6 to S10, TM4, I5, I6, I9, C4)
+#### F10. Prerequisites and environment (S6 to S9, TM4, I5, I6, I9, C4)
 
 - `lsof` becomes a declared Linux prerequisite: a Setup row and a `make init` check (D14).
 - The `lsof` parser treats a non-absolute record, or one containing `(readlink:`, as
@@ -427,16 +480,19 @@ flowchart LR
   does. This is the shared POSIX row, so it applies on macOS too (D13: identical effect under an
   English locale, and the same fix for a non-English one).
 - Default fix: `wezterm-socket.ts` `realpath`s the selected socket before linking.
-- Default fix: on Linux, tmux and Herdr servers start under `systemd-run --user --scope` when
-  `systemd-run` resolves, so they leave the launcher's cgroup.
 - Default fix: `scripts/lib.mjs` `have()` uses `command -v` through `/bin/sh`.
 - **Tests:** seam-row unit tests on both platforms; parser cases for the readlink record;
-  `make init` preflight per platform; the scope wrapper's argv with and without `systemd-run`.
+  `make init` preflight per platform.
 
 #### F12. Linux CI coverage (C1, C2)
 
+- Lands first, ahead of its tier: it changes only CI and test skips, and F4's real-shell
+  verification depends on it (see [Order and dependencies](#order-and-dependencies)).
 - The e2e job runs its Electron specs under `xvfb-run -a` with `--no-sandbox` on Linux, and
   `desktop-startup` and `product-issue-preload` drop their darwin skip (D16).
+- A spec that fails on Linux only because of a defect F4 fixes (the frameless window or the
+  menu) keeps a Linux skip whose reason names F4, and F4 removes it. Any other failure is fixed
+  in F12.
 - The unit-shard action installs tmux the same way the e2e job does (D16).
 - This changes `.github/workflows/ci.yml` and `.github/actions/run-unit-shard/action.yml`, which
   AGENTS.md lists as controlled; this plan is the explicit scope for it. The "Shard budget"
@@ -445,15 +501,13 @@ flowchart LR
 
 ### T4: cosmetic copy, styling and docs
 
-#### F11. Copy and cosmetics (S11, S12, I7, I8, W8 to W10)
+#### F11. Copy and cosmetics (S11, S12, I8, W8 to W10)
 
 - Default fix: neutral copy for every "this Mac", "Dock", "personal Applications folder" and
   ⌘V string, and the stale comments.
 - Default fix: monospace stack gains `"DejaVu Sans Mono", "Liberation Mono"` before
   `monospace`.
 - Default fix: `shortenCwd` shortens the daemon's home directory rather than `/Users/`.
-- Default fix: `gen-icons` renders the tray PNGs and `icon.png` first and skips `iconutil` off
-  macOS, with a distro-neutral hint.
 - Default fix: the demo launcher uses `xdg-open` on Linux.
 - Add Ctrl+Y as redo off macOS in the workflow library; add Linux wrappers (`systemd-run`,
   `systemd-inhibit`, `setsid`, `flatpak-spawn`) to the discovery wrapper list.
@@ -478,11 +532,19 @@ flowchart LR
 
 ## Order and dependencies
 
-T1 lands first, then T2, T3 and T4. Within that order:
+F12 lands first. Then T1, T2, T3 and T4 follow in order. Within that order:
 
+- **F12 before F4.** F12 changes only CI and test skips. F4's proof that the Linux shell boots is
+  the `desktop-startup` spec that F12 runs on Linux.
 - F3 and F4 both add the platform to the preload; whichever lands first owns that bridge
   field and the other reuses it.
+- **F4 owns the `gen-icons` Linux fix** because it needs `build/icon.png` and the Linux tray
+  PNGs that the generator renders.
 - F7's desktop entry uses F4's `build/icon.png`.
+- **F5 before F6.** F6's Setup rows read F5's `unsupportedReason` (to omit iTerm2 and cmux) and
+  Ghostty's Linux detection (to mark an installed Ghostty satisfied).
+- **F7 carries the multiplexer scope wrapper**, so no systemd unit ships while a unit restart
+  could still kill the tmux and Herdr servers.
 - F8's close-to-quit only matters once F4's native frame gives Linux a close button.
 - F13's matrix is written last, from what the other groups shipped.
 - F10's Setup row for `lsof` uses F6's platform-aware catalog rows.
@@ -495,7 +557,7 @@ T1 lands first, then T2, T3 and T4. Within that order:
   first-class platform with no silent breakage, run from a source checkout. Behavior
   contracts: one line per fix group as it merges. Plan docs: this file.
 - Every later PR carries `fork:linux-support` and a "Fork feature changes" section.
-- A PR that adds a Linux row to a platform seam (F10's executable-environment row, and the
+- A PR that adds a Linux row to a platform seam (F10's executable-environment row, and F7's
   `systemd-run --scope` wrapper if it is placed in process lifetime) also carries
   `fork:platform-seams` and amends #422's contract "each seam's platform-selection map is empty"
   to name the Linux rows. F10's `LC_ALL=C` changes the shared POSIX process-inspection row, which
