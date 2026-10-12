@@ -125,6 +125,22 @@ its own `###` subsection, in this order.
 6. **Follow-up work** - what you recommend next and why it is out of scope here. Make each
    item a concise, actionable bullet.
 
+### Closing the issue the work came from
+
+When the work comes from a GitHub issue, the body names it on its own line at the top of
+`## For Humans`, above `### Why`:
+
+- `Closes #<n>` when the issue is in the pull request's repository, or
+  `Closes <owner>/<repo>#<n>` when it is in a different one. Merging then closes the issue.
+- `Part of #<n>` (or `Part of <owner>/<repo>#<n>`) instead when the issue has acceptance
+  criteria only a human can finish, such as a playtest or a manual sign-off. List each one
+  under `### Known gaps`, so the reviewer can see why the issue stays open.
+- Nothing when the work does not come from an issue. Do not invent one.
+
+Only that line in the body closes the issue. A `(#<n>)` in the title closes nothing, and
+neither does a mention such as "from #<n>". A pull request that covers several issues gives
+each its own line.
+
 ## For Agents
 
 Written for the next agent that has to read, extend, or debug this code. Keep this section
