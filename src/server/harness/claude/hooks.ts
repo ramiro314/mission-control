@@ -226,6 +226,24 @@ export function isMissionHookShimCommand(command: string): boolean {
 }
 
 /**
+ * The shim's text: this machine's node and checkout, which settings.json never names.
+ *
+ * Written here, beside `missionHookScriptPath`, because that is what reads it back: the
+ * hook-script environment check finds a moved checkout by parsing the quoted absolute
+ * script path out of the `exec` line. An exec line that parser cannot read would silence
+ * that check, so the two change together.
+ */
+export function missionHookShimText(nodeBin: string, scriptPath: string): string {
+  return [
+    "#!/bin/sh",
+    "# Mission Control's Claude Code hook bridge for this machine, written by",
+    "# `npm run install-hooks`. Re-run that to update it; never edit it by hand.",
+    `exec "${nodeBin}" "${scriptPath}" "$@"`,
+    "",
+  ].join("\n");
+}
+
+/**
  * Every script an installer of ours can write, by the tail of its path.
  *
  * ONE list. Both predicates below are DERIVED from it rather than restating it, because a
@@ -275,7 +293,7 @@ export function isMissionHookCommand(command: string): boolean {
  * The script path inside one of our hook commands, or null when it cannot be read exactly.
  *
  * The shim command names no script and answers null; `isMissionHookShimCommand` covers it,
- * and the shim's own text, which is `exec "<node>" "<script>" "$@"`, answers here.
+ * and the shim's own text, `missionHookShimText`, answers here.
  *
  * The commands we write are `"<node>" "<script>" <Event>`, optionally preceded by
  * `ELECTRON_RUN_AS_NODE=1`, so the script is a quoted argument - quoted precisely because

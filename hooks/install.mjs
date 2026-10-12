@@ -61,6 +61,7 @@ import {
   isMissionHookCommand,
   MISSION_HOOK_SHIM,
   missionHookShimCommand,
+  missionHookShimText,
 } from "../src/server/harness/claude/hooks.ts";
 /** Marker identifying our statusLine wrapper command in settings.json. */
 const STATUSLINE_MARKER = "harness-statusline.mjs";
@@ -102,17 +103,6 @@ const TELEMETRY_INTERVAL_MS = 15000;
 // Under the home directory, not `stateDir()`: settings.json has to name it by one path on
 // every machine, and `MISSION_HOME` may differ between them.
 const shimPath = join(homedir(), MISSION_HOOK_SHIM);
-
-/** The shim's text: this machine's node and checkout, which settings.json never names. */
-function shimScript() {
-  return [
-    "#!/bin/sh",
-    "# Mission Control's Claude Code hook bridge for this machine, written by",
-    "# `npm run install-hooks`. Re-run that to update it; never edit it by hand.",
-    `exec "${nodeBin}" "${scriptPath}" "$@"`,
-    "",
-  ].join("\n");
-}
 
 /** Our statusLine wrapper command (delegates to the user's real status line). */
 function statuslineCommand() {
@@ -326,7 +316,7 @@ if (uninstall) {
   shimChanged = existsSync(shimPath);
   rmSync(shimPath, { force: true });
 } else {
-  const shim = shimScript();
+  const shim = missionHookShimText(nodeBin, scriptPath);
   let current = null;
   try {
     current = readFileSync(shimPath, "utf8");

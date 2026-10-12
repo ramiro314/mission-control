@@ -8,6 +8,7 @@ import {
   isMissionHookCommand,
   missionHookScriptPath,
   missionHookShimCommand,
+  missionHookShimText,
 } from "../src/server/harness/claude/hooks.ts";
 import { ENVIRONMENT_ROW_METADATA } from "../src/shared/setup-catalog.ts";
 import { environmentCheckViews } from "../src/server/environment/index.ts";
@@ -330,8 +331,15 @@ function shimSettings(): string {
   return JSON.stringify({ hooks }, null, 2);
 }
 
-/** The shim's text, as `hooks/install.mjs` writes it, naming `script`. */
-const shimFor = (script: string): string => `#!/bin/sh\nexec "/opt/homebrew/bin/node" "${script}" "$@"\n`;
+/** The shim's text, from the same builder `hooks/install.mjs` writes it with. */
+const shimFor = (script: string): string => missionHookShimText("/opt/homebrew/bin/node", script);
+
+// The check finds a moved checkout by parsing the shim, so the shim's text has to parse.
+test("the shim's text yields the script it runs", () => {
+  for (const script of [LIVE, STALE, SATELLITE]) {
+    assert.equal(missionHookScriptPath(missionHookShimText("/opt/homebrew/bin/node", script)), script);
+  }
+});
 
 test("a shim command is ours to remove, and names no path of its own", () => {
   const command = missionHookShimCommand("Stop");

@@ -14,7 +14,9 @@ import { parse } from "jsonc-parser";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const { transientCheckoutRoot } = await import("../hooks/install-checks.mjs");
-const { claudeHooks, missionHookShimCommand } = await import("../src/server/harness/claude/hooks.ts");
+const { claudeHooks, missionHookScriptPath, missionHookShimCommand } = await import(
+  "../src/server/harness/claude/hooks.ts"
+);
 /** What every hook command of ours names now: the shim, never a script. */
 const MARKER = ".mission-control/bin/harness-hook";
 const STATUSLINE_MARKER = "harness-statusline.mjs";
@@ -562,8 +564,12 @@ test("two machines with different checkouts leave a shared settings.json identic
     runFromFakePool(path, fakePoolInstaller(dir), ["--force"], homeB);
     assert.equal(readFileSync(path, "utf8"), afterA, "the second machine changes nothing in the shared file");
 
-    assert.match(readFileSync(join(homeA, MARKER), "utf8"), new RegExp(`"${checkout}/hooks/harness-hook\\.mjs"`));
-    assert.match(readFileSync(join(homeB, MARKER), "utf8"), /pool\/7\/repo\/hooks\/harness-hook\.mjs"/);
+    // Read back the way the hook-script environment check reads them.
+    assert.equal(missionHookScriptPath(readFileSync(join(homeA, MARKER), "utf8")), join(checkout, "hooks", "harness-hook.mjs"));
+    assert.equal(
+      missionHookScriptPath(readFileSync(join(homeB, MARKER), "utf8")),
+      join(dir, "pool", "7", "repo", "hooks", "harness-hook.mjs"),
+    );
   });
 });
 
