@@ -8,6 +8,10 @@
  * `sh -c` and a stub `electronmon` first on `PATH`. The stub prints the noise, an unrelated
  * Chromium error, ordinary output and the dev server URL it was given, so a change to the
  * script's quoting, pipe, or environment that drops more than the one message fails here.
+ *
+ * It also prints a NUL byte and an invalid UTF-8 byte first. Without `-a`, GNU grep treats
+ * the stream as binary at the NUL, stops printing lines, and exits, and in a UTF-8 locale
+ * it drops the invalid line, so every later log line would be lost.
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,6 +31,8 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 writeFileSync(
   join(dir, "electronmon"),
   `#!/bin/sh
+printf 'nul \\000 byte\\n'
+printf 'bad \\377 byte\\n' >&2
 echo "${NOISE}" >&2
 echo "${REAL_ERROR}" >&2
 echo "app stdout"
@@ -40,9 +46,15 @@ test("dev:electron drops only Chromium's negative frame latency log", { skip: pr
   assert.ok(shellCommand, "dev:electron no longer runs electronmon as a quoted concurrently command");
   const result = spawnSync("sh", ["-c", shellCommand], {
     encoding: "utf8",
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, LC_ALL: "C.UTF-8" },
   });
   assert.equal(result.status, 0, result.stderr);
   const lines = (result.stdout + result.stderr).split("\n").filter(Boolean);
-  assert.deepEqual(lines, [REAL_ERROR, "app stdout", "dev server: http://localhost:5173"]);
+  assert.deepEqual(lines, [
+    "nul \0 byte",
+    "bad \uFFFD byte",
+    REAL_ERROR,
+    "app stdout",
+    "dev server: http://localhost:5173",
+  ]);
 });
