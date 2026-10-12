@@ -1,6 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import {
   HARNESS_MODEL_CATALOG_LIMITS,
@@ -14,6 +13,7 @@ import {
   cleanupAgentSubprocessEnv,
 } from "../../agent-subprocess-env.ts";
 import { resolveBinPath } from "../../util/exec.ts";
+import { ensureHeadlessCwd } from "../../headless-cwd.ts";
 
 
 /** Exact isolation flags for the prompt-free, no-session Pi catalog probe. */
@@ -274,7 +274,7 @@ export async function discoverPiModels(
   let child: PiCatalogChild;
   try {
     child = spawn(executable, PI_MODEL_CATALOG_ARGS, {
-      cwd: tmpdir(),
+      cwd: ensureHeadlessCwd(),
       env,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],

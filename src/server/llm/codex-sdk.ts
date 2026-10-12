@@ -1,8 +1,8 @@
-import { tmpdir } from "node:os";
 
 import { Codex } from "@openai/codex-sdk";
 import type { LlmRunOptions } from "@shared/llm.ts";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
+import { ensureHeadlessCwd } from "../headless-cwd.ts";
 
 /**
  * One headless Codex call, driven through `@openai/codex-sdk` instead of hand-parsed argv.
@@ -39,19 +39,19 @@ export interface CodexSdkResult {
 /**
  * The posture every SDK run is pinned to, matching the exec transport's argv term for term.
  *
- * `workingDirectory` is the one that bites if it is left out. The SDK defaults the thread to
- * the CURRENT PROCESS's directory, which for the daemon and the Foreman worker is a real
- * checkout - so an omitted setting silently scopes a tool-less run to whatever repository
- * happens to be open, while `codex exec` has always spawned in `tmpdir()`. These calls have
- * no repository scope by design: `LlmRunOptions` carries no `cwd`, the only `cwd` in the
- * model lives on `LlmToolGrant`, and this runner declares `sandbox: null` and refuses every
- * grant outright. A run that may not be granted a directory must not inherit one either.
+ * `workingDirectory` joins these at `startThread`, because the headless cwd is created on
+ * demand, and it is the one that bites if it is left out. The SDK defaults the thread to the
+ * CURRENT PROCESS's directory, which for the daemon and the Foreman worker is a real checkout
+ * - so an omitted setting silently scopes a tool-less run to whatever repository happens to be
+ * open, while `codex exec` spawns in the headless cwd (`headless-cwd.ts`). These calls have no
+ * repository scope by design: `LlmRunOptions` carries no `cwd`, the only `cwd` in the model
+ * lives on `LlmToolGrant`, and this runner declares `sandbox: null` and refuses every grant
+ * outright. A run that may not be granted a directory must not inherit one either.
  */
 const THREAD_POSTURE = {
   skipGitRepoCheck: true,
   sandboxMode: "read-only",
   approvalPolicy: "never",
-  workingDirectory: tmpdir(),
 } as const;
 
 /**
@@ -146,6 +146,7 @@ export async function runCodexSdkOneShot(
     // choice a security decision, which it must not be.
     const thread = client.startThread({
       ...THREAD_POSTURE,
+      workingDirectory: ensureHeadlessCwd(),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.effort ? { modelReasoningEffort: opts.effort } : {}),
     });

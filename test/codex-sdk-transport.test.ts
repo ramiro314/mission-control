@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 
+import { HEADLESS_CWD } from "../src/server/headless-cwd.ts";
 import { codexRunner, configureCodexRunnerTransport } from "../src/server/llm/codex.ts";
 import { killLiveCodexSdkRuns, runCodexSdkOneShot } from "../src/server/llm/codex-sdk.ts";
 
@@ -251,8 +251,8 @@ test("usage rides back so an sdk run reaches the spend ledger like an exec one",
  * What is at stake, and this one is only visible from outside the file: the SDK defaults a
  * thread's working directory to the CURRENT PROCESS's. Both processes that run this - the
  * daemon and the Foreman worker - are started inside a real checkout, so leaving it unset
- * scopes a tool-less run to whatever repository happens to be open, while `codex exec` has
- * always spawned in `tmpdir()`.
+ * scopes a tool-less run to whatever repository happens to be open, while `codex exec`
+ * spawns in the headless cwd.
  *
  * These calls are not repository-scoped by design. `LlmRunOptions` carries no `cwd` at all;
  * the only `cwd` in the model belongs to `LlmToolGrant`, and this runner declares
@@ -276,7 +276,7 @@ test("an sdk run is pinned to the exec transport's posture, not the process's", 
 
   assert.equal(
     sawThread?.workingDirectory,
-    tmpdir(),
+    HEADLESS_CWD,
     "an unset working directory silently scopes the run to the daemon's own checkout",
   );
   assert.equal(sawThread?.sandboxMode, "read-only");

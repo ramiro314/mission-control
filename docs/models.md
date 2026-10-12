@@ -34,6 +34,16 @@ path - each bills through whatever its own CLI is logged in as. It is entirely
 independent of which harness a card runs, which is the point - you can review a Codex session with
 Claude, or run the cheap jobs on the account that has quota left.
 
+Every app-owned call that runs without a tool grant, and Pi's model catalog probe, runs in one
+fixed directory outside any checkout. On Linux that is `headless` under the state dir
+(`~/.mission-control/headless` by default), created owner-only on first use, because the shared
+`/tmp` would let any local user plant an `AGENTS.md` or `CLAUDE.md` there. On macOS it is the
+per-user temp dir. Claude files each run's transcript under the project dir it derives from that
+directory, and the daemon deletes those transcripts after a day. On Linux, versions before this
+change ran in `/tmp`, so their headless transcripts sit in `~/.claude/projects/-tmp/` beside
+those of any session you started from `/tmp`. The daemon no longer touches that directory; remove
+what you do not want there by hand.
+
 Every app-owned row starts on *Inherit*. Any job can leave that and choose for itself, so naming a
 task can run on Claude while compacting Workflow context runs on Codex. A job's own choice wins;
 when it has none, the app-wide provider resolution falls through to
