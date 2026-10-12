@@ -10,8 +10,6 @@ import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
 import { observeReactRefresh } from "../fixtures/react-refresh.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
-test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
-
 for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged dashboard after a held press"] as const) {
   test(`a real desktop Report click publishes from the ${surface}`, async ({ daemon }) => {
     writeFileSync(daemon.ghProductPath, JSON.stringify({ preflight: "ok", issueCreate: "created" }));
@@ -31,6 +29,8 @@ for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged 
           fileURLToPath(new URL("../fixtures/desktop-product-issue.cjs", import.meta.url)),
           `${dev?.origin ?? daemon.baseURL}/#/fleet`,
           authorizationModule,
+          // After the fixture's positional arguments, which it reads by index from `process.argv`.
+          ...(process.platform === "linux" ? ["--no-sandbox"] : []),
         ],
       });
       try {
