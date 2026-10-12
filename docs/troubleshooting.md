@@ -23,6 +23,17 @@ it, or set `MISSION_HOME` to a genuinely independent state directory if both dae
 intentional. Do not delete `daemon.lock`: the file is durable metadata, while the kernel-held
 lock is the ownership authority and is released automatically after a crash.
 
+## A launch fails with "Mission Control refused" a path
+
+Each launch writes its wrapper script and disposable state home under
+`mission-control-agent-state`, and scout credentials under `mission-control-agent-capabilities`.
+Both live in `$XDG_RUNTIME_DIR/mission-control` on Linux and in the temp dir on macOS (see
+`MISSION_AGENT_RUNTIME_DIR` in [Configuration](configuration.md)). Mission Control refuses a root
+that is a symlink, is owned by another uid, or carries any group or other mode bits, because
+another local user could then swap a launch wrapper or read a credential. It never falls back to
+a different directory. The error names the path, its owner and its mode: check who created it,
+remove it, and retry. Mission Control recreates it with mode `0700`.
+
 ## A Claude session stays grey, or its status looks stale
 
 `instrumented: true` means the daemon has fresh hook evidence for that session. Install

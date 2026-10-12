@@ -22,6 +22,17 @@ export const SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV: string;
 export const SCOUT_SESSION_LOCATOR_ENV: string;
 export const MISSION_SESSION_ID_ENV: string;
 export const MISSION_AGENT_SESSION_ID_ENV: string;
+export const AGENT_RUNTIME_DIR_ENV: string;
+export const AGENT_STATE_ROOT: string;
+export const AGENT_CAPABILITIES_ROOT: string;
+export function agentRuntimeBase(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string;
+export class AgentRuntimeRootRefusedError extends Error {
+  constructor(path: string, info: import("node:fs").Stats);
+  readonly path: string;
+}
+export function assertPrivateAgentRuntimeRoot(path: string): void;
+export function agentRuntimeRoot(name: string, options?: { create?: boolean }): string;
+export function legacyAgentRuntimeRoot(name: string, platform?: NodeJS.Platform): string | null;
 export function scoutSubmissionCredentialPath(cwd: string): string;
 export function isolatedScoutSubmissionCredentialPath(cwd: string): string;
 export function readScoutSubmissionCredential(cwd: string): string;

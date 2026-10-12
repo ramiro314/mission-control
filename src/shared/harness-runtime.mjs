@@ -13,7 +13,7 @@
 // alongside gives the TS side types.
 
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -186,6 +186,87 @@ export const MISSION_SESSION_ID_ENV = "MISSION_SESSION_ID";
 export const MISSION_AGENT_SESSION_ID_ENV = "MISSION_AGENT_SESSION_ID";
 
 /**
+ * The base the daemon resolved for its private agent runtime roots. The daemon sets it in
+ * every launch env and in the env of the MCP config it hands an agent, so a child never
+ * re-derives a different root from its own environment.
+ */
+export const AGENT_RUNTIME_DIR_ENV = "MISSION_AGENT_RUNTIME_DIR";
+
+/** Disposable agent state homes, including each terminal launch wrapper. */
+export const AGENT_STATE_ROOT = "mission-control-agent-state";
+
+/** Scout capability files an MCP child reads at call time. */
+export const AGENT_CAPABILITIES_ROOT = "mission-control-agent-capabilities";
+
+/**
+ * Where the private agent runtime roots live: the daemon's override, then on Linux the
+ * per-user `$XDG_RUNTIME_DIR/mission-control` instead of the shared, aged-out `/tmp`, then the
+ * temp dir. macOS's temp dir is already per-user, so macOS resolves exactly as before.
+ */
+export function agentRuntimeBase(env = process.env, platform = process.platform) {
+  const override = env[AGENT_RUNTIME_DIR_ENV]?.trim();
+  if (override) return resolve(override);
+  const runtime = platform === "linux" ? env.XDG_RUNTIME_DIR?.trim() : undefined;
+  if (runtime) return join(runtime, "mission-control");
+  return tmpdir();
+}
+
+/** A private root that another user could have planted or can read. */
+export class AgentRuntimeRootRefusedError extends Error {
+  constructor(path, info) {
+    const mode = (info.mode & 0o7777).toString(8).padStart(4, "0");
+    const kind = info.isSymbolicLink() ? "a symlink " : info.isDirectory() ? "" : "not a directory, ";
+    super(`Mission Control refused ${path}: ${kind}owned by uid ${info.uid} with mode ${mode}; remove it and retry`);
+    this.name = "AgentRuntimeRootRefusedError";
+    this.path = path;
+  }
+}
+
+/** Throw unless `path` is a real directory owned by this uid with no group or other bits. */
+export function assertPrivateAgentRuntimeRoot(path) {
+  const info = lstatSync(path);
+  if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
+    throw new AgentRuntimeRootRefusedError(path, info);
+  }
+}
+
+/**
+ * The one resolver for a private agent runtime root, shared by the daemon and its children.
+ *
+ * A writer passes `create` so the check runs after the directory exists, closing the window in
+ * which another user could plant it. A reader gets the path of a root that does not exist yet,
+ * which holds nothing to read. An existing root that fails the ownership check is refused, and
+ * never replaced by another directory, so a planted root cannot steer the choice.
+ */
+export function agentRuntimeRoot(name, { create = false } = {}) {
+  const root = join(agentRuntimeBase(), name);
+  if (create) mkdirSync(root, { recursive: true, mode: 0o700 });
+  try {
+    assertPrivateAgentRuntimeRoot(root);
+  } catch (error) {
+    if (create || error?.code !== "ENOENT") throw error;
+  }
+  return root;
+}
+
+/**
+ * On Linux, the temp-dir root a daemon from before `$XDG_RUNTIME_DIR` used, while it exists
+ * and passes the ownership check, so an in-flight child keeps working across the upgrade.
+ * Null everywhere else, including when it is the current root.
+ */
+export function legacyAgentRuntimeRoot(name, platform = process.platform) {
+  if (platform !== "linux") return null;
+  const legacy = join(tmpdir(), name);
+  if (legacy === join(agentRuntimeBase(), name)) return null;
+  try {
+    assertPrivateAgentRuntimeRoot(legacy);
+    return legacy;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Where the daemon leaves the opaque credential for the one checkout an MCP process is in.
  *
  * The digest is a filename, never authentication. It keeps an absolute checkout path out of
@@ -205,7 +286,7 @@ export function scoutSubmissionCredentialPath(cwd) {
  */
 export function isolatedScoutSubmissionCredentialPath(cwd) {
   const key = createHash("sha256").update(resolve(cwd)).digest("hex");
-  return join(tmpdir(), "mission-control-agent-capabilities", key);
+  return join(agentRuntimeRoot(AGENT_CAPABILITIES_ROOT), key);
 }
 
 /** Read this checkout's daemon-issued credential, or "" when none was provisioned. */
@@ -229,7 +310,7 @@ export function readScoutSubmissionCredential(cwd) {
 
 /** Session capabilities live outside the isolated child state home, namespaced by daemon port. */
 export function sessionScoutCredentialDirectory() {
-  return join(tmpdir(), "mission-control-agent-capabilities", `scouts-${PORT}`);
+  return join(agentRuntimeRoot(AGENT_CAPABILITIES_ROOT), `scouts-${PORT}`);
 }
 
 export function sessionScoutCredentialPath(identity) {

@@ -1,8 +1,11 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
+  AGENT_CAPABILITIES_ROOT,
+  agentRuntimeRoot,
   isolatedScoutSubmissionCredentialPath,
+  legacyAgentRuntimeRoot,
   scoutSubmissionCredentialPath,
   sessionScoutCredentialPath,
 } from "@shared/harness-runtime.mjs";
@@ -79,6 +82,17 @@ function encode(authority: ScoutSubmissionAuthority): string {
 }
 
 /**
+ * Every capability path an MCP child may read `path` from: the current root, plus on Linux the
+ * pre-upgrade temp-dir root while it exists and is private, because a child started before the
+ * upgrade still resolves its paths there.
+ */
+function capabilityPaths(path: string): string[] {
+  const root = agentRuntimeRoot(AGENT_CAPABILITIES_ROOT, { create: true });
+  const legacy = legacyAgentRuntimeRoot(AGENT_CAPABILITIES_ROOT);
+  return legacy ? [path, join(legacy, relative(root, path))] : [path];
+}
+
+/**
  * Mint and atomically publish the credential an MCP server in `cwd` will read at call time.
  *
  * Reading at call time matters for an assigned agent: its MCP process can outlive several
@@ -89,7 +103,7 @@ export function provisionScoutSubmissionCredential(taskId: string, cwd: string):
   const token = encode({ taskId, cwd: canonical });
   for (const file of [
     scoutSubmissionCredentialPath(canonical),
-    isolatedScoutSubmissionCredentialPath(canonical),
+    ...capabilityPaths(isolatedScoutSubmissionCredentialPath(canonical)),
   ]) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
@@ -119,7 +133,7 @@ export function provisionSessionScoutCredential(
   if (authority.pid > 0) identities.push(`pid:${authority.pid}`);
 
   const token = encode(authority);
-  const paths = identities.map(sessionScoutCredentialPath);
+  const paths = identities.map(sessionScoutCredentialPath).flatMap(capabilityPaths);
   for (const file of paths) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     const temporary = `${file}.${randomBytes(6).toString("hex")}.tmp`;
