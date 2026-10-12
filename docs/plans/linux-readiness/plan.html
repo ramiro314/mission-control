@@ -19,7 +19,7 @@ th{color:var(--muted)}tr:last-child td{border-bottom:0}
 below) and a plan review that approved it as written. Follow-up chosen in the review: Create
 tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up
 task once this plan&#39;s pull request merges. Amended the same day in plan-validation repair
-round 1 (R1 to R5 below). Not implemented.</p>
+round 1 (R1 to R5) and repair round 2 (R6 to R11), both below. Not implemented.</p>
 <h2 id="goal">Goal</h2>
 <p>Mission Control was built and run on macOS. Its operator now runs it on Linux. This plan
 records every place the repository assumes macOS, what each one does on Linux, and how each
@@ -74,13 +74,18 @@ shell flags or macOS paths.</li>
 <h3 id="repair-round-1-clarifications">Repair round 1 clarifications</h3>
 <p>These come from the plan-validation review on 2026-10-12. None changes a human decision.</p>
 <div class="wide"><table><thead><tr><th>ID</th><th>Issue</th><th>Resolution</th></tr></thead><tbody><tr><td>R1</td><td>F5 expected a Setup row reading &quot;macOS only&quot; for iTerm2 on Linux, while D12 and F6 hide it</td><td>The rule now follows D12. Setup omits rows for a backend unsupported on the platform (F6). Terminal pickers keep their existing disabled-with-reason display (F5). DOC9 is about the troubleshooting doc entry, not the Setup row</td></tr><tr><td>R2</td><td>No group owned Linux detection of an installed Ghostty (TM2), and F5 put <code>unsupportedReason</code> on Ghostty, which would have disabled its own Linux adapter</td><td>F5 owns the detection: a bare <code>ghostty</code> candidate with PATH search on Linux, and macOS unchanged. Ghostty gets no <code>unsupportedReason</code>; iTerm and cmux do</td></tr><tr><td>R3</td><td>F4 (T1) named F12&#39;s (T3) un-skipped spec as its test</td><td>F12 lands first, ahead of its tier. A spec blocked only by an F4 defect keeps a Linux skip that names F4, and F4 removes it</td></tr><tr><td>R4</td><td>F7&#39;s systemd unit (T2) shipped before F10&#39;s (T3) cgroup escape, so a unit restart could kill every agent</td><td>The <code>systemd-run --user --scope</code> wrapper moves from F10 into F7 and ships with the unit</td></tr><tr><td>R5</td><td>F4 (T1) needs PNGs that only the F11 (T4) <code>gen-icons</code> fix can render</td><td>The <code>gen-icons</code> Linux fix (I7) moves from F11 into F4</td></tr></tbody></table></div>
+<h3 id="repair-round-2-clarifications">Repair round 2 clarifications</h3>
+<p>These come from the second plan-validation review on 2026-10-12. The packet arrived truncated
+partway through its fourth requested change, so R9&#39;s scope beyond the visible text, and R10 and
+R11, come from the judge&#39;s summary. None changes a human decision.</p>
+<div class="wide"><table><thead><tr><th>ID</th><th>Issue</th><th>Resolution</th></tr></thead><tbody><tr><td>R6</td><td>The daemon&#39;s display environment under the systemd unit was unspecified, so Focus could work after <code>enable --now</code> and fail after a reboot</td><td>F7: <code>WantedBy=default.target</code>; a Linux <code>graphicalSessionEnv()</code> reads the user manager&#39;s environment at each GUI spawn; a named no-display error; logout and linger behavior stated; manual Focus check after a fresh login</td></tr><tr><td>R7</td><td>The shell&#39;s supervise branch could race the unit at login</td><td>F7: on Linux the shell asks <code>systemctl --user is-active</code> before supervising and waits to adopt an activating unit; state-lock contention exits 75, which the unit does not restart on and the shell answers by adopting; manual checks for supervise-alone and exactly one daemon at login</td></tr><tr><td>R8</td><td>Makefile kill paths had no PID source once <code>lsof</code> went away</td><td>F10: daemon PIDs come from <code>/api/health</code>&#39;s <code>pid</code> and the existing <code>pkill</code> patterns; Vite keeps <code>lsof</code> with an explicit message when it is missing; one manual check per target</td></tr><tr><td>R9</td><td>The moved state root had no single resolver, refusal behavior or upgrade path</td><td>F2: one <code>agentRuntimeRoot()</code> with an env override the daemon hands every child; fail-closed refusal with a named message; dual write to an owned legacy capability root while it exists</td></tr><tr><td>R10</td><td>The tray-host probe mechanism was unspecified</td><td>F8: <code>busctl --user ... NameHasOwner org.kde.StatusNotifierWatcher</code>, at startup and on each close; any failure counts as no tray</td></tr><tr><td>R11</td><td>F1&#39;s headless cwd might fall inside an F2 deny rule</td><td>F1&#39;s cwd is never an Inspector cwd. Checking found a real interaction instead: pooled worktrees live in the state dir. F2&#39;s Linux state-dir rule excludes <code>worktree-pools</code>, macOS stays unchanged, and the existing macOS effect is recorded as S13</td></tr></tbody></table></div>
 <h2 id="severity-tiers">Severity tiers</h2>
 <div class="wide"><table><thead><tr><th>Tier</th><th>Meaning</th></tr></thead><tbody><tr><td>T1</td><td>Harm or daily breakage: data loss, a security control that does nothing, or a core interaction that does not work</td></tr><tr><td>T2</td><td>A feature that is missing or broken on Linux</td></tr><tr><td>T3</td><td>Degraded: works on the operator&#39;s box, fails on a minimal or differently configured Linux</td></tr><tr><td>T4</td><td>Cosmetic copy, styling and documentation</td></tr></tbody></table></div>
 <h2 id="findings-by-subsystem">Findings by subsystem</h2>
 <p>Each finding names its location at <code>b030421d</code>, what it assumes, what happens on Linux, its
 tier, and the fix group that resolves it.</p>
 <h3 id="server-runtime-srcserver-srcshared">Server runtime (<code>src/server/</code>, <code>src/shared/</code>)</h3>
-<div class="wide"><table><thead><tr><th>#</th><th>Location</th><th>macOS assumption</th><th>On Linux</th><th>Tier</th><th>Fix</th></tr></thead><tbody><tr><td>S1</td><td><code>src/server/claude-cli.ts:74</code>, <code>src/server/goal/prune.ts:10-30</code></td><td><code>HEADLESS_CWD = tmpdir()</code>, and &quot;<code>$TMPDIR</code> is normally unset for an interactive shell, so a real session&#39;s cwd is a repo&quot;</td><td><code>tmpdir()</code> is the shared <code>/tmp</code>. The pruner deletes every <code>*.jsonl</code> older than 24h in <code>~/.claude/projects/-tmp/</code> (302 entries on this box), including sessions the human started from <code>/tmp</code></td><td>T1</td><td>F1</td></tr><tr><td>S2</td><td><code>src/server/llm/codex.ts:363</code>, <code>src/server/llm/codex-sdk.ts:54</code>, <code>src/server/harness/pi/model-catalog.ts:277</code></td><td>One-shot model runs use the temp dir as cwd</td><td><code>/tmp</code> is world-writable, so a planted <code>/tmp/AGENTS.md</code> can inject instructions</td><td>T1</td><td>F1</td></tr><tr><td>S3</td><td><code>src/server/inspector/worker.ts:309-312</code></td><td>Deny rules <code>//Users/*/.aws/**</code>, <code>.ssh</code>, <code>.claude</code>, <code>.mission-control</code></td><td>Homes are <code>/home/&lt;user&gt;</code>, so the four rules match nothing. <code>~/.claude/.credentials.json</code> holds the OAuth token in plaintext on Linux, and <code>**/credentials*</code> does not match a dot-prefixed name</td><td>T1</td><td>F2</td></tr><tr><td>S4</td><td><code>src/server/agent-subprocess-env.ts:35,88,94,154,231</code>, <code>src/shared/harness-runtime.mjs:208,232</code>, <code>src/server/scouts/submission-auth.ts:94,124</code></td><td><code>mkdirSync(join(tmpdir(), ...), {mode: 0o700})</code> accepts an existing directory owned by anyone</td><td><code>/tmp</code> is shared: another local user who pre-creates the root can swap the launch wrapper or read the loopback token. Arch also ages <code>/tmp</code> out after 10 days</td><td>T1</td><td>F2</td></tr><tr><td>S5</td><td><code>src/server/keep-awake.ts:109-131,216</code></td><td>Only darwin gets a provider (IOKit); the command seam passes caffeinate&#39;s <code>-i -w &lt;pid&gt;</code></td><td>Keep Awake is permanently unavailable</td><td>T2</td><td>F9</td></tr><tr><td>S6</td><td><code>src/server/process-inspection/posix.ts:139,156,193</code>, <code>src/server/executables/catalog.ts:124-126</code></td><td><code>lsof</code> is always present</td><td><code>lsof</code> is not in Arch <code>base</code>. Without it, worktree occupancy is &quot;unknown&quot;, so release and cleanup are refused indefinitely, and Codex rollout attribution is lost. No Setup row declares it</td><td>T3</td><td>F10</td></tr><tr><td>S7</td><td><code>src/server/process-inspection/posix.ts:144-150</code></td><td>Every <code>n</code> record from <code>lsof</code> is a path</td><td>For same-user unreadable processes <code>lsof</code> prints <code>n/proc/&lt;pid&gt;/cwd (readlink: Permission denied)</code> with exit 0, which is stored as a cwd and fails open</td><td>T3</td><td>F10</td></tr><tr><td>S8</td><td><code>src/server/process-inspection/posix.ts:95-96,171,188</code>, <code>src/server/discovery/processes.ts:191-194</code></td><td><code>ps lstart</code> parsed with <code>Date.parse</code> and no <code>LC_ALL=C</code></td><td>A non-English <code>LC_TIME</code> yields start time 0 and launch verification fails</td><td>T3</td><td>F10</td></tr><tr><td>S9</td><td><code>src/server/platform/executable-environment.ts:34,49-59</code></td><td>One POSIX row: <code>/Applications</code>, <code>/opt/homebrew/*</code>, and <code>/bin/zsh</code> when <code>SHELL</code> is unset</td><td>Under systemd or a launcher without <code>SHELL</code>, the login-shell PATH read tries zsh, which may not exist. No linuxbrew, nix, snap, cargo or bun dirs</td><td>T3</td><td>F10</td></tr><tr><td>S10</td><td><code>src/server/terminal/*</code> (multiplexer server spawn)</td><td>A detached, <code>setsid</code> process outlives its launcher</td><td>systemd kills by cgroup. This box&#39;s Herdr server lives in a Ghostty surface scope, so closing that terminal, or stopping a future systemd unit, can kill the server and every agent in it</td><td>T3</td><td>F7</td></tr><tr><td>S11</td><td><code>src/server/discovery/processes.ts:47-52</code></td><td>Wrapper list includes <code>caffeinate</code> and <code>gtimeout</code></td><td>No <code>systemd-run</code>, <code>systemd-inhibit</code>, <code>setsid</code>, <code>flatpak-spawn</code>; native matching still finds the agent</td><td>T4</td><td>F11</td></tr><tr><td>S12</td><td><code>src/server/keep-awake.ts:73</code>, <code>src/server/index.ts:924-926</code>, <code>src/shared/update-copy.ts:26-59</code>, <code>src/server/open-targets/browser.ts:168-171</code>, <code>src/server/discovery/tty.ts:10</code></td><td>Copy and comments say &quot;this Mac&quot;, &quot;Dock&quot;, &quot;personal Applications folder&quot;, &quot;desktop build is macOS-only&quot;, &quot;ttysNNN&quot;</td><td>Misleading text</td><td>T4</td><td>F11</td></tr></tbody></table></div>
+<div class="wide"><table><thead><tr><th>#</th><th>Location</th><th>macOS assumption</th><th>On Linux</th><th>Tier</th><th>Fix</th></tr></thead><tbody><tr><td>S1</td><td><code>src/server/claude-cli.ts:74</code>, <code>src/server/goal/prune.ts:10-30</code></td><td><code>HEADLESS_CWD = tmpdir()</code>, and &quot;<code>$TMPDIR</code> is normally unset for an interactive shell, so a real session&#39;s cwd is a repo&quot;</td><td><code>tmpdir()</code> is the shared <code>/tmp</code>. The pruner deletes every <code>*.jsonl</code> older than 24h in <code>~/.claude/projects/-tmp/</code> (302 entries on this box), including sessions the human started from <code>/tmp</code></td><td>T1</td><td>F1</td></tr><tr><td>S2</td><td><code>src/server/llm/codex.ts:363</code>, <code>src/server/llm/codex-sdk.ts:54</code>, <code>src/server/harness/pi/model-catalog.ts:277</code></td><td>One-shot model runs use the temp dir as cwd</td><td><code>/tmp</code> is world-writable, so a planted <code>/tmp/AGENTS.md</code> can inject instructions</td><td>T1</td><td>F1</td></tr><tr><td>S3</td><td><code>src/server/inspector/worker.ts:309-312</code></td><td>Deny rules <code>//Users/*/.aws/**</code>, <code>.ssh</code>, <code>.claude</code>, <code>.mission-control</code></td><td>Homes are <code>/home/&lt;user&gt;</code>, so the four rules match nothing. <code>~/.claude/.credentials.json</code> holds the OAuth token in plaintext on Linux, and <code>**/credentials*</code> does not match a dot-prefixed name</td><td>T1</td><td>F2</td></tr><tr><td>S4</td><td><code>src/server/agent-subprocess-env.ts:35,88,94,154,231</code>, <code>src/shared/harness-runtime.mjs:208,232</code>, <code>src/server/scouts/submission-auth.ts:94,124</code></td><td><code>mkdirSync(join(tmpdir(), ...), {mode: 0o700})</code> accepts an existing directory owned by anyone</td><td><code>/tmp</code> is shared: another local user who pre-creates the root can swap the launch wrapper or read the loopback token. Arch also ages <code>/tmp</code> out after 10 days</td><td>T1</td><td>F2</td></tr><tr><td>S5</td><td><code>src/server/keep-awake.ts:109-131,216</code></td><td>Only darwin gets a provider (IOKit); the command seam passes caffeinate&#39;s <code>-i -w &lt;pid&gt;</code></td><td>Keep Awake is permanently unavailable</td><td>T2</td><td>F9</td></tr><tr><td>S6</td><td><code>src/server/process-inspection/posix.ts:139,156,193</code>, <code>src/server/executables/catalog.ts:124-126</code></td><td><code>lsof</code> is always present</td><td><code>lsof</code> is not in Arch <code>base</code>. Without it, worktree occupancy is &quot;unknown&quot;, so release and cleanup are refused indefinitely, and Codex rollout attribution is lost. No Setup row declares it</td><td>T3</td><td>F10</td></tr><tr><td>S7</td><td><code>src/server/process-inspection/posix.ts:144-150</code></td><td>Every <code>n</code> record from <code>lsof</code> is a path</td><td>For same-user unreadable processes <code>lsof</code> prints <code>n/proc/&lt;pid&gt;/cwd (readlink: Permission denied)</code> with exit 0, which is stored as a cwd and fails open</td><td>T3</td><td>F10</td></tr><tr><td>S8</td><td><code>src/server/process-inspection/posix.ts:95-96,171,188</code>, <code>src/server/discovery/processes.ts:191-194</code></td><td><code>ps lstart</code> parsed with <code>Date.parse</code> and no <code>LC_ALL=C</code></td><td>A non-English <code>LC_TIME</code> yields start time 0 and launch verification fails</td><td>T3</td><td>F10</td></tr><tr><td>S9</td><td><code>src/server/platform/executable-environment.ts:34,49-59</code></td><td>One POSIX row: <code>/Applications</code>, <code>/opt/homebrew/*</code>, and <code>/bin/zsh</code> when <code>SHELL</code> is unset</td><td>Under systemd or a launcher without <code>SHELL</code>, the login-shell PATH read tries zsh, which may not exist. No linuxbrew, nix, snap, cargo or bun dirs</td><td>T3</td><td>F10</td></tr><tr><td>S10</td><td><code>src/server/terminal/*</code> (multiplexer server spawn)</td><td>A detached, <code>setsid</code> process outlives its launcher</td><td>systemd kills by cgroup. This box&#39;s Herdr server lives in a Ghostty surface scope, so closing that terminal, or stopping a future systemd unit, can kill the server and every agent in it</td><td>T3</td><td>F7</td></tr><tr><td>S11</td><td><code>src/server/discovery/processes.ts:47-52</code></td><td>Wrapper list includes <code>caffeinate</code> and <code>gtimeout</code></td><td>No <code>systemd-run</code>, <code>systemd-inhibit</code>, <code>setsid</code>, <code>flatpak-spawn</code>; native matching still finds the agent</td><td>T4</td><td>F11</td></tr><tr><td>S13</td><td><code>src/server/inspector/worker.ts:309-312</code>, <code>src/server/config.ts:26</code></td><td>The <code>//Users/*/.mission-control/**</code> deny rule covers the whole state dir</td><td>The default worktree pool lives inside the state dir, so on <strong>macOS</strong> the Inspector is denied the files of a pooled worktree it reviews. This is a macOS observation; Linux avoids it through F2&#39;s carve-out (R11)</td><td>n/a</td><td>Out of scope (macOS unchanged, D3)</td></tr><tr><td>S12</td><td><code>src/server/keep-awake.ts:73</code>, <code>src/server/index.ts:924-926</code>, <code>src/shared/update-copy.ts:26-59</code>, <code>src/server/open-targets/browser.ts:168-171</code>, <code>src/server/discovery/tty.ts:10</code></td><td>Copy and comments say &quot;this Mac&quot;, &quot;Dock&quot;, &quot;personal Applications folder&quot;, &quot;desktop build is macOS-only&quot;, &quot;ttysNNN&quot;</td><td>Misleading text</td><td>T4</td><td>F11</td></tr></tbody></table></div>
 <h3 id="terminals-srcserverterminal-srcsharedterminalts">Terminals (<code>src/server/terminal/</code>, <code>src/shared/terminal.ts</code>)</h3>
 <div class="wide"><table><thead><tr><th>#</th><th>Location</th><th>macOS assumption</th><th>On Linux</th><th>Tier</th><th>Fix</th></tr></thead><tbody><tr><td>TM1</td><td><code>src/shared/terminal.ts:45</code>; <code>src/server/terminal/ghostty.ts:222-223</code>, <code>iterm.ts:238-239</code>, <code>cmux.ts:700-705</code></td><td><code>EMULATOR_IDS = [&quot;wezterm&quot;,&quot;ghostty&quot;,&quot;iterm&quot;]</code>; Ghostty, iTerm and cmux are driven through <code>/usr/bin/osascript</code></td><td>WezTerm is the only emulator that can open a window. With tmux or Herdr and no WezTerm, <code>targets.ts:137-148</code> reports &quot;sessions open detached - install a terminal that can show one&quot;. Dispatch still works detached; Focus, raise and the new-session launcher do not</td><td>T2</td><td>F5</td></tr><tr><td>TM2</td><td><code>src/server/executables/catalog.ts:92-111</code>, <code>src/server/terminal/bin.ts:107,179,182</code></td><td>Exclusion relies on <code>.app</code> candidate paths; no <code>unsupportedReason</code> (compare <code>herdr.ts:24-28</code>)</td><td>Setup lists the installed Ghostty as &quot;missing&quot; and offers <code>brew install --cask ghostty</code>; iTerm and cmux read &quot;not installed&quot; instead of &quot;macOS only&quot;. Setting <code>GHOSTTY_BIN</code> makes every call fail on a missing <code>osascript</code></td><td>T2</td><td>F5</td></tr><tr><td>TM3</td><td><code>src/server/terminal/home.ts:313-314</code></td><td>The dispatch error suggests &quot;tmux, herdr, cmux, wezterm, ghostty, iterm&quot;</td><td>Recommends backends that cannot work</td><td>T4</td><td>F5</td></tr><tr><td>TM4</td><td><code>src/server/terminal/wezterm-socket.ts:52-66</code></td><td><code>link(path, alias)</code> follows a symlink (Darwin)</td><td>Linux <code>link()</code> does not. If WezTerm reports its <code>default-&lt;class&gt;</code> symlink, the alias is not a socket and WezTerm silently goes unavailable. Unverified: WezTerm is not installed on this box</td><td>T3</td><td>F10</td></tr><tr><td>TM5</td><td><code>src/server/setup/service.ts:45</code></td><td>cmux services offered with no platform gate</td><td>Only reachable if cmux were installed; fails on <code>osascript</code></td><td>T4</td><td>F5</td></tr></tbody></table></div>
 <h3 id="electron-shell-srcmain-srcpreload-build">Electron shell (<code>src/main/</code>, <code>src/preload/</code>, <code>build/</code>)</h3>
@@ -117,18 +122,85 @@ platforms; a pruner test proving a <code>-tmp</code> transcript older than 24h s
 </ul>
 <figure class="diagram"><svg viewBox="0 0 1000 330" role="img" aria-label="Before: headless runs and a human's /tmp sessions share ~/.claude/projects/-tmp/, and the pruner deletes both. After on Linux: headless runs use a private state-dir cwd whose transcript dir is the only one pruned; -tmp is untouched."><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker></defs><text class="hd" x="20" y="24">Before (macOS-shaped, today on Linux)</text><rect class="bx " x="20" y="44" width="200" height="46" rx="8"/><text x="120" y="72" text-anchor="middle">Headless claude run</text><rect class="bx " x="20" y="140" width="200" height="46" rx="8"/><text x="120" y="168" text-anchor="middle">Human runs claude in /tmp</text><rect class="bx " x="20" y="236" width="200" height="46" rx="8"/><text x="120" y="264" text-anchor="middle">Pruner, older than 24h</text><rect class="bx warn" x="290" y="140" width="190" height="46" rx="8"/><text x="385" y="168" text-anchor="middle">~/.claude/projects/-tmp/</text><line class="ar" x1="220" y1="67" x2="290" y2="150" marker-end="url(#ah)"/><text class="lbl" x="262" y="92" text-anchor="middle">cwd /tmp</text><line class="ar" x1="220" y1="163" x2="290" y2="163" marker-end="url(#ah)"/><line class="ar" x1="220" y1="259" x2="290" y2="176" marker-end="url(#ah)"/><text class="lbl" x="262" y="252" text-anchor="middle">deletes both</text><line class="sep" x1="500" y1="10" x2="500" y2="320"/><text class="hd" x="520" y="24">After, on Linux</text><rect class="bx " x="520" y="44" width="190" height="46" rx="8"/><text x="615" y="72" text-anchor="middle">Headless claude run</text><rect class="bx " x="520" y="140" width="190" height="46" rx="8"/><text x="615" y="168" text-anchor="middle">Pruner, older than 24h</text><rect class="bx ok" x="760" y="70" width="225" height="62" rx="8"/><text x="872.5" y="89" text-anchor="middle">~/.claude/projects/</text><text x="872.5" y="106" text-anchor="middle">-home-user--mission-</text><text x="872.5" y="123" text-anchor="middle">control-headless/</text><rect class="bx " x="520" y="236" width="190" height="46" rx="8"/><text x="615" y="264" text-anchor="middle">Human runs claude in /tmp</text><rect class="bx " x="760" y="236" width="225" height="46" rx="8"/><text x="872.5" y="255.5" text-anchor="middle">~/.claude/projects/-tmp/</text><text x="872.5" y="272.5" text-anchor="middle">(untouched)</text><line class="ar" x1="710" y1="67" x2="760" y2="92" marker-end="url(#ah)"/><text class="lbl" x="735" y="40" text-anchor="middle">cwd: state dir/headless</text><line class="ar" x1="710" y1="163" x2="760" y2="115" marker-end="url(#ah)"/><line class="ar" x1="710" y1="259" x2="760" y2="259" marker-end="url(#ah)"/></svg></figure><h4 id="f2-inspector-deny-list-and-private-state-dirs-s3-s4">F2. Inspector deny list and private state dirs (S3, S4)</h4>
 <ul>
-<li>Build the four home-scoped deny rules from <code>os.homedir()</code> (<code>//${home}/.ssh/**</code> and so on)
-instead of <code>//Users/*</code>, and add <code>**/.credentials.json</code>. On macOS the rules resolve to the same
-paths, so this applies everywhere (D13). <code>llm-runner-contract.test.ts</code> pins the exact rendered
-string and is updated with it.</li>
-<li>Every <code>tmpdir()</code> root that holds agent state, capabilities or submission auth goes through
-one helper that <code>lstat</code>s the root and refuses it unless <code>uid === getuid()</code>, it is not a
-symlink, and <code>(mode &amp; 0o077) === 0</code>, the rule <code>resume-lease.ts:44-60</code> already applies. This is
-a no-op on macOS&#39;s private <code>$TMPDIR</code>, so it applies everywhere (D13).</li>
-<li>On Linux the roots move to <code>$XDG_RUNTIME_DIR</code> when it is set (per-user, 0700, not aged out),
-falling back to the checked temp dir. macOS is unchanged.</li>
-<li><strong>Tests:</strong> deny-rule rendering on both platforms; the ownership helper refuses a foreign-uid,
-group-writable or symlinked root; root selection with and without <code>XDG_RUNTIME_DIR</code>.</li>
+<li><p><strong>Deny rules.</strong></p>
+<ul>
+<li>The <code>.ssh</code>, <code>.aws</code> and <code>.claude</code> rules are built from <code>os.homedir()</code>
+(<code>//${home}/.ssh/**</code>) instead of <code>//Users/*</code>, and <code>**/.credentials.json</code> is added. On macOS
+these resolve to the same paths, so they apply everywhere (D13).</li>
+<li><strong>The state-dir rule differs by platform (R11).</strong> The Inspector&#39;s cwd is the PR&#39;s worktree or
+repo root (<code>liveDir</code>, <code>src/server/inspector/worker.ts:340-344</code>), and the default worktree pool
+lives inside the state dir (<code>WORKTREE_POOLS_DIR</code>, <code>src/server/config.ts:26</code>). A blanket
+<code>//${home}/.mission-control/**</code> rule would therefore deny the Linux Inspector the worktree it
+is reviewing, which today&#39;s inert Linux rules do not.</li>
+<li>On Linux the state-dir rule is built from the resolved state dir (<code>stateDir()</code>, which honors
+<code>MISSION_HOME</code>). It has one rule per top-level entry of that dir <strong>except <code>worktree-pools</code></strong>.</li>
+<li>On macOS the rule stays <code>//Users/*/.mission-control/**</code>, unchanged, because a carve-out
+would change macOS behavior (D13). That rule also covers macOS pooled worktrees today; this
+is recorded as S13 and left out of scope.</li>
+<li>F1&#39;s headless cwd (<code>&lt;state dir&gt;/headless</code>) is never an Inspector cwd. A grant always carries
+the worktree or repo root (<code>src/server/llm/claude-sdk.ts:186</code> falls back to <code>HEADLESS_CWD</code>
+only without a grant), and headless runs hold no tools. That it sits under the state-dir
+rule is therefore correct and harmless.</li>
+<li><code>llm-runner-contract.test.ts</code> pins the exact rendered string per platform and is updated
+with it.</li>
+</ul>
+</li>
+<li><p><strong>One resolver for the private roots (R9).</strong> The roots are derived in three places today:</p>
+<ul>
+<li><code>DISPOSABLE_STATE_ROOT</code> (<code>src/server/agent-subprocess-env.ts:35</code>), used by the daemon only;</li>
+<li><code>isolatedScoutSubmissionCredentialPath</code> and <code>sessionScoutCredentialDirectory</code>
+(<code>src/shared/harness-runtime.mjs:208,232</code>), used by the daemon and by MCP children that
+resolve their own credential path;</li>
+<li><code>scouts/submission-auth.ts:94,124</code>, which writes through the harness-runtime paths.</li>
+</ul>
+<p>They are replaced by one <code>agentRuntimeRoot(name)</code> in <code>src/shared/harness-runtime.mjs</code>, which
+every process imports. The resolution order is:</p>
+<ol>
+<li><code>MISSION_AGENT_RUNTIME_DIR</code>, which the daemon sets to the root it resolved, both in every
+launch env and in the <code>env</code> of the MCP config it hands an agent, so a child never
+re-derives a different root;</li>
+<li>on Linux, <code>$XDG_RUNTIME_DIR/mission-control</code> (per-user, 0700, not aged out);</li>
+<li><code>tmpdir()</code>, which is macOS&#39;s only source, so macOS is unchanged.</li>
+</ol>
+</li>
+<li><p><strong>Ownership check, everywhere (D13).</strong> The resolver <code>lstat</code>s the root and refuses it unless
+<code>uid === getuid()</code>, it is not a symlink, and <code>(mode &amp; 0o077) === 0</code>. That is the rule
+<code>resume-lease.ts:44-60</code> already applies. On macOS&#39;s private <code>$TMPDIR</code> it is a no-op.</p>
+</li>
+<li><p><strong>Refusal.</strong> A refused root fails closed and never falls back to another directory, so an
+attacker cannot steer the choice:</p>
+<ul>
+<li>in the daemon, the launch or credential provisioning that needed it fails with &quot;Mission
+Control refused <code>&lt;path&gt;</code>: owned by uid N with mode M; remove it and retry&quot;, surfaced through
+the existing launch-error path (<code>src/server/terminal/launch-error.ts</code>);</li>
+<li>in an MCP child, the credential read returns empty, which is today&#39;s &quot;no credential
+provisioned&quot; path, and the daemon&#39;s log names the refused root.</li>
+</ul>
+</li>
+<li><p><strong>Upgrade of in-flight sessions.</strong></p>
+<ul>
+<li>Disposable state homes keep today&#39;s lifetime: the old daemon&#39;s exit hook removes its live
+homes (<code>agent-subprocess-env.ts:hookProcessCleanup</code>), as on any restart. On Linux,
+<code>reconcileDisposableAgentStateHomes</code> sweeps both the new root and the legacy
+<code>/tmp/mission-control-agent-state</code>.</li>
+<li>Capability files are the one cross-version reader: an MCP child started before the upgrade
+keeps resolving the legacy <code>/tmp/mission-control-agent-capabilities</code> path. On Linux, while
+that legacy root exists and passes the ownership check, the daemon writes each capability
+file to both roots. The legacy root disappears at reboot on tmpfs <code>/tmp</code> (Arch), or through
+<code>systemd-tmpfiles</code> ageing elsewhere, and the dual write stops when it is gone.</li>
+</ul>
+</li>
+<li><p><strong>Tests:</strong></p>
+<ul>
+<li>deny-rule rendering per platform, including that the Linux rules do not cover
+<code>worktree-pools</code>;</li>
+<li>the resolver order (env override, <code>XDG_RUNTIME_DIR</code>, temp dir) on both platforms;</li>
+<li>an MCP child given <code>MISSION_AGENT_RUNTIME_DIR</code> reads the credential the daemon wrote;</li>
+<li>the ownership check refuses a foreign-uid, group-writable or symlinked root with the
+message above;</li>
+<li>the Linux dual write to an existing, owned legacy root, and no write to a foreign one.</li>
+</ul>
+</li>
 </ul>
 <h4 id="f3-primary-modifier-shortcuts-w1-to-w5-c3">F3. Primary-modifier shortcuts (W1 to W5, C3)</h4>
 <ul>
@@ -240,56 +312,144 @@ instruction rows show for missing tools.</li>
 </ul>
 <h4 id="f7-the-source-checkout-as-the-linux-install-e6-e8-i1-to-i4-w7">F7. The source checkout as the Linux install (E6, E8, I1 to I4, W7)</h4>
 <ul>
-<li><strong>systemd user unit.</strong> <code>install-service</code> on Linux writes
-<code>~/.config/systemd/user/mission-control.service</code> running the existing
-<code>scripts/start-service.mjs</code> (daemon only, as launchd does today) with
-<code>WorkingDirectory=&lt;checkout&gt;</code>, <code>Restart=always</code>, and the resolved Node. It runs
+<li><p><strong>systemd user unit.</strong> <code>install-service</code> on Linux writes
+<code>~/.config/systemd/user/mission-control.service</code>, which runs the existing
+<code>scripts/start-service.mjs</code> (daemon only, as launchd does today) with the resolved Node. It runs
 <code>systemctl --user daemon-reload</code> and <code>enable --now</code>; <code>--uninstall</code> reverses it. Logs go to
-journald. macOS keeps launchd.</li>
-<li><strong>Multiplexer servers leave the launcher&#39;s cgroup (S10).</strong> On Linux, tmux and Herdr servers
+journald. macOS keeps launchd. The unit:</p>
+<pre><code>[Service]
+ExecStart=&lt;resolved node&gt; &lt;checkout&gt;/scripts/start-service.mjs
+WorkingDirectory=&lt;checkout&gt;
+Restart=always
+RestartSec=2
+RestartPreventExitStatus=75
+[Install]
+WantedBy=default.target</code></pre></li>
+<li><p><strong>Graphical environment under the unit (R6).</strong> The unit carries no display variables, and it
+is wanted by <code>default.target</code>, not <code>graphical-session.target</code>, because a window manager that
+never reaches <code>graphical-session.target</code> would never start it.</p>
+<ul>
+<li>Every GUI program the daemon spawns goes through one <code>graphicalSessionEnv()</code> helper. That
+covers <code>xdg-open</code> and <code>gtk-launch</code> in <code>open-targets/browser.ts</code>, F5&#39;s <code>ghostty</code> and
+<code>xdg-terminal-exec</code> / <code>$TERMINAL</code> adapters, and WezTerm on Linux.</li>
+<li>The helper uses the daemon&#39;s own <code>WAYLAND_DISPLAY</code> or <code>DISPLAY</code> when set. Otherwise it reads
+<code>systemctl --user show-environment</code> at that spawn and takes <code>WAYLAND_DISPLAY</code>, <code>DISPLAY</code>,
+<code>XAUTHORITY</code>, <code>DBUS_SESSION_BUS_ADDRESS</code>, <code>XDG_CURRENT_DESKTOP</code> and <code>XDG_SESSION_TYPE</code> from it.</li>
+<li>Reading at spawn time covers a unit that started before the desktop imported its
+environment into the user manager. KDE Plasma and GNOME import it at login; other sessions
+run <code>dbus-update-activation-environment --systemd</code>, which F13 documents. It also covers a
+later login with a new display.</li>
+<li>When neither source has a display, the action fails with &quot;No graphical session is reachable
+from the Mission Control daemon: WAYLAND_DISPLAY and DISPLAY are unset in the daemon and in
+the systemd user manager. Log in to a desktop session, or start the daemon from one.&quot; This
+appears where Focus and open-target errors appear today.</li>
+<li>The helper is Linux-only; macOS spawns are unchanged.</li>
+</ul>
+</li>
+<li><p><strong>Lifetime at logout.</strong></p>
+<ul>
+<li>Without linger (the default), the user manager stops when the user&#39;s last session ends.
+That stops the unit and every <code>systemd-run --user --scope</code> server with its agents, which
+matches macOS, where logout ends the LaunchAgent and the session&#39;s processes.</li>
+<li>With linger (<code>loginctl enable-linger</code>), the unit and the scoped servers keep running after
+logout. GUI actions fail with the message above until the next graphical login, when the
+spawn-time read picks up the new display.</li>
+<li>F13 documents both.</li>
+</ul>
+</li>
+<li><p><strong>Multiplexer servers leave the launcher&#39;s cgroup (S10).</strong> On Linux, tmux and Herdr servers
 that Mission Control starts run under <code>systemd-run --user --scope</code> when <code>systemd-run</code>
 resolves; without it, they start as today. This lands in F7 with the unit, never after it:
 <code>systemctl --user stop</code>, or a <code>Restart=always</code> restart, would otherwise kill every server the
 daemon started and every agent inside it. The same wrapper also takes them out of a
-terminal&#39;s surface scope when the daemon runs under <code>make start</code>.</li>
-<li><strong>Desktop entry (D19).</strong> A new Make target builds <code>dist/</code> and installs
+terminal&#39;s surface scope when the daemon runs under <code>make start</code>.</p>
+</li>
+<li><p><strong>Desktop entry (D19).</strong> A new Make target builds <code>dist/</code> and installs
 <code>~/.local/share/applications/mission-control.desktop</code>, which runs the checkout&#39;s Electron
-against the built bundles with no <code>MISSION_DEV_SERVER_URL</code>. That shell adopts a daemon already
-answering on the port (systemd or <code>make up</code>) or supervises its own daemon and Foreman, as the
-packaged macOS app does (<code>src/main/daemon.ts</code>, <code>src/main/daemon-policy.ts</code>). It uses
-<code>build/icon.png</code> from F4. Updating is <code>git pull &amp;&amp; make build</code>.</li>
-<li><strong>Start at login.</strong> On Linux the tray checkbox reads and toggles
+against the built bundles with no <code>MISSION_DEV_SERVER_URL</code>. It uses <code>build/icon.png</code> from F4.
+Updating is <code>git pull &amp;&amp; make build</code>.</p>
+</li>
+<li><p><strong>Adopt, wait or supervise (R7).</strong> Today the shell probes <code>/api/health</code> once and spawns its
+own daemon when nothing answers (<code>startDaemon</code>, <code>src/main/daemon.ts</code>). It then starts Foreman
+in both cases (<code>ownElectronBackgroundStart</code>, <code>src/main/daemon-policy.ts</code>). A unit and an
+autostarted shell both start at login, so on Linux the shell adds one step:</p>
+<ul>
+<li><strong>A daemon answers:</strong> adopt it, as today. Quitting the shell leaves an adopted daemon running
+(its <code>stop</code> is a no-op).</li>
+<li><strong>Nothing answers:</strong> run <code>systemctl --user is-active mission-control.service</code> (1 s timeout).<ul>
+<li>On <code>active</code>, <code>activating</code> or <code>reloading</code>, do not spawn. Poll the health probe every 500 ms
+for up to 30 s and adopt. On timeout the startup page says the service is running but not
+answering, and names <code>journalctl --user -u mission-control</code>.</li>
+<li>On anything else (inactive, failed, not installed, or no <code>systemctl</code>), supervise its own
+daemon and Foreman as today.</li>
+</ul>
+</li>
+<li><strong>State-lock contention gets exit status 75</strong> (EX_TEMPFAIL) instead of today&#39;s uncaught
+<code>contentionError</code> from <code>acquireStateOwnership</code> (<code>src/server/index.ts:134</code>). The unit&#39;s
+<code>RestartPreventExitStatus=75</code> makes a unit daemon that loses the lock stop instead of
+restart-looping into the failed state. On Linux, the shell&#39;s supervisor treats 75 as
+&quot;another daemon owns this state&quot;: it re-probes and adopts instead of restarting. launchd
+and the macOS shell restart on 75 exactly as they do on today&#39;s exit 1, so the macOS effect
+is identical (D13), and the shell&#39;s handling of 75 is a Linux branch.</li>
+</ul>
+</li>
+<li><p><strong>Start at login.</strong> On Linux the tray checkbox reads and toggles
 <code>~/.config/autostart/mission-control.desktop</code>, a copy of the desktop entry. It is disabled
-with a hint when the desktop entry is not installed.</li>
-<li><strong>macOS-only refusals.</strong> <code>make install</code>, <code>make app</code>, <code>make install-app</code>, <code>npm run package</code>,
+with a hint when the desktop entry is not installed.</p>
+</li>
+<li><p><strong>macOS-only refusals.</strong> <code>make install</code>, <code>make app</code>, <code>make install-app</code>, <code>npm run package</code>,
 <code>scripts/install.sh</code> and <code>recover-database</code> refuse Linux up front with one message: &quot;the
 packaged app is macOS only; on Linux run from a checkout (see docs/setup.md)&quot;. <code>make help</code>
 marks them &quot;[macOS]&quot;. The updater&#39;s Linux reason says the same. The bundle-path code in E8
-stays darwin-only and is guarded rather than ported.</li>
-<li><strong>Tests:</strong><ul>
+stays darwin-only and is guarded rather than ported.</p>
+</li>
+<li><p><strong>Tests:</strong></p>
+<ul>
 <li><code>install-service</code> unit tests for the Linux unit text and the <code>systemctl</code> calls through a
 fake (twin of the launchd test);</li>
 <li>the scope wrapper&#39;s argv with and without <code>systemd-run</code>, and macOS unchanged;</li>
 <li>desktop-entry and autostart file contents;</li>
 <li>refusal messages per platform;</li>
-<li>manual verification that the entry launches from the KDE menu, adopts a systemd daemon,
-and starts at login;</li>
-<li>manual verification that <code>systemctl --user restart mission-control</code> leaves running tmux and
-Herdr sessions and their agents alive.</li>
+<li>the adopt / wait / supervise decision with <code>systemctl</code> and the health probe injected, and
+the supervisor&#39;s handling of exit 75, on both platforms;</li>
+<li><code>graphicalSessionEnv()</code>: own env wins, manager env fills a missing display, and the
+no-display message, on Linux only;</li>
+<li>manual, on the operator&#39;s box:<ul>
+<li>the entry launches from the KDE menu and adopts a systemd daemon;</li>
+<li>with the unit disabled and no daemon running, the entry supervises its own daemon and
+Foreman, and quitting the shell stops both;</li>
+<li>with the unit enabled and autostart on, a fresh login yields exactly one daemon: the
+health <code>pid</code> equals the unit&#39;s <code>MainPID</code> from <code>systemctl --user show -p MainPID</code>;</li>
+<li>after a fresh login, with the daemon running only under the unit, Focus raises Ghostty on
+a tmux session;</li>
+<li><code>systemctl --user restart mission-control</code> leaves running tmux and Herdr sessions and their
+agents alive;</li>
+<li>with linger off, logging out ends the unit and the scoped servers.</li>
 </ul>
 </li>
 </ul>
-<figure class="diagram"><svg viewBox="0 0 1000 320" role="img" aria-label="A systemd user unit runs scripts/start-service.mjs, which runs the daemon on port 7317. A .desktop entry, and its XDG autostart copy for Start at login, launch the built Electron shell from the checkout. The shell adopts a daemon that already answers on the port, or supervises its own daemon and Foreman."><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker></defs><rect class="bx " x="10" y="20" width="260" height="50" rx="8"/><text x="140" y="41.5" text-anchor="middle">systemd --user:</text><text x="140" y="58.5" text-anchor="middle">mission-control.service</text><rect class="bx " x="330" y="20" width="220" height="50" rx="8"/><text x="440" y="50" text-anchor="middle">scripts/start-service.mjs</text><rect class="bx " x="760" y="120" width="225" height="50" rx="8"/><text x="872.5" y="150" text-anchor="middle">Daemon on port 7317</text><rect class="bx ok" x="10" y="140" width="260" height="50" rx="8"/><text x="140" y="161.5" text-anchor="middle">~/.local/share/applications/</text><text x="140" y="178.5" text-anchor="middle">mission-control.desktop</text><rect class="bx ok" x="10" y="240" width="260" height="50" rx="8"/><text x="140" y="261.5" text-anchor="middle">~/.config/autostart copy</text><text x="140" y="278.5" text-anchor="middle">(Start at login)</text><rect class="bx ok" x="330" y="190" width="220" height="50" rx="8"/><text x="440" y="211.5" text-anchor="middle">Built Electron shell</text><text x="440" y="228.5" text-anchor="middle">from the checkout</text><rect class="bx " x="590" y="120" width="140" height="50" rx="8"/><text x="660" y="150" text-anchor="middle">Adopt it</text><rect class="bx " x="590" y="240" width="140" height="60" rx="8"/><text x="660" y="266.5" text-anchor="middle">Supervise own</text><text x="660" y="283.5" text-anchor="middle">daemon + Foreman</text><line class="ar" x1="270" y1="45" x2="330" y2="45" marker-end="url(#ah)"/><line class="ar" x1="550" y1="45" x2="840" y2="120" marker-end="url(#ah)"/><line class="ar" x1="270" y1="165" x2="330" y2="205" marker-end="url(#ah)"/><line class="ar" x1="270" y1="265" x2="330" y2="225" marker-end="url(#ah)"/><line class="ar" x1="550" y1="205" x2="590" y2="150" marker-end="url(#ah)"/><text class="lbl" x="515" y="160" text-anchor="middle">daemon answers</text><line class="ar" x1="550" y1="225" x2="590" y2="265" marker-end="url(#ah)"/><text class="lbl" x="530" y="268" text-anchor="middle">no daemon</text><line class="ar" x1="730" y1="145" x2="760" y2="145" marker-end="url(#ah)"/><line class="ar" x1="730" y1="265" x2="830" y2="170" marker-end="url(#ah)"/></svg></figure><h4 id="f8-tray-less-desktops-e7-u3">F8. Tray-less desktops (E7, U3)</h4>
+</li>
+</ul>
+<figure class="diagram"><svg viewBox="0 0 1000 380" role="img" aria-label="A systemd user unit runs scripts/start-service.mjs, which runs the daemon on port 7317. A .desktop entry, and its XDG autostart copy for Start at login, launch the built Electron shell from the checkout. The shell adopts a daemon that answers on the port; if none answers but the unit is active or activating, it waits up to 30 seconds for health and adopts; if the unit is inactive or absent, it supervises its own daemon and Foreman."><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker></defs><rect class="bx " x="10" y="20" width="260" height="50" rx="8"/><text x="140" y="41.5" text-anchor="middle">systemd --user:</text><text x="140" y="58.5" text-anchor="middle">mission-control.service</text><rect class="bx " x="330" y="20" width="220" height="50" rx="8"/><text x="440" y="50" text-anchor="middle">scripts/start-service.mjs</text><rect class="bx " x="800" y="170" width="185" height="50" rx="8"/><text x="892.5" y="200" text-anchor="middle">Daemon on port 7317</text><rect class="bx ok" x="10" y="160" width="260" height="50" rx="8"/><text x="140" y="181.5" text-anchor="middle">~/.local/share/applications/</text><text x="140" y="198.5" text-anchor="middle">mission-control.desktop</text><rect class="bx ok" x="10" y="270" width="260" height="50" rx="8"/><text x="140" y="291.5" text-anchor="middle">~/.config/autostart copy</text><text x="140" y="308.5" text-anchor="middle">(Start at login)</text><rect class="bx ok" x="330" y="215" width="200" height="50" rx="8"/><text x="430" y="236.5" text-anchor="middle">Built Electron shell</text><text x="430" y="253.5" text-anchor="middle">from the checkout</text><rect class="bx " x="610" y="105" width="150" height="50" rx="8"/><text x="685" y="135" text-anchor="middle">Adopt it</text><rect class="bx ok" x="610" y="185" width="150" height="60" rx="8"/><text x="685" y="211.5" text-anchor="middle">Wait up to 30 s</text><text x="685" y="228.5" text-anchor="middle">for health, adopt</text><rect class="bx " x="610" y="290" width="150" height="60" rx="8"/><text x="685" y="316.5" text-anchor="middle">Supervise own</text><text x="685" y="333.5" text-anchor="middle">daemon + Foreman</text><line class="ar" x1="270" y1="45" x2="330" y2="45" marker-end="url(#ah)"/><line class="ar" x1="550" y1="45" x2="880" y2="170" marker-end="url(#ah)"/><line class="ar" x1="270" y1="185" x2="330" y2="230" marker-end="url(#ah)"/><line class="ar" x1="270" y1="295" x2="330" y2="250" marker-end="url(#ah)"/><line class="ar" x1="530" y1="225" x2="610" y2="130" marker-end="url(#ah)"/><text class="lbl" x="548" y="160" text-anchor="middle">answers</text><line class="ar" x1="530" y1="240" x2="610" y2="215" marker-end="url(#ah)"/><text class="lbl" x="560" y="206" text-anchor="middle">unit activating</text><line class="ar" x1="530" y1="255" x2="610" y2="315" marker-end="url(#ah)"/><text class="lbl" x="548" y="305" text-anchor="middle">unit absent</text><line class="ar" x1="760" y1="130" x2="820" y2="170" marker-end="url(#ah)"/><line class="ar" x1="760" y1="215" x2="800" y2="200" marker-end="url(#ah)"/><line class="ar" x1="760" y1="320" x2="860" y2="220" marker-end="url(#ah)"/></svg></figure><h4 id="f8-tray-less-desktops-e7-u3">F8. Tray-less desktops (E7, U3)</h4>
 <ul>
 <li>Settings gains an Integrations section with Install and Remove buttons that call the existing
 <code>installIntegrations</code> and <code>removeIntegrations</code> preload bridge, shown only in the desktop shell.
 The copy in <code>setup-catalog.ts:555</code> and <code>claude-hooks.ts:242</code> then points at it truthfully.</li>
-<li>On Linux, at startup the shell probes the session bus for an owner of
-<code>org.kde.StatusNotifierWatcher</code>. With one, closing the window hides it to the tray (today&#39;s
-behavior, and the operator&#39;s on KDE). Without one, closing the window quits the shell. macOS
-is unchanged.</li>
+<li><strong>Tray-host probe (R10).</strong> The Electron main process runs <code>busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s org.kde.StatusNotifierWatcher</code> through <code>execFile</code> with a 1 s timeout. <code>busctl</code> ships with
+systemd (D2) and is resolved through the executable catalog.<ul>
+<li>The probe runs at startup and again on each window close, because a tray host can start
+after the shell.</li>
+<li>The answer <code>b true</code> means a tray host exists: closing hides the window to the tray (today&#39;s
+behavior, and the operator&#39;s on KDE).</li>
+<li>Anything else (<code>b false</code>, a missing <code>busctl</code>, an error or a timeout) means no tray, and
+closing the window quits the shell. A probe failure therefore never hides a window the user
+cannot get back.</li>
+<li>macOS is unchanged.</li>
+</ul>
+</li>
 <li><strong>Tests:</strong> an e2e spec for the Settings Integrations section; unit tests for the
-close-behavior decision with the probe injected, on both platforms.</li>
+close-behavior decision with the probe injected (true, false, missing, error, timeout) on both
+platforms; a manual check on KDE that closing hides to the tray.</li>
 </ul>
 <h4 id="f9-keep-awake-through-systemd-inhibit-s5-w6">F9. Keep Awake through <code>systemd-inhibit</code> (S5, W6)</h4>
 <ul>
@@ -312,8 +472,21 @@ the lock on the operator&#39;s box.</li>
 <li><code>lsof</code> becomes a declared Linux prerequisite: a Setup row and a <code>make init</code> check (D14).</li>
 <li>The <code>lsof</code> parser treats a non-absolute record, or one containing <code>(readlink:</code>, as
 unresolved instead of as a cwd.</li>
-<li>Makefile <code>status</code>, <code>up</code>, <code>claude</code> and <code>stop-all</code> probe <code>/api/health</code> (and Vite&#39;s port with
-<code>curl</code>) instead of <code>lsof</code> (D14).</li>
+<li><strong>Makefile without <code>lsof</code> for the daemon (D14, R8).</strong> <code>/api/health</code> already returns the
+daemon&#39;s <code>pid</code>. The targets use <code>curl -fsS --max-time 1</code>, present on macOS and in Arch <code>base</code>:<ul>
+<li><code>status</code> reads the <code>pid</code> from <code>/api/health</code>, and says &quot;not running&quot; when it does not answer;</li>
+<li><code>up</code> starts the daemon as today, then polls <code>/api/health</code> for up to 10 s instead of
+<code>lsof</code>-ing the port after a fixed 1.5 s sleep;</li>
+<li><code>claude</code> probes <code>/api/health</code> to decide whether a daemon is up, so a live daemon is never
+restarted;</li>
+<li><code>stop-all</code> and <code>down</code> keep stopping the daemon, Foreman and electronmon by <code>pkill -f</code>
+pattern, as today. Vite has no health endpoint, so <code>stop-all</code> keeps
+<code>lsof -ti tcp:$(WEB_PORT)</code> for Vite&#39;s PID: <code>lsof</code> is a declared prerequisite (D14) and
+always present on macOS. When <code>lsof</code> is missing it prints &quot;lsof not found: stop Vite on
+:$(WEB_PORT) yourself&quot; instead of skipping silently.</li>
+<li>The Makefile is shared, and on macOS these probes give the same answers as before.</li>
+</ul>
+</li>
 <li>Default fix: <code>make init</code> checks for a C++ compiler, <code>make</code> and <code>python3</code> on Linux, keyed on
 the state-lock build target, and prints a Linux-specific line; the Xcode wording is darwin-only.
 <code>test/init-prerequisites.test.ts</code> drops the Keep Awake rationale.</li>
@@ -327,7 +500,15 @@ English locale, and the same fix for a non-English one).</li>
 <li>Default fix: <code>wezterm-socket.ts</code> <code>realpath</code>s the selected socket before linking.</li>
 <li>Default fix: <code>scripts/lib.mjs</code> <code>have()</code> uses <code>command -v</code> through <code>/bin/sh</code>.</li>
 <li><strong>Tests:</strong> seam-row unit tests on both platforms; parser cases for the readlink record;
-<code>make init</code> preflight per platform.</li>
+<code>make init</code> preflight per platform; manual Makefile checks on the operator&#39;s box with <code>lsof</code>
+hidden from <code>PATH</code>:<ul>
+<li><code>make status</code> reports the running daemon&#39;s pid, and &quot;not running&quot; when it is down;</li>
+<li><code>make up</code> reports success once the daemon answers;</li>
+<li><code>make claude</code> with a live daemon does not restart it (the health pid is unchanged);</li>
+<li><code>make stop-all</code> with Vite running stops it when <code>lsof</code> is present, and prints the &quot;lsof
+not found&quot; line when it is hidden.</li>
+</ul>
+</li>
 </ul>
 <h4 id="f12-linux-ci-coverage-c1-c2">F12. Linux CI coverage (C1, C2)</h4>
 <ul>
@@ -386,6 +567,8 @@ PNGs that the generator renders.</li>
 <li>F7&#39;s desktop entry uses F4&#39;s <code>build/icon.png</code>.</li>
 <li><strong>F5 before F6.</strong> F6&#39;s Setup rows read F5&#39;s <code>unsupportedReason</code> (to omit iTerm2 and cmux) and
 Ghostty&#39;s Linux detection (to mark an installed Ghostty satisfied).</li>
+<li><strong>F5 before F7.</strong> F7&#39;s <code>graphicalSessionEnv()</code> wraps F5&#39;s Linux emulator spawns as well as the
+existing open target.</li>
 <li><strong>F7 carries the multiplexer scope wrapper</strong>, so no systemd unit ships while a unit restart
 could still kill the tmux and Herdr servers.</li>
 <li>F8&#39;s close-to-quit only matters once F4&#39;s native frame gives Linux a close button.</li>
@@ -426,5 +609,7 @@ command output attached to the PR, never committed.</li>
 there, and F8 covers GNOME&#39;s missing tray.</li>
 <li>A macOS CI shard or manual Mac checks (D22).</li>
 <li>Pruning or deleting existing <code>~/.claude/projects/-tmp/</code> transcripts (D21).</li>
+<li>Changing macOS&#39;s state-dir deny rule so the macOS Inspector can read pooled worktrees (S13).
+It changes macOS behavior, so it needs its own decision (D3, D13).</li>
 </ul>
 </main></body></html>

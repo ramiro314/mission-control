@@ -4,7 +4,7 @@ Status: approved 2026-10-12 after a three-round interview with the human (decisi
 below) and a plan review that approved it as written. Follow-up chosen in the review: Create
 tickets after the plan merges, so Mission Control slices it into tickets in a linked follow-up
 task once this plan's pull request merges. Amended the same day in plan-validation repair
-round 1 (R1 to R5 below). Not implemented.
+round 1 (R1 to R5) and repair round 2 (R6 to R11), both below. Not implemented.
 
 ## Goal
 
@@ -100,6 +100,21 @@ These come from the plan-validation review on 2026-10-12. None changes a human d
 | R4 | F7's systemd unit (T2) shipped before F10's (T3) cgroup escape, so a unit restart could kill every agent | The `systemd-run --user --scope` wrapper moves from F10 into F7 and ships with the unit |
 | R5 | F4 (T1) needs PNGs that only the F11 (T4) `gen-icons` fix can render | The `gen-icons` Linux fix (I7) moves from F11 into F4 |
 
+### Repair round 2 clarifications
+
+These come from the second plan-validation review on 2026-10-12. The packet arrived truncated
+partway through its fourth requested change, so R9's scope beyond the visible text, and R10 and
+R11, come from the judge's summary. None changes a human decision.
+
+| ID | Issue | Resolution |
+|---|---|---|
+| R6 | The daemon's display environment under the systemd unit was unspecified, so Focus could work after `enable --now` and fail after a reboot | F7: `WantedBy=default.target`; a Linux `graphicalSessionEnv()` reads the user manager's environment at each GUI spawn; a named no-display error; logout and linger behavior stated; manual Focus check after a fresh login |
+| R7 | The shell's supervise branch could race the unit at login | F7: on Linux the shell asks `systemctl --user is-active` before supervising and waits to adopt an activating unit; state-lock contention exits 75, which the unit does not restart on and the shell answers by adopting; manual checks for supervise-alone and exactly one daemon at login |
+| R8 | Makefile kill paths had no PID source once `lsof` went away | F10: daemon PIDs come from `/api/health`'s `pid` and the existing `pkill` patterns; Vite keeps `lsof` with an explicit message when it is missing; one manual check per target |
+| R9 | The moved state root had no single resolver, refusal behavior or upgrade path | F2: one `agentRuntimeRoot()` with an env override the daemon hands every child; fail-closed refusal with a named message; dual write to an owned legacy capability root while it exists |
+| R10 | The tray-host probe mechanism was unspecified | F8: `busctl --user ... NameHasOwner org.kde.StatusNotifierWatcher`, at startup and on each close; any failure counts as no tray |
+| R11 | F1's headless cwd might fall inside an F2 deny rule | F1's cwd is never an Inspector cwd. Checking found a real interaction instead: pooled worktrees live in the state dir. F2's Linux state-dir rule excludes `worktree-pools`, macOS stays unchanged, and the existing macOS effect is recorded as S13 |
+
 ## Severity tiers
 
 | Tier | Meaning |
@@ -129,6 +144,7 @@ tier, and the fix group that resolves it.
 | S9 | `src/server/platform/executable-environment.ts:34,49-59` | One POSIX row: `/Applications`, `/opt/homebrew/*`, and `/bin/zsh` when `SHELL` is unset | Under systemd or a launcher without `SHELL`, the login-shell PATH read tries zsh, which may not exist. No linuxbrew, nix, snap, cargo or bun dirs | T3 | F10 |
 | S10 | `src/server/terminal/*` (multiplexer server spawn) | A detached, `setsid` process outlives its launcher | systemd kills by cgroup. This box's Herdr server lives in a Ghostty surface scope, so closing that terminal, or stopping a future systemd unit, can kill the server and every agent in it | T3 | F7 |
 | S11 | `src/server/discovery/processes.ts:47-52` | Wrapper list includes `caffeinate` and `gtimeout` | No `systemd-run`, `systemd-inhibit`, `setsid`, `flatpak-spawn`; native matching still finds the agent | T4 | F11 |
+| S13 | `src/server/inspector/worker.ts:309-312`, `src/server/config.ts:26` | The `//Users/*/.mission-control/**` deny rule covers the whole state dir | The default worktree pool lives inside the state dir, so on **macOS** the Inspector is denied the files of a pooled worktree it reviews. This is a macOS observation; Linux avoids it through F2's carve-out (R11) | n/a | Out of scope (macOS unchanged, D3) |
 | S12 | `src/server/keep-awake.ts:73`, `src/server/index.ts:924-926`, `src/shared/update-copy.ts:26-59`, `src/server/open-targets/browser.ts:168-171`, `src/server/discovery/tty.ts:10` | Copy and comments say "this Mac", "Dock", "personal Applications folder", "desktop build is macOS-only", "ttysNNN" | Misleading text | T4 | F11 |
 
 ### Terminals (`src/server/terminal/`, `src/shared/terminal.ts`)
@@ -255,18 +271,68 @@ flowchart LR
 
 #### F2. Inspector deny list and private state dirs (S3, S4)
 
-- Build the four home-scoped deny rules from `os.homedir()` (`//${home}/.ssh/**` and so on)
-  instead of `//Users/*`, and add `**/.credentials.json`. On macOS the rules resolve to the same
-  paths, so this applies everywhere (D13). `llm-runner-contract.test.ts` pins the exact rendered
-  string and is updated with it.
-- Every `tmpdir()` root that holds agent state, capabilities or submission auth goes through
-  one helper that `lstat`s the root and refuses it unless `uid === getuid()`, it is not a
-  symlink, and `(mode & 0o077) === 0`, the rule `resume-lease.ts:44-60` already applies. This is
-  a no-op on macOS's private `$TMPDIR`, so it applies everywhere (D13).
-- On Linux the roots move to `$XDG_RUNTIME_DIR` when it is set (per-user, 0700, not aged out),
-  falling back to the checked temp dir. macOS is unchanged.
-- **Tests:** deny-rule rendering on both platforms; the ownership helper refuses a foreign-uid,
-  group-writable or symlinked root; root selection with and without `XDG_RUNTIME_DIR`.
+- **Deny rules.**
+  - The `.ssh`, `.aws` and `.claude` rules are built from `os.homedir()`
+    (`//${home}/.ssh/**`) instead of `//Users/*`, and `**/.credentials.json` is added. On macOS
+    these resolve to the same paths, so they apply everywhere (D13).
+  - **The state-dir rule differs by platform (R11).** The Inspector's cwd is the PR's worktree or
+    repo root (`liveDir`, `src/server/inspector/worker.ts:340-344`), and the default worktree pool
+    lives inside the state dir (`WORKTREE_POOLS_DIR`, `src/server/config.ts:26`). A blanket
+    `//${home}/.mission-control/**` rule would therefore deny the Linux Inspector the worktree it
+    is reviewing, which today's inert Linux rules do not.
+  - On Linux the state-dir rule is built from the resolved state dir (`stateDir()`, which honors
+    `MISSION_HOME`). It has one rule per top-level entry of that dir **except `worktree-pools`**.
+  - On macOS the rule stays `//Users/*/.mission-control/**`, unchanged, because a carve-out
+    would change macOS behavior (D13). That rule also covers macOS pooled worktrees today; this
+    is recorded as S13 and left out of scope.
+  - F1's headless cwd (`<state dir>/headless`) is never an Inspector cwd. A grant always carries
+    the worktree or repo root (`src/server/llm/claude-sdk.ts:186` falls back to `HEADLESS_CWD`
+    only without a grant), and headless runs hold no tools. That it sits under the state-dir
+    rule is therefore correct and harmless.
+  - `llm-runner-contract.test.ts` pins the exact rendered string per platform and is updated
+    with it.
+- **One resolver for the private roots (R9).** The roots are derived in three places today:
+  - `DISPOSABLE_STATE_ROOT` (`src/server/agent-subprocess-env.ts:35`), used by the daemon only;
+  - `isolatedScoutSubmissionCredentialPath` and `sessionScoutCredentialDirectory`
+    (`src/shared/harness-runtime.mjs:208,232`), used by the daemon and by MCP children that
+    resolve their own credential path;
+  - `scouts/submission-auth.ts:94,124`, which writes through the harness-runtime paths.
+
+  They are replaced by one `agentRuntimeRoot(name)` in `src/shared/harness-runtime.mjs`, which
+  every process imports. The resolution order is:
+  1. `MISSION_AGENT_RUNTIME_DIR`, which the daemon sets to the root it resolved, both in every
+     launch env and in the `env` of the MCP config it hands an agent, so a child never
+     re-derives a different root;
+  2. on Linux, `$XDG_RUNTIME_DIR/mission-control` (per-user, 0700, not aged out);
+  3. `tmpdir()`, which is macOS's only source, so macOS is unchanged.
+- **Ownership check, everywhere (D13).** The resolver `lstat`s the root and refuses it unless
+  `uid === getuid()`, it is not a symlink, and `(mode & 0o077) === 0`. That is the rule
+  `resume-lease.ts:44-60` already applies. On macOS's private `$TMPDIR` it is a no-op.
+- **Refusal.** A refused root fails closed and never falls back to another directory, so an
+  attacker cannot steer the choice:
+  - in the daemon, the launch or credential provisioning that needed it fails with "Mission
+    Control refused `<path>`: owned by uid N with mode M; remove it and retry", surfaced through
+    the existing launch-error path (`src/server/terminal/launch-error.ts`);
+  - in an MCP child, the credential read returns empty, which is today's "no credential
+    provisioned" path, and the daemon's log names the refused root.
+- **Upgrade of in-flight sessions.**
+  - Disposable state homes keep today's lifetime: the old daemon's exit hook removes its live
+    homes (`agent-subprocess-env.ts:hookProcessCleanup`), as on any restart. On Linux,
+    `reconcileDisposableAgentStateHomes` sweeps both the new root and the legacy
+    `/tmp/mission-control-agent-state`.
+  - Capability files are the one cross-version reader: an MCP child started before the upgrade
+    keeps resolving the legacy `/tmp/mission-control-agent-capabilities` path. On Linux, while
+    that legacy root exists and passes the ownership check, the daemon writes each capability
+    file to both roots. The legacy root disappears at reboot on tmpfs `/tmp` (Arch), or through
+    `systemd-tmpfiles` ageing elsewhere, and the dual write stops when it is gone.
+- **Tests:**
+  - deny-rule rendering per platform, including that the Linux rules do not cover
+    `worktree-pools`;
+  - the resolver order (env override, `XDG_RUNTIME_DIR`, temp dir) on both platforms;
+  - an MCP child given `MISSION_AGENT_RUNTIME_DIR` reads the credential the daemon wrote;
+  - the ownership check refuses a foreign-uid, group-writable or symlinked root with the
+    message above;
+  - the Linux dual write to an existing, owned legacy root, and no write to a foreign one.
 
 #### F3. Primary-modifier shortcuts (W1 to W5, C3)
 
@@ -386,11 +452,48 @@ flowchart LR
 #### F7. The source checkout as the Linux install (E6, E8, I1 to I4, W7)
 
 - **systemd user unit.** `install-service` on Linux writes
-  `~/.config/systemd/user/mission-control.service` running the existing
-  `scripts/start-service.mjs` (daemon only, as launchd does today) with
-  `WorkingDirectory=<checkout>`, `Restart=always`, and the resolved Node. It runs
+  `~/.config/systemd/user/mission-control.service`, which runs the existing
+  `scripts/start-service.mjs` (daemon only, as launchd does today) with the resolved Node. It runs
   `systemctl --user daemon-reload` and `enable --now`; `--uninstall` reverses it. Logs go to
-  journald. macOS keeps launchd.
+  journald. macOS keeps launchd. The unit:
+
+  ```ini
+  [Service]
+  ExecStart=<resolved node> <checkout>/scripts/start-service.mjs
+  WorkingDirectory=<checkout>
+  Restart=always
+  RestartSec=2
+  RestartPreventExitStatus=75
+  [Install]
+  WantedBy=default.target
+  ```
+
+- **Graphical environment under the unit (R6).** The unit carries no display variables, and it
+  is wanted by `default.target`, not `graphical-session.target`, because a window manager that
+  never reaches `graphical-session.target` would never start it.
+  - Every GUI program the daemon spawns goes through one `graphicalSessionEnv()` helper. That
+    covers `xdg-open` and `gtk-launch` in `open-targets/browser.ts`, F5's `ghostty` and
+    `xdg-terminal-exec` / `$TERMINAL` adapters, and WezTerm on Linux.
+  - The helper uses the daemon's own `WAYLAND_DISPLAY` or `DISPLAY` when set. Otherwise it reads
+    `systemctl --user show-environment` at that spawn and takes `WAYLAND_DISPLAY`, `DISPLAY`,
+    `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE` from it.
+  - Reading at spawn time covers a unit that started before the desktop imported its
+    environment into the user manager. KDE Plasma and GNOME import it at login; other sessions
+    run `dbus-update-activation-environment --systemd`, which F13 documents. It also covers a
+    later login with a new display.
+  - When neither source has a display, the action fails with "No graphical session is reachable
+    from the Mission Control daemon: WAYLAND_DISPLAY and DISPLAY are unset in the daemon and in
+    the systemd user manager. Log in to a desktop session, or start the daemon from one." This
+    appears where Focus and open-target errors appear today.
+  - The helper is Linux-only; macOS spawns are unchanged.
+- **Lifetime at logout.**
+  - Without linger (the default), the user manager stops when the user's last session ends.
+    That stops the unit and every `systemd-run --user --scope` server with its agents, which
+    matches macOS, where logout ends the LaunchAgent and the session's processes.
+  - With linger (`loginctl enable-linger`), the unit and the scoped servers keep running after
+    logout. GUI actions fail with the message above until the next graphical login, when the
+    spawn-time read picks up the new display.
+  - F13 documents both.
 - **Multiplexer servers leave the launcher's cgroup (S10).** On Linux, tmux and Herdr servers
   that Mission Control starts run under `systemd-run --user --scope` when `systemd-run`
   resolves; without it, they start as today. This lands in F7 with the unit, never after it:
@@ -399,10 +502,27 @@ flowchart LR
   terminal's surface scope when the daemon runs under `make start`.
 - **Desktop entry (D19).** A new Make target builds `dist/` and installs
   `~/.local/share/applications/mission-control.desktop`, which runs the checkout's Electron
-  against the built bundles with no `MISSION_DEV_SERVER_URL`. That shell adopts a daemon already
-  answering on the port (systemd or `make up`) or supervises its own daemon and Foreman, as the
-  packaged macOS app does (`src/main/daemon.ts`, `src/main/daemon-policy.ts`). It uses
-  `build/icon.png` from F4. Updating is `git pull && make build`.
+  against the built bundles with no `MISSION_DEV_SERVER_URL`. It uses `build/icon.png` from F4.
+  Updating is `git pull && make build`.
+- **Adopt, wait or supervise (R7).** Today the shell probes `/api/health` once and spawns its
+  own daemon when nothing answers (`startDaemon`, `src/main/daemon.ts`). It then starts Foreman
+  in both cases (`ownElectronBackgroundStart`, `src/main/daemon-policy.ts`). A unit and an
+  autostarted shell both start at login, so on Linux the shell adds one step:
+  - **A daemon answers:** adopt it, as today. Quitting the shell leaves an adopted daemon running
+    (its `stop` is a no-op).
+  - **Nothing answers:** run `systemctl --user is-active mission-control.service` (1 s timeout).
+    - On `active`, `activating` or `reloading`, do not spawn. Poll the health probe every 500 ms
+      for up to 30 s and adopt. On timeout the startup page says the service is running but not
+      answering, and names `journalctl --user -u mission-control`.
+    - On anything else (inactive, failed, not installed, or no `systemctl`), supervise its own
+      daemon and Foreman as today.
+  - **State-lock contention gets exit status 75** (EX_TEMPFAIL) instead of today's uncaught
+    `contentionError` from `acquireStateOwnership` (`src/server/index.ts:134`). The unit's
+    `RestartPreventExitStatus=75` makes a unit daemon that loses the lock stop instead of
+    restart-looping into the failed state. On Linux, the shell's supervisor treats 75 as
+    "another daemon owns this state": it re-probes and adopts instead of restarting. launchd
+    and the macOS shell restart on 75 exactly as they do on today's exit 1, so the macOS effect
+    is identical (D13), and the shell's handling of 75 is a Linux branch.
 - **Start at login.** On Linux the tray checkbox reads and toggles
   `~/.config/autostart/mission-control.desktop`, a copy of the desktop entry. It is disabled
   with a hint when the desktop entry is not installed.
@@ -417,10 +537,21 @@ flowchart LR
   - the scope wrapper's argv with and without `systemd-run`, and macOS unchanged;
   - desktop-entry and autostart file contents;
   - refusal messages per platform;
-  - manual verification that the entry launches from the KDE menu, adopts a systemd daemon,
-    and starts at login;
-  - manual verification that `systemctl --user restart mission-control` leaves running tmux and
-    Herdr sessions and their agents alive.
+  - the adopt / wait / supervise decision with `systemctl` and the health probe injected, and
+    the supervisor's handling of exit 75, on both platforms;
+  - `graphicalSessionEnv()`: own env wins, manager env fills a missing display, and the
+    no-display message, on Linux only;
+  - manual, on the operator's box:
+    - the entry launches from the KDE menu and adopts a systemd daemon;
+    - with the unit disabled and no daemon running, the entry supervises its own daemon and
+      Foreman, and quitting the shell stops both;
+    - with the unit enabled and autostart on, a fresh login yields exactly one daemon: the
+      health `pid` equals the unit's `MainPID` from `systemctl --user show -p MainPID`;
+    - after a fresh login, with the daemon running only under the unit, Focus raises Ghostty on
+      a tmux session;
+    - `systemctl --user restart mission-control` leaves running tmux and Herdr sessions and their
+      agents alive;
+    - with linger off, logging out ends the unit and the scoped servers.
 
 ```mermaid
 flowchart LR
@@ -428,8 +559,10 @@ flowchart LR
   E["~/.local/share/applications/mission-control.desktop"] --> B[Built Electron shell from the checkout]
   A["~/.config/autostart copy (Start at login)"] --> B
   B -->|daemon answers on the port| AD[Adopt it]
-  B -->|no daemon| SP[Supervise own daemon and Foreman]
+  B -->|"no answer, unit active or activating"| WT[Wait up to 30 s for health, then adopt]
+  B -->|"no answer, unit inactive or absent"| SP[Supervise own daemon and Foreman]
   AD --> DM
+  WT --> DM
   SP --> DM
 ```
 
@@ -438,12 +571,21 @@ flowchart LR
 - Settings gains an Integrations section with Install and Remove buttons that call the existing
   `installIntegrations` and `removeIntegrations` preload bridge, shown only in the desktop shell.
   The copy in `setup-catalog.ts:555` and `claude-hooks.ts:242` then points at it truthfully.
-- On Linux, at startup the shell probes the session bus for an owner of
-  `org.kde.StatusNotifierWatcher`. With one, closing the window hides it to the tray (today's
-  behavior, and the operator's on KDE). Without one, closing the window quits the shell. macOS
-  is unchanged.
+- **Tray-host probe (R10).** The Electron main process runs `busctl --user call
+  org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s
+  org.kde.StatusNotifierWatcher` through `execFile` with a 1 s timeout. `busctl` ships with
+  systemd (D2) and is resolved through the executable catalog.
+  - The probe runs at startup and again on each window close, because a tray host can start
+    after the shell.
+  - The answer `b true` means a tray host exists: closing hides the window to the tray (today's
+    behavior, and the operator's on KDE).
+  - Anything else (`b false`, a missing `busctl`, an error or a timeout) means no tray, and
+    closing the window quits the shell. A probe failure therefore never hides a window the user
+    cannot get back.
+  - macOS is unchanged.
 - **Tests:** an e2e spec for the Settings Integrations section; unit tests for the
-  close-behavior decision with the probe injected, on both platforms.
+  close-behavior decision with the probe injected (true, false, missing, error, timeout) on both
+  platforms; a manual check on KDE that closing hides to the tray.
 
 #### F9. Keep Awake through `systemd-inhibit` (S5, W6)
 
@@ -467,8 +609,19 @@ flowchart LR
 - `lsof` becomes a declared Linux prerequisite: a Setup row and a `make init` check (D14).
 - The `lsof` parser treats a non-absolute record, or one containing `(readlink:`, as
   unresolved instead of as a cwd.
-- Makefile `status`, `up`, `claude` and `stop-all` probe `/api/health` (and Vite's port with
-  `curl`) instead of `lsof` (D14).
+- **Makefile without `lsof` for the daemon (D14, R8).** `/api/health` already returns the
+  daemon's `pid`. The targets use `curl -fsS --max-time 1`, present on macOS and in Arch `base`:
+  - `status` reads the `pid` from `/api/health`, and says "not running" when it does not answer;
+  - `up` starts the daemon as today, then polls `/api/health` for up to 10 s instead of
+    `lsof`-ing the port after a fixed 1.5 s sleep;
+  - `claude` probes `/api/health` to decide whether a daemon is up, so a live daemon is never
+    restarted;
+  - `stop-all` and `down` keep stopping the daemon, Foreman and electronmon by `pkill -f`
+    pattern, as today. Vite has no health endpoint, so `stop-all` keeps
+    `lsof -ti tcp:$(WEB_PORT)` for Vite's PID: `lsof` is a declared prerequisite (D14) and
+    always present on macOS. When `lsof` is missing it prints "lsof not found: stop Vite on
+    :$(WEB_PORT) yourself" instead of skipping silently.
+  - The Makefile is shared, and on macOS these probes give the same answers as before.
 - Default fix: `make init` checks for a C++ compiler, `make` and `python3` on Linux, keyed on
   the state-lock build target, and prints a Linux-specific line; the Xcode wording is darwin-only.
   `test/init-prerequisites.test.ts` drops the Keep Awake rationale.
@@ -482,7 +635,13 @@ flowchart LR
 - Default fix: `wezterm-socket.ts` `realpath`s the selected socket before linking.
 - Default fix: `scripts/lib.mjs` `have()` uses `command -v` through `/bin/sh`.
 - **Tests:** seam-row unit tests on both platforms; parser cases for the readlink record;
-  `make init` preflight per platform.
+  `make init` preflight per platform; manual Makefile checks on the operator's box with `lsof`
+  hidden from `PATH`:
+  - `make status` reports the running daemon's pid, and "not running" when it is down;
+  - `make up` reports success once the daemon answers;
+  - `make claude` with a live daemon does not restart it (the health pid is unchanged);
+  - `make stop-all` with Vite running stops it when `lsof` is present, and prints the "lsof
+    not found" line when it is hidden.
 
 #### F12. Linux CI coverage (C1, C2)
 
@@ -543,6 +702,8 @@ F12 lands first. Then T1, T2, T3 and T4 follow in order. Within that order:
 - F7's desktop entry uses F4's `build/icon.png`.
 - **F5 before F6.** F6's Setup rows read F5's `unsupportedReason` (to omit iTerm2 and cmux) and
   Ghostty's Linux detection (to mark an installed Ghostty satisfied).
+- **F5 before F7.** F7's `graphicalSessionEnv()` wraps F5's Linux emulator spawns as well as the
+  existing open target.
 - **F7 carries the multiplexer scope wrapper**, so no systemd unit ships while a unit restart
   could still kill the tmux and Herdr servers.
 - F8's close-to-quit only matters once F4's native frame gives Linux a close button.
@@ -583,3 +744,5 @@ F12 lands first. Then T1, T2, T3 and T4 follow in order. Within that order:
   there, and F8 covers GNOME's missing tray.
 - A macOS CI shard or manual Mac checks (D22).
 - Pruning or deleting existing `~/.claude/projects/-tmp/` transcripts (D21).
+- Changing macOS's state-dir deny rule so the macOS Inspector can read pooled worktrees (S13).
+  It changes macOS behavior, so it needs its own decision (D3, D13).
