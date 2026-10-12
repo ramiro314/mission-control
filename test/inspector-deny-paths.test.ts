@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -72,14 +72,33 @@ test("Linux denies an unknown entry present at spawn, including one created afte
   assert.equal(denied(after, join(state, "worktrees", "t1", "a.ts")), false);
 });
 
+test("a named Linux entry is denied whatever its type", () => {
+  const typed = mkdtempSync(join(home, "typed-"));
+  // A directory under a file glob, and a file under a directory glob.
+  mkdirSync(join(typed, "token-cache"));
+  writeFileSync(join(typed, ".pi-extension-x"), "{}");
+  writeFileSync(join(typed, "staged-install-1"), "x");
+  const rules = renderDenyPaths("linux", "/home/op", typed);
+  assert.ok(denied(rules, join(typed, "token-cache", "secret")), "a directory under `token*` is readable");
+  assert.ok(denied(rules, join(typed, ".pi-extension-x")), "a file under `.pi-extension-*` is readable");
+  assert.ok(denied(rules, join(typed, "staged-install-1")), "a file under `staged-install-*` is readable");
+  // The same holds before any of them exists.
+  const empty = renderDenyPaths("linux", "/home/op", join(home, "absent"));
+  assert.ok(denied(empty, join(home, "absent", "token-cache", "secret")));
+  assert.ok(denied(empty, join(home, "absent", ".pi-extension-x")));
+});
+
 test("a symlinked Linux state dir or home is denied as spelled and as resolved", () => {
   const link = join(home, "state-link");
   symlinkSync(state, link);
   const rules = renderDenyPaths("linux", link, link);
+  // The resolved side is the full realpath: on macOS the temp dir itself sits under `/var`,
+  // a symlink to `/private/var`.
+  const real = realpathSync(state);
   assert.ok(denied(rules, join(link, "harness.db")));
-  assert.ok(denied(rules, join(state, "harness.db")));
-  assert.ok(denied(rules, join(state, ".ssh", "id_rsa")));
-  assert.equal(denied(rules, join(state, "worktree-pools", "a.ts")), false);
+  assert.ok(denied(rules, join(real, "harness.db")));
+  assert.ok(denied(rules, join(real, ".ssh", "id_rsa")));
+  assert.equal(denied(rules, join(real, "worktree-pools", "a.ts")), false);
 });
 
 test("macOS keeps its constant list and its whole-state-dir rule", () => {

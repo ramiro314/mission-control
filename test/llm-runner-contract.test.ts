@@ -838,15 +838,16 @@ test("the Inspector's deny rules render exactly, per platform", () => {
     "//home/op/.aws/**",
     "//home/op/.ssh/**",
     "//home/op/.claude/**",
+    // Every named glob is denied as an entry and as a tree, whatever its type turns out to be.
     ...[
       "harness.db*", "token*", "scout-submission.key*", "scout-producer.json*",
       "install-receipt.json*", "pi-extension.json*", "daemon.lock*", "daemon.log*", "foreman.log*",
       "update.log*", "update-outcome.json*", "foreman-spend-outbox.*", "foreman-spend-quarantine.*",
-      "backups/**", "archives/**", "uploads/**", "workflow-evidence/**", "scouts/**",
-      "scout-submission-credentials/**", "ask-channel/**", "installers/**", "bin/**",
-      "check-worktrees/**", "pi-extension.lock.d/**", "integrations/**", "app-src/**",
-      "staged-install-*/**", ".pi-extension-*/**", "database-recovery/**",
-    ].map((entry) => `${state}/${entry}`),
+      "backups", "archives", "uploads", "workflow-evidence", "scouts",
+      "scout-submission-credentials", "ask-channel", "installers", "bin",
+      "check-worktrees", "pi-extension.lock.d", "integrations", "app-src",
+      "staged-install-*", ".pi-extension-*", "database-recovery",
+    ].flatMap((entry) => [`${state}/${entry}`, `${state}/${entry}/**`]),
   ]);
   for (const rendered of [darwin, linux]) {
     assert.equal(

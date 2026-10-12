@@ -83,19 +83,25 @@ export const STATE_DENY_DIRS = [
 /** Dispatched worktrees live in the state dir, and the Inspector reviews one of them. */
 export const STATE_CARVE_OUTS = ["worktrees", "worktree-pools"] as const;
 
+/**
+ * The named list as top-level globs. Each one is denied both as an entry and as a tree, so a
+ * name that matches is covered whatever its type: a `token-cache/` directory under the
+ * `token*` file glob, or a `.pi-extension-x` file under the `.pi-extension-*` dir glob.
+ */
+const NAMED_GLOBS = [
+  ...STATE_DENY_FILES.map((f) => f.endsWith("*") ? f : `${f}*`),
+  ...STATE_DENY_DIRS,
+];
+
 /** A single path segment's glob (`*` only) as a matcher. */
 function segmentMatcher(glob: string): RegExp {
   return new RegExp(`^${glob.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
 }
-const fileGlob = (f: string) => f.endsWith("*") ? f : `${f}*`;
-const NAMED_FILE = STATE_DENY_FILES.map((f) => segmentMatcher(fileGlob(f)));
-const NAMED_DIR = STATE_DENY_DIRS.map(segmentMatcher);
+const NAMED = NAMED_GLOBS.map(segmentMatcher);
 
 /** Is a top-level state-dir entry already covered by the named list or carved out? */
 export function stateEntryClassified(name: string): boolean {
-  return (STATE_CARVE_OUTS as readonly string[]).includes(name)
-    || NAMED_FILE.some((m) => m.test(name))
-    || NAMED_DIR.some((m) => m.test(name));
+  return (STATE_CARVE_OUTS as readonly string[]).includes(name) || NAMED.some((m) => m.test(name));
 }
 
 /**
@@ -117,21 +123,14 @@ const rule = (path: string) => `/${path}`;
 function stateDirRules(stateDir: string): string[] {
   let extra: string[] = [];
   try {
-    extra = readdirSync(stateDir, { withFileTypes: true })
-      .filter((e) => !stateEntryClassified(e.name))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .flatMap((e) =>
-        e.isDirectory() ? [`${e.name}/**`]
-        : e.isSymbolicLink() ? [e.name, `${e.name}/**`]
-        : [e.name]);
+    extra = readdirSync(stateDir)
+      .filter((name) => !stateEntryClassified(name))
+      .sort((a, b) => a.localeCompare(b));
   } catch {
     // A missing or unreadable state dir still gets every named entry below.
   }
-  const entries = [
-    ...STATE_DENY_FILES.map(fileGlob),
-    ...STATE_DENY_DIRS.map((d) => `${d}/**`),
-    ...extra,
-  ];
+  // Entry and tree for every name, so its type at spawn (or later) cannot open a gap.
+  const entries = [...NAMED_GLOBS, ...extra].flatMap((e) => [e, `${e}/**`]);
   return roots(stateDir).flatMap((root) => entries.map((e) => rule(join(root, e))));
 }
 
