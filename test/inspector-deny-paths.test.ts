@@ -19,6 +19,8 @@ const {
   renderDenyPaths,
   stateEntryClassified,
 } = await import("../src/server/inspector/deny-paths.ts");
+const { inspectorRunOptions } = await import("../src/server/inspector/worker.ts");
+const { InspectorConfigSchema } = await import("../src/shared/protocol.ts");
 
 /** Claude Code's rule glob (`//abs`, `*`, `**`) as a matcher for absolute paths. */
 function denied(rules: readonly string[], path: string): boolean {
@@ -70,6 +72,36 @@ test("Linux denies an unknown entry present at spawn, including one created afte
   assert.ok(denied(after, join(state, "late-file.json")), "a file created after load is readable");
   assert.equal(denied(after, join(state, "worktree-pools", "1", "repo", "a.ts")), false);
   assert.equal(denied(after, join(state, "worktrees", "t1", "a.ts")), false);
+});
+
+/** The deny rules an Inspector spawn's grant carries, with `process.platform` set to `platform`. */
+function spawnGrantDenyPaths(platform: NodeJS.Platform): readonly string[] {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    const cfg = InspectorConfigSchema.parse({ runner: "claude" });
+    const run = inspectorRunOptions(cfg, 1000, join(state, "worktree-pools", "1", "repo"), "inspector:review");
+    assert.ok("grant" in run.options && run.options.grant, "a Claude review spawned without a grant");
+    return run.options.grant.denyPaths;
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+test("an Inspector spawn on Linux carries rules built at that spawn", () => {
+  const first = spawnGrantDenyPaths("linux");
+  assert.notDeepEqual(first, DENY_PATHS, "the Linux spawn got macOS's load-time constant");
+  assert.equal(first.includes("//Users/*/.mission-control/**"), false);
+  assert.equal(denied(first, join(state, "spawn-late", "secret")), false);
+
+  mkdirSync(join(state, "spawn-late"));
+  const next = spawnGrantDenyPaths("linux");
+  assert.ok(denied(next, join(state, "spawn-late", "secret")), "an entry created after load is readable at the next spawn");
+  assert.ok(denied(next, join(state, "harness.db")));
+  assert.equal(denied(next, join(state, "worktree-pools", "1", "repo", "a.ts")), false);
+
+  // The macOS twin: the spawn keeps the constant.
+  assert.equal(spawnGrantDenyPaths("darwin"), DENY_PATHS);
 });
 
 test("a named Linux entry is denied whatever its type", () => {

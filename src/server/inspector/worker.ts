@@ -183,8 +183,10 @@ function reviewModel(cfg: InspectorConfig): string {
  * this builds for are different jobs with different prices - a full review carries the
  * largest prompt in the system, a follow-up reply a third of it - and folding them into one
  * `inspector` bucket would answer none of the questions worth asking about either.
+ *
+ * Exported so a test can see the grant a spawn really receives, deny rules included.
  */
-function inspectorRunOptions(
+export function inspectorRunOptions(
   cfg: InspectorConfig,
   timeoutMs: number,
   cwd: string,
