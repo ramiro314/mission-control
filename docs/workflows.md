@@ -34,7 +34,8 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Current version 20 uses `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Version 20 moves all eight to `gpt-6-sol`, and current
+version 21 keeps that routing.
 App-wide and environment defaults cannot change these published snapshots.
 
 A Persona can also recommend a reasoning **effort** (`low`, `medium`, `high`, `xhigh` or
@@ -213,7 +214,10 @@ frozen text artifact containing the root plan, phase files, relevant unchanged r
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
-Their next versions update only the pinned model to `gpt-6-sol`.
+Their next versions update only the pinned model to `gpt-6-sol`. The version after that, in every
+built-in workflow with a Pull Request action, changes only that action's text: issue-backed work
+names its issue in the pull request body (`Closes #<n>`, or `Part of #<n>` when a human step
+remains). Every earlier version keeps the action text it was published with.
 
 **No-Mistakes Review (Affected tests)** (`builtin-workflow:no-mistakes-review-affected-tests`) is
 No-Mistakes Review's current pipeline with two changes: the first stage runs the
@@ -368,7 +372,7 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 20 because it is current. Adopting the newer version on an
+take version 21 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
