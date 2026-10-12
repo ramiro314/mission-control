@@ -130,8 +130,8 @@ function hookCommands(settings: unknown): { event: string; command: string }[] {
  * Our scripts named by the file, each with the events it was installed for.
  *
  * A shim command names no script, so it is read through `shimText`, the shim's own
- * `exec` line. No shim (null) is a machine that shares the settings file without running
- * Mission Control, where the command exits 0 by design, so it reports nothing.
+ * `exec` line. With no readable shim (null) there is no script to name; a shim that is
+ * missing or not executable is reported separately, by `shimSentence`.
  */
 function scriptsInUse(settings: unknown, shimText: string | null): Map<string, Set<string>> {
   const byScript = new Map<string, Set<string>>();
@@ -147,6 +147,23 @@ function scriptsInUse(settings: unknown, shimText: string | null): Map<string, S
     else if (byScript.size < MAX_SCRIPTS) byScript.set(script, new Set([event]));
   }
   return byScript;
+}
+
+/**
+ * The warning for a shim this machine lacks or cannot run.
+ *
+ * The daemon runs on a Mission Control machine by definition, so the shim should be here.
+ * Without it the guard in `missionHookShimCommand` makes every hook exit 0 before it runs:
+ * no error anywhere, and no session state. The one repair is the repo installer, which
+ * writes the shim; the desktop button would replace the shared commands with absolute paths.
+ */
+function shimSentence(shim: string, events: number, problem: "missing" | "not executable"): string {
+  const state = problem === "missing" ? "that file is not there" : "that file is not executable";
+  return (
+    `Claude Code runs the Mission Control hook shim ${shortPath(shim)} for ${plural(events, "hook event")} on this machine, and ${state}. ` +
+    `Each of those hooks exits without reporting, so terminal sessions on this machine show no state. ` +
+    `Re-run \`${REPAIR_COMMAND}\` from a Mission Control checkout that still exists to write it again.`
+  );
 }
 
 /** The sentence for one missing script, given how many events run it. */
@@ -191,10 +208,22 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
       read.truncated && error.offset + error.length >= read.text.length;
     if (errors.some((error) => !fromOurCut(error))) return { warning: null, detail: null };
 
-    const shimRead = hookCommands(settings).some(({ command }) => isMissionHookShimCommand(command))
-      ? await deps.readText(join(deps.homeDir, MISSION_HOOK_SHIM))
-      : null;
+    const shimEvents = new Set(
+      hookCommands(settings)
+        .filter(({ command }) => isMissionHookShimCommand(command))
+        .map(({ event }) => event),
+    );
+    const shim = join(deps.homeDir, MISSION_HOOK_SHIM);
+    const shimRead = shimEvents.size > 0 ? await deps.readText(shim) : null;
     const shimText = shimRead?.ok ? shimRead.text : null;
+    // Present but unreadable stays silent, for the reason a script's does below.
+    let shimProblem: "missing" | "not executable" | null = null;
+    if (shimRead && !shimRead.ok && shimRead.missing) shimProblem = "missing";
+    else if (shimRead?.ok && !(await deps.isExecutable(shim))) shimProblem = "not executable";
+    if (shimProblem) {
+      // The repair rewrites every entry of ours, so a stale absolute one beside it is fixed too.
+      return { warning: shimSentence(shim, shimEvents.size, shimProblem), detail: `${settingsPath} runs ${shortPath(shim)}` };
+    }
 
     const missing: { script: string; events: number }[] = [];
     for (const [script, events] of scriptsInUse(settings, shimText)) {
