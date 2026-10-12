@@ -4,7 +4,7 @@ import { parse, type ParseError } from "jsonc-parser";
 
 import { ENVIRONMENT_CHECK_INFO } from "@shared/environment-checks.ts";
 
-import { missionHookScriptPath } from "../harness/claude/hooks.ts";
+import { isMissionHookShimCommand, MISSION_HOOK_SHIM, missionHookScriptPath } from "../harness/claude/hooks.ts";
 import type {
   EnvironmentCheckImpl,
   EnvironmentCheckResult,
@@ -126,17 +126,44 @@ function hookCommands(settings: unknown): { event: string; command: string }[] {
   return found;
 }
 
-/** Our scripts named by the file, each with the events it was installed for. */
-function scriptsInUse(settings: unknown): Map<string, Set<string>> {
+/**
+ * Our scripts named by the file, each with the events it was installed for.
+ *
+ * A shim command names no script, so it is read through `shimText`, the shim's own
+ * `exec` line. With no readable shim (null) there is no script to name; a shim that is
+ * missing or not executable is reported separately, by `shimSentence`.
+ */
+function scriptsInUse(settings: unknown, shimText: string | null): Map<string, Set<string>> {
   const byScript = new Map<string, Set<string>>();
   for (const { event, command } of hookCommands(settings)) {
-    const script = missionHookScriptPath(command);
+    const script = isMissionHookShimCommand(command)
+      ? shimText === null
+        ? null
+        : missionHookScriptPath(shimText)
+      : missionHookScriptPath(command);
     if (script === null) continue;
     const events = byScript.get(script);
     if (events) events.add(event);
     else if (byScript.size < MAX_SCRIPTS) byScript.set(script, new Set([event]));
   }
   return byScript;
+}
+
+/**
+ * The warning for a shim this machine lacks or cannot run.
+ *
+ * The daemon runs on a Mission Control machine by definition, so the shim should be here.
+ * Without it the guard in `missionHookShimCommand` makes every hook exit 0 before it runs:
+ * no error anywhere, and no session state. The one repair is the repo installer, which
+ * writes the shim; the desktop button would replace the shared commands with absolute paths.
+ */
+function shimSentence(shim: string, events: number, problem: "missing" | "not executable"): string {
+  const state = problem === "missing" ? "that file is not there" : "that file is not executable";
+  return (
+    `Claude Code runs the Mission Control hook shim ${shortPath(shim)} for ${plural(events, "hook event")} on this machine, and ${state}. ` +
+    `Each of those hooks exits without reporting, so terminal sessions on this machine show no state. ` +
+    `Re-run \`${REPAIR_COMMAND}\` from a Mission Control checkout that still exists to write it again.`
+  );
 }
 
 /** The sentence for one missing script, given how many events run it. */
@@ -181,8 +208,25 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
       read.truncated && error.offset + error.length >= read.text.length;
     if (errors.some((error) => !fromOurCut(error))) return { warning: null, detail: null };
 
+    const shimEvents = new Set(
+      hookCommands(settings)
+        .filter(({ command }) => isMissionHookShimCommand(command))
+        .map(({ event }) => event),
+    );
+    const shim = join(deps.homeDir, MISSION_HOOK_SHIM);
+    const shimRead = shimEvents.size > 0 ? await deps.readText(shim) : null;
+    const shimText = shimRead?.ok ? shimRead.text : null;
+    // Present but unreadable stays silent, for the reason a script's does below.
+    let shimProblem: "missing" | "not executable" | null = null;
+    if (shimRead && !shimRead.ok && shimRead.missing) shimProblem = "missing";
+    else if (shimRead?.ok && !(await deps.isExecutable(shim))) shimProblem = "not executable";
+    if (shimProblem) {
+      // The repair rewrites every entry of ours, so a stale absolute one beside it is fixed too.
+      return { warning: shimSentence(shim, shimEvents.size, shimProblem), detail: `${settingsPath} runs ${shortPath(shim)}` };
+    }
+
     const missing: { script: string; events: number }[] = [];
-    for (const [script, events] of scriptsInUse(settings)) {
+    for (const [script, events] of scriptsInUse(settings, shimText)) {
       const probe = await deps.readText(script);
       // Only absence counts. A script that is present but unreadable is a permission
       // problem this check cannot distinguish from a race, and `readText` already folds the

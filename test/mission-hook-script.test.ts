@@ -4,8 +4,11 @@ import { join } from "node:path";
 
 import {
   MISSION_HOOK_SCRIPTS,
+  MISSION_HOOK_SHIM,
   isMissionHookCommand,
   missionHookScriptPath,
+  missionHookShimCommand,
+  missionHookShimText,
 } from "../src/server/harness/claude/hooks.ts";
 import { ENVIRONMENT_ROW_METADATA } from "../src/shared/setup-catalog.ts";
 import { environmentCheckViews } from "../src/server/environment/index.ts";
@@ -57,11 +60,13 @@ const EVENTS = [
 const missing = (): FileRead => ({ ok: false, missing: true, reason: "ENOENT" });
 const text = (value: string, truncated = false): FileRead => ({ ok: true, text: value, truncated });
 
-function deps(files: Record<string, FileRead>): EnvironmentDeps {
+/** A machine whose files are exactly `files`, each executable unless named in `notExecutable`. */
+function deps(files: Record<string, FileRead>, notExecutable: string[] = []): EnvironmentDeps {
   return {
     homeDir: HOME,
     readText: async (path) => files[path] ?? missing(),
     subdirectories: async () => [],
+    isExecutable: async (path) => path in files && !notExecutable.includes(path),
   };
 }
 
@@ -82,8 +87,8 @@ function settingsFor(script: string, events: string[] = EVENTS): string {
 }
 
 /** The hook check's view for a machine whose files are exactly `files`. */
-async function hookCheck(files: Record<string, FileRead>) {
-  const views = await environmentCheckViews(deps(files));
+async function hookCheck(files: Record<string, FileRead>, notExecutable: string[] = []) {
+  const views = await environmentCheckViews(deps(files, notExecutable));
   const view = views.find((v) => v.id === "mission-hook-script");
   assert.ok(view, "the check must always be reported");
   return view;
@@ -309,10 +314,77 @@ test("two dead paths are read once each and both reported", async () => {
       return files[path] ?? missing();
     },
     subdirectories: async () => [],
+    isExecutable: async () => true,
   });
   const warning = views.find((v) => v.id === "mission-hook-script")?.warning ?? "";
   assert.ok(warning.includes(STALE), warning);
   assert.ok(warning.includes(SATELLITE), warning);
   assert.equal(reads.filter((p) => p === STALE).length, 1, "the same dead path is probed once");
   assert.equal(reads.filter((p) => p === SATELLITE).length, 1);
+});
+
+// --- the shim the repo installer writes, for a settings.json shared between machines ---
+
+const SHIM = join(HOME, MISSION_HOOK_SHIM);
+
+/** A settings file whose every event runs the shim, as the repo installer now writes it. */
+function shimSettings(): string {
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of EVENTS) hooks[event] = [{ hooks: [{ type: "command", command: missionHookShimCommand(event) }] }];
+  return JSON.stringify({ hooks }, null, 2);
+}
+
+/** The shim's text, from the same builder `hooks/install.mjs` writes it with. */
+const shimFor = (script: string): string => missionHookShimText("/opt/homebrew/bin/node", script);
+
+// The check finds a moved checkout by parsing the shim, so the shim's text has to parse.
+test("the shim's text yields the script it runs", () => {
+  for (const script of [LIVE, STALE, SATELLITE]) {
+    assert.equal(missionHookScriptPath(missionHookShimText("/opt/homebrew/bin/node", script)), script);
+  }
+});
+
+test("a shim command is ours to remove, and names no path of its own", () => {
+  const command = missionHookShimCommand("Stop");
+  assert.equal(isMissionHookCommand(command), true);
+  assert.equal(missionHookScriptPath(command), null);
+});
+
+test("a shim pointing at a moved checkout is reported through the shim", async () => {
+  const view = await hookCheck({ [SETTINGS]: text(shimSettings()), [SHIM]: text(shimFor(STALE)) });
+  assert.ok(view.warning);
+  assert.ok(view.warning.includes(STALE), view.warning);
+  assert.match(view.warning, /9 hook events/);
+});
+
+test("a shim pointing at a live checkout hears nothing", async () => {
+  const view = await hookCheck({
+    [SETTINGS]: text(shimSettings()),
+    [SHIM]: text(shimFor(LIVE)),
+    [LIVE]: text("#!/usr/bin/env node\n"),
+  });
+  assert.equal(view.warning, null);
+});
+
+// The check runs in the daemon, so this machine runs Mission Control and should have the
+// shim. Without it every hook exits 0 before running: no error, and no session state.
+test("a missing shim is reported, with the installer that writes it", async () => {
+  const view = await hookCheck({ [SETTINGS]: text(shimSettings()) });
+  assert.ok(view.warning);
+  assert.ok(view.warning.includes(SHIM), view.warning);
+  assert.match(view.warning, /9 hook events/);
+  assert.match(view.warning, /is not there/);
+  assert.match(view.warning, /npm run install-hooks/);
+  // The desktop button would swap the shared commands for absolute paths.
+  assert.doesNotMatch(view.warning, /Install Claude integrations/);
+  assert.equal(view.detail, `${SETTINGS} runs ${SHIM}`);
+});
+
+test("a shim that lost its execute bit is reported", async () => {
+  const view = await hookCheck(
+    { [SETTINGS]: text(shimSettings()), [SHIM]: text(shimFor(LIVE)), [LIVE]: text("#!/usr/bin/env node\n") },
+    [SHIM],
+  );
+  assert.ok(view.warning);
+  assert.match(view.warning, /is not executable/);
 });
