@@ -1,7 +1,7 @@
-// The macOS application menu. Electron's default menu has no Settings item, so we
-// install a full template that keeps the standard roles (edit/window - the source of
-// copy-paste, minimize, close) and adds the conventional App → Settings… entry bound to
-// ⌘,. Choosing it just forwards to a handler; the actual editor lives in the renderer
+// The application menu. Electron's default menu has no Settings item, so we install a
+// full template that keeps the standard roles (edit/window - the source of copy-paste,
+// minimize, close) and adds the conventional Settings… entry bound to ⌘, (App menu on
+// macOS, File menu on Linux, where the bar stays hidden until Alt). Choosing it just forwards to a handler; the actual editor lives in the renderer
 // (see App / SettingsPage).
 //
 // The template itself is `./menu-template.ts`, which imports no electron runtime and is
@@ -26,7 +26,7 @@ let state: AppMenuState = { rendererOwnsNumberRow: false };
 
 function build(): void {
   if (!installed) return;
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.name, installed, state)));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.name, installed, state, process.platform)));
 }
 
 export function installAppMenu(handlers: AppMenuHandlers): void {

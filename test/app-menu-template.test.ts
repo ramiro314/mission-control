@@ -44,6 +44,7 @@ function menu(claimed: boolean): Item[] {
     "Mission Control",
     { onOpenSettings: () => {}, onCheckForUpdates: () => {} },
     { rendererOwnsNumberRow: claimed },
+    "darwin",
   ) as Item[];
 }
 
@@ -205,10 +206,12 @@ test("the default state is the one that leaves zoom alone", () => {
   // straight onto the Library or Runs and never reaches Fleet at all.
   const roles = (menu(false).find((item) => item.label === "View")?.submenu ?? [])
     .map((item) => item.role);
-  const atLaunch = appMenuTemplate("Mission Control", {
-    onOpenSettings: () => {},
-    onCheckForUpdates: () => {},
-  }) as Item[];
+  const atLaunch = appMenuTemplate(
+    "Mission Control",
+    { onOpenSettings: () => {}, onCheckForUpdates: () => {} },
+    undefined,
+    "darwin",
+  ) as Item[];
   const launchRoles = (atLaunch.find((item) => item.label === "View")?.submenu ?? [])
     .map((item) => item.role);
   assert.deepEqual(launchRoles, roles);
@@ -264,7 +267,7 @@ test("the preference reaches the menu across all four layers", () => {
   );
   assert.match(
     menu,
-    /appMenuTemplate\(app\.name, installed, state\)/,
+    /appMenuTemplate\(app\.name, installed, state, process\.platform\)/,
     "the menu is rebuilt without the claim it was told about",
   );
   // Idempotent, because the dashboard reports on load, on change and on every reload. Without
@@ -307,4 +310,87 @@ test("the keys the menu releases are the keys the page answers, on both platform
       }
     });
   }
+});
+
+/** The menu as a list of names, depth-first, so a whole template's shape compares at once. */
+function shape(items: Item[]): unknown[] {
+  return items.map((item) => {
+    const name = item.label ?? item.role ?? item.type;
+    return item.submenu ? { [name ?? ""]: shape(item.submenu) } : name;
+  });
+}
+
+function linuxMenu(claimed: boolean): Item[] {
+  return appMenuTemplate(
+    "Mission Control",
+    { onOpenSettings: () => {}, onCheckForUpdates: () => {} },
+    { rendererOwnsNumberRow: claimed },
+    "linux",
+  ) as Item[];
+}
+
+test("the macOS menu keeps its app menu, its roles and its window menu", () => {
+  assert.deepEqual(shape(released), [
+    {
+      "Mission Control": [
+        "about", "Check for Updates…", "separator", "Settings…", "separator", "services",
+        "separator", "hide", "hideOthers", "unhide", "separator", "quit",
+      ],
+    },
+    "editMenu",
+    {
+      View: [
+        "reload", "forceReload", "toggleDevTools", "separator", "resetZoom", "zoomIn", "zoomOut",
+        "separator", "togglefullscreen",
+      ],
+    },
+    "windowMenu",
+  ]);
+});
+
+test("Linux gets File, Edit, View and Help, with Settings and Quit under File", () => {
+  assert.deepEqual(shape(linuxMenu(false)), [
+    { File: ["Settings…", "separator", "quit"] },
+    "editMenu",
+    {
+      View: [
+        "reload", "forceReload", "toggleDevTools", "separator", "resetZoom", "zoomIn", "zoomOut",
+        "separator", "togglefullscreen",
+      ],
+    },
+    { Help: ["Check for Updates…"] },
+  ]);
+  const settings = flatten(linuxMenu(false)).find((item) => item.label === "Settings…");
+  assert.equal(settings?.accelerator, "CmdOrCtrl+,");
+});
+
+test("the Linux menu carries none of the macOS app-menu roles or zoom", () => {
+  for (const claimed of [false, true]) {
+    const roles = flatten(linuxMenu(claimed)).map((item) => item.role);
+    for (const role of ["about", "services", "hide", "hideOthers", "unhide", "zoom", "windowMenu"]) {
+      assert.equal(roles.includes(role), false, `the Linux menu still carries the "${role}" role`);
+    }
+  }
+});
+
+test("the Linux menu releases the jump keys exactly as the macOS one does", () => {
+  const claimed = accelerators(linuxMenu(true));
+  for (const accelerator of RENDERER_OWNED_ACCELERATORS) {
+    assert.equal(claimed.has(accelerator.toLowerCase()), false, `Linux registers ${accelerator}`);
+  }
+  const linuxView = linuxMenu(true).find((item) => item.label === "View");
+  assert.deepEqual(shape(linuxView?.submenu ?? []), shape(view?.submenu ?? []));
+});
+
+test("the Linux Settings and update items reach their handlers", () => {
+  const calls: string[] = [];
+  const items = flatten(appMenuTemplate(
+    "Mission Control",
+    { onOpenSettings: () => calls.push("settings"), onCheckForUpdates: () => calls.push("updates") },
+    undefined,
+    "linux",
+  ) as Item[]) as Array<Item & { click?: () => void }>;
+  items.find((item) => item.label === "Settings…")?.click?.();
+  items.find((item) => item.label === "Check for Updates…")?.click?.();
+  assert.deepEqual(calls, ["settings", "updates"]);
 });

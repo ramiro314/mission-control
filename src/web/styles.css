@@ -3880,15 +3880,17 @@ body {
   border-bottom: 1px solid var(--border-soft);
 }
 
-/* Desktop shell only: the window has no native title bar, so the topbar is it.
+/* macOS desktop shell only: the window has no native title bar, so the topbar is it.
    The left inset clears the traffic lights, and empty topbar space drags the
-   window - interactive children opt back out via no-drag below.
+   window - interactive children opt back out via no-drag below. A Linux window
+   (`is-linux`) has the window manager's frame, so neither applies there; the
+   no-drag rules stay on `.is-desktop` because they are inert without a drag region.
 
    The lights are pinned to the window, but .app is centred and caps at 1400px,
    so once the window grows past that the dead space beside the column already
    clears them and a fixed inset would just strand the brand out to the right.
    Inset by whatever that gap leaves uncovered, and no more. */
-.is-desktop .topbar {
+.is-mac .topbar {
   padding-left: clamp(4px, calc(84px - (100vw - 1400px) / 2), 84px);
   -webkit-app-region: drag;
 }
@@ -13032,7 +13034,7 @@ select:not([multiple]) option:focus-visible {
 /* A .ghost-btn reduced to its glyph - keeps the ghost border/hover, just drops
    the label to a single square-ish icon. The topbar's right cluster leans on
    these: spelling out every control ate the horizontal room the traffic-light
-   inset needs (see .is-desktop .topbar), and the icons carry the meaning on
+   inset needs (see .is-mac .topbar), and the icons carry the meaning on
    their own. The name still reaches screen readers + the tooltip.
    (Distinct from .icon-btn above, which is the borderless modal close button.) */
 .glyph-btn {
@@ -25917,12 +25919,12 @@ span.line-run-prov {
   margin-bottom: 0;
   padding-inline: 22px;
 }
-/* Desktop shell: both supported layouts run the topbar full-width (the shell sets
+/* macOS desktop shell: both supported layouts run the topbar full-width (the shell sets
    `max-width: none`), so the topbar starts hard against x=0. Reserve a fixed
    inset wide enough to clear the lights at any width. Beats both the base
-   `.is-desktop .topbar` and `.app-console .topbar` rules on specificity (0,3,0). */
-.is-desktop .app-console .topbar,
-.is-desktop .app-board .topbar {
+   `.is-mac .topbar` and `.app-console .topbar` rules on specificity (0,3,0). */
+.is-mac .app-console .topbar,
+.is-mac .app-board .topbar {
   padding-left: 84px;
 }
 

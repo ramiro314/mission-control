@@ -1683,7 +1683,8 @@ so it works everywhere again rather than being shadowed on Fleet.
 
 Every shortcut managed by the shortcut list is **customizable**. Open **Settings** - the ⚙ gear
 in the top bar, or (in the desktop app)
-**Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
+**Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd>, or **File → Settings…** /
+<kbd>Ctrl</kbd><kbd>,</kbd> on Linux - then click a shortcut and press the new key
 (optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
 <kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
 plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character

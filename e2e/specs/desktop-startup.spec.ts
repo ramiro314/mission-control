@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import { _electron as electron, type Page } from "playwright";
+import { _electron as electron, type ElectronApplication, type Page } from "playwright";
 import { expect, test } from "../fixtures/test.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
@@ -59,6 +59,32 @@ async function evidence(page: Page, name: string) {
   await page.screenshot({ path: join(dir, `${name}.png`) });
 }
 
+/**
+ * The frame the production window gets on this platform. macOS keeps the hidden title bar,
+ * so the startup header and the dashboard's topbar are the title bar; on Linux the window
+ * manager draws the frame and the menu bar waits for Alt.
+ */
+async function expectPlatformChrome(application: ElectronApplication, page: Page, surface: "startup" | "dashboard") {
+  const mac = process.platform === "darwin";
+  if (surface === "startup") {
+    const region = await page.locator("header").evaluate((el) => getComputedStyle(el).getPropertyValue("-webkit-app-region"));
+    expect(region, "only the macOS startup header is the title bar").toBe(mac ? "drag" : "none");
+    if (!mac) {
+      const frame = await application.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        return { autoHide: window?.isMenuBarAutoHide(), visible: window?.isMenuBarVisible() };
+      });
+      expect(frame, "the Linux window hides its menu bar until Alt").toEqual({ autoHide: true, visible: false });
+    }
+    return;
+  }
+  const html = page.locator("html");
+  await expect(html).toHaveClass(/\bis-desktop\b/);
+  await expect(html).toHaveClass(mac ? /\bis-mac\b/ : /\bis-linux\b/);
+  const region = await page.locator("header.topbar").evaluate((el) => getComputedStyle(el).getPropertyValue("-webkit-app-region"));
+  expect(region, "only the macOS topbar drags the window").toBe(mac ? "drag" : "none");
+}
+
 for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation"] as const) {
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
@@ -78,6 +104,7 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
     try {
       const page = await application.firstWindow();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
+      await expectPlatformChrome(application, page, "startup");
       await evidence(page, "starting");
       if (scenario === "local page cancellation") {
         await application.evaluate(({ app }) => { app.emit("fixture:stop-startup"); });
@@ -116,6 +143,7 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
       gate.release();
       await expect(page.getByRole("button", { name: "Dispatch" }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toHaveCount(0);
+      await expectPlatformChrome(application, page, "dashboard");
       await evidence(page, "ready");
       const requests = gate.dashboardRequests();
       // A completed startup must not keep navigating over an active dashboard.
