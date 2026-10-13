@@ -47,6 +47,9 @@ test("an empty Linux state dir still denies every named entry and never the carv
   const rules = renderDenyPaths("linux", "/home/op", state);
   for (const f of PLAN_FILES) assert.ok(denied(rules, join(state, f)), `${f} is readable`);
   for (const d of PLAN_DIRS) assert.ok(denied(rules, join(state, d, "x", "y")), `${d}/ is readable`);
+  // Not an Inspector cwd: a grant always carries the reviewed checkout. It holds every headless
+  // run's instruction files, so the reviewer has no business reading it.
+  assert.ok(denied(rules, join(state, "headless", "AGENTS.md")), "headless/ is readable");
   for (const f of ["update.log.1", "install-receipt.json.123.tmp", "foreman-spend-outbox.ab.json"]) {
     assert.ok(denied(rules, join(state, f)), `${f} is readable`);
   }

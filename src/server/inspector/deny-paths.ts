@@ -83,6 +83,7 @@ export const STATE_DENY_DIRS = [
   "staged-install-*",
   ".pi-extension-*",
   "database-recovery",
+  "headless",
 ] as const;
 
 /** Dispatched worktrees live in the state dir, and the Inspector reviews one of them. */

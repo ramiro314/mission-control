@@ -852,7 +852,7 @@ test("the Inspector's deny rules render exactly, per platform", () => {
       "backups", "archives", "uploads", "workflow-evidence", "scouts",
       "scout-submission-credentials", "ask-channel", "installers", "bin",
       "check-worktrees", "pi-extension.lock.d", "integrations", "app-src",
-      "staged-install-*", ".pi-extension-*", "database-recovery",
+      "staged-install-*", ".pi-extension-*", "database-recovery", "headless",
     ].flatMap((entry) => [`${state}/${entry}`, `${state}/${entry}/**`]),
   ]);
   for (const rendered of [darwin, linux]) {

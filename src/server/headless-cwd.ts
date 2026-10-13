@@ -25,10 +25,11 @@ import { stateDir } from "../shared/harness-runtime.mjs";
  * one started by launchd can write to different directories. Each prunes its own, which is
  * right - neither can know the other's.
  *
- * Pure so both platforms are testable on either.
+ * Pure so both platforms are testable on either. The state dir defaults through `stateDir()`
+ * so the Inspector deny list's source guard sees `headless` as a state-dir entry.
  */
-export function headlessCwdFor(platform: NodeJS.Platform, stateDir: string, tmp = tmpdir()): string {
-  return platform === "linux" ? join(stateDir, "headless") : tmp;
+export function headlessCwdFor(platform: NodeJS.Platform, home = stateDir(), tmp = tmpdir()): string {
+  return platform === "linux" ? join(home, "headless") : tmp;
 }
 
 // `stateDir()` rather than `config.ts`'s `STATE_DIR`: the same resolver, without importing the
@@ -36,7 +37,7 @@ export function headlessCwdFor(platform: NodeJS.Platform, stateDir: string, tmp 
 // from Foreman's pure modules, so a `config.ts` import here froze the home inside test files
 // that statically import those modules and only set their own home afterwards, and `openDb`
 // then refused every open.
-export const HEADLESS_CWD = headlessCwdFor(process.platform, stateDir());
+export const HEADLESS_CWD = headlessCwdFor(process.platform);
 
 /**
  * `HEADLESS_CWD`, created on demand. Call this at the spawn rather than reading the constant:
