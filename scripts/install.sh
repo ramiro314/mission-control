@@ -5,7 +5,8 @@ set -euo pipefail
 
 main() {
   if [[ "$(uname -s)" != Darwin ]]; then
-    echo "Mission Control's desktop app requires macOS on Apple Silicon." >&2
+    # The same words as MACOS_ONLY_MESSAGE in src/shared/macos-only.mjs; no checkout exists yet.
+    echo "The packaged app is macOS only; on Linux run from a checkout (see docs/setup.md)." >&2
     return 1
   fi
   for tool in git node; do

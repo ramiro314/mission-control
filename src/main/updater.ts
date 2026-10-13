@@ -29,6 +29,7 @@ import { processLifetime } from "../server/platform/process-lifetime.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "../shared/github-sso.mjs";
+import { macOSOnlyRefusal } from "../shared/macos-only.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
@@ -149,6 +150,7 @@ export interface UpdateStageRequest {
 
 export interface UpdaterPort {
   packaged: boolean;
+  platform: string;
   arch: string;
   currentVersion(): string;
   currentCommit(): string | null;
@@ -622,6 +624,13 @@ export class UpdateController {
   }
 
   async start(): Promise<void> {
+    // Ahead of the packaged check: a Linux checkout is never packaged, and "only in the
+    // packaged app" would promise an app Linux will not get.
+    const platformRefusal = macOSOnlyRefusal(this.port.platform);
+    if (platformRefusal) {
+      this.publish({ phase: "disabled", reason: platformRefusal, lastOutcome: null });
+      return;
+    }
     if (!this.port.packaged) {
       this.publish({
         phase: "disabled",
@@ -1323,6 +1332,7 @@ export function createDefaultUpdaterPort(options: {
   currentCommit: () => string | null;
   /** Re-read on every call: the receipt and both bundles can change while the app is open. */
   installSnapshot: () => InstallSnapshot;
+  platform?: string;
   arch?: string;
   helperSource: string;
   stateDirectory: string;
@@ -1344,6 +1354,7 @@ export function createDefaultUpdaterPort(options: {
       return {source: journal.plan.source, target: journal.plan.target, status: journal.stage === "complete" ? "complete" : "repair-required", repairs: journal.repairs.filter((item) => item.status === "pending")};
     },
     packaged: options.packaged,
+    platform: options.platform ?? process.platform,
     arch: options.arch ?? process.arch,
     currentVersion: options.currentVersion,
     currentCommit: options.currentCommit,
