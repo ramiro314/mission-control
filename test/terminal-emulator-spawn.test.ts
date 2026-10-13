@@ -84,7 +84,6 @@ process.env.FAKE_LOG = LOG;
 const { weztermEmulator } = await import("../src/server/terminal/wezterm.ts");
 const {
   guiSpawn,
-  NO_GRAPHICAL_SESSION,
   unpreparedGuiSpawn,
   userScope,
 } = await import("../src/server/graphical-session.ts");
@@ -98,9 +97,14 @@ const desktop = (live: boolean) => ({
   socketExists: (path: string) => live && path === "/run/user/1000/wayland-0",
 });
 const scope = (systemdRun: string | null) => {
-  const wrap = userScope({ platform: "linux", systemdRun: () => systemdRun, socketExists: () => false });
+  // A host whose user manager is running: its private socket exists under the runtime dir.
+  const wrap = userScope({
+    platform: "linux",
+    systemdRun: () => systemdRun,
+    socketExists: (path) => path === "/run/user/1000/systemd/private",
+  });
   return (bin: string, args: readonly string[], env: NodeJS.ProcessEnv) =>
-    wrap(bin, args, { ...env, DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" });
+    wrap(bin, args, { ...env, XDG_RUNTIME_DIR: "/run/user/1000", DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" });
 };
 
 interface Call {
@@ -203,13 +207,17 @@ test("on Linux without systemd-run the spawn starts as before", async () => {
   assert.deepEqual(calls[1]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
 });
 
-test("on Linux with no reachable display the spawn refuses by name and opens nothing", async () => {
-  const { result, calls, scoped } = await spawnTab("ok", guiSpawn(desktop(false), scope(FAKE_SYSTEMD_RUN)));
+test("on Linux with no display of its own the spawn still asks the running GUI, as before", async () => {
+  // A daemon over SSH, or a headless runner: the GUI that answered the endpoint lookup is the
+  // display, so the named refusal every other GUI spawn gives would break what always worked.
+  const prepareGui = guiSpawn(desktop(false), scope(FAKE_SYSTEMD_RUN));
+  assert.equal((await prepareGui("/usr/bin/env", [], {})).ok, false, "the helper itself finds no display");
+  const { result, calls, scoped } = await spawnTab("ok", prepareGui);
 
-  assert.deepEqual(result, { ok: false, error: NO_GRAPHICAL_SESSION, outcomeUnknown: false, target: null });
-  assert.equal(scoped.length, 0);
-  // The endpoint lookup ran; no `spawn` did.
-  assert.ok(calls.every((c) => c.argv[2] !== "spawn"));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.target, { paneId: "7", tabId: "3", incarnation: socket.incarnation });
+  assert.equal(scoped.length, 0, "an unprepared spawn is not scoped");
+  assert.deepEqual(calls[1]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
 });
 
 test("on macOS the spawn is unchanged", async () => {

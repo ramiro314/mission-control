@@ -229,13 +229,17 @@ export function weztermEmulator(
       async tab(spec: TabSpec): Promise<SpawnResult> {
         return await withSocket(undefined, async (socket): Promise<SpawnResult> => {
           // The one call that opens something, so on Linux it goes through the same display
-          // and scope preparation as every other GUI spawn (`graphical-session.ts`): no
-          // reachable desktop refuses by name, and the CLI runs in a scope of its own.
-          // Identity on macOS.
+          // and scope preparation as every other GUI spawn (`graphical-session.ts`). Identity on
+          // macOS.
+          //
+          // Unlike the others it never refuses for want of a display. The GUI that just answered
+          // the endpoint lookup IS the display, and it opens the tab itself, so a daemon reaching
+          // it from outside any desktop session (over SSH, or a headless runner) has always
+          // worked. With no display of its own, the call runs exactly as it did before.
           const command = socket.command(["spawn", ...(spec.cwd ? ["--cwd", spec.cwd] : []), "--", ...spec.argv]);
           const prepared = await prepareGui(command.bin, command.args, command.env);
-          if (!prepared.ok) return { ok: false, error: prepared.error, outcomeUnknown: false, target: null };
-          const result = await exec(prepared.bin, prepared.args, { env: prepared.env });
+          const run = prepared.ok ? prepared : command;
+          const result = await exec(run.bin, run.args, { env: run.env });
           // The spawn's own outcome, never a guess. A `wezterm cli spawn` that was killed
           // rather than answering may have died AFTER the compositor opened the tab, and
           // reporting that as a clean failure is how the focus fallback opens a second one.

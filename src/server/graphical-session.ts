@@ -23,8 +23,8 @@ import { run } from "./util/exec.ts";
 //
 // WezTerm goes through both at its one call that opens something, `wezterm cli spawn`. That CLI
 // asks an already-running GUI over its socket and exits, so the tab itself belongs to the GUI's
-// process tree; what the helpers buy there is the same named refusal with no reachable desktop,
-// and the same scope rule as every other GUI spawn, rather than a fourth exception.
+// process tree. It takes the display set and the scope when there is a display, and is the one
+// spawn that does not refuse without one: the GUI that answered the socket is the display.
 
 /** The display variables a GUI program needs, always taken together from one source. */
 export const GRAPHICAL_SESSION_VARIABLES = [
@@ -171,13 +171,20 @@ export interface UserScopeDeps {
 }
 
 /**
- * Whether `systemd-run --user` can reach the user manager from `env`: it talks to it over the
- * session bus, so without one it would refuse every command it wraps.
+ * Whether a systemd user manager is there to create a scope for `env`. `systemd-run --scope`
+ * refuses, and runs nothing, when it is not, so wrapping anyway would turn a spawn that works
+ * into one that fails.
+ *
+ * A session bus alone does not prove it: a container's `dbus-launch` bus, or a shell that
+ * inherited another user's address, has one with no manager behind it. The manager's own
+ * socket does: `systemd --user` listens on `$XDG_RUNTIME_DIR/systemd/private` for as long as
+ * it runs, and another user's runtime directory is mode 0700, so it cannot be seen from here.
+ * `--scope` then reaches the manager over the session bus, which has to be there too.
  */
-function userBusReachable(env: NodeJS.ProcessEnv, exists: (path: string) => boolean): boolean {
-  if (env.DBUS_SESSION_BUS_ADDRESS?.trim()) return true;
+function userManagerReachable(env: NodeJS.ProcessEnv, exists: (path: string) => boolean): boolean {
   const runtimeDir = env.XDG_RUNTIME_DIR?.trim();
-  return Boolean(runtimeDir) && exists(join(runtimeDir!, "bus"));
+  if (!runtimeDir || !exists(join(runtimeDir, "systemd", "private"))) return false;
+  return Boolean(env.DBUS_SESSION_BUS_ADDRESS?.trim()) || exists(join(runtimeDir, "bus"));
 }
 
 /**
@@ -187,14 +194,14 @@ function userBusReachable(env: NodeJS.ProcessEnv, exists: (path: string) => bool
  * rather than handing it to the manager, so its stdout, exit status and environment reach the
  * caller exactly as an unwrapped spawn's would. Each call gets its own auto-named scope.
  *
- * Without `systemd-run`, or a user bus to reach the manager through, the command is returned
- * as it was, and starts as it always did.
+ * Without `systemd-run`, or a user manager to create the scope, the command is returned as it
+ * was, and starts as it always did.
  */
 export function userScope(deps: UserScopeDeps): ScopeCommand {
   return (bin, args, env) => {
     if (deps.platform !== "linux") return { bin, args: [...args] };
     const systemdRun = deps.systemdRun();
-    if (!systemdRun || !userBusReachable(env, deps.socketExists)) return { bin, args: [...args] };
+    if (!systemdRun || !userManagerReachable(env, deps.socketExists)) return { bin, args: [...args] };
     return {
       bin: systemdRun,
       args: ["--user", "--scope", "--quiet", "--collect", "--slice=app.slice", "--", bin, ...args],

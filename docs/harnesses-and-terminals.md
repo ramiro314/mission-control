@@ -312,14 +312,19 @@ startup for a manager-run daemon to see it.
 
 Those GUI programs, and the tmux and Herdr servers Mission Control starts, each run in a
 transient scope of their own in `app.slice` (`systemd-run --user --scope`) whenever
-`systemd-run` resolves and the user bus is reachable. That takes them out of the daemon's
+`systemd-run` resolves and a systemd user manager is running for the daemon's user (its
+`$XDG_RUNTIME_DIR/systemd/private` socket exists, and a session bus is there to reach it). A
+session bus with no manager behind it, such as a container's `dbus-launch` bus, does not count. That takes them out of the daemon's
 cgroup, so stopping or restarting the daemon, or closing the terminal `make start` runs in, no
 longer kills the servers, the agents inside them, the windows Focus opened, or a browser an
 open target started. Only the call that can start a server is wrapped: tmux's `new-session` and
-`herdr server`. Without `systemd-run` everything starts as it did before. For WezTerm the
+`herdr server`. Without `systemd-run` or a running user manager everything starts as it did
+before. For WezTerm the
 prepared call is `wezterm cli --no-auto-start spawn`, which asks an already-running WezTerm GUI
-to open the tab and exits, so the tab itself belongs to that GUI; the endpoint lookup, focus and
-every other WezTerm call run as before. macOS spawns are unchanged.
+to open the tab and exits, so the tab itself belongs to that GUI. It is the one GUI spawn that
+does not refuse without a display: the WezTerm GUI that answered its socket is the display, so a
+daemon reaching it from outside a desktop session (over SSH, for example) runs the call exactly
+as before. The endpoint lookup, focus and every other WezTerm call run as before. macOS spawns are unchanged.
 
 iTerm2
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates

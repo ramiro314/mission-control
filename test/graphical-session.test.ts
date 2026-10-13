@@ -9,6 +9,7 @@ import {
   unscoped,
   userScope,
   type GraphicalSessionDeps,
+  type ScopeCommand,
 } from "../src/server/graphical-session.ts";
 import { openFile } from "../src/server/open-targets/index.ts";
 import type { OpenDeps } from "../src/server/open-targets/types.ts";
@@ -182,8 +183,17 @@ test("the manager's environment is read from its KEY=VALUE lines", () => {
 
 const SYSTEMD_RUN = "/usr/bin/systemd-run";
 const SCOPE_PREFIX = ["--user", "--scope", "--quiet", "--collect", "--slice=app.slice", "--"];
-const BUS = { DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" };
-const scoped = userScope({ platform: "linux", systemdRun: () => SYSTEMD_RUN, socketExists: () => false });
+const MANAGER_SOCKET = `${RUNTIME}/systemd/private`;
+/** A login session's runtime directory and bus address, as a spawn's environment carries them. */
+const BUS = { XDG_RUNTIME_DIR: RUNTIME, DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" };
+/** A host whose systemd user manager is running. */
+const withManager = userScope({
+  platform: "linux",
+  systemdRun: () => SYSTEMD_RUN,
+  socketExists: (path) => path === MANAGER_SOCKET,
+});
+/** That host's wrapper as a spawn site sees it, whatever environment the spawn carries. */
+const scoped: ScopeCommand = (bin, args, env) => withManager(bin, args, { ...env, ...BUS });
 const noSystemdRun = userScope({ platform: "linux", systemdRun: () => null, socketExists: () => true });
 const macScope = userScope({ platform: "darwin", systemdRun: () => SYSTEMD_RUN, socketExists: () => true });
 
@@ -196,15 +206,32 @@ test("with systemd-run each command runs in its own scope in app.slice", () => {
   const viaRuntime = userScope({
     platform: "linux",
     systemdRun: () => SYSTEMD_RUN,
-    socketExists: (path) => path === `${RUNTIME}/bus`,
+    socketExists: (path) => path === `${RUNTIME}/bus` || path === MANAGER_SOCKET,
   });
   assert.equal(viaRuntime("/usr/bin/herdr", ["server"], { XDG_RUNTIME_DIR: RUNTIME }).bin, SYSTEMD_RUN);
 });
 
-test("without systemd-run, or a user bus to reach the manager, a command starts as today", () => {
+test("a session bus with no user manager behind it starts every command as today", () => {
+  // A container's `dbus-launch` bus, or a shell that inherited another user's bus address and
+  // runtime directory: `systemd-run --scope` would refuse there and run nothing at all.
+  const raw = { bin: "/usr/bin/tmux", args: ["new-session"] };
+  const busOnly = userScope({
+    platform: "linux",
+    systemdRun: () => SYSTEMD_RUN,
+    socketExists: (path) => path === `${RUNTIME}/bus`,
+  });
+  assert.deepEqual(busOnly("/usr/bin/tmux", ["new-session"], BUS), raw);
+  assert.deepEqual(busOnly("/usr/bin/tmux", ["new-session"], { XDG_RUNTIME_DIR: RUNTIME }), raw);
+  // A bus address with no runtime directory names no manager socket to check either.
+  assert.deepEqual(withManager("/usr/bin/tmux", ["new-session"], { DBUS_SESSION_BUS_ADDRESS: BUS.DBUS_SESSION_BUS_ADDRESS }), raw);
+  // The manager without a bus to reach it over is no better.
+  assert.deepEqual(withManager("/usr/bin/tmux", ["new-session"], { XDG_RUNTIME_DIR: RUNTIME }), raw);
+});
+
+test("without systemd-run, or a user manager to create the scope, a command starts as today", () => {
   const raw = { bin: "/usr/bin/tmux", args: ["new-session"] };
   assert.deepEqual(noSystemdRun("/usr/bin/tmux", ["new-session"], BUS), raw);
-  assert.deepEqual(scoped("/usr/bin/tmux", ["new-session"], {}), raw);
+  assert.deepEqual(withManager("/usr/bin/tmux", ["new-session"], {}), raw);
   assert.deepEqual(macScope("/usr/bin/tmux", ["new-session"], BUS), raw, "macOS is unchanged");
   assert.deepEqual(unscoped("/usr/bin/tmux", ["new-session"], BUS), raw);
 });
