@@ -16,6 +16,10 @@
 const Module = require("node:module");
 const childProcess = require("node:child_process");
 
+// A packaged app is a macOS `.app`: off macOS the entry point derives no running bundle at all
+// (`runningBundlePath`), so present the host as macOS for every case to reach the hand-over.
+Object.defineProperty(process, "platform", { value: "darwin" });
+
 const observed = { app: [], spawn: [], loadError: null };
 const deadline = setTimeout(() => {
   process.stderr.write("The entry point did not finish its startup decision.\n");
