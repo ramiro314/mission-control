@@ -23,6 +23,7 @@ function fixture(show?: (screen: StartupScreen, signal: AbortSignal) => Promise<
     loaded: () => { loaded++; },
     log: (error) => { errors.push(error); },
     notice: () => notice,
+    clearNotice: () => { notice = null; },
     pause: (signal) => new Promise<void>((resolve) => {
       const finish = () => { signal.removeEventListener("abort", finish); resolve(); };
       resume = finish;
@@ -34,6 +35,7 @@ function fixture(show?: (screen: StartupScreen, signal: AbortSignal) => Promise<
     ready: (value: boolean) => { ready = value; },
     failLoad: (value: boolean) => { rejectLoad = value; },
     notice: (value: StartupScreen) => { notice = value; },
+    currentNotice: () => notice,
     loads: () => loads,
     loaded: () => loaded,
     async tick(time: number) { now = time; resume?.(); await flush(); },
@@ -81,6 +83,51 @@ test("a notice from the background start replaces the wait at once, survives Ret
   await f.tick(91_000);
   await second;
   assert.equal(f.loaded(), 1);
+  assert.equal(f.currentNotice(), null, "a loaded dashboard ends the wait the notice explained");
+});
+
+test("a window opened after the dashboard loaded never shows the earlier run's notice during a brief outage", async () => {
+  // One notice for the process, as window.ts keeps it, shared by the first window and a later one.
+  let notice: StartupScreen | null = null;
+  let ready = false;
+  let resume: (() => void) | undefined;
+  const startup = (screens: StartupScreen[]) => new WindowStartup({
+    now: () => 0,
+    show: async (screen) => { screens.push(screen); },
+    ready: async () => ready,
+    load: async () => {},
+    loaded: () => {},
+    log: assert.fail,
+    notice: () => notice,
+    clearNotice: () => { notice = null; },
+    pause: (signal) => new Promise<void>((resolve) => {
+      resume = resolve;
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    }),
+  });
+
+  const first: StartupScreen[] = [];
+  const firstRun = startup(first).start();
+  await flush();
+  notice = "service";
+  resume?.();
+  await flush();
+  assert.deepEqual(first, ["starting", "service"]);
+  ready = true;
+  resume?.();
+  await firstRun;
+
+  // The unit restarts: the daemon is unreachable for a moment when the window is recreated.
+  ready = false;
+  const second: StartupScreen[] = [];
+  const later = startup(second);
+  const secondRun = later.start();
+  await flush();
+  resume?.();
+  await flush();
+  assert.deepEqual(second, ["starting"], "no claim of a 30 s silence nobody waited through");
+  later.stop();
+  await secondRun;
 });
 
 test("the service screen names the unit's journal and offers Retry", () => {

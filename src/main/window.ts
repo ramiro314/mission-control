@@ -24,7 +24,8 @@ let startup: WindowStartup | null = null;
 // A close already waiting on the tray-host probe; a second close joins it.
 let closeDecision: Promise<void> | null = null;
 const loadedListeners = new Set<() => void>();
-// Set when the background start learns why the daemon is not answering.
+// Set when the background start learns why the daemon is not answering; cleared once the
+// dashboard loads, so it explains only the wait that set it.
 let startupNotice: StartupScreen | null = null;
 
 export function setStartupNotice(screen: StartupScreen): void {
@@ -154,6 +155,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
     loaded: () => { for (const listener of loadedListeners) listener(); },
     log: (error) => console.error("[mission-control] dashboard startup navigation failed:", error),
     notice: () => startupNotice,
+    clearNotice: () => { startupNotice = null; },
   });
   startup = loading;
   window.once("ready-to-show", () => { if (!window.isDestroyed()) window.show(); });

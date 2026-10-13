@@ -13,6 +13,11 @@ interface WindowStartupPort {
   log(error: unknown): void;
   /** A screen that explains the wait better than "slow" can; shown as soon as it is set. */
   notice?(): StartupScreen | null;
+  /**
+   * The wait the notice explained is over. Called once the dashboard loads, so a later window,
+   * or a Retry during a brief outage, starts from "starting" instead of a stale explanation.
+   */
+  clearNotice?(): void;
 }
 
 /** One initial navigation owner per window, including Retry and teardown. */
@@ -75,6 +80,7 @@ export class WindowStartup {
         }
         if (signal.aborted) return;
         this.finished = true;
+        this.port.clearNotice?.();
         this.port.loaded();
         return;
       }
