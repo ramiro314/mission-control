@@ -64,6 +64,15 @@ async function evidence(page: Page, name: string) {
  * so the startup header and the dashboard's topbar are the title bar; on Linux the window
  * manager draws the frame and the menu bar waits for Alt.
  */
+/** A native Alt tap, delivered the way the OS delivers one: through the window's input path. */
+async function pressAlt(application: ElectronApplication) {
+  await application.evaluate(({ BrowserWindow }) => {
+    const contents = BrowserWindow.getAllWindows()[0]?.webContents;
+    contents?.sendInputEvent({ type: "keyDown", keyCode: "Alt" });
+    contents?.sendInputEvent({ type: "keyUp", keyCode: "Alt" });
+  });
+}
+
 async function expectPlatformChrome(application: ElectronApplication, page: Page, surface: "startup" | "dashboard") {
   const mac = process.platform === "darwin";
   if (surface === "startup") {
@@ -77,6 +86,26 @@ async function expectPlatformChrome(application: ElectronApplication, page: Page
       expect(frame, "the Linux window hides its menu bar until Alt").toEqual({ autoHide: true, visible: false });
     }
     return;
+  }
+  const menu = await application.evaluate(({ Menu }) => {
+    const walk = (items: Electron.MenuItem[]): Electron.MenuItem[] =>
+      items.flatMap((item) => [item, ...walk(item.submenu?.items ?? [])]);
+    const items = Menu.getApplicationMenu()?.items ?? [];
+    return { top: items.map((item) => item.label), roles: walk(items).map((item) => item.role ?? null) };
+  });
+  const macRoles = ["about", "services", "hide", "hideothers", "unhide", "zoom", "windowmenu"];
+  if (mac) {
+    expect(menu.top.slice(1)).toEqual(["Edit", "View", "Window"]);
+  } else {
+    expect(menu.top, "the running Linux shell installed the Linux menu").toEqual(["File", "Edit", "View", "Help"]);
+    expect(menu.roles.filter((role) => macRoles.includes(role?.toLowerCase() ?? "")), "macOS app-menu roles").toEqual([]);
+    // Alt is the only way to the hidden bar, so it must reach the native menu bar through the page.
+    await pressAlt(application);
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible()),
+      { message: "Alt did not reveal the Linux menu bar" }).toBe(true);
+    await pressAlt(application);
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible()),
+      { message: "a second Alt did not hide the Linux menu bar again" }).toBe(false);
   }
   const html = page.locator("html");
   await expect(html).toHaveClass(/\bis-desktop\b/);
@@ -95,9 +124,11 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
       bundle: true, platform: "node", format: "cjs", external: ["electron"],
       alias: { "@shared": join(process.cwd(), "src/shared") },
     });
+    const menuModule = join(daemon.home, "menu.cjs");
+    buildSync({ entryPoints: ["src/main/menu.ts"], outfile: menuModule, bundle: true, platform: "node", format: "cjs", external: ["electron"] });
     const application = await electron.launch({ args: [
       fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)),
-      gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario,
+      gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario, menuModule,
       // After the fixture's positional arguments, which it reads by index from `process.argv`.
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
     ] });

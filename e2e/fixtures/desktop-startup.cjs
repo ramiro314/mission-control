@@ -2,7 +2,7 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("node:path");
 
-const [origin, windowModule, profile, scenario] = process.argv.slice(2);
+const [origin, windowModule, profile, scenario, menuModule] = process.argv.slice(2);
 process.env.MISSION_PORT = new URL(origin).port;
 delete process.env.MISSION_DEV_SERVER_URL;
 app.setPath("userData", profile);
@@ -45,6 +45,8 @@ app.whenReady().then(() => {
   }));
   ipcMain.handle("mission:card-jump-keys", () => undefined);
   ipcMain.handle("mission:version", () => "1.25.0");
+  // The production menu install, as index.ts does it, so the spec reads the menu the shell installs.
+  require(menuModule).installAppMenu({ onOpenSettings: () => {}, onCheckForUpdates: () => {} });
   createWindow(path.join(process.cwd(), "dist/preload/index.cjs"));
 });
 app.on("window-all-closed", () => app.quit());
