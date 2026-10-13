@@ -7964,6 +7964,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const result = await executeSetupInstall(parsed.data, {
       catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+      platform: setupInstallDeps?.platform,
       homeDir: setupInstallDeps?.homeDir ?? homedir(),
       listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
       listProviderInstallers:

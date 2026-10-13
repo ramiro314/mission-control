@@ -100,9 +100,26 @@ const MAX_SWEEP_ISSUES = 1000;
  */
 const MAX_SWEEP_PAGES = 50;
 
+/**
+ * How to install jira-cli on this host. Homebrew only exists on macOS; on Linux the
+ * project's own release builds are the one source that works on every distribution.
+ */
+export function jiraCliInstall(platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin"
+    ? "`brew install ankitpokhrel/jira-cli/jira-cli`"
+    : "a release from https://github.com/ankitpokhrel/jira-cli/releases";
+}
+
+/** How to upgrade jira-cli on this host. */
+export function jiraCliUpgrade(platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin"
+    ? "`brew upgrade jira-cli`"
+    : "install a newer release from https://github.com/ankitpokhrel/jira-cli/releases";
+}
+
 /** What to say when there is no way to reach Jira at all. Names BOTH fixes. */
 const NO_PATH =
-  "no way to reach Jira: install the CLI (`brew install ankitpokhrel/jira-cli/jira-cli` " +
+  `no way to reach Jira: install the CLI (${jiraCliInstall()} ` +
   "then `jira init`), or set JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
 /** What to say about an empty filter, which is storable but unusable. */
@@ -681,7 +698,7 @@ export function cliFailure(res: CliRun, verb = "jira issue list"): string {
         why ? ` - ${why}` : ""
       } - it may be waiting for input, which a background sweep cannot give it`;
     case "not-installed":
-      return "the jira CLI could not be run - reinstall it (`brew install ankitpokhrel/jira-cli/jira-cli`), or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback";
+      return `the jira CLI could not be run - reinstall it (${jiraCliInstall()}), or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback`;
     case "unconfigured":
       return `the jira CLI is installed but not configured${why ? ` - ${why}` : ""} - run \`jira init\`, or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback`;
     case "unauthenticated":
@@ -692,7 +709,7 @@ export function cliFailure(res: CliRun, verb = "jira issue list"): string {
       // fix is neither the token nor the query: upgrade it, or let REST do the paging. Any
       // OTHER unknown flag is the generic sentence, which quotes what the CLI actually said.
       return /paginate/i.test(res.stderr)
-        ? `this jira CLI does not support \`--paginate\`${why ? ` - ${why}` : ""} - upgrade it (\`brew upgrade jira-cli\`), or set JIRA_API_TOKEN and JIRA_EMAIL so the REST rung can page`
+        ? `this jira CLI does not support \`--paginate\`${why ? ` - ${why}` : ""} - upgrade it (${jiraCliUpgrade()}), or set JIRA_API_TOKEN and JIRA_EMAIL so the REST rung can page`
         : `${verb} failed${why ? `: ${why}` : ""}`;
     default:
       return `${verb} failed${why ? `: ${why}` : ""}`;
@@ -1439,7 +1456,7 @@ async function preflight(cfg: JiraConfig, ctx: SweepContext): Promise<string | n
 
 /** What to say when there is no rung that can write at all. Names BOTH fixes. */
 const NO_WRITE_PATH =
-  "no way to write to Jira: install the CLI (`brew install ankitpokhrel/jira-cli/jira-cli` " +
+  `no way to write to Jira: install the CLI (${jiraCliInstall()} ` +
   "then `jira init`), or set JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
 /**

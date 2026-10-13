@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { isSetupInstallArgv } from "../src/server/setup/install.ts";
+import {
+  SETUP_DEPENDENCY_IDS,
+  SETUP_DEPENDENCY_INFO,
+  setupRemedy,
+} from "../src/shared/setup-catalog.ts";
 
 function rejects(cases: readonly (readonly unknown[])[]): void {
   for (const argv of cases) {
@@ -81,5 +86,16 @@ test("the setup install grammar accepts only the catalog's complete invocation s
     ["npm", "install", "--global", "@scope/pkg"],
   ]) {
     assert.equal(isSetupInstallArgv(argv), true, JSON.stringify(argv));
+  }
+});
+
+test("every catalog command fits the grammar, and Homebrew commands exist only under darwin", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    for (const id of SETUP_DEPENDENCY_IDS) {
+      const remedy = setupRemedy(SETUP_DEPENDENCY_INFO[id], platform);
+      if (remedy.kind !== "command") continue;
+      assert.equal(isSetupInstallArgv(remedy.argv), true, `${platform} ${id}`);
+      if (remedy.argv[0] === "brew") assert.equal(platform, "darwin", id);
+    }
   }
 });

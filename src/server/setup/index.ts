@@ -14,12 +14,14 @@ import {
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   TERMINAL_PAIR_INFO,
+  setupPlatform,
+  setupRemedy,
   type SetupChecksView,
   type SetupDependencyId,
   type SetupRowView,
   type SetupStatus,
 } from "@shared/setup-catalog.ts";
-import type { TerminalBackendId } from "@shared/terminal.ts";
+import { isTerminalBackendId, type TerminalBackendId } from "@shared/terminal.ts";
 
 import { ghBin } from "../config.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
@@ -135,7 +137,10 @@ async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
 }
 
 async function nodeRuntimeStatus(deps: SetupDeps): Promise<SetupStatus> {
-  const guidance = `Install or update Node.js ${MIN_NODE_MAJOR}+ using the command below (requires Homebrew), then press Re-check. If an older runtime is still selected, correct MISSION_NODE_BIN or your version manager/PATH and restart Mission Control with that environment.`;
+  const install = setupPlatform(deps.platform ?? process.platform) === "darwin"
+    ? "using the command below (requires Homebrew)"
+    : "with your distribution's package manager or a version manager";
+  const guidance = `Install or update Node.js ${MIN_NODE_MAJOR}+ ${install}, then press Re-check. If an older runtime is still selected, correct MISSION_NODE_BIN or your version manager/PATH and restart Mission Control with that environment.`;
   const status = await present("node", deps, "node");
   if (status.state !== "satisfied") {
     return { state: "needs-setup", why: `Node.js could not be found. ${guidance}`, evidence: null };
@@ -398,15 +403,28 @@ export function defaultSetupDeps(): SetupDeps {
   };
 }
 
+/**
+ * A terminal backend this host cannot run at all, whose row Setup leaves out (D12).
+ *
+ * "requires macOS" is a fact about the machine, not a gap to fix, so iTerm2 and cmux are not
+ * listed on Linux rather than listed as needing setup. The terminal pickers keep showing them
+ * disabled with the reason, which is where choosing one would otherwise be attempted.
+ */
+function unsupportedOnHost(id: SetupDependencyId, deps: SetupDeps): boolean {
+  return isTerminalBackendId(id) && Boolean(deps.backendUnsupported?.(id));
+}
+
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
   await deps.refreshPath?.();
+  const platform = setupPlatform(deps.platform ?? process.platform);
+  const offered = SETUP_DEPENDENCY_IDS.filter((id) => !unsupportedOnHost(id, deps));
   const [probed, targets, environment] = await Promise.all([
-    Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
+    Promise.all(offered.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
   ]);
-  const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
+  const probeById = new Map(offered.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
   const derived: SetupRowView = {
     ...TERMINAL_PAIR_INFO,
@@ -417,7 +435,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const environmentRows = environment.map(environmentRow).filter((row): row is SetupRowView => row !== null);
   const rows: SetupRowView[] = [];
   for (const family of SETUP_FAMILY_IDS) {
-    for (const id of SETUP_DEPENDENCY_IDS) {
+    for (const id of offered) {
       const info = SETUP_DEPENDENCY_INFO[id];
       if (info.family === family) {
         const probe = probeById.get(id)!;
@@ -428,7 +446,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
           requirement: info.requirement,
           enables: info.enables,
           // The probe's own remedy when this reading has one; see `SetupProbeResult`.
-          remedy: probe.remedy ?? info.remedy,
+          remedy: probe.remedy ?? setupRemedy(info, platform),
           status: probe.status,
         });
       }

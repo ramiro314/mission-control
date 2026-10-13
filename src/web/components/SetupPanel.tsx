@@ -414,15 +414,30 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
   if (remedy.kind === "skill") {
     return <CopyCommand argv={[remedy.command]} note="Copy skill command" />;
   }
+  if (remedy.kind === "instruction") {
+    // No "Run in a terminal": Linux has no one package manager to run (D12).
+    return (
+      <div className="setup-remedy-actions">
+        <p className="setup-instruction">
+          Install <code>{remedy.package}</code> with your distribution's package manager.
+        </p>
+        <RemedyLink url={remedy.url} label={remedy.label} />
+      </div>
+    );
+  }
+  return <RemedyLink url={remedy.url} label={remedy.label} />;
+}
+
+function RemedyLink({ url, label }: { url: string; label: string }): React.JSX.Element {
   return (
-    <Tooltip label={remedy.label}>
+    <Tooltip label={label}>
       <a
         className="setup-link"
-        href={remedy.url}
-        target={remedy.url.startsWith("http") ? "_blank" : undefined}
-        rel={remedy.url.startsWith("http") ? "noreferrer" : undefined}
+        href={url}
+        target={url.startsWith("http") ? "_blank" : undefined}
+        rel={url.startsWith("http") ? "noreferrer" : undefined}
       >
-        {remedy.label}<span aria-hidden> ↗</span>
+        {label}<span aria-hidden> ↗</span>
       </a>
     </Tooltip>
   );
