@@ -12,6 +12,7 @@ const { focus } = await import("../src/server/actions.ts");
 import {
   OK,
   FAIL,
+  MUX_BIN,
   emulatorPane,
   fakeEmulator,
   fakeMultiplexer,
@@ -20,6 +21,9 @@ import {
 } from "./helpers/terminal-fakes.ts";
 import { mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 import type { MuxSessions } from "../src/server/terminal/types.ts";
+import { GHOSTTY_BIN } from "../src/server/terminal/bin.ts";
+import { ghosttyEmulator } from "../src/server/terminal/ghostty.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 
 // What is at stake: that Focus is a COMPOSITION of two axes and not a tmux special case.
 //
@@ -199,6 +203,28 @@ test("no tab hosts it: a fresh one is opened running the multiplexer's own attac
   // The argv comes from the multiplexer, not from a literal here: a `tmux attach` typed at
   // this layer is the branch this migration deletes.
   assert.deepEqual(opened, [{ argv: ["fake-mux", "attach", "-t", "work"], title: "work" }]);
+});
+
+test("on Linux with Ghostty and no WezTerm, Focus opens a Ghostty window on the attach argv", async () => {
+  // The real spawn-only Linux adapter, on the subprocess seam. It lists nothing, so no tab can
+  // host the session and the walk always ends in a new window - even when a client is attached
+  // somewhere, which is the second-window behaviour the docs state.
+  for (const clients of [[], [muxClient({ tty: "pts/9", session: "work" })]]) {
+    const calls: string[][] = [];
+    const ghostty = ghosttyEmulator(async (_bin, args) => {
+      calls.push(args);
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    }, "linux");
+    const mux = fakeMultiplexer({ sessions: sessions(), clients: async () => clients, select: async () => OK });
+    const deps = {
+      ...fakeTerminals(mux, fakeEmulator(), undefined, ghostty),
+      installed: (spec: unknown) => spec === MUX_BIN || spec === GHOSTTY_BIN,
+      unsupported: () => null,
+    };
+
+    assert.deepEqual(await focus(mkSession(onMux), deps), { ok: true });
+    assert.deepEqual(calls, [["+new-window", "--title=work", "-e", "fake-mux", "attach", "-t", "work"]]);
+  }
 });
 
 test("attached in a terminal we cannot raise is a success, not a failure", async () => {
