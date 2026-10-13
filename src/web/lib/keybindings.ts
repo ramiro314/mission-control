@@ -636,6 +636,18 @@ export function chordHasCommandModifier(chord: string): boolean {
   return mods.includes("cmd") || mods.includes("ctrl");
 }
 
+/**
+ * Whether a keypress opens the Files workspace's document find: the resolved Find binding, or
+ * the two keys a person reaches for, ⌘F and Ctrl+F, whatever Find is bound to.
+ *
+ * Both fallbacks go through `canonicalChord`, so Ctrl+F reaches it on every platform: on
+ * macOS it is `ctrl+f`, distinct from ⌘F, and elsewhere a keypress never emits `ctrl` at all.
+ */
+export function opensDocumentFind(chord: string | null, findBinding: string): boolean {
+  if (!chord) return false;
+  return [findBinding, "cmd+f", "ctrl+f"].some((c) => c && chord === canonicalChord(c));
+}
+
 /** True when a chord uses a standard function key, which has no text-editing behavior. */
 export function chordUsesFunctionKey(chord: string): boolean {
   const { key } = parseChord(chord);

@@ -54,6 +54,7 @@ const {
   findConflicts,
   formatChord,
   isReservedChord,
+  opensDocumentFind,
   previewResetBinding,
   reservedChordReason,
   resetAll,
@@ -804,5 +805,25 @@ test("off macOS, cmd+alt is AltGr-shaped; on macOS ⌘ rules AltGr out", () => {
   mac(() => {
     assert.equal(chordMayBeAltGraph("cmd+alt+q"), false);
     assert.equal(chordMayBeAltGraph("ctrl+alt+q"), true);
+  });
+});
+
+test("Ctrl+F still opens document find on either platform when Find is rebound", () => {
+  // The Files workspace accepts ⌘F and Ctrl+F whatever Find is bound to. Off macOS a keypress
+  // never emits `ctrl`, so a literal `ctrl+f` comparison would be dead there.
+  linux(() => {
+    const findBinding = resolveKeybindings({ findInConversation: "ctrl+shift+f" }).findInConversation;
+    assert.equal(findBinding, "cmd+shift+f");
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { ctrl: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("F", { ctrl: true, shift: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { meta: true })), findBinding), false);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f")), findBinding), false);
+  });
+  mac(() => {
+    const findBinding = resolveKeybindings({ findInConversation: "cmd+shift+f" }).findInConversation;
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { meta: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { ctrl: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("F", { meta: true, shift: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f")), findBinding), false);
   });
 });
