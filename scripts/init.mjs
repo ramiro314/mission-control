@@ -14,9 +14,10 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  buildToolchain,
+  buildToolsPrerequisiteMessage,
   chromiumPrerequisiteMessage,
   nodePrerequisiteMessage,
-  xcodeToolsPrerequisiteMessage,
 } from "./init-prerequisites.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -80,19 +81,22 @@ if (nodeProblem) fail(nodeProblem);
 ok(`Node.js ${process.versions.node}`);
 
 // 2. Toolchain prerequisite ---------------------------------------------------
-// The build below compiles the state ownership and Keep Awake addons with node-gyp, and this
-// script's `run()` only warns on failure. So without the tools the build warns past node-gyp,
-// `dist/native` is never written, and the daemon refuses to start later on an artifact that
-// was never produced.
-// Not asked when `--skip-build` means no native build is going to happen at all.
-if (!skipBuild) {
-  heading("Xcode command line tools prerequisite");
-  const xcodeProblem = xcodeToolsPrerequisiteMessage({
+// The build below compiles the state ownership addon with node-gyp, and this script's `run()`
+// only warns on failure. So without the tools the build warns past node-gyp, `dist/native` is
+// never written, and the daemon refuses to start later on an artifact that was never produced.
+// Not asked when `--skip-build` means no native build is going to happen at all, nor where
+// the state lock has no build target.
+const toolchain = skipBuild ? null : buildToolchain(process.platform, process.env);
+if (toolchain) {
+  heading(toolchain.heading);
+  const toolchainProblem = buildToolsPrerequisiteMessage({
     platform: process.platform,
-    installed: spawnSync("xcode-select", ["-p"], { encoding: "utf8" }).status === 0,
+    missing: toolchain.probes
+      .filter(({ command: [cmd, ...args] }) => spawnSync(cmd, args, { stdio: "ignore" }).status !== 0)
+      .map(({ tool }) => tool),
   });
-  if (xcodeProblem) fail(xcodeProblem);
-  ok("Xcode command line tools available");
+  if (toolchainProblem) fail(toolchainProblem);
+  ok(toolchain.available);
 }
 
 // 3. Node dependencies -------------------------------------------------------
