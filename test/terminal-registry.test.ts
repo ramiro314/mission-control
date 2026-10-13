@@ -129,7 +129,8 @@ test("writes prefer the innermost handle", () => {
 });
 
 test("an emulator-only session binds to its emulator", () => {
-  for (const emulator of EMULATOR_IDS) {
+  // A raise-only emulator never hosts an agent, so no session holds a handle on it.
+  for (const emulator of EMULATOR_IDS.filter((id) => !EMULATORS[id].raiseOnly)) {
     const bound = bindPane([{ ...EMU_HANDLE, backend: emulator }]);
     assert.equal(bound?.kind, "emulator");
     assert.equal(bound?.token, `${emulator}:5`);

@@ -117,6 +117,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/terminal/herdr-client.ts": [
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Herdr path resolved by the catalog-backed status probe before server startup" },
   ],
+  "src/server/terminal/xdg-terminal.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "detached default-terminal window, launched through the locator-resolved xdg-terminal-exec or $TERMINAL" },
+  ],
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],

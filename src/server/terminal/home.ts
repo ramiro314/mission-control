@@ -189,7 +189,7 @@ export function homeBackends(
   for (const id of EMULATOR_IDS) {
     const backend = deps.emulators[id];
     const spawn = backend.spawn;
-    if (!spawn || binUnavailableReason(backend.bin, backend.label, deps)) continue;
+    if (!spawn || backend.raiseOnly || binUnavailableReason(backend.bin, backend.label, deps)) continue;
     const list = backend.list;
     emu.push({
       id,
@@ -257,12 +257,17 @@ export type LaunchResult =
   | { ok: true; backend: HomeBackend; resourceId: string | null }
   | { ok: false; error: string; outcomeUnknown?: boolean };
 
-/** Every backend this host could run once installed, so the error never recommends iTerm on Linux. */
+/**
+ * Every backend this host could run once installed, so the error never recommends iTerm on
+ * Linux - nor a raise-only emulator, which could not host the agent even if installed.
+ */
 function hostableBackendIds(deps: HomeDeps): TerminalBackendId[] {
   const unsupported = deps.unsupported ?? binUnsupportedReason;
   return [
     ...MULTIPLEXER_IDS.filter((id) => !unsupported(deps.multiplexers[id].bin)),
-    ...EMULATOR_IDS.filter((id) => !unsupported(deps.emulators[id].bin)),
+    ...EMULATOR_IDS.filter(
+      (id) => !deps.emulators[id].raiseOnly && !unsupported(deps.emulators[id].bin),
+    ),
   ];
 }
 

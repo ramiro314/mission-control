@@ -477,6 +477,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MC_E2E_WEZTERM_SOCKET: herdrEnabled ? join(home, "wez.sock") : undefined,
     GHOSTTY_BIN: join(home, "missing-ghostty"),
     ITERM_BIN: join(home, "missing-iterm"),
+    // The Linux default terminal's two launchers. Without both, a Linux developer's desktop
+    // terminal would open a real window on every Focus a spec drives.
+    MISSION_XDG_TERMINAL_EXEC_BIN: join(home, "missing-xdg-terminal-exec"),
+    TERMINAL: "",
     // The keep-awake provider, redirected at a fake that records its argv. With the
     // override present this daemon is "supported" on any platform - which is the point:
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a

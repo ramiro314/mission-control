@@ -550,7 +550,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -3800,6 +3800,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { backend, payload } = parsed.data;
 
     if (payload === "agent") {
+      // First, before any transfer, SDK stop or resume lease: a terminal that can only show
+      // multiplexer sessions must not become the agent's home. The launch menu greys the row
+      // out with this same sentence.
+      const notAHome = agentHostUnavailable(backend, configuredTerminalTargetDeps);
+      if (notAHome) return c.json({ ok: false, backend, error: notAHome }, 409);
       const reserved = transferForNote(noteKeyFor(session));
       if (reserved) return c.json({ ok: false, error: "This conversation is already being handed over. Check its transfer in Sitrep", transfer: transferSummary(reserved) }, 409);
       if (transferRetiredSource(session.id)) return c.json({ ok: false, error: "This source has already continued in terminal. Focus its successor or check the transfer in Sitrep" }, 409);

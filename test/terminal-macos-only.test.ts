@@ -65,7 +65,11 @@ test("terminal pickers keep the fixed list and disable iTerm2 and cmux with the 
       focusEmulator: automaticFocusEmulator,
     });
     const unavailable = Object.fromEntries(views.map((view) => [view.id, view.unavailable]));
-    assert.deepEqual(views.map((view) => view.id), [...MULTIPLEXER_IDS, ...EMULATOR_IDS]);
+    // Fixed, except the Linux default terminal, which macOS does not list at all.
+    const listed = platform === "darwin"
+      ? EMULATOR_IDS.filter((id) => id !== "xdg-terminal")
+      : EMULATOR_IDS;
+    assert.deepEqual(views.map((view) => view.id), [...MULTIPLEXER_IDS, ...listed]);
     if (platform === "darwin") {
       assert.equal(unavailable.iterm, "iTerm2 is not installed");
       assert.equal(unavailable.cmux, "cmux is not installed");

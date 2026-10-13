@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
 import type { BinSpec } from "./types.ts";
 import { onPath } from "../util/exec.ts";
-import { executableChildEnv, locateExecutableSync } from "../executables/locator.ts";
+import {
+  executableChildEnv,
+  locateCommandSync,
+  locateExecutableSync,
+} from "../executables/locator.ts";
 import { executableSpec } from "../executables/catalog.ts";
 import type { ExecutableId } from "@shared/executables.ts";
 
@@ -73,7 +77,11 @@ export function binDropEnv(spec: BinSpec): readonly string[] {
  */
 export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env): boolean {
   if (binUnsupportedReason(spec)) return false;
-  if (spec.id) return locateExecutableSync(spec.id) !== null;
+  if (spec.id) {
+    if (locateExecutableSync(spec.id) !== null) return true;
+    const fallback = spec.fallbackCommand?.(env);
+    return fallback ? locateCommandSync(fallback) !== null : false;
+  }
   const bin = resolveBin(spec);
   if (!bin) return false;
   // An absolute or relative path either exists or does not; an env override is taken on
@@ -104,7 +112,7 @@ export function binUnavailableReason(
 ): string | null {
   const unsupported = (deps.unsupported ?? binUnsupportedReason)(spec);
   if (unsupported) return unsupported;
-  return deps.installed(spec) ? null : `${label} is not installed`;
+  return deps.installed(spec) ? null : (spec.missingReason ?? `${label} is not installed`);
 }
 
 /**
@@ -201,3 +209,26 @@ export function macOSOnly(
 
 /** iTerm2 is detected from its macOS app bundle and driven through Apple Events. */
 export const ITERM_BIN: BinSpec = { id: "iterm", unsupportedReason: macOSOnly("iterm") };
+
+/** The sentence every non-Linux host gives for the Linux desktop's default terminal. */
+export const XDG_TERMINAL_UNSUPPORTED_REASON = "requires Linux";
+
+/** The desktop's `$TERMINAL`, a command name, or null when unset or blank. */
+export function terminalVariable(env: NodeJS.ProcessEnv): string | null {
+  return env.TERMINAL?.trim() || null;
+}
+
+/**
+ * The Linux desktop's default terminal, reached through `xdg-terminal-exec` and then through
+ * `$TERMINAL`. Installed means either resolves; `xdg-terminal.ts` tries them in that order.
+ *
+ * `TERMINAL` is read from the daemon's own environment, the one a desktop session exports
+ * it into. It names a command, never a command line, so it is resolved like any other bare
+ * name and not split on spaces.
+ */
+export const XDG_TERMINAL_BIN: BinSpec = {
+  id: "xdg-terminal-exec",
+  unsupportedReason: (platform) => (platform === "linux" ? null : XDG_TERMINAL_UNSUPPORTED_REASON),
+  missingReason: "No default terminal found - install xdg-terminal-exec or set $TERMINAL",
+  fallbackCommand: terminalVariable,
+};
