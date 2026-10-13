@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { headlessTranscriptDir, pruneHeadlessTranscripts } from "../src/server/goal/prune.ts";
 import { HEADLESS_CWD, ensureHeadlessCwd, headlessCwdFor } from "../src/server/headless-cwd.ts";
-import { STATE_DIR } from "../src/server/config.ts";
+import { stateDir } from "../src/shared/harness-runtime.mjs";
 
 // This module DELETES files, so the tests are about what it must never touch at least as much
 // as about what it removes.
@@ -95,7 +95,7 @@ test("on Linux the headless cwd is private to the state dir; on macOS it stays t
   assert.equal(headlessCwdFor("linux", "/home/me/.mission-control", "/tmp"), "/home/me/.mission-control/headless");
   assert.equal(headlessCwdFor("darwin", "/Users/me/.mission-control", "/var/folders/x/T"), "/var/folders/x/T");
   // The live value is the same choice, made for this process.
-  assert.equal(HEADLESS_CWD, headlessCwdFor(process.platform, STATE_DIR));
+  assert.equal(HEADLESS_CWD, headlessCwdFor(process.platform, stateDir()));
 });
 
 test("the headless cwd is created on demand, owner-only", () => {

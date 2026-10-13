@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STATE_DIR } from "./config.ts";
+import { stateDir } from "../shared/harness-runtime.mjs";
 
 /**
  * The cwd every one-shot model run spawns in: headless Claude (print and SDK), both Codex
@@ -31,7 +31,12 @@ export function headlessCwdFor(platform: NodeJS.Platform, stateDir: string, tmp 
   return platform === "linux" ? join(stateDir, "headless") : tmp;
 }
 
-export const HEADLESS_CWD = headlessCwdFor(process.platform, STATE_DIR);
+// `stateDir()` rather than `config.ts`'s `STATE_DIR`: the same resolver, without importing the
+// module that freezes the state home. The Pi model catalog imports this file and is reachable
+// from Foreman's pure modules, so a `config.ts` import here froze the home inside test files
+// that statically import those modules and only set their own home afterwards, and `openDb`
+// then refused every open.
+export const HEADLESS_CWD = headlessCwdFor(process.platform, stateDir());
 
 /**
  * `HEADLESS_CWD`, created on demand. Call this at the spawn rather than reading the constant:
