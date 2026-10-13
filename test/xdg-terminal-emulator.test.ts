@@ -27,6 +27,7 @@ import {
   type XdgTerminalLauncher,
 } from "../src/server/terminal/xdg-terminal.ts";
 import type { BinSpec, TerminalResult } from "../src/server/terminal/types.ts";
+import { unpreparedGuiSpawn } from "../src/server/graphical-session.ts";
 import type { ResolvedExecutable } from "../src/server/executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
 import { MUX_BIN, OK, FAIL, fakeEmulator, fakeMultiplexer } from "./helpers/terminal-fakes.ts";
@@ -52,6 +53,7 @@ function recording(launchers: readonly XdgTerminalLauncher[], answers: Record<st
       return answers[launcher.name] ?? OK;
     },
     settleMs: 0,
+    prepareGui: unpreparedGuiSpawn,
   });
   return { emulator, started };
 }

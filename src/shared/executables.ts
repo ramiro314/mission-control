@@ -32,6 +32,8 @@ export const EXECUTABLE_IDS = [
   "systemd-inhibit",
   "xdg-terminal-exec",
   "busctl",
+  "systemd-run",
+  "systemctl",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

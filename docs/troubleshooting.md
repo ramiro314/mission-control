@@ -45,6 +45,19 @@ home, and every later launch fails with "Mission Control cannot create ...: XDG_
 `loginctl enable-linger` so it survives logout, or set `MISSION_AGENT_RUNTIME_DIR` to a private
 directory (see [Configuration](configuration.md)), then restart Mission Control.
 
+## Focus or Open in says "No graphical session is reachable"
+
+On Linux the daemon gives every window it opens a display from its own environment or the
+systemd user manager's, and refuses when neither names a display whose socket still exists (see
+[Linux display and process scopes](harnesses-and-terminals.md#linux-display-and-process-scopes)).
+That happens after you log out with lingering on, or when the daemon was started outside any
+desktop session, for example over SSH. Log in to a desktop session and try again. If you are
+logged in and it still refuses, compare `echo $WAYLAND_DISPLAY $DISPLAY` in a desktop terminal
+with `systemctl --user show-environment`: a desktop that does not import its environment into the
+user manager needs `dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY
+XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE` in its startup, or start the daemon from a
+terminal in that session.
+
 ## A Claude session stays grey, or its status looks stale
 
 `instrumented: true` means the daemon has fresh hook evidence for that session. Install

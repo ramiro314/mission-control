@@ -290,6 +290,42 @@ which the default terminal then shows. It is supported on Linux only and, unlike
 uninstalled emulator, has no row at all on macOS, in Setup or in any terminal picker. A stored
 terminal preference still wins over its place in the attempt order.
 
+### Linux display and process scopes
+
+On Linux every GUI program the daemon starts takes its display from one helper,
+`graphicalSessionEnv()` in `src/server/graphical-session.ts`, rather than from whatever the
+daemon inherited: the Ghostty, default-terminal and WezTerm windows and tabs Focus and the
+new-session launcher open, and the `xdg-open` or `gtk-launch` behind **Open in > Browser**. It has two sources, the
+daemon's own environment and the systemd user manager's, read with
+`systemctl --user show-environment` at each spawn. A daemon run by the user manager (systemd
+sets `INVOCATION_ID`) tries the manager's first, because only the manager learns about a later
+login; a daemon started any other way, `make start` included, tries its own first. The display
+variables (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`,
+`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`) always come as one set from the source chosen, never
+mixed. A source counts only when its display socket exists: `$XDG_RUNTIME_DIR/<WAYLAND_DISPLAY>`
+(or the absolute path it names), or `/tmp/.X11-unix/X<N>` for a local `DISPLAY` `:N`; a remote
+`host:N` display is taken as present. When neither source has one, the action fails with "No
+graphical session is reachable from the Mission Control daemon: ..." where its Focus or "Open in"
+error normally appears, and nothing is started. A desktop that does not import its environment
+into the user manager at login needs `dbus-update-activation-environment --systemd` in its
+startup for a manager-run daemon to see it.
+
+Those GUI programs, and the tmux and Herdr servers Mission Control starts, each run in a
+transient scope of their own in `app.slice` (`systemd-run --user --scope`) whenever
+`systemd-run` resolves and a systemd user manager is running for the daemon's user (its
+`$XDG_RUNTIME_DIR/systemd/private` socket exists, and a session bus is there to reach it). A
+session bus with no manager behind it, such as a container's `dbus-launch` bus, does not count. That takes them out of the daemon's
+cgroup, so stopping or restarting the daemon, or closing the terminal `make start` runs in, no
+longer kills the servers, the agents inside them, the windows Focus opened, or a browser an
+open target started. Only the call that can start a server is wrapped: tmux's `new-session` and
+`herdr server`. Without `systemd-run` or a running user manager everything starts as it did
+before. For WezTerm the
+prepared call is `wezterm cli --no-auto-start spawn`, which asks an already-running WezTerm GUI
+to open the tab and exits, so the tab itself belongs to that GUI. It is the one GUI spawn that
+does not refuse without a display: the WezTerm GUI that answered its socket is the display, so a
+daemon reaching it from outside a desktop session (over SSH, for example) runs the call exactly
+as before. The endpoint lookup, focus and every other WezTerm call run as before. macOS spawns are unchanged.
+
 iTerm2
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
 windows, tabs, and split sessions, addresses every action by the session's stable unique ID,

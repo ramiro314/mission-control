@@ -8,6 +8,8 @@ import type { TerminalExec } from "./exec.ts";
 export interface WeztermSocket {
   incarnation: string;
   exec: (args: string[], opts?: { input?: string; timeoutMs?: number }) => ReturnType<TerminalExec>;
+  /** The exact command `exec` runs for `args`, for a caller that has to prepare it first. */
+  command: (args: string[]) => { bin: string; args: string[]; env: NodeJS.ProcessEnv };
 }
 
 /**
@@ -90,13 +92,20 @@ export async function withWeztermSocket<T>(
     if (!stat?.isSocket() || stat.birthtimeNs <= 0n) return null;
     const incarnation = `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
     if (expected !== undefined && incarnation !== expected) return null;
+    // env supplies a freshly pinned address, never the inherited WEZTERM_UNIX_SOCKET.
+    // The fixed env executable keeps the locator's unconditional WezTerm scrub intact.
+    const command = (args: string[]) => ({
+      bin: FIXED_OS_EXECUTABLES.env,
+      args: [`WEZTERM_UNIX_SOCKET=${alias}`, bin, "cli", "--no-auto-start", ...args],
+      env,
+    });
     return await operation({
       incarnation,
-      // env supplies a freshly pinned address, never the inherited WEZTERM_UNIX_SOCKET.
-      // The fixed env executable keeps the locator's unconditional WezTerm scrub intact.
-      exec: (args, opts = {}) => exec(FIXED_OS_EXECUTABLES.env, [
-        `WEZTERM_UNIX_SOCKET=${alias}`, bin, "cli", "--no-auto-start", ...args,
-      ], { ...opts, env }),
+      command,
+      exec: (args, opts = {}) => {
+        const run = command(args);
+        return exec(run.bin, run.args, { ...opts, env: run.env });
+      },
     });
   } finally {
     if (linked) await unlink(alias).catch(() => {});

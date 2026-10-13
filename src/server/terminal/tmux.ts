@@ -4,6 +4,7 @@ import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
 import { shellCommand } from "./shell.ts";
+import { inUserScope, type ScopeCommand } from "../graphical-session.ts";
 import { readTmuxAddress, tmuxAddress, tmuxIdentityCondition, tmuxScopedArgs, tmuxSessionTarget, TMUX_ADDRESS_FORMAT } from "./tmux-target.ts";
 import type {
   DetachedSessionSpec,
@@ -307,7 +308,10 @@ function serverAbsent(result: Awaited<ReturnType<TerminalExec>>, socket: string)
   );
 }
 
-export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
+export function tmuxMultiplexer(
+  exec: TerminalExec = defaultExec,
+  scope: ScopeCommand = inUserScope,
+): Multiplexer {
   const bin = () => resolveBin(TMUX_BIN);
   /** Discovery uses the configured environment; captured handles explicitly pin their socket. */
   const tmux = (args: string[], opts: { timeoutMs?: number; input?: string } = {}) =>
@@ -516,10 +520,15 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         // join them into shell text. Encode one command for both paths so a prompt remains
         // one literal argument everywhere. `--` keeps a binary or flag-first command out of
         // `new-session`'s own parser.
-        const result = await tmux(
+        // The one call that can start a server, so it runs in a scope of its own on Linux: the
+        // server it forks, and every agent inside, then outlive a daemon restart.
+        const env = binEnv(TMUX_BIN);
+        const command = scope(
+          bin(),
           ["new-session", "-d", "-P", "-F", TMUX_ADDRESS_FORMAT.join(SEP), "-s", spec.name, "-c", spec.cwd, "--", shellCommand(spec.argv)],
-          { timeoutMs: SESSION_TIMEOUT_MS },
+          env,
         );
+        const result = await exec(command.bin, command.args, { timeoutMs: SESSION_TIMEOUT_MS, env });
         const address = tmuxAddress(result.stdout.trim().split(SEP));
         const created = { ...toResult(result, "tmux new-session failed"), ...(address ? { session: address } : {}) };
         if (!created.ok || !address || !spec.sidePane) return created;

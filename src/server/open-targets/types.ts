@@ -1,5 +1,6 @@
 import type { OpenTargetInfo } from "@shared/open-targets.ts";
 import type { run } from "../util/exec.ts";
+import type { PrepareGuiSpawn } from "../graphical-session.ts";
 
 /**
  * What the daemon lends a target. Narrow on purpose - no registry, no DB, no session:
@@ -20,6 +21,11 @@ export interface OpenDeps {
   installed: (bin: string, env: NodeJS.ProcessEnv) => boolean;
   /** Absolute shared-locator answer. Optional only for injected compatibility test deps. */
   resolveBin?: (bin: string, env: NodeJS.ProcessEnv) => string | null;
+  /**
+   * The display environment and scope a launcher runs in (`graphical-session.ts`). Optional
+   * only for injected test deps, which launch nothing real; absent means unchanged.
+   */
+  prepareGui?: PrepareGuiSpawn;
 }
 
 /** The command that opens one file. argv, never a shell string. */
