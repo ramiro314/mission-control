@@ -121,10 +121,11 @@ import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "../src/shared/githu
 import { macOSOnlyRefusal } from "../src/shared/macos-only.mjs";
 import {
   archPrerequisiteMessage,
+  buildToolchain,
+  buildToolsPrerequisiteMessage,
   ghPrerequisiteMessage,
   gitPrerequisiteMessage,
   nodePrerequisiteMessage,
-  xcodeToolsPrerequisiteMessage,
 } from "./init-prerequisites.mjs";
 
 export { APP_BUNDLE_NAME, SYSTEM_APPS_DIR, plistVersion, stagingPaths, swapAppBundle };
@@ -657,12 +658,17 @@ function checkPrerequisites({ needsBuildTools }) {
 
   // Asked here rather than discovered in the build step, where node-gyp's own text is buried
   // in the package output and `run()` reports only "`npm run package` failed".
-  const xcodeProblem = xcodeToolsPrerequisiteMessage({
-    platform: process.platform,
-    installed: capture("xcode-select", ["-p"]).status === 0,
-  });
-  if (xcodeProblem) fail(xcodeProblem);
-  ok("Xcode command line tools available");
+  const toolchain = buildToolchain(process.platform, process.env);
+  if (toolchain) {
+    const toolchainProblem = buildToolsPrerequisiteMessage({
+      platform: process.platform,
+      missing: toolchain.probes
+        .filter(({ command: [cmd, ...args] }) => capture(cmd, args).status !== 0)
+        .map(({ tool }) => tool),
+    });
+    if (toolchainProblem) fail(toolchainProblem);
+    ok(toolchain.available);
+  }
 
   const ghVersion = capture(GH_BIN, ["--version"]);
   const ghAuth = ghVersion.status === 0 ? capture(GH_BIN, GH_ARGS.authStatus()) : null;

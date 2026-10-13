@@ -11,7 +11,16 @@ export function ghPrerequisiteMessage(state: {
   installed: boolean;
   authenticated: boolean;
 }): string | null;
-export function xcodeToolsPrerequisiteMessage(state: {
+export interface BuildToolchain {
+  heading: string;
+  available: string;
+  probes: { tool: string; command: [string, ...string[]] }[];
+}
+export function buildToolchain(
+  platform: string,
+  env?: Record<string, string | undefined>,
+): BuildToolchain | null;
+export function buildToolsPrerequisiteMessage(state: {
   platform: string;
-  installed: boolean;
+  missing: string[];
 }): string | null;

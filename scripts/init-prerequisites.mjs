@@ -1,3 +1,5 @@
+import { hasNativeAddonSources } from "./native-addon-sources.mjs";
+
 export const MIN_NODE_MAJOR = 24;
 
 export function nodeMajor(version) {
@@ -48,22 +50,54 @@ export function ghPrerequisiteMessage({ installed, authenticated }) {
 }
 
 /**
- * The Xcode command line tools prerequisite, asked before anything long-running starts.
+ * The native build toolchain, asked for before anything long-running starts.
  *
- * Both `npm run build` and `npm run package` compile the state-lock and Keep Awake addons
- * with node-gyp (`scripts/build-native.mjs`), and node-gyp cannot run without a toolchain. Without
- * this check that fails at the very end of a clone, a `npm ci`, and a full Electron package -
- * and it fails as node-gyp's own `gyp: No Xcode or CLT version detected!` buried in inherited
- * output, under the installer's generic "`npm run package` failed".
+ * Both `npm run build` and `npm run package` compile the state-lock addon with node-gyp
+ * (`scripts/build-native.mjs`), and node-gyp cannot run without a toolchain. Without this check
+ * that fails at the very end of a clone, a `npm ci`, and a full Electron package - and it fails
+ * as node-gyp's own text buried in inherited output, under a generic "failed" line, after
+ * which the daemon refuses to start on an artifact that was never produced.
  *
- * `git` being present is not evidence of the tools: Homebrew's git needs none of them. That is
- * why this is a check of its own rather than a sentence inside `gitPrerequisiteMessage`.
+ * Keyed on the state-lock build target, because that addon is required: wherever it has
+ * sources, the toolchain is asked for, and a platform it has no sources for has nothing to be
+ * missing. Each probe is a command that exits 0 when its tool is usable.
  *
- * Darwin-only by construction, because `nativeBuildTarget` skips the native build entirely on
- * every other platform, so there is nothing to be missing.
+ * On darwin `git` being present is not evidence of the Xcode tools: Homebrew's git needs none
+ * of them. That is why this is a check of its own rather than a sentence inside
+ * `gitPrerequisiteMessage`.
+ *
+ * On Linux the probes name what node-gyp itself will run: the C++ compiler its Makefile uses
+ * (`CXX_target`, then `CXX`, then make's default `g++`), `make`, and the Python it looks for
+ * (`PYTHON`, then `python3`). The Makefile runs the compiler setting through `/bin/sh`, so a
+ * wrapper or flag form such as `ccache g++` is split into words here and probed whole.
  */
-export function xcodeToolsPrerequisiteMessage({ platform, installed }) {
-  if (platform !== "darwin") return null;
-  if (installed) return null;
-  return "the Xcode command line tools are not installed - run `xcode-select --install`, let it finish, then rerun this command. Mission Control compiles a small native module during the build, and node-gyp cannot do that without them.";
+export function buildToolchain(platform, env = {}) {
+  if (!hasNativeAddonSources("state-lock", platform)) return null;
+  if (platform === "darwin") {
+    return {
+      heading: "Xcode command line tools prerequisite",
+      available: "Xcode command line tools available",
+      probes: [{ tool: "the Xcode command line tools", command: ["xcode-select", "-p"] }],
+    };
+  }
+  const cxx = (env.CXX_target || env.CXX || "").trim() || "g++";
+  const python = env.PYTHON || "python3";
+  return {
+    heading: "Native build tools prerequisite",
+    available: `C++ compiler (${cxx}), make and ${python} available`,
+    probes: [
+      { tool: `a C++ compiler (${cxx})`, command: [...cxx.split(/\s+/), "--version"] },
+      { tool: "make", command: ["make", "--version"] },
+      { tool: python, command: [python, "--version"] },
+    ],
+  };
+}
+
+/** The refusal for the `missing` probe tools of `buildToolchain(platform)`, or null. */
+export function buildToolsPrerequisiteMessage({ platform, missing }) {
+  if (missing.length === 0) return null;
+  if (platform === "darwin") {
+    return "the Xcode command line tools are not installed - run `xcode-select --install`, let it finish, then rerun this command. Mission Control compiles a small native module during the build, and node-gyp cannot do that without them.";
+  }
+  return `the native build tools are missing: ${missing.join(", ")} - install them with your distribution's package manager (for example \`build-essential python3\` on Debian or Ubuntu, \`gcc-c++ make python3\` on Fedora, \`base-devel python\` on Arch), then rerun this command. Mission Control compiles a small native module during the build, and node-gyp cannot do that without them.`;
 }

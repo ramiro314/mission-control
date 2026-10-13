@@ -130,6 +130,11 @@ Install Node.js 24 or newer and verify it:
 node --version
 ```
 
+The build compiles a small native module with node-gyp, so it also needs a C++ toolchain: the
+Xcode command line tools on macOS (`xcode-select --install`), or a C++ compiler, `make` and
+`python3` on Linux (for example `build-essential python3` on Debian or Ubuntu, `base-devel
+python` on Arch).
+
 Browser tests also need Playwright Chromium once per machine. `npm install` does not
 download it, so install it explicitly when you need e2e coverage:
 
@@ -154,8 +159,9 @@ browser prerequisite as part of bootstrap, run:
 make init ARGS="--with-e2e"
 ```
 
-The init command checks the Node version before it changes the checkout, and checks
-for Chromium before build and hook setup when `--with-e2e` is requested. Each failed
+The init command checks the Node version before it changes the checkout, checks for that
+native build toolchain unless `--skip-build` is given, and checks for Chromium before build and
+hook setup when `--with-e2e` is requested. Each failed
 check prints the command that fixes it. `make setup` runs the same dependency, build, and hook
 steps without the prerequisite walkthrough.
 
