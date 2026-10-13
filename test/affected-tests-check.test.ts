@@ -238,12 +238,16 @@ test("many failing tests with long messages still make a valid failing verdict t
   const [first] = verdict.requestedChanges;
   assert.equal(first!.title, "Fix the failing test \"case 0 keeps its invariant\" in test/suite-0.test.ts");
   assert.equal(first!.evidence[0]!.kind, "check");
-  assert.ok(LONG_MESSAGE.startsWith(first!.evidence[0]!.quote!));
-  const listed = verdict.requestedChanges.length;
-  assert.ok(listed >= 1 && listed <= failures.length);
+  // The messages share the budget, so each is shortened and every capped failure still fits.
+  assert.equal(verdict.requestedChanges.length, failures.length);
+  for (const change of verdict.requestedChanges) {
+    const quote = change.evidence[0]!.quote!;
+    assert.ok(quote.length > 0 && quote.length < LONG_MESSAGE.length && LONG_MESSAGE.startsWith(quote));
+    assert.ok(change.rationale.endsWith(`${quote}…`));
+  }
   assert.match(
     first!.rationale,
-    new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed\\. This check's run detail has the rest\\.`),
+    /58 tests failed twice in this check; only the first 20 are listed\. This check's run detail has the rest\./,
   );
 });
 
