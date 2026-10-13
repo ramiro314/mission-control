@@ -83,12 +83,17 @@ const PS_TIMEOUT_MS = 30_000;
 const CWD_LIST_TIMEOUT_MS = 30_000;
 
 /**
- * Whether an `lsof` name record is a resolved path. For a process it may not read, `lsof`
- * prints `n/proc/<pid>/cwd (readlink: Permission denied)` and still exits 0; that is an
- * unresolved cwd, not a directory the process sits in.
+ * Whether an `lsof` name record is a resolved path. On Linux `lsof` reports a cwd it could not
+ * read as `n/proc/<pid>/cwd (readlink: <error>)` and still exits 0; that is not a directory
+ * the process sits in.
  */
 function isResolvedPath(name: string): boolean {
   return name.startsWith("/") && !name.includes("(readlink:");
+}
+
+/** The record for a same-user process the kernel will not let this user inspect. */
+function isPermissionDenied(name: string): boolean {
+  return name.includes("(readlink: Permission denied)");
 }
 
 /** Pair `lsof -F` records: `p<pid>` opens a process, each following `n<path>` belongs to it. */
@@ -159,24 +164,28 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
     /**
      * One batched `lsof`. `-Fpn` prints `p<pid>` then `n<path>` records; we pair them.
      * lsof may exit non-zero when some pids vanish mid-call, but still prints the survivors.
-     * A record that is not a resolved path leaves its pid out, which callers read as
-     * unresolved rather than as a cwd.
+     * A record that is not a resolved path is never a cwd. A permission refusal puts its pid
+     * in `unreadable`; any other such record leaves the pid out, which callers read as
+     * unresolved.
      */
     async readCwds(pids) {
       const result = await runner.run("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fpn"], {
         timeoutMs: CWD_LIST_TIMEOUT_MS,
       });
       const cwds = new Map<number, string>();
+      const unreadable = new Set<number>();
       let pid: number | null = null;
       for (const line of result.stdout.split("\n")) {
         if (line.startsWith("p")) {
           const n = Number(line.slice(1));
           pid = Number.isNaN(n) ? null : n;
-        } else if (line.startsWith("n") && pid !== null && isResolvedPath(line.slice(1))) {
-          cwds.set(pid, line.slice(1));
+        } else if (line.startsWith("n") && pid !== null) {
+          const name = line.slice(1);
+          if (isResolvedPath(name)) cwds.set(pid, name);
+          else if (isPermissionDenied(name)) unreadable.add(pid);
         }
       }
-      return { cwds, result };
+      return { cwds, unreadable, result };
     },
 
     async readOpenFiles(pids) {

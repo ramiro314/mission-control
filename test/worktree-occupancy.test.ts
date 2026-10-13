@@ -93,6 +93,48 @@ test("a ps-listed PID omitted by a partial cwd result makes occupancy unknown", 
   });
 });
 
+test("a PID whose cwd the system refused is outside the boundary, not an omission", async () => {
+  const { one } = fixture();
+  let processReads = 0;
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      processReads++;
+      return {
+        processes: [process(10), process(20)],
+        unknownReason: null,
+        cwdScopePids: [10, 20],
+        completedCollectorPids: [],
+      };
+    },
+    // PID 20 is a same-user process Linux will not let this user inspect.
+    readCwds: async () => ({ cwds: new Map([[10, one]]), unreadable: new Set([20]), unknownReason: null }),
+  });
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") {
+    assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+  }
+  assert.equal(processReads, 1, "nothing was unresolved, so no disappearance check ran");
+});
+
+test("a refused PID still counts as unresolved when the cwd listing itself failed", async () => {
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10), process(20)],
+      unknownReason: null,
+      cwdScopePids: [10, 20],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => ({
+      cwds: new Map(),
+      unreadable: new Set([20]),
+      unknownReason: "cwd listing failed: exit 1",
+    }),
+  });
+  assert.deepEqual(result.get(one), { status: "unknown", reason: "cwd listing failed: exit 1" });
+});
+
 test("a completed ps collector is excluded from cwd completeness", async () => {
   const { one } = fixture();
   const result = await inspectWorktreeOccupancy([one], {

@@ -98,17 +98,24 @@ test("lsof field records pair each path with the pid before it", async () => {
   assert.deepEqual((await inspector.readOpenFiles([7])).files, new Map([[7, ["/dev/null", "/tmp/x.jsonl"]]]));
 });
 
-test("an lsof cwd record that is not a resolved path leaves its pid unresolved", async () => {
+test("an lsof cwd record that is not a resolved path is never a cwd", async () => {
   const { runner } = recordingRunner({
-    "lsof -a -d cwd -p 7,8,9 -Fpn": stubRun({
+    "lsof -a -d cwd -p 7,8,9,10 -Fpn": stubRun({
       // What lsof prints, with exit 0, for a same-user process it may not read on Linux.
-      stdout: "p7\nfcwd\nn/proc/7/cwd (readlink: Permission denied)\np8\nfcwd\nnrelative/dir\np9\nfcwd\nn/work/c\n",
+      stdout: [
+        "p7", "fcwd", "n/proc/7/cwd (readlink: Permission denied)",
+        "p8", "fcwd", "nrelative/dir",
+        "p9", "fcwd", "n/work/c",
+        "p10", "fcwd", "n/proc/10/cwd (readlink: No such file or directory)",
+        "",
+      ].join("\n"),
       stderr: "",
       code: 0,
     }),
   });
-  const { cwds } = await createPosixProcessInspector(runner).readCwds([7, 8, 9]);
+  const { cwds, unreadable } = await createPosixProcessInspector(runner).readCwds([7, 8, 9, 10]);
   assert.deepEqual(cwds, new Map([[9, "/work/c"]]));
+  assert.deepEqual(unreadable, new Set([7]), "only a permission refusal is unreadable; the rest are omitted");
 });
 
 test("a start-and-command read splits the five lstart tokens from a flattened command", () => {
