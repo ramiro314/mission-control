@@ -330,6 +330,13 @@ test("the detached launch reports a refusal, a missing command, and an open wind
     ok: true,
     outcomeUnknown: false,
   });
+  // Killed rather than answering: the window may be open, so this must stay unknown - the
+  // adapter neither tries `$TERMINAL` after it nor lets the launcher tear the session down.
+  assert.deepEqual(await launchDetached(sh, ["kill -TERM $$"], { cwd: null, settleMs: 5_000 }), {
+    ok: false,
+    error: "sh was killed by SIGTERM",
+    outcomeUnknown: true,
+  });
   // Still running when the settle window closes: the terminal is showing its window.
   assert.deepEqual(await launchDetached(sh, ["sleep 2"], { cwd: null, settleMs: 50 }), {
     ok: true,
