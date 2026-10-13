@@ -50,7 +50,7 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
     cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/tools/gh",
-    resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
+    resolveBinPath: async (bin) => bin === "node" || bin === "lsof" ? `/tools/${bin}` : bin.startsWith("/tools/") ? bin : null,
     runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
     installedPlugins: async () => ({
       ok: true,
@@ -366,6 +366,8 @@ test("Linux leaves out the rows for macOS-only backends and offers no Homebrew r
     assert.equal(dependencyRow(view, id)?.remedy.kind, "instruction", id);
   }
   assert.equal(dependencyRow(view, "node-runtime")?.remedy.kind, "instruction");
+  assert.deepEqual(dependencyRow(view, "lsof")?.status, { state: "missing" });
+  assert.deepEqual(dependencyRow(view, "lsof")?.remedy, setupRemedy(SETUP_DEPENDENCY_INFO.lsof, "linux"));
   assert.deepEqual(dependencyRow(view, "claude-cli")?.remedy, setupRemedy(SETUP_DEPENDENCY_INFO["claude-cli"], "darwin"));
 });
 
@@ -379,6 +381,17 @@ test("an installed Ghostty or WezTerm reads as satisfied on Linux", async () => 
   }
 });
 
+test("Linux lists lsof as a required runtime row that reads satisfied once it resolves", async () => {
+  const view = await setupChecksView(deps({
+    platform: "linux",
+    executableDiagnostic: async (id) => id === "lsof" ? { path: "/usr/bin/lsof", source: "PATH" } : null,
+  }));
+  const row = dependencyRow(view, "lsof");
+  assert.equal(row?.family, "runtime");
+  assert.equal(row?.requirement, "required");
+  assert.deepEqual(row?.status, { state: "satisfied", evidence: "/usr/bin/lsof", source: "PATH" });
+});
+
 test("macOS keeps every row and its Homebrew remedies", async () => {
   const view = await setupChecksView(deps({
     platform: "darwin",
@@ -386,7 +399,10 @@ test("macOS keeps every row and its Homebrew remedies", async () => {
     installedBackend: async () => null,
     resolveBinPath: async () => null,
   }));
-  for (const id of SETUP_DEPENDENCY_IDS) assert.ok(dependencyRow(view, id), id);
+  for (const id of SETUP_DEPENDENCY_IDS) {
+    if (id === "lsof") assert.equal(dependencyRow(view, id), undefined, "macOS ships lsof, so Setup does not list it");
+    else assert.ok(dependencyRow(view, id), id);
+  }
   for (const id of ["iterm", "wezterm", "ghostty", "tmux", "gh-cli", "node-runtime"] as const) {
     const remedy = dependencyRow(view, id)?.remedy;
     assert.equal(remedy?.kind, "command", id);

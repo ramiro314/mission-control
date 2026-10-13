@@ -14,6 +14,7 @@ import {
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   TERMINAL_PAIR_INFO,
+  setupOfferedOn,
   setupPlatform,
   setupRemedy,
   type SetupChecksView,
@@ -321,6 +322,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
   "node-runtime": nodeRuntimeStatus,
+  lsof: (deps) => present("lsof", deps, "lsof"),
 };
 
 function reasonOf(error: unknown): string {
@@ -418,7 +420,9 @@ function unsupportedOnHost(id: SetupDependencyId, deps: SetupDeps): boolean {
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
   await deps.refreshPath?.();
   const platform = setupPlatform(deps.platform ?? process.platform);
-  const offered = SETUP_DEPENDENCY_IDS.filter((id) => !unsupportedOnHost(id, deps));
+  const offered = SETUP_DEPENDENCY_IDS.filter(
+    (id) => setupOfferedOn(SETUP_DEPENDENCY_INFO[id], platform) && !unsupportedOnHost(id, deps),
+  );
   const [probed, targets, environment] = await Promise.all([
     Promise.all(offered.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),

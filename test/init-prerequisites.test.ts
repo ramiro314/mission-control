@@ -11,6 +11,8 @@ import {
   chromiumPrerequisiteMessage,
   ghPrerequisiteMessage,
   gitPrerequisiteMessage,
+  lsofPrerequisiteMessage,
+  lsofRequired,
   MIN_NODE_MAJOR,
   nodeMajor,
   nodePrerequisiteMessage,
@@ -169,7 +171,7 @@ test("make init refuses a missing toolchain before the build, in this platform's
 test("make init passes a present toolchain and goes on to the build", {
   skip: !["darwin", "linux"].includes(process.platform),
 }, () => {
-  const result = initPreflight(["xcode-select", "g++", "make", "python3"]);
+  const result = initPreflight(["xcode-select", "g++", "make", "python3", "lsof"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(
     result.stdout,
@@ -179,4 +181,34 @@ test("make init passes a present toolchain and goes on to the build", {
   );
   if (process.platform !== "darwin") assert.doesNotMatch(result.stdout, /Xcode/);
   assert.match(result.stdout, /\[dry-run\] npm run build/);
+});
+
+test("lsof is a prerequisite on Linux only, refused with the package to install", () => {
+  assert.equal(lsofRequired("linux"), true);
+  assert.equal(lsofRequired("darwin"), false, "macOS ships lsof in its base system");
+  assert.equal(lsofPrerequisiteMessage(true), null);
+  const missing = String(lsofPrerequisiteMessage(false));
+  assert.match(missing, /^lsof is not installed - install the `lsof` package with your distribution's package manager/);
+  assert.match(missing, /worktree release and cleanup/);
+});
+
+test("make init refuses a missing lsof on Linux and never asks on macOS", {
+  skip: !["darwin", "linux"].includes(process.platform),
+}, () => {
+  const result = initPreflight(["xcode-select", "g++", "make", "python3"]);
+  if (process.platform === "darwin") {
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stdout + result.stderr, /lsof/);
+    return;
+  }
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /lsof prerequisite/);
+  assert.match(result.stderr, /lsof is not installed - install the `lsof` package/);
+  assert.doesNotMatch(result.stdout, /dry-run\] npm/);
+});
+
+test("make init passes a present lsof on Linux", { skip: process.platform !== "linux" }, () => {
+  const result = initPreflight(["g++", "make", "python3", "lsof"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /✓.* lsof available/);
 });

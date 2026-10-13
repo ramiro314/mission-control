@@ -12,14 +12,23 @@ PORT     ?= 7317
 WEB_PORT ?= 5173
 LOG  := .harness.log
 # Every server process (watcher + child) has this in its argv, so pkill/pgrep
-# find the whole tree regardless of how it was started.
-MATCH := src/server/index.ts
+# find the whole tree regardless of how it was started.  Each pattern brackets one
+# character so it never matches its own text: Linux pgrep/pkill, unlike BSD's, do not
+# skip their ancestors, so a plain pattern also matched the recipe shell running it
+# and killed it.
+MATCH := src/server/index[.]ts
 # The Foreman worker's argv marker (unique to the auto-responder worker).
-FOREMAN_MATCH := src/server/foreman/worker.ts
+FOREMAN_MATCH := src/server/foreman/worker[.]ts
+ELECTRON_MATCH := [e]lectronmon
 # Proof that the installed tree matches the manifests. Defined up here because make
 # expands a rule's prerequisites as it parses that rule, so a definition below the first
 # use would silently leave that target with no prerequisite. See the rule for why.
 NPM_STAMP := node_modules/.install-stamp
+# The daemon targets ask the daemon itself, not `lsof`, which a Linux base system may not
+# ship. `/api/health` answers with the daemon's pid; curl exits 7 when nothing accepts a
+# connection on the port at all, which is the one answer that means "no daemon".
+HEALTH     := curl -fsS --max-time 1 http://127.0.0.1:$(PORT)/api/health
+HEALTH_PID := $(HEALTH) 2>/dev/null | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p'
 
 .DEFAULT_GOAL := help
 .PHONY: help init install session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
@@ -44,9 +53,9 @@ session: ## Ask the running daemon for a manual worktree lease (e.g. make sessio
 
 claude: ## One shot: bootstrap, ensure the daemon, lease a worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"
 	@$(MAKE) --no-print-directory init
-	@lsof -ti tcp:$(PORT) >/dev/null 2>&1 \
-		&& echo "✓ harness daemon already up on http://127.0.0.1:$(PORT)" \
-		|| $(MAKE) --no-print-directory up
+	@$(HEALTH) >/dev/null 2>&1; rc=$$?; \
+		if [ $$rc -eq 7 ]; then $(MAKE) --no-print-directory up; \
+		else echo "✓ harness daemon already up on http://127.0.0.1:$(PORT)"; fi
 	node scripts/new-session.mjs -- claude $(ARGS)
 
 dev: ## Daemon + web in the foreground, both auto-reload (Ctrl-C to stop)
@@ -64,14 +73,19 @@ server: ## Just the daemon in the foreground, auto-reload
 web: ## Just the Vite web dev server
 	npm run dev:web
 
+# Waits up to 10 s for a health answer from a pid other than the one answering before, so a
+# daemon that is still shutting down, or one `down` cannot stop, is never taken for the new one.
 up: ## Start the daemon in the background (auto-reload); logs to .harness.log
-	@$(MAKE) --no-print-directory down >/dev/null 2>&1 || true
-	@nohup npm run dev:server > $(LOG) 2>&1 & \
-		sleep 1.5; \
-		if lsof -ti tcp:$(PORT) >/dev/null 2>&1; then \
-			echo "daemon up on http://127.0.0.1:$(PORT)  (make logs | make status | make down)"; \
-		else \
-			echo "daemon failed to bind :$(PORT) - see: make logs"; fi
+	@old=$$($(HEALTH_PID)); \
+		$(MAKE) --no-print-directory down >/dev/null 2>&1 || true; \
+		nohup npm run dev:server > $(LOG) 2>&1 & \
+		i=0; while [ $$i -lt 20 ]; do \
+			sleep 0.5; pid=$$($(HEALTH_PID)); \
+			if [ -n "$$pid" ] && [ "$$pid" != "$$old" ]; then \
+				echo "daemon up on http://127.0.0.1:$(PORT)  (make logs | make status | make down)"; exit 0; fi; \
+			i=$$((i+1)); \
+		done; \
+		echo "daemon did not answer on :$(PORT) within 10 s - see: make logs"
 
 down: ## Stop the background daemon
 	@if pgrep -f "$(MATCH)" >/dev/null 2>&1; then \
@@ -84,14 +98,16 @@ restart: ## Stop the whole stack and start it fresh in the foreground (daemon + 
 
 stop-all: ## Stop every harness dev process (daemon, Vite, Electron shell, Foreman)
 	@pkill -f "$(FOREMAN_MATCH)" >/dev/null 2>&1 && echo "foreman stopped" || true
-	@pkill -f "electronmon" >/dev/null 2>&1 && echo "electron shell stopped" || true
-	@webpids=$$(lsof -ti tcp:$(WEB_PORT) 2>/dev/null); \
-		if [ -n "$$webpids" ]; then kill $$webpids >/dev/null 2>&1; echo "web (vite) stopped"; fi
+	@pkill -f "$(ELECTRON_MATCH)" >/dev/null 2>&1 && echo "electron shell stopped" || true
+	@if command -v lsof >/dev/null 2>&1; then \
+		webpids=$$(lsof -ti tcp:$(WEB_PORT) 2>/dev/null); \
+		if [ -n "$$webpids" ]; then kill $$webpids >/dev/null 2>&1; echo "web (vite) stopped"; fi; \
+	else echo "lsof not found: stop Vite on :$(WEB_PORT) yourself"; fi
 	@if pgrep -f "$(MATCH)" >/dev/null 2>&1; then pkill -f "$(MATCH)"; echo "daemon stopped"; else echo "no daemon running"; fi
 	@sleep 1
 
 status: ## Show whether the daemon is running
-	@pid=$$(lsof -ti tcp:$(PORT) 2>/dev/null | head -1); \
+	@pid=$$($(HEALTH_PID)); \
 	if [ -n "$$pid" ]; then echo "running (pid $$pid) on http://127.0.0.1:$(PORT)"; \
 	else echo "not running"; fi
 

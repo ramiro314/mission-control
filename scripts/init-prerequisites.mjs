@@ -101,3 +101,19 @@ export function buildToolsPrerequisiteMessage({ platform, missing }) {
   }
   return `the native build tools are missing: ${missing.join(", ")} - install them with your distribution's package manager (for example \`build-essential python3\` on Debian or Ubuntu, \`gcc-c++ make python3\` on Fedora, \`base-devel python\` on Arch), then rerun this command. Mission Control compiles a small native module during the build, and node-gyp cannot do that without them.`;
 }
+
+/**
+ * `lsof`, asked for where the base system may not ship it (D14).
+ *
+ * The daemon reads which processes are working in a worktree through `lsof`, and without it
+ * that answer is "unknown", so worktree release and cleanup are refused indefinitely. macOS
+ * ships it in the base system, so only Linux is asked. Setup lists the same Linux row.
+ */
+export function lsofRequired(platform) {
+  return platform === "linux";
+}
+
+export function lsofPrerequisiteMessage(installed) {
+  if (installed) return null;
+  return "lsof is not installed - install the `lsof` package with your distribution's package manager, then rerun this command. Mission Control uses it to see which processes are working in a worktree, and refuses worktree release and cleanup without it.";
+}

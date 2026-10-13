@@ -22,6 +22,7 @@ Prerequisites:
 
 - Node.js 24 or newer. Check with `node --version`.
 - npm, supplied with Node.js.
+- On Linux, `lsof`, which some base systems leave out. `make init` checks for it.
 - Playwright Chromium for browser tests. It is a one-time download per machine and
   is intentionally not installed by `npm install`.
 

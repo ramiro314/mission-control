@@ -77,6 +77,10 @@ PATH still selects an older runtime, correct that selection and restart Mission 
 the corrected environment. The updater still performs its fuller Node/npm checks in the build
 directory before preparing an update.
 
+On Linux the **Runtime** family also has a required **lsof** row. A missing `lsof` names the
+package for your distribution's package manager and runs nothing. macOS ships `lsof`, so the row
+is not shown there.
+
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
 offers **Start the Herdr server** instead of the installation guide. That button opens no
@@ -144,6 +148,10 @@ Xcode command line tools on macOS (`xcode-select --install`), or a C++ compiler,
 `python3` on Linux (for example `build-essential python3` on Debian or Ubuntu, `base-devel
 python` on Arch).
 
+On Linux, also install `lsof`, which some base systems (Arch's `base`, for one) leave out. The
+daemon uses it to see which processes are working in a worktree; without it that answer is
+unknown, so worktree release and cleanup are refused. macOS ships it.
+
 Browser tests also need Playwright Chromium once per machine. `npm install` does not
 download it, so install it explicitly when you need e2e coverage:
 
@@ -169,7 +177,7 @@ make init ARGS="--with-e2e"
 ```
 
 The init command checks the Node version before it changes the checkout, checks for that
-native build toolchain unless `--skip-build` is given, and checks for Chromium before build and
+native build toolchain unless `--skip-build` is given, checks for `lsof` on Linux, and checks for Chromium before build and
 hook setup when `--with-e2e` is requested. Each failed
 check prints the command that fixes it. `make setup` runs the same dependency, build, and hook
 steps without the prerequisite walkthrough.

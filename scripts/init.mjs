@@ -17,8 +17,11 @@ import {
   buildToolchain,
   buildToolsPrerequisiteMessage,
   chromiumPrerequisiteMessage,
+  lsofPrerequisiteMessage,
+  lsofRequired,
   nodePrerequisiteMessage,
 } from "./init-prerequisites.mjs";
+import { have } from "./lib.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = new Set(process.argv.slice(2));
@@ -99,7 +102,16 @@ if (toolchain) {
   ok(toolchain.available);
 }
 
-// 3. Node dependencies -------------------------------------------------------
+// 3. lsof prerequisite (Linux) ------------------------------------------------
+// Not part of any build: the daemon needs it at runtime to see who is working in a worktree.
+if (lsofRequired(process.platform)) {
+  heading("lsof prerequisite");
+  const lsofProblem = lsofPrerequisiteMessage(have("lsof"));
+  if (lsofProblem) fail(lsofProblem);
+  ok("lsof available");
+}
+
+// 4. Node dependencies -------------------------------------------------------
 heading("Node dependencies");
 if (existsSync(join(repo, "node_modules"))) {
   ok("node_modules present");
@@ -109,7 +121,7 @@ if (existsSync(join(repo, "node_modules"))) {
   if (run("npm", ["install", "--no-audit", "--no-fund"])) ok("dependencies installed");
 }
 
-// 4. Browser prerequisite -----------------------------------------------------
+// 5. Browser prerequisite -----------------------------------------------------
 if (withE2e) {
   heading("Playwright Chromium prerequisite");
   const path = await chromiumPath();
@@ -117,7 +129,7 @@ if (withE2e) {
   ok(`Chromium available (${path})`);
 }
 
-// 5. Build -------------------------------------------------------------------
+// 6. Build -------------------------------------------------------------------
 heading("Build (web UI + MCP bundle)");
 if (skipBuild) {
   ok("skipped (--skip-build)");
@@ -125,7 +137,7 @@ if (skipBuild) {
   ok("built dist/web + dist/mcp");
 }
 
-// 6. Claude status hooks -----------------------------------------------------
+// 7. Claude status hooks -----------------------------------------------------
 heading("Claude status hooks");
 if (skipHooks) {
   ok("skipped (--skip-hooks) - wire later with `npm run install-hooks`");
