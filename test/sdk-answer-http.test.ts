@@ -28,6 +28,9 @@ const { TerminalLaunchError } = await import("../src/server/terminal/launch-erro
 
 import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
+const { pinAppleScriptGhostty } = await import("./helpers/apple-script-ghostty.ts");
+// Ghostty stands in for an emulator with stable pane UUIDs here; see the helper.
+pinAppleScriptGhostty();
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
 const { mkTask, mkSession, mkEmuHandle } = await import("./helpers/session-fixture.ts");

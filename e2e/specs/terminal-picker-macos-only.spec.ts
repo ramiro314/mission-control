@@ -17,12 +17,16 @@ async function shoot(page: Page, name: string): Promise<void> {
 
 // Unmocked: the rows come from the fixture daemon's own `/api/terminal-targets`. iTerm2 is
 // pinned to a missing path there, so off macOS the row says what no install could fix, and
-// on macOS it keeps the ordinary "not installed". Ghostty is supported on both platforms.
+// on macOS it keeps the ordinary "not installed". Ghostty is supported on both platforms; on
+// Linux it only shows multiplexer sessions, so a dispatch chooser names that instead.
 test("the terminal picker shows iTerm2 disabled with requires macOS off macOS", async ({
   dashboard,
   daemon,
 }) => {
   const itermReason = process.platform === "darwin" ? "iTerm2 is not installed" : "requires macOS";
+  const ghosttyReason = process.platform === "linux"
+    ? "Ghostty only shows multiplexer sessions - it cannot host an agent"
+    : "Ghostty is not installed";
 
   await dashboard.goto(`${daemon.baseURL}/#/settings`);
   await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
@@ -43,7 +47,7 @@ test("the terminal picker shows iTerm2 disabled with requires macOS off macOS", 
 
   const ghostty = menu.getByRole("menuitemradio", { name: /Ghostty/ });
   await expect(ghostty).toBeDisabled();
-  await expect(ghostty).toContainText("Ghostty is not installed");
+  await expect(ghostty).toContainText(ghosttyReason);
   await expect(ghostty).not.toContainText("requires macOS");
   await shoot(dashboard, "01-iterm-requires-macos");
 });

@@ -15,6 +15,7 @@ import {
 import { CMUX_BIN } from "../src/server/terminal/cmux.ts";
 import { launchHome, type HomeDeps } from "../src/server/terminal/home.ts";
 import { EMULATORS, MULTIPLEXERS, automaticFocusEmulator } from "../src/server/terminal/registry.ts";
+import { ghosttyEmulator } from "../src/server/terminal/ghostty.ts";
 import { terminalTargetViews } from "../src/server/terminal/targets.ts";
 import { setupServiceStarters, startSetupService } from "../src/server/setup/service.ts";
 import type { BinSpec } from "../src/server/terminal/types.ts";
@@ -86,7 +87,8 @@ test("the dispatch error recommends only backends this platform can run", async 
   for (const platform of PLATFORMS) {
     const deps: HomeDeps = {
       multiplexers: MULTIPLEXERS,
-      emulators: EMULATORS,
+      // Ghostty is chosen by platform, so each pass gets that platform's adapter.
+      emulators: { ...EMULATORS, ghostty: ghosttyEmulator(undefined, platform) },
       installed: () => false,
       unsupported: onPlatform(platform),
       focusEmulator: automaticFocusEmulator,
@@ -100,7 +102,8 @@ test("the dispatch error recommends only backends this platform can run", async 
   );
   assert.equal(
     errors.linux,
-    "no terminal backend can host a dispatched agent - install one of tmux, herdr, wezterm, ghostty",
+    // The Linux Ghostty only shows multiplexer sessions, so it is no agent's home to recommend.
+    "no terminal backend can host a dispatched agent - install one of tmux, herdr, wezterm",
   );
 });
 
