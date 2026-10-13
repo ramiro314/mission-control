@@ -189,6 +189,21 @@ test("a second daemon cannot own the same state home through a different port", 
   await stopDaemon(first.child);
 });
 
+test("a state-ownership failure other than contention exits as an ordinary crash, not 75", async () => {
+  // A state home under a regular file cannot be created, so ownership fails inside
+  // acquireStateOwnership for a reason the systemd unit should restart on.
+  const blocker = join(root, "not-a-directory");
+  writeFileSync(blocker, "");
+  const daemon = startDaemon(join(blocker, "home"), await unusedPort());
+  const [code, signal] = await daemon.exit;
+
+  assert.equal(signal, null, daemon.output());
+  assert.notEqual(code, 0, daemon.output());
+  assert.notEqual(code, 75, daemon.output());
+  assert.match(daemon.output(), /ENOTDIR[\s\S]*at acquireStateOwnership/);
+  assert.doesNotMatch(daemon.output(), /state home is already owned/i);
+});
+
 test("ordinary restart works and stale ownership recovers after a crash", async () => {
   const home = join(root, "crashed");
   const first = startDaemon(home, await unusedPort());

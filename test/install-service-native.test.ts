@@ -92,6 +92,7 @@ function runLinuxInstaller(
   root: string,
   args: string[],
   unitActive = false,
+  disableFails = false,
 ): { calls: string[]; stdout: string } {
   const home = join(root, "home");
   const fakeBin = join(root, "bin");
@@ -102,7 +103,11 @@ function runLinuxInstaller(
     join(fakeBin, "systemctl"),
     "#!/bin/sh\n" +
       "printf '%s\\n' \"$*\" >> \"$FAKE_SYSTEMCTL_LOG\"\n" +
-      'case "$2" in is-active) [ "$FAKE_UNIT_ACTIVE" = 1 ] || exit 3 ;; esac\n',
+      'case "$2" in\n' +
+      '  is-active) [ "$FAKE_UNIT_ACTIVE" = 1 ] || exit 3 ;;\n' +
+      '  disable) [ "$FAKE_DISABLE_FAILS" = 1 ] && exit 5 ;;\n' +
+      "esac\n" +
+      "exit 0\n",
     { mode: 0o755 },
   );
   rmSync(systemctlLog, { force: true });
@@ -117,6 +122,7 @@ function runLinuxInstaller(
     PATH: `${fakeBin}:/usr/bin:/bin`,
     FAKE_SYSTEMCTL_LOG: systemctlLog,
     FAKE_UNIT_ACTIVE: unitActive ? "1" : "0",
+    FAKE_DISABLE_FAILS: disableFails ? "1" : "0",
   };
   delete env.XDG_CONFIG_HOME;
   const stdout = execFileSync(
@@ -190,6 +196,25 @@ test("on Linux reinstalling restarts a running unit and --uninstall removes it",
       "--user daemon-reload",
     ]);
     assert.equal(existsSync(unitPath), false, "--uninstall must delete the unit file");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("on Linux --uninstall still removes the unit and reloads when disable fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-install-service-systemd-"));
+  const unitPath = join(root, "home", ".config", "systemd", "user", "mission-control.service");
+  try {
+    runLinuxInstaller(root, []);
+    assert.ok(existsSync(unitPath));
+
+    // execFileSync throws on a non-zero exit, so returning at all means the installer exited 0.
+    const removal = runLinuxInstaller(root, ["--uninstall"], false, true);
+    assert.deepEqual(removal.calls, [
+      "--user disable --now mission-control.service",
+      "--user daemon-reload",
+    ]);
+    assert.equal(existsSync(unitPath), false, "a failed disable must not keep the unit file");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
