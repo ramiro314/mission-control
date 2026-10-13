@@ -79,6 +79,7 @@ web: ## Just the Vite web dev server
 
 # Waits up to 10 s for a health answer from a pid other than the one answering before, so a
 # daemon that is still shutting down, or one `down` cannot stop, is never taken for the new one.
+# A timeout fails the target, so `make claude` does not go on to lease against no daemon.
 up: ## Start the daemon in the background (auto-reload); logs to .harness.log
 	@$(CURL_CHECK); \
 		old=$$($(HEALTH_PID)); \
@@ -90,7 +91,7 @@ up: ## Start the daemon in the background (auto-reload); logs to .harness.log
 				echo "daemon up on http://127.0.0.1:$(PORT)  (make logs | make status | make down)"; exit 0; fi; \
 			i=$$((i+1)); \
 		done; \
-		echo "daemon did not answer on :$(PORT) within 10 s - see: make logs"
+		echo "daemon did not answer on :$(PORT) within 10 s - see: make logs"; exit 1
 
 down: ## Stop the background daemon
 	@if pgrep -f "$(MATCH)" >/dev/null 2>&1; then \
