@@ -39,3 +39,15 @@ export function isMacClient(): boolean {
   if (platform === null) return true;
   return platform === "darwin" || /^(mac|iphone|ipad|ipod)/i.test(platform);
 }
+
+/**
+ * The desktop shell's platform class, set beside `is-desktop` by `main.tsx`. Only `is-mac`
+ * turns the topbar into the window's title bar (the traffic-light inset and the drag region);
+ * a Linux window has the window manager's frame above it.
+ *
+ * Read from the preload alone, never the browser fallbacks, because this is a fact about the
+ * shell. A preload that predates the field can only be a macOS one: no other shell shipped.
+ */
+export function desktopPlatformClass(desktop: Pick<MissionDesktop, "platform">): "is-mac" | "is-linux" {
+  return desktop.platform === undefined || desktop.platform === "darwin" ? "is-mac" : "is-linux";
+}

@@ -19,8 +19,19 @@ const COPY: Record<StartupScreen, { title: string; description: string }> = {
   },
 };
 
+/**
+ * The header's title-bar role, per platform, matching the dashboard's `is-mac` split. On
+ * macOS the header is the window's title bar: it drags the window and its label clears the
+ * traffic lights. Elsewhere the window manager draws a frame above it, so neither applies.
+ */
+function headerStyle(platform: NodeJS.Platform): string {
+  return platform === "darwin"
+    ? "header{-webkit-app-region:drag}header span{margin-left:108px}"
+    : "header span{margin-left:32px}";
+}
+
 /** Built into the shell: it must render before the daemon can serve any assets. */
-export function startupPage(screen: StartupScreen): string {
+export function startupPage(screen: StartupScreen, platform: NodeJS.Platform): string {
   const { title, description } = COPY[screen];
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -28,8 +39,9 @@ export function startupPage(screen: StartupScreen): string {
 <title>Mission Control</title><style>
 :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e6edf3;background:#0e1116}
 *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:80px 32px 40px}
-header{position:fixed;inset:0 0 auto;height:76px;-webkit-app-region:drag;border-bottom:1px solid #232b35}
-header span{display:block;margin:29px 0 0 108px;font-size:12px;letter-spacing:.12em;color:#98a8bb}
+header{position:fixed;inset:0 0 auto;height:76px;border-bottom:1px solid #232b35}
+header span{display:block;margin-top:29px;font-size:12px;letter-spacing:.12em;color:#98a8bb}
+${headerStyle(platform)}
 main{width:min(100%,440px)}.mark{width:48px;height:48px;border:1px solid #315749;border-radius:14px;display:grid;place-items:center;margin-bottom:28px;color:#67d9ac;background:#152b24}
 .mark:after{content:"";width:16px;height:16px;border:2px solid currentColor;border-radius:50%;border-right-color:transparent;animation:spin 1.4s linear infinite}
 h1{font-size:26px;line-height:1.2;letter-spacing:-.025em;margin:0 0 16px;font-weight:600}

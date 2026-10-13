@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { hydrateUiConfig } from "./lib/uiConfig.ts";
+import { desktopPlatformClass } from "./lib/platform.ts";
 import { ModelCatalogProvider } from "./model-catalog.tsx";
 import "@xyflow/react/dist/style.css";
 // Global vendor CSS belongs at the browser entry rather than inside `DiffView`: the latter is
@@ -11,10 +12,12 @@ import "@xyflow/react/dist/style.css";
 import "react-diff-view/style/index.css";
 import "./styles.css";
 
-// In the Electron shell the window has no native title bar (titleBarStyle:
-// "hiddenInset"), so the topbar doubles as it: this flag turns on the traffic-
-// light inset and the drag region. In a plain browser tab neither applies.
-if (window.missionDesktop?.isDesktop) document.documentElement.classList.add("is-desktop");
+// In the Electron shell on macOS the window has no native title bar, so the topbar
+// doubles as it: `is-mac` turns on the traffic-light inset and the drag region. A Linux
+// window has the window manager's frame (`is-linux`), and a plain browser tab gets none.
+if (window.missionDesktop?.isDesktop) {
+  document.documentElement.classList.add("is-desktop", desktopPlatformClass(window.missionDesktop));
+}
 
 // Reconcile the dashboard's preferences with the daemon, which owns them. Fired here
 // rather than from an effect in App because it is not App's state: the layout, the

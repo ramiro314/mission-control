@@ -141,13 +141,14 @@ function scan(source: string): { uncovered: string[]; staleExemptions: string[] 
   return { uncovered, staleExemptions };
 }
 
-test("the desktop shell still makes the topbar the draggable title bar", () => {
-  // The premise of every other assertion here. If the shell ever gets a native title
-  // bar back, this file is the thing that should be deleted, loudly and on purpose.
+test("the macOS desktop shell still makes the topbar the draggable title bar", () => {
+  // The premise of every other assertion here. A Linux window has the window manager's
+  // frame, so the drag region is `is-mac` only; if macOS ever gets a native title bar back
+  // too, this file is the thing that should be deleted, loudly and on purpose.
   const dragRules = ALL.filter((r) => /-webkit-app-region:\s*drag\b/.test(r.body));
   assert.deepEqual(
     dragRules.flatMap((r) => r.selectors),
-    [".is-desktop .topbar"],
+    [".is-mac .topbar"],
     "the drag region moved or multiplied; the covered list below is scoped to the topbar",
   );
 });

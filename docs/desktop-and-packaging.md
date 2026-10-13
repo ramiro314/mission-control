@@ -15,6 +15,22 @@ plain files on disk. The Electron shell supervises the daemon and the HTTP-only 
 it does not become a second state owner. Foreman never opens SQLite, and its daemon lease keeps
 an independently started worker safe as a standby.
 
+## Window and menu
+
+[`window-chrome.ts`](../src/main/window-chrome.ts) picks the window's frame per platform:
+
+- On macOS the window has no native title bar. The dashboard's topbar is the title bar: it
+  drags the window, and its left edge clears the traffic lights. The application menu is the
+  macOS app menu, with **Mission Control → Settings…** on <kbd>⌘</kbd><kbd>,</kbd>.
+- On Linux the window manager draws the frame, with its own close, minimize and maximize. The
+  menu bar is hidden until <kbd>Alt</kbd> reveals it, and holds **File** (Settings… on
+  <kbd>Ctrl</kbd><kbd>,</kbd>, and Quit), **Edit**, **View** and **Help** (Check for
+  Updates…), from [`menu-template.ts`](../src/main/menu-template.ts).
+
+The renderer learns which from the preload's `platform` field: `main.tsx` adds `is-mac` or
+`is-linux` beside `is-desktop`, and only `is-mac` applies the traffic-light inset and the
+topbar drag region. The startup page makes the same split.
+
 ## Icons and the tray
 
 The app icons and tray images in `build/` are generated from the SVGs beside them by

@@ -13,6 +13,7 @@ const TIMEOUT_MS = 120_000;
 
 interface DesktopPreloadResult {
   isDesktop: boolean;
+  platform: string | null;
   hasDesktopClass: boolean;
   capability: string | null;
   preloadError: string | null;
@@ -76,6 +77,11 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
       `the sandboxed preload failed before it could expose the desktop bridge: ${result.preloadError}`,
     );
     assert.equal(result.isDesktop, true, "the renderer cannot distinguish Electron from a browser");
+    assert.equal(
+      result.platform,
+      process.platform,
+      "the renderer cannot tell a macOS shell's title bar from a Linux window manager's frame",
+    );
     assert.equal(
       result.hasDesktopClass,
       true,

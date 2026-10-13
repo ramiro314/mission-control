@@ -15,6 +15,7 @@ import { daemonHealthy } from "./daemon.ts";
 import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
 import { windowIcon } from "./platform-icons.ts";
+import { windowChrome } from "./window-chrome.ts";
 
 let win: BrowserWindow | null = null;
 let startup: WindowStartup | null = null;
@@ -42,8 +43,8 @@ export function onMainWindowClosed(listener: () => void): void {
   closedListeners.add(listener);
 }
 
-// The window has no native title bar, so the topbar doubles as one and gives up
-// its left edge to the traffic lights. Open at a comfortable desktop size; the
+// On macOS the window has no native title bar, so the topbar doubles as one and gives
+// up its left edge to the traffic lights (see window-chrome.ts). Open at a comfortable desktop size; the
 // topbar's container-query ladder handles narrower half-screen windows without
 // making this preferred width a responsive breakpoint. Never exceed the display.
 const PREFERRED = { width: 1400, height: 860 };
@@ -100,13 +101,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
     // macOS takes it from the .app bundle; elsewhere the task switcher needs it here.
     icon: windowIcon(process.platform, join(app.getAppPath(), "build")),
     backgroundColor: "#0e1116",
-    // The app's own dark topbar IS the title bar: no native strip, traffic
-    // lights inset over the topbar's left padding (see .topbar in styles.css).
-    // "hiddenInset" would park them at the standard y for a 38px bar, ~15px
-    // above the centre of our taller topbar row; position them explicitly so
-    // they line up with the brand instead.
-    titleBarStyle: "hidden",
-    trafficLightPosition: { x: 20, y: 28 },
+    ...windowChrome(process.platform),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -142,7 +137,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
   };
   const loading = new WindowStartup({
     now: () => Date.now(),
-    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state))}`, signal),
+    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state, process.platform))}`, signal),
     ready: (signal) => dashboardReady(url, signal),
     load: (signal) => navigate(url, signal),
     pause: (signal) => delay(1000, undefined, { signal }),

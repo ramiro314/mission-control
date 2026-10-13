@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import { _electron as electron, type Page } from "playwright";
+import { _electron as electron, type ElectronApplication, type Page } from "playwright";
 import { expect, test } from "../fixtures/test.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
@@ -59,6 +59,61 @@ async function evidence(page: Page, name: string) {
   await page.screenshot({ path: join(dir, `${name}.png`) });
 }
 
+/**
+ * The frame the production window gets on this platform. macOS keeps the hidden title bar,
+ * so the startup header and the dashboard's topbar are the title bar; on Linux the window
+ * manager draws the frame and the menu bar waits for Alt.
+ */
+/** A native Alt tap, delivered the way the OS delivers one: through the window's input path. */
+async function pressAlt(application: ElectronApplication) {
+  await application.evaluate(({ BrowserWindow }) => {
+    const contents = BrowserWindow.getAllWindows()[0]?.webContents;
+    contents?.sendInputEvent({ type: "keyDown", keyCode: "Alt" });
+    contents?.sendInputEvent({ type: "keyUp", keyCode: "Alt" });
+  });
+}
+
+async function expectPlatformChrome(application: ElectronApplication, page: Page, surface: "startup" | "dashboard") {
+  const mac = process.platform === "darwin";
+  if (surface === "startup") {
+    const region = await page.locator("header").evaluate((el) => getComputedStyle(el).getPropertyValue("-webkit-app-region"));
+    expect(region, "only the macOS startup header is the title bar").toBe(mac ? "drag" : "none");
+    if (!mac) {
+      const frame = await application.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        return { autoHide: window?.isMenuBarAutoHide(), visible: window?.isMenuBarVisible() };
+      });
+      expect(frame, "the Linux window hides its menu bar until Alt").toEqual({ autoHide: true, visible: false });
+    }
+    return;
+  }
+  const menu = await application.evaluate(({ Menu }) => {
+    const walk = (items: Electron.MenuItem[]): Electron.MenuItem[] =>
+      items.flatMap((item) => [item, ...walk(item.submenu?.items ?? [])]);
+    const items = Menu.getApplicationMenu()?.items ?? [];
+    return { top: items.map((item) => item.label), roles: walk(items).map((item) => item.role ?? null) };
+  });
+  const macRoles = ["about", "services", "hide", "hideothers", "unhide", "zoom", "windowmenu"];
+  if (mac) {
+    expect(menu.top.slice(1)).toEqual(["Edit", "View", "Window"]);
+  } else {
+    expect(menu.top, "the running Linux shell installed the Linux menu").toEqual(["File", "Edit", "View", "Help"]);
+    expect(menu.roles.filter((role) => macRoles.includes(role?.toLowerCase() ?? "")), "macOS app-menu roles").toEqual([]);
+    // Alt is the only way to the hidden bar, so it must reach the native menu bar through the page.
+    await pressAlt(application);
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible()),
+      { message: "Alt did not reveal the Linux menu bar" }).toBe(true);
+    await pressAlt(application);
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible()),
+      { message: "a second Alt did not hide the Linux menu bar again" }).toBe(false);
+  }
+  const html = page.locator("html");
+  await expect(html).toHaveClass(/\bis-desktop\b/);
+  await expect(html).toHaveClass(mac ? /\bis-mac\b/ : /\bis-linux\b/);
+  const region = await page.locator("header.topbar").evaluate((el) => getComputedStyle(el).getPropertyValue("-webkit-app-region"));
+  expect(region, "only the macOS topbar drags the window").toBe(mac ? "drag" : "none");
+}
+
 for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation"] as const) {
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
@@ -69,15 +124,18 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
       bundle: true, platform: "node", format: "cjs", external: ["electron"],
       alias: { "@shared": join(process.cwd(), "src/shared") },
     });
+    const menuModule = join(daemon.home, "menu.cjs");
+    buildSync({ entryPoints: ["src/main/menu.ts"], outfile: menuModule, bundle: true, platform: "node", format: "cjs", external: ["electron"] });
     const application = await electron.launch({ args: [
       fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)),
-      gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario,
+      gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario, menuModule,
       // After the fixture's positional arguments, which it reads by index from `process.argv`.
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
     ] });
     try {
       const page = await application.firstWindow();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
+      await expectPlatformChrome(application, page, "startup");
       await evidence(page, "starting");
       if (scenario === "local page cancellation") {
         await application.evaluate(({ app }) => { app.emit("fixture:stop-startup"); });
@@ -116,6 +174,7 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
       gate.release();
       await expect(page.getByRole("button", { name: "Dispatch" }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toHaveCount(0);
+      await expectPlatformChrome(application, page, "dashboard");
       await evidence(page, "ready");
       const requests = gate.dashboardRequests();
       // A completed startup must not keep navigating over an active dashboard.

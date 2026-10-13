@@ -1,4 +1,5 @@
-// The macOS application menu, as a template and nothing else.
+// The application menu, as a template and nothing else: the macOS app menu, and the menu bar
+// a Linux window reveals on Alt.
 //
 // Split out from `menu.ts` so the one decision in here that a person can get wrong is
 // testable in `test/` for milliseconds: which keys the menu claims from the renderer. A menu
@@ -108,6 +109,7 @@ export function appMenuTemplate(
   appName: string,
   handlers: AppMenuHandlers,
   state: AppMenuState = { rendererOwnsNumberRow: false },
+  platform: NodeJS.Platform = process.platform,
 ): MenuItemConstructorOptions[] {
   // Given up only while the renderer is claiming them. The roles carry Electron's own
   // accelerators, labels and behavior, so the fallback is the stock View menu rather than an
@@ -119,18 +121,52 @@ export function appMenuTemplate(
         { label: "Zoom Out", click: (_item, window) => zoomWindow(window, -ZOOM_STEP) },
       ]
     : [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }];
+  const view: MenuItemConstructorOptions = {
+    // Spelled out rather than `role: "viewMenu"`, and the zoom items are the whole reason.
+    // The stock submenu is exactly this list, so writing it out costs nothing and buys the
+    // one thing the role cannot express: three zoom entries whose accelerators depend on
+    // whether the dashboard is using those keys. Reload, DevTools and full screen keep
+    // their standard accelerators in both states, none of which the dashboard binds -
+    // `⌃R` is a dashboard chord and is not `⌘R`.
+    label: "View",
+    submenu: [
+      { role: "reload" },
+      { role: "forceReload" },
+      { role: "toggleDevTools" },
+      { type: "separator" },
+      ...zoom,
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ],
+  };
+  const settings: MenuItemConstructorOptions = {
+    label: "Settings…",
+    accelerator: "CmdOrCtrl+,",
+    click: () => handlers.onOpenSettings(),
+  };
+  const checkForUpdates: MenuItemConstructorOptions = {
+    label: "Check for Updates…",
+    click: () => handlers.onCheckForUpdates(),
+  };
+  // Off macOS there is no app menu to hold Settings and Quit, and its roles (`about`,
+  // `services`, `hide`, `hideOthers`, `unhide`) and the window menu's `zoom` are inert, so
+  // the menu bar takes the conventional File / Edit / View / Help shape instead.
+  if (platform !== "darwin") {
+    return [
+      { label: "File", submenu: [settings, { type: "separator" }, { role: "quit" }] },
+      { role: "editMenu" },
+      view,
+      { label: "Help", submenu: [checkForUpdates] },
+    ];
+  }
   return [
     {
       label: appName,
       submenu: [
         { role: "about" },
-        { label: "Check for Updates…", click: () => handlers.onCheckForUpdates() },
+        checkForUpdates,
         { type: "separator" },
-        {
-          label: "Settings…",
-          accelerator: "CmdOrCtrl+,",
-          click: () => handlers.onOpenSettings(),
-        },
+        settings,
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
@@ -142,24 +178,7 @@ export function appMenuTemplate(
       ],
     },
     { role: "editMenu" },
-    {
-      // Spelled out rather than `role: "viewMenu"`, and the zoom items are the whole reason.
-      // The stock submenu is exactly this list, so writing it out costs nothing and buys the
-      // one thing the role cannot express: three zoom entries whose accelerators depend on
-      // whether the dashboard is using those keys. Reload, DevTools and full screen keep
-      // their standard accelerators in both states, none of which the dashboard binds -
-      // `⌃R` is a dashboard chord and is not `⌘R`.
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { role: "toggleDevTools" },
-        { type: "separator" },
-        ...zoom,
-        { type: "separator" },
-        { role: "togglefullscreen" },
-      ],
-    },
+    view,
     { role: "windowMenu" },
   ];
 }

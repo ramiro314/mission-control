@@ -24,6 +24,7 @@ app.whenReady().then(async () => {
     await win.loadFile(page);
     const result = await win.webContents.executeJavaScript(`({
       isDesktop: window.missionDesktop?.isDesktop === true,
+      platform: window.missionDesktop?.platform ?? null,
       hasDesktopClass: document.documentElement.classList.contains("is-desktop"),
       capability: window.missionDesktop?.claimProductIssueAuthorization?.() ?? null,
     })`);

@@ -290,7 +290,7 @@ live from the moment it boots.
 
 Settings is a **page**, not a modal: `#/settings/<category>` in the URL, reached from the ⚙
 gear in the top bar, from **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> in the
-desktop app, or by opening the link directly. <kbd>Esc</kbd> returns you to the fleet, the
+desktop app (**File → Settings…** / <kbd>Ctrl</kbd><kbd>,</kbd> on Linux), or by opening the link directly. <kbd>Esc</kbd> returns you to the fleet, the
 gear takes you back the same way, and browser back/forward walk the categories you visited.
 While the page is up the session and panel shortcuts stand down, so nothing you type here can
 drive the fleet behind it. The direct Fleet, Library and Runs shortcuts remain available when
