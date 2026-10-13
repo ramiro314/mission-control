@@ -408,12 +408,15 @@ test("it never hosts a dispatched agent: dispatch skips it and its chooser row s
 });
 
 test("only a raise-only terminal refuses to host an agent, before anything is launched", async () => {
+  // The Linux Ghostty is spawn-only too, so on a Linux host it refuses for the same reason.
+  const raiseOnly: Partial<Record<string, string>> = {
+    "xdg-terminal": "Default terminal only shows multiplexer sessions - it cannot host an agent",
+    ...(process.platform === "linux"
+      ? { ghostty: "Ghostty only shows multiplexer sessions - it cannot host an agent" }
+      : {}),
+  };
   for (const id of TERMINAL_BACKEND_IDS) {
-    assert.equal(
-      agentHostUnavailable(id),
-      id === "xdg-terminal" ? "Default terminal only shows multiplexer sessions - it cannot host an agent" : null,
-      id,
-    );
+    assert.equal(agentHostUnavailable(id), raiseOnly[id] ?? null, id);
   }
   let calls = 0;
   const refused = await launchAgentTerminal(

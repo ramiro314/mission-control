@@ -273,7 +273,11 @@ and offers **Start the Herdr server**, which runs the daemon's own startup rathe
 terminal. See [First-run setup](setup.md).
 
 The emulator registry currently contains WezTerm, Ghostty, iTerm2, and the Linux desktop's
-**Default terminal** (`xdg-terminal`) in that order. The default terminal is the Linux fallback
+**Default terminal** (`xdg-terminal`) in that order. Ghostty is AppleScript-driven on macOS
+and spawn-only on Linux: there it resolves `ghostty` on `PATH` and opens a window with
+`ghostty +new-window -e <argv>`, declaring list, write, capture and focus null, so a tmux or
+Herdr session is raised in Ghostty on a machine with no WezTerm. Like the default terminal it
+is `raiseOnly` there, so it never hosts a dispatched agent. The default terminal is the Linux fallback
 for Focus and the new-session launcher when nothing more precise is installed: it opens a window
 through `xdg-terminal-exec <attach argv>`, then, if that is missing or refuses, through
 `$TERMINAL -e <attach argv>`. The default terminal opens windows and does nothing else: list,

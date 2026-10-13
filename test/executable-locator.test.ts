@@ -349,6 +349,29 @@ test("custom per-user terminal app locations are supported without a filesystem 
   }
 });
 
+test("Ghostty on PATH resolves on Linux and is never searched for on macOS", async () => {
+  const f = fixture();
+  const inherited = join(f.root, "usr", "bin");
+  const ghostty = executable(join(inherited, "ghostty"));
+  f.env.PATH = inherited;
+  try {
+    const at = (platform: NodeJS.Platform) => new ExecutableLocator({
+      env: f.env,
+      executable: f.executable,
+      platform,
+      probeLoginShell: async () => ({ path: null, problem: null }),
+    }).resolve(executableSpec("ghostty"));
+    // Linux runs this binary through the spawn-only adapter, so finding it is the answer.
+    const linux = await at("linux");
+    assert.equal(linux?.path, ghostty);
+    assert.equal(linux?.source, "inherited-path");
+    // macOS detects the app bundle only; a `ghostty` on PATH is not what its adapter runs.
+    assert.equal(await at("darwin"), null);
+  } finally {
+    f.clean();
+  }
+});
+
 test("dead login shells degrade to manager and OS defaults", async () => {
   const f = fixture();
   const asdf = join(f.root, "relocated-asdf");

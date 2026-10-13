@@ -19,6 +19,9 @@ const { Registry } = await import("../src/server/registry.ts");
 const { correlate } = await import("../src/server/discovery/correlate.ts");
 const { pollOnce } = await import("../src/server/discovery/poller.ts");
 const db = await import("../src/server/db.ts");
+const { pinAppleScriptGhostty } = await import("./helpers/apple-script-ghostty.ts");
+// Ghostty stands in for an emulator with stable pane UUIDs here; see the helper.
+pinAppleScriptGhostty();
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const proc = (pid: number, ppid: number, startMs = 1000): Proc => ({

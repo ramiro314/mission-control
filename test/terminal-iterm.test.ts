@@ -64,7 +64,8 @@ test("declares the complete iTerm2 capability surface and passive host gate", ()
 test("detects only the configured app bundle without a PATH fallback", () => {
   const declared = executableSpec("iterm");
   assert.equal(declared.overrideEnv, "ITERM_BIN");
-  assert.equal(declared.searchPath, false);
+  assert.equal(declared.searchPath("darwin"), false);
+  assert.equal(declared.searchPath("linux"), false);
   assert.deepEqual(declared.candidates(executableCandidateContext()), [
     "/Applications/iTerm.app/Contents/MacOS/iTerm2",
     `${process.env.HOME}/Applications/iTerm.app/Contents/MacOS/iTerm2`,

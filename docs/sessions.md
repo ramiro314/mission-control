@@ -263,6 +263,19 @@ wrong: the permission-mode chip, dialog detection, and the read-back that confir
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
 else, if you want those too.
 
+**Ghostty on Linux** is a different adapter under the same name, and it only opens windows.
+Focus on a tmux or Herdr session that no window shows, and **New session** on those rows, run
+`ghostty +new-window -e <attach command>`, which opens a window in the running Ghostty
+(Ghostty's D-Bus activation starts one if none is running). Linux Ghostty has no command that
+lists, types into or reads a surface, so a session running directly in a Ghostty window on
+Linux is not discovered through Ghostty. For that reason it never hosts a dispatched agent,
+exactly like the Linux default terminal: dispatch skips it and the dispatch chooser shows it
+disabled. An agent lives in tmux or Herdr, which Ghostty then shows, and the multiplexer
+provides discovery, input and capture. A plain shell from the conversation pane's launcher
+still opens in Ghostty. Focus raises a window only by opening a new one: a session already
+attached in an open Ghostty window gets a second window rather than the existing one brought
+forward.
+
 #### iTerm2 Automation and permission recovery
 
 iTerm2 is controlled through its built-in AppleScript dictionary. Mission Control uses the

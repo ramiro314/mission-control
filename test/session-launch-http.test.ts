@@ -14,6 +14,10 @@ import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
 import { STATE_DIR } from "../src/server/config.ts";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
 import { TerminalLaunchError } from "../src/server/terminal/launch-error.ts";
+import { pinAppleScriptGhostty } from "./helpers/apple-script-ghostty.ts";
+
+// These resumes model the macOS Ghostty, which hosts agents; see the helper.
+pinAppleScriptGhostty();
 await managedResumeFixture(STATE_DIR);
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire

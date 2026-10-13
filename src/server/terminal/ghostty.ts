@@ -1,5 +1,5 @@
 import type { TerminalInventory } from "./inventory.ts";
-import { GHOSTTY_BIN } from "./bin.ts";
+import { binEnv, GHOSTTY_BIN, resolveBin } from "./bin.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
@@ -196,7 +196,75 @@ export function parseSurfaces(stdout: string): TerminalInventory<EmulatorPane> {
   return panes;
 }
 
-export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
+/**
+ * Ghostty on this host. macOS is driven through Apple Events, Linux through the CLI; the two
+ * share an id, a label and a glyph, so the operator's terminal preference names one Ghostty.
+ */
+export function ghosttyEmulator(
+  exec: TerminalExec = defaultExec,
+  platform: NodeJS.Platform = process.platform,
+): TerminalEmulator {
+  return platform === "linux" ? linuxGhostty(exec) : appleScriptGhostty(exec);
+}
+
+/**
+ * `+new-window` is IPC to the running instance (D-Bus activation starts one), so the CLI
+ * returns once the request is delivered. Cold activation starts a GTK app first.
+ */
+const SPAWN_TIMEOUT_MS = 10_000;
+
+/**
+ * The Linux Ghostty: spawn-only.
+ *
+ * On GTK `ghostty +new-window` opens a window in the running instance and, unlike macOS,
+ * forwards `--working-directory`, `--title` and `-e`. Everything after `-e` is the command,
+ * passed as argv rather than re-split by a shell. Measured against Ghostty 1.3.1 on KDE
+ * Wayland: an argument containing spaces arrived as one `$1`, and `--working-directory`
+ * rooted the surface there. (`+new-window --help` prints nothing because the flag is
+ * forwarded to the instance too, which is what made `-e` look doubtful before it was tried.)
+ *
+ * The rest is null because there is no Linux transport for it: Ghostty has no CLI that lists,
+ * types into or reads a surface, and with nothing listed there is no surface to raise. The
+ * multiplexer it attaches to already lists, writes and captures; this window only shows it.
+ * For the same reason it never hosts a dispatched agent (`raiseOnly`), like the Linux default
+ * terminal: an agent in a window nothing can address could be neither messaged nor found again.
+ */
+function linuxGhostty(exec: TerminalExec): TerminalEmulator {
+  return {
+    id: "ghostty",
+    label: "Ghostty",
+    glyph: "◫",
+    bin: GHOSTTY_BIN,
+    list: null,
+    hostProcess: null,
+    write: null,
+    capture: null,
+    focus: null,
+    restoreTarget: null,
+    spawn: {
+      async tab(spec: TabSpec): Promise<SpawnResult> {
+        const args = [
+          "+new-window",
+          ...(spec.cwd ? [`--working-directory=${spec.cwd}`] : []),
+          `--title=${spec.title}`,
+          "-e",
+          ...spec.argv,
+        ];
+        const r = await exec(resolveBin(GHOSTTY_BIN), args, {
+          timeoutMs: SPAWN_TIMEOUT_MS,
+          env: binEnv(GHOSTTY_BIN),
+        });
+        // A window opened and nothing can address it - `SpawnResult`'s honest split.
+        return { ...toResult(r, "ghostty could not open a window"), target: null };
+      },
+    },
+    retitle: null,
+    raiseOnly: true,
+    names: PLAIN_NAMES,
+  };
+}
+
+function appleScriptGhostty(exec: TerminalExec): TerminalEmulator {
   /**
    * Every Apple Event goes through here. `osascript` is at a fixed path on every macOS, and
    * on a machine without it this whole adapter is unreachable anyway - `binPresent` gates on
