@@ -10,19 +10,22 @@ import { join } from "node:path";
 // never writes, so the sweep found nothing and deleted nothing. Now it reaches Claude's real
 // directory, so this pins exactly what one sweep removes there and what it leaves alone.
 //
-// `HEADLESS_CWD` is `tmpdir()` at import and the projects root is `~/.claude/projects` at
-// import, so both are redirected here, before the modules load.
+// `HEADLESS_CWD` is fixed at import - `tmpdir()` on macOS, `<state dir>/headless` on Linux -
+// and the projects root is `~/.claude/projects` at import, so all three are redirected here,
+// before the modules load, each through a name Claude's encoding rewrites.
 
 const base = mkdtempSync(join(tmpdir(), "prune-encoding-"));
-const headlessCwd = join(base, "mc_tmp+x y");
+const tmpRedirect = join(base, "mc_tmp+x y");
+const stateRedirect = join(base, "mc_state+x y");
 const home = join(base, "home");
-mkdirSync(headlessCwd, { recursive: true });
+mkdirSync(tmpRedirect, { recursive: true });
 mkdirSync(home, { recursive: true });
-process.env.TMPDIR = headlessCwd;
+process.env.TMPDIR = tmpRedirect;
+process.env.HARNESS_HOME = stateRedirect;
 process.env.HOME = home;
 after(() => rmSync(base, { recursive: true, force: true }));
 
-const { HEADLESS_CWD } = await import("../src/server/claude-cli.ts");
+const { HEADLESS_CWD, ensureHeadlessCwd, headlessCwdFor } = await import("../src/server/headless-cwd.ts");
 const { headlessTranscriptDir, pruneHeadlessTranscripts } = await import("../src/server/goal/prune.ts");
 const { CLAUDE_PROJECTS_DIR, claudeProjectDir } = await import("../src/server/harness/claude/project-dir.ts");
 
@@ -39,7 +42,12 @@ function seed(dir: string, name: string, ageMs: number): string {
 }
 
 test("one sweep removes exactly the old transcript in Claude's encoded directory", () => {
-  assert.equal(HEADLESS_CWD, headlessCwd, "the temp dir redirect did not reach HEADLESS_CWD");
+  assert.equal(
+    HEADLESS_CWD,
+    headlessCwdFor(process.platform, stateRedirect, tmpRedirect),
+    "the redirect did not reach HEADLESS_CWD",
+  );
+  ensureHeadlessCwd();
   assert.equal(CLAUDE_PROJECTS_DIR, join(home, ".claude", "projects"));
 
   const realCwd = realpathSync(HEADLESS_CWD);

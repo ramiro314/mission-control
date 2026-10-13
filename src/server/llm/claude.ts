@@ -134,7 +134,7 @@ export const claudeRunner: LlmRunner = {
       return result.text;
     }
     // No grant means no `tools`, no `cwd` and no `settings` - so `runClaudeText` applies
-    // its own defaults: every tool disabled, and the temp dir above. That is the safe
+    // its own defaults: every tool disabled, and the headless cwd above. That is the safe
     // shape for every caller that embeds untrusted text, which is all of them but one.
     const raw = await runClaudeText(prompt, {
       model: opts.model,

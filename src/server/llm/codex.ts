@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { locateExecutable } from "../executables/locator.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
+import { ensureHeadlessCwd } from "../headless-cwd.ts";
 import { killLiveCodexSdkRuns, runCodexSdkOneShot, type CodexSdkDeps } from "./codex-sdk.ts";
 import { DEFAULT_CODEX_TRANSPORT, type CodexTransport } from "@shared/llm.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
@@ -360,7 +361,7 @@ export const codexRunner: LlmRunner = {
           try {
             return spawn(executable.path, args, {
               ...processLifetime.treeRootOptions,
-              cwd: tmpdir(),
+              cwd: ensureHeadlessCwd(),
               stdio: ["pipe", "pipe", "pipe"],
               env,
             });

@@ -6,7 +6,8 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkUserMessage,
 } from "../harness/claude/sdk-types.ts";
-import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
+import { CLAUDE_DEFAULT_TIMEOUT_MS } from "../claude-cli.ts";
+import { ensureHeadlessCwd } from "../headless-cwd.ts";
 import { CLAUDE_SANDBOX, claudeGrantDenyRules } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
@@ -183,7 +184,7 @@ export async function runClaudeSdkOneShot(
   let stderr = "";
   let subprocessEnv: NodeJS.ProcessEnv | undefined;
   const execute = async (): Promise<ClaudeSdkOneShotResult> => {
-    const cwd = realpathSync(grant?.cwd ?? HEADLESS_CWD);
+    const cwd = realpathSync(grant?.cwd ?? ensureHeadlessCwd());
     const executable = await deps.executable();
     if (controller.signal.aborted) {
       throw cancelError ?? new Error("Claude Agent SDK run aborted");
@@ -230,10 +231,11 @@ export async function runClaudeSdkOneShot(
     // the print transport in `claude-cli.ts`; the SDK path inherits it rather than widening
     // transcript cleanup in a security-sensitive transport change.
     //
-    // `realpathSync` is load-bearing on macOS, where TMPDIR is commonly a symlink. Claude
-    // records the resolved cwd in its encoded project path, and `headlessTranscriptDir()`
-    // resolves the same value before sweeping. Passing the unresolved spelling would make
-    // the test seam and the pruner disagree about where this run belongs.
+    // `realpathSync` is load-bearing wherever the cwd sits behind a symlink: macOS's TMPDIR
+    // commonly does, and so can a Linux state dir. Claude records the resolved cwd in its
+    // encoded project path, and `headlessTranscriptDir()` resolves the same value before
+    // sweeping. Passing the unresolved spelling would make the test seam and the pruner
+    // disagree about where this run belongs.
     subprocessEnv = deps.env(cwd);
     const query = await deps.query({
       prompt: images.length === 0

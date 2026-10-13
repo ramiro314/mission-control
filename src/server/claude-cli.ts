@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { tmpdir } from "node:os";
 import { unwrapEnvelope } from "./llm/structured.ts";
+import { HEADLESS_CWD, ensureHeadlessCwd } from "./headless-cwd.ts";
 import { locateExecutable } from "./executables/locator.ts";
 import { processLifetime } from "./platform/process-lifetime.ts";
 import { claudeImageUserMessage } from "./llm/claude-input.ts";
@@ -58,20 +58,8 @@ export const CLAUDE_DEFAULT_TIMEOUT_MS = Number(
   process.env.MISSION_CLAUDE_TIMEOUT_MS || process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000,
 );
 
-/**
- * The cwd every headless run spawns in.
- *
- * Exported because it is not just where the process runs: Claude derives the directory it
- * writes a run's transcript to from the spawner's cwd, so this value alone decides where they
- * all pile up. The pruner (`goal/prune.ts`) derives that directory from THIS constant rather
- * than re-deriving `tmpdir()` itself - the two must never disagree, or the sweep silently
- * cleans an empty directory while the real one grows forever.
- *
- * Note this is per-process: it follows TMPDIR, so a daemon started from a shell and one
- * started by launchd can write to different directories. Each prunes its own, which is right -
- * neither can know the other's.
- */
-export const HEADLESS_CWD = tmpdir();
+/** Re-exported so the runners that grew up beside this module keep one import. */
+export { HEADLESS_CWD };
 
 /** Children we spawned, so a process exit doesn't leave them burning tokens. */
 const live = new Set<ChildProcess>();
@@ -140,7 +128,7 @@ export interface ClaudeRunOptions {
   /** Claude Code settings layers to load. Omitted by default so background LLM jobs stay isolated. */
   settingSources?: readonly ("user" | "project" | "local")[];
   /**
-   * Where the run spawns. Defaults to `HEADLESS_CWD` (a temp dir), which is right for
+   * Where the run spawns. Defaults to `HEADLESS_CWD` (no checkout), which is right for
    * every tool-less caller: with no tools, a working directory is meaningless, and a
    * real one only risks the run noticing a repo it has no business in.
    *
@@ -245,7 +233,7 @@ async function runClaudeRaw(
       try {
         return spawn(executable.path, args, {
           ...processLifetime.treeRootOptions,
-          cwd: opts.cwd ?? HEADLESS_CWD,
+          cwd: opts.cwd ?? ensureHeadlessCwd(),
           stdio: ["pipe", "pipe", "pipe"],
           env,
         });

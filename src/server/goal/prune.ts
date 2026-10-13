@@ -1,7 +1,7 @@
 import { readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { envVar } from "../config.ts";
-import { HEADLESS_CWD } from "../claude-cli.ts";
+import { HEADLESS_CWD } from "../headless-cwd.ts";
 import { unref } from "../util/timers.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "../harness/claude/project-dir.ts";
 
@@ -10,23 +10,30 @@ import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "../harness/claude/project
 // transcripts sampled on this machine were already Foreman's, before the goal refiner started
 // adding one per card per refresh.
 //
-// Claude derives a transcript's directory from the spawning process's cwd, and `runClaudeText`
-// always spawns in `tmpdir()`, so every headless run lands in ONE directory - which this
-// prunes by age.
+// Claude derives a transcript's directory from the spawning process's cwd, and every headless
+// run spawns in `HEADLESS_CWD` (`headless-cwd.ts`), so they all land in ONE directory - which
+// this prunes by age. The sweep does not distinguish whose a `.jsonl` is, so how far it can
+// reach depends on whose that directory is, and that differs by platform.
 //
-// That directory is not exclusively ours, though, and the distinction is worth stating
-// honestly rather than trusting later: a human who runs `claude` interactively from `$TMPDIR`
-// gets a transcript in the same encoded project dir, and this sweep does not distinguish whose
-// a `.jsonl` is. What bounds the risk is circumstance, not construction - `$TMPDIR` is
-// normally unset for an interactive shell, so a real session's cwd is a repo; the sweep only
-// ever touches `*.jsonl`; and the 24h mtime floor means even that human's transcript survives
-// until a day after they last touched it. Deliberately accepted, not overlooked.
+// On Linux it is exclusively ours by construction. The cwd is `<state dir>/headless`, owner-only
+// and created by Mission Control, so no human session runs there and this sweep never touches
+// `~/.claude/projects/-tmp/`. It used to: the cwd was the shared `/tmp`, and the sweep deleted
+// the transcripts of sessions the human started from `/tmp` along with ours. The transcripts left
+// in `-tmp` from before the move stay there: this sweep cannot tell ours from the human's, so
+// it leaves them all, and they can be removed by hand.
 //
-// The same holds for any cwd that merely ENCODES like the temp dir. Claude's encoding is lossy
-// (`claudeProjectDir`: every non-alphanumeric becomes `-`), so `/tmp/a_b`, `/tmp/a-b` and
-// `/tmp/a b` all share `-tmp-a-b`, and Claude itself keeps their transcripts in one directory.
-// A session run from such a cwd is swept on exactly the terms above, and nothing here can
-// tell its transcripts apart from ours.
+// On macOS it is the per-user `$TMPDIR`, and not exclusively ours: a human who runs `claude`
+// interactively from `$TMPDIR` gets a transcript in the same encoded project dir. What bounds
+// the risk there is circumstance, not construction - `$TMPDIR` is normally unset for an
+// interactive shell, so a real session's cwd is a repo; the sweep only ever touches
+// `*.jsonl`; and the 24h mtime floor means even that human's transcript survives until a day
+// after they last touched it. Deliberately accepted, not overlooked.
+//
+// The same holds for any cwd that merely ENCODES like the headless one. Claude's encoding is
+// lossy (`claudeProjectDir`: every non-alphanumeric becomes `-`), so `/a/b_c`, `/a/b-c` and
+// `/a/b c` all share `-a-b-c`, and Claude itself keeps their transcripts in one directory. A
+// session run from such a cwd is swept on exactly the terms above, and nothing here can tell
+// its transcripts apart from ours.
 //
 // Rejected: pointing CLAUDE_CONFIG_DIR at a throwaway dir, which would isolate these
 // perfectly. It relocates auth along with everything else, so the runs could silently fail to
@@ -48,9 +55,9 @@ const PRUNE_AGE_MS = Number(envVar("HEADLESS_PRUNE_AGE_MS") ?? 24 * 60 * 60 * 10
 /**
  * The directory Claude writes a headless run's transcript to.
  *
- * Claude's own project dir (`claudeProjectDir`) for `HEADLESS_CWD`, the exact cwd
- * `runClaudeText` spawns with. Derived from that constant rather than from `tmpdir()` again so
- * the two cannot drift apart.
+ * Claude's own project dir (`claudeProjectDir`) for `HEADLESS_CWD`, the exact cwd every
+ * headless run spawns with. Derived from that constant rather than recomputed so the two
+ * cannot drift apart. `cwd` is a parameter only so tests can name either platform's value.
  *
  * The `realpathSync` is load-bearing and was found the hard way. Claude resolves the cwd
  * through symlinks BEFORE encoding it, and on macOS `os.tmpdir()` is `/var/folders/…/T`,
@@ -59,13 +66,14 @@ const PRUNE_AGE_MS = Number(envVar("HEADLESS_PRUNE_AGE_MS") ?? 24 * 60 * 60 * 10
  * sweep finds no such directory, removes nothing, reports nothing, and looks like it works.
  * Verified against a real `claude -p`, which wrote to the `-private-` form.
  *
- * Falls back to the unresolved path if realpath fails (the directory is gone), which can only
- * make the sweep a no-op - never point it somewhere else.
+ * Falls back to the unresolved path if realpath fails (the directory is gone, or on Linux not
+ * created yet because no run has needed it), which can only make the sweep a no-op - never
+ * point it somewhere else.
  */
-export function headlessTranscriptDir(projectsDir = CLAUDE_PROJECTS_DIR): string {
-  let cwd = HEADLESS_CWD;
+export function headlessTranscriptDir(projectsDir = CLAUDE_PROJECTS_DIR, headlessCwd = HEADLESS_CWD): string {
+  let cwd = headlessCwd;
   try {
-    cwd = realpathSync(HEADLESS_CWD);
+    cwd = realpathSync(headlessCwd);
   } catch {
     // unresolvable - use it as given; a wrong-but-absent dir prunes nothing
   }
