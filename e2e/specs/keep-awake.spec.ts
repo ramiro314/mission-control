@@ -37,7 +37,7 @@ async function daemonPid(daemon: DaemonHandle): Promise<number> {
 const trigger = (page: Page) => page.getByRole("button", { name: /^Keep awake/ });
 const dialog = (page: Page) => page.getByRole("dialog", { name: "Keep awake" });
 const switchIn = (page: Page) =>
-  dialog(page).getByRole("switch", { name: "Keep this Mac awake" });
+  dialog(page).getByRole("switch", { name: "Keep this computer awake" });
 
 test("the live segment drives the explicit command fixture and every window converges over SSE", async ({
   dashboard,
@@ -54,7 +54,10 @@ test("the live segment drives the explicit command fixture and every window conv
   await expect(trigger(dashboard)).toHaveAttribute("aria-expanded", "true");
 
   // 2. The dropdown states the guarantee, the non-guarantees, and the lifecycle - the
-  // exact promises the runbook verifies against a real Mac.
+  // exact promises the runbook verifies against a real Mac. Its copy names no platform: the
+  // same dropdown drives IOKit on macOS and systemd-inhibit on Linux.
+  await expect(dialog(dashboard)).toContainText("Keep this computer awake");
+  await expect(dialog(dashboard)).not.toContainText("this Mac");
   await expect(dialog(dashboard)).toContainText(
     "The screen can dim and lock normally. Prevents idle sleep.",
   );

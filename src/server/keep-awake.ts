@@ -1,6 +1,10 @@
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import type { KeepAwakeStatus } from "@shared/types.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
+import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
+import { locateExecutableSync } from "./executables/locator.ts";
+import { processLifetimeFor, type ProcessLifetime } from "./platform/process-lifetime.ts";
 import {
   loadNativeKeepAwakeBinding,
   type NativeKeepAwakeBinding,
@@ -21,6 +25,11 @@ export type { NativeKeepAwakeBinding } from "./keep-awake-native.ts";
  * `MISSION_KEEP_AWAKE_BIN` selects the legacy command mechanics only as an explicit
  * test seam. It is never a production fallback after native loading or IOKit fails.
  *
+ * On Linux the daemon runs `systemd-inhibit --what=idle:sleep` around `tail --pid=<daemon
+ * PID>`: logind holds the idle and sleep lock for as long as that child lives, the child
+ * exits when the daemon does, however it dies, and off ends the child's whole tree through
+ * the process-lifetime seam.
+ *
  * There is intentionally NOTHING durable here. Keep Awake applies only to the current
  * daemon run by an approved human decision: every new manager starts `off`, no config
  * key is written, and nothing reacquires the assertion at boot. The status this class
@@ -40,7 +49,7 @@ export interface KeepAwakeChild {
 }
 
 export interface KeepAwakeDeps {
-  /** Host platform. Defaults to `process.platform`; only `darwin` ships a provider. */
+  /** Host platform. Defaults to `process.platform`; `darwin` and `linux` ship a provider. */
   platform?: NodeJS.Platform;
   /**
    * Inhibitor executable override. `undefined` reads `MISSION_KEEP_AWAKE_BIN` through
@@ -50,11 +59,18 @@ export interface KeepAwakeDeps {
    * power settings.
    */
   override?: string | null;
-  /** The PID `-w` binds the explicit command fixture to. Defaults to `process.pid`. */
+  /** The PID a command provider's child exits with. Defaults to `process.pid`. */
   daemonPid?: number;
   now?: () => number;
-  spawn?: (bin: string, args: string[]) => KeepAwakeChild;
+  /** `options` is the process-lifetime seam's tree-root options, spread before the defaults. */
+  spawn?: (bin: string, args: string[], options: Readonly<SpawnOptions>) => KeepAwakeChild;
   loadNativeBinding?: () => NativeKeepAwakeBinding;
+  /** Linux: the absolute `systemd-inhibit`, or null when it does not resolve. */
+  locateInhibitor?: () => string | null;
+  /** Linux: whether a fixed path, the inhibitor's `tail`, is an executable file. */
+  isExecutable?: (path: string) => boolean;
+  /** How a Linux inhibitor's tree is started and ended. Defaults to the platform's seam. */
+  processLifetime?: ProcessLifetime;
   setTimeoutFn?: (fn: () => void, ms: number) => NodeJS.Timeout;
   clearTimeoutFn?: (t: NodeJS.Timeout) => void;
   /** How long a SIGTERM gets before the SIGKILL fallback, and the fallback's own wait. */
@@ -70,14 +86,42 @@ export interface KeepAwakeDeps {
  */
 const ERROR_MAX_CHARS = 200;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2000;
-const NATIVE_ASSERTION_REASON = "Mission Control is keeping this Mac awake while agent work is active";
+const ASSERTION_REASON = "Mission Control is keeping this computer awake while agent work is active";
+
+/**
+ * The Linux inhibitor's argv. `block` is the only mode that holds sleep off; `delay` would
+ * only postpone it. The command is what ties the lock to the daemon: GNU `tail --pid` exits
+ * once that PID is gone, and `systemd-inhibit` releases the lock when its command exits.
+ */
+export function systemdInhibitArgs(daemonPid: number): string[] {
+  return [
+    "--what=idle:sleep",
+    "--who=Mission Control",
+    `--why=${ASSERTION_REASON}`,
+    "--mode=block",
+    FIXED_OS_EXECUTABLES.tail,
+    `--pid=${daemonPid}`,
+    "-f",
+    "/dev/null",
+  ];
+}
+
+function executableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function bounded(text: string): string {
   return text.length > ERROR_MAX_CHARS ? `${text.slice(0, ERROR_MAX_CHARS - 1)}…` : text;
 }
 
 type KeepAwakeProvider =
-  | { kind: "command"; bin: string }
+  /** `tree`: started as a process-tree root and ended through the process-lifetime seam. */
+  | { kind: "command"; name: "caffeinate" | "systemd-inhibit"; bin: string; args: string[]; tree: boolean }
   | { kind: "native"; binding: NativeKeepAwakeBinding }
   | { kind: "unavailable"; reason: string };
 
@@ -85,7 +129,8 @@ export class KeepAwakeManager {
   private readonly provider: KeepAwakeProvider;
   private readonly daemonPid: number;
   private readonly now: () => number;
-  private readonly spawnFn: (bin: string, args: string[]) => KeepAwakeChild;
+  private readonly spawnFn: (bin: string, args: string[], options: Readonly<SpawnOptions>) => KeepAwakeChild;
+  private readonly lifetime: ProcessLifetime;
   private readonly setTimeoutFn: (fn: () => void, ms: number) => NodeJS.Timeout;
   private readonly clearTimeoutFn: (t: NodeJS.Timeout) => void;
   private readonly forceKillAfterMs: number;
@@ -108,14 +153,46 @@ export class KeepAwakeManager {
   constructor(deps: KeepAwakeDeps = {}) {
     const platform = deps.platform ?? process.platform;
     const override = deps.override === undefined ? envVar("KEEP_AWAKE_BIN") ?? null : deps.override;
+    this.daemonPid = deps.daemonPid ?? process.pid;
     if (override) {
-      this.provider = { kind: "command", bin: override };
+      this.provider = {
+        kind: "command",
+        name: "caffeinate",
+        bin: override,
+        args: ["-i", "-w", String(this.daemonPid)],
+        tree: false,
+      };
+    } else if (platform === "linux") {
+      const locateInhibitor =
+        deps.locateInhibitor ?? (() => locateExecutableSync("systemd-inhibit")?.path ?? null);
+      const bin = locateInhibitor();
+      // `tail` is checked here too: without it `systemd-inhibit` exits the moment it starts,
+      // which would read as a failure on every switch instead of an honest unavailable.
+      const tail = FIXED_OS_EXECUTABLES.tail;
+      const isExecutable = deps.isExecutable ?? executableFile;
+      this.provider = !bin
+        ? {
+            kind: "unavailable",
+            reason: "Keep awake is unavailable on this system - systemd-inhibit was not found",
+          }
+        : !isExecutable(tail)
+          ? {
+              kind: "unavailable",
+              reason: `Keep awake is unavailable on this system - ${tail} was not found`,
+            }
+          : {
+              kind: "command",
+              name: "systemd-inhibit",
+              bin,
+              args: systemdInhibitArgs(this.daemonPid),
+              tree: true,
+            };
     } else if (platform !== "darwin") {
       this.provider = {
         kind: "unavailable",
         reason: bounded(
           `Keep awake is unavailable on this system (${platform}) - ` +
-            "the native provider only supports macOS",
+            "it is supported on macOS and on Linux with systemd",
         ),
       };
     } else {
@@ -130,14 +207,14 @@ export class KeepAwakeManager {
         };
       }
     }
-    this.daemonPid = deps.daemonPid ?? process.pid;
     this.now = deps.now ?? Date.now;
     this.spawnFn =
       deps.spawn ??
-      ((bin, args) =>
+      ((executable, args, options) =>
         // Direct argv, no shell, no inherited stdio: the command is fixed and the
-        // arguments are numbers we produced, so nothing here is interpolatable.
-        nodeSpawn(bin, args, { stdio: "ignore", shell: false }));
+        // arguments are constants and numbers we produced, so nothing is interpolatable.
+        nodeSpawn(executable, args, { ...options, stdio: "ignore", shell: false }));
+    this.lifetime = deps.processLifetime ?? processLifetimeFor(platform);
     this.setTimeoutFn = deps.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimeoutFn = deps.clearTimeoutFn ?? ((t) => clearTimeout(t));
     this.forceKillAfterMs = deps.forceKillAfterMs ?? DEFAULT_FORCE_KILL_AFTER_MS;
@@ -149,7 +226,7 @@ export class KeepAwakeManager {
       provider: this.provider.kind === "native"
         ? "iokit"
         : this.provider.kind === "command"
-          ? "caffeinate"
+          ? this.provider.name
           : null,
       since: null,
       error: null,
@@ -175,8 +252,8 @@ export class KeepAwakeManager {
   /**
    * The daemon-shutdown half: the disable path, and nothing more. There is no durable
    * state to write because none exists. IOKit drops a native assertion with its owning
-   * process, while the explicit command fixture's `-w <daemon PID>` covers exits that
-   * never reach this method.
+   * process, while a command provider's child watches the daemon PID and covers exits
+   * that never reach this method.
    */
   async stop(): Promise<void> {
     await this.setEnabled(false);
@@ -197,7 +274,7 @@ export class KeepAwakeManager {
     this.publish({ state: "starting", since: null, error: null });
     if (this.provider.kind === "native") {
       try {
-        this.nativeHandle = this.provider.binding.create(NATIVE_ASSERTION_REASON);
+        this.nativeHandle = this.provider.binding.create(ASSERTION_REASON);
         this.hasNativeHandle = true;
       } catch (err) {
         this.nativeHandle = undefined;
@@ -213,7 +290,12 @@ export class KeepAwakeManager {
       this.publish({ state: "on", since: this.now(), error: null });
       return this.current;
     }
-    const child = this.spawnFn(this.provider.bin, ["-i", "-w", String(this.daemonPid)]);
+    const provider = this.provider;
+    const child = this.spawnFn(
+      provider.bin,
+      provider.args,
+      provider.tree ? this.lifetime.treeRootOptions : {},
+    );
     this.child = child;
     const outcome = await new Promise<"spawned" | Error>((resolve) => {
       child.on("spawn", () => resolve("spawned"));
@@ -249,11 +331,11 @@ export class KeepAwakeManager {
     const exited = new Promise<void>((resolve) => {
       this.expectedExit = { child, resolve };
     });
-    child.kill("SIGTERM");
+    this.signal(child, "SIGTERM");
     // Bounded escalation, and only ever for the child this manager spawned: SIGTERM is
     // given `forceKillAfterMs`, then SIGKILL the same again. A child that survives both
     // is abandoned with a visible error rather than allowed to hang daemon shutdown.
-    const killTimer = this.setTimeoutFn(() => child.kill("SIGKILL"), this.forceKillAfterMs);
+    const killTimer = this.setTimeoutFn(() => this.signal(child, "SIGKILL"), this.forceKillAfterMs);
     let deadlineTimer: NodeJS.Timeout | null = null;
     const gaveUp = await Promise.race([
       exited.then(() => false),
@@ -278,6 +360,22 @@ export class KeepAwakeManager {
     }
     this.publish({ state: "off", since: null, error: null });
     return this.current;
+  }
+
+  /**
+   * A tree-rooted child is signalled as a tree, so `systemd-inhibit`'s `tail` cannot outlive
+   * it; anything else, or a tree that is already gone, falls back to the child alone.
+   */
+  private signal(child: KeepAwakeChild, signal: NodeJS.Signals): void {
+    if (this.provider.kind === "command" && this.provider.tree && child.pid) {
+      try {
+        this.lifetime.signalTree(child.pid, signal);
+        return;
+      } catch {
+        // Fall through to the child itself.
+      }
+    }
+    child.kill(signal);
   }
 
   private disableNative(binding: NativeKeepAwakeBinding): KeepAwakeStatus {

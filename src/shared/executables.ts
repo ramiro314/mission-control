@@ -29,6 +29,7 @@ export const EXECUTABLE_IDS = [
   "lsof",
   "du",
   "treehouse",
+  "systemd-inhibit",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

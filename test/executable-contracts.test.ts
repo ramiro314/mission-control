@@ -39,8 +39,7 @@ interface ChildProcessBoundary {
     | "verified-migration-source"
     | "operator-command"
     | "ci-workflow-command"
-    | "resolved-path-parameter"
-    | "test-provider";
+    | "resolved-path-parameter";
   reason: string;
 }
 
@@ -95,7 +94,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Pi path resolved before catalog discovery" },
   ],
   "src/server/keep-awake.ts": [
-    { operation: "spawn", command: "bin", contract: "test-provider", reason: "explicit fake provider retained for Linux-safe integration coverage" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "the explicit MISSION_KEEP_AWAKE_BIN fixture, or Linux systemd-inhibit resolved through the locator when the manager is built" },
   ],
   "src/server/llm/codex.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Codex CLI" },
@@ -284,8 +283,6 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === "command";
     case "resolved-path-parameter":
       return boundary.command === "executable";
-    case "test-provider":
-      return boundary.command === "bin";
   }
 }
 

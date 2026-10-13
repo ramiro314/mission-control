@@ -1,4 +1,4 @@
-# Keep Awake - real macOS verification runbook
+# Keep Awake - real host verification runbook
 
 Automated tests prove the daemon owns the native assertion lifecycle, that every window
 converges over SSE through a Linux-safe command fixture, and that a restart returns the mode to off.
@@ -6,7 +6,7 @@ What they cannot prove is that the OPERATING SYSTEM honoured the assertion - tha
 really did stay up with the screen locked, and really did let go afterwards. This runbook
 is that receipt. Perform it on a real Mac against a real daemon (no
 `MISSION_KEEP_AWAKE_BIN` override) and record the observations in the change that needed
-them.
+them. The steps below are for macOS; Linux has its own shorter [section](#linux).
 
 ## The exact guarantee being verified
 
@@ -22,7 +22,7 @@ them.
 ## 1. Enable, and see the assertion
 
 1. Open the dashboard, click the **live** segment in the fleet pulse, and switch
-   **Keep this Mac awake** on. The indicator must read `live · awake`.
+   **Keep this computer awake** on. The indicator must read `live · awake`.
 2. Record the daemon PID, then confirm the same process owns the assertion:
 
    ```sh
@@ -80,3 +80,21 @@ exact-PID mechanics, see [Running Mission Control](../overview.md#quick-start).
 If IOKit denies or terminates the assertion, or endpoint policy prohibits it, stop and record
 the exact return and policy evidence. Do not add a command, input, audio, display, or automatic
 retry fallback.
+
+## Linux
+
+On Linux the provider is `systemd-inhibit`, and the receipt is logind's own list. Run against
+a real daemon with no `MISSION_KEEP_AWAKE_BIN` override.
+
+1. Switch **Keep this computer awake** on, then:
+
+   ```sh
+   systemd-inhibit --list --no-pager | grep "Mission Control"
+   ```
+
+   Expect one `Mission Control` row with `What` `idle:sleep`, `Mode` `block`, and the
+   daemon's own UID.
+2. Switch it off. The same command prints nothing, and
+   `pgrep -af "tail --pid=<daemon PID>"` prints nothing.
+3. Switch it on again, then `kill -9 <daemon PID>`. Within about a second the row is gone:
+   `tail --pid` noticed the daemon's exit and `systemd-inhibit` released the lock.

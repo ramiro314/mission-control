@@ -128,6 +128,7 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     candidates: ({ platform }) => platform === "darwin" ? ["/usr/bin/du"] : ["/usr/bin/du"],
   }),
   treehouse: spec("treehouse", "Treehouse compatibility CLI", "treehouse", "TREEHOUSE_BIN"),
+  "systemd-inhibit": spec("systemd-inhibit", "systemd inhibitor", "systemd-inhibit", "SYSTEMD_INHIBIT_BIN"),
 };
 
 /** Truly fixed OS utilities. They are never searched and must be invoked by this path. */
@@ -140,6 +141,9 @@ export const FIXED_OS_EXECUTABLES = {
   // deliberately not overridable: the desktop shell uses it before `app.whenReady()`, so there
   // is no locator snapshot yet and nothing to select between.
   open: "/usr/bin/open",
+  // Keep Awake's Linux inhibitor runs this as its command, so `systemd-inhibit` exits, and
+  // releases its lock, when the daemon does. GNU coreutils; `--pid` is a GNU extension.
+  tail: "/usr/bin/tail",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;
