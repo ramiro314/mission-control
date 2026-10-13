@@ -34,6 +34,7 @@ import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
 import { readBrief } from "./brief.ts";
+import { inspectorDenyPaths } from "./deny-paths.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
 import {
@@ -182,8 +183,10 @@ function reviewModel(cfg: InspectorConfig): string {
  * this builds for are different jobs with different prices - a full review carries the
  * largest prompt in the system, a follow-up reply a third of it - and folding them into one
  * `inspector` bucket would answer none of the questions worth asking about either.
+ *
+ * Exported so a test can see the grant a spawn really receives, deny rules included.
  */
-function inspectorRunOptions(
+export function inspectorRunOptions(
   cfg: InspectorConfig,
   timeoutMs: number,
   cwd: string,
@@ -205,7 +208,7 @@ function inspectorRunOptions(
       // cannot, so it reviews the supplied diff without repository tools instead of
       // silently accepting a weaker grant.
       ...(runner.sandbox
-        ? { grant: { tools: REVIEW_TOOLS.split(","), cwd, denyPaths: DENY_PATHS } }
+        ? { grant: { tools: REVIEW_TOOLS.split(","), cwd, denyPaths: inspectorDenyPaths() } }
         : {}),
     },
   } as const;
@@ -276,54 +279,12 @@ export function pushEndsTheWait(pr: Pick<InspectorPr, "failCount" | "lastFailKin
  * diff without being able to open a file misses most of what matters (does this break a
  * caller? is there a test?), which is why the grant exists - but the input is a diff
  * anyone can author and the output is a public comment, so it is paid for by the deny
- * rules below, the worktree cwd, the changed-path filter in the planner, and the
+ * rules in `./deny-paths.ts`, the worktree cwd, the changed-path filter in the planner, and the
  * scrubber on every outbound string.
  */
 export const REVIEW_TOOLS = "Read,Grep,Glob";
 
-/**
- * Path rules handed to Claude Code itself, so they are enforced by the harness rather
- * than by asking the model nicely.
- *
- * The list is the obvious credential stores plus this app's own state: a reviewer that
- * could read `~/.claude` could read the operator's other projects' transcripts, and a
- * reviewer that could read `.git/config` could read a token embedded in a remote URL.
- *
- * Every path is denied for all THREE tools the reviewer holds, not just `Read`. `Grep`
- * takes an absolute path and prints the matching lines, so a `Read(...)`-only list
- * protects nothing it names; `Glob` confirms the files exist. The grant is what pays
- * for the tool access, so it has to cover the whole grant.
- */
-export const DENY_PATHS = [
-  "**/.env",
-  "**/.env.*",
-  "**/*.pem",
-  "**/*.key",
-  "**/*.p12",
-  "**/id_rsa*",
-  "**/id_ed25519*",
-  "**/.git/config",
-  "**/.npmrc",
-  "**/.netrc",
-  "**/credentials*",
-  "//Users/*/.aws/**",
-  "//Users/*/.ssh/**",
-  "//Users/*/.claude/**",
-  "//Users/*/.mission-control/**",
-];
-
-/**
- * Exported alongside `REVIEW_TOOLS` and `DENY_PATHS` so `llm-runner-contract.test.ts` can
- * assert that the `LlmRunner` tool grant renders this EXACT string. The Inspector is the
- * only caller that holds tools, so it is the one that decides whether that interface fits;
- * pinning the equality now is what makes the item that migrates this call site a provable
- * no-op rather than a hopeful one.
- */
-export const DENY_SETTINGS = JSON.stringify({
-  permissions: {
-    deny: DENY_PATHS.flatMap((p) => [`Read(${p})`, `Grep(${p})`, `Glob(${p})`]),
-  },
-});
+export { DENY_PATHS, DENY_SETTINGS } from "./deny-paths.ts";
 
 /**
  * A directory that still exists to run things from, or null.
