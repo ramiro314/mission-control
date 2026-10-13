@@ -209,9 +209,8 @@ test("the topbar and the palette open the same retained draft", async ({ dashboa
   await expect(form(dashboard)).toBeHidden();
 
   // In through the palette this time, typed by the word someone in this state reaches for.
-  // `Meta+k` and not `ControlOrMeta+k`: `chordFromEvent` derives the Command modifier from
-  // `e.metaKey` alone, so the ControlOrMeta spelling arrives as "ctrl+k" and matches nothing.
-  await dashboard.keyboard.press("Meta+k");
+  // `ControlOrMeta`, the platform's primary modifier, as `cmd` means in the chord grammar.
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   await dashboard.keyboard.type("bug");

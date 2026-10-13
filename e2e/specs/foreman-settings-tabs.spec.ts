@@ -179,7 +179,7 @@ test("a settings deep link selects the closed Foreman tab before flashing its co
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await dashboard.getByRole("combobox", { name: "Search everything" })
     .fill("Skip automatic completion for Scout tasks");
   await dashboard.getByRole("option", {
@@ -197,7 +197,7 @@ test("a settings deep link selects the closed Foreman tab before flashing its co
   // until the first flash has genuinely finished, then drive the same palette result again.
   await expect(target).not.toHaveClass(/settings-flash/, { timeout: 5_000 });
   await tab(dashboard, "Posture").click();
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await dashboard.getByRole("combobox", { name: "Search everything" })
     .fill("Skip automatic completion for Scout tasks");
   await dashboard.getByRole("option", {

@@ -18,7 +18,7 @@ async function enable(daemon: DaemonHandle) {
 test("search, reconnect and renderer loops produce bounded private facts without duplicating navigation", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   await enable(daemon);
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const search = dashboard.getByRole("combobox", { name: "Search everything" });
   await search.fill("telemetry");
   await expectContentClearsBorder(dashboard.getByRole("dialog", { name: "Search everything" }));
@@ -30,7 +30,7 @@ test("search, reconnect and renderer loops produce bounded private facts without
 
   // A reconnect remains in one page visit; SSE snapshots are not navigation.
   await dashboard.context().setOffline(true);
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await search.fill("PRIVATE_SENTINEL_no_result_7fe97");
   await expect(dashboard.getByText(/Nothing matches/i)).toBeVisible();
   await dashboard.keyboard.press("Escape");

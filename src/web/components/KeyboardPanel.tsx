@@ -4,6 +4,7 @@ import {
   type ActionId,
   bindingValidationError,
   chordFromEvent,
+  defaultChord,
   findConflicts,
   formatChord,
   resetAll,
@@ -132,7 +133,7 @@ export function KeyboardPanel(): React.JSX.Element {
             const resetOwner = resetPreview.owner ? labelOf(resetPreview.owner) : null;
             const resetTooltip =
               custom && !resetChord && resetOwner
-                ? `Clear ${formattedChord || "custom binding"} - ${formatChord(a.defaultBinding)} is taken by ${resetOwner}, so this stays unset`
+                ? `Clear ${formattedChord || "custom binding"} - ${formatChord(defaultChord(a))} is taken by ${resetOwner}, so this stays unset`
                 : custom
                   ? `Reset ${a.label} to ${resetChord}`
                   : formattedChord
@@ -140,7 +141,7 @@ export function KeyboardPanel(): React.JSX.Element {
                     : "No custom binding";
             const resetAriaLabel =
               custom && !resetChord && resetOwner
-                ? `Clear ${a.label} ${formattedChord || "custom binding"}; ${formatChord(a.defaultBinding)} is taken by ${resetOwner}, so ${a.label} stays unset`
+                ? `Clear ${a.label} ${formattedChord || "custom binding"}; ${formatChord(defaultChord(a))} is taken by ${resetOwner}, so ${a.label} stays unset`
                 : `Reset ${a.label} to default`;
             return (
               <div

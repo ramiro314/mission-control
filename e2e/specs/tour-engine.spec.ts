@@ -155,7 +155,7 @@ test("both entry points are drawn from the tour registry, and start the same one
 
   // The palette's Do group draws one command row per registered tour, from the same registry.
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("See the work");
   await expect(palette.getByRole("option", { name: TOUR_COMMAND })).toHaveCount(1);
@@ -202,7 +202,7 @@ test("a second activation while a tour is running does not start a second tour",
 
   // The running tour owns the keyboard, so the palette cannot even open over it. That is the
   // outer guard; the inner one is the single active-run ref, which is what this count proves.
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await expect(dashboard.getByRole("dialog", { name: "Search everything" })).toBeHidden();
   await expect(dashboard.locator(".driver-popover")).toHaveCount(1);
   await expect(first).toContainText("Step 1 of 14");

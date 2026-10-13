@@ -519,11 +519,9 @@ test("Scouts is reachable from the topbar, its shortcut, and the command palette
   //    found by what the page is about.
   await dashboard.getByRole("button", { name: /^Fleet/ }).click();
   await expect(scoutsRail).toBeHidden();
-  // `Meta+k`, not `ControlOrMeta`: the chord grammar derives `cmd` from `e.metaKey` alone
-  // (`chordFromEvent`), so on Linux CI `ControlOrMeta` sends Control, no chord matches, and
-  // the palette never opens. Passed on macOS and failed on CI for exactly that reason. The
-  // three other specs that open the palette all press `Meta+k`.
-  await dashboard.keyboard.press("Meta+k");
+  // `ControlOrMeta`: the chord grammar's `cmd` is Command on macOS and Ctrl elsewhere, so
+  // this is ⌘K on a Mac and Ctrl+K on Linux CI. See the note in `palette.spec.ts`.
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   // "investigation" is in the row's keywords and in NO page title, so a hit here proves the

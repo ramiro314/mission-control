@@ -29,7 +29,7 @@ async function pin(daemon: DaemonHandle, patch: object) {
   expect(response.ok).toBe(true);
 }
 async function browse(page: Page) {
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox").fill("Browse tours");
   await palette.getByRole("option", { name: /Browse tours, command/ }).click();
@@ -241,7 +241,7 @@ for (const startDirectly of [false, true]) {
     const held = new Promise<void>((resolve) => { release = resolve; });
     await page.route("**/api/ui/config", async (route) => { await held; await route.continue(); });
     await page.goto(`${daemon.baseURL}/#/fleet`);
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("ControlOrMeta+k");
     const palette = page.getByRole("dialog", { name: "Search everything" });
     await expect(palette).toBeVisible();
     if (startDirectly) {
@@ -276,7 +276,7 @@ for (const entry of TOUR_ENTRIES) {
     await expect(first).toHaveCount(1);
     await expect(first).toContainText(TOUR_DEFINITIONS[entry.id].steps[0]!.title);
     await expect(first).toContainText(`Step 1 of ${TOUR_DEFINITIONS[entry.id].steps.length}`);
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByRole("dialog", { name: "Search everything" })).toBeHidden();
     await first.getByRole("button", { name: "Exit tour" }).click();
     await expect(first).toBeHidden();
@@ -425,7 +425,7 @@ for (const owner of ["tour", "overlay"]) {
       await expect(page.locator(".driver-popover")).toBeVisible();
     } else {
       await picker(page).getByRole("button", { name: "Dismiss", exact: true }).click();
-      await page.keyboard.press("Meta+k");
+      await page.keyboard.press("ControlOrMeta+k");
       await expect(page.getByRole("dialog", { name: "Search everything" })).toBeVisible();
     }
     await write.reject();

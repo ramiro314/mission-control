@@ -16,6 +16,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import { CARD_SHORTCUT_CHORDS } from "./card-shortcuts.ts";
+import { isMacClient } from "./platform.ts";
 import { subscribeUiConfig, uiConfig, updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 export type ActionId =
@@ -75,6 +76,20 @@ export interface ActionDef {
    * unsafe chord in the editor and on every read of the stored overrides.
    */
   firesWhileTyping?: boolean;
+  /**
+   * Whether `defaultBinding` applies only on macOS. Off macOS the action ships unbound and
+   * stays bindable; see `defaultChord`.
+   */
+  macOnlyDefault?: boolean;
+}
+
+/**
+ * The chord an action ships with on this client, or "" when it ships unbound here.
+ *
+ * Differs from `defaultBinding` only for a `macOnlyDefault` action off macOS.
+ */
+export function defaultChord(action: ActionDef): string {
+  return action.macOnlyDefault && !isMacClient() ? "" : action.defaultBinding;
 }
 
 // Order here is the order shown in the settings panel.
@@ -389,11 +404,15 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
+    // ⌃R on macOS only. Off macOS `ctrl` is the primary modifier, so ⌃R would be Ctrl+R,
+    // which is reload: a destructive action must not share a key with it. It stays in the
+    // session's action bar there, and can be bound in Keyboard settings.
     id: "reset",
     label: "Reset checkout",
     description: "Reset the selected session's checkout to origin and clear its context.",
     defaultBinding: "ctrl+r",
     group: "selection",
+    macOnlyDefault: true,
   },
   {
     // Appended because action ids key persisted overrides. Delete is page-contextual rather
@@ -434,6 +453,12 @@ const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
  * "+" ahead of the key. Returns null for a lone modifier press so key capture can
  * keep waiting for a real key.
  *
+ * `cmd` is the platform's PRIMARY modifier, not a physical key. On macOS it is Command and
+ * `ctrl` is Control. Everywhere else it is Ctrl, so Ctrl emits `cmd` and no keypress there
+ * emits `ctrl`; a stored `ctrl` chord still matches through `canonicalChord`. The Super key
+ * returns null off macOS, because the desktop owns it and a binding written `cmd` must not
+ * answer to it.
+ *
  * Whether shift is a modifier depends on whether the key is *cased*:
  *
  * - A cased character (a letter) only changes case under shift, so shift is a real
@@ -450,9 +475,11 @@ const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
 export function chordFromEvent(e: KeyboardEvent): string | null {
   const k = e.key;
   if (k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return null;
+  const mac = isMacClient();
+  if (e.metaKey && !mac) return null;
   const mods: string[] = [];
   if (e.metaKey) mods.push("cmd");
-  if (e.ctrlKey) mods.push("ctrl");
+  if (e.ctrlKey) mods.push(mac ? "ctrl" : "cmd");
   if (e.altKey) mods.push("alt");
   let key: string;
   if (k.length === 1 && !isCased(k)) {
@@ -491,6 +518,22 @@ function parseChord(chord: string): { mods: string[]; key: string } {
     }
   }
   return { mods, key: rest };
+}
+
+/**
+ * The one spelling a chord has on this client, which every comparison goes through: stored
+ * bindings, defaults, and `chordFromEvent`'s output (already canonical) alike.
+ *
+ * On macOS a chord is its own canonical form, `cmd` (Command) and `ctrl` (Control) apart.
+ * Elsewhere both tokens mean Ctrl, so `ctrl` becomes `cmd` and the two compare equal.
+ * Stored text is never rewritten; only what it is compared as changes.
+ */
+export function canonicalChord(chord: string): string {
+  if (!chord || isMacClient()) return chord;
+  const { mods, key } = parseChord(chord);
+  if (!mods.includes("ctrl")) return chord;
+  const canonical = new Set(mods.map((m) => (m === "ctrl" ? "cmd" : m)));
+  return [...MOD_TOKENS.filter((m) => canonical.has(m)), key].join("+");
 }
 
 const MOD_SYMBOL: Record<string, string> = { cmd: "⌘", ctrl: "⌃", alt: "⌥", shift: "⇧" };
@@ -556,7 +599,7 @@ export function ariaKeyshortcuts(chord: string): string | undefined {
  */
 export function reservedChordReason(chord: string): string | null {
   if (chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key)) return "grid navigation";
-  if (CARD_SHORTCUT_CHORDS.includes(chord)) return "the fleet's session jump shortcuts";
+  if (CARD_SHORTCUT_CHORDS.includes(canonicalChord(chord))) return "the fleet's session jump shortcuts";
   return null;
 }
 
@@ -673,10 +716,12 @@ export function chordEditsText(chord: string): boolean {
  * not AltGr there). At DISPATCH the question is answerable exactly, and
  * `composerEditorRequested` asks it through `getModifierState("AltGraph")`.
  *
- * Cmd present means it is not AltGr: no layout produces a character from ⌘ plus Ctrl+Alt.
+ * On macOS, Cmd present means it is not AltGr: no layout produces a character from ⌘ plus
+ * Ctrl+Alt. Off macOS `cmd` IS Ctrl (see `canonicalChord`), so it counts as Ctrl there.
  */
 export function chordMayBeAltGraph(chord: string): boolean {
-  const { mods } = parseChord(chord);
+  const { mods } = parseChord(canonicalChord(chord));
+  if (!isMacClient()) return mods.includes("cmd") && mods.includes("alt");
   if (mods.includes("cmd")) return false;
   return mods.includes("ctrl") && mods.includes("alt");
 }
@@ -807,21 +852,26 @@ function currentOverrides(): Overrides {
  * displaces an operator's existing choice. Within each pass registry order breaks
  * malformed legacy/hand-edited ties; an action that cannot claim its stored chord or
  * default stays unset.
+ *
+ * Resolves to CANONICAL chords, so every reader compares `chordFromEvent`'s output with
+ * plain equality, and two chords that are one key on this client (`ctrl+k` and `cmd+k` off
+ * macOS) collide here rather than both appearing bound.
  */
 function computeResolved(overrides: Overrides): Record<ActionId, string> {
   const out = {} as Record<ActionId, string>;
   const claimed = new Set<string>();
   for (const a of ACTIONS) out[a.id] = "";
   for (const a of ACTIONS) {
-    const chord = overrides[a.id];
+    const chord = canonicalChord(overrides[a.id] ?? "");
     if (!chord || claimed.has(chord)) continue;
     out[a.id] = chord;
     claimed.add(chord);
   }
   for (const a of ACTIONS) {
-    if (overrides[a.id] || claimed.has(a.defaultBinding)) continue;
-    out[a.id] = a.defaultBinding;
-    claimed.add(a.defaultBinding);
+    const chord = canonicalChord(defaultChord(a));
+    if (overrides[a.id] || !chord || claimed.has(chord)) continue;
+    out[a.id] = chord;
+    claimed.add(chord);
   }
   return out;
 }
@@ -843,7 +893,8 @@ export function previewResetBinding(
   delete next[id];
   const bindings = computeResolved(next);
   const binding = bindings[id];
-  const defaultBinding = ACTION_BY_ID.get(id)?.defaultBinding;
+  const def = ACTION_BY_ID.get(id);
+  const defaultBinding = def ? canonicalChord(defaultChord(def)) : "";
   const owner =
     !binding && defaultBinding
       ? (ACTIONS.find((action) => bindings[action.id] === defaultBinding)?.id ?? null)
@@ -866,7 +917,7 @@ export function setBinding(id: ActionId, chord: string): void {
   if (!def) return;
   const next: Overrides = { ...currentOverrides() };
   if (bindingValidationError(computeResolved(next), id, chord)) return;
-  if (chord === def.defaultBinding) delete next[id];
+  if (canonicalChord(chord) === canonicalChord(defaultChord(def))) delete next[id];
   else next[id] = chord;
   commit(next);
 }
@@ -888,12 +939,12 @@ export function resetAll(): void {
 
 /**
  * For a resolved binding map, the set of actions each action collides with (two
- * actions sharing a chord). Empty for anything unique.
+ * actions sharing a canonical chord). Empty for anything unique.
  */
 export function findConflicts(bindings: Record<ActionId, string>): Map<ActionId, ActionId[]> {
   const byChord = new Map<string, ActionId[]>();
   for (const a of ACTIONS) {
-    const chord = bindings[a.id];
+    const chord = canonicalChord(bindings[a.id]);
     if (!chord) continue;
     const arr = byChord.get(chord) ?? [];
     arr.push(a.id);

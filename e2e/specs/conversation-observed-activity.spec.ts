@@ -124,10 +124,9 @@ test("Find borrows the secondary rail and closing it restores Observed activity"
   await expect(activity.getByText("bash", { exact: true })).toBeVisible();
 
   // The helper selected the session before opening the detail. Open find with its chord.
-  // `Meta+f`, not `ControlOrMeta`: the app's chord grammar reads `cmd` off
-  // `metaKey`, which is what Playwright synthesizes for Meta on every platform.
+  // `ControlOrMeta`: the chord grammar's `cmd` is Command on macOS and Ctrl elsewhere.
   await card.locator(".detail-body").focus();
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
 
   // Find owns the column now - whole, not shared: its rail is visible, activity is gone.
   await expect(card.getByRole("searchbox", { name: "Find in conversation" })).toBeVisible();

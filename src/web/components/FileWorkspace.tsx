@@ -1398,9 +1398,9 @@ function FileWorkspaceBody({
    * - it fires from inside a typing element, because the caret is in CodeMirror's
    *   `contentEditable` whenever the reader is in the Editor, which is precisely when they
    *   want find;
-   * - it accepts `ctrl+f` as well as the resolved binding. `chordFromEvent` does no platform
-   *   normalization, so the default `cmd+f` genuinely does not match Ctrl+F, and the ask
-   *   names both keys.
+   * - it accepts `ctrl+f` as well as the resolved binding. On macOS the default `cmd+f`
+   *   genuinely does not match Ctrl+F, and the ask names both keys; elsewhere Ctrl+F is
+   *   `cmd+f` already (see `chordFromEvent`).
    *
    * It also claims FIND-NEXT and FIND-PREVIOUS, not only the open chord, and it has to: only
    * `FileEditor` installs those, so with find open over a Markdown or HTML preview - where no

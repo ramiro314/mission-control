@@ -25,12 +25,8 @@ import { expect, test } from "../fixtures/test.ts";
  * is, then closed, so no agent binary runs and nothing here spends model tokens.
  */
 
-/**
- * `Meta+k`, not `ControlOrMeta+k` - the same trap `palette.spec.ts` documents. `chordFromEvent`
- * derives the Command modifier from `e.metaKey` alone, so on Linux, where Playwright maps
- * `ControlOrMeta` to Control, this would arrive as "ctrl+k" and match nothing.
- */
-const CHORD = "Meta+k";
+/** `ControlOrMeta`, the platform's primary modifier. See the note in `palette.spec.ts`. */
+const CHORD = "ControlOrMeta+k";
 
 /**
  * The panel's checkbox, by the label it is wrapped in.

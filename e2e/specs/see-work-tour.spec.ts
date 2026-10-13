@@ -23,7 +23,7 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
 
 async function startTour(page: Page): Promise<void> {
   const palette = page.getByRole("dialog", { name: "Search everything" });
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("See the work");
   await palette.getByRole("option", { name: TOUR_COMMAND }).click();
@@ -174,7 +174,7 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
     await dashboard.keyboard.press(key);
     expect(await dialog.evaluate((root) => root.contains(document.activeElement))).toBe(true);
   }
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await expect(dashboard.getByRole("dialog", { name: "Search everything" })).toBeHidden();
 
   await dialog.getByRole("button", { name: "Next" }).click();

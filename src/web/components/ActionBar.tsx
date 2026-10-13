@@ -558,7 +558,7 @@ export function ActionBar({
           )}
           {session.cwd && onReset && (
             <Tooltip
-              label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
+              label={`Reset checkout to origin's default branch and clear context${bindings.reset ? ` (${formatChord(bindings.reset)})` : ""}`}
             >
               <button className="act act-reset" onClick={onReset}>
                 <Keycap action="reset" /> reset

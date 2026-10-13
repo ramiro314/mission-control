@@ -164,7 +164,7 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
 
   // Search is one route into the same registered category. The result lands on the native
   // inventory anchor, while the direct hash below proves the bookmark grammar too.
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await dashboard.getByRole("combobox", { name: "Search everything" }).fill("native worktree pools");
   await dashboard.getByRole("option", { name: /Native worktree pools/ }).click();
   await expect(dashboard).toHaveURL(/#\/settings\/worktrees$/);
