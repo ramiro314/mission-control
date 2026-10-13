@@ -8,6 +8,7 @@ import {
   type ContextInfo,
   type ContextTarget,
 } from "../src/web/lib/context-actions.ts";
+import { onClientPlatform } from "./helpers/client-platform.ts";
 
 function info(selection = ""): ContextInfo {
   return {
@@ -304,4 +305,28 @@ test("dedupe compares operation kind and payload, not payload alone", () => {
     labels(resolveContextActions(fakeElement({}), info(), registry)),
     ["Copy", "Paste", "Paste as quote", "Copy message"],
   );
+});
+
+test("Paste names the clipboard key each platform has, here and when permission is refused", async () => {
+  const pasteOn = async (platform: "darwin" | "linux") => {
+    const field = fakeField("draft", 5, 5);
+    const el = fakeElement({ "textarea, input": field });
+    const messages: string[] = [];
+    const ctx = info();
+    ctx.readClipboard = async () => { throw new Error("denied"); };
+    ctx.announce = (message) => { messages.push(message); };
+    const paste = onClientPlatform(platform, () => resolveContextActions(el, ctx))
+      .find((action) => action.id === "field.paste");
+    assert.ok(paste);
+    await paste.run();
+    return { hint: paste.hint, messages };
+  };
+  assert.deepEqual(await pasteOn("darwin"), {
+    hint: "⌘V",
+    messages: ["Paste needs clipboard permission. Press ⌘V instead."],
+  });
+  assert.deepEqual(await pasteOn("linux"), {
+    hint: "Ctrl+V",
+    messages: ["Paste needs clipboard permission. Press Ctrl+V instead."],
+  });
 });

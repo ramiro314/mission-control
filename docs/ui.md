@@ -1547,8 +1547,11 @@ names the layouts where a shortcut's target exists.
 <kbd>⌘</kbd> is the primary modifier: Command on macOS, <kbd>Ctrl</kbd> on Linux and Windows,
 where the Super key belongs to the desktop. Off macOS <kbd>⌘</kbd> and <kbd>⌃</kbd> are both
 Ctrl, so <kbd>⌘</kbd><kbd>K</kbd> is Ctrl+K and so is a binding recorded as <kbd>⌃</kbd><kbd>K</kbd>
-on a Mac; two such bindings are reported as the same key. Keycaps still draw <kbd>⌘</kbd>
-there. Stored bindings keep the text they were recorded with and work on either platform.
+on a Mac; two such bindings are reported as the same key. Keycaps and shortcut copy there name
+the keys instead of drawing <kbd>⌘</kbd> <kbd>⌃</kbd> <kbd>⌥</kbd> <kbd>⇧</kbd>: <kbd>⌘</kbd><kbd>⇧</kbd><kbd>R</kbd>
+reads Ctrl+Shift+R, <kbd>⇧</kbd><kbd>S</kbd> reads Shift+S, and the card jump keys read Ctrl+1, which
+assistive technology hears as `Control+1` rather than `Meta+1`. This table keeps the macOS glyphs. Stored bindings keep the text they were recorded with and work on
+either platform.
 
 | Key | Action | Scope |
 |-----|--------|-------|

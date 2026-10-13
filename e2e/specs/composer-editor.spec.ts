@@ -5,6 +5,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { platformKeycap, platformKeycapPattern } from "../fixtures/keycaps.ts";
 
 /**
  * The chain no other layer here can follow: a chord inside a live textarea opens a
@@ -15,11 +16,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 const DRAFT = "the first attempt at a correction";
 const REFINED = "one: the first point\ntwo: the second point\nthree: the third";
 const ABANDONED = "\nfour: a point that must not survive Escape";
-/**
- * The default `ctrl+g` as drawn on this machine. Off macOS `ctrl` and `cmd` are both Ctrl,
- * so the binding resolves to the primary modifier `cmd` and its keycap draws ⌘ there.
- */
-const EXPAND_KEYCAP = process.platform === "darwin" ? "⌃G" : "⌘G";
+/** The default `ctrl+g` as drawn on this machine: ⌃G on macOS, Ctrl+G everywhere else. */
+const EXPAND_KEYCAP = platformKeycap("⌃G");
 
 const EVIDENCE = artifactsDir("composer-editor");
 
@@ -148,7 +146,7 @@ test("the expand chord is rebindable, and refuses a key that would type itself",
 
   await dashboard.keyboard.press("ControlOrMeta+e");
   await expect(
-    row.getByRole("button", { name: /^Change shortcut for Expand the message box \(currently ⌘E\)/ }),
+    row.getByRole("button", { name: new RegExp(`^Change shortcut for Expand the message box \\(currently ${platformKeycapPattern("⌘E")}\\)`) }),
   ).toBeVisible();
   await shoot(dashboard, "rebound-in-keyboard-settings");
 

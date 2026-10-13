@@ -296,8 +296,10 @@ export const ACTIONS: readonly ActionDef[] = [
     // browser textarea on any of the three platforms.
     id: "composerEditor",
     label: "Expand the message box",
-    description:
-      "Open what you are writing in a full-size editor. ⌘Enter or ⌃Enter puts the result back in the send box without sending it.",
+    // A getter, because the staging keys it names depend on the client platform.
+    get description() {
+      return `Open what you are writing in a full-size editor. ${composerEditorStageKeys()} puts the result back in the send box without sending it.`;
+    },
     defaultBinding: "ctrl+g",
     group: "selection",
     firesWhileTyping: true,
@@ -537,6 +539,9 @@ export function canonicalChord(chord: string): string {
 }
 
 const MOD_SYMBOL: Record<string, string> = { cmd: "⌘", ctrl: "⌃", alt: "⌥", shift: "⇧" };
+// Off macOS a keycap names its modifiers, because those are the words printed on the keys
+// there. `cmd` and `ctrl` are both Ctrl (see `canonicalChord`).
+const MOD_NAME: Record<string, string> = { cmd: "Ctrl", ctrl: "Ctrl", alt: "Alt", shift: "Shift" };
 const KEY_LABEL: Record<string, string> = {
   ArrowUp: "↑",
   ArrowDown: "↓",
@@ -551,23 +556,60 @@ const KEY_LABEL: Record<string, string> = {
   ContextMenu: "☰",
 };
 
-/** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
+/**
+ * Human-readable form of a chord for keycaps and the editor: "⌘K", "⇧O", "⇥", "/" on macOS,
+ * and "Ctrl+K", "Shift+O", "⇥", "/" everywhere else.
+ */
 export function formatChord(chord: string): string {
   if (!chord) return "";
-  const { mods, key } = parseChord(chord);
-  const modStr = mods.map((m) => MOD_SYMBOL[m] ?? m).join("");
+  const mac = isMacClient();
+  const { mods, key } = parseChord(mac ? chord : canonicalChord(chord));
   // A modified letter reads as the keycap convention it's written in everywhere
   // else ("⌘K", "⇧O"), while a bare letter stays as typed ("k").
-  if (mods.length > 0 && key.length === 1 && isCased(key)) return modStr + key.toUpperCase();
-  return modStr + (KEY_LABEL[key] ?? key);
+  const keyStr = mods.length > 0 && key.length === 1 && isCased(key)
+    ? key.toUpperCase()
+    : KEY_LABEL[key] ?? key;
+  if (!mac) return [...mods.map((m) => MOD_NAME[m] ?? m), keyStr].join("+");
+  return mods.map((m) => MOD_SYMBOL[m] ?? m).join("") + keyStr;
 }
 
-/** WAI-ARIA spelling of a canonical chord for `aria-keyshortcuts`. */
+/**
+ * The command modifiers as copy names them: "⌘ or ⌃" on macOS, where they are two keys,
+ * and "Ctrl" everywhere else, where `cmd` and `ctrl` are the same one.
+ */
+export function commandModifierNames(): string {
+  return isMacClient() ? "⌘ or ⌃" : "Ctrl";
+}
+
+/**
+ * The keys that stage the full-size editor's text back in the send box, as copy names them
+ * (`composerEditorStages`): "⌘Enter or ⌃Enter" on macOS, "Ctrl+Enter" everywhere else.
+ */
+export function composerEditorStageKeys(): string {
+  return isMacClient() ? "⌘Enter or ⌃Enter" : "Ctrl+Enter";
+}
+
+/** The twelve card jump keys as copy names them: "⌘1 … ⌘0, ⌘-, ⌘=" on macOS. */
+export function cardShortcutKeysLabel(): string {
+  const keys = CARD_SHORTCUT_CHORDS.map(formatChord);
+  return `${keys[0]} … ${keys.slice(-3).join(", ")}`;
+}
+
+/** The three jump keys the desktop menu takes from page zoom: "⌘0/⌘-/⌘=" on macOS. */
+export function cardShortcutZoomKeysLabel(): string {
+  return CARD_SHORTCUT_CHORDS.slice(-3).map(formatChord).join("/");
+}
+
+/**
+ * WAI-ARIA spelling of a canonical chord for `aria-keyshortcuts`. Off macOS `cmd` is Ctrl
+ * (see `canonicalChord`), so it is announced as `Control` there, never `Meta`.
+ */
 export function ariaKeyshortcuts(chord: string): string | undefined {
   if (!chord) return undefined;
-  const { mods, key } = parseChord(chord);
+  const mac = isMacClient();
+  const { mods, key } = parseChord(mac ? chord : canonicalChord(chord));
   const ariaMods: Record<string, string> = {
-    cmd: "Meta",
+    cmd: mac ? "Meta" : "Control",
     ctrl: "Control",
     alt: "Alt",
     shift: "Shift",
@@ -780,7 +822,7 @@ export function typingUnsafeChordReason(id: ActionId, chord: string): string | n
   if (chordMayBeAltGraph(chord)) {
     return `${formatChord(chord)} is how Windows and Linux report AltGr, which types a character on many layouts. This shortcut fires from inside the send box, so that character would open the editor instead of being typed.`;
   }
-  return `${formatChord(chord)} would be typed into the message. This shortcut fires from inside the send box, so it needs ⌘ or ⌃ with a key, or a function key.`;
+  return `${formatChord(chord)} would be typed into the message. This shortcut fires from inside the send box, so it needs ${commandModifierNames()} with a key, or a function key.`;
 }
 
 /**

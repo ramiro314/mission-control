@@ -5,6 +5,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { settled } from "../fixtures/settle.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { platformKeycap } from "../fixtures/keycaps.ts";
 
 /**
  * The Native PTY rendering of the Conversation, driven end to end: a dispatched fake agent
@@ -322,7 +323,7 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   // The composer keeps the prompt metaphor and teaches the RESOLVED focus binding, not
   // the shipped `s`. Pressing the rebound chord proves the cue and the action share one
   // source rather than merely displaying the same custom value by coincidence.
-  await expect(reopened.getByText("mission (⇧J) >", { exact: true })).toBeVisible();
+  await expect(reopened.getByText(`mission (${platformKeycap("⇧J")}) >`, { exact: true })).toBeVisible();
   const reply = reopened.getByPlaceholder(/^Send the next instruction/);
   await expect(reply).toBeEnabled();
   await terminal.locator(".pty-titlebar").click();

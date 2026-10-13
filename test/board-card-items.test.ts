@@ -52,6 +52,7 @@ const { DISPLAY_GROUP_COPY, DISPLAY_ITEMS, isDisplayItemShown } = await import(
 );
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
+const { onClientPlatform } = await import("./helpers/client-platform.ts");
 const { DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS, seedHiddenDisplayItems } = await import(
   "../src/shared/protocol.ts",
 );
@@ -505,4 +506,15 @@ test("the preview mounts the real tile rather than a picture of one", () => {
   // stops its stretched open button, its pickers and its workflow disclosure from being
   // clicked or tabbed into.
   assert.match(panel, /className="board-card-preview-stage" inert/);
+});
+
+test("the Jump shortcut item names its keys the way each platform's keyboard does", () => {
+  const item = DISPLAY_ITEMS.find((i) => i.id === "cardShortcut")!;
+  const onMac = onClientPlatform("darwin", () => item.description);
+  assert.match(onMac, /^The ⌘1 … ⌘0, ⌘-, ⌘= keycap on the card/);
+  assert.match(onMac, /gives up ⌘0\/⌘-\/⌘=, and/);
+  const offMac = onClientPlatform("linux", () => item.description);
+  assert.match(offMac, /^The Ctrl\+1 … Ctrl\+0, Ctrl\+-, Ctrl\+= keycap on the card/);
+  assert.match(offMac, /gives up Ctrl\+0\/Ctrl\+-\/Ctrl\+=, and/);
+  assert.doesNotMatch(offMac, /⌘/);
 });

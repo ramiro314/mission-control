@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { COMPOSER_EDITOR_KEYS_HINT, composerEditorStages } from "../lib/composer-editor.ts";
+import { composerEditorKeysHint, composerEditorStages } from "../lib/composer-editor.ts";
+import { composerEditorStageKeys } from "../lib/keybindings.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -107,14 +108,14 @@ export function ComposerEditorModal({
       </div>
 
       <footer className="modal-foot">
-        <span className="composer-editor-keys">{COMPOSER_EDITOR_KEYS_HINT}</span>
+        <span className="composer-editor-keys">{composerEditorKeysHint()}</span>
         <span className="actions-spacer" />
         <Tooltip label="Close without staging - the send box keeps what it had">
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             Cancel
           </button>
         </Tooltip>
-        <Tooltip label="Put this text in the send box, unsent (⌘Enter or ⌃Enter)">
+        <Tooltip label={`Put this text in the send box, unsent (${composerEditorStageKeys()})`}>
           <button type="button" className="btn btn-send" onClick={stage}>
             Stage in the send box
           </button>

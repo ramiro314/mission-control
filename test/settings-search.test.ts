@@ -381,3 +381,12 @@ test("daemon-backed toggles get no binding until their config has loaded", () =>
   assert.equal(loaded.get("skills-enabled")!.get(), true);
   for (const id of loaded.keys()) assert.ok(BINDABLE_CONTROL_IDS.includes(id), `${id} is not bindable`);
 });
+
+test("the card jump keys are reachable by the modifier each platform calls them by", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "board-card")!;
+  // ⌘1 on macOS, Ctrl+1 everywhere else: a Linux operator hunting for where the numbers on
+  // their cards came from types "ctrl 1", not "cmd 1".
+  for (const term of ["cmd 1", "command 1", "ctrl 1", "control 1"]) {
+    assert.ok(control.keywords.includes(term), `"${term}" does not reach the jump keys`);
+  }
+});

@@ -46,10 +46,14 @@ const {
   ariaKeyshortcuts,
   bindingValidationError,
   canonicalChord,
+  cardShortcutKeysLabel,
+  cardShortcutZoomKeysLabel,
   chordFromEvent,
   chordHasCommandModifier,
   chordMayBeAltGraph,
   chordUsesFunctionKey,
+  commandModifierNames,
+  composerEditorStageKeys,
   defaultChord,
   findConflicts,
   formatChord,
@@ -61,6 +65,7 @@ const {
   resetBinding,
   resolveKeybindings,
   setBinding,
+  typingUnsafeChordReason,
 } = await import("../src/web/lib/keybindings.ts");
 const { onClientPlatform } = await import("./helpers/client-platform.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
@@ -734,7 +739,7 @@ test("conflicts compare canonical chords, so ctrl+k and cmd+k collide only off m
     assert.deepEqual(findConflicts(bindings).get("fleet"), ["settingsSearch"]);
     assert.equal(
       bindingValidationError(resolveKeybindings({}), "fleet", "ctrl+k"),
-      "⌃K is already bound to Search everything.",
+      "Ctrl+K is already bound to Search everything.",
     );
     // A stored override claims first, so the default it now shadows is left unset.
     const resolved = resolveKeybindings({ fleet: "ctrl+k" });
@@ -826,4 +831,95 @@ test("Ctrl+F still opens document find on either platform when Find is rebound",
     assert.equal(opensDocumentFind(chordFromEvent(key("F", { meta: true, shift: true })), findBinding), true);
     assert.equal(opensDocumentFind(chordFromEvent(key("f")), findBinding), false);
   });
+});
+
+// ---- keycaps and shortcut copy off macOS ----
+//
+// Off macOS a keycap names the keys a Linux keyboard has: `cmd` and `ctrl` are both "Ctrl",
+// and no ⌘ ⌃ ⌥ glyph is drawn. The macOS answer is pinned beside every Linux one.
+
+test("off macOS, a keycap names its modifiers; on macOS it draws the glyphs", () => {
+  const cases: [string, string, string][] = [
+    ["cmd+k", "⌘K", "Ctrl+K"],
+    ["ctrl+r", "⌃R", "Ctrl+R"],
+    ["ctrl+g", "⌃G", "Ctrl+G"],
+    ["alt+e", "⌥E", "Alt+E"],
+    ["shift+o", "⇧O", "Shift+O"],
+    ["cmd+shift+r", "⌘⇧R", "Ctrl+Shift+R"],
+    // Stored out of canonical order, and with both tokens: one Ctrl, in Ctrl+Alt+Shift order.
+    ["shift+ctrl+alt+x", "⇧⌃⌥X", "Ctrl+Alt+Shift+X"],
+    ["cmd+ctrl+k", "⌘⌃K", "Ctrl+K"],
+    ["cmd+,", "⌘,", "Ctrl+,"],
+    ["cmd++", "⌘+", "Ctrl++"],
+    ["cmd+=", "⌘=", "Ctrl+="],
+    ["shift+Tab", "⇧⇥", "Shift+⇥"],
+    ["cmd+Enter", "⌘↵", "Ctrl+↵"],
+    ["k", "k", "k"],
+    ["Escape", "Esc", "Esc"],
+    ["", "", ""],
+  ];
+  for (const [chord, onMac, offMac] of cases) {
+    assert.equal(mac(() => formatChord(chord)), onMac, `${chord} on macOS`);
+    assert.equal(linux(() => formatChord(chord)), offMac, `${chord} on Linux`);
+  }
+});
+
+test("off macOS, no default keycap draws a Mac modifier glyph", () => {
+  linux(() => {
+    for (const a of ACTIONS) {
+      assert.doesNotMatch(formatChord(defaultChord(a)), /[⌘⌃⌥⇧]/, `${a.id} draws a Mac glyph`);
+    }
+  });
+});
+
+test("the card jump keys and the zoom keys they take are named per platform", () => {
+  assert.equal(mac(cardShortcutKeysLabel), "⌘1 … ⌘0, ⌘-, ⌘=");
+  assert.equal(mac(cardShortcutZoomKeysLabel), "⌘0/⌘-/⌘=");
+  assert.equal(linux(cardShortcutKeysLabel), "Ctrl+1 … Ctrl+0, Ctrl+-, Ctrl+=");
+  assert.equal(linux(cardShortcutZoomKeysLabel), "Ctrl+0/Ctrl+-/Ctrl+=");
+});
+
+test("shortcut copy names Ctrl off macOS and keeps its macOS wording", () => {
+  assert.equal(mac(commandModifierNames), "⌘ or ⌃");
+  assert.equal(linux(commandModifierNames), "Ctrl");
+  assert.equal(mac(composerEditorStageKeys), "⌘Enter or ⌃Enter");
+  assert.equal(linux(composerEditorStageKeys), "Ctrl+Enter");
+
+  const editor = (): string => ACTIONS.find((a) => a.id === "composerEditor")?.description ?? "";
+  assert.match(mac(editor), /\. ⌘Enter or ⌃Enter puts the result back/);
+  assert.match(linux(editor), /\. Ctrl\+Enter puts the result back/);
+
+  const typed = (): string | null => typingUnsafeChordReason("composerEditor", "q");
+  assert.equal(
+    mac(typed),
+    "q would be typed into the message. This shortcut fires from inside the send box, so it needs ⌘ or ⌃ with a key, or a function key.",
+  );
+  assert.equal(
+    linux(typed),
+    "q would be typed into the message. This shortcut fires from inside the send box, so it needs Ctrl with a key, or a function key.",
+  );
+  assert.match(linux(() => typingUnsafeChordReason("composerEditor", "cmd+v") ?? ""), /^Ctrl\+V is a text-editing command/);
+});
+
+test("the Keyboard panel names the reserved jump keys per platform", () => {
+  const panel = (): string => renderToStaticMarkup(createElement(KeyboardPanel));
+  assert.match(mac(panel), /fleet&#x27;s ⌘1 … ⌘0, ⌘-, ⌘= session jump keys/);
+  const offMac = linux(panel);
+  assert.match(offMac, /fleet&#x27;s Ctrl\+1 … Ctrl\+0, Ctrl\+-, Ctrl\+= session jump keys/);
+  assert.match(offMac, /<kbd[^>]*>Ctrl\+K<\/kbd>|>Ctrl\+K</);
+  assert.doesNotMatch(offMac, /[⌘⌃⌥]/);
+});
+
+test("off macOS, aria-keyshortcuts announces Control for cmd; on macOS it stays Meta", () => {
+  const cases: [string, string, string][] = [
+    ["cmd+2", "Meta+2", "Control+2"],
+    ["ctrl+g", "Control+g", "Control+g"],
+    ["cmd+shift+k", "Meta+Shift+K", "Control+Shift+K"],
+    ["cmd+ctrl+k", "Meta+Control+k", "Control+k"],
+    ["shift+d", "Shift+D", "Shift+D"],
+  ];
+  for (const [chord, onMac, offMac] of cases) {
+    assert.equal(mac(() => ariaKeyshortcuts(chord)), onMac, `${chord} on macOS`);
+    assert.equal(linux(() => ariaKeyshortcuts(chord)), offMac, `${chord} on Linux`);
+  }
 });

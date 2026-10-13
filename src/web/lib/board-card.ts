@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { cardShortcutKeysLabel, cardShortcutZoomKeysLabel } from "./keybindings.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
@@ -78,8 +79,10 @@ export const DISPLAY_ITEMS = [
     id: "cardShortcut",
     group: "card",
     label: "Jump shortcut",
-    description:
-      "The ⌘1 … ⌘0, ⌘-, ⌘= keycap on the card and beside the Console rail's state word, and the chord itself: press it to open that session's console. The keys are handed out down the fleet and across the board's columns - the rail is those columns read end to end, so a session keeps its key when you switch layout - and they move up as sessions finish. While this is on the number row belongs to the fleet: in the desktop app page zoom keeps its View menu items but gives up ⌘0/⌘-/⌘=, and in a browser tab any key your browser keeps for selecting a tab or zooming stays the browser's. Unchecked, the keycaps go, the chords stand down, and those keys zoom again.",
+    // A getter, because the keys it names depend on the client platform.
+    get description() {
+      return `The ${cardShortcutKeysLabel()} keycap on the card and beside the Console rail's state word, and the chord itself: press it to open that session's console. The keys are handed out down the fleet and across the board's columns - the rail is those columns read end to end, so a session keeps its key when you switch layout - and they move up as sessions finish. While this is on the number row belongs to the fleet: in the desktop app page zoom keeps its View menu items but gives up ${cardShortcutZoomKeysLabel()}, and in a browser tab any key your browser keeps for selecting a tab or zooming stays the browser's. Unchecked, the keycaps go, the chords stand down, and those keys zoom again.`;
+    },
   },
   {
     id: "goal",
