@@ -7,6 +7,7 @@ import {
   type ResolvedExecutable,
 } from "../executables/locator.ts";
 import { PLAIN_NAMES } from "./names.ts";
+import { processLifetime } from "../platform/process-lifetime.ts";
 import type { SpawnResult, TabSpec, TerminalEmulator, TerminalResult } from "./types.ts";
 
 /**
@@ -91,10 +92,11 @@ export const launchDetached: DetachedLaunch = (launcher, args, opts) =>
     // Resolved by `xdgTerminalLaunchers` through the shared locator before it gets here.
     const executable = launcher.path;
     try {
-      // Its own process group, so the window outlives a daemon restart, and no pipes the
-      // daemon would have to keep draining.
+      // The root of its own process tree, so the window outlives a daemon restart, and no
+      // pipes the daemon would have to keep draining. The tree options come from the
+      // platform seam, which owns how a platform expresses one.
       child = spawn(executable, [...launcher.prefix, ...args], {
-        detached: true,
+        ...processLifetime.treeRootOptions,
         stdio: "ignore",
         env: launcher.env,
         ...(opts.cwd ? { cwd: opts.cwd } : {}),

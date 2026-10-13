@@ -148,7 +148,16 @@ test.describe("compatible stable Herdr", () => {
           .find((node) => node.nodeType === Node.TEXT_NODE)
           ?.textContent?.trim() ?? ""),
     );
-    expect(labels).toEqual(["tmux", "Herdr", "cmux", "WezTerm", "Ghostty", "iTerm2"]);
+    // The desktop's default terminal is a Linux-only row, listed last; macOS has no such row.
+    expect(labels).toEqual([
+      "tmux",
+      "Herdr",
+      "cmux",
+      "WezTerm",
+      "Ghostty",
+      "iTerm2",
+      ...(process.platform === "linux" ? ["Default terminal"] : []),
+    ]);
 
     const herdr = menu.getByRole("menuitem").filter({ hasText: "Herdr" });
     await expect(herdr).toBeEnabled();
