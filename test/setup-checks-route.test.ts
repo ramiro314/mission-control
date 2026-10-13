@@ -39,6 +39,8 @@ function deps(
   ready?: boolean,
 ): SetupDeps {
   return {
+    // Linux lists every dependency here; macOS leaves the lsof row out.
+    platform: "linux",
     environment: { homeDir: home, readText: async () => ({ ok: false, missing: true, reason: "missing" }), subdirectories: async () => [], isExecutable: async () => true },
     agentBin: (agent) => `/fake/${agent}`,
     installedBackend: async (id) => `/fake/${id}`,

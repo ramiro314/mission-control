@@ -6,7 +6,10 @@ reference when you need the underlying behavior or configuration.
 ## The daemon will not start because port 7317 is already in use
 
 Mission Control's daemon uses port 7317 by default. First run `make status` to see
-whether the expected daemon already owns that port. If this checkout started a
+whether the expected daemon already owns that port. It asks the daemon's `/api/health` for its
+pid, so it reports "not running" when no daemon answers, even when some other program holds the
+port. It needs `curl`, as `make up` and `make claude` do, and stops with "curl not found" rather
+than guess when `curl` is missing. If this checkout started a
 background daemon that you want to replace, run `make down`, then start the service
 again. Use `make logs` when the daemon did not bind so you can see its startup error.
 

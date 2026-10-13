@@ -24,3 +24,5 @@ export function buildToolsPrerequisiteMessage(state: {
   platform: string;
   missing: string[];
 }): string | null;
+export function lsofRequired(platform: string): boolean;
+export function lsofPrerequisiteMessage(installed: boolean): string | null;

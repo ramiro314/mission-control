@@ -32,6 +32,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "iterm",
   "herdr",
   "node-runtime",
+  "lsof",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -83,7 +84,7 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
   runtime: {
     id: "runtime",
     label: "Runtime",
-    description: "The system Node.js runtime used by app updates and Node-based tools.",
+    description: "System tools Mission Control runs itself, such as the Node.js runtime used by app updates and Node-based tools.",
   },
 };
 
@@ -245,11 +246,18 @@ export interface SetupDependencyInfo {
   /** What is unavailable while this row is not satisfied. */
   enables: string;
   remedies: SetupRemedies;
+  /** The only hosts this row is offered on. Absent means every host. */
+  platforms?: readonly SetupPlatform[];
 }
 
 /** The catalog remedy this host is offered for one dependency. */
 export function setupRemedy(info: SetupDependencyInfo, platform: SetupPlatform): SetupRemedy {
   return info.remedies[platform];
+}
+
+/** Whether Setup lists this dependency on the host at all. */
+export function setupOfferedOn(info: SetupDependencyInfo, platform: SetupPlatform): boolean {
+  return !info.platforms || info.platforms.includes(platform);
 }
 
 /** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
@@ -474,6 +482,21 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
         label: "Open Node.js installation guide",
       },
     },
+  },
+  // Linux only (D14): macOS ships lsof in its base system, and `make init` asks for it too.
+  lsof: {
+    id: "lsof",
+    label: "lsof",
+    family: "runtime",
+    requirement: "required",
+    enables: "Without it, Mission Control cannot tell which processes are working in a worktree, so worktree release and cleanup are refused, and Codex sessions lose their transcript attribution.",
+    remedies: everywhere({
+      kind: "instruction",
+      package: "lsof",
+      url: "https://github.com/lsof-org/lsof",
+      label: "Open lsof project page",
+    }),
+    platforms: ["linux"],
   },
 };
 

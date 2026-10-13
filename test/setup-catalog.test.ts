@@ -6,6 +6,7 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   TERMINAL_PAIR_INFO,
+  setupOfferedOn,
   setupPlatform,
   setupRemedy,
   type SetupPlatform,
@@ -15,7 +16,7 @@ const PLATFORMS: readonly SetupPlatform[] = ["darwin", "linux"];
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-2), ["herdr", "node-runtime"], "new persisted ids append after existing entries");
+  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-2), ["node-runtime", "lsof"], "new persisted ids append after existing entries");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-cli"].requirement, "required");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-auth"].requirement, "required");
   assert.deepEqual(setupRemedy(SETUP_DEPENDENCY_INFO.iterm, "darwin"), {
@@ -74,7 +75,18 @@ test("Linux is offered no Homebrew command and no cask, and keeps its npm rows",
     ghostty: "ghostty",
     "gh-cli": "gh",
     "node-runtime": "nodejs",
+    lsof: "lsof",
   });
+});
+
+test("lsof is a Linux row only, and every other row is offered on both hosts", () => {
+  for (const id of SETUP_DEPENDENCY_IDS) {
+    const info = SETUP_DEPENDENCY_INFO[id];
+    assert.equal(setupOfferedOn(info, "linux"), true, id);
+    assert.equal(setupOfferedOn(info, "darwin"), id !== "lsof", id);
+  }
+  assert.equal(SETUP_DEPENDENCY_INFO.lsof.requirement, "required");
+  assert.equal(SETUP_DEPENDENCY_INFO.lsof.family, "runtime");
 });
 
 test("every host but macOS reads the Linux remedies", () => {
