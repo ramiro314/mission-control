@@ -257,6 +257,15 @@ export type LaunchResult =
   | { ok: true; backend: HomeBackend; resourceId: string | null }
   | { ok: false; error: string; outcomeUnknown?: boolean };
 
+/** Every backend this host could run once installed, so the error never recommends iTerm on Linux. */
+function hostableBackendIds(deps: HomeDeps): TerminalBackendId[] {
+  const unsupported = deps.unsupported ?? binUnsupportedReason;
+  return [
+    ...MULTIPLEXER_IDS.filter((id) => !unsupported(deps.multiplexers[id].bin)),
+    ...EMULATOR_IDS.filter((id) => !unsupported(deps.emulators[id].bin)),
+  ];
+}
+
 /**
  * What a test worker is told when it reaches this with the real machine's backends.
  *
@@ -311,7 +320,7 @@ export async function launchHome(
       error: preferredBackend
         ? `the selected terminal backend ${preferredBackend} cannot host a dispatched agent on this machine`
         : "no terminal backend can host a dispatched agent - install one of " +
-          [...MULTIPLEXER_IDS, ...EMULATOR_IDS].join(", "),
+          hostableBackendIds(deps).join(", "),
     };
   }
   let last = "";

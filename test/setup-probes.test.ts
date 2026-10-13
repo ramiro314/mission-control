@@ -17,6 +17,8 @@ import {
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/setup/index.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
+import { binUnsupportedReason } from "../src/server/terminal/bin.ts";
+import { terminalBackendBin } from "../src/server/terminal/registry.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 
@@ -272,6 +274,26 @@ test("an installed cmux that is closed or refusing is needs-setup, with the matc
     evidence: "/tools/cmux (socket control allowAll)",
   });
   assert.equal(ready.remedy, undefined);
+});
+
+test("off macOS cmux is offered no service and its socket is never probed", async () => {
+  let controlProbes = 0;
+  const linux = await probed("cmux", {
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id), "linux"),
+    cmuxControl: async () => {
+      controlProbes += 1;
+      return { state: "stopped" };
+    },
+  });
+  assert.deepEqual(linux.status, { state: "needs-setup", why: "requires macOS", evidence: null });
+  assert.equal(linux.remedy, undefined);
+  assert.equal(controlProbes, 0);
+
+  const darwin = await probed("cmux", {
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id), "darwin"),
+    cmuxControl: async () => ({ state: "stopped" }),
+  });
+  assert.deepEqual(darwin.remedy, CMUX_APP_REMEDY);
 });
 
 test("a missing cmux keeps the catalog install remedy and never probes its socket", async () => {

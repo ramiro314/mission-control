@@ -3,6 +3,7 @@ import type { BinSpec } from "./types.ts";
 import { onPath } from "../util/exec.ts";
 import { executableChildEnv, locateExecutableSync } from "../executables/locator.ts";
 import { executableSpec } from "../executables/catalog.ts";
+import type { ExecutableId } from "@shared/executables.ts";
 
 /**
  * Reaching a backend's CLI, once: which binary, in what environment, and whether it is
@@ -178,5 +179,25 @@ export const WEZTERM_BIN: BinSpec = { id: "wezterm" };
  */
 export const GHOSTTY_BIN: BinSpec = { id: "ghostty" };
 
+/** Why a backend that only macOS can run is unavailable everywhere else. */
+export const MACOS_ONLY_REASON = "requires macOS";
+
+/**
+ * The host gate for a backend that exists only on macOS: iTerm2 is driven through Apple
+ * Events, and cmux is a macOS app whose control socket lives only while that app runs.
+ *
+ * An operator override that resolves is taken on trust on any platform, as an explicit
+ * `MISSION_KEEP_AWAKE_BIN` is. That is how the e2e suite drives its fake cmux on Linux CI,
+ * and an override naming nothing still reads as unsupported rather than as "not installed".
+ */
+export function macOSOnly(
+  id: ExecutableId,
+): (platform: NodeJS.Platform) => string | null {
+  return (platform) =>
+    platform === "darwin" || locateExecutableSync(id)?.source === "operator-override"
+      ? null
+      : MACOS_ONLY_REASON;
+}
+
 /** iTerm2 is detected from its macOS app bundle and driven through Apple Events. */
-export const ITERM_BIN: BinSpec = { id: "iterm" };
+export const ITERM_BIN: BinSpec = { id: "iterm", unsupportedReason: macOSOnly("iterm") };
