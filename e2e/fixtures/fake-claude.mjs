@@ -937,7 +937,8 @@ function scoutCredential() {
   const identity = locator ? `session:${locator}` : `pid:${process.pid}`;
   const key = createHash("sha256").update(identity).digest("hex");
   try {
-    return readFileSync(join(tmpdir(), "mission-control-agent-capabilities",
+    // The daemon hands every launch the runtime root it resolved, as a real MCP child reads it.
+    return readFileSync(join(process.env.MISSION_AGENT_RUNTIME_DIR ?? tmpdir(), "mission-control-agent-capabilities",
       `scouts-${process.env.MISSION_PORT ?? "7317"}`, key), "utf8").trim();
   } catch { /* Legacy scout fixtures retain their original credential path below. */ }
   const direct = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;

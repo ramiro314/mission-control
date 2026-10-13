@@ -1,7 +1,6 @@
 import { LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -10,18 +9,24 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AGENT_RUNTIME_DIR_ENV,
+  AGENT_STATE_ROOT,
+  AgentRuntimeRootError,
   MISSION_API_TOKEN_ENV,
   MISSION_API_TOKEN_FILE_ENV,
   PORT,
   SCOUT_SUBMISSION_CREDENTIAL_ENV,
   SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
   SCOUT_SESSION_LOCATOR_ENV,
+  agentRuntimeBase,
+  agentRuntimeRoot,
   isolatedScoutSubmissionCredentialPath,
+  legacyAgentRuntimeRoot,
   readToken,
 } from "../shared/harness-runtime.mjs";
+import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import { shellCommand } from "./terminal/shell.ts";
@@ -32,23 +37,49 @@ export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME
 /** Terminal pane identifiers that a headless or SDK child must never inherit. */
 const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"] as const;
 
-const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** Remove only expired Pipeline caller files left by a previous daemon crash. */
+/** An unusable private root fails the launch that needed it, before any command is delivered. */
+function asLaunchError(error: unknown): unknown {
+  return error instanceof AgentRuntimeRootError ? new TerminalLaunchError(error.message, false) : error;
+}
+
+/** The roots this daemon's homes live in, without checking or creating them. */
+function disposableStateRoots(): string[] {
+  const legacy = legacyAgentRuntimeRoot(AGENT_STATE_ROOT);
+  return [join(agentRuntimeBase(), AGENT_STATE_ROOT), ...(legacy ? [legacy] : [])];
+}
+
+/**
+ * Remove only expired Pipeline caller files left by a previous daemon crash. On Linux this also
+ * sweeps the pre-upgrade temp-dir root while it is still private.
+ */
 export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
+  let roots: string[];
+  try {
+    roots = [agentRuntimeRoot(AGENT_STATE_ROOT)];
+  } catch (error) {
+    console.error(`[agent-state] ${error instanceof Error ? error.message : String(error)}`);
+    roots = [];
+  }
+  const legacy = legacyAgentRuntimeRoot(AGENT_STATE_ROOT);
+  if (legacy) roots.push(legacy);
+  for (const root of roots) reconcileDisposableStateRoot(root, now);
+}
+
+function reconcileDisposableStateRoot(root: string, now: number): void {
   let entries: string[];
   try {
-    entries = readdirSync(DISPOSABLE_STATE_ROOT);
+    entries = readdirSync(root);
   } catch {
     return;
   }
   for (const entry of entries) {
     if (!entry.startsWith("session-")) continue;
-    const stateHome = join(DISPOSABLE_STATE_ROOT, entry);
+    const stateHome = join(root, entry);
     if (liveDisposableStateHomes.has(stateHome)) continue;
     try {
       const info = statSync(stateHome);
@@ -85,13 +116,18 @@ function hookProcessCleanup(): void {
 
 /** Make one private state home for one agent-controlled launch. */
 export function createDisposableAgentStateHome(): string {
-  mkdirSync(DISPOSABLE_STATE_ROOT, { recursive: true, mode: 0o700 });
+  let root: string;
+  try {
+    root = agentRuntimeRoot(AGENT_STATE_ROOT, { create: true });
+  } catch (error) {
+    throw asLaunchError(error);
+  }
   // Terminal wrappers remove their own homes in the child, so discard those completed
   // entries before tracking another launch in the parent daemon.
   for (const stateHome of liveDisposableStateHomes) {
     if (!existsSync(stateHome)) liveDisposableStateHomes.delete(stateHome);
   }
-  const stateHome = mkdtempSync(join(DISPOSABLE_STATE_ROOT, "session-"));
+  const stateHome = mkdtempSync(join(root, "session-"));
   liveDisposableStateHomes.add(stateHome);
   hookProcessCleanup();
   return stateHome;
@@ -100,8 +136,11 @@ export function createDisposableAgentStateHome(): string {
 /** Remove only a home minted by this module. Safe to repeat after another owner cleaned it. */
 export function cleanupDisposableAgentStateHome(stateHome: string | undefined): void {
   if (!stateHome) return;
-  const prefix = `${DISPOSABLE_STATE_ROOT}/session-`;
-  if (!stateHome.startsWith(prefix) || stateHome.slice(prefix.length).includes("/")) return;
+  const minted = disposableStateRoots().some((root) => {
+    const prefix = `${root}/session-`;
+    return stateHome.startsWith(prefix) && !stateHome.slice(prefix.length).includes("/");
+  });
+  if (!minted) return;
   rmSync(stateHome, { recursive: true, force: true });
   liveDisposableStateHomes.delete(stateHome);
 }
@@ -140,6 +179,7 @@ export function agentSubprocessEnv(
   for (const name of STATE_HOME_ENV_NAMES) delete env[name];
   const stateHome = options.stateHome ?? createDisposableAgentStateHome();
   env.MISSION_HOME = stateHome;
+  env[AGENT_RUNTIME_DIR_ENV] = agentRuntimeBase();
   delete env[MISSION_API_TOKEN_ENV];
   delete env[MISSION_API_TOKEN_FILE_ENV];
   // Only the SDK supervisor may issue a report locator for this particular launch.
@@ -166,7 +206,7 @@ export function agentSubprocessEnv(
     return env;
   } catch (error) {
     if (options.stateHome === undefined) cleanupDisposableAgentStateHome(stateHome);
-    throw error;
+    throw asLaunchError(error);
   }
 }
 

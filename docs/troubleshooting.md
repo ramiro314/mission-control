@@ -23,6 +23,28 @@ it, or set `MISSION_HOME` to a genuinely independent state directory if both dae
 intentional. Do not delete `daemon.lock`: the file is durable metadata, while the kernel-held
 lock is the ownership authority and is released automatically after a crash.
 
+## A launch fails with "Mission Control refused" a path
+
+Each launch writes its wrapper script and disposable state home under
+`mission-control-agent-state`, and scout credentials under `mission-control-agent-capabilities`.
+Both live in `$XDG_RUNTIME_DIR/mission-control` on Linux and in the temp dir on macOS (see
+`MISSION_AGENT_RUNTIME_DIR` in [Configuration](configuration.md)). Mission Control refuses a root
+that is a symlink, is owned by another uid, or carries any group or other mode bits, because
+another local user could then swap a launch wrapper or read a credential. It never falls back to
+a different directory. The error names the path, its owner and its mode: check who created it,
+remove it, and retry. Mission Control recreates it with mode `0700`.
+
+## A launch fails because `XDG_RUNTIME_DIR` does not exist
+
+On Linux the agent runtime roots live in `$XDG_RUNTIME_DIR/mission-control`. logind creates
+`$XDG_RUNTIME_DIR` (usually `/run/user/<uid>`) at login and removes it when your last login
+session ends, unless lingering is enabled. A daemon that keeps running after you log out, such
+as one started in tmux over SSH, then loses every running agent's launch wrapper and state
+home, and every later launch fails with "Mission Control cannot create ...: XDG_RUNTIME_DIR
+(...) does not exist". Mission Control never creates that directory itself. Run
+`loginctl enable-linger` so it survives logout, or set `MISSION_AGENT_RUNTIME_DIR` to a private
+directory (see [Configuration](configuration.md)), then restart Mission Control.
+
 ## A Claude session stays grey, or its status looks stale
 
 `instrumented: true` means the daemon has fresh hook evidence for that session. Install
