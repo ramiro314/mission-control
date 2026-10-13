@@ -99,6 +99,12 @@ test("Linux asks for the compiler, make and Python node-gyp will run, in Linux t
     ),
     ["clang++", "make", "/usr/bin/python3.12"],
   );
+  // node-gyp's Makefile runs the setting through a shell, so a wrapper form builds and must
+  // be probed whole: `ccache g++ --version` still fails when g++ itself is absent.
+  assert.deepEqual(buildToolchain("linux", { CXX: "ccache g++" })?.probes[0], {
+    tool: "a C++ compiler (ccache g++)",
+    command: ["ccache", "g++", "--version"],
+  });
   assert.equal(
     buildToolchain("linux", { CXX_target: "g++-14", CXX: "clang++" })?.probes[0]?.tool,
     "a C++ compiler (g++-14)",

@@ -68,7 +68,8 @@ export function ghPrerequisiteMessage({ installed, authenticated }) {
  *
  * On Linux the probes name what node-gyp itself will run: the C++ compiler its Makefile uses
  * (`CXX_target`, then `CXX`, then make's default `g++`), `make`, and the Python it looks for
- * (`PYTHON`, then `python3`).
+ * (`PYTHON`, then `python3`). The Makefile runs the compiler setting through `/bin/sh`, so a
+ * wrapper or flag form such as `ccache g++` is split into words here and probed whole.
  */
 export function buildToolchain(platform, env = {}) {
   if (!hasNativeAddonSources("state-lock", platform)) return null;
@@ -79,13 +80,13 @@ export function buildToolchain(platform, env = {}) {
       probes: [{ tool: "the Xcode command line tools", command: ["xcode-select", "-p"] }],
     };
   }
-  const cxx = env.CXX_target || env.CXX || "g++";
+  const cxx = (env.CXX_target || env.CXX || "").trim() || "g++";
   const python = env.PYTHON || "python3";
   return {
     heading: "Native build tools prerequisite",
     available: `C++ compiler (${cxx}), make and ${python} available`,
     probes: [
-      { tool: `a C++ compiler (${cxx})`, command: [cxx, "--version"] },
+      { tool: `a C++ compiler (${cxx})`, command: [...cxx.split(/\s+/), "--version"] },
       { tool: "make", command: ["make", "--version"] },
       { tool: python, command: [python, "--version"] },
     ],
