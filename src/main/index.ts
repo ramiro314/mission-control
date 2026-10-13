@@ -103,7 +103,7 @@ const paths = {
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
   webDir: join(appRoot, "dist", "web"),
   preload: join(appRoot, "dist", "preload", "index.cjs"),
-  trayIcon: join(appRoot, "build", "trayTemplate.png"),
+  buildDir: join(appRoot, "build"),
 };
 
 let backgroundStart: BackgroundStartOwnership<DaemonController, ForemanController> | null = null;
@@ -379,7 +379,7 @@ app.whenReady().then(async () => {
   const onCheckForUpdates = () => void updater?.checkForUpdates();
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
-  createTray(paths.trayIcon, {
+  createTray(paths.buildDir, {
     onOpen: () => showWindow(paths.preload),
     onCheckForUpdates,
     onInstallIntegrations: () => {

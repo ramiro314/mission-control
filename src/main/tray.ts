@@ -7,6 +7,7 @@ import { Tray, Menu, nativeImage, app } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
+import { trayIcon } from "./platform-icons.ts";
 
 interface ReportCounts {
   needsYou: number;
@@ -26,12 +27,14 @@ export interface TrayHandlers {
 let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
+let buildDir = "";
+let shownIcon = "";
 
-function trayImage(iconPath: string): Electron.NativeImage {
+function trayImage(iconPath: string, template: boolean): Electron.NativeImage {
   if (iconPath && existsSync(iconPath)) {
     const img = nativeImage.createFromPath(iconPath);
     if (!img.isEmpty()) {
-      img.setTemplateImage(true); // recolors for light/dark menu bars
+      if (template) img.setTemplateImage(true); // recolors for light/dark menu bars
       return img;
     }
   }
@@ -46,8 +49,14 @@ function render(handlers: TrayHandlers): void {
   if (!tray) return;
   const c = last;
   tray.setToolTip(`Mission Control - ${summary(c)}`);
-  // A short title next to the icon draws the eye when something needs you.
+  // A short title next to the icon draws the eye when something needs you. It is
+  // macOS-only, so elsewhere the icon itself swaps to a badged image.
   tray.setTitle(c.needsYou > 0 ? ` ${c.needsYou}` : "");
+  const icon = trayIcon(process.platform, buildDir, c.needsYou);
+  if (icon.path !== shownIcon) {
+    tray.setImage(trayImage(icon.path, icon.template));
+    shownIcon = icon.path;
+  }
 
   const template: MenuItemConstructorOptions[] = [
     { label: `Mission Control`, enabled: false },
@@ -91,8 +100,12 @@ async function refresh(handlers: TrayHandlers): Promise<void> {
   }
 }
 
-export function createTray(iconPath: string, handlers: TrayHandlers): Tray {
-  tray = new Tray(trayImage(iconPath));
+/** `dir` holds the images `scripts/gen-icons.mjs` generates. */
+export function createTray(dir: string, handlers: TrayHandlers): Tray {
+  buildDir = dir;
+  const icon = trayIcon(process.platform, buildDir, last.needsYou);
+  tray = new Tray(trayImage(icon.path, icon.template));
+  shownIcon = icon.path;
   tray.on("click", () => handlers.onOpen());
   render(handlers);
   void refresh(handlers);
@@ -105,4 +118,5 @@ export function destroyTray(): void {
   poll = null;
   tray?.destroy();
   tray = null;
+  shownIcon = "";
 }
