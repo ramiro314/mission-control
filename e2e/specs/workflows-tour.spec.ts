@@ -56,7 +56,7 @@ const hash = (page: Page): Promise<string> => page.evaluate(() => location.hash)
 
 async function startFromPalette(page: Page): Promise<void> {
   const palette = page.getByRole("dialog", { name: "Search everything" });
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Follow the review");
   await palette.getByRole("option", { name: /Start Follow the review tour, command/ }).click();

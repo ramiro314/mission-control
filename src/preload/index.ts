@@ -27,6 +27,10 @@ window.addEventListener("click", (event) => {
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
+  // The OS this renderer runs on, for the keyboard: on macOS `cmd` is Command, elsewhere it
+  // is Ctrl. A sandboxed preload still has `process.platform`. Read through
+  // `src/web/lib/platform.ts`, never directly.
+  platform: process.platform,
   version: (): Promise<string> => ipcRenderer.invoke("mission:version"),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("mission:open-external", url),
   installIntegrations: (): Promise<{ ok: boolean; message: string }> =>

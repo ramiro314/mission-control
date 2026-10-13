@@ -64,15 +64,14 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
 }
 
 /**
- * `Meta+k`, not `ControlOrMeta+k`.
+ * `ControlOrMeta+k`, the operator's search chord on the machine this suite runs on.
  *
- * `chordFromEvent` spells the Command modifier `cmd` and derives it from `e.metaKey` ALONE, so
- * on Linux - where Playwright maps `ControlOrMeta` to Control - that chord would arrive as
- * "ctrl+k" and match nothing. Playwright sets `metaKey` from `Meta` on every platform, so this
- * is the one spelling that presses the operator's ⌘K on the machine this suite happens to run
- * on.
+ * `chordFromEvent` spells the platform's primary modifier `cmd`: Command on macOS, Ctrl
+ * everywhere else, where Super belongs to the desktop. Playwright's `ControlOrMeta` follows
+ * the same rule, so this is ⌘K on a Mac and Ctrl+K on Linux CI. `Meta+k` on Linux is Super+K,
+ * which the dashboard deliberately ignores.
  */
-const CHORD = "Meta+k";
+const CHORD = "ControlOrMeta+k";
 
 const palette = (page: Page) => page.getByRole("dialog", { name: "Search everything" });
 const field = (page: Page) => page.getByRole("combobox", { name: "Search everything" });

@@ -435,7 +435,7 @@ test.describe("with no engine or verified source checkout", () => {
     );
     await shoot(page, "04-missing-engine");
 
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("ControlOrMeta+k");
     const palette = page.getByRole("dialog", { name: "Search everything" });
     await palette.getByRole("combobox", { name: "Search everything" }).fill("conductor");
     await expect(palette.getByRole("option", { name: /Conductor settings/ })).toBeVisible();

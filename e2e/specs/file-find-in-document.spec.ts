@@ -220,7 +220,7 @@ test("Cmd+F searches the document rather than opening the conversation", async (
   const conversationTab = tabs.getByRole("tab", { name: /Conversation/ });
   await expect(filesTab).toHaveAttribute("aria-selected", "true");
 
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await expect(searchbox(dashboard)).toBeFocused();
   // The whole first thing this feature had to fix: the chord used to fall through to App,
   // which revealed the conversation and left the document behind.
@@ -279,7 +279,7 @@ test("find-next and find-previous step the ring from Preview, where no editor ex
    */
   await openFilesTab(dashboard, daemon);
   await openPlan(dashboard);
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("reconnect");
   await expect(readout(dashboard)).toHaveText("1 / 3");
   await expect(marks(dashboard)).toHaveCount(3);
@@ -315,7 +315,7 @@ test("one find session crosses the Preview/Editor toggle, each surface counting 
   await openPlan(dashboard);
   const modes = dashboard.getByRole("group", { name: "File view mode" });
 
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("reconnect");
   await dashboard.getByRole("button", { name: "Aa" }).click();
   await expect(dashboard.getByRole("button", { name: "Aa" })).toHaveAttribute("aria-pressed", "true");
@@ -483,7 +483,7 @@ test("find works in the extracted Files window", async ({ dashboard, daemon }) =
    * an overlay is open, and this window is an overlay. The bare `p`/`e` chords stand down here
    * too, which is why find could not be one of them.
    */
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   const box = extracted.getByRole("searchbox", { name: "Find in this document" });
   await expect(box).toBeFocused();
   await box.fill("reconnect");
@@ -552,7 +552,7 @@ test("find in an HTML preview marks the words a reader can see, and counts only 
   await openFilesTab(dashboard, daemon);
   const frame = await openReport(dashboard, COUNTED, /First visible smuggled word/);
 
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("smuggled");
   await expect(readout(dashboard)).toHaveText("1 / 3");
   // The bar no longer caveats an HTML count, because the count is no longer taken over source.
@@ -638,7 +638,7 @@ test("a run is joined across inline markup and broken at every visible separatio
   await openFilesTab(dashboard, daemon);
   const frame = await openReport(dashboard, COUNTED, /together/);
 
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("joinme");
   await expect(readout(dashboard)).toHaveText("1 / 1");
   // ONE hit, and it is highlighted WHOLE - a Range spans the element boundary natively, so the
@@ -748,14 +748,14 @@ test("a query typed before the preview loaded highlights by itself, and survives
   // Find open, with a query, on a markdown document - then select the HTML one. The preview
   // has not loaded when the query already exists, which is the ordering that used to lose it.
   await openPlan(dashboard);
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("budget is bounded");
   await expect(readout(dashboard)).toHaveText("1 / 1");
 
   const frame = await openReport(dashboard, REPORT, /SSE reconnect audit/);
   // The bar reopens empty for a new document by design, so the query is retyped here; what is
   // being asserted is that the FRAME picks it up without a second keystroke once it is loaded.
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("budget is bounded");
   await expect(readout(dashboard)).toHaveText("1 / 2");
   await expect.poll(async () => (await highlighted(frame)).count).toBe(2);
@@ -818,7 +818,7 @@ test("a frame that cannot highlight keeps the block reveal, its note and its own
   await openFilesTab(dashboard, daemon);
   const frame = await openReport(dashboard, REPORT, /SSE reconnect audit/);
 
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("budget is bounded");
   // In-frame first, so the downgrade below is a change and not the initial state.
   await expect(dashboard.locator(".file-content .find-bar .find-note")).toHaveCount(0);
@@ -865,7 +865,7 @@ test("an HTML comment still anchors while a find highlight is active", async ({
   await openFilesTab(dashboard, daemon);
   const frame = await openReport(dashboard, COUNTED, /Second visible smuggled word/);
 
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await searchbox(dashboard).fill("smuggled");
   await expect.poll(async () => (await highlighted(frame)).count).toBe(3);
 

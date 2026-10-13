@@ -10,6 +10,11 @@ export {};
 declare global {
   interface MissionDesktop {
     isDesktop: boolean;
+    /**
+     * `process.platform` of the shell. Optional: an older preload beside a newer bundle has
+     * none, and `src/web/lib/platform.ts` falls back to the browser's own answer.
+     */
+    platform?: string;
     version(): Promise<string>;
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;

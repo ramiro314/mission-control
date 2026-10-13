@@ -1542,7 +1542,13 @@ menu, so **Copy** never refers to text away from the pointer.
 
 The dashboard is keyboard-driven - use the arrow keys to navigate Board, to walk
 the Console rail or scroll its open reader, then act without reaching for the mouse. The table
-names the layouts where a shortcut's target exists:
+names the layouts where a shortcut's target exists.
+
+<kbd>⌘</kbd> is the primary modifier: Command on macOS, <kbd>Ctrl</kbd> on Linux and Windows,
+where the Super key belongs to the desktop. Off macOS <kbd>⌘</kbd> and <kbd>⌃</kbd> are both
+Ctrl, so <kbd>⌘</kbd><kbd>K</kbd> is Ctrl+K and so is a binding recorded as <kbd>⌃</kbd><kbd>K</kbd>
+on a Mac; two such bindings are reported as the same key. Keycaps still draw <kbd>⌘</kbd>
+there. Stored bindings keep the text they were recorded with and work on either platform.
 
 | Key | Action | Scope |
 |-----|--------|-------|
@@ -1597,7 +1603,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |
 | <kbd>⌃</kbd><kbd>C</kbd> | [Interrupt](sessions.md#interrupt-stop-the-turn-without-ending-the-session) the selected session: stop the turn it is running, drop everything queued behind it, and put the cursor in its composer. No confirm - the conversation survives. Works from inside the composer, and from the Board overview without opening a detail. **Yields to a live text selection**, so <kbd>⌃</kbd><kbd>C</kbd> still copies whenever anything is selected. Works on both runtimes: an Agent SDK turn is stopped through its driver, a terminal one by writing <kbd>Esc</kbd> into the pane. A pane sitting in tmux copy-mode refuses and names the way out | Selected working session |
-| <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
+| <kbd>⌃</kbd><kbd>R</kbd> (macOS) | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first). Unbound off macOS, where Ctrl+R is reload: use the action bar's **reset**, or bind a key in **Settings → Keyboard** | Selected session |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move between Session, the stages, their reviewers and End. <kbd>Home</kbd> / <kbd>End</kbd> jump to either terminus | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>⌥</kbd><kbd>←</kbd> <kbd>⌥</kbd><kbd>→</kbd> | Move the focused stage earlier or later in the chain | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
@@ -1613,6 +1619,8 @@ corner; on the **Console** it is on the rail row, immediately left of the row's
 **working** / **idle** state word. It works from the overview and from inside the console,
 where it re-points the open detail at another session without a trip back out. It also works
 while the cursor is in a reply box, because every one of these chords carries <kbd>⌘</kbd>.
+Off macOS they are <kbd>Ctrl</kbd>+<kbd>1</kbd> through <kbd>Ctrl</kbd>+<kbd>=</kbd>: Super plus a
+digit belongs to the desktop, and Ctrl+0/-/= are the keys the desktop app's View menu hands over.
 
 Both layouts draw the **same** numbering, because there is only one: the rail is the board's
 status columns read end to end, so switching layout re-draws the same twelve keys against the

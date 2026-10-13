@@ -45,17 +45,24 @@ const {
   ACTIONS,
   ariaKeyshortcuts,
   bindingValidationError,
+  canonicalChord,
   chordFromEvent,
   chordHasCommandModifier,
+  chordMayBeAltGraph,
   chordUsesFunctionKey,
+  defaultChord,
   findConflicts,
   formatChord,
   isReservedChord,
+  opensDocumentFind,
+  previewResetBinding,
+  reservedChordReason,
   resetAll,
   resetBinding,
   resolveKeybindings,
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
+const { onClientPlatform } = await import("./helpers/client-platform.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
 const { DeleteButton } = await import("../src/web/components/DeleteButton.tsx");
@@ -500,7 +507,7 @@ test("reset copy reflects whether the default will be restored", async () => {
   resetAll();
 });
 
-test("reset is a first-class action defaulting to Ctrl+R on the selected card", () => {
+test("reset is a first-class action defaulting to ⌃R on macOS, on the selected card", () => {
   const reset = ACTIONS.find((a) => a.id === "reset");
   assert.ok(reset, "reset missing from the customizable registry");
   assert.equal(reset.defaultBinding, "ctrl+r");
@@ -637,4 +644,186 @@ test("the conversation launchers are customizable selection actions", () => {
   assert.equal(terminal.group, "selection");
   assert.equal(agent.group, "selection");
   assert.equal(ACTIONS.indexOf(agent), ACTIONS.indexOf(terminal) + 1);
+});
+
+// ---- the primary modifier off macOS ----
+//
+// `cmd` is the platform's primary modifier: Command on macOS, Ctrl everywhere else, where
+// Super belongs to the desktop. Every case runs on both platforms, so the macOS answer is
+// pinned beside the Linux one.
+
+const linux = <T>(fn: () => T): T => onClientPlatform("linux", fn);
+const mac = <T>(fn: () => T): T => onClientPlatform("darwin", fn);
+
+test("off macOS, Ctrl is the primary modifier and Super is no shortcut at all", () => {
+  linux(() => {
+    assert.equal(chordFromEvent(key("k", { ctrl: true })), "cmd+k");
+    assert.equal(chordFromEvent(key("O", { ctrl: true, shift: true })), "cmd+shift+o");
+    assert.equal(chordFromEvent(key("q", { ctrl: true, alt: true })), "cmd+alt+q");
+    // Not "k": a Super chord that fell through as a bare letter would kill a session.
+    assert.equal(chordFromEvent(key("k", { meta: true })), null);
+    assert.equal(chordFromEvent(key("k", { meta: true, ctrl: true })), null);
+    assert.equal(chordFromEvent(key("k")), "k");
+  });
+  mac(() => {
+    assert.equal(chordFromEvent(key("k", { meta: true })), "cmd+k");
+    assert.equal(chordFromEvent(key("k", { ctrl: true })), "ctrl+k");
+    assert.equal(chordFromEvent(key("k", { meta: true, ctrl: true })), "cmd+ctrl+k");
+  });
+});
+
+test("off macOS, ctrl and cmd are one canonical chord; on macOS they stay apart", () => {
+  linux(() => {
+    assert.equal(canonicalChord("ctrl+g"), "cmd+g");
+    assert.equal(canonicalChord("cmd+ctrl+k"), "cmd+k");
+    assert.equal(canonicalChord("ctrl+alt+shift+x"), "cmd+alt+shift+x");
+    assert.equal(canonicalChord("cmd+k"), "cmd+k");
+    assert.equal(canonicalChord("ctrl++"), "cmd++");
+    assert.equal(canonicalChord("shift+Tab"), "shift+Tab");
+    assert.equal(canonicalChord(""), "");
+  });
+  mac(() => {
+    for (const chord of ["ctrl+g", "cmd+ctrl+k", "ctrl+alt+shift+x", "cmd+k"]) {
+      assert.equal(canonicalChord(chord), chord);
+    }
+  });
+});
+
+test("off macOS, Ctrl+K opens search, Ctrl+F finds, and the ctrl defaults answer to Ctrl", () => {
+  linux(() => {
+    const resolved = resolveKeybindings({});
+    assert.equal(chordFromEvent(key("k", { ctrl: true })), resolved.settingsSearch);
+    assert.equal(chordFromEvent(key("f", { ctrl: true })), resolved.findInConversation);
+    assert.equal(chordFromEvent(key("g", { ctrl: true })), resolved.composerEditor);
+    assert.equal(chordFromEvent(key("c", { ctrl: true })), resolved.interrupt);
+    assert.equal(resolved.interrupt, "cmd+c");
+  });
+  mac(() => {
+    const resolved = resolveKeybindings({});
+    assert.equal(chordFromEvent(key("k", { meta: true })), resolved.settingsSearch);
+    assert.equal(chordFromEvent(key("f", { meta: true })), resolved.findInConversation);
+    assert.equal(chordFromEvent(key("g", { ctrl: true })), resolved.composerEditor);
+    assert.equal(resolved.interrupt, "ctrl+c");
+    assert.notEqual(chordFromEvent(key("k", { ctrl: true })), resolved.settingsSearch);
+  });
+});
+
+test("a stored binding keeps its text and works on either platform", async () => {
+  await updateUiConfig({ keybindings: { diff: "ctrl+j", files: "cmd+j" } });
+  linux(() => {
+    // One key off macOS, so the first in registry order keeps it and the other is unset.
+    const resolved = resolveKeybindings({ diff: "ctrl+j", files: "cmd+j" });
+    assert.equal(resolved.diff, "cmd+j");
+    assert.equal(resolved.files, "");
+    assert.equal(chordFromEvent(key("j", { ctrl: true })), resolved.diff);
+  });
+  mac(() => {
+    const resolved = resolveKeybindings({ diff: "ctrl+j", files: "cmd+j" });
+    assert.equal(resolved.diff, "ctrl+j");
+    assert.equal(resolved.files, "cmd+j");
+  });
+  // Resolving never rewrote what the daemon holds.
+  assert.equal(stored().diff, "ctrl+j");
+  assert.equal(stored().files, "cmd+j");
+  resetAll();
+});
+
+test("conflicts compare canonical chords, so ctrl+k and cmd+k collide only off macOS", () => {
+  linux(() => {
+    const bindings = { ...defaults(), fleet: "ctrl+k" };
+    assert.deepEqual(findConflicts(bindings).get("fleet"), ["settingsSearch"]);
+    assert.equal(
+      bindingValidationError(resolveKeybindings({}), "fleet", "ctrl+k"),
+      "⌃K is already bound to Search everything.",
+    );
+    // A stored override claims first, so the default it now shadows is left unset.
+    const resolved = resolveKeybindings({ fleet: "ctrl+k" });
+    assert.equal(resolved.fleet, "cmd+k");
+    assert.equal(resolved.settingsSearch, "");
+  });
+  mac(() => {
+    assert.equal(findConflicts({ ...defaults(), fleet: "ctrl+k" }).get("fleet"), undefined);
+    assert.equal(bindingValidationError(resolveKeybindings({}), "fleet", "ctrl+k"), null);
+  });
+});
+
+test("reserved-chord checks compare canonical chords", () => {
+  linux(() => {
+    assert.equal(reservedChordReason("ctrl+1"), "the fleet's session jump shortcuts");
+    assert.equal(reservedChordReason("ctrl+="), "the fleet's session jump shortcuts");
+    // Sanitized on read, so the action falls back to its own default.
+    assert.equal(resolveKeybindings({ diff: "ctrl+1" }).diff, "shift+d");
+  });
+  mac(() => {
+    assert.equal(reservedChordReason("ctrl+1"), null);
+    assert.equal(resolveKeybindings({ diff: "ctrl+1" }).diff, "ctrl+1");
+  });
+});
+
+test("off macOS, Reset checkout ships unbound and can be bound", async () => {
+  const reset = ACTIONS.find((a) => a.id === "reset")!;
+  linux(() => {
+    assert.equal(defaultChord(reset), "");
+    const resolved = resolveKeybindings({});
+    assert.equal(resolved.reset, "");
+    // Ctrl+R is reload there, and nothing in the registry answers it.
+    const ctrlR = chordFromEvent(key("r", { ctrl: true }));
+    assert.equal(Object.values(resolved).includes(ctrlR!), false);
+    assert.deepEqual(previewResetBinding({}, "reset"), { binding: "", owner: null });
+    assert.equal(bindingValidationError(resolved, "reset", "cmd+shift+r"), null);
+    assert.equal(resolveKeybindings({ reset: "cmd+shift+r" }).reset, "cmd+shift+r");
+  });
+  mac(() => {
+    assert.equal(defaultChord(reset), "ctrl+r");
+    assert.equal(resolveKeybindings({}).reset, "ctrl+r");
+  });
+  // The settings row still lists it, unset, so it is discoverable and bindable.
+  await updateUiConfig({ keybindings: {} });
+  const html = linux(() => renderToStaticMarkup(createElement(KeyboardPanel)));
+  assert.match(html, /aria-label="Change shortcut for Reset checkout \(currently unset\)"/);
+  resetAll();
+});
+
+test("recording a key that is the default spelled the other way stores no override", () => {
+  resetAll();
+  linux(() => {
+    // Ctrl+G records as cmd+g off macOS, which IS the ctrl+g default there.
+    setBinding("composerEditor", chordFromEvent(key("g", { ctrl: true }))!);
+  });
+  assert.equal(stored().composerEditor, undefined);
+  mac(() => setBinding("composerEditor", "cmd+g"));
+  assert.equal(stored().composerEditor, "cmd+g", "on macOS ⌘G is a different key from ⌃G");
+  resetAll();
+});
+
+test("off macOS, cmd+alt is AltGr-shaped; on macOS ⌘ rules AltGr out", () => {
+  linux(() => {
+    assert.equal(chordMayBeAltGraph("cmd+alt+q"), true);
+    assert.equal(chordMayBeAltGraph("ctrl+alt+q"), true);
+    assert.equal(chordMayBeAltGraph("cmd+q"), false);
+  });
+  mac(() => {
+    assert.equal(chordMayBeAltGraph("cmd+alt+q"), false);
+    assert.equal(chordMayBeAltGraph("ctrl+alt+q"), true);
+  });
+});
+
+test("Ctrl+F still opens document find on either platform when Find is rebound", () => {
+  // The Files workspace accepts ⌘F and Ctrl+F whatever Find is bound to. Off macOS a keypress
+  // never emits `ctrl`, so a literal `ctrl+f` comparison would be dead there.
+  linux(() => {
+    const findBinding = resolveKeybindings({ findInConversation: "ctrl+shift+f" }).findInConversation;
+    assert.equal(findBinding, "cmd+shift+f");
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { ctrl: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("F", { ctrl: true, shift: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { meta: true })), findBinding), false);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f")), findBinding), false);
+  });
+  mac(() => {
+    const findBinding = resolveKeybindings({ findInConversation: "cmd+shift+f" }).findInConversation;
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { meta: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f", { ctrl: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("F", { meta: true, shift: true })), findBinding), true);
+    assert.equal(opensDocumentFind(chordFromEvent(key("f")), findBinding), false);
+  });
 });

@@ -296,7 +296,7 @@ test("the board numbers its cards across columns, and the key opens that card's 
   // The claim: pressing the key opens THAT card's console view. ⌘2 is the idle card, which is
   // deliberately not the one the board has selected or the one that needs you - so opening it
   // cannot be a coincidence of either.
-  await dashboard.keyboard.press("Meta+2");
+  await dashboard.keyboard.press("ControlOrMeta+2");
   const detail = dashboard.locator(".cdetail");
   await expect(detail).toBeVisible();
   await expect(detail.getByRole("heading", { name: IDLE_CARD.title })).toBeVisible();
@@ -307,7 +307,7 @@ test("the board numbers its cards across columns, and the key opens that card's 
 
   // ⌘1 from inside the console re-points it at the other card, rather than needing a trip back
   // to the overview first.
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(detail.getByRole("heading", { name: ASKED_CARD.title })).toBeVisible();
 
   // REFRESH. The question is answered, so the `Zulu` card leaves **needs you** - and the two
@@ -331,7 +331,7 @@ test("the board numbers its cards across columns, and the key opens that card's 
   // refresh, and a picture taken after the jump would show the console instead of the two
   // renumbered cards it is evidence for.
   await shoot(dashboard, "03-keys-refreshed-after-the-answer");
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(dashboard.locator(".cdetail").getByRole("heading", { name: IDLE_CARD.title }))
     .toBeVisible();
 });
@@ -465,7 +465,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
 
   // The claim: pressing the key opens THAT row's conversation. ⌘2 is the idle row, which is
   // not the row the rail opens by default, so this cannot be a coincidence of the selection.
-  await dashboard.keyboard.press("Meta+2");
+  await dashboard.keyboard.press("ControlOrMeta+2");
   const detail = dashboard.locator(".console-detail .cdetail");
   await expect(detail.getByRole("heading", { name: IDLE_CARD.title })).toBeVisible();
   await expect(idleRow).toHaveAttribute("aria-current", "true");
@@ -482,7 +482,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
 
   // ⌘1 re-points the open detail at the other row, the same way it does inside the Board's
   // drill-in, rather than needing the selection walked there.
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(detail.getByRole("heading", { name: ASKED_CARD.title })).toBeVisible();
 
   // REFRESH, from the rail's side. The question is answered, so the `Zulu` row leaves the
@@ -503,7 +503,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
   // The chord stands down with them, which is the half a keycap assertion cannot see. ⌘1 is
   // the `Alpha` row's key after the refresh above, and the detail is on `Zulu` - so a jump
   // that still fired would be unmistakable here, and the detail staying put is the claim.
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(detail.getByRole("heading", { name: ASKED_CARD.title })).toBeVisible();
   await expect(idleRow).not.toHaveAttribute("aria-keyshortcuts", "Meta+1");
 });
@@ -556,9 +556,9 @@ test("all twelve slots are handed out in order, and the last three open their ca
   // re-point a detail the previous one opened.
   const detail = dashboard.locator(".cdetail");
   for (const [chord, title] of [
-    ["Meta+0", "Slot 10"],
-    ["Meta+-", "Slot 11"],
-    ["Meta+=", "Slot 12"],
+    ["ControlOrMeta+0", "Slot 10"],
+    ["ControlOrMeta+-", "Slot 11"],
+    ["ControlOrMeta+=", "Slot 12"],
   ] as const) {
     await dashboard.keyboard.press(chord);
     await expect(detail.getByRole("heading", { name: title, exact: true })).toBeVisible();
@@ -590,7 +590,7 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   // The half a keycap count cannot prove, and the reason the two are one switch: the chord is
   // down too. ⌘1 does nothing, so nothing opens - and on the desktop shell ⌘0/⌘-/⌘= go back
   // to whatever else the operator uses them for.
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(dashboard.locator(".cdetail")).toHaveCount(0);
   // Still an ordinary card: its name is not on the list and cannot be switched off.
   await expect(tile.locator(".tile-name")).toHaveCount(1);
@@ -602,7 +602,7 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   await item.check();
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await expect(keycap(tile)).toHaveText("⌘1");
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(dashboard.locator(".cdetail")).toBeVisible();
 });
 
@@ -708,7 +708,7 @@ test("the shortcut is not a rebindable action in the Keyboard panel", async ({
   const diffRow = panel.locator('[data-anchor="keyboard/diff"]');
   await diffRow.getByRole("button", { name: /^Change shortcut for Open diff/ }).click();
   await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
-  await dashboard.keyboard.press("Meta+1");
+  await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(panel.locator(".settings-error"))
     .toHaveText("⌘1 is reserved for the fleet's session jump shortcuts.");
   // Still recording after a refusal, which is the right shape - the operator is being asked

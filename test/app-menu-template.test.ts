@@ -7,7 +7,14 @@ import {
   appMenuTemplate,
   RENDERER_OWNED_ACCELERATORS,
 } from "../src/main/menu-template.ts";
-import { CARD_SHORTCUT_CHORDS } from "../src/web/lib/card-shortcuts.ts";
+import {
+  assignCardShortcuts,
+  CARD_SHORTCUT_CHORDS,
+  CARD_SHORTCUT_KEYS,
+  cardShortcutTarget,
+} from "../src/web/lib/card-shortcuts.ts";
+import { chordFromEvent } from "../src/web/lib/keybindings.ts";
+import { onClientPlatform } from "./helpers/client-platform.ts";
 
 /**
  * The desktop menu must not claim a key the dashboard binds.
@@ -272,4 +279,32 @@ test("the preference reaches the menu across all four layers", () => {
 test("Settings keeps its conventional chord", () => {
   const settings = flatten(template).find((item) => item.label === "Settings…");
   assert.equal(settings?.accelerator, "CmdOrCtrl+,");
+});
+
+test("the keys the menu releases are the keys the page answers, on both platforms", () => {
+  // `CommandOrControl` is Command on macOS and Ctrl elsewhere. The page's `cmd` token follows
+  // the same rule, so each released zoom key lands on a jump slot on either platform. Off
+  // macOS it used not to: the menu gave up Ctrl+0/-/= while the page listened for Super.
+  const assigned = assignCardShortcuts([CARD_SHORTCUT_KEYS.map((key) => `s${key}`)]);
+  const physical = { darwin: "metaKey", linux: "ctrlKey" } as const;
+  for (const platform of ["darwin", "linux"] as const) {
+    onClientPlatform(platform, () => {
+      for (const key of ["0", "-", "="]) {
+        assert.ok(RENDERER_OWNED_ACCELERATORS.includes(`CommandOrControl+${key}`));
+        const chord = chordFromEvent({
+          key,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+          [physical[platform]]: true,
+        } as unknown as KeyboardEvent);
+        assert.equal(
+          cardShortcutTarget(chord ?? "", assigned),
+          `s${key}`,
+          `${platform}: CommandOrControl+${key} does not reach its jump slot`,
+        );
+      }
+    });
+  }
 });

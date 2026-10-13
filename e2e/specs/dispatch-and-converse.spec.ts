@@ -1326,7 +1326,7 @@ test("a managed launch shows only the human task request, and the agent still ge
   //    searchable, so find is looking at a real list. Under the "You" scope for the same
   //    reason the log assertions are: the agent's echo is a legitimate All-scope match.
   await detail.locator(".detail-body").focus();
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   const box = detail.getByRole("searchbox", { name: "Find in conversation" });
   const results = detail.getByRole("complementary", { name: "Search results" });
   await box.fill("Mission Control execution authorization");

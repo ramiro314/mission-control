@@ -95,8 +95,10 @@ export const CARD_SHORTCUT_KEYS = [
 /**
  * The canonical chord for one slot key, in `chordFromEvent`'s grammar.
  *
- * `cmd`, not `meta`: this codebase spells the Command/Meta modifier `cmd` (see
- * `keybindings.ts`), so a chord built any other way would never match a keypress. Every
+ * `cmd`, not `meta`: this codebase spells the primary modifier `cmd` (see
+ * `keybindings.ts`), so a chord built any other way would never match a keypress. That makes
+ * the slots ⌘1 … ⌘= on macOS and Ctrl+1 … Ctrl+= everywhere else, where Super belongs to the
+ * desktop and Ctrl+0/-/= are the keys the desktop menu hands over. Every
  * chord here carries a command modifier, which is also what makes these safe to fire from
  * inside a half-written reply - the same rule `chordHasCommandModifier` states for ⌘K.
  */

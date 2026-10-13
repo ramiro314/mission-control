@@ -73,7 +73,13 @@ import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { chordFromEvent, isTypingTarget, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
+import {
+  chordFromEvent,
+  isTypingTarget,
+  opensDocumentFind,
+  useKeybindingHints,
+  useKeybindings,
+} from "../lib/keybindings.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 // The sandboxed HTML preview boundary is SHARED with Scouts and lives in one module, so
 // neither surface can quietly weaken the CSP or the sandbox for its own documents.
@@ -1398,9 +1404,10 @@ function FileWorkspaceBody({
    * - it fires from inside a typing element, because the caret is in CodeMirror's
    *   `contentEditable` whenever the reader is in the Editor, which is precisely when they
    *   want find;
-   * - it accepts `ctrl+f` as well as the resolved binding. `chordFromEvent` does no platform
-   *   normalization, so the default `cmd+f` genuinely does not match Ctrl+F, and the ask
-   *   names both keys.
+   * - it accepts ⌘F and Ctrl+F as well as the resolved binding, so a rebound Find keeps
+   *   both keys here. On macOS the default `cmd+f` genuinely does not match Ctrl+F, and the
+   *   ask names both keys. `opensDocumentFind` compares them canonically, which is what keeps
+   *   Ctrl+F working off macOS, where a keypress never emits `ctrl`.
    *
    * It also claims FIND-NEXT and FIND-PREVIOUS, not only the open chord, and it has to: only
    * `FileEditor` installs those, so with find open over a Markdown or HTML preview - where no
@@ -1418,7 +1425,7 @@ function FileWorkspaceBody({
     if (findSurface === null) return;
     function onKeyDown(event: KeyboardEvent): void {
       const chord = chordFromEvent(event);
-      const bound = chord === findChord || chord === "cmd+f" || chord === "ctrl+f";
+      const bound = opensDocumentFind(chord, findChord);
       const claimed = editorFindChord(event);
       const action = bound
         ? "open"

@@ -44,7 +44,7 @@ test("telemetry Settings: off by default, local-only capture, and an honest prod
 }) => {
   // The palette is one route into the category, and it is the route somebody actually takes -
   // "telemetry" is a word people search for rather than a rail row they remember.
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await dashboard.getByRole("combobox", { name: "Search everything" }).fill("telemetry");
   await dashboard.getByRole("option", { name: /Collect telemetry on this machine/ }).click();
   await expect(dashboard).toHaveURL(/#\/settings\/telemetry$/);

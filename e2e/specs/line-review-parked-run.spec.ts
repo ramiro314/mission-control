@@ -351,10 +351,8 @@ test("the palette hoists a parked run into what is waiting on you", async ({
     deliveryMode: "preview",
   });
 
-  // `Meta+k` and not `ControlOrMeta+k`: `chordFromEvent` derives the Command modifier from
-  // `e.metaKey` alone, so the ControlOrMeta spelling arrives as "ctrl+k" on Linux and matches
-  // nothing. See the note in `palette.spec.ts`.
-  await dashboard.keyboard.press("Meta+k");
+  // `ControlOrMeta`, the platform's primary modifier. See the note in `palette.spec.ts`.
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
 

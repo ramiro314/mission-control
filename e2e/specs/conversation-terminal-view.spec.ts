@@ -311,7 +311,7 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   // and mark it here. A hit find can see but not highlight, or text on screen find reports
   // zero of, are the two ways this feature lies about a number.
   await terminal.locator(".pty-titlebar").click();
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   const findBox = reopened.getByRole("searchbox", { name: "Find in conversation" });
   await findBox.fill("--short");
   await expect(reopened.locator(".transcript-log mark.find-hit")).toHaveCount(1);

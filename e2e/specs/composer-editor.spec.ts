@@ -15,6 +15,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 const DRAFT = "the first attempt at a correction";
 const REFINED = "one: the first point\ntwo: the second point\nthree: the third";
 const ABANDONED = "\nfour: a point that must not survive Escape";
+/**
+ * The default `ctrl+g` as drawn on this machine. Off macOS `ctrl` and `cmd` are both Ctrl,
+ * so the binding resolves to the primary modifier `cmd` and its keycap draws ⌘ there.
+ */
+const EXPAND_KEYCAP = process.platform === "darwin" ? "⌃G" : "⌘G";
 
 const EVIDENCE = artifactsDir("composer-editor");
 
@@ -80,7 +85,7 @@ test("⌃G opens the draft full size and ⌘Enter stages it back, unsent", async
   await expect(big).toHaveValue(REFINED);
   await shoot(dashboard, "editor-holding-the-modified-text");
 
-  await big.press("Meta+Enter");
+  await big.press("ControlOrMeta+Enter");
 
   await expect(editor).toBeHidden();
   await expect(composer).toHaveValue(REFINED);
@@ -118,7 +123,9 @@ test("the expand chord is rebindable, and refuses a key that would type itself",
   const row = dashboard.locator('[data-anchor="keyboard/composerEditor"]');
   await expect(row).toContainText("Expand the message box");
   await expect(
-    row.getByRole("button", { name: /^Change shortcut for Expand the message box \(currently ⌃G\)/ }),
+    row.getByRole("button", {
+      name: `Change shortcut for Expand the message box (currently ${EXPAND_KEYCAP})`,
+    }),
   ).toBeVisible();
 
   await row.getByRole("button", { name: /^Change shortcut for Expand the message box/ }).click();
@@ -133,13 +140,13 @@ test("the expand chord is rebindable, and refuses a key that would type itself",
   // ⌘V would swallow Paste in the box people paste into most, and ⌃⌥Q is how Windows and
   // Linux report AltGr, which types `@` on a German layout. Both carry a command modifier,
   // so both looked valid to the older rule.
-  await dashboard.keyboard.press("Meta+v");
+  await dashboard.keyboard.press("ControlOrMeta+v");
   await expect(dashboard.locator(".settings-error")).toContainText("text-editing command");
   await dashboard.keyboard.press("Control+Alt+q");
   await expect(dashboard.locator(".settings-error")).toContainText("AltGr");
   await expect(row.getByRole("button", { name: /^Recording/ })).toBeVisible();
 
-  await dashboard.keyboard.press("Meta+e");
+  await dashboard.keyboard.press("ControlOrMeta+e");
   await expect(
     row.getByRole("button", { name: /^Change shortcut for Expand the message box \(currently ⌘E\)/ }),
   ).toBeVisible();
@@ -156,7 +163,7 @@ test("the expand chord is rebindable, and refuses a key that would type itself",
   await expect(editor).toBeHidden();
   await expect(composer).toHaveValue(DRAFT);
 
-  await composer.press("Meta+e");
+  await composer.press("ControlOrMeta+e");
   await expect(editor).toBeVisible();
   await expect(editor.getByRole("textbox", { name: "Message" })).toHaveValue(DRAFT);
 });
@@ -189,7 +196,7 @@ test("the terminal rendering names the chord in its `enter sends` legend", async
   await expect(composer).toBeEnabled();
 
   const legend = card.locator(".pty-sendkey");
-  await expect(legend).toHaveText("enter sends · shift+enter newline · ⌃G expands · drop images");
+  await expect(legend).toHaveText(`enter sends · shift+enter newline · ${EXPAND_KEYCAP} expands · drop images`);
   await shoot(dashboard, "hint-beside-enter-sends-terminal");
 
   // And the chord works from this composer too, not only from the chat one.
@@ -268,7 +275,7 @@ test("⌃G opens on an empty send box, and what is written there stages too", as
   // And it is a working editor, not merely an open one: what gets written from empty stages
   // back the same way a continued draft does.
   await big.fill(REFINED);
-  await big.press("Meta+Enter");
+  await big.press("ControlOrMeta+Enter");
   await expect(editor).toBeHidden();
   await expect(composer).toHaveValue(REFINED);
 });

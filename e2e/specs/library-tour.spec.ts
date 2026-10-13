@@ -121,7 +121,7 @@ async function startFromSettings(page: Page, daemon: DaemonHandle, category = "d
 
 async function startFromPalette(page: Page): Promise<void> {
   const palette = page.getByRole("dialog", { name: "Search everything" });
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Author what runs");
   await palette.getByRole("option", { name: TOUR_COMMAND }).click();
@@ -583,7 +583,7 @@ test("a finished tour starts again from stop one, carrying nothing over from the
   expect(await assetSnapshot(daemon)).toBe(before);
 
   // And the entry point is not spent: the palette still offers the row a third time.
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Author what runs");
   await expect(palette.getByRole("option", { name: TOUR_COMMAND })).toBeVisible();

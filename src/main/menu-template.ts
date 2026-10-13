@@ -40,6 +40,10 @@ export interface AppMenuHandlers {
  * repository can rewrite the way this one rewrites a menu; what happens there, and why the
  * keys are the same on both surfaces anyway, is recorded in `src/web/lib/card-shortcuts.ts`.
  *
+ * `CommandOrControl` is Ctrl off macOS, which is the key the page listens for there too: the
+ * dashboard's `cmd` token means Ctrl off macOS (`src/web/lib/keybindings.ts`), so the keys
+ * this releases are the keys the jump arm answers on every platform.
+ *
  * Exported so the test asserts the exclusion rather than restating it. `Plus` and
  * `Shift+Plus` are in the list because that is how Electron spells the zoom-in role's
  * accelerator, and `⌘+` is the same physical key as `⌘=`.

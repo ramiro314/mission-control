@@ -311,7 +311,7 @@ test("a palette search for a Foreman model lands on the Models page and flashes 
   // is worse than no hit: the operator concludes the setting was removed. This is the whole
   // chord-to-category-to-scroll path, which no unit test can walk end to end.
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await dashboard.getByRole("combobox", { name: "Search everything" }).fill("Foreman provider");
   await dashboard.getByRole("option", { name: /Foreman provider and models, setting/ }).click();
 
@@ -324,7 +324,7 @@ test("a palette search for a Foreman model lands on the Models page and flashes 
 
   // The same for the Inspector's entry, whose id is unchanged so a stored keybinding survives.
   await expect(target).not.toHaveClass(/settings-flash/, { timeout: 5_000 });
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await dashboard.getByRole("combobox", { name: "Search everything" }).fill("Inspector review model");
   await dashboard.getByRole("option", { name: /GitHub Inspector review model, setting/ }).click();
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/settings/models");

@@ -24,6 +24,7 @@ import {
   reservedChordReason,
   resolveKeybindings,
 } from "../src/web/lib/keybindings.ts";
+import { onClientPlatform } from "./helpers/client-platform.ts";
 
 /**
  * The fleet's ⌘1 … ⌘= jump keys: how a slot is handed out, and what a keypress
@@ -125,6 +126,29 @@ test("every chord is one a keypress can actually produce", () => {
       `⌘${key} does not normalize to the chord the card prints`,
     );
   }
+});
+
+test("off macOS the slots are Ctrl+1 … Ctrl+=, and Super reaches none of them", () => {
+  // Super+digit launches apps (GNOME) or switches taskbar entries (KDE), and the desktop
+  // never lets the page see it. Ctrl is the primary modifier there, which is also the key
+  // the desktop menu's `CommandOrControl+0/-/=` release hands to the page.
+  const event = (key: string, mods: { meta?: boolean; ctrl?: boolean }) =>
+    ({ key, metaKey: Boolean(mods.meta), ctrlKey: Boolean(mods.ctrl), altKey: false, shiftKey: false }) as unknown as KeyboardEvent;
+  const assigned = assignCardShortcuts([CARD_SHORTCUT_KEYS.map((key) => `s${key}`)]);
+  onClientPlatform("linux", () => {
+    for (const key of CARD_SHORTCUT_KEYS) {
+      const chord = chordFromEvent(event(key, { ctrl: true }));
+      assert.equal(chord, cardShortcutChord(key), `Ctrl+${key} is not slot ${key}`);
+      assert.equal(cardShortcutTarget(chord!, assigned), `s${key}`);
+      assert.equal(chordFromEvent(event(key, { meta: true })), null, `Super+${key} produced a chord`);
+    }
+  });
+  onClientPlatform("darwin", () => {
+    for (const key of CARD_SHORTCUT_KEYS) {
+      assert.equal(chordFromEvent(event(key, { meta: true })), cardShortcutChord(key));
+      assert.equal(cardShortcutTarget(chordFromEvent(event(key, { ctrl: true }))!, assigned), null);
+    }
+  });
 });
 
 test("each slot prints and announces itself", () => {

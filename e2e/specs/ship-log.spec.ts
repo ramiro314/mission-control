@@ -397,7 +397,7 @@ test("⌘K reaches the Ship log, and so does the Line's Shipped drawer", async (
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
 
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   // Searched by what the page is ABOUT, not by its name - the keywords carry that, and an

@@ -243,7 +243,7 @@ test("the setup reminder is durable, detects a regression, and the tour hands ov
   expect(hijacked, "a finished tour took focus back from where the operator clicked")
     .toBeNull();
 
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Set up this machine");
   await palette.getByRole("option", { name: TOUR_COMMAND }).click();
