@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test, type TestContext } from "node:test";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Task } from "../src/shared/types.ts";
 import { DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { McpTaskConfigurationSchema } from "../src/shared/protocol.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
 
@@ -28,6 +30,9 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { getTask, listTasks, openDb } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchModel, resolveDispatchEffort } = await import("../src/server/harnesses.ts");
+const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { savePlan } = await import("../src/server/plans/store.ts");
+const { planAuthority } = await import("../src/server/plans/authority.ts");
 
 function gitRepo(name: string): string {
   const path = join(repos, name);
@@ -46,7 +51,8 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
   const tasks = new TaskManager(registry, undefined, undefined, undefined, archives);
   const queues = new QueueManager(registry);
   const workflows = new WorkflowManager(registry);
-  const app = buildApp({ registry, tasks, queues, workflows, reviews: new ReviewManager(registry) });
+  const reviews = new ReviewManager(registry);
+  const app = buildApp({ registry, tasks, queues, workflows, reviews });
   const paths: string[] = [];
   const server = serve({
     hostname: "127.0.0.1",
@@ -95,8 +101,56 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
   async function create(over: Record<string, unknown> = {}) {
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
   }
-  return { client, call, create, registry, tasks, app, paths };
+  return { client, call, create, registry, tasks, app, paths, reviews };
 }
+
+test("MCP configuration and exact local plan inputs coexist without changing either dependency boundary", async (t) => {
+  applySkillsConfig({ planStorage: "local", commitPlanHtml: true });
+  const f = await fixture(t);
+  const defaultPlan = await f.create({ kind: "plan" });
+  assert.equal(defaultPlan.workflowId, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  assert.deepEqual(getTask(defaultPlan.id)!.planPolicy, { version: 2, storage: "local", commitPlanHtml: true });
+
+  const source = await f.create({ kind: "plan", workflowId: null });
+  f.registry.applyDiscovery([{
+    syntheticId: "sdk:backlog-test", agent: "claude", name: "Local plan author", nameSource: "process",
+    cwd: repoA, repoRoot: repoA, gitRoot: repoA, gitBranch: "plan/local",
+    pid: 101, tty: null, terminals: [], startedAt: Date.now(),
+  }]);
+  f.registry.applyHook({ agent: "claude", event: "Stop", sessionId: "local-plan-author", cwd: repoA, transcriptPath: null, env: {} });
+  f.registry.upsertTask({ ...getTask(source.id)!, status: "running", sessionId: "sdk:backlog-test", worktreePath: repoA });
+  const saved = await savePlan(planAuthority(f.registry, f.registry.getSession("sdk:backlog-test")!, "repo-01"), {
+    repoSlot: "repo-01", requestId: randomUUID(), slug: "merged-mcp-contract", expectedRevision: 0,
+    files: [{ name: "plan.md", content: "# Exact plan" }, { name: "plan.html", content: "<h1>Exact plan</h1>" }],
+  });
+  const identity = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: 1 };
+  const planInputs = [{ ...identity, files: ["plan.md"] }];
+  await f.call("create_task", { title: "Unapproved plan", intent: "Must wait for approval", repository: repoA, workflowId: null,
+    planInputs, dependencies: [{ type: "plan", ...identity }] }, /explicit human approval/);
+  await f.call("create_task", { title: "Too many prerequisites", intent: "All dependency forms share one cap", repository: repoA, workflowId: null,
+    planInputs, planPrerequisites: [identity], dependsOnTaskIds: Array.from({ length: 50 }, (_, i) => `prerequisite-${i}`) }, /at most 50 task dependencies/);
+  const reviewResponse = await f.app.request("/mcp/v2/reviews", {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ env: {}, sessionId: "sdk:backlog-test", cwd: repoA, kind: "plan-decisions", title: "Approve exact plan", body: "Review the final bundle", managedPlan: { repoSlot: "repo-01", planId: identity.planId, revision: 1 } }),
+  });
+  assert.equal(reviewResponse.status, 200, await reviewResponse.clone().text());
+  const review = await reviewResponse.json() as { id: string };
+  f.reviews.resolve(review.id, "answer", null, "human", [{ decisionId: "approve-final-bundle", selected: ["approve"], other: null }]);
+  const code = await f.create({ workflowId: null });
+  const created = await f.create({ kind: "bugfix", agent: "codex", model: "gpt-6-sol", effort: "high", workflowId: null,
+    planInputs, planPrerequisites: [identity], dependencies: [{ type: "task", taskId: code.id }] });
+  const stored = getTask(created.id)!;
+  assert.deepEqual(stored.planInputs, planInputs);
+  assert.deepEqual(created.planInputs, planInputs);
+  assert.equal(stored.kind, "bugfix");
+  assert.equal(stored.model, "gpt-6-sol");
+  assert.equal(stored.effort, "high");
+  assert.deepEqual(stored.dependencies.map((edge) => edge.type), ["task", "plan"]);
+  assert.ok(stored.dependencies.every((edge) => edge.satisfiedAt === null));
+  const edited = await f.call("update_task", { taskId: created.id, title: "Retain exact input", priority: "high" });
+  assert.equal(edited!.priority, "high");
+  assert.deepEqual(getTask(created.id)!.planInputs, planInputs);
+});
 
 test("MCP advertises and persists every backlog configuration field without launching", async (t) => {
   const f = await fixture(t);

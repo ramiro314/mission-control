@@ -44,6 +44,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/product-issues", "task.issue_submit", "tasks"],
   ["POST", "/mcp/product-issues", "task.issue_submit", "tasks"],
   ["POST", "/mcp/reviews", "attention.request", "permissions"],
+  ["POST", "/mcp/v2/reviews", "attention.request", "permissions"],
   ["POST", "/mcp/reviews/:id/detach", "attention.detach", "permissions"],
   ["POST", "/api/reviews/:id/resolve", "attention.resolve", "permissions"],
   ["POST", "/api/sessions/:id/mode/cycle", "permission.mode_cycle", "permissions"],

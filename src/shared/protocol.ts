@@ -1,3 +1,4 @@
+import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
@@ -527,12 +528,13 @@ export const CreateReviewSchema = z
     sessionId: z.string().nullable().optional().default(null),
     cwd: z.string().nullable().optional().default(null),
     kind: z.enum(["plan", "diff", "input", "plan-decisions"]),
+    managedPlan: PlanReviewInputSchema.optional(),
     title: z.string().min(1),
     body: z.string(),
     /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
     decisions: z.array(PlanDecisionSchema).optional(),
   })
-  .refine((r) => r.kind !== "plan-decisions" || (r.decisions?.length ?? 0) > 0, {
+  .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
     path: ["decisions"],
   })
@@ -912,6 +914,7 @@ const TASK_TRIAGE_FIELDS = {
 export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task"), taskId: z.string().min(1) }),
   z.object({ type: z.literal("session"), sessionId: z.string().min(1) }),
+  PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
@@ -922,7 +925,7 @@ const TaskDependenciesSchema = z
     const seen = new Set<string>();
     for (let i = 0; i < dependencies.length; i++) {
       const dependency = dependencies[i]!;
-      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      const key = dependency.type === "plan" ? `plan:${dependency.planId}:${dependency.revision}` : dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
       if (seen.has(key)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i], message: "duplicate task dependency" });
       }
@@ -1083,6 +1086,7 @@ export const DispatchSchema = z
      */
     enabled: z.boolean().optional().default(true),
     dependencies: TaskDependenciesSchema.optional().default([]),
+    planInputs: TaskPlanInputsSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
   })
   // Only when the harness is NAMED. An effort sent with no agent is a level chosen against
@@ -1332,6 +1336,7 @@ const UpdateTaskFieldsSchema = z
     effort: EffortLevelSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
+    planInputs: TaskPlanInputsSchema.optional(),
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
@@ -1348,6 +1353,7 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   extraRepoRoots: true,
   title: true,
   intent: true,
+  planInputs: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -1355,9 +1361,11 @@ export const McpCreateTaskV3Schema = McpCreateTaskBaseSchema.extend({
   ...McpTaskConfigurationSchema.shape,
   targetRepository: z.string().trim().min(1).optional(),
   additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).default([]),
+  planInputs: TaskPlanInputsSchema.default([]),
+  planPrerequisites: z.array(PlanIdentitySchema).max(16).default([]),
 }).strict().refine(
   (o) => o.dependsOnTaskIds.length + (o.dependsOnCurrentSession ? 1 : 0)
-    + (o.dependencies?.length ?? 0) <= MAX_TASK_DEPENDENCIES,
+    + (o.dependencies?.length ?? 0) + o.planPrerequisites.length <= MAX_TASK_DEPENDENCIES,
   mcpTaskDependencyRefinement,
 );
 export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
@@ -1365,6 +1373,7 @@ export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
+  planInputs: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
   additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
@@ -2263,6 +2272,7 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
 export const SkillsConfigSchema = z.object({
   /** Pinned by new managed plans; rendered previews are retained regardless. */
   commitPlanHtml: z.boolean().default(false),
+  planStorage: z.enum(["repository", "local"]).default("repository"),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2298,7 +2308,7 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true })
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true })
   .partial()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
