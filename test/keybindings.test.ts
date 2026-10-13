@@ -909,3 +909,17 @@ test("the Keyboard panel names the reserved jump keys per platform", () => {
   assert.match(offMac, /<kbd[^>]*>Ctrl\+K<\/kbd>|>Ctrl\+K</);
   assert.doesNotMatch(offMac, /[⌘⌃⌥]/);
 });
+
+test("off macOS, aria-keyshortcuts announces Control for cmd; on macOS it stays Meta", () => {
+  const cases: [string, string, string][] = [
+    ["cmd+2", "Meta+2", "Control+2"],
+    ["ctrl+g", "Control+g", "Control+g"],
+    ["cmd+shift+k", "Meta+Shift+K", "Control+Shift+K"],
+    ["cmd+ctrl+k", "Meta+Control+k", "Control+k"],
+    ["shift+d", "Shift+D", "Shift+D"],
+  ];
+  for (const [chord, onMac, offMac] of cases) {
+    assert.equal(mac(() => ariaKeyshortcuts(chord)), onMac, `${chord} on macOS`);
+    assert.equal(linux(() => ariaKeyshortcuts(chord)), offMac, `${chord} on Linux`);
+  }
+});

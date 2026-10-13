@@ -600,12 +600,16 @@ export function cardShortcutZoomKeysLabel(): string {
   return CARD_SHORTCUT_CHORDS.slice(-3).map(formatChord).join("/");
 }
 
-/** WAI-ARIA spelling of a canonical chord for `aria-keyshortcuts`. */
+/**
+ * WAI-ARIA spelling of a canonical chord for `aria-keyshortcuts`. Off macOS `cmd` is Ctrl
+ * (see `canonicalChord`), so it is announced as `Control` there, never `Meta`.
+ */
 export function ariaKeyshortcuts(chord: string): string | undefined {
   if (!chord) return undefined;
-  const { mods, key } = parseChord(chord);
+  const mac = isMacClient();
+  const { mods, key } = parseChord(mac ? chord : canonicalChord(chord));
   const ariaMods: Record<string, string> = {
-    cmd: "Meta",
+    cmd: mac ? "Meta" : "Control",
     ctrl: "Control",
     alt: "Alt",
     shift: "Shift",

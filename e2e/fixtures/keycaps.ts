@@ -20,3 +20,11 @@ const MOD_NAME: Record<string, string> = { "⌘": "Ctrl", "⌃": "Ctrl", "⌥": 
 export function platformKeycapPattern(mac: string): string {
   return platformKeycap(mac).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/**
+ * An `aria-keyshortcuts` value written in its macOS spelling. Off macOS `cmd` is announced
+ * as `Control` (`ariaKeyshortcuts`), so a leading `Meta` becomes `Control`.
+ */
+export function platformAriaKeyshortcuts(mac: string): string {
+  return process.platform === "darwin" ? mac : mac.replace(/^Meta\+/, "Control+");
+}

@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { platformKeycap, platformKeycapPattern } from "../fixtures/keycaps.ts";
+import { platformAriaKeyshortcuts, platformKeycap, platformKeycapPattern } from "../fixtures/keycaps.ts";
 
 /**
  * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= over the fleet's sessions: the keycap in each Board card's top-right
@@ -291,7 +291,7 @@ test("the board numbers its cards across columns, and the key opens that card's 
   // `aria-hidden`, as every keycap in this app is.
   await expect(
     idleTile.getByRole("button", { name: new RegExp(`^Open .*${IDLE_CARD.title}`) }),
-  ).toHaveAttribute("aria-keyshortcuts", "Meta+2");
+  ).toHaveAttribute("aria-keyshortcuts", platformAriaKeyshortcuts("Meta+2"));
   await shoot(dashboard, "01-two-columns-numbered");
 
   // The claim: pressing the key opens THAT card's console view. ⌘2 is the idle card, which is
@@ -462,7 +462,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
 
   // The chord is announced on the control it drives - the row itself here, since the rail's
   // keycap is `aria-hidden` like every other keycap in this app.
-  await expect(idleRow).toHaveAttribute("aria-keyshortcuts", "Meta+2");
+  await expect(idleRow).toHaveAttribute("aria-keyshortcuts", platformAriaKeyshortcuts("Meta+2"));
 
   // The claim: pressing the key opens THAT row's conversation. ⌘2 is the idle row, which is
   // not the row the rail opens by default, so this cannot be a coincidence of the selection.
@@ -506,7 +506,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
   // that still fired would be unmistakable here, and the detail staying put is the claim.
   await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(detail.getByRole("heading", { name: ASKED_CARD.title })).toBeVisible();
-  await expect(idleRow).not.toHaveAttribute("aria-keyshortcuts", "Meta+1");
+  await expect(idleRow).not.toHaveAttribute("aria-keyshortcuts", platformAriaKeyshortcuts("Meta+1"));
 });
 
 test("all twelve slots are handed out in order, and the last three open their cards", async ({

@@ -129,6 +129,8 @@ test("the rail keycap reads Ctrl+1, and the action bar's reset names no key whil
   // The rail row's jump keycap is Ctrl+1, the key that opens it here.
   const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
   await expect(row.locator(".rail-state-line .kb-hint")).toHaveText("Ctrl+1");
+  // And it is announced as Control, not as the Meta key the desktop owns.
+  await expect(row).toHaveAttribute("aria-keyshortcuts", "Control+1");
   await shoot(dashboard, "04-rail-keycap-ctrl-1");
   // The action stays reachable from the session it acts on, and its description no longer
   // ends in an empty "()" where the ⌃R it used to print would have been.
