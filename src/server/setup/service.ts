@@ -45,9 +45,9 @@ export type SetupServiceStarters = Record<SetupServiceId, () => Promise<Terminal
  * A cmux repair, refused before it runs on a host cmux does not support. The Setup row never
  * offers one there, so this closes the route to a request that names one anyway.
  */
-export function cmuxStarter(
+function cmuxStarter(
   start: () => Promise<TerminalResult>,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform,
 ): () => Promise<TerminalResult> {
   return async () => {
     const unsupported = binUnsupportedReason(CMUX_BIN, platform);
@@ -56,17 +56,24 @@ export function cmuxStarter(
   };
 }
 
-export const DEFAULT_SETUP_SERVICE_STARTERS: SetupServiceStarters = {
-  "herdr-server": () => herdrServerStart(),
-  "cmux-app": cmuxStarter(() => cmuxAppStart()),
-  "cmux-socket-control": cmuxStarter(async () => {
-    const written = enableCmuxSocketControl();
-    if (!written.ok) return { ok: false, error: written.error, outcomeUnknown: false };
-    // No reload is asked for: under `cmuxOnly` that call is refused too, and cmux picks the
-    // file up by watching it. See `setup/cmux-config.ts` for where that was measured.
-    return { ok: true, outcomeUnknown: false };
-  }),
-};
+/** The daemon's starters for one host platform; a test names the platform it means. */
+export function setupServiceStarters(
+  platform: NodeJS.Platform = process.platform,
+): SetupServiceStarters {
+  return {
+    "herdr-server": () => herdrServerStart(),
+    "cmux-app": cmuxStarter(() => cmuxAppStart(), platform),
+    "cmux-socket-control": cmuxStarter(async () => {
+      const written = enableCmuxSocketControl();
+      if (!written.ok) return { ok: false, error: written.error, outcomeUnknown: false };
+      // No reload is asked for: under `cmuxOnly` that call is refused too, and cmux picks the
+      // file up by watching it. See `setup/cmux-config.ts` for where that was measured.
+      return { ok: true, outcomeUnknown: false };
+    }, platform),
+  };
+}
+
+export const DEFAULT_SETUP_SERVICE_STARTERS: SetupServiceStarters = setupServiceStarters();
 
 export interface SetupServiceResponse {
   status: 200 | 409 | 504;

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -15,7 +16,7 @@ import { CMUX_BIN } from "../src/server/terminal/cmux.ts";
 import { launchHome, type HomeDeps } from "../src/server/terminal/home.ts";
 import { EMULATORS, MULTIPLEXERS, automaticFocusEmulator } from "../src/server/terminal/registry.ts";
 import { terminalTargetViews } from "../src/server/terminal/targets.ts";
-import { cmuxStarter } from "../src/server/setup/service.ts";
+import { setupServiceStarters, startSetupService } from "../src/server/setup/service.ts";
 import type { BinSpec } from "../src/server/terminal/types.ts";
 
 // iTerm2 is driven through Apple Events and cmux is a macOS app, so off macOS both say so
@@ -99,18 +100,30 @@ test("the dispatch error recommends only backends this platform can run", async 
   );
 });
 
-test("a cmux setup service is refused off macOS before it runs, and runs on macOS", async () => {
-  let started = 0;
-  const start = async () => {
-    started += 1;
-    return { ok: true as const, outcomeUnknown: false };
-  };
-  assert.deepEqual(await cmuxStarter(start, "linux")(), {
-    ok: false,
-    error: "cmux requires macOS",
-    outcomeUnknown: false,
-  });
-  assert.equal(started, 0);
-  assert.deepEqual(await cmuxStarter(start, "darwin")(), { ok: true, outcomeUnknown: false });
-  assert.equal(started, 1);
+test("both real cmux setup services are refused off macOS before they run", async () => {
+  // A temp config path, so the socket-control repair writing for real would show up here and
+  // nowhere else. `cmux-app` would answer with cmuxAppStart's own sentence, never this one.
+  const dir = mkdtempSync(join(tmpdir(), "mission-cmux-config-"));
+  const configPath = join(dir, "cmux.json");
+  try {
+    process.env.MISSION_CMUX_CONFIG_PATH = configPath;
+    delete process.env.MISSION_CMUX_BIN;
+    delete process.env.CMUX_BIN;
+    const linux = setupServiceStarters("linux");
+    for (const service of ["cmux-app", "cmux-socket-control"] as const) {
+      const response = await startSetupService(service, linux);
+      assert.equal(response.status, 409);
+      assert.equal(response.body.outcome, "refused");
+      assert.equal(response.body.detail, "cmux requires macOS");
+    }
+    assert.equal(existsSync(configPath), false);
+
+    // On macOS the same starter reaches the real config write.
+    const darwin = await startSetupService("cmux-socket-control", setupServiceStarters("darwin"));
+    assert.equal(darwin.status, 200);
+    assert.equal(existsSync(configPath), true);
+  } finally {
+    delete process.env.MISSION_CMUX_CONFIG_PATH;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
