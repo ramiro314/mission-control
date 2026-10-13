@@ -2,6 +2,7 @@
 // they are functions of a chord alone and testable without a browser.
 
 import { chordSurvivesTyping, formatChord } from "./keybindings.ts";
+import { isMacClient } from "./platform.ts";
 
 /**
  * Whether a keystroke inside a composer asked for the full-size editor.
@@ -77,9 +78,10 @@ export function composerKeysHint(expandChord: string): string {
 /**
  * The editor's footer legend.
  *
- * Names BOTH staging modifiers rather than only ⌘. `composerEditorStages` accepts either,
- * and a legend that said ⌘ alone told every Windows and Linux reader about a key their
- * keyboard does not have while withholding the one that works for them.
+ * On macOS it names BOTH staging modifiers rather than only ⌘, because
+ * `composerEditorStages` accepts either. Everywhere else it names Ctrl, the key that works
+ * there, rather than Mac glyphs for keys that keyboard does not have.
  */
-export const COMPOSER_EDITOR_KEYS_HINT =
-  "⌘/⌃enter stages it in the send box · esc discards";
+export function composerEditorKeysHint(): string {
+  return `${isMacClient() ? "⌘/⌃enter" : "ctrl+enter"} stages it in the send box · esc discards`;
+}

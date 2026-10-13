@@ -1,3 +1,4 @@
+import { formatChord } from "./keybindings.ts";
 import { WORKSPACE_PATH_CLASS } from "./rehypeWorkspacePaths.ts";
 
 export type ContextTier = "item" | "container";
@@ -269,10 +270,11 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
   }
   if (snapshot.field.disabled || snapshot.field.readOnly) return actions;
 
+  const pasteKey = formatChord("cmd+v");
   const paste = (asQuote: boolean): ContextAction => ({
     id: asQuote ? "field.paste-quote" : "field.paste",
     label: asQuote ? "Paste as quote" : "Paste",
-    hint: asQuote ? "> text" : "⌘V",
+    hint: asQuote ? "> text" : pasteKey,
     kind: asQuote ? "paste-quote" : "paste",
     payload: "",
     managesFocus: true,
@@ -296,7 +298,7 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
           return;
         }
         setFieldSelection(snapshot);
-        ctx.announce("Paste needs clipboard permission. Press ⌘V instead.", "error");
+        ctx.announce(`Paste needs clipboard permission. Press ${pasteKey} instead.`, "error");
       }
     },
   });

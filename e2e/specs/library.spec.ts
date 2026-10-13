@@ -4,6 +4,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { platformKeycap } from "../fixtures/keycaps.ts";
 
 /**
  * The Library, driven the way an operator drives it: the topbar segment, the shelves, and the
@@ -213,7 +214,7 @@ test("the topbar segments directly open Fleet, Library, Runs and Scouts, while S
   await expect(fleet.locator("kbd")).toHaveText("f");
   await expect(library.locator("kbd")).toHaveText("w");
   await expect(runs.locator("kbd")).toHaveText("r");
-  await expect(scouts.locator("kbd")).toHaveText("⇧S");
+  await expect(scouts.locator("kbd")).toHaveText(platformKeycap("⇧S"));
   // Sitrep left the title bar to make room for the third page segment.
   await expect(dashboard.locator("header.topbar").getByRole("button", { name: "Sitrep" }))
     .toHaveCount(0);

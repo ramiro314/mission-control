@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { platformKeycap, platformKeycapPattern } from "../fixtures/keycaps.ts";
 
 /**
  * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= over the fleet's sessions: the keycap in each Board card's top-right
@@ -273,8 +274,8 @@ test("the board numbers its cards across columns, and the key opens that card's 
 
   // The numbering crosses the status boundary: **needs you** is the first column, so its card
   // is ⌘1 and the count CARRIES ON into **idle** rather than restarting at 1 there.
-  await expect(keycap(askedTile)).toHaveText("⌘1");
-  await expect(keycap(idleTile)).toHaveText("⌘2");
+  await expect(keycap(askedTile)).toHaveText(platformKeycap("⌘1"));
+  await expect(keycap(idleTile)).toHaveText(platformKeycap("⌘2"));
   // In the card's top-right corner, which is where the request put it: the name takes the
   // rest of the head's width, so the keycap's right edge is the last thing on the row.
   const headBox = (await askedTile.locator(".tile-head").boundingBox())!;
@@ -321,12 +322,12 @@ test("the board numbers its cards across columns, and the key opens that card's 
   await expect(settled).toHaveCount(2);
   await expect(settled.nth(0)).toContainText(IDLE_CARD.title);
   await expect(settled.nth(1)).toContainText(ASKED_CARD.title);
-  await expect(keycap(settled.nth(0))).toHaveText("⌘1");
-  await expect(keycap(settled.nth(1))).toHaveText("⌘2");
+  await expect(keycap(settled.nth(0))).toHaveText(platformKeycap("⌘1"));
+  await expect(keycap(settled.nth(1))).toHaveText(platformKeycap("⌘2"));
   // Which is the swap, stated from the card's side: the card that held ⌘1 a moment ago now
   // prints ⌘2, and ⌘1 opens its neighbour.
   const askedNow = idleCol.locator(".tile").filter({ hasText: ASKED_CARD.title });
-  await expect(keycap(askedNow)).toHaveText("⌘2");
+  await expect(keycap(askedNow)).toHaveText(platformKeycap("⌘2"));
   // Captured from the OVERVIEW, before the press below: this is the one frame that shows the
   // refresh, and a picture taken after the jump would show the console instead of the two
   // renumbered cards it is evidence for.
@@ -353,8 +354,8 @@ test("the Console rail prints the same keys beside its state words, and they ope
   await useBoardLayout(dashboard, daemon);
   const askedTile = dashboard.locator("main.board section.board-col.tone-attention .tile");
   const idleTile = dashboard.locator("main.board section.board-col.tone-idle .tile");
-  await expect(keycap(askedTile)).toHaveText("⌘1");
-  await expect(keycap(idleTile)).toHaveText("⌘2");
+  await expect(keycap(askedTile)).toHaveText(platformKeycap("⌘1"));
+  await expect(keycap(idleTile)).toHaveText(platformKeycap("⌘2"));
 
   await useConsoleLayout(dashboard, daemon);
   const rail = dashboard.getByRole("navigation", { name: "Sessions" });
@@ -366,8 +367,8 @@ test("the Console rail prints the same keys beside its state words, and they ope
   // THE SAME numbering, session for session. The rail is the board's columns read end to end,
   // so the session that printed ⌘1 on a card prints ⌘1 on its row - a layout switch must not
   // renumber the fleet.
-  await expect(railKeycap(askedRow)).toHaveText("⌘1");
-  await expect(railKeycap(idleRow)).toHaveText("⌘2");
+  await expect(railKeycap(askedRow)).toHaveText(platformKeycap("⌘1"));
+  await expect(railKeycap(idleRow)).toHaveText(platformKeycap("⌘2"));
   expect(idle.id, "the two dispatches are two sessions").not.toBe(asked.id);
 
   // WHERE it sits, which is the placement the operator chose over three others: immediately
@@ -490,8 +491,8 @@ test("the Console rail prints the same keys beside its state words, and they ope
   // hands it ⌘1. The keys follow the POSITION, on this layout exactly as on the board.
   await api(daemon, `/api/reviews/${reviewId}/resolve`, { action: "dismiss" });
   await expect(rail.locator(".rail-group.tone-attention")).toHaveCount(0);
-  await expect(railKeycap(idleRow)).toHaveText("⌘1");
-  await expect(railKeycap(askedRow)).toHaveText("⌘2");
+  await expect(railKeycap(idleRow)).toHaveText(platformKeycap("⌘1"));
+  await expect(railKeycap(askedRow)).toHaveText(platformKeycap("⌘2"));
 
   // And the one switch takes the rail's keycaps down with the board's, which is what the
   // item's own description now promises about both surfaces.
@@ -541,7 +542,7 @@ test("all twelve slots are handed out in order, and the last three open their ca
   // The number row as it is spelled on the keyboard, in board order. Asserted card by card
   // rather than as a set: the claim is that slot N belongs to the Nth card, and a set would
   // pass on a board that handed out all twelve keys in the wrong order.
-  const row = ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8", "⌘9", "⌘0", "⌘-", "⌘="];
+  const row = ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8", "⌘9", "⌘0", "⌘-", "⌘="].map(platformKeycap);
   for (const [index, chord] of row.entries()) {
     await expect(tiles.nth(index)).toContainText(titles[index]!);
     await expect(keycap(tiles.nth(index))).toHaveText(chord);
@@ -577,7 +578,7 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   await expect(tile).toHaveCount(1);
   // Shipped ON, unlike the worktree cell: this is the affordance for a capability rather than
   // a new fact about the session, and a chord nobody can see is a chord nobody presses.
-  await expect(keycap(tile)).toHaveText("⌘1");
+  await expect(keycap(tile)).toHaveText(platformKeycap("⌘1"));
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   const item = dashboard.getByRole("checkbox", { name: "Jump shortcut", exact: true });
@@ -601,7 +602,7 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   await expect(item).not.toBeChecked();
   await item.check();
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  await expect(keycap(tile)).toHaveText("⌘1");
+  await expect(keycap(tile)).toHaveText(platformKeycap("⌘1"));
   await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(dashboard.locator(".cdetail")).toBeVisible();
 });
@@ -697,7 +698,7 @@ test("the shortcut is not a rebindable action in the Keyboard panel", async ({
     .filter({ has: dashboard.getByRole("heading", { name: "Shortcuts", exact: true }) });
   await expect(panel).toBeVisible();
   await expect(panel).not.toContainText("Jump shortcut");
-  for (const chord of ["⌘1", "⌘0", "⌘-", "⌘="]) {
+  for (const chord of ["⌘1", "⌘0", "⌘-", "⌘="].map(platformKeycap)) {
     await expect(panel.getByText(chord, { exact: true })).toHaveCount(0);
   }
   // Nor can an action be REBOUND onto one of the twelve, which is the other half of "not
@@ -710,14 +711,14 @@ test("the shortcut is not a rebindable action in the Keyboard panel", async ({
   await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
   await dashboard.keyboard.press("ControlOrMeta+1");
   await expect(panel.locator(".settings-error"))
-    .toHaveText("⌘1 is reserved for the fleet's session jump shortcuts.");
+    .toHaveText(`${platformKeycap("⌘1")} is reserved for the fleet's session jump shortcuts.`);
   // Still recording after a refusal, which is the right shape - the operator is being asked
   // for a different key, not silently returned to a row that looks unchanged.
   await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
   await dashboard.keyboard.press("Escape");
   // Refused, not quietly applied: the action still answers to its own key.
   await expect(
-    diffRow.getByRole("button", { name: /^Change shortcut for Open diff \(currently ⇧D\)/ }),
+    diffRow.getByRole("button", { name: new RegExp(`^Change shortcut for Open diff \\(currently ${platformKeycapPattern("⇧D")}\\)`) }),
   ).toBeVisible();
 
   // The switch that does exist, on the surface the request named, so the two panels

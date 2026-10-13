@@ -230,6 +230,9 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "keycap",
       "cmd 1",
       "command 1",
+      // Off macOS the same keys are Ctrl+1 and on.
+      "ctrl 1",
+      "control 1",
       "number keys",
     ],
     kind: "jump",

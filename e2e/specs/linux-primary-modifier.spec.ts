@@ -59,13 +59,50 @@ test("Ctrl+K opens Settings search on Linux, and Super+K does not", async ({ das
   await resetRow.getByRole("button", { name: /^Change shortcut for Reset checkout/ }).click();
   await dashboard.keyboard.press("Control+Shift+r");
   await expect(
-    resetRow.getByRole("button", { name: /^Change shortcut for Reset checkout \(currently ⌘⇧R\)/ }),
+    resetRow.getByRole("button", { name: /^Change shortcut for Reset checkout \(currently Ctrl\+Shift\+R\)/ }),
   ).toBeVisible();
   await expect(dashboard.locator(".settings-error")).toHaveCount(0);
 
   // Settings search still answers Ctrl+K from inside Settings.
   await dashboard.keyboard.press("Control+k");
   await expect(palette(dashboard)).toBeVisible();
+});
+
+test("keycaps and shortcut copy name Ctrl on Linux, never the Mac glyphs", async ({ dashboard, daemon }) => {
+  // The gear's tooltip, which used to print "Settings (⌘,)" on every platform.
+  await dashboard.getByRole("button", { name: /^Settings/ }).hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(/^Settings \(Ctrl\+,\)/);
+  await dashboard.mouse.move(0, 0);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/keyboard`);
+  // The rail box's keycap for the palette, and the row that binds it.
+  await expect(dashboard.locator(".settings-rail-search-kbd")).toHaveText("Ctrl+K");
+  await expect(
+    dashboard.getByRole("button", { name: "Change shortcut for Search everything (currently Ctrl+K)" }),
+  ).toBeVisible();
+  // A default stored as `ctrl+g` is the same Ctrl key, not a second modifier.
+  const expandRow = dashboard.locator('[data-anchor="keyboard/composerEditor"]');
+  await expect(
+    expandRow.getByRole("button", { name: /^Change shortcut for Expand the message box \(currently Ctrl\+G\)/ }),
+  ).toBeVisible();
+  await expect(expandRow).toContainText("Ctrl+Enter puts the result back in the send box");
+  const panel = dashboard
+    .locator("section.settings-section")
+    .filter({ has: dashboard.getByRole("heading", { name: "Shortcuts", exact: true }) });
+  await expect(panel).toContainText("fleet's Ctrl+1 … Ctrl+0, Ctrl+-, Ctrl+= session jump keys");
+  for (const glyph of ["⌘", "⌃", "⌥", "⇧"]) await expect(panel).not.toContainText(glyph);
+  await shoot(dashboard, "03-keyboard-settings-name-ctrl");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
+  const jumpItem = dashboard.locator("label").filter({ hasText: "Jump shortcut" }).first();
+  await expect(jumpItem).toContainText("The Ctrl+1 … Ctrl+0, Ctrl+-, Ctrl+= keycap on the card");
+  await expect(jumpItem).toContainText("gives up Ctrl+0/Ctrl+-/Ctrl+=");
+  await expect(jumpItem).not.toContainText("⌘");
+
+  // Settings search finds the jump keys by the name a Linux keyboard gives them.
+  await dashboard.keyboard.press("Control+k");
+  await dashboard.getByRole("combobox", { name: "Search everything" }).fill("ctrl 1");
+  await expect(dashboard.getByRole("option", { name: /Board card/ }).first()).toBeVisible();
 });
 
 /** Dispatch one session against the fake agent and open its console detail. */
@@ -84,11 +121,15 @@ async function openOneSession(page: Page, daemon: DaemonHandle) {
   return card;
 }
 
-test("the action bar's reset names no key while Reset checkout is unbound", async ({
+test("the rail keycap reads Ctrl+1, and the action bar's reset names no key while Reset checkout is unbound", async ({
   dashboard,
   daemon,
 }) => {
   const card = await openOneSession(dashboard, daemon);
+  // The rail row's jump keycap is Ctrl+1, the key that opens it here.
+  const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(row.locator(".rail-state-line .kb-hint")).toHaveText("Ctrl+1");
+  await shoot(dashboard, "04-rail-keycap-ctrl-1");
   // The action stays reachable from the session it acts on, and its description no longer
   // ends in an empty "()" where the ⌃R it used to print would have been.
   await expect(card.getByRole("button", { name: "reset", exact: true })).toHaveAccessibleDescription(

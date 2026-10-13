@@ -4025,8 +4025,8 @@ export function App(): React.JSX.Element {
                   route.page === "settings"
                     ? "Return to the fleet of running sessions"
                     : gearPhrase
-                      ? `Settings (⌘,) - ${gearPhrase}`
-                      : "Settings (⌘,)"
+                      ? `Settings (${formatChord("cmd+,")}) - ${gearPhrase}`
+                      : `Settings (${formatChord("cmd+,")})`
                 }
               >
                 <button

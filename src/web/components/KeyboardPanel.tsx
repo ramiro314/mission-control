@@ -3,6 +3,7 @@ import {
   ACTIONS,
   type ActionId,
   bindingValidationError,
+  cardShortcutKeysLabel,
   chordFromEvent,
   defaultChord,
   findConflicts,
@@ -194,7 +195,7 @@ export function KeyboardPanel(): React.JSX.Element {
       <p className="settings-hint">
         Click a shortcut, then press the new key. Esc, the arrow keys and bare Tab drive
         layout navigation and can't be reassigned; modified Tab chords remain available. The
-        fleet's ⌘1 … ⌘0, ⌘-, ⌘= session jump keys are reserved too - they address a card's or
+        fleet's {cardShortcutKeysLabel()} session jump keys are reserved too - they address a card's or
         rail row's position rather than an action, and are switched on and off under Display.
       </p>
     </section>

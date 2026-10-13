@@ -23,7 +23,7 @@ Object.defineProperty(globalThis, "fetch", {
 });
 
 const {
-  COMPOSER_EDITOR_KEYS_HINT,
+  composerEditorKeysHint,
   composerEditorRequested,
   composerEditorStages,
   composerKeysHint,
@@ -38,6 +38,7 @@ const {
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
 const { ComposerEditorModal } = await import("../src/web/components/ComposerEditorModal.tsx");
+const { onClientPlatform } = await import("./helpers/client-platform.ts");
 type ComposerActivityHandlers = Parameters<typeof ComposerEditorModal>[0]["activity"];
 const { TranscriptPanel } = await import("../src/web/components/TranscriptPanel.tsx");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
@@ -193,11 +194,19 @@ test("a real AltGr keypress opens nothing, even against a stored Ctrl+Alt bindin
   assert.equal(composerEditorRequested("ctrl+g", "ctrl+g", { altGraph: true }), false);
 });
 
-test("the staging legend names both modifiers, not just the macOS one", () => {
-  // `composerEditorStages` accepts ⌃Enter for keyboards with no Command key, so a legend
-  // naming only ⌘ told Windows and Linux readers about a key they do not have.
-  assert.match(COMPOSER_EDITOR_KEYS_HINT, /⌘\/⌃enter/);
-  assert.match(renderModal({ text: "draft", reopenHint: "⌃G" }), /⌘\/⌃enter stages it/);
+test("the staging legend names both modifiers on macOS and Ctrl everywhere else", () => {
+  // `composerEditorStages` accepts ⌘Enter and ⌃Enter, so on macOS a legend naming only ⌘
+  // would withhold a key that works. Off macOS the glyphs name keys the keyboard does not
+  // have, so it says Ctrl.
+  const modal = () => renderModal({ text: "draft", reopenHint: "⌃G" });
+  assert.match(onClientPlatform("darwin", composerEditorKeysHint), /^⌘\/⌃enter stages it/);
+  assert.match(onClientPlatform("darwin", modal), /⌘\/⌃enter stages it/);
+  assert.match(onClientPlatform("darwin", modal), /unsent \(⌘Enter or ⌃Enter\)/);
+  assert.match(onClientPlatform("linux", composerEditorKeysHint), /^ctrl\+enter stages it/);
+  const offMac = onClientPlatform("linux", modal);
+  assert.match(offMac, /ctrl\+enter stages it/);
+  assert.match(offMac, /unsent \(Ctrl\+Enter\)/);
+  assert.doesNotMatch(offMac, /⌘\/⌃|⌘Enter|⌃Enter/);
 });
 
 test("the editor refuses to store a chord that would type itself", () => {
