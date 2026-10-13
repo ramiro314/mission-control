@@ -365,8 +365,9 @@ The adapter first asks WezTerm to select its normal default endpoint with
 `--no-auto-start` and the inherited `WEZTERM_UNIX_SOCKET` removed. The CLI's socket trace
 locates that endpoint; its preliminary pane list does not establish target identity.
 The adapter then hard-links the socket and enumerates through that private alias. When the
-trace names a symlink, such as WezTerm's `default-<class>` link, the adapter resolves it with
-`realpath` first, because Linux `link()` does not follow a symlink the way Darwin's does. Its
+trace names a symlink, such as WezTerm's `default-<class>` link, the adapter follows that link
+first, because Linux `link()` does not follow a symlink the way Darwin's does. It resolves only
+the link itself, not its parent directories, so a symlinked parent never lengthens the alias. Its
 incarnation records device, inode and birth time. Every target operation repeats endpoint
 selection, pins the socket, compares the incarnation and keeps the link until the command
 finishes. A restart between validation and execution cannot redirect the alias to the new
