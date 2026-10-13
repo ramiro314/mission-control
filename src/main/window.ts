@@ -14,7 +14,7 @@ import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import { closeBehavior, probeTrayHost } from "./tray-host.ts";
 import { daemonHealthy } from "./daemon.ts";
-import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
+import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS, type StartupScreen } from "./window-startup.ts";
 import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
 import { windowIcon } from "./platform-icons.ts";
 import { windowChrome } from "./window-chrome.ts";
@@ -24,6 +24,12 @@ let startup: WindowStartup | null = null;
 // A close already waiting on the tray-host probe; a second close joins it.
 let closeDecision: Promise<void> | null = null;
 const loadedListeners = new Set<() => void>();
+// Set when the background start learns why the daemon is not answering.
+let startupNotice: StartupScreen | null = null;
+
+export function setStartupNotice(screen: StartupScreen): void {
+  startupNotice = screen;
+}
 
 export function onMainWindowLoaded(listener: () => void): void {
   loadedListeners.add(listener);
@@ -147,6 +153,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
     pause: (signal) => delay(1000, undefined, { signal }),
     loaded: () => { for (const listener of loadedListeners) listener(); },
     log: (error) => console.error("[mission-control] dashboard startup navigation failed:", error),
+    notice: () => startupNotice,
   });
   startup = loading;
   window.once("ready-to-show", () => { if (!window.isDestroyed()) window.show(); });

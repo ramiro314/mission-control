@@ -6,7 +6,7 @@ const [origin, windowModule, profile, scenario, menuModule] = process.argv.slice
 process.env.MISSION_PORT = new URL(origin).port;
 delete process.env.MISSION_DEV_SERVER_URL;
 app.setPath("userData", profile);
-const { createWindow, stopWindowStartup } = require(windowModule);
+const { createWindow, setStartupNotice, stopWindowStartup } = require(windowModule);
 
 // Inject only the failed or unsettled Electron operation, leaving recovery to window.ts.
 const loadURL = BrowserWindow.prototype.loadURL;
@@ -37,6 +37,8 @@ BrowserWindow.prototype.loadURL = function (url, ...args) {
   return loadURL.call(this, url, ...args);
 };
 app.on("fixture:stop-startup", stopWindowStartup);
+// What index.ts does when startDaemon's wait for a running systemd unit times out.
+app.on("fixture:unit-unresponsive", () => setStartupNotice("service"));
 
 app.whenReady().then(() => {
   ipcMain.handle("mission:update-get-state", () => ({

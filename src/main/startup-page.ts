@@ -17,6 +17,11 @@ const COPY: Record<StartupScreen, { title: string; description: string }> = {
     title: "Reconnecting to Mission Control",
     description: "The dashboard could not load. We will keep trying, or you can retry now.",
   },
+  service: {
+    title: "The Mission Control service is not answering",
+    description:
+      "The mission-control systemd user service is running but has not answered for 30 seconds. We will keep trying. Its log says why: <code>journalctl --user -u mission-control</code>",
+  },
 };
 
 /**
@@ -46,7 +51,7 @@ main{width:min(100%,440px)}.mark{width:48px;height:48px;border:1px solid #315749
 .mark:after{content:"";width:16px;height:16px;border:2px solid currentColor;border-radius:50%;border-right-color:transparent;animation:spin 1.4s linear infinite}
 h1{font-size:26px;line-height:1.2;letter-spacing:-.025em;margin:0 0 16px;font-weight:600}
 p{margin:0;color:#acb8c8;line-height:1.65;font-size:15px}a{display:inline-block;margin-top:26px;color:#d0f7e5;background:#203f32;border:1px solid #416f59;border-radius:7px;padding:9px 17px;text-decoration:none;font-size:14px;font-weight:600;-webkit-app-region:no-drag}
-a:hover{background:#2a5040}a:focus-visible{outline:2px solid #86e4bc;outline-offset:4px}.hint{font-size:13px;margin-top:24px;color:#98a8bb}
+a:hover{background:#2a5040}a:focus-visible{outline:2px solid #86e4bc;outline-offset:4px}.hint{font-size:13px;margin-top:24px;color:#98a8bb}code{font-family:ui-monospace,monospace;font-size:13px;color:#d0f7e5;user-select:all}
 @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.mark:after{animation:none}}
 </style></head><body><header><span>MISSION CONTROL</span></header><main>
 <div class="mark" aria-hidden="true"></div><div role="status"><h1>${title}</h1><p>${description}</p></div>

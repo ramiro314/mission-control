@@ -114,7 +114,7 @@ async function expectPlatformChrome(application: ElectronApplication, page: Page
   expect(region, "only the macOS topbar drags the window").toBe(mac ? "drag" : "none");
 }
 
-for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation"] as const) {
+for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation", "unresponsive systemd unit"] as const) {
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
     const gate = await gatedDaemon(daemon.baseURL);
@@ -146,6 +146,15 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
         return;
       } else if (scenario === "local page failure") {
         expect(await application.evaluate(() => Reflect.get(globalThis, "startupPageFailures"))).toBe(1);
+      } else if (scenario === "unresponsive systemd unit") {
+        await application.evaluate(({ app }) => { app.emit("fixture:unit-unresponsive"); });
+        await expect(page.getByRole("heading", { name: "The Mission Control service is not answering" })).toBeVisible();
+        await expect(page.getByRole("status")).toContainText("journalctl --user -u mission-control");
+        await expect(page.getByRole("link", { name: "Retry now" })).toBeVisible();
+        await evidence(page, "service-unresponsive");
+        // Retry starts over and the notice comes straight back while the unit stays silent.
+        await page.getByRole("link", { name: "Retry now" }).click();
+        await expect(page.getByRole("heading", { name: "The Mission Control service is not answering" })).toBeVisible();
       } else if (scenario === "late readiness") {
         // Cross the old 15-second retry budget before making health reachable.
         await page.waitForTimeout(17_000);

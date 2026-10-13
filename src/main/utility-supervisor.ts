@@ -23,6 +23,11 @@ export interface UtilityProcessOptions {
   onSpawn?: (child: UtilityProcess) => void;
   captureChildOutput?: boolean;
   includeFailureDetails?: boolean;
+  /**
+   * Asked after an unrequested exit. A string is why this process must not be restarted: it is
+   * logged and supervision ends. Null, or a rejection, restarts as usual.
+   */
+  afterExit?: (code: number) => Promise<string | null>;
 }
 
 /**
@@ -70,12 +75,26 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
           attachUtilityProcessOutput(spawned, log, opts.captureChildOutput);
           spawned.once("exit", (code) => {
             child = null;
-            log.end(
-              stopped
-                ? `[mission-control] ${opts.serviceName} stopped\n`
-                : `[mission-control] ${opts.serviceName} exited with code ${code}; restarting\n`,
-            );
-            scheduleRestart();
+            const restart = (): void => {
+              log.end(
+                stopped
+                  ? `[mission-control] ${opts.serviceName} stopped\n`
+                  : `[mission-control] ${opts.serviceName} exited with code ${code}; restarting\n`,
+              );
+              scheduleRestart();
+            };
+            if (stopped || !opts.afterExit) {
+              restart();
+              return;
+            }
+            void opts.afterExit(code).catch(() => null).then((release) => {
+              if (release === null || stopped) {
+                restart();
+                return;
+              }
+              stopped = true;
+              log.end(`[mission-control] ${opts.serviceName} exited with code ${code}; ${release}\n`);
+            });
           });
           opts.onSpawn?.(spawned);
         },

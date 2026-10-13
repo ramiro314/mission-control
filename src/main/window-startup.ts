@@ -1,6 +1,7 @@
 // The timeout changes the explanation, not the daemon's opportunity to become ready.
 export const WINDOW_STARTUP_TIMEOUT_MS = 60_000;
-export type StartupScreen = "starting" | "slow" | "error";
+// "service" is a Linux systemd unit that is running but never answered (see daemon-start.ts).
+export type StartupScreen = "starting" | "slow" | "error" | "service";
 
 interface WindowStartupPort {
   now(): number;
@@ -10,6 +11,8 @@ interface WindowStartupPort {
   pause(signal: AbortSignal): Promise<void>;
   loaded(): void;
   log(error: unknown): void;
+  /** A screen that explains the wait better than "slow" can; shown as soon as it is set. */
+  notice?(): StartupScreen | null;
 }
 
 /** One initial navigation owner per window, including Retry and teardown. */
@@ -53,6 +56,7 @@ export class WindowStartup {
   private async run(signal: AbortSignal): Promise<void> {
     const began = this.port.now();
     let explained = false;
+    let shown: StartupScreen = "starting";
     await this.show("starting", signal);
     while (!signal.aborted) {
       const ready = await this.port.ready(signal);
@@ -64,6 +68,7 @@ export class WindowStartup {
           if (signal.aborted) return;
           this.port.log(error);
           await this.show("error", signal);
+          shown = "error";
           explained = true;
           if (!signal.aborted) await this.port.pause(signal);
           continue;
@@ -73,8 +78,14 @@ export class WindowStartup {
         this.port.loaded();
         return;
       }
-      if (!explained && this.port.now() - began >= WINDOW_STARTUP_TIMEOUT_MS) {
+      const notice = this.port.notice?.() ?? null;
+      if (notice && shown !== notice) {
+        await this.show(notice, signal);
+        shown = notice;
+        explained = true;
+      } else if (!explained && this.port.now() - began >= WINDOW_STARTUP_TIMEOUT_MS) {
         await this.show("slow", signal);
+        shown = "slow";
         explained = true;
       }
       if (!signal.aborted) await this.port.pause(signal);

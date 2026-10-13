@@ -34,7 +34,7 @@ HEALTH     := curl -fsS --max-time 1 http://127.0.0.1:$(PORT)/api/health
 HEALTH_PID := $(HEALTH) 2>/dev/null | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p'
 
 .DEFAULT_GOAL := help
-.PHONY: help init install session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
+.PHONY: help init install session claude dev desktop desktop-entry start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -67,6 +67,13 @@ dev: ## Daemon + web in the foreground, both auto-reload (Ctrl-C to stop)
 
 desktop: ## Electron shell + daemon + Vite, all auto-reload (Ctrl-C to stop)
 	npm run dev:desktop
+
+# The Linux desktop shell outside development: the checkout's own Electron against the built
+# bundles, launched from the app menu. Refuses other platforms before it builds.
+desktop-entry: $(NPM_STAMP) ## [Linux] Build, then add this checkout's desktop shell to the app menu (update: git pull && make build)
+	@node scripts/install-desktop-entry.mjs --check
+	npm run build
+	@node scripts/install-desktop-entry.mjs
 
 start: ## Everything: daemon + Vite + Electron shell + Foreman, all auto-reload (Ctrl-C to stop)
 	npm run dev:start

@@ -23,7 +23,7 @@ import {
   type BackgroundStartOwnership,
 } from "./daemon-policy.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
-import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
+import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, setStartupNotice, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { probeTrayHost } from "./tray-host.ts";
@@ -345,6 +345,7 @@ app.whenReady().then(async () => {
         // it keeps its db + token.
         logPath: join(stateDir(), "daemon.log"),
         requireFresh: requireFreshDaemon,
+        onUnitUnresponsive: () => setStartupNotice("service"),
       }),
     async () =>
       startForeman({

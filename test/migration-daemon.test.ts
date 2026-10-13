@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -30,6 +30,12 @@ test('fresh migration startup rejects an occupied unhealthy port and starts only
         ? `export const PORT=${address.port}; export const BASE_URL="http://127.0.0.1:${address.port}";`
         : 'export const calls=[]; export function superviseUtilityProcess(opts) {calls.push(opts);return {stop(){}};}'}));
     }}]});
+  // On Linux an unreachable daemon makes the shell ask systemd about its unit. Answer for a
+  // unit that is not running, so a developer's own running unit cannot turn this into a wait.
+  const systemctl = join(root, 'systemctl');
+  writeFileSync(systemctl, '#!/bin/sh\necho inactive\nexit 3\n', {mode: 0o755});
+  process.env.MISSION_SYSTEMCTL_BIN = systemctl;
+  t.after(() => { delete process.env.MISSION_SYSTEMCTL_BIN; });
   const loaded = createRequire(import.meta.url)(outfile) as {startDaemon: typeof startDaemon; calls: unknown[]};
   const options = {requireFresh: true, serverEntry: '/fixture/personal/server.mjs', webDir: '/fixture/personal/web', logPath: join(root, 'daemon.log')};
   for (mode of ['http-error', 'invalid-json', 'wrong-service', 'timeout']) {
