@@ -21,9 +21,10 @@ import { run } from "./util/exec.ts";
 // platform seam with a per-platform row: there is one platform that needs them and no second
 // answer to select between.
 //
-// WezTerm is deliberately absent. The daemon never starts a WezTerm process that outlives the
-// call: `wezterm cli --no-auto-start` asks an already-running GUI over its socket, needs no
-// display, and the tab it opens belongs to that GUI's process tree, not the daemon's.
+// WezTerm goes through both at its one call that opens something, `wezterm cli spawn`. That CLI
+// asks an already-running GUI over its socket and exits, so the tab itself belongs to the GUI's
+// process tree; what the helpers buy there is the same named refusal with no reachable desktop,
+// and the same scope rule as every other GUI spawn, rather than a fourth exception.
 
 /** The display variables a GUI program needs, always taken together from one source. */
 export const GRAPHICAL_SESSION_VARIABLES = [

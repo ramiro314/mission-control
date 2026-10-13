@@ -110,6 +110,24 @@ test("a stale own display falls through to the manager's", async () => {
   assert.equal(deps.managerReads(), 1);
 });
 
+test("under the user manager an unreadable or stale manager falls through to the daemon's own display", async () => {
+  // A unit started before the desktop imported its environment: the manager has no display
+  // yet, or `systemctl` could not answer, while the daemon was handed a live one.
+  for (const manager of [null, desktop({ WAYLAND_DISPLAY: "wayland-1", DISPLAY: ":1" }), {}]) {
+    const deps = sources({
+      own: desktop({ INVOCATION_ID: "abc", XDG_CURRENT_DESKTOP: "sway" }),
+      manager,
+      sockets: [WAYLAND_SOCKET, X0],
+    });
+    const session = await graphicalSessionEnv(BASE, deps);
+    assert.ok(session.ok, JSON.stringify(manager));
+    assert.equal(session.env.WAYLAND_DISPLAY, "wayland-0");
+    assert.equal(session.env.DISPLAY, ":0");
+    assert.equal(session.env.XDG_CURRENT_DESKTOP, "sway", "the whole set comes from the daemon's own source");
+    assert.equal(deps.managerReads(), 1, "the manager is asked first");
+  }
+});
+
 test("both sources stale gives the named no-display refusal", async () => {
   for (const own of [desktop(), desktop({ INVOCATION_ID: "abc" })]) {
     const deps = sources({ own, manager: desktop({ DISPLAY: ":1" }), sockets: [] });

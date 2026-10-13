@@ -294,8 +294,8 @@ terminal preference still wins over its place in the attempt order.
 
 On Linux every GUI program the daemon starts takes its display from one helper,
 `graphicalSessionEnv()` in `src/server/graphical-session.ts`, rather than from whatever the
-daemon inherited: the Ghostty and default-terminal windows Focus and the new-session launcher
-open, and the `xdg-open` or `gtk-launch` behind **Open in > Browser**. It has two sources, the
+daemon inherited: the Ghostty, default-terminal and WezTerm windows and tabs Focus and the
+new-session launcher open, and the `xdg-open` or `gtk-launch` behind **Open in > Browser**. It has two sources, the
 daemon's own environment and the systemd user manager's, read with
 `systemctl --user show-environment` at each spawn. A daemon run by the user manager (systemd
 sets `INVOCATION_ID`) tries the manager's first, because only the manager learns about a later
@@ -316,10 +316,10 @@ transient scope of their own in `app.slice` (`systemd-run --user --scope`) whene
 cgroup, so stopping or restarting the daemon, or closing the terminal `make start` runs in, no
 longer kills the servers, the agents inside them, the windows Focus opened, or a browser an
 open target started. Only the call that can start a server is wrapped: tmux's `new-session` and
-`herdr server`. Without `systemd-run` everything starts as it did before. WezTerm is outside
-both: the daemon only asks an already-running WezTerm GUI to open a tab over its socket
-(`wezterm cli --no-auto-start`), which needs no display, and the tab belongs to that GUI rather
-than to the daemon. macOS spawns are unchanged.
+`herdr server`. Without `systemd-run` everything starts as it did before. For WezTerm the
+prepared call is `wezterm cli --no-auto-start spawn`, which asks an already-running WezTerm GUI
+to open the tab and exits, so the tab itself belongs to that GUI; the endpoint lookup, focus and
+every other WezTerm call run as before. macOS spawns are unchanged.
 
 iTerm2
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates

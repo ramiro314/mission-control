@@ -61,9 +61,47 @@ process.exit(0);
   { mode: 0o755 },
 );
 
+// A `systemd-run` that records how it was called, then runs the command after `--`, which is
+// all `--scope` does with it once the scope exists.
+const FAKE_SYSTEMD_RUN = join(home, "systemd-run");
+const SCOPE_LOG = join(home, "scope.jsonl");
+writeFileSync(
+  FAKE_SYSTEMD_RUN,
+  `#!/usr/bin/env node
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const argv = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(SCOPE_LOG)}, JSON.stringify({ argv, display: process.env.WAYLAND_DISPLAY ?? null }) + "\\n");
+const rest = argv.slice(argv.indexOf("--") + 1);
+const child = spawnSync(rest[0], rest.slice(1), { stdio: "inherit" });
+process.exit(child.status ?? 1);
+`,
+  { mode: 0o755 },
+);
+
 process.env.HARNESS_HOME = join(home, "state");
 process.env.FAKE_LOG = LOG;
 const { weztermEmulator } = await import("../src/server/terminal/wezterm.ts");
+const {
+  guiSpawn,
+  NO_GRAPHICAL_SESSION,
+  unpreparedGuiSpawn,
+  userScope,
+} = await import("../src/server/graphical-session.ts");
+type PrepareGuiSpawn = import("../src/server/graphical-session.ts").PrepareGuiSpawn;
+
+/** A Linux desktop whose Wayland socket exists, or one with no display at all. */
+const desktop = (live: boolean) => ({
+  platform: "linux" as const,
+  env: live ? { XDG_RUNTIME_DIR: "/run/user/1000", WAYLAND_DISPLAY: "wayland-0" } : {},
+  managerEnvironment: async () => null,
+  socketExists: (path: string) => live && path === "/run/user/1000/wayland-0",
+});
+const scope = (systemdRun: string | null) => {
+  const wrap = userScope({ platform: "linux", systemdRun: () => systemdRun, socketExists: () => false });
+  return (bin: string, args: readonly string[], env: NodeJS.ProcessEnv) =>
+    wrap(bin, args, { ...env, DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" });
+};
 
 interface Call {
   argv: string[];
@@ -72,8 +110,9 @@ interface Call {
 }
 
 /** Run one spawn against the fake, returning the result and every call it made. */
-async function spawnTab(mode: "ok" | "unreadable" | "refused") {
+async function spawnTab(mode: "ok" | "unreadable" | "refused", prepareGui: PrepareGuiSpawn = unpreparedGuiSpawn) {
   writeFileSync(LOG, "");
+  writeFileSync(SCOPE_LOG, "");
   const prev = { bin: process.env.WEZTERM_BIN, spawn: process.env.FAKE_SPAWN, sock: process.env.WEZTERM_UNIX_SOCKET };
   process.env.WEZTERM_BIN = FAKE;
   process.env.FAKE_SPAWN = mode;
@@ -83,13 +122,15 @@ async function spawnTab(mode: "ok" | "unreadable" | "refused") {
     // The generous locator budget is on purpose: this fake `wezterm` is a Node script, so
     // each endpoint lookup pays a fresh Node startup, and a loaded full suite pushed that
     // past the 1s production budget. What is under test is the spawn's outcome, not speed.
-    const result = await weztermEmulator(undefined, { locatorTimeoutMs: 10_000 }).spawn!.tab({
+    const result = await weztermEmulator(undefined, { locatorTimeoutMs: 10_000, prepareGui }).spawn!.tab({
       argv: ["tmux", "attach", "-t", "api"],
       title: "api",
       cwd: null,
     });
     const calls: Call[] = readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    return { result, calls };
+    const scoped: { argv: string[]; display: string | null }[] = readFileSync(SCOPE_LOG, "utf8")
+      .trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    return { result, calls, scoped };
   } finally {
     if (prev.bin === undefined) delete process.env.WEZTERM_BIN;
     else process.env.WEZTERM_BIN = prev.bin;
@@ -136,4 +177,49 @@ test("a refused spawn is a failure, and says why", async () => {
   assert.equal(result.target, null);
   // Default endpoint selection preceded the refused spawn; there is no post-spawn lookup.
   assert.equal(calls.length, 2);
+});
+
+test("on Linux the spawn runs in its own scope with the live display", async () => {
+  const { result, calls, scoped } = await spawnTab("ok", guiSpawn(desktop(true), scope(FAKE_SYSTEMD_RUN)));
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.target, { paneId: "7", tabId: "3", incarnation: socket.incarnation });
+  // Only the spawn is scoped: the endpoint lookup and the tab lookup start nothing.
+  assert.equal(scoped.length, 1);
+  const argv = scoped[0]!.argv;
+  assert.deepEqual(argv.slice(0, 6), ["--user", "--scope", "--quiet", "--collect", "--slice=app.slice", "--"]);
+  assert.equal(argv[6], "/usr/bin/env");
+  assert.match(argv[7]!, /^WEZTERM_UNIX_SOCKET=/);
+  assert.deepEqual(argv.slice(8), [FAKE, "cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
+  assert.equal(scoped[0]!.display, "wayland-0");
+  assert.deepEqual(calls[1]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
+});
+
+test("on Linux without systemd-run the spawn starts as before", async () => {
+  const { result, calls, scoped } = await spawnTab("ok", guiSpawn(desktop(true), scope(null)));
+
+  assert.equal(result.ok, true);
+  assert.equal(scoped.length, 0);
+  assert.deepEqual(calls[1]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
+});
+
+test("on Linux with no reachable display the spawn refuses by name and opens nothing", async () => {
+  const { result, calls, scoped } = await spawnTab("ok", guiSpawn(desktop(false), scope(FAKE_SYSTEMD_RUN)));
+
+  assert.deepEqual(result, { ok: false, error: NO_GRAPHICAL_SESSION, outcomeUnknown: false, target: null });
+  assert.equal(scoped.length, 0);
+  // The endpoint lookup ran; no `spawn` did.
+  assert.ok(calls.every((c) => c.argv[2] !== "spawn"));
+});
+
+test("on macOS the spawn is unchanged", async () => {
+  const mac = guiSpawn(
+    { ...desktop(false), platform: "darwin" },
+    userScope({ platform: "darwin", systemdRun: () => FAKE_SYSTEMD_RUN, socketExists: () => true }),
+  );
+  const { result, calls, scoped } = await spawnTab("ok", mac);
+
+  assert.equal(result.ok, true);
+  assert.equal(scoped.length, 0);
+  assert.deepEqual(calls[1]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
 });

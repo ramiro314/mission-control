@@ -4,6 +4,7 @@ import { WEZTERM_BIN } from "./bin.ts";
 import { withWeztermSocket, type WeztermSocket } from "./wezterm-socket.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
+import { prepareGuiSpawn, type PrepareGuiSpawn } from "../graphical-session.ts";
 import type {
   EmulatorPane,
   EmulatorTarget,
@@ -127,8 +128,9 @@ export function parsePanes(stdout: string): TerminalInventory<EmulatorPane> {
  */
 export function weztermEmulator(
   exec: TerminalExec = defaultExec,
-  opts: { locatorTimeoutMs?: number } = {},
+  opts: { locatorTimeoutMs?: number; prepareGui?: PrepareGuiSpawn } = {},
 ): TerminalEmulator {
+  const prepareGui = opts.prepareGui ?? prepareGuiSpawn;
   const withSocket = <T>(expected: string | undefined, operation: (socket: WeztermSocket) => Promise<T>) =>
     withWeztermSocket(exec, expected, operation, opts.locatorTimeoutMs);
   const unavailable = () => ({
@@ -226,12 +228,14 @@ export function weztermEmulator(
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
         return await withSocket(undefined, async (socket): Promise<SpawnResult> => {
-          const result = await socket.exec([
-            "spawn",
-            ...(spec.cwd ? ["--cwd", spec.cwd] : []),
-            "--",
-            ...spec.argv,
-          ]);
+          // The one call that opens something, so on Linux it goes through the same display
+          // and scope preparation as every other GUI spawn (`graphical-session.ts`): no
+          // reachable desktop refuses by name, and the CLI runs in a scope of its own.
+          // Identity on macOS.
+          const command = socket.command(["spawn", ...(spec.cwd ? ["--cwd", spec.cwd] : []), "--", ...spec.argv]);
+          const prepared = await prepareGui(command.bin, command.args, command.env);
+          if (!prepared.ok) return { ok: false, error: prepared.error, outcomeUnknown: false, target: null };
+          const result = await exec(prepared.bin, prepared.args, { env: prepared.env });
           // The spawn's own outcome, never a guess. A `wezterm cli spawn` that was killed
           // rather than answering may have died AFTER the compositor opened the tab, and
           // reporting that as a clean failure is how the focus fallback opens a second one.
