@@ -3,14 +3,16 @@
 // file://, so the SPA's same-origin relative URLs, the SSE stream, and the
 // daemon's loopback-Host security check all keep working unchanged.
 //
-// Closing the window HIDES it (the app stays resident in the menu bar so alerts
-// keep firing); only a real quit destroys it.
+// Closing the window HIDES it (the app stays resident in the menu bar or tray so
+// alerts keep firing); only a real quit destroys it. On Linux it hides only while a
+// tray host exists to bring it back, and quits otherwise (see tray-host.ts).
 
 import { app, BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
-import { isQuitting } from "./lifecycle.ts";
+import { isQuitting, setQuitting } from "./lifecycle.ts";
+import { closeBehavior, probeTrayHost } from "./tray-host.ts";
 import { daemonHealthy } from "./daemon.ts";
 import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
@@ -19,6 +21,8 @@ import { windowChrome } from "./window-chrome.ts";
 
 let win: BrowserWindow | null = null;
 let startup: WindowStartup | null = null;
+// A close already waiting on the tray-host probe; a second close joins it.
+let closeDecision: Promise<void> | null = null;
 const loadedListeners = new Set<() => void>();
 
 export function onMainWindowLoaded(listener: () => void): void {
@@ -169,10 +173,18 @@ export function createWindow(preloadPath: string): BrowserWindow {
   });
 
   win.on("close", (e) => {
-    if (!isQuitting()) {
-      e.preventDefault();
-      win?.hide();
-    }
+    if (isQuitting()) return;
+    e.preventDefault();
+    closeDecision ??= closeBehavior(process.platform, probeTrayHost).then((behavior) => {
+      closeDecision = null;
+      if (isQuitting()) return;
+      if (behavior === "hide") {
+        win?.hide();
+        return;
+      }
+      setQuitting(true);
+      app.quit();
+    });
   });
   win.on("closed", () => {
     loading.stop();

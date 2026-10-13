@@ -26,6 +26,7 @@ import { startForeman, type ForemanController } from "./foreman.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
+import { probeTrayHost } from "./tray-host.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
@@ -274,7 +275,8 @@ app.on("activate", () => {
 
 // The window hides on close and stays resident (menu bar), so we intentionally
 // do NOT quit when all windows are gone - the tray keeps the app (and alerts)
-// alive until the user explicitly quits.
+// alive until the user explicitly quits. A Linux desktop with no tray host quits
+// from the window's close handler instead (see tray-host.ts).
 app.on("window-all-closed", () => {
   /* keep running for the tray */
 });
@@ -319,6 +321,13 @@ app.whenReady().then(async () => {
   // Finder, Dock, and LaunchAgent environments are routinely minimal. Build the same
   // bounded executable snapshot the daemon owns before the shell starts any child process.
   await initializeExecutableEnvironment();
+  // Closing the window probes again, because a tray host can start after the shell; this one
+  // records what the desktop offered at launch.
+  if (process.platform === "linux") {
+    void probeTrayHost().then((present) => {
+      console.log(`Tray host ${present ? "found: closing the window hides it" : "not found: closing the window quits"}.`);
+    });
+  }
   // Auto-grant the Notification permission for the daemon/Vite origin so the
   // dashboard's "Enable desktop alerts" resolves to `granted` (OS-level delivery
   // is still governed by System Settings → Notifications → Mission Control).
