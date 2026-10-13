@@ -53,7 +53,10 @@ test("an empty Linux state dir still denies every named entry and never the carv
   for (const carve of STATE_CARVE_OUTS) {
     assert.equal(denied(rules, join(state, carve, "pool", "repo", "src", "a.ts")), false, `${carve} is denied`);
   }
-  for (const secret of [".ssh/id_ed25519", ".aws/credentials", ".claude/.credentials.json"]) {
+  for (const secret of [
+    ".ssh/id_ed25519", ".aws/credentials", ".claude/.credentials.json", ".codex/auth.json",
+    ".config/gh/hosts.yml", ".pi/agent/auth.json",
+  ]) {
     assert.ok(denied(rules, join("/home/op", secret)), `~/${secret} is readable`);
   }
   assert.ok(rules.includes("**/.credentials.json"));
@@ -135,10 +138,13 @@ test("a symlinked Linux state dir or home is denied as spelled and as resolved",
 
 test("macOS keeps its constant list and its whole-state-dir rule", () => {
   assert.equal(inspectorDenyPaths("darwin"), DENY_PATHS);
-  assert.deepEqual(renderDenyPaths("darwin", "/Users/op", state).slice(-4), [
+  assert.deepEqual(renderDenyPaths("darwin", "/Users/op", state).slice(-7), [
     "//Users/op/.aws/**",
     "//Users/op/.ssh/**",
     "//Users/op/.claude/**",
+    "//Users/op/.codex/**",
+    "//Users/op/.config/gh/**",
+    "//Users/op/.pi/**",
     "//Users/*/.mission-control/**",
   ]);
 });

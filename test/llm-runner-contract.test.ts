@@ -827,6 +827,9 @@ test("the Inspector's deny rules render exactly, per platform", () => {
     "//Users/op/.aws/**",
     "//Users/op/.ssh/**",
     "//Users/op/.claude/**",
+    "//Users/op/.codex/**",
+    "//Users/op/.config/gh/**",
+    "//Users/op/.pi/**",
     "//Users/*/.mission-control/**",
   ]);
   // A state dir that does not exist yet still renders every named entry, and nothing for
@@ -838,6 +841,9 @@ test("the Inspector's deny rules render exactly, per platform", () => {
     "//home/op/.aws/**",
     "//home/op/.ssh/**",
     "//home/op/.claude/**",
+    "//home/op/.codex/**",
+    "//home/op/.config/gh/**",
+    "//home/op/.pi/**",
     // Every named glob is denied as an entry and as a tree, whatever its type turns out to be.
     ...[
       "harness.db*", "token*", "scout-submission.key*", "scout-producer.json*",

@@ -113,7 +113,8 @@ Five things stand in the way of that:
 
 1. **Tool allowlist** - reading only. No `Bash`, no `Write`/`Edit`, no `WebFetch`, no MCP.
 2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys,
-   `.credentials.json`, the home directory's `.ssh`, `.aws` and `.claude`, `.git/config`,
+   `.credentials.json`, the home directory's `.ssh`, `.aws`, `.claude`, `.codex`,
+   `.config/gh` and `.pi` (each agent CLI's login and transcripts), `.git/config`,
    and Mission Control's own state - denied for all three of `Read`, `Grep` and `Glob`,
    since `Grep` prints the lines of any path it is given. On macOS the whole state dir is
    denied. On Linux the rules are rebuilt at every review from the resolved state dir

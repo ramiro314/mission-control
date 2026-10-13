@@ -33,7 +33,12 @@ const SECRET_PATTERNS = [
   "**/.credentials.json",
 ];
 
-const HOME_SECRET_DIRS = [".aws", ".ssh", ".claude"];
+/**
+ * Home-directory stores holding credentials in plaintext on a host with no keyring: Claude's
+ * `.credentials.json`, Codex's `auth.json`, `gh`'s `hosts.yml` and Pi's `agent/auth.json`.
+ * Every agent CLI here also keeps its transcripts beside them, so the whole tree is denied.
+ */
+const HOME_SECRET_DIRS = [".aws", ".ssh", ".claude", ".codex", ".config/gh", ".pi"];
 
 /** macOS keeps its whole-state-dir rule unchanged (S13 in the Linux readiness plan). */
 const DARWIN_STATE_RULE = "//Users/*/.mission-control/**";
