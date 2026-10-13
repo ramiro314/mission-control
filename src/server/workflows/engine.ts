@@ -24,6 +24,7 @@ import type {
   PersonaExecutionView,
   WorkflowCheckOutcome,
   WorkflowCheckEvidence,
+  WorkflowTestFailure,
   WorkflowCheckSlot,
   WorkflowCommandView,
   WorkflowPolicy,
@@ -45,6 +46,7 @@ import {
 } from "@shared/workflow.ts";
 import { envVar } from "../config.ts";
 import { llmRunner } from "../llm/index.ts";
+import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
 import { ModelReplyMiss, replyMissClause, runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
@@ -357,26 +359,16 @@ export function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): 
   // Tests named by JUnit results each get their own requested change, carrying the runner's
   // own message: the end of a combined run-and-rerun log is where the NAME of a failing test
   // is least likely to be, and a repair packet that cuts it off sends the agent hunting.
+  // Only if not even the first failure fits does the output tail stand in for them.
   const failures = outcome.affected?.failures ?? [];
   if (failures.length > 0) {
-    // The list is capped; the summary carries the true count, and the packet says it is partial.
-    const total = outcome.affected?.failureCount ?? failures.length;
-    const unlisted = total > failures.length
-      ? `\n\n${total} tests failed twice in this check; only the first ${failures.length} are listed.`
-      : "";
-    return normalizePersonaVerdict({
-      verdict: "fail",
+    const verdict = failingTestsVerdict(
       summary,
-      requestedChanges: failures.map((failure, index) => {
-        const where = failure.file ? ` in ${failure.file}` : "";
-        return {
-          title: `Fix the failing test "${failure.name}"${where}`,
-          rationale: `It failed on the run and again on its rerun.${index === 0 ? unlisted : ""}\n\n${failure.message}`,
-          evidence: [{ kind: "check" as const, path: attemptId, quote: failure.message }],
-        };
-      }),
-      confidence: 1,
-    }, new Set(), new Set(), new Set([attemptId]));
+      failures,
+      outcome.affected?.failureCount ?? failures.length,
+      attemptId,
+    );
+    if (verdict) return verdict;
   }
   const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
@@ -392,6 +384,83 @@ export function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): 
       rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
     }],
+    confidence: 1,
+  }, new Set(), new Set(), new Set([attemptId]));
+}
+
+/**
+ * The least of its message a listed failure keeps before the verdict lists one failure fewer:
+ * enough for an assertion line, which is worth more to the agent than one more test name.
+ */
+const FAILURE_MESSAGE_FLOOR_BYTES = 200;
+
+/**
+ * Failing tests as requested changes, as many as fit `verdictJsonBytes`, or null if not even
+ * the first one does.
+ *
+ * Each message is quoted twice, in the rationale and in its evidence, so twenty of them at
+ * `AFFECTED_TESTS_LIMITS.failureMessage` are several times the budget (#466). The listed
+ * failures share one message cap instead, the largest that fits, so a short message leaves
+ * its unused share to the others. When even `FAILURE_MESSAGE_FLOOR_BYTES` each does not fit,
+ * the verdict lists one failure fewer. The first change says how many were left out.
+ */
+function failingTestsVerdict(
+  summary: string,
+  failures: readonly WorkflowTestFailure[],
+  total: number,
+  attemptId: string,
+): PersonaVerdict | null {
+  const longest = Math.max(...failures.map((failure) => utf8Bytes(failure.message)));
+  for (let listed = failures.length; listed > 0; listed--) {
+    const build = (cap: number) => failingTestsVerdictAt(summary, failures, listed, total, attemptId, cap);
+    // The longest a single character's UTF-8 can be, so the clip never empties a message.
+    let low = listed === 1 ? 4 : FAILURE_MESSAGE_FLOOR_BYTES;
+    let best = build(low);
+    if (!best) continue;
+    // The verdict only grows with the cap, so the largest cap that fits is found by bisection.
+    let high = longest;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const verdict = build(mid);
+      if (verdict) {
+        best = verdict;
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best;
+  }
+  return null;
+}
+
+function failingTestsVerdictAt(
+  summary: string,
+  failures: readonly WorkflowTestFailure[],
+  listed: number,
+  total: number,
+  attemptId: string,
+  messageCap: number,
+): PersonaVerdict | null {
+  // The summary carries the true count; the packet says it is partial and where the rest are.
+  const recorded = listed < failures.length ? ` Run detail names the first ${failures.length}.` : "";
+  const unlisted = total > listed
+    ? `\n\n${total} tests failed twice in this check; only the first ${listed} are listed.${recorded}`
+    : "";
+  return normalizePersonaVerdict({
+    verdict: "fail",
+    summary,
+    requestedChanges: failures.slice(0, listed).map((failure, index) => {
+      const where = failure.file ? ` in ${failure.file}` : "";
+      const message = utf8Bytes(failure.message) <= messageCap
+        ? failure.message
+        : `${clipUtf8Bytes(failure.message, messageCap - 3)}…`;
+      return {
+        title: `Fix the failing test "${failure.name}"${where}`,
+        rationale: `It failed on the run and again on its rerun.${index === 0 ? unlisted : ""}\n\n${message}`,
+        evidence: [{ kind: "check" as const, path: attemptId, quote: message }],
+      };
+    }),
     confidence: 1,
   }, new Set(), new Set(), new Set([attemptId]));
 }

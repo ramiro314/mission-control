@@ -4,12 +4,16 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  PersonaVerdictSchema,
   WorkflowCheckOutcomeSchema,
 } from "../src/shared/protocol.ts";
 import {
+  AFFECTED_TESTS_LIMITS,
+  WORKFLOW_EXECUTION_LIMITS,
   commandTemplateProblem,
   emptyWorkflowCommandView,
   type WorkflowCheckOutcome,
+  type WorkflowTestFailure,
 } from "../src/shared/workflow.ts";
 import { CheckRuntime } from "../src/server/workflows/check-runtime.ts";
 import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
@@ -344,4 +348,92 @@ test("more failures than the cap are counted in full, on the outcome and in the 
   assert.equal(verdict.requestedChanges.length, 20);
   assert.match(verdict.requestedChanges[0]!.rationale, /25 tests failed twice in this check; only the first 20 are listed\./);
   assert.doesNotMatch(verdict.requestedChanges[1]!.rationale, /only the first/);
+});
+
+// Issue #466: twenty listed failures, each quoting a 2,000-character message into both its
+// rationale and its evidence, came to several times `verdictJsonBytes`. The strict schema
+// refused the verdict and a real test failure was retried as an infrastructure failure.
+function failedTwice(failures: WorkflowTestFailure[], failureCount: number, note?: string): WorkflowCheckOutcome {
+  return WorkflowCheckOutcomeSchema.parse({
+    status: "failed",
+    slot: "affected-tests",
+    command: TEMPLATE,
+    exitCode: 1,
+    output: "run 2\n",
+    truncatedBytes: 0,
+    note: note ?? `Ran 542 selected test files; ${failureCount} tests failed twice.`,
+    affected: {
+      selectedCount: 542,
+      selected: [],
+      flakeCount: 0,
+      flakes: [],
+      failureCount,
+      failures,
+      settings: { patterns: ["test/*.test.ts"], includeImporters: true, smokeSet: [], localKeys: [] },
+    },
+  });
+}
+
+// Ten UTF-16 code units: CJK, an astral emoji, a quote, a newline and a tab, so the message is
+// costly both as UTF-8 and as JSON, and a cut through it can land mid-character.
+const COSTLY = "期待値≠実😀\"\n\t";
+
+function costlyMessage(index: number, length: number = AFFECTED_TESTS_LIMITS.failureMessage): string {
+  const head = `#${String(index).padStart(2, "0")} fails `;
+  return head + COSTLY.repeat((length - head.length) / COSTLY.length);
+}
+
+function assertWithinBudget(verdict: ReturnType<typeof checkVerdict>) {
+  assert.ok(verdict, "a failed check must yield a verdict, never an infrastructure failure");
+  assert.equal(verdict.verdict, "fail");
+  assert.ok(PersonaVerdictSchema.safeParse(verdict).success);
+  assert.ok(Buffer.byteLength(JSON.stringify(verdict)) <= WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes);
+  if (verdict.verdict !== "fail") throw new Error("unreachable");
+  for (const change of verdict.requestedChanges) {
+    // A clip never leaves half a surrogate pair behind.
+    assert.doesNotMatch(change.rationale + change.evidence[0]!.quote, /[\ud800-\udbff](?![\udc00-\udfff])/);
+  }
+  return verdict;
+}
+
+test("as many max-length multi-byte failures as fit are listed, and the verdict says how many it left out", () => {
+  const failures = Array.from({ length: AFFECTED_TESTS_LIMITS.failures }, (_, i) => ({
+    file: "test/headless-cwd.test.ts",
+    name: `resolves the working directory ${i}`,
+    message: costlyMessage(i),
+  }));
+  assert.equal(failures[0]!.message.length, AFFECTED_TESTS_LIMITS.failureMessage);
+  const verdict = assertWithinBudget(checkVerdict(failedTwice(failures, 58), "attempt-1"));
+  const listed = verdict.requestedChanges.length;
+  assert.ok(listed >= 1 && listed < failures.length, `listed ${listed}`);
+  const first = verdict.requestedChanges[0]!;
+  assert.equal(first.title, "Fix the failing test \"resolves the working directory 0\" in test/headless-cwd.test.ts");
+  assert.match(first.rationale, new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed\\.`));
+  assert.match(first.rationale, /Run detail names the first 20\./);
+  assert.match(first.rationale, /#00 fails 期待値/);
+  assert.match(first.evidence[0]!.quote, /^#00 fails 期待値/);
+  // Every listed failure is the one at its own position, still carrying its own message.
+  verdict.requestedChanges.forEach((change, i) => {
+    assert.match(change.title, new RegExp(`directory ${i}"`));
+    assert.match(change.evidence[0]!.quote, new RegExp(`^#${String(i).padStart(2, "0")} fails`));
+  });
+});
+
+test("failures that all fit are listed in full with no omission note", () => {
+  const failures = Array.from({ length: 3 }, (_, i) => ({ file: null, name: `case ${i}`, message: costlyMessage(i, 400) }));
+  const verdict = assertWithinBudget(checkVerdict(failedTwice(failures, 3), "attempt-1"));
+  assert.equal(verdict.requestedChanges.length, 3);
+  assert.doesNotMatch(verdict.requestedChanges[0]!.rationale, /only the first/);
+  assert.equal(verdict.requestedChanges[2]!.evidence[0]!.quote, costlyMessage(2, 400).trim());
+});
+
+test("even maximal names, paths and summary still yield a valid failing verdict naming the first failure", () => {
+  const failures = Array.from({ length: AFFECTED_TESTS_LIMITS.failures }, (_, i) => ({
+    file: `test/${"漢".repeat(AFFECTED_TESTS_LIMITS.path - 10)}.ts`,
+    name: `${i} ${"😀".repeat((AFFECTED_TESTS_LIMITS.testName - 4) / 2)}`,
+    message: costlyMessage(i),
+  }));
+  const note = "漢".repeat(WORKFLOW_EXECUTION_LIMITS.verdictSummary);
+  const verdict = assertWithinBudget(checkVerdict(failedTwice(failures, 58, note), "attempt-1"));
+  assert.match(verdict.requestedChanges[0]!.title, /^Fix the failing test "0 😀/);
 });
