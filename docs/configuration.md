@@ -288,7 +288,7 @@ npm run lint           # oxlint over src, hooks, test, scripts, e2e (also: make 
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
-npm run install-service# LaunchAgent (macOS)
+npm run install-service # LaunchAgent (macOS) or systemd user unit (Linux)
 npm run personas       # recompile the built-in Personas from personas/*.md (commit the result)
 npm run session-actions # recompile the built-in session actions from actions/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex

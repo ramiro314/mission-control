@@ -149,18 +149,31 @@ npm run build
 npm start          # http://127.0.0.1:7317
 ```
 
-To run it always, as a login LaunchAgent (macOS):
+To run it always, as a login LaunchAgent (macOS) or systemd user unit (Linux):
 
 ```sh
 npm run install-service          # start now + on login
 npm run install-service -- --uninstall
 ```
 
-The LaunchAgent builds the native Keep Awake addon with its configured Node before it registers
-the tsx loader and imports the source daemon into that same process. Build failure is visible in
-`daemon.log`, and the daemon never starts with a missing or stale native artifact. Because there
-is no daemon child, launchd's service PID is the same PID reported by `/api/health` and shown as
-the assertion owner by `pmset`.
+The service builds the native addons with its configured Node before it registers the tsx loader
+and imports the source daemon into that same process. Build failure is visible in `daemon.log`
+on macOS and in `journalctl --user -u mission-control` on Linux, and the daemon never starts with
+a missing or stale native artifact. Because there is no daemon child, the service PID is the same
+PID reported by `/api/health`: launchd's, shown as the assertion owner by `pmset`, and the unit's
+`MainPID` on Linux.
+
+On Linux the installer writes `~/.config/systemd/user/mission-control.service` (under
+`$XDG_CONFIG_HOME` when set), then runs `systemctl --user daemon-reload` and
+`systemctl --user enable --now mission-control.service`; reinstalling over a running unit
+restarts it. The unit restarts the daemon two seconds after any exit except status 75, which a
+daemon returns when another one already owns its state home: it stops there instead of
+restart-looping, and `systemctl --user status mission-control` names the owner. It is wanted by
+`default.target`, so it starts with the user manager rather than with a particular desktop, and
+it stops at logout unless lingering is on (`loginctl enable-linger`). The tmux and Herdr servers
+and the windows it opens run in [scopes of their
+own](harnesses-and-terminals.md#linux-display-and-process-scopes), so restarting the unit leaves
+them running.
 
 ## Desktop app (macOS)
 

@@ -86,6 +86,147 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
   }
 });
 
+// A fake `systemctl` that records each call and answers `is-active` from FAKE_UNIT_ACTIVE, so
+// the installer's systemd branch runs on any host without reaching a real user manager.
+function runLinuxInstaller(
+  root: string,
+  args: string[],
+  unitActive = false,
+): { calls: string[]; stdout: string } {
+  const home = join(root, "home");
+  const fakeBin = join(root, "bin");
+  const systemctlLog = join(root, "systemctl.log");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(fakeBin, { recursive: true });
+  writeFileSync(
+    join(fakeBin, "systemctl"),
+    "#!/bin/sh\n" +
+      "printf '%s\\n' \"$*\" >> \"$FAKE_SYSTEMCTL_LOG\"\n" +
+      'case "$2" in is-active) [ "$FAKE_UNIT_ACTIVE" = 1 ] || exit 3 ;; esac\n',
+    { mode: 0o755 },
+  );
+  rmSync(systemctlLog, { force: true });
+  const importInstaller = [
+    'Object.defineProperty(process, "platform", { value: "linux", configurable: true });',
+    `await import(${JSON.stringify(pathToFileURL(installer).href)});`,
+  ].join("\n");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    MISSION_HOME: join(root, "state"),
+    PATH: `${fakeBin}:/usr/bin:/bin`,
+    FAKE_SYSTEMCTL_LOG: systemctlLog,
+    FAKE_UNIT_ACTIVE: unitActive ? "1" : "0",
+  };
+  delete env.XDG_CONFIG_HOME;
+  const stdout = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", importInstaller, "--", ...args],
+    { cwd: repo, env, encoding: "utf8", stdio: "pipe" },
+  );
+  const calls = existsSync(systemctlLog)
+    ? readFileSync(systemctlLog, "utf8").trim().split("\n")
+    : [];
+  return { calls, stdout };
+}
+
+test("on Linux a systemd user unit runs the native-build daemon entry and stops on exit 75", () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-install-service-systemd-"));
+  const unitPath = join(root, "home", ".config", "systemd", "user", "mission-control.service");
+  try {
+    const { calls, stdout } = runLinuxInstaller(root, []);
+    const quote = (value: string) => `"${value.replaceAll("%", "%%").replace(/[\\"]/g, "\\$&").replaceAll("$", "$$$$")}"`;
+    const pathEnv = [dirname(process.execPath), "/usr/local/bin", "/usr/bin", "/bin"].join(":");
+    assert.equal(
+      readFileSync(unitPath, "utf8"),
+      [
+        "[Unit]",
+        "Description=Mission Control daemon",
+        "",
+        "[Service]",
+        `ExecStart=${quote(process.execPath)} ${quote(serviceEntry)}`,
+        `WorkingDirectory=${repo.replaceAll("%", "%%")}`,
+        `Environment="PATH=${pathEnv.replaceAll("%", "%%")}"`,
+        "Restart=always",
+        "RestartSec=2",
+        "RestartPreventExitStatus=75",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+      ].join("\n"),
+    );
+    assert.deepEqual(calls, [
+      "--user is-active --quiet mission-control.service",
+      "--user daemon-reload",
+      "--user enable --now mission-control.service",
+    ]);
+    assert.match(stdout, /journalctl --user -u mission-control/);
+    assert.ok(
+      !existsSync(join(root, "home", "Library")),
+      "the Linux branch must not write a LaunchAgent",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("on Linux reinstalling restarts a running unit and --uninstall removes it", () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-install-service-systemd-"));
+  const unitPath = join(root, "home", ".config", "systemd", "user", "mission-control.service");
+  try {
+    const reinstall = runLinuxInstaller(root, [], true);
+    assert.deepEqual(reinstall.calls, [
+      "--user is-active --quiet mission-control.service",
+      "--user daemon-reload",
+      "--user enable --now mission-control.service",
+      "--user restart mission-control.service",
+    ]);
+    assert.ok(existsSync(unitPath));
+
+    const removal = runLinuxInstaller(root, ["--uninstall"], true);
+    assert.deepEqual(removal.calls, [
+      "--user disable --now mission-control.service",
+      "--user daemon-reload",
+    ]);
+    assert.equal(existsSync(unitPath), false, "--uninstall must delete the unit file");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a systemd unit quotes a checkout path that systemd would otherwise split or expand", () => {
+  // Run a copy of the installer from a checkout whose name has a space, a specifier and a
+  // variable, with a stub runtime module so nothing else of the checkout is needed.
+  const root = mkdtempSync(join(tmpdir(), "mission-install-service-quote-"));
+  const checkout = join(root, "odd 50% $HOME dir");
+  try {
+    mkdirSync(join(checkout, "scripts"), { recursive: true });
+    mkdirSync(join(checkout, "src", "shared"), { recursive: true });
+    copyFileSync(installer, join(checkout, "scripts", "install-service.mjs"));
+    writeFileSync(
+      join(checkout, "src", "shared", "harness-runtime.mjs"),
+      'export const BASE_URL = "http://127.0.0.1:7317";\nexport const stateDir = () => "/nonexistent";\n',
+    );
+    const fakeBin = join(root, "bin");
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const importInstaller = [
+      'Object.defineProperty(process, "platform", { value: "linux", configurable: true });',
+      `await import(${JSON.stringify(pathToFileURL(join(checkout, "scripts", "install-service.mjs")).href)});`,
+    ].join("\n");
+    execFileSync(process.execPath, ["--input-type=module", "-e", importInstaller], {
+      env: { ...process.env, HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), PATH: `${fakeBin}:/usr/bin:/bin` },
+      stdio: "pipe",
+    });
+    const unit = readFileSync(join(root, "config", "systemd", "user", "mission-control.service"), "utf8");
+    assert.match(unit, /^ExecStart=".+" "\S*odd 50%% \$\$HOME dir\/scripts\/start-service\.mjs"$/m);
+    assert.match(unit, /^WorkingDirectory=\S*odd 50%% \$HOME dir$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the LaunchAgent entry builds first and runs the daemon at its exact PID", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-start-service-native-"));
   const scripts = join(root, "scripts");

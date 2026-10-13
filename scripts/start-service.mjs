@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-// launchd entry for the source-owned daemon. Build the native runtime artifacts before
-// any source import can acquire state ownership or advertise Keep Awake support, then load
-// the daemon into this process so launchd owns and signals its exact PID.
+// launchd and systemd entry for the source-owned daemon. Build the native runtime artifacts
+// before any source import can acquire state ownership or advertise Keep Awake support, then
+// load the daemon into this process so the service manager owns and signals its exact PID and
+// sees its exit status.
 
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
