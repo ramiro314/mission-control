@@ -194,21 +194,14 @@ test("a test that fails twice fails the check, with one requested change naming 
   assert.match(verdict.requestedChanges[0]!.rationale, /1 !== 2/);
 });
 
-test("many failing tests with long messages still make a valid failing verdict that fits its budget", () => {
-  // Every failure at the caps: multi-byte text, and newlines and quotes that JSON escaping inflates.
-  const line = "断言失败: \"expected\" ≠ \"actual\"\n";
-  const message = line.repeat(AFFECTED_TESTS_LIMITS.failureMessage).slice(0, AFFECTED_TESTS_LIMITS.failureMessage);
-  const failures = Array.from({ length: AFFECTED_TESTS_LIMITS.failures }, (_, index) => ({
-    file: `test/suite-${index}.test.ts`,
-    name: `case ${index} keeps its invariant`,
-    message,
-  }));
-  const outcome: WorkflowCheckOutcome = WorkflowCheckOutcomeSchema.parse({
+/** A failed affected-tests outcome naming `failures`, out of 58 that failed twice. */
+function failedOutcome(failures: { file: string; name: string; message: string }[]): WorkflowCheckOutcome {
+  return WorkflowCheckOutcomeSchema.parse({
     status: "failed",
     slot: "affected-tests",
     command: TEMPLATE,
     exitCode: 1,
-    output: "",
+    output: "the end of the run log",
     truncatedBytes: 0,
     note: "Ran 542 selected test files; 58 tests failed twice.",
     affected: {
@@ -221,18 +214,74 @@ test("many failing tests with long messages still make a valid failing verdict t
       settings: { patterns: ["test/*.test.ts"], includeImporters: true, smokeSet: [], localKeys: [] },
     },
   });
+}
 
-  const verdict = checkVerdict(outcome, "attempt-1");
+// Every message at the cap: multi-byte text, and newlines and quotes that JSON escaping inflates.
+const LONG_MESSAGE = "断言失败: \"expected\" ≠ \"actual\"\n"
+  .repeat(AFFECTED_TESTS_LIMITS.failureMessage)
+  .slice(0, AFFECTED_TESTS_LIMITS.failureMessage);
+
+function assertWithinBudget(verdict: unknown): void {
+  assert.ok(Buffer.byteLength(JSON.stringify(verdict)) <= WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes);
+}
+
+test("many failing tests with long messages still make a valid failing verdict that fits its budget", () => {
+  const failures = Array.from({ length: AFFECTED_TESTS_LIMITS.failures }, (_, index) => ({
+    file: `test/suite-${index}.test.ts`,
+    name: `case ${index} keeps its invariant`,
+    message: LONG_MESSAGE,
+  }));
+  const verdict = checkVerdict(failedOutcome(failures), "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict !== "fail") return;
-  assert.ok(Buffer.byteLength(JSON.stringify(verdict)) <= WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes);
+  assertWithinBudget(verdict);
   const [first] = verdict.requestedChanges;
   assert.equal(first!.title, "Fix the failing test \"case 0 keeps its invariant\" in test/suite-0.test.ts");
   assert.equal(first!.evidence[0]!.kind, "check");
-  assert.ok(message.startsWith(first!.evidence[0]!.quote!));
+  assert.ok(LONG_MESSAGE.startsWith(first!.evidence[0]!.quote!));
   const listed = verdict.requestedChanges.length;
   assert.ok(listed >= 1 && listed <= failures.length);
-  assert.match(first!.rationale, new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed`));
+  assert.match(
+    first!.rationale,
+    new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed\\. This check's run detail has the rest\\.`),
+  );
+});
+
+test("failures that cannot all fit the verdict budget are listed in part, saying how many", () => {
+  // Names and paths near their caps, in three-byte characters: every title is kilobytes.
+  const failures = Array.from({ length: AFFECTED_TESTS_LIMITS.failures }, (_, index) => ({
+    file: `test/${"深".repeat(AFFECTED_TESTS_LIMITS.path - 20)}-${index}.test.ts`,
+    name: `case ${index} ${"名".repeat(AFFECTED_TESTS_LIMITS.testName - 20)}`,
+    message: LONG_MESSAGE,
+  }));
+  const verdict = checkVerdict(failedOutcome(failures), "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict !== "fail") return;
+  assertWithinBudget(verdict);
+  const listed = verdict.requestedChanges.length;
+  assert.ok(listed >= 1 && listed < failures.length, `listed ${listed}`);
+  assert.match(verdict.requestedChanges[0]!.title, /^Fix the failing test "case 0 /);
+  assert.match(
+    verdict.requestedChanges[0]!.rationale,
+    new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed\\. This check's run detail has the rest\\.`),
+  );
+});
+
+test("a failing test too large for any verdict falls back to the output tail, never to no verdict", () => {
+  // A name of quotes and a message of backslashes double when JSON escapes them, and the path's
+  // three-byte characters triple: one failure alone is over the budget.
+  const outcome = failedOutcome([{
+    file: "测".repeat(AFFECTED_TESTS_LIMITS.path),
+    name: "\"".repeat(AFFECTED_TESTS_LIMITS.testName),
+    message: "\\".repeat(AFFECTED_TESTS_LIMITS.failureMessage),
+  }]);
+  const verdict = checkVerdict(outcome, "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict !== "fail") return;
+  assertWithinBudget(verdict);
+  assert.equal(verdict.requestedChanges.length, 1);
+  assert.equal(verdict.requestedChanges[0]!.title, "Fix the failing affected-tests check");
+  assert.equal(verdict.requestedChanges[0]!.rationale, "the end of the run log");
 });
 
 test("missing JUnit results fail with the output tail rather than guessing", async () => {
