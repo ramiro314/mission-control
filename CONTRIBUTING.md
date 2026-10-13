@@ -22,9 +22,16 @@ Prerequisites:
 
 - Node.js 24 or newer. Check with `node --version`.
 - npm, supplied with Node.js.
+- A C++ toolchain for the small native module the build compiles: the Xcode command line
+  tools on macOS (`xcode-select --install`), or a C++ compiler, `make` and `python3` on Linux
+  (for example `build-essential python3` on Debian or Ubuntu, `base-devel python` on Arch).
+  `make init` checks for it.
 - On Linux, `lsof`, which some base systems leave out. `make init` checks for it.
+- On Linux, tmux, for the unit tests that drive a real tmux server. They skip without it, so a
+  green run without tmux has not exercised them; CI installs it.
 - Playwright Chromium for browser tests. It is a one-time download per machine and
-  is intentionally not installed by `npm install`.
+  is intentionally not installed by `npm install`. On Linux it also needs system libraries; on
+  Debian or Ubuntu `npx playwright install --with-deps chromium` installs them.
 
 ```sh
 git clone https://github.com/teamupstart/mission-control.git
@@ -59,7 +66,7 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
 | `npm run lint` | Oxlint over source, hooks, tests, scripts, and e2e. |
-| `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
+| `npm test` | Full Node test suite, including Electron geometry checks on macOS and Linux. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
 | `npm run smoke` | Boots built bundles after `npm run build`, and checks the MCP bundle publishes exactly the tools `MISSION_MCP_TOOLS` declares. |
@@ -68,10 +75,14 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run docs:screenshots` | Regenerates the committed README screenshots from the token-free demo. Build first. |
 
 `make build`, `make check`, `make test`, `make lint`, and `make smoke` install or
-refresh dependencies through the repository's stamp file. On macOS, `npm test`
-uses real Electron geometry tests. In the Codex Seatbelt sandbox, run Electron
+refresh dependencies through the repository's stamp file. `npm test` uses real
+Electron geometry tests. On macOS, in the Codex Seatbelt sandbox, run Electron
 tests with the required scoped outside-sandbox approval; do not bypass the
-preflight or add Chromium flags.
+preflight or add Chromium flags. On Linux the Electron tests and specs pass
+`--no-sandbox` themselves, and a machine with no display runs them under
+`xvfb-run -a` (for example `xvfb-run -a npm test`), as CI does. That is the
+sanctioned Linux setup; the rule against Chromium flags is about the macOS
+preflight.
 
 `npm test` runs six test files concurrently by default. Set
 `MISSION_TEST_CONCURRENCY` to override that local worker count. CI uses ephemeral GitHub-hosted
@@ -94,7 +105,8 @@ The repository has four complementary test layers:
 2. **Static React markup tests** use `renderToStaticMarkup` to pin markup shape.
    They do not prove browser behavior.
 3. **Electron geometry tests** measure real layout, overflow, and clipping on
-   macOS. Use them when those physical properties matter.
+   macOS and Linux (CI runs them on Linux under `xvfb-run -a`). Use them when those
+   physical properties matter.
 4. **Playwright end-to-end tests** in `e2e/` drive the built dashboard, daemon,
    routes, and server events together. Read [e2e/README.md](e2e/README.md) before
    adding one.

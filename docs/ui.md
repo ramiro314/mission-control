@@ -306,7 +306,8 @@ demonstration.
 <kbd>⌘</kbd><kbd>K</kbd> is the connective tissue across the primary pages: **one input** over
 everything the [Library](library-and-line.md#the-library) holds, everything the [Line](#the-line-the-pipeline-strip-above-the-fleet) is running, and
 every [setting](skills-and-settings.md#settings). Type a few letters and land on the shelf card, the live run, or
-the control - from wherever you are.
+the control - from wherever you are. Off macOS the chord is <kbd>Ctrl</kbd><kbd>K</kbd>, as every
+<kbd>⌘</kbd> shortcut is <kbd>Ctrl</kbd> there (see [Keyboard shortcuts](#keyboard-shortcuts)).
 
 It opens **over whatever page you are on** and never navigates to open. <kbd>Esc</kbd>, a
 click on the dimmed backdrop, or <kbd>⌘</kbd><kbd>K</kbd> again closes it and leaves the page

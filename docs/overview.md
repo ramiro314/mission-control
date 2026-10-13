@@ -186,6 +186,9 @@ entry](desktop-and-packaging.md#the-linux-desktop-entry)).
 Prefer a real menu-bar app over a browser tab? Mission Control packages into a native
 macOS app (Apple Silicon) that supervises the daemon, shows the dashboard in a window,
 and - crucially - **delivers alerts even with the window closed** (a browser tab can't).
+There is no packaged Linux app: on Linux the same shell runs from a checkout, through
+`make desktop` or `make desktop-entry`, and the install, update and recovery steps below do not
+apply (see [platform support](setup.md#platform-support)).
 
 Install directly, with no checkout to keep:
 
@@ -294,8 +297,12 @@ make restart        # stop any running stack and start it fresh
 The window loads the Vite dev server, so React Fast Refresh works inside it exactly as in
 the browser; the Electron shell restarts on main-process edits. In this mode `dev:server`
 alone owns the daemon and its restart loop; Electron supervises both the daemon and
-[Foreman](foreman.md#foreman-auto-responder) only in the packaged app. `make start` adds the
+[Foreman](foreman.md#foreman-auto-responder) only in the packaged app and in the built shell the
+Linux desktop entry launches. `make start` adds the
 development Foreman worker to the group; `make restart`
 tears the whole stack down and brings it back up. The plain `make dev` browser workflow is
-unchanged. See [docs/plans/migrate-electron.md](plans/migrate-electron.md) for the full
+unchanged. On Linux these targets work the same from a desktop session; Electron needs a display
+and a working Chromium sandbox (see [Troubleshooting](troubleshooting.md#the-desktop-shell-aborts-with-a-chromium-sandbox-error-on-linux)).
+For the built shell without a dev server, use `make desktop-entry` (see [The Linux desktop
+entry](desktop-and-packaging.md#the-linux-desktop-entry)). See [docs/plans/migrate-electron.md](plans/migrate-electron.md) for the full
 design.

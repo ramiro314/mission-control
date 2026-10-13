@@ -15,6 +15,11 @@ Temporary checkouts and build files are removed; only a small updater installer 
 alongside the install receipt.
 See [installation details and options](docs/overview.md#desktop-app-macos).
 
+On Linux there is no packaged app: run Mission Control from a checkout (the second path under
+[Get started](#get-started)). The [platform-support matrix](docs/setup.md#platform-support) lists
+what differs, such as a systemd user unit in place of the LaunchAgent and `git pull` in place of
+the updater.
+
 **Give yourself superpowers without the compromises.**
 
 Most software factories ask you to adopt their agent, terminal, workflow, and worldview.
@@ -139,7 +144,9 @@ when changed, one independently reviewed pull request per repository.
 
 Per-harness settings choose whether dispatched sessions run on the Agent SDK or in a terminal.
 Terminal-backed harnesses can stay on Automatic selection or pin dispatches to tmux, Herdr, cmux,
-WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser.
+WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser. cmux and iTerm2 run on macOS
+only. On Linux, Ghostty and the desktop's default terminal open windows for Focus but never host
+an agent, so a terminal-runtime agent there runs in tmux, Herdr, or WezTerm.
 Ghostty dispatches retain their verified pane UUID across daemon restarts and inventory failures.
 External Ghostty sessions without a proven pane association remain visible with input disabled.
 
@@ -372,7 +379,10 @@ repository:
   npm run dev
   ```
 
-  Then open `http://127.0.0.1:5173`. See [First-run setup](docs/setup.md) and
+  Then open `http://127.0.0.1:5173`. This is also how Mission Control runs on Linux, where the
+  checkout is the install: `make desktop-entry` adds the desktop shell to the app menu,
+  `npm run install-service` keeps the daemon running as a systemd user unit, and
+  `git pull && make build` updates it. See [First-run setup](docs/setup.md) and
   [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path. Upstart
   operators should also follow [Running Mission Control at Upstart](docs/upstart.md) for the
   UpstartClaw marketplace, plugin, sign-in, and daemon environment steps.

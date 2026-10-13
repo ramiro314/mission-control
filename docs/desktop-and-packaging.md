@@ -1,6 +1,9 @@
 # Desktop shell and packaging
 
-Mission Control can run as a local daemon during development or as a macOS Electron app.
+Mission Control can run as a local daemon during development or as a macOS Electron app. On
+Linux the same Electron shell runs from a checkout rather than a packaged app: `make desktop`
+during development, or the built shell through [the Linux desktop
+entry](#the-linux-desktop-entry). Packaging, updates and migration below are macOS only.
 The [Electron main process](../src/main/index.ts) starts the daemon and Foreman worker, then embeds the dashboard;
 the [preload entrypoint](../src/preload/index.ts) keeps the renderer boundary explicit.
 

@@ -278,7 +278,7 @@ npm run foreman        # Source-development Foreman worker; the packaged app sta
 npm run build          # build web, daemon, Foreman, Electron, MCP, and satellite bundles
 npm test               # full test suite, including real Electron GUI geometry checks
 npm run test:workflow-evidence # focused evidence transport and Test Evidence audit checks
-npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
+npm run test:electron  # focused Electron GUI checks (AGENTS.md: macOS Seatbelt; on Linux with no display, xvfb-run -a)
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
 npm run smoke          # boot the built bundles, and check the MCP one publishes every declared tool (after build)

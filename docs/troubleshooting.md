@@ -78,6 +78,96 @@ user manager needs `dbus-update-activation-environment --systemd WAYLAND_DISPLAY
 XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE` in its startup, or start the daemon from a
 terminal in that session.
 
+## `make init` says the native build tools are missing
+
+The build compiles a small native module with node-gyp, so `make init` checks for a toolchain
+before it starts anything long-running and stops with the command that fixes it. On macOS that is
+`xcode-select --install`. On Linux it names what is missing among the C++ compiler (`CXX`, else
+`g++`), `make` and `python3` (or `PYTHON`): install them with your distribution's package manager,
+for example `build-essential python3` on Debian or Ubuntu, `gcc-c++ make python3` on Fedora, or
+`base-devel python` on Arch, then rerun `make init`. `make init ARGS="--skip-build"` skips the check
+along with the build.
+
+## Worktree release or cleanup is refused because `lsof` is missing
+
+The daemon asks `lsof` which processes are working in a worktree. Without it that answer is
+unknown, and Mission Control refuses to release or clean up a worktree it cannot prove is idle.
+macOS ships `lsof`; some Linux base systems, Arch's `base` among them, do not. `make init` stops
+when it is missing, and **Settings → Setup → Runtime** shows a required **lsof** row. Install the
+`lsof` package with your distribution's package manager, then press **Re-check**. The Makefile's
+daemon targets ask `/api/health` instead; only `make stop-all` (and so `make restart`) still uses
+`lsof`, to find Vite, and without it prints "lsof not found: stop Vite on :5173 yourself" and
+leaves Vite running.
+
+## The desktop shell aborts with a Chromium sandbox error on Linux
+
+```
+FATAL:setuid_sandbox_host.cc The SUID sandbox helper binary was found, but is not configured
+correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that
+.../node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.
+```
+
+Chromium's sandbox needs unprivileged user namespaces. When the kernel or AppArmor restricts
+them, as Ubuntu 24.04 and later do by default, Electron falls back to the setuid helper
+`chrome-sandbox`, and `npm install` never makes that helper setuid root, so the shell
+(`make desktop`, `make start`, or the [desktop entry](desktop-and-packaging.md#the-linux-desktop-entry))
+aborts before its window opens. Arch and Fedora allow the namespaces, so this does not happen there.
+Either allow user namespaces for Electron (on Ubuntu, an AppArmor profile granting `userns` to
+`node_modules/electron/dist/electron`, or `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`
+for the whole machine), or make the helper setuid root:
+
+```sh
+sudo chown root:root node_modules/electron/dist/chrome-sandbox
+sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+```
+
+`npm install` replaces the helper whenever Electron is reinstalled, so the second fix has to be
+repeated after an Electron upgrade. Do not launch the shell with `--no-sandbox`: the Electron
+tests pass it because CI's runner restricts user namespaces, and that is the only place it is
+sanctioned.
+
+## The desktop shell or an Electron test cannot open a display on Linux
+
+Electron exits at once with `Missing X server or $DISPLAY` when the shell or an Electron test
+starts with neither `WAYLAND_DISPLAY` nor `DISPLAY`: over SSH, in a container, or from a terminal
+that is not inside the desktop session. Start the shell from a desktop session. For the tests, run
+them under a virtual display, as CI does:
+
+```sh
+xvfb-run -a npm test
+xvfb-run -a npm run test:e2e
+```
+
+Windows the daemon opens for Focus and **Open in** are a different path with their own message;
+see [Focus or Open in says "No graphical session is reachable"](#focus-or-open-in-says-no-graphical-session-is-reachable),
+which also covers `dbus-update-activation-environment --systemd` for a desktop that does not hand
+its display to the systemd user manager.
+
+## Mission Control stops when you log out of Linux
+
+The `install-service` unit runs under your systemd user manager, which by default stops when your
+last login session ends. That stops the daemon, and with it the tmux and Herdr servers Mission
+Control started and the agents inside them, which matches macOS, where logout ends the
+LaunchAgent. To keep them running after logout, enable lingering:
+
+```sh
+loginctl enable-linger
+```
+
+With lingering on, the unit and those servers keep running and `$XDG_RUNTIME_DIR` survives, but
+the desktop's display goes away with the session, so Focus and **Open in** fail with "No graphical
+session is reachable" until you log in to a desktop again. A daemon started with `make start` or
+`npm run dev` belongs to the terminal that started it and stops with it either way.
+
+## Old headless transcripts remain in `~/.claude/projects/-tmp/`
+
+On Linux, Mission Control's one-shot model runs used to start in `/tmp`, so Claude filed their
+transcripts in `~/.claude/projects/-tmp/`, beside those of any session you started from `/tmp`.
+They now run in `~/.mission-control/headless`, and the daemon prunes only that directory's
+transcripts. It never touches `-tmp` again, because it cannot tell its old files from yours there.
+Remove what you do not want by hand; nothing in Mission Control reads them (see
+[Models](models.md)). macOS is unaffected: its runs use the per-user temp dir as before.
+
 ## A Claude session stays grey, or its status looks stale
 
 `instrumented: true` means the daemon has fresh hook evidence for that session. Install
@@ -148,6 +238,9 @@ npm run test:e2e
 See the [browser end-to-end test guide](../e2e/README.md).
 
 ## iTerm2 is installed but sessions are missing or actions are denied
+
+iTerm2 runs on macOS only; on Linux it is shown disabled with **requires macOS** and has no
+Setup row.
 
 First confirm iTerm2 is open. Mission Control intentionally does not address a closed iTerm2
 during Setup or discovery because AppleScript application addressing would launch it. If the
