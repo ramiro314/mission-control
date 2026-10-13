@@ -6,13 +6,15 @@
 // Closing the window HIDES it (the app stays resident in the menu bar so alerts
 // keep firing); only a real quit destroys it.
 
-import { BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
+import { app, BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { isQuitting } from "./lifecycle.ts";
 import { daemonHealthy } from "./daemon.ts";
 import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
+import { windowIcon } from "./platform-icons.ts";
 
 let win: BrowserWindow | null = null;
 let startup: WindowStartup | null = null;
@@ -95,6 +97,8 @@ export function createWindow(preloadPath: string): BrowserWindow {
     minHeight: 480,
     show: false,
     title: "Mission Control",
+    // macOS takes it from the .app bundle; elsewhere the task switcher needs it here.
+    icon: windowIcon(process.platform, join(app.getAppPath(), "build")),
     backgroundColor: "#0e1116",
     // The app's own dark topbar IS the title bar: no native strip, traffic
     // lights inset over the topbar's left padding (see .topbar in styles.css).

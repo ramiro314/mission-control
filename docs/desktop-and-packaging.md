@@ -15,6 +15,20 @@ plain files on disk. The Electron shell supervises the daemon and the HTTP-only 
 it does not become a second state owner. Foreman never opens SQLite, and its daemon lease keeps
 an independently started worker safe as a standby.
 
+## Icons and the tray
+
+The app icons and tray images in `build/` are generated from the SVGs beside them by
+[`scripts/gen-icons.mjs`](../scripts/gen-icons.mjs); never edit the PNGs by hand. It needs
+`rsvg-convert` (librsvg) and runs on macOS and Linux. It renders the PNGs first, then folds
+`icon.icns` with `iconutil` only on macOS, so a Linux run leaves the committed `.icns` as it
+was. [`platform-icons.ts`](../src/main/platform-icons.ts) chooses between them:
+
+- macOS takes its app icon from the `.app` bundle and draws the tray from `trayTemplate.png`
+  as a template image, with the needs-you count as the tray title.
+- On Linux the window gets `icon.png` for the window switcher, and the tray shows
+  `tray-light.png`, a white glyph for a dark panel. Tray titles are macOS-only, so while the
+  needs-you count is above zero the tray swaps to `tray-badged.png` instead.
+
 ## Startup while SDK sessions restore
 
 The shell immediately shows **Starting Mission Control** from a local page that does not
