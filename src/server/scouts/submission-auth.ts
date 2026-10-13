@@ -86,7 +86,7 @@ function encode(authority: ScoutSubmissionAuthority): string {
  * and is private, because a child started before the upgrade still resolves its paths there.
  * Null when there is no such root.
  */
-export function legacyCapabilityPath(path: string): string | null {
+function legacyCapabilityPath(path: string): string | null {
   const root = agentRuntimeRoot(AGENT_CAPABILITIES_ROOT);
   const legacy = legacyAgentRuntimeRoot(AGENT_CAPABILITIES_ROOT);
   return legacy ? join(legacy, relative(root, path)) : null;

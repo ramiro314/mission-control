@@ -198,27 +198,42 @@ export const AGENT_STATE_ROOT = "mission-control-agent-state";
 /** Scout capability files an MCP child reads at call time. */
 export const AGENT_CAPABILITIES_ROOT = "mission-control-agent-capabilities";
 
+/** The base and, when it came from there, the `$XDG_RUNTIME_DIR` it sits in. */
+function resolveAgentRuntimeBase(env, platform) {
+  const override = env[AGENT_RUNTIME_DIR_ENV]?.trim();
+  if (override) return { base: resolve(override), xdg: null };
+  const runtime = platform === "linux" ? env.XDG_RUNTIME_DIR?.trim() : undefined;
+  if (runtime) return { base: join(runtime, "mission-control"), xdg: runtime };
+  return { base: tmpdir(), xdg: null };
+}
+
 /**
  * Where the private agent runtime roots live: the daemon's override, then on Linux the
  * per-user `$XDG_RUNTIME_DIR/mission-control` instead of the shared, aged-out `/tmp`, then the
  * temp dir. macOS's temp dir is already per-user, so macOS resolves exactly as before.
+ *
+ * `$XDG_RUNTIME_DIR` has its own lifetime: logind removes it when the user's last login
+ * session ends, unless lingering is enabled, and only logind can create it again.
  */
 export function agentRuntimeBase(env = process.env, platform = process.platform) {
-  const override = env[AGENT_RUNTIME_DIR_ENV]?.trim();
-  if (override) return resolve(override);
-  const runtime = platform === "linux" ? env.XDG_RUNTIME_DIR?.trim() : undefined;
-  if (runtime) return join(runtime, "mission-control");
-  return tmpdir();
+  return resolveAgentRuntimeBase(env, platform).base;
+}
+
+/** A private agent runtime root that cannot be used; `path` names the root. */
+export class AgentRuntimeRootError extends Error {
+  constructor(message, path) {
+    super(message);
+    this.name = new.target.name;
+    this.path = path;
+  }
 }
 
 /** A private root that another user could have planted or can read. */
-export class AgentRuntimeRootRefusedError extends Error {
+export class AgentRuntimeRootRefusedError extends AgentRuntimeRootError {
   constructor(path, info) {
     const mode = (info.mode & 0o7777).toString(8).padStart(4, "0");
     const kind = info.isSymbolicLink() ? "a symlink " : info.isDirectory() ? "" : "not a directory, ";
-    super(`Mission Control refused ${path}: ${kind}owned by uid ${info.uid} with mode ${mode}; remove it and retry`);
-    this.name = "AgentRuntimeRootRefusedError";
-    this.path = path;
+    super(`Mission Control refused ${path}: ${kind}owned by uid ${info.uid} with mode ${mode}; remove it and retry`, path);
   }
 }
 
@@ -239,8 +254,25 @@ export function assertPrivateAgentRuntimeRoot(path) {
  * never replaced by another directory, so a planted root cannot steer the choice.
  */
 export function agentRuntimeRoot(name, { create = false } = {}) {
-  const root = join(agentRuntimeBase(), name);
-  if (create) mkdirSync(root, { recursive: true, mode: 0o700 });
+  const { base, xdg } = resolveAgentRuntimeBase(process.env, process.platform);
+  const root = join(base, name);
+  if (create) {
+    // Never create `$XDG_RUNTIME_DIR` itself: it is logind's, and missing means the user's
+    // last login session ended without lingering, not that it was never made.
+    if (xdg && !existsSync(xdg)) {
+      throw new AgentRuntimeRootError(
+        `Mission Control cannot create ${root}: XDG_RUNTIME_DIR (${xdg}) does not exist. `
+          + "logind removes it when your last login session ends; run `loginctl enable-linger` "
+          + `so it persists, or set ${AGENT_RUNTIME_DIR_ENV} to a private directory, then restart Mission Control`,
+        root,
+      );
+    }
+    try {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      throw new AgentRuntimeRootError(`Mission Control cannot create ${root}: ${error?.message ?? String(error)}`, root);
+    }
+  }
   try {
     assertPrivateAgentRuntimeRoot(root);
   } catch (error) {
@@ -309,8 +341,8 @@ export function readScoutSubmissionCredential(cwd) {
 }
 
 /** Session capabilities live outside the isolated child state home, namespaced by daemon port. */
-export function sessionScoutCredentialDirectory() {
-  return join(agentRuntimeRoot(AGENT_CAPABILITIES_ROOT), `scouts-${PORT}`);
+export function sessionScoutCredentialDirectory(capabilitiesRoot = agentRuntimeRoot(AGENT_CAPABILITIES_ROOT)) {
+  return join(capabilitiesRoot, `scouts-${PORT}`);
 }
 
 export function sessionScoutCredentialPath(identity) {

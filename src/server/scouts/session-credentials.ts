@@ -1,9 +1,9 @@
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sessionScoutCredentialDirectory } from "@shared/harness-runtime.mjs";
+import { AGENT_CAPABILITIES_ROOT, legacyAgentRuntimeRoot, sessionScoutCredentialDirectory } from "@shared/harness-runtime.mjs";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { Registry } from "../registry.ts";
-import { legacyCapabilityPath, provisionSessionScoutCredential, verifyScoutSubmissionCredential } from "./submission-auth.ts";
+import { provisionSessionScoutCredential, verifyScoutSubmissionCredential } from "./submission-auth.ts";
 
 /** Registry-owned capability projection. No client can mint authority by claiming an id. */
 export function maintainScoutSessionCredentials(registry: Registry): () => void {
@@ -47,15 +47,15 @@ export function maintainScoutSessionCredentials(registry: Registry): () => void 
   const unobserve = registry.onSessionsObserved(() => {
     // Restoration/discovery has completed before old files can be judged stale. On Linux the
     // legacy temp-dir root received copies too, so its stale ones are pruned the same way.
-    let directories: string[];
+    // A refused current root is logged and skipped; the legacy one is still pruned.
+    const directories: string[] = [];
     try {
-      const current = sessionScoutCredentialDirectory();
-      const legacy = legacyCapabilityPath(current);
-      directories = legacy ? [current, legacy] : [current];
+      directories.push(sessionScoutCredentialDirectory());
     } catch (error) {
       console.error("[scout] capability reconciliation failed", error);
-      return;
     }
+    const legacy = legacyAgentRuntimeRoot(AGENT_CAPABILITIES_ROOT);
+    if (legacy) directories.push(sessionScoutCredentialDirectory(legacy));
     for (const directory of directories) reconcileDirectory(directory);
   });
   function reconcileDirectory(directory: string): void {

@@ -21,6 +21,7 @@ mkdirSync(process.env.HARNESS_HOME, { recursive: true });
 // Each test points the shared resolver at its own runtime base, and at its own temp dir so the
 // Linux legacy root is a fixture rather than the machine's real `/tmp` one.
 const originalTmpdir = process.env.TMPDIR;
+const originalXdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
 const originalGetuid = process.getuid;
 
 const runtime = await import("../src/shared/harness-runtime.mjs");
@@ -62,6 +63,8 @@ afterEach(() => {
   delete process.env[AGENT_RUNTIME_DIR_ENV];
   if (originalTmpdir === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = originalTmpdir;
+  if (originalXdgRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+  else process.env.XDG_RUNTIME_DIR = originalXdgRuntimeDir;
   process.getuid = originalGetuid;
 });
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -333,4 +336,58 @@ test("on Linux cleanup removes a home under a private legacy root and keeps one 
   chmodSync(legacy, 0o777);
   cleanupDisposableAgentStateHome(home);
   assert.ok(existsSync(home), "a home under a legacy root that fails the ownership check is left alone");
+});
+
+test("on Linux a missing XDG_RUNTIME_DIR fails launches by name and is never created", linuxOnly, () => {
+  fixture();
+  delete process.env[AGENT_RUNTIME_DIR_ENV];
+  // What logind leaves behind once the user's last login session ends without lingering.
+  const xdg = join(root, `run-user-${serial}`);
+  process.env.XDG_RUNTIME_DIR = xdg;
+  const named = (error: Error) =>
+    error.message.startsWith(`Mission Control cannot create ${join(xdg, "mission-control")}`)
+    && error.message.includes(`XDG_RUNTIME_DIR (${xdg}) does not exist`)
+    && error.message.includes("loginctl enable-linger")
+    && error.message.includes(AGENT_RUNTIME_DIR_ENV);
+
+  assert.throws(() => createDisposableAgentStateHome(), (error: Error) =>
+    error instanceof TerminalLaunchError && !error.outcomeUnknown && named(error));
+  assert.throws(() => provisionScoutSubmissionCredential("task-a", root), named);
+  assert.equal(existsSync(xdg), false, "XDG_RUNTIME_DIR belongs to logind and is never created here");
+
+  mkdirSync(xdg, { mode: 0o700 });
+  const home = createDisposableAgentStateHome();
+  assert.ok(home.startsWith(join(xdg, "mission-control", AGENT_STATE_ROOT, "session-")));
+  cleanupDisposableAgentStateHome(home);
+});
+
+test("on Linux a refused current capability root still prunes the legacy credential copy", linuxOnly, async (t) => {
+  const { base, temp } = fixture();
+  mkdirSync(join(temp, AGENT_CAPABILITIES_ROOT), { mode: 0o700 });
+  const [current, legacy] = provisionSessionScoutCredential(
+    { taskId: null, cwd: root, sessionId: "refused-current", episodeId: "e1", pid: 0, agentSessionId: null },
+  );
+  assert.ok(current && legacy);
+  const capabilities = join(base, AGENT_CAPABILITIES_ROOT);
+  chmodSync(capabilities, 0o770);
+  const logged = t.mock.method(console, "error", () => {});
+
+  const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
+  let observed = () => {};
+  const registry = {
+    subscribe: () => () => {},
+    onSessionsObserved: (listener: () => void) => { observed = listener; return () => {}; },
+    getSession: () => undefined,
+  } as unknown as Parameters<typeof maintainScoutSessionCredentials>[0];
+  const stop = maintainScoutSessionCredentials(registry);
+  try {
+    observed();
+  } finally {
+    stop();
+  }
+
+  assert.equal(existsSync(legacy), false, "the legacy copy is pruned although the current root was refused");
+  assert.ok(existsSync(current), "nothing inside the refused root is touched");
+  const lines = logged.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.ok(lines.some((line) => line.includes(`Mission Control refused ${capabilities}: `)), JSON.stringify(lines));
 });

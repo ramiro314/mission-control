@@ -13,7 +13,7 @@ import { join } from "node:path";
 import {
   AGENT_RUNTIME_DIR_ENV,
   AGENT_STATE_ROOT,
-  AgentRuntimeRootRefusedError,
+  AgentRuntimeRootError,
   MISSION_API_TOKEN_ENV,
   MISSION_API_TOKEN_FILE_ENV,
   PORT,
@@ -42,9 +42,9 @@ const liveDisposableStateHomes = new Set<string>();
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** A refused private root fails the launch that needed it, before any command is delivered. */
+/** An unusable private root fails the launch that needed it, before any command is delivered. */
 function asLaunchError(error: unknown): unknown {
-  return error instanceof AgentRuntimeRootRefusedError ? new TerminalLaunchError(error.message, false) : error;
+  return error instanceof AgentRuntimeRootError ? new TerminalLaunchError(error.message, false) : error;
 }
 
 /** The roots this daemon's homes live in, without checking or creating them. */
