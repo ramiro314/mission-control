@@ -14,7 +14,12 @@ import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
-import { acquireStateOwnership } from "./state-ownership.ts";
+import {
+  acquireStateOwnership,
+  STATE_CONTENTION_EXIT_STATUS,
+  StateOwnershipContentionError,
+  type StateOwnership,
+} from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
 import { observeInjections } from "./injections.ts";
@@ -131,7 +136,14 @@ await initializeExecutableEnvironment();
 // database, so API ports are irrelevant and two independent state homes remain independent.
 // Its native handle holds an OS lock for this process lifetime; crashes release that lock in
 // the kernel while leaving the metadata available to explain who owned the previous run.
-const stateOwnership = acquireStateOwnership();
+let stateOwnership: StateOwnership;
+try {
+  stateOwnership = acquireStateOwnership();
+} catch (error) {
+  if (!(error instanceof StateOwnershipContentionError)) throw error;
+  console.error(`[mission-control] ${error.message}`);
+  process.exit(STATE_CONTENTION_EXIT_STATUS);
+}
 const database = openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API

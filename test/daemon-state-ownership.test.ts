@@ -179,13 +179,29 @@ test("a second daemon cannot own the same state home through a different port", 
   const [code, signal] = await second.exit;
 
   assert.equal(signal, null, second.output());
-  assert.notEqual(code, 0, second.output());
+  // EX_TEMPFAIL, which the systemd unit's RestartPreventExitStatus=75 stops on.
+  assert.equal(code, 75, second.output());
   assert.match(second.output(), /state home is already owned by another Mission Control daemon/i);
   assert.match(second.output(), new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(second.output(), new RegExp(`port ${firstPort}`));
   assert.doesNotMatch(second.output(), new RegExp(`listening.+${secondPort}`));
 
   await stopDaemon(first.child);
+});
+
+test("a state-ownership failure other than contention exits as an ordinary crash, not 75", async () => {
+  // A state home under a regular file cannot be created, so ownership fails inside
+  // acquireStateOwnership for a reason the systemd unit should restart on.
+  const blocker = join(root, "not-a-directory");
+  writeFileSync(blocker, "");
+  const daemon = startDaemon(join(blocker, "home"), await unusedPort());
+  const [code, signal] = await daemon.exit;
+
+  assert.equal(signal, null, daemon.output());
+  assert.notEqual(code, 0, daemon.output());
+  assert.notEqual(code, 75, daemon.output());
+  assert.match(daemon.output(), /ENOTDIR[\s\S]*at acquireStateOwnership/);
+  assert.doesNotMatch(daemon.output(), /state home is already owned/i);
 });
 
 test("ordinary restart works and stale ownership recovers after a crash", async () => {
@@ -220,7 +236,7 @@ test("ownership contention refuses startup before the state database is touched"
     const [code, signal] = await contender.exit;
 
     assert.equal(signal, null, contender.output());
-    assert.notEqual(code, 0, contender.output());
+    assert.equal(code, 75, contender.output());
     assert.match(contender.output(), /state home is already owned by another Mission Control daemon/i);
     assert.equal(existsSync(join(home, "harness.db")), false, "the refused daemon created or migrated the state database");
     assert.equal(resumeLeaseStatus(lease).state, "preparing", "the rejected startup must not revoke the live daemon's preparation");

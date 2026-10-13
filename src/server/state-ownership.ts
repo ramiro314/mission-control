@@ -35,6 +35,15 @@ function readOwner(path: string): Partial<StateOwner> | null {
   }
 }
 
+/**
+ * EX_TEMPFAIL: another daemon owns this state home. A supervisor that restarts on failure can
+ * tell this apart from a crash; the systemd unit's `RestartPreventExitStatus=75` stops instead
+ * of restart-looping, while launchd and the desktop shell restart on it as on any exit.
+ */
+export const STATE_CONTENTION_EXIT_STATUS = 75;
+
+export class StateOwnershipContentionError extends Error {}
+
 function contentionError(stateDir: string, lockPath: string): Error {
   const owner = readOwner(lockPath);
   const details = [
@@ -43,7 +52,7 @@ function contentionError(stateDir: string, lockPath: string): Error {
     owner?.startedAt === undefined ? null : `started ${owner.startedAt}`,
   ].filter((detail): detail is string => detail !== null);
   const ownerText = details.length > 0 ? ` Current owner: ${details.join(", ")}.` : "";
-  return new Error(
+  return new StateOwnershipContentionError(
     `The state home is already owned by another Mission Control daemon: ${stateDir}.` +
       ownerText +
       " Stop that daemon, or start this one with a different MISSION_HOME, then retry.",

@@ -26,6 +26,11 @@ it, or set `MISSION_HOME` to a genuinely independent state directory if both dae
 intentional. Do not delete `daemon.lock`: the file is durable metadata, while the kernel-held
 lock is the ownership authority and is released automatically after a crash.
 
+The daemon exits with status 75 in this case. On Linux the `install-service` unit does not
+restart on 75, so `systemctl --user status mission-control` shows it failed with
+`status=75/TEMPFAIL` and `journalctl --user -u mission-control` holds the message. Once the other
+daemon is stopped, `systemctl --user restart mission-control` starts it again.
+
 ## A launch fails with "Mission Control refused" a path
 
 Each launch writes its wrapper script and disposable state home under
