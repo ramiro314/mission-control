@@ -54,6 +54,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/main/startup-handover.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
   ],
+  "src/main/daemon-start.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "bounded systemctl --user is-active probe of the daemon unit through the locator-resolved systemctl" },
+  ],
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },
