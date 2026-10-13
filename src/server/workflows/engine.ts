@@ -24,6 +24,7 @@ import type {
   PersonaExecutionView,
   WorkflowCheckOutcome,
   WorkflowCheckEvidence,
+  WorkflowTestFailure,
   WorkflowCheckSlot,
   WorkflowCommandView,
   WorkflowPolicy,
@@ -70,6 +71,7 @@ import {
   type CheckScheduler,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
+import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
 import {
   decideWaitForCi,
   initialWaitForCiState,
@@ -359,24 +361,9 @@ export function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): 
   // is least likely to be, and a repair packet that cuts it off sends the agent hunting.
   const failures = outcome.affected?.failures ?? [];
   if (failures.length > 0) {
-    // The list is capped; the summary carries the true count, and the packet says it is partial.
     const total = outcome.affected?.failureCount ?? failures.length;
-    const unlisted = total > failures.length
-      ? `\n\n${total} tests failed twice in this check; only the first ${failures.length} are listed.`
-      : "";
-    return normalizePersonaVerdict({
-      verdict: "fail",
-      summary,
-      requestedChanges: failures.map((failure, index) => {
-        const where = failure.file ? ` in ${failure.file}` : "";
-        return {
-          title: `Fix the failing test "${failure.name}"${where}`,
-          rationale: `It failed on the run and again on its rerun.${index === 0 ? unlisted : ""}\n\n${failure.message}`,
-          evidence: [{ kind: "check" as const, path: attemptId, quote: failure.message }],
-        };
-      }),
-      confidence: 1,
-    }, new Set(), new Set(), new Set([attemptId]));
+    const verdict = failingTestsVerdict(summary, failures, total, attemptId);
+    if (verdict) return verdict;
   }
   const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
@@ -394,6 +381,66 @@ export function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): 
     }],
     confidence: 1,
   }, new Set(), new Set(), new Set([attemptId]));
+}
+
+/**
+ * Pool for the failure messages a failing-tests verdict quotes, shared equally by the failures
+ * it lists. Each message is carried twice, in the rationale and in its evidence quote, so this
+ * spends half the verdict on messages and leaves the rest for titles, the summary and the JSON.
+ */
+const FAILURE_MESSAGES_BYTES = WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes / 4;
+
+/**
+ * One requested change per failing test, as many as fit `verdictJsonBytes`.
+ *
+ * Twenty runner messages at `AFFECTED_TESTS_LIMITS.failureMessage` each, carried twice, are
+ * several times that budget, and a verdict over it is refused - which turned a real test
+ * failure into an infrastructure failure that every retry repeated. So each message is clipped
+ * to its share of `FAILURE_MESSAGES_BYTES`, and failures are listed in order only while the
+ * verdict still fits. Fit is measured on the verdict's real JSON rather than estimated, because
+ * escaping a stack trace's newlines and quotes inflates it by an amount only encoding knows.
+ * The first rationale says how many failures went unlisted.
+ *
+ * Null when not even the first failure fits, which a name and path at their own caps can do;
+ * the caller then falls back to the output tail rather than refusing the outcome.
+ */
+function failingTestsVerdict(
+  summary: string,
+  failures: readonly WorkflowTestFailure[],
+  total: number,
+  attemptId: string,
+): PersonaVerdict | null {
+  const share = Math.min(
+    WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput,
+    Math.floor(FAILURE_MESSAGES_BYTES / failures.length),
+  );
+  const changes = failures.map((failure) => {
+    const where = failure.file ? ` in ${failure.file}` : "";
+    const message = clipUtf8Bytes(failure.message, share);
+    return {
+      title: `Fix the failing test "${failure.name}"${where}`,
+      message: message.length < failure.message.length ? `${message}…` : message,
+      evidence: [{ kind: "check" as const, path: attemptId, quote: message }],
+    };
+  });
+  const candidate = (listed: number) => ({
+    verdict: "fail" as const,
+    summary,
+    requestedChanges: changes.slice(0, listed).map(({ title, message, evidence }, index) => {
+      const unlisted = index === 0 && total > listed
+        ? `\n\n${total} tests failed twice in this check; only the first ${listed} are listed. ` +
+          "This check's run detail has the rest."
+        : "";
+      return { title, rationale: `It failed on the run and again on its rerun.${unlisted}\n\n${message}`, evidence };
+    }),
+    confidence: 1,
+  });
+  const fits = (listed: number) =>
+    utf8Bytes(JSON.stringify(candidate(listed))) <= WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes;
+  let listed = 0;
+  while (listed < changes.length && fits(listed + 1)) listed++;
+  if (listed === 0) return null;
+  return normalizePersonaVerdict(candidate(listed), new Set(), new Set(), new Set([attemptId]));
 }
 
 /**
