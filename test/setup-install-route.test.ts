@@ -31,7 +31,7 @@ interface LaunchCall extends TerminalLaunchSpec {
 function catalogWith(id: SetupDependencyId, remedy: SetupRemedy) {
   return {
     ...SETUP_DEPENDENCY_INFO,
-    [id]: { ...SETUP_DEPENDENCY_INFO[id], remedy },
+    [id]: { ...SETUP_DEPENDENCY_INFO[id], remedies: { darwin: remedy, linux: remedy } },
   };
 }
 
@@ -69,6 +69,8 @@ function appFor({
     launchSessionTerminal: launcher,
     setupInstallDeps: {
       catalog: SETUP_DEPENDENCY_INFO,
+      // The Homebrew cases are macOS cases; the Linux twin below overrides this.
+      platform: "darwin",
       homeDir: home,
       listRepoRoots: async () => ["/verified"],
       listProviderInstallers: async (provider, roots) => ({
@@ -363,6 +365,23 @@ test("a command remedy launches the exact catalog argv in the hold-open wrapper 
       setupInstallerShell(["brew", "install", "--cask", "wezterm"]),
     ],
   }]);
+});
+
+test("on Linux a Homebrew row is refused before launch and an npm row still runs", async () => {
+  const calls: LaunchCall[] = [];
+  const app = appFor({ calls, install: { platform: "linux" } });
+  for (const id of ["wezterm", "ghostty", "tmux", "gh-cli", "node-runtime"] as const) {
+    const response = await post(app, { id, backend: "cmux" });
+    assert.equal(response.status, 409, id);
+    assert.match(await response.text(), /distribution's package manager/, id);
+  }
+  assert.equal(calls.length, 0);
+
+  const npm = await post(app, { id: "claude-cli", backend: "cmux" });
+  assert.equal(npm.status, 200);
+  assert.deepEqual(calls.map((call) => call.argv), [
+    ["/bin/sh", "-c", setupInstallerShell(["npm", "install", "-g", "@anthropic-ai/claude-code"])],
+  ]);
 });
 
 test("terminal outcomes preserve status and the launcher's exact sentence", async () => {

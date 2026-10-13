@@ -158,6 +158,7 @@ const GH_MENTIONS: Readonly<Record<string, readonly GhMention[]>> = {
   ],
   "src/shared/setup-catalog.ts": [
     { fn: "<module>", line: 'argv: ["brew", "install", "gh"],', why: "the install remedy's package name" },
+    { fn: "<module>", line: 'package: "gh",', why: "the Linux instruction remedy's package name; it runs nothing" },
   ],
   "scripts/check-pi-desktop-install.mjs": [
     { fn: "<module>", line: 'for (const name of ["git", "gh", "npm"]) writeFileSync(join(bin, name), shim, { mode: 0o755 });', why: "writes a fake gh for the install check" },

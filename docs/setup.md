@@ -30,6 +30,14 @@ choose an available backend and Mission Control opens a visible terminal running
 fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
+
+Remedies follow the host. On macOS a missing tmux, WezTerm, Ghostty, GitHub CLI or Node.js offers
+its Homebrew command. Linux has no single package manager to name, so the same row shows the
+package to install, "with your distribution's package manager", and a link to the tool's install
+guide, with no **Run in a terminal** button. The `npm install -g` rows (Claude Code and Pi) run on
+both. Rows for a terminal backend the host cannot run at all, iTerm2 and cmux on Linux, are left
+out of Setup rather than reported as needing setup; the terminal pickers still list them,
+disabled with **requires macOS**. An installed Ghostty or WezTerm reads as satisfied on Linux.
 Every read probes the machine afresh, except that a read arriving while another is still
 probing - a second tab, a reload, or **Re-check** pressed mid-round - shares that round's result
 instead of starting a second set of probes. Each read still gets its own snapshot for dismissal.
@@ -59,10 +67,11 @@ without the plugin remain free of Upstart-specific setup chrome.
 
 The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
 installer and update preflight (currently Node.js 24). It reports a missing or older runtime as
-**Needs setup**, and failed or unparseable version probes as **Unknown**. **Run in a terminal**
-opens `brew install node` in the selected visible terminal to install or update Node.js and npm.
-This command requires Homebrew; if you manage Node another way, select a supported version in
-that manager instead. Read the command's exit status, then press **Re-check**. Opening the
+**Needs setup**, and failed or unparseable version probes as **Unknown**. On macOS,
+**Run in a terminal** opens `brew install node` in the selected visible terminal to install or
+update Node.js and npm. This command requires Homebrew; if you manage Node another way, select a
+supported version in that manager instead. On Linux the row names the `nodejs` package for your
+distribution's package manager, or a version manager, and runs nothing. Read the command's exit status, then press **Re-check**. Opening the
 installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager, or inherited
 PATH still selects an older runtime, correct that selection and restart Mission Control with
 the corrected environment. The updater still performs its fuller Node/npm checks in the build
@@ -92,7 +101,7 @@ refused rather than replaced. No reload is needed - cmux watches the file - and 
 possible anyway, since `cmux reload-config` is one of the calls the default refuses. A satisfied
 row reports the mode it read, as `(socket control allowAll)`.
 
-The optional iTerm2 row uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
+The optional iTerm2 row, shown on macOS only, uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
 configured `ITERM_BIN` filesystem
 check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is
 `brew install --cask iterm2`; Automation permission is requested only when an already-running

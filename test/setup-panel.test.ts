@@ -274,6 +274,34 @@ test("a service remedy renders one start control and no terminal choice", () => 
   assert.doesNotMatch(html, /setup-command/);
 });
 
+// Linux's answer for a missing package: the package, the instruction and a guide, and
+// nothing that would run a command - no terminal picker, no copyable argv.
+test("an instruction remedy names the package and a guide and runs nothing", () => {
+  const html = render([
+    CLAUDE,
+    row({
+      rowId: { source: "dependency", id: "wezterm" },
+      family: "terminals",
+      label: "WezTerm",
+      requirement: "optional",
+      enables: "No scriptable windows.",
+      remedy: {
+        kind: "instruction",
+        package: "wezterm",
+        url: "https://wezterm.org/install/linux.html",
+        label: "Open WezTerm installation guide",
+      },
+      status: { state: "missing" },
+    }),
+  ], "setup/dependency-wezterm");
+  assert.match(html, /Install <code>wezterm<\/code> with your distribution(&#x27;|')s package manager\./);
+  assert.match(html, /href="https:\/\/wezterm\.org\/install\/linux\.html"/);
+  assert.match(html, /Open WezTerm installation guide/);
+  assert.doesNotMatch(html, /Run in a terminal/);
+  assert.doesNotMatch(html, /Terminal for WezTerm/);
+  assert.doesNotMatch(html, /setup-command/);
+});
+
 // The rail's selection precedence, which no markup assertion can reach: these are the
 // transitions BETWEEN renders, and `renderToStaticMarkup` only ever produces one.
 test("the opening family is latched once, so a repair cannot move the rail", () => {

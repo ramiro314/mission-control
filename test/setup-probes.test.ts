@@ -13,6 +13,7 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupRemedy,
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/setup/index.ts";
@@ -146,11 +147,18 @@ test("Node Setup checks the selected executable, shares the installer floor, and
 
 test("Node Setup reports missing and unverifiable runtimes without a false Ready", async () => {
   const missing = await probe("node-runtime", {
+    platform: "darwin",
     resolveBinPath: async () => null,
     runCommand: async () => { throw Error("must not run a missing executable"); },
   });
   assert.equal(missing.state, "needs-setup");
   if (missing.state === "needs-setup") assert.match(missing.why, /could not be found.*requires Homebrew/);
+  const linux = await probe("node-runtime", { platform: "linux", resolveBinPath: async () => null });
+  assert.equal(linux.state, "needs-setup");
+  if (linux.state === "needs-setup") {
+    assert.match(linux.why, /could not be found.*distribution's package manager/);
+    assert.doesNotMatch(linux.why, /Homebrew|command below/);
+  }
   for (const result of [
     stubRun({ stdout: "not Node", stderr: "", code: 0 }),
     stubRun({ stdout: "24.fake", stderr: "", code: 0 }),
@@ -324,12 +332,66 @@ test("a cmux socket that failed some other way is not offered a repair for a fau
 
 test("a probe remedy overrides the catalog remedy on the row it repairs", async () => {
   const view = await setupChecksView(deps({
+    platform: "linux",
     herdrServer: async () => ({ state: "stopped", socket: "/run/herdr.sock" }),
   }));
   const herdr = view.rows.find((row) => row.rowId.source === "dependency" && row.rowId.id === "herdr");
   assert.deepEqual(herdr?.remedy, HERDR_SERVER_REMEDY);
   const wezterm = view.rows.find((row) => row.rowId.source === "dependency" && row.rowId.id === "wezterm");
-  assert.deepEqual(wezterm?.remedy, SETUP_DEPENDENCY_INFO.wezterm.remedy);
+  assert.deepEqual(wezterm?.remedy, setupRemedy(SETUP_DEPENDENCY_INFO.wezterm, "linux"));
+});
+
+/** One Setup row by dependency id, or undefined when the host leaves it out. */
+function dependencyRow(view: Awaited<ReturnType<typeof setupChecksView>>, id: SetupDependencyId) {
+  return view.rows.find((row) => row.rowId.source === "dependency" && row.rowId.id === id);
+}
+
+test("Linux leaves out the rows for macOS-only backends and offers no Homebrew remedy", async () => {
+  const probedIds: string[] = [];
+  const view = await setupChecksView(deps({
+    platform: "linux",
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id), "linux"),
+    installedBackend: async (id) => {
+      probedIds.push(id);
+      return null;
+    },
+    resolveBinPath: async () => null,
+  }));
+  assert.equal(dependencyRow(view, "iterm"), undefined);
+  assert.equal(dependencyRow(view, "cmux"), undefined);
+  assert.ok(!probedIds.includes("iterm") && !probedIds.includes("cmux"), probedIds.join());
+  for (const row of view.rows) assert.doesNotMatch(JSON.stringify(row.remedy), /brew|--cask/, row.label);
+  for (const id of ["ghostty", "wezterm", "tmux", "gh-cli"] as const) {
+    assert.deepEqual(dependencyRow(view, id)?.status, { state: "missing" }, id);
+    assert.equal(dependencyRow(view, id)?.remedy.kind, "instruction", id);
+  }
+  assert.equal(dependencyRow(view, "node-runtime")?.remedy.kind, "instruction");
+  assert.deepEqual(dependencyRow(view, "claude-cli")?.remedy, setupRemedy(SETUP_DEPENDENCY_INFO["claude-cli"], "darwin"));
+});
+
+test("an installed Ghostty or WezTerm reads as satisfied on Linux", async () => {
+  const view = await setupChecksView(deps({
+    platform: "linux",
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id), "linux"),
+  }));
+  for (const id of ["ghostty", "wezterm"] as const) {
+    assert.deepEqual(dependencyRow(view, id)?.status, { state: "satisfied", evidence: `/tools/${id}` }, id);
+  }
+});
+
+test("macOS keeps every row and its Homebrew remedies", async () => {
+  const view = await setupChecksView(deps({
+    platform: "darwin",
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id), "darwin"),
+    installedBackend: async () => null,
+    resolveBinPath: async () => null,
+  }));
+  for (const id of SETUP_DEPENDENCY_IDS) assert.ok(dependencyRow(view, id), id);
+  for (const id of ["iterm", "wezterm", "ghostty", "tmux", "gh-cli", "node-runtime"] as const) {
+    const remedy = dependencyRow(view, id)?.remedy;
+    assert.equal(remedy?.kind, "command", id);
+    if (remedy?.kind === "command") assert.equal(remedy.argv[0], "brew", id);
+  }
 });
 
 test("an outdated GitHub CLI reports needs-setup, and a current one stays satisfied", async () => {

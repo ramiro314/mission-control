@@ -35162,6 +35162,20 @@ body.foreman-sidecar-open .modal-backdrop {
   margin: 0;
 }
 
+.setup-instruction {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0;
+}
+
+.setup-instruction code {
+  overflow-wrap: anywhere;
+}
+
+.setup-instruction + .setup-link {
+  margin-top: 6px;
+}
+
 .setup-provider-checkout code {
   color: var(--muted);
   margin-left: 5px;

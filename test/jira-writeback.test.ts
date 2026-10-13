@@ -20,6 +20,8 @@ import {
   writebackBlocks,
   cliFailure,
   cliFault,
+  jiraCliInstall,
+  jiraCliUpgrade,
   restReadFailure,
   restWritebackFailure,
 } from "../src/server/task-sources/jira.ts";
@@ -604,9 +606,19 @@ test("no rung at all refuses with both fixes named", async () => {
   machine({ cli: false });
   const r = await jira.annotate!(cfg(), notice(), ctx);
   assert.match(r.error!, /no way to write to Jira/);
-  assert.match(r.error!, /brew install ankitpokhrel\/jira-cli\/jira-cli/);
+  assert.ok(r.error!.includes(jiraCliInstall()), r.error!);
   assert.match(r.error!, /JIRA_API_TOKEN and JIRA_EMAIL/);
   assert.equal(r.outcomeUnknown, false);
+});
+
+// Homebrew exists only on macOS, so Linux is pointed at the project's own release builds.
+test("the jira-cli install and upgrade hints follow the host", () => {
+  assert.equal(jiraCliInstall("darwin"), "`brew install ankitpokhrel/jira-cli/jira-cli`");
+  assert.equal(jiraCliUpgrade("darwin"), "`brew upgrade jira-cli`");
+  for (const hint of [jiraCliInstall("linux"), jiraCliUpgrade("linux")]) {
+    assert.match(hint, /https:\/\/github\.com\/ankitpokhrel\/jira-cli\/releases/);
+    assert.doesNotMatch(hint, /brew/);
+  }
 });
 
 // A completion that opened no pull request has nothing to LINK, which is not a failure and

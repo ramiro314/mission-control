@@ -1618,7 +1618,9 @@ issue more than the page size, which is an exact test for whether anything follo
 The local method uses this ladder:
 
 1. Your **`jira` CLI** ([`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli),
-   `brew install ankitpokhrel/jira-cli/jira-cli` then `jira init`), if it's on the daemon's
+   `brew install ankitpokhrel/jira-cli/jira-cli` on macOS or a
+   [release build](https://github.com/ankitpokhrel/jira-cli/releases) on Linux, then
+   `jira init`), if it's on the daemon's
    `PATH`. It already knows your site and your login, so this is the `gh` trade again.
 2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
@@ -1683,7 +1685,7 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 | `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
 | `refusing to send JIRA_API_TOKEN to <host>` | that host is not Jira Cloud and is not in `JIRA_ALLOWED_HOSTS`. Name it there if it really is your Jira; the CLI rung keeps working regardless |
-| `this jira CLI does not support --paginate` | too old to be asked for a bounded request at all. `brew upgrade jira-cli`, or set the two variables so the REST rung is used instead |
+| `this jira CLI does not support --paginate` | too old to be asked for a bounded request at all. Upgrade it (`brew upgrade jira-cli` on macOS, a newer release on Linux), or set the two variables so the REST rung is used instead |
 | `this filter is larger than one sweep can read` | more than 1000 issues (or 50 requests) match, so the tail is unreachable - narrow the JQL |
 
 A sweep reports the same sentences on the source itself, so a failure that happens at 3am
