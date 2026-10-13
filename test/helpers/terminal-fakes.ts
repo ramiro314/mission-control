@@ -92,10 +92,11 @@ export function fakeTerminals(
   secondEmu: TerminalEmulator = fakeEmulator({ id: "ghostty", label: "Ghostty" }),
   thirdEmu: TerminalEmulator = fakeEmulator({ id: "iterm", label: "iTerm2" }),
   third: Multiplexer = fakeMultiplexer({ id: "herdr", label: "Herdr" }),
+  fourthEmu: TerminalEmulator = fakeEmulator({ id: "xdg-terminal", label: "Default terminal" }),
 ): TerminalDeps {
   return {
     multiplexers: { tmux: mux, herdr: third, cmux: second },
-    emulators: { wezterm: emu, ghostty: secondEmu, iterm: thirdEmu },
+    emulators: { wezterm: emu, ghostty: secondEmu, iterm: thirdEmu, "xdg-terminal": fourthEmu },
     // Everything present and every multiplexer on Automatic, so a test that is not about
     // availability or the focus preference reads exactly as it did before those two seams
     // existed. A test that IS about them overrides the field it is asserting on.

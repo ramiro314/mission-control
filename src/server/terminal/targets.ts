@@ -38,6 +38,7 @@ import {
 import {
   automaticFocusEmulator,
   emulatorAttemptOrder,
+  emulatorListed,
   EMULATORS,
   MULTIPLEXERS,
   type FocusEmulatorPreference,
@@ -71,6 +72,23 @@ export interface TerminalLaunchSpec {
   name: string;
   cwd: string;
   argv: readonly string[];
+}
+
+function raiseOnlyReason(emulator: TerminalEmulator): string {
+  return `${emulator.label} only shows multiplexer sessions - it cannot host an agent`;
+}
+
+/**
+ * Why this backend cannot be an agent's home, or null when it can. Only a raise-only
+ * emulator (`TerminalEmulator.raiseOnly`) answers: it would start an agent Mission Control
+ * could neither message, interrupt, capture, nor find again. A shell there is fine.
+ */
+export function agentHostUnavailable(
+  backend: TerminalBackendId,
+  deps: Pick<TerminalTargetDeps, "emulators"> = defaultTerminalTargetDeps,
+): string | null {
+  const emulator = deps.emulators[backend];
+  return emulator?.raiseOnly ? raiseOnlyReason(emulator) : null;
 }
 
 /** Can this emulator open a window right now? The one condition, asked in one place. */
@@ -175,16 +193,18 @@ function emulatorView(
       dispatchUnavailable: reason,
     };
   }
+  // Said before installation: no install would let it host an agent.
+  const raiseOnly = emulator.raiseOnly ? raiseOnlyReason(emulator) : null;
   const unavailable = binUnavailableReason(emulator.bin, emulator.label, deps);
   if (unavailable) {
-    return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: unavailable };
+    return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: raiseOnly ?? unavailable };
   }
   return {
     ...base,
     blurb: "New window in the worktree.",
     detail: null,
     unavailable: null,
-    dispatchUnavailable: null,
+    dispatchUnavailable: raiseOnly,
   };
 }
 
@@ -192,7 +212,8 @@ function emulatorView(
  * Every registered backend, in `TERMINAL_BACKEND_IDS` order, each saying whether it can be
  * used and why not.
  *
- * Unavailable rows are RETURNED, not filtered. The browser renders them disabled with the
+ * Unavailable rows are RETURNED, not filtered - except an emulator that is only another
+ * platform's fallback (`emulatorListed`), which is no row at all on a host that cannot use it. The browser renders them disabled with the
  * sentence, because "we found no terminal" and "we did not look" read identically as an
  * empty menu, and the fix for the first is a sentence away.
  *
@@ -210,7 +231,7 @@ export function terminalTargetViews(
   }
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
-    if (emulator) views.push({ id, ...emulatorView(emulator, deps) });
+    if (emulator && emulatorListed(emulator, deps)) views.push({ id, ...emulatorView(emulator, deps) });
   }
   return views;
 }
@@ -264,6 +285,8 @@ export async function launchAgentTerminal(
   spec: TerminalLaunchSpec,
   launcher: TerminalLauncher = launchTerminal,
 ): Promise<TerminalLaunchOutcome> {
+  const refused = agentHostUnavailable(backend);
+  if (refused) return { ok: false, label: backend, error: refused, status: 409 };
   const stateHome = createDisposableAgentStateHome();
   try {
     const argv = isolatedAgentArgv(spec.argv, { cwd: spec.cwd, stateHome });

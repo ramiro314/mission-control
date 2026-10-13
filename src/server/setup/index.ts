@@ -85,7 +85,10 @@ async function agentStatus(id: SetupDependencyId, deps: SetupDeps): Promise<Setu
   return present(deps.agentBin(agent), deps, AGENT_EXECUTABLE[agent]);
 }
 
-async function terminalStatus(id: TerminalBackendId, deps: SetupDeps): Promise<SetupStatus> {
+/** A terminal backend with its own Setup row, which is every one the catalog names directly. */
+type SetupTerminalId = Extract<TerminalBackendId, ExecutableId>;
+
+async function terminalStatus(id: SetupTerminalId, deps: SetupDeps): Promise<SetupStatus> {
   const unsupported = deps.backendUnsupported?.(id);
   if (unsupported) return { state: "needs-setup", why: unsupported, evidence: null };
   if (deps.executableDiagnostic) {

@@ -81,7 +81,9 @@ a test, in a daemon, and in an operator's environment.
 It also clears every inherited executable override (`MISSION_GH_BIN`, `MISSION_CLAUDE_BIN`,
 and the rest of `*_BIN` under all three prefixes). Those outrank `PATH`, where most files put
 their fakes, so a developer's own override would otherwise send the suite to the real binary.
-A test that needs one sets it in its file body, as it does for its home.
+A test that needs one sets it in its file body, as it does for its home. `TERMINAL` goes too:
+it is the Linux default terminal's second launcher, so a developer's value could open real
+windows.
 
 A test that needs a particular database keeps seeding its own home above its imports, exactly
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test

@@ -454,3 +454,19 @@ test("resume retains the spawned UUID and binds only a positively discovered rec
     assert.deepEqual(task.terminalLaunch, matches ? { resourceId: task.terminalResourceId, sessionId: f.candidate.syntheticId } : null);
   }
 });
+
+test("the Linux default terminal opens a shell but never becomes the agent's home", async () => {
+  // It only shows multiplexer sessions: an agent started in it could be neither messaged,
+  // interrupted, captured, nor found after a restart. Refused before any handoff or lease.
+  launched.length = 0;
+  const agent = await launch("exited", { backend: "xdg-terminal", payload: "agent" });
+  assert.equal(agent.status, 409);
+  const body = (await agent.json()) as { ok: boolean; error: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "Default terminal only shows multiplexer sessions - it cannot host an agent");
+  assert.equal(launched.length, 0, "no terminal was asked to run the agent");
+
+  const shell = await launch("embedded", { backend: "xdg-terminal", payload: "shell" });
+  assert.equal(shell.status, 200);
+  assert.deepEqual(launched.map((entry) => entry.backend), ["xdg-terminal"]);
+});

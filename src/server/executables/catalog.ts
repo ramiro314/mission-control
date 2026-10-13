@@ -129,6 +129,12 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
   }),
   treehouse: spec("treehouse", "Treehouse compatibility CLI", "treehouse", "TREEHOUSE_BIN"),
   "systemd-inhibit": spec("systemd-inhibit", "systemd inhibitor", "systemd-inhibit", "SYSTEMD_INHIBIT_BIN"),
+  "xdg-terminal-exec": spec(
+    "xdg-terminal-exec",
+    "XDG default terminal launcher",
+    "xdg-terminal-exec",
+    "XDG_TERMINAL_EXEC_BIN",
+  ),
   busctl: spec("busctl", "systemd D-Bus client", "busctl", "BUSCTL_BIN"),
 };
 

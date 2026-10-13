@@ -503,6 +503,25 @@ export interface TerminalEmulator {
   /** Rename the tab a pane lives in - the value `list` reports back as `tabTitle`. */
   retitle: ((target: EmulatorTarget, title: string) => Promise<TerminalResult>) | null;
   /**
+   * True for an adapter that exists only as one platform's fallback, so a host that does
+   * not support it omits it from every list instead of showing it disabled.
+   *
+   * Absent for every emulator a human might install on the wrong platform. iTerm2 on Linux
+   * is a row worth greying out with its reason; the Linux desktop's default terminal on
+   * macOS is not a thing anyone could install, and listing it would change the macOS UI for
+   * nothing.
+   */
+  hiddenWhereUnsupported?: true;
+  /**
+   * True for an emulator that only shows a multiplexer session, never hosts a dispatched
+   * agent itself. Dispatch skips it, and its row says so in a dispatch chooser.
+   *
+   * A dispatched agent's home must be one Mission Control can reach again: type into,
+   * interrupt, capture, and find after a restart. An emulator that can do none of that
+   * would start an agent nothing can steer, where refusing at least names what to install.
+   */
+  raiseOnly?: true;
+  /**
    * What a TAB TITLE may be on this backend - see `NameRules`.
    *
    * Required for the same reason `MuxSessions.names` is, and declared even by a backend
@@ -528,11 +547,23 @@ interface BinHostSupport {
    * transport and launch mechanics have been validated there.
    */
   unsupportedReason?: (platform: NodeJS.Platform) => string | null;
+  /**
+   * The sentence for a supported host where nothing resolves, when "<label> is not
+   * installed" would not say what to do - a launcher reached two ways names both.
+   */
+  missingReason?: string;
 }
 
 interface CatalogBinSpec extends BinHostSupport {
   /** Production backends carry only the identity of their authoritative catalog entry. */
   id: import("@shared/executables.ts").ExecutableId;
+  /**
+   * A second command that provides the same capability, consulted only when the catalog
+   * executable is absent - the desktop's `$TERMINAL` behind `xdg-terminal-exec`. Null when
+   * there is none. `binPresent` reads it so availability and the adapter agree on what
+   * counts as installed; `resolveBin` does not, because the fallback takes different argv.
+   */
+  fallbackCommand?: (env: NodeJS.ProcessEnv) => string | null;
 }
 
 interface CompatibilityBinSpec extends BinHostSupport {

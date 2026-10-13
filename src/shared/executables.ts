@@ -30,6 +30,7 @@ export const EXECUTABLE_IDS = [
   "du",
   "treehouse",
   "systemd-inhibit",
+  "xdg-terminal-exec",
   "busctl",
 ] as const;
 
