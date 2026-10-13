@@ -34,7 +34,14 @@ const {
   legacyAgentRuntimeRoot,
   sessionScoutCredentialPath,
 } = runtime;
-const { agentSubprocessEnv, cleanupAgentSubprocessEnv, createDisposableAgentStateHome, isolatedAgentArgv, reconcileDisposableAgentStateHomes } =
+const {
+  agentSubprocessEnv,
+  cleanupAgentSubprocessEnv,
+  cleanupDisposableAgentStateHome,
+  createDisposableAgentStateHome,
+  isolatedAgentArgv,
+  reconcileDisposableAgentStateHomes,
+} =
   await import("../src/server/agent-subprocess-env.ts");
 const { provisionScoutSubmissionCredential, provisionSessionScoutCredential, sessionScoutCredentialLocator } =
   await import("../src/server/scouts/submission-auth.ts");
@@ -162,6 +169,37 @@ test("a group-writable root refuses launches and credential provisioning, and th
   assert.equal(existsSync(join(temp, AGENT_CAPABILITIES_ROOT)), false);
 });
 
+// Write bits are not the only exposure: a root another user can only READ still leaks every
+// credential in it, so a check that looked at write bits alone must fail here.
+for (const mode of [0o740, 0o704]) {
+  test(`a root readable but not writable by ${mode === 0o740 ? "group" : "other"} is refused`, () => {
+    const { base } = fixture();
+    const sessionId = `readable-${mode.toString(8)}`;
+    provisionSessionScoutCredential({ taskId: null, cwd: root, sessionId, episodeId: "e1", pid: 0, agentSessionId: null });
+    const capabilities = join(base, AGENT_CAPABILITIES_ROOT);
+    chmodSync(capabilities, mode);
+    const named = `Mission Control refused ${capabilities}: owned by uid ${process.getuid!()} with mode 0${mode.toString(8)}; remove it and retry`;
+
+    assert.throws(() => provisionScoutSubmissionCredential("task-a", root), (error: Error) => error.message === named);
+    assert.throws(
+      () => provisionSessionScoutCredential({ taskId: null, cwd: root, sessionId, episodeId: "e2", pid: 0, agentSessionId: null }),
+      (error: Error) => error.message === named,
+    );
+    process.env.MISSION_SCOUT_SESSION_LOCATOR = sessionScoutCredentialLocator(sessionId);
+    try {
+      assert.equal(runtime.readSessionScoutSubmissionCredential(root), "");
+    } finally {
+      delete process.env.MISSION_SCOUT_SESSION_LOCATOR;
+    }
+
+    const state = join(base, AGENT_STATE_ROOT);
+    mkdirSync(state, { mode: 0o700 });
+    chmodSync(state, mode);
+    assert.throws(() => createDisposableAgentStateHome(), (error: Error) =>
+      error instanceof TerminalLaunchError && !error.outcomeUnknown && error.message.startsWith(`Mission Control refused ${state}:`));
+  });
+}
+
 test("a symlinked root is refused even when its target is private", () => {
   const { base } = fixture();
   const target = join(root, `private-target-${serial}`);
@@ -238,4 +276,61 @@ test("on Linux startup reconciliation prunes an absent owner's legacy credential
   } finally {
     stop();
   }
+});
+
+test("on Linux a refused current root is logged by path and the legacy root is still swept", linuxOnly, (t) => {
+  const { base, temp } = fixture();
+  const expired = JSON.stringify({ expiresAt: 1 });
+  const current = join(base, AGENT_STATE_ROOT);
+  const refusedHome = join(current, "session-refused");
+  const legacyHome = join(temp, AGENT_STATE_ROOT, "session-legacy");
+  for (const home of [refusedHome, legacyHome]) {
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, "pipeline-caller-x.json"), expired, { mode: 0o600 });
+  }
+  chmodSync(current, 0o770);
+  const logged = t.mock.method(console, "error", () => {});
+
+  reconcileDisposableAgentStateHomes(Date.now());
+
+  const lines = logged.mock.calls.map((call) => String(call.arguments[0]));
+  assert.ok(
+    lines.some((line) => line.startsWith(`[agent-state] Mission Control refused ${current}: `)),
+    `the daemon log must name the refused root, got ${JSON.stringify(lines)}`,
+  );
+  assert.deepEqual(readdirSync(legacyHome), [], "the legacy root is swept after the current one is refused");
+  assert.deepEqual(readdirSync(refusedHome), ["pipeline-caller-x.json"], "nothing inside a refused root is touched");
+});
+
+test("cleanup removes only homes this module could have minted", () => {
+  const { base } = fixture();
+  const minted = createDisposableAgentStateHome();
+  const current = join(base, AGENT_STATE_ROOT);
+  const nested = join(current, "session-outer", "inner");
+  const notSession = join(current, "other-entry");
+  const outside = join(root, `outside-${serial}`, "session-abc");
+  for (const dir of [nested, notSession, outside]) mkdirSync(dir, { recursive: true });
+
+  for (const dir of [nested, notSession, outside]) cleanupDisposableAgentStateHome(dir);
+  for (const dir of [nested, notSession, outside]) assert.ok(existsSync(dir), `${dir} is not a minted home and must be kept`);
+
+  cleanupDisposableAgentStateHome(minted);
+  assert.equal(existsSync(minted), false);
+});
+
+test("on Linux cleanup removes a home under a private legacy root and keeps one under an unsafe root", linuxOnly, () => {
+  const { temp } = fixture();
+  const legacy = join(temp, AGENT_STATE_ROOT);
+  const home = join(legacy, "session-before-upgrade");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  chmodSync(legacy, 0o700);
+  writeFileSync(join(home, "launch.sh"), "#!/bin/sh\n");
+
+  cleanupDisposableAgentStateHome(home);
+  assert.equal(existsSync(home), false, "a pre-upgrade home under the private legacy root is released");
+
+  mkdirSync(home, { mode: 0o700 });
+  chmodSync(legacy, 0o777);
+  cleanupDisposableAgentStateHome(home);
+  assert.ok(existsSync(home), "a home under a legacy root that fails the ownership check is left alone");
 });
