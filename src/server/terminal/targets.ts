@@ -74,6 +74,23 @@ export interface TerminalLaunchSpec {
   argv: readonly string[];
 }
 
+function raiseOnlyReason(emulator: TerminalEmulator): string {
+  return `${emulator.label} only shows multiplexer sessions - it cannot host an agent`;
+}
+
+/**
+ * Why this backend cannot be an agent's home, or null when it can. Only a raise-only
+ * emulator (`TerminalEmulator.raiseOnly`) answers: it would start an agent Mission Control
+ * could neither message, interrupt, capture, nor find again. A shell there is fine.
+ */
+export function agentHostUnavailable(
+  backend: TerminalBackendId,
+  deps: Pick<TerminalTargetDeps, "emulators"> = defaultTerminalTargetDeps,
+): string | null {
+  const emulator = deps.emulators[backend];
+  return emulator?.raiseOnly ? raiseOnlyReason(emulator) : null;
+}
+
 /** Can this emulator open a window right now? The one condition, asked in one place. */
 function canRaise(
   emulator: TerminalEmulator | undefined,
@@ -176,10 +193,8 @@ function emulatorView(
       dispatchUnavailable: reason,
     };
   }
-  // Said before installation: no install would let it host a dispatched agent.
-  const raiseOnly = emulator.raiseOnly
-    ? `${emulator.label} only shows multiplexer sessions - it cannot host a dispatched agent`
-    : null;
+  // Said before installation: no install would let it host an agent.
+  const raiseOnly = emulator.raiseOnly ? raiseOnlyReason(emulator) : null;
   const unavailable = binUnavailableReason(emulator.bin, emulator.label, deps);
   if (unavailable) {
     return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: raiseOnly ?? unavailable };
@@ -270,6 +285,8 @@ export async function launchAgentTerminal(
   spec: TerminalLaunchSpec,
   launcher: TerminalLauncher = launchTerminal,
 ): Promise<TerminalLaunchOutcome> {
+  const refused = agentHostUnavailable(backend);
+  if (refused) return { ok: false, label: backend, error: refused, status: 409 };
   const stateHome = createDisposableAgentStateHome();
   try {
     const argv = isolatedAgentArgv(spec.argv, { cwd: spec.cwd, stateHome });

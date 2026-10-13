@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LaunchList, SessionLaunchers } from "../src/web/components/LaunchMenu.tsx";
+import { LaunchList, SessionLaunchers, agentRowUnavailable } from "../src/web/components/LaunchMenu.tsx";
 import type { TerminalTargetView } from "../src/shared/terminal.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
@@ -175,4 +175,37 @@ test("both launcher buttons show their customizable shortcut hints", () => {
   assert.match(src, /action="terminal"/);
   assert.match(src, /<Keycap action="agent" \/>/);
   assert.match(src, /registerLaunchers\(session\.id, handle\)/);
+});
+
+test("a terminal that cannot host an agent is open for a shell and closed for the agent", () => {
+  const raiser = view({
+    id: "xdg-terminal",
+    label: "Default terminal",
+    detail: null,
+    blurb: "New window in the worktree.",
+    dispatchUnavailable: "Default terminal only shows multiplexer sessions - it cannot host an agent",
+  });
+  const rows = (verb: string, agent: boolean) =>
+    renderToStaticMarkup(
+      createElement(LaunchList, {
+        targets: [raiser, view()],
+        failed: false,
+        verb,
+        onChoose: () => {},
+        rowUnavailable: agent ? agentRowUnavailable : undefined,
+      }),
+    );
+
+  const shell = rows("Open a shell in", false);
+  assert.match(shell, /Open a shell in Default terminal\. New window in the worktree\./);
+  assert.doesNotMatch(shell, /disabled/);
+
+  const agent = rows("Resume this conversation in", true);
+  assert.match(agent, /Default terminal only shows multiplexer sessions - it cannot host an agent/);
+  assert.equal(agent.match(/disabled=""/g)?.length, 1, "only the raise-only row is closed");
+  // A detached multiplexer is fine to dispatch to yet has no window: `unavailable` still wins.
+  assert.equal(
+    agentRowUnavailable(view({ unavailable: "no window", dispatchUnavailable: null })),
+    "no window",
+  );
 });

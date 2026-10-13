@@ -82,7 +82,7 @@ test("on Linux the dispatch chooser shows the default terminal disabled, with wh
   const row = menu.getByRole("menuitemradio", { name: /Default terminal/ });
   await expect(row).toBeDisabled();
   await expect(row).toContainText(
-    "Default terminal only shows multiplexer sessions - it cannot host a dispatched agent",
+    "Default terminal only shows multiplexer sessions - it cannot host an agent",
   );
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
@@ -91,6 +91,66 @@ test("on Linux the dispatch chooser shows the default terminal disabled, with wh
     await page.screenshot({ path: join(evidence, "dispatch-picker-linux.png"), fullPage: true });
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/linux-default-terminal/dispatch-picker-linux.png");
+  }
+});
+
+test("on Linux the conversation pane opens a shell in the default terminal, never the agent", async ({
+  page,
+  daemon,
+}) => {
+  test.skip(process.platform !== "linux", "the default terminal exists on Linux only");
+
+  await page.goto(daemon.baseURL);
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("open my checkout in the default terminal");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
+
+  // By its label: tmux's row also mentions the default terminal, which raises its sessions.
+  const defaultTerminal = (menu: import("@playwright/test").Locator) =>
+    menu.getByRole("menuitem").filter({
+      has: page.locator(".launch-label", { hasText: /^Default terminal$/ }),
+    });
+
+  // A shell is fine anywhere a window can open.
+  await card.locator(".conv-launch").getByRole("button", { name: "Terminal", exact: true }).click();
+  const shellMenu = card.getByRole("menu", { name: "Open a shell in the worktree with" });
+  const shellRow = defaultTerminal(shellMenu);
+  await expect(shellRow).toBeEnabled();
+  await expect(shellRow.locator(".launch-note")).toHaveText(
+    "Open a shell in Default terminal. New window in the worktree.",
+  );
+  await page.keyboard.press("Escape");
+  await expect(shellMenu).toBeHidden();
+
+  // The agent is not: nothing could reach it there again.
+  const agentChooser = card.locator(".conv-launch").getByRole("button", { name: /Claude Code/ });
+  await expect(agentChooser).toBeEnabled();
+  await agentChooser.click();
+  const agentMenu = card.getByRole("menu", { name: /resume this conversation in/ });
+  await expect(agentMenu).toBeVisible();
+  const agentRow = defaultTerminal(agentMenu);
+  await expect(agentRow).toBeDisabled();
+  await expect(agentRow.locator(".launch-note")).toHaveText(
+    "Default terminal only shows multiplexer sessions - it cannot host an agent",
+  );
+  // The suite's fake cmux still takes the agent.
+  await expect(agentMenu.getByRole("menuitem").filter({ hasText: "cmux" })).toBeEnabled();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("linux-default-terminal");
+    mkdirSync(evidence, { recursive: true });
+    await page.mouse.move(0, 0);
+    await page.screenshot({ path: join(evidence, "agent-launcher-linux.png") });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/linux-default-terminal/agent-launcher-linux.png");
   }
 });
 

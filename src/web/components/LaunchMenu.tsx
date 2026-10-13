@@ -39,17 +39,28 @@ export interface SessionLaunchersHandle {
  * `renderToStaticMarkup` test, which never runs an effect and so can never open the real
  * menu.
  */
+/**
+ * Why a row cannot take the session's own agent: the window must open, and the backend must
+ * be able to host an agent at all - see `TerminalTargetView.dispatchUnavailable`.
+ */
+export function agentRowUnavailable(target: TerminalTargetView): string | null {
+  return target.unavailable ?? target.dispatchUnavailable ?? null;
+}
+
 export function LaunchList({
   targets,
   failed,
   verb,
   onChoose,
+  rowUnavailable = (target) => target.unavailable,
 }: {
   targets: TerminalTargetView[] | null;
   failed: boolean;
   /** The action each row promises ("Open a shell in"). */
   verb: string;
   onChoose: (target: TerminalTargetView) => void;
+  /** Why a row cannot be chosen for this launcher's action, or null. */
+  rowUnavailable?: (target: TerminalTargetView) => string | null;
 }): React.JSX.Element {
   if (failed) {
     return <p className="launch-note is-error">Could not ask the daemon what is available.</p>;
@@ -60,28 +71,31 @@ export function LaunchList({
   }
   return (
     <>
-      {targets.map((target) => (
-        <Tooltip key={target.id} label={target.unavailable ?? `${verb} ${target.label}`}>
-          <button
-            type="button"
-            role="menuitem"
-            className="launch-row"
-            disabled={Boolean(target.unavailable)}
-            onClick={() => onChoose(target)}
-          >
-            <span className="launch-glyph" aria-hidden>{target.glyph}</span>
-            <span className="launch-text">
-              <span className="launch-label">
-                {target.label}
-                {target.detail && <em>{target.detail}</em>}
+      {targets.map((target) => {
+        const unavailable = rowUnavailable(target);
+        return (
+          <Tooltip key={target.id} label={unavailable ?? `${verb} ${target.label}`}>
+            <button
+              type="button"
+              role="menuitem"
+              className="launch-row"
+              disabled={Boolean(unavailable)}
+              onClick={() => onChoose(target)}
+            >
+              <span className="launch-glyph" aria-hidden>{target.glyph}</span>
+              <span className="launch-text">
+                <span className="launch-label">
+                  {target.label}
+                  {target.detail && <em>{target.detail}</em>}
+                </span>
+                <span className="launch-note">
+                  {unavailable ?? `${verb} ${target.label}. ${target.blurb}`}
+                </span>
               </span>
-              <span className="launch-note">
-                {target.unavailable ?? `${verb} ${target.label}. ${target.blurb}`}
-              </span>
-            </span>
-          </button>
-        </Tooltip>
-      ))}
+            </button>
+          </Tooltip>
+        );
+      })}
     </>
   );
 }
@@ -219,6 +233,7 @@ function Launcher({
             targets={targets}
             failed={failed}
             verb={verb}
+            rowUnavailable={action === "agent" ? agentRowUnavailable : undefined}
             onChoose={(target) => {
               setOpen(false);
               onChoose(target.id);

@@ -152,6 +152,10 @@ export interface TerminalTargetView {
    * This differs from `unavailable` for a detached multiplexer. A user-opened terminal
    * needs an emulator to raise the detached session into a visible window, while a
    * background dispatch only needs the persistent session itself.
+   *
+   * It is the "can this be an agent's home" answer, so the launch menu's AGENT rows read it
+   * after `unavailable` (`agentRowUnavailable`): a raise-only terminal opens a shell but
+   * refuses an agent, dispatched or launched by hand.
    */
   dispatchUnavailable?: string | null;
   /**

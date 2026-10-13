@@ -12,7 +12,13 @@ import {
   XDG_TERMINAL_UNSUPPORTED_REASON,
 } from "../src/server/terminal/bin.ts";
 import { emulatorAttemptOrder, emulatorListed, EMULATORS } from "../src/server/terminal/registry.ts";
-import { launchTerminal, terminalTargetViews, type TerminalTargetDeps } from "../src/server/terminal/targets.ts";
+import {
+  agentHostUnavailable,
+  launchAgentTerminal,
+  launchTerminal,
+  terminalTargetViews,
+  type TerminalTargetDeps,
+} from "../src/server/terminal/targets.ts";
 import {
   launchDetached,
   rootedArgv,
@@ -397,6 +403,30 @@ test("it never hosts a dispatched agent: dispatch skips it and its chooser row s
   assert.equal(row?.unavailable, null);
   assert.equal(
     row?.dispatchUnavailable,
-    "Default terminal only shows multiplexer sessions - it cannot host a dispatched agent",
+    "Default terminal only shows multiplexer sessions - it cannot host an agent",
   );
+});
+
+test("only a raise-only terminal refuses to host an agent, before anything is launched", async () => {
+  for (const id of TERMINAL_BACKEND_IDS) {
+    assert.equal(
+      agentHostUnavailable(id),
+      id === "xdg-terminal" ? "Default terminal only shows multiplexer sessions - it cannot host an agent" : null,
+      id,
+    );
+  }
+  let calls = 0;
+  const refused = await launchAgentTerminal(
+    "xdg-terminal",
+    { name: "api", cwd: "/w/api", argv: ["claude"] },
+    async () => {
+      calls += 1;
+      return { ok: true, label: "Default terminal", status: 200 };
+    },
+  );
+  assert.deepEqual(
+    { ok: refused.ok, status: refused.status, error: refused.error },
+    { ok: false, status: 409, error: "Default terminal only shows multiplexer sessions - it cannot host an agent" },
+  );
+  assert.equal(calls, 0);
 });
