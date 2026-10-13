@@ -78,24 +78,6 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
   const describedBy = await evidence.getAttribute("aria-describedby");
   expect(await page.locator(`#${describedBy}`).textContent()).toContain(daemon.home);
 
-  await openSetupFamily(page, "terminals");
-  const wezterm = setupRow(page, "dependency-wezterm");
-  await expect(wezterm).toContainText("Missing");
-  await expect(wezterm.getByRole("button", { name: "Copy" })).toBeVisible();
-  const iterm = setupRow(page, "dependency-iterm");
-  await expect(iterm).toContainText("iTerm2");
-  await expect(iterm.getByText("optional", { exact: true })).toBeVisible();
-  await expect(iterm).toContainText("brew install --cask iterm2");
-  await expect(iterm.getByRole("button", { name: "Copy" })).toBeVisible();
-
-  if (process.env.MC_E2E_EVIDENCE === "1") {
-    const evidence = artifactsDir("iterm-support");
-    mkdirSync(evidence, { recursive: true });
-    await page.screenshot({ path: `${evidence}/setup-row.png`, fullPage: true });
-    // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/.artifacts/iterm-support/setup-row.png");
-  }
-
   await openSetupFamily(page, "pipelines");
   const conductor = setupRow(page, "dependency-ai-conductor");
   await expect(conductor).toContainText("Missing");
@@ -114,6 +96,62 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     await page.screenshot({ path: `${evidence}/setup-panel.png`, fullPage: true });
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup/setup-panel.png");
+  }
+});
+
+test("Setup offers macOS its Homebrew commands, iTerm2 included", async ({ page, daemon }) => {
+  test.skip(process.platform !== "darwin", "Homebrew remedies are macOS-only");
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+  await openSetupFamily(page, "terminals");
+  const wezterm = setupRow(page, "dependency-wezterm");
+  await expect(wezterm).toContainText("Missing");
+  await expect(wezterm).toContainText("brew install --cask wezterm");
+  await expect(wezterm.getByRole("button", { name: "Copy" })).toBeVisible();
+  const iterm = setupRow(page, "dependency-iterm");
+  await expect(iterm).toContainText("iTerm2");
+  await expect(iterm.getByText("optional", { exact: true })).toBeVisible();
+  await expect(iterm).toContainText("brew install --cask iterm2");
+  await expect(iterm.getByRole("button", { name: "Copy" })).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("iterm-support");
+    mkdirSync(evidence, { recursive: true });
+    await page.screenshot({ path: `${evidence}/setup-row.png`, fullPage: true });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/iterm-support/setup-row.png");
+  }
+});
+
+// The fixture daemon pins WezTerm and Ghostty to missing paths and gives iTerm2 no override,
+// so on Linux iTerm2 is unsupported and the two emulators are simply not installed.
+test("Setup on Linux leaves out iTerm2 and shows instruction rows for missing tools", async ({ page, daemon }) => {
+  test.skip(process.platform !== "linux", "the Linux remedies are offered on Linux only");
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+  await openSetupFamily(page, "terminals");
+  await expect(setupRow(page, "dependency-wezterm")).toBeVisible();
+  await expect(setupRow(page, "dependency-iterm")).toHaveCount(0);
+
+  for (const [anchor, pkg, guide] of [
+    ["dependency-wezterm", "wezterm", "Open WezTerm installation guide"],
+    ["dependency-ghostty", "ghostty", "Open Ghostty installation guide"],
+  ] as const) {
+    const row = setupRow(page, anchor);
+    await expect(row).toContainText("Missing");
+    await expect(row).toContainText(`Install ${pkg} with your distribution's package manager.`);
+    await expect(row.getByRole("link", { name: guide })).toHaveAttribute("href", /^https:\/\//);
+    await expect(row.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+    await expect(row).not.toContainText("brew");
+  }
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("linux-setup-remedies");
+    mkdirSync(evidence, { recursive: true });
+    await page.mouse.move(1, 1);
+    await page.screenshot({ path: `${evidence}/terminals.png`, fullPage: true });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/linux-setup-remedies/terminals.png");
   }
 });
 

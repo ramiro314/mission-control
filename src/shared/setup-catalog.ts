@@ -158,6 +158,9 @@ export const SETUP_SERVICE_INFO: Record<
 export type SetupRemedy =
   | { kind: "link"; url: string; label: string }
   | { kind: "command"; argv: readonly string[]; note: string }
+  // A package the operator installs themselves, with a guide. Linux has no one package
+  // manager this build could name, so it offers the package and runs nothing (D12).
+  | { kind: "instruction"; package: string; url: string; label: string }
   | { kind: "provider-installer"; provider: PipelineProviderId }
   | { kind: "skill"; command: string }
   // The one remedy that is not an installation. It carries no argv for the same reason
@@ -215,6 +218,25 @@ export const CMUX_SOCKET_CONTROL_REMEDY: SetupRemedy = {
   note: "Set automation.socketControlMode to allowAll in ~/.config/cmux/cmux.json, keeping a timestamped backup of the current file.",
 };
 
+/**
+ * The hosts a catalog remedy is written for.
+ *
+ * Every other platform reads as Linux: Setup is not offered on Windows (D5), and the Linux
+ * remedies run nothing, so the wrong guess costs a sentence rather than a failed command.
+ */
+export type SetupPlatform = "darwin" | "linux";
+
+export function setupPlatform(platform: string): SetupPlatform {
+  return platform === "darwin" ? "darwin" : "linux";
+}
+
+/** One remedy per host, so a Homebrew command is only ever offered where Homebrew is. */
+export type SetupRemedies = Readonly<Record<SetupPlatform, SetupRemedy>>;
+
+function everywhere(remedy: SetupRemedy): SetupRemedies {
+  return { darwin: remedy, linux: remedy };
+}
+
 export interface SetupDependencyInfo {
   id: SetupDependencyId;
   label: string;
@@ -222,7 +244,12 @@ export interface SetupDependencyInfo {
   requirement: SetupRequirement;
   /** What is unavailable while this row is not satisfied. */
   enables: string;
-  remedy: SetupRemedy;
+  remedies: SetupRemedies;
+}
+
+/** The catalog remedy this host is offered for one dependency. */
+export function setupRemedy(info: SetupDependencyInfo, platform: SetupPlatform): SetupRemedy {
+  return info.remedies[platform];
 }
 
 /** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
@@ -233,11 +260,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "agents",
     requirement: "recommended",
     enables: "Without it, Claude sessions and Claude-backed background jobs cannot launch.",
-    remedy: {
+    remedies: everywhere({
       kind: "command",
       argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
       note: "Install the official Claude Code npm package without sudo.",
-    },
+    }),
   },
   "codex-cli": {
     id: "codex-cli",
@@ -245,11 +272,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "agents",
     requirement: "recommended",
     enables: "Without it, Codex sessions and Codex-backed background jobs cannot launch.",
-    remedy: {
+    remedies: everywhere({
       kind: "link",
       url: "https://developers.openai.com/codex/cli",
       label: "Open Codex installation guide",
-    },
+    }),
   },
   "pi-cli": {
     id: "pi-cli",
@@ -257,11 +284,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "agents",
     requirement: "recommended",
     enables: "Without it, Pi sessions cannot launch or resume, and Pi's Agent SDK runtime stays unavailable.",
-    remedy: {
+    remedies: everywhere({
       kind: "command",
       argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
       note: "Install the Pi coding agent package globally.",
-    },
+    }),
   },
   tmux: {
     id: "tmux",
@@ -269,10 +296,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "terminals",
     requirement: "optional",
     enables: "Adds durable detached sessions, provided an installed emulator can raise them.",
-    remedy: {
-      kind: "command",
-      argv: ["brew", "install", "tmux"],
-      note: "Install tmux with Homebrew.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        argv: ["brew", "install", "tmux"],
+        note: "Install tmux with Homebrew.",
+      },
+      linux: {
+        kind: "instruction",
+        package: "tmux",
+        url: "https://github.com/tmux/tmux/wiki/Installing",
+        label: "Open tmux installation guide",
+      },
     },
   },
   cmux: {
@@ -281,11 +316,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "terminals",
     requirement: "optional",
     enables: "Adds visible, durable workspaces that need no second terminal to raise them.",
-    remedy: {
+    remedies: everywhere({
       kind: "link",
       url: "https://cmux.com/docs/getting-started",
       label: "Open cmux installation guide",
-    },
+    }),
   },
   wezterm: {
     id: "wezterm",
@@ -293,10 +328,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "terminals",
     requirement: "optional",
     enables: "Adds scriptable terminal windows and can raise detached tmux sessions.",
-    remedy: {
-      kind: "command",
-      argv: ["brew", "install", "--cask", "wezterm"],
-      note: "Install WezTerm with Homebrew.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        argv: ["brew", "install", "--cask", "wezterm"],
+        note: "Install WezTerm with Homebrew.",
+      },
+      linux: {
+        kind: "instruction",
+        package: "wezterm",
+        url: "https://wezterm.org/install/linux.html",
+        label: "Open WezTerm installation guide",
+      },
     },
   },
   ghostty: {
@@ -305,10 +348,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "terminals",
     requirement: "optional",
     enables: "Adds native terminal windows that Mission Control can discover and focus on macOS.",
-    remedy: {
-      kind: "command",
-      argv: ["brew", "install", "--cask", "ghostty"],
-      note: "Install Ghostty with Homebrew.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        argv: ["brew", "install", "--cask", "ghostty"],
+        note: "Install Ghostty with Homebrew.",
+      },
+      linux: {
+        kind: "instruction",
+        package: "ghostty",
+        url: "https://ghostty.org/docs/install/binary",
+        label: "Open Ghostty installation guide",
+      },
     },
   },
   "gh-cli": {
@@ -317,10 +368,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "github",
     requirement: "required",
     enables: "Without it, Mission Control cannot inspect, open, review, or merge GitHub work.",
-    remedy: {
-      kind: "command",
-      argv: ["brew", "install", "gh"],
-      note: "Install the GitHub CLI with Homebrew.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        argv: ["brew", "install", "gh"],
+        note: "Install the GitHub CLI with Homebrew.",
+      },
+      linux: {
+        kind: "instruction",
+        package: "gh",
+        url: "https://github.com/cli/cli/blob/trunk/docs/install_linux.md",
+        label: "Open GitHub CLI installation guide",
+      },
     },
   },
   "gh-auth": {
@@ -329,11 +388,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "github",
     requirement: "required",
     enables: "Without a github.com login, GitHub operations fail even when the CLI is installed.",
-    remedy: {
+    remedies: everywhere({
       kind: "link",
       url: "https://cli.github.com/manual/gh_auth_login",
       label: "Open GitHub authentication guide",
-    },
+    }),
   },
   "claude-plugins": {
     id: "claude-plugins",
@@ -341,11 +400,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "extensions",
     requirement: "optional",
     enables: "Without plugins, Claude sessions do not receive plugin-provided tools, hooks, or commands.",
-    remedy: {
+    remedies: everywhere({
       kind: "link",
       url: "https://docs.anthropic.com/en/docs/claude-code/plugins",
       label: "Open Claude Code plugin guide",
-    },
+    }),
   },
   "claude-skills": {
     id: "claude-skills",
@@ -353,11 +412,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "extensions",
     requirement: "optional",
     enables: "Without them, sessions do not receive Mission Control's reusable workflow skills.",
-    remedy: {
+    remedies: everywhere({
       kind: "link",
       url: "#/settings/skills",
       label: "Open Skills settings",
-    },
+    }),
   },
   "ai-conductor": {
     id: "ai-conductor",
@@ -365,7 +424,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "pipelines",
     requirement: "optional",
     enables: "Without it, Mission Control cannot commission or observe gated ai-conductor runs.",
-    remedy: { kind: "provider-installer", provider: "ai-conductor" },
+    remedies: everywhere({ kind: "provider-installer", provider: "ai-conductor" }),
   },
   iterm: {
     id: "iterm",
@@ -373,10 +432,15 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "terminals",
     requirement: "optional",
     enables: "Adds scriptable iTerm2 windows and can raise detached tmux sessions on macOS.",
-    remedy: {
-      kind: "command",
-      argv: ["brew", "install", "--cask", "iterm2"],
-      note: "Install iTerm2 with Homebrew.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        argv: ["brew", "install", "--cask", "iterm2"],
+        note: "Install iTerm2 with Homebrew.",
+      },
+      // Off macOS the row is omitted (iTerm2 is macOS-only), so this is reached only
+      // through an operator override.
+      linux: { kind: "link", url: "https://iterm2.com/downloads.html", label: "Open iTerm2 downloads" },
     },
   },
   herdr: {
@@ -385,11 +449,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "terminals",
     requirement: "optional",
     enables: "Adds durable default-server workspaces, pane control, and full-client reattachment on macOS and Linux.",
-    remedy: {
+    remedies: everywhere({
       kind: "link",
       url: "https://herdr.dev/docs/install/",
       label: "Open Herdr installation guide",
-    },
+    }),
   },
   "node-runtime": {
     id: "node-runtime",
@@ -397,10 +461,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     family: "runtime",
     requirement: "required",
     enables: "A supported system Node.js installation is required to prepare app updates and run Node-based tools.",
-    remedy: {
-      kind: "command",
-      argv: ["brew", "install", "node"],
-      note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        argv: ["brew", "install", "node"],
+        note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
+      },
+      linux: {
+        kind: "instruction",
+        package: "nodejs",
+        url: "https://nodejs.org/en/download/package-manager",
+        label: "Open Node.js installation guide",
+      },
     },
   },
 };

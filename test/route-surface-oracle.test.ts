@@ -215,6 +215,8 @@ function concrete(path: string): string {
 
 /** A machine that never changes, so setup rows record the route rather than the host. */
 const SETUP_PROBES = {
+  // Remedies follow the host, so the fixed machine names one: the recorded rows are macOS's.
+  platform: "darwin",
   environment: {
     homeDir: home,
     readText: async () => ({ ok: false, missing: true, reason: "missing" }),

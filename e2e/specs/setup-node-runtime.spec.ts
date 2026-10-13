@@ -1,6 +1,8 @@
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Page } from "@playwright/test";
+
 import { expect, test as base } from "../fixtures/test.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
@@ -23,23 +25,45 @@ const test = base.extend<{ selectedNode: { path: string; version(value: string):
   },
 });
 
-test("Setup detects old, missing and invalid Node and runs the repair through the chosen terminal", async ({ page, daemon, selectedNode }) => {
+async function capture(page: Page, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  const dir = "e2e/.artifacts/setup-node-runtime";
+  await mkdir(dir, { recursive: true });
+  await expect(page.getByRole("button", { name: "Re-check", exact: true })).toBeVisible();
+  await page.mouse.move(1, 1);
+  await page.screenshot({ path: join(dir, name), fullPage: true });
+}
+
+test("Setup detects old, missing and invalid Node", async ({ page, daemon, selectedNode }) => {
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(page, "runtime");
   const row = setupRow(page, "dependency-node-runtime");
   await expect(row).toContainText("Node.js 22.0.0 is too old");
   await expect(row).toContainText("requires Node.js 24 or newer");
   await expect(row).toContainText("restart Mission Control");
+  await rm(selectedNode.path);
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+  await expect(row).toContainText("Node.js could not be found");
+  await selectedNode.version("not-a-version");
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+  await expect(row).toContainText("could not verify the selected Node.js version");
+  await selectedNode.version("24.0.0");
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+  await expect(row.getByRole("img", { name: "Ready", exact: true })).toBeVisible();
+  await expect(row).toContainText("Node.js 24.0.0");
+  await expect(row.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+  await capture(page, "ready.png");
+});
+
+test("Setup runs the Homebrew Node repair through the chosen terminal on macOS", async ({ page, daemon }) => {
+  test.skip(process.platform !== "darwin", "Homebrew remedies are macOS-only");
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "runtime");
+  const row = setupRow(page, "dependency-node-runtime");
+  await expect(row).toContainText("Node.js 22.0.0 is too old");
+  await expect(row).toContainText("requires Homebrew");
   await expect(row).toContainText("brew install node");
-  const capture = async (name: string) => {
-    if (process.env.MC_E2E_EVIDENCE !== "1") return;
-    const dir = "e2e/.artifacts/setup-node-runtime";
-    await mkdir(dir, { recursive: true });
-    await expect(page.getByRole("button", { name: "Re-check", exact: true })).toBeVisible();
-    await page.mouse.move(1, 1);
-    await page.screenshot({ path: join(dir, name), fullPage: true });
-  };
-  await capture("incompatible.png");
+  await capture(page, "incompatible.png");
   await row.getByLabel("Terminal for Node.js").selectOption("cmux");
   const request = page.waitForRequest(r => r.url().endsWith("/api/setup/install") && r.method() === "POST");
   await row.getByRole("button", { name: "Run in a terminal" }).click();
@@ -52,16 +76,20 @@ test("Setup detects old, missing and invalid Node and runs the repair through th
   // Opening a terminal is not evidence of a repaired installation.
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row).toContainText("Node.js 22.0.0 is too old");
-  await rm(selectedNode.path);
-  await page.getByRole("button", { name: "Re-check", exact: true }).click();
-  await expect(row).toContainText("Node.js could not be found");
-  await selectedNode.version("not-a-version");
-  await page.getByRole("button", { name: "Re-check", exact: true }).click();
-  await expect(row).toContainText("could not verify the selected Node.js version");
-  await selectedNode.version("24.0.0");
-  await page.getByRole("button", { name: "Re-check", exact: true }).click();
-  await expect(row.getByRole("img", { name: "Ready", exact: true })).toBeVisible();
-  await expect(row).toContainText("Node.js 24.0.0");
+});
+
+test("Setup on Linux names the Node package and runs nothing", async ({ page, daemon }) => {
+  test.skip(process.platform !== "linux", "the Linux remedies are offered on Linux only");
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "runtime");
+  const row = setupRow(page, "dependency-node-runtime");
+  await expect(row).toContainText("Node.js 22.0.0 is too old");
+  await expect(row).toContainText("with your distribution's package manager or a version manager");
+  await expect(row).toContainText("Install nodejs with your distribution's package manager.");
+  await expect(row.getByRole("link", { name: "Open Node.js installation guide" })).toHaveAttribute("href", /^https:\/\//);
   await expect(row.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
-  await capture("ready.png");
+  await expect(row).not.toContainText("Homebrew");
+  await expect(row).not.toContainText("brew install");
+  await capture(page, "incompatible-linux.png");
+  expect(recordsIn(daemon.recordDir, f => f.startsWith("cmux-"))).toEqual([]);
 });

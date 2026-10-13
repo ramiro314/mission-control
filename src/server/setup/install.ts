@@ -1,5 +1,7 @@
 import {
   SETUP_DEPENDENCY_INFO,
+  setupPlatform,
+  setupRemedy,
   type SetupDependencyId,
   type SetupDependencyInfo,
 } from "@shared/setup-catalog.ts";
@@ -94,6 +96,8 @@ export interface SetupInstallResult {
 
 export interface SetupInstallExecutionDeps {
   catalog: Readonly<Record<SetupDependencyId, SetupDependencyInfo>>;
+  /** The host whose catalog remedy runs. Defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
   homeDir: string;
   listRepoRoots(): Promise<string[]>;
   listProviderInstallers(
@@ -143,12 +147,15 @@ export async function executeSetupInstall(
   deps: SetupInstallExecutionDeps,
 ): Promise<SetupInstallResponse> {
   const info = deps.catalog[body.id];
-  const remedy = info.remedy;
+  // The same remedy Setup showed this host, so Linux can never be handed a Homebrew command.
+  const remedy = setupRemedy(info, setupPlatform(deps.platform ?? process.platform));
 
   let launch: TerminalLaunchSpec;
   switch (remedy.kind) {
     case "link":
       return refused(body.id, info.label, "This setup remedy opens a link and has no command to run.");
+    case "instruction":
+      return refused(body.id, info.label, "Install this package with your distribution's package manager; Mission Control runs no command for it.");
     case "skill":
       return refused(body.id, info.label, "This setup remedy is a skill command and must run inside a session.");
     case "service":

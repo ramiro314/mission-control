@@ -35,6 +35,8 @@ export interface SetupSkillsRead {
 
 /** Read-only seams used by the uncached Setup snapshot. */
 export interface SetupDeps {
+  /** The host whose remedies and rows are offered. Defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
   canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
   refreshPath?(): Promise<void>;

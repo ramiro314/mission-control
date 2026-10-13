@@ -8,7 +8,15 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 
-test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1" } });
+/**
+ * Pi is the row these specs install, because its remedy is the same npm command on every
+ * host: Homebrew rows are macOS-only, and CI is Linux. An override naming nothing makes the
+ * row read as missing without letting a real Pi resolve.
+ */
+const PI_MISSING = { MISSION_PI_BIN: "/nonexistent/mission-e2e/pi" };
+const PI_INSTALL = ["npm", "install", "-g", "@earendil-works/pi-coding-agent"];
+
+test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1", ...PI_MISSING } });
 
 function terminalRecords(recordDir: string): { argv: string[] }[] {
   return recordsIn<{ argv: string[] }>(recordDir, (file) => file.startsWith("cmux-"));
@@ -27,22 +35,22 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
   await expect(conductor.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
   await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
 
-  await openSetupFamily(page, "terminals");
-  const wezterm = setupRow(page, "dependency-wezterm");
-  await expect(wezterm).toContainText("brew install --cask wezterm");
-  await expect(wezterm.getByRole("button", { name: "Copy" })).toBeVisible();
-  await wezterm.getByLabel("Terminal for WezTerm").selectOption("cmux");
+  await openSetupFamily(page, "agents");
+  const pi = setupRow(page, "dependency-pi-cli");
+  await expect(pi).toContainText(PI_INSTALL.join(" "));
+  await expect(pi.getByRole("button", { name: "Copy" })).toBeVisible();
+  await pi.getByLabel("Terminal for Pi").selectOption("cmux");
 
   const requestReady = page.waitForRequest((request) =>
     request.url().endsWith("/api/setup/install") && request.method() === "POST");
-  await wezterm.getByRole("button", { name: "Run in a terminal" }).click();
+  await pi.getByRole("button", { name: "Run in a terminal" }).click();
   const request = await requestReady;
-  expect(request.postDataJSON()).toEqual({ id: "wezterm", backend: "cmux" });
+  expect(request.postDataJSON()).toEqual({ id: "pi-cli", backend: "cmux" });
 
-  await expect(wezterm.getByRole("status")).toContainText(
+  await expect(pi.getByRole("status")).toContainText(
     "cmux opened the installer. Watch it finish and read its exit code in that window.",
   );
-  await expect(wezterm.getByRole("status")).toContainText(
+  await expect(pi.getByRole("status")).toContainText(
     "When the installer finishes, press Re-check.",
   );
 
@@ -54,7 +62,7 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
   const expectedCommand = shellCommand([
     "/bin/sh",
     "-c",
-    setupInstallerShell(["brew", "install", "--cask", "wezterm"]),
+    setupInstallerShell(PI_INSTALL),
   ]);
   expect(actualCommand).toBe(expectedCommand);
 
@@ -88,13 +96,13 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
 test("Setup renders the terminal launcher's refusal sentence", async ({ page, daemon }) => {
   await page.route("**/api/setup/install", async (route) => {
     const body = route.request().postDataJSON();
-    expect(body).toEqual({ id: "wezterm", backend: "cmux" });
+    expect(body).toEqual({ id: "pi-cli", backend: "cmux" });
     await route.fulfill({
       status: 409,
       contentType: "application/json",
       body: JSON.stringify({
         ok: false,
-        id: "wezterm",
+        id: "pi-cli",
         outcome: "refused",
         label: "cmux",
         detail: "cmux is available but no terminal could raise it.",
@@ -103,28 +111,28 @@ test("Setup renders the terminal launcher's refusal sentence", async ({ page, da
   });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
-  await openSetupFamily(page, "terminals");
-  const wezterm = setupRow(page, "dependency-wezterm");
-  await wezterm.getByLabel("Terminal for WezTerm").selectOption("cmux");
-  await wezterm.getByRole("button", { name: "Run in a terminal" }).click();
-  await expect(wezterm.getByRole("status")).toHaveText(
+  await openSetupFamily(page, "agents");
+  const pi = setupRow(page, "dependency-pi-cli");
+  await pi.getByLabel("Terminal for Pi").selectOption("cmux");
+  await pi.getByRole("button", { name: "Run in a terminal" }).click();
+  await expect(pi.getByRole("status")).toHaveText(
     "cmux is available but no terminal could raise it.",
   );
   expect(terminalRecords(daemon.recordDir)).toEqual([]);
 });
 
 test.describe("with iTerm2 installed", () => {
-  test.use({ daemonEnv: { ITERM_BIN: "/usr/bin/true" } });
+  test.use({ daemonEnv: { ITERM_BIN: "/usr/bin/true", ...PI_MISSING } });
 
   test("Setup offers iTerm2 as a registry-driven launch target", async ({ page, daemon }) => {
     await page.route("**/api/setup/install", async (route) => {
-      expect(route.request().postDataJSON()).toEqual({ id: "wezterm", backend: "iterm" });
+      expect(route.request().postDataJSON()).toEqual({ id: "pi-cli", backend: "iterm" });
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           ok: true,
-          id: "wezterm",
+          id: "pi-cli",
           outcome: "opened",
           label: "iTerm2",
           detail: "iTerm2 opened the installer.",
@@ -136,10 +144,11 @@ test.describe("with iTerm2 installed", () => {
     await openSetupFamily(page, "terminals");
     const iterm = setupRow(page, "dependency-iterm");
     await expect(iterm.getByRole("img", { name: "Ready" })).toBeVisible();
-    const wezterm = setupRow(page, "dependency-wezterm");
-    await wezterm.getByLabel("Terminal for WezTerm").selectOption("iterm");
-    await wezterm.getByRole("button", { name: "Run in a terminal" }).click();
-    await expect(wezterm.getByRole("status")).toContainText("iTerm2 opened the installer.");
+    await openSetupFamily(page, "agents");
+    const pi = setupRow(page, "dependency-pi-cli");
+    await pi.getByLabel("Terminal for Pi").selectOption("iterm");
+    await pi.getByRole("button", { name: "Run in a terminal" }).click();
+    await expect(pi.getByRole("status")).toContainText("iTerm2 opened the installer.");
 
     if (process.env.MC_E2E_EVIDENCE === "1") {
       const evidence = artifactsDir("iterm-support");
