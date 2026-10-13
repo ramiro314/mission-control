@@ -347,6 +347,8 @@ test("more failures than the cap are counted in full, on the outcome and in the 
   if (verdict?.verdict !== "fail") return;
   assert.equal(verdict.requestedChanges.length, 20);
   assert.match(verdict.requestedChanges[0]!.rationale, /25 tests failed twice in this check; only the first 20 are listed\./);
+  // Every recorded failure is listed, so there is nothing more in run detail to point to.
+  assert.doesNotMatch(verdict.requestedChanges[0]!.rationale, /Run detail/);
   assert.doesNotMatch(verdict.requestedChanges[1]!.rationale, /only the first/);
 });
 
@@ -404,8 +406,10 @@ test("as many max-length multi-byte failures as fit are listed, and the verdict 
   }));
   assert.equal(failures[0]!.message.length, AFFECTED_TESTS_LIMITS.failureMessage);
   const verdict = assertWithinBudget(checkVerdict(failedTwice(failures, 58), "attempt-1"));
+  // Pinned for this fixture: 18 changes at the 200-byte message floor do not fit the budget,
+  // and 17 do, so a verdict that listed fewer than fit would be caught here.
   const listed = verdict.requestedChanges.length;
-  assert.ok(listed >= 1 && listed < failures.length, `listed ${listed}`);
+  assert.equal(listed, 17);
   const first = verdict.requestedChanges[0]!;
   assert.equal(first.title, "Fix the failing test \"resolves the working directory 0\" in test/headless-cwd.test.ts");
   assert.match(first.rationale, new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed\\.`));
