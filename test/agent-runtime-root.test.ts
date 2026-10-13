@@ -216,3 +216,26 @@ test("on Linux reconciliation sweeps both the current and the legacy state root"
   reconcileDisposableAgentStateHomes(Date.now());
   for (const home of homes) assert.deepEqual(readdirSync(home), [], home);
 });
+
+test("on Linux startup reconciliation prunes an absent owner's legacy credential copy", linuxOnly, async () => {
+  const { temp } = fixture();
+  mkdirSync(join(temp, AGENT_CAPABILITIES_ROOT), { mode: 0o700 });
+  const paths = provisionSessionScoutCredential({ taskId: null, cwd: root, sessionId: "absent", episodeId: "e1", pid: 0, agentSessionId: null });
+  assert.equal(paths.length, 2);
+
+  const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
+  let observed = () => {};
+  // Only what startup reconciliation reaches for an owner the registry no longer knows.
+  const registry = {
+    subscribe: () => () => {},
+    onSessionsObserved: (listener: () => void) => { observed = listener; return () => {}; },
+    getSession: () => undefined,
+  } as unknown as Parameters<typeof maintainScoutSessionCredentials>[0];
+  const stop = maintainScoutSessionCredentials(registry);
+  try {
+    observed();
+    for (const path of paths) assert.equal(existsSync(path), false, path);
+  } finally {
+    stop();
+  }
+});

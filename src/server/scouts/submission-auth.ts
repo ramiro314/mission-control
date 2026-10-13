@@ -82,14 +82,21 @@ function encode(authority: ScoutSubmissionAuthority): string {
 }
 
 /**
- * Every capability path an MCP child may read `path` from: the current root, plus on Linux the
- * pre-upgrade temp-dir root while it exists and is private, because a child started before the
- * upgrade still resolves its paths there.
+ * Where `path` sits in the pre-upgrade temp-dir capability root on Linux, while that root exists
+ * and is private, because a child started before the upgrade still resolves its paths there.
+ * Null when there is no such root.
  */
-function capabilityPaths(path: string): string[] {
-  const root = agentRuntimeRoot(AGENT_CAPABILITIES_ROOT, { create: true });
+export function legacyCapabilityPath(path: string): string | null {
+  const root = agentRuntimeRoot(AGENT_CAPABILITIES_ROOT);
   const legacy = legacyAgentRuntimeRoot(AGENT_CAPABILITIES_ROOT);
-  return legacy ? [path, join(legacy, relative(root, path))] : [path];
+  return legacy ? join(legacy, relative(root, path)) : null;
+}
+
+/** Every capability path an MCP child may read `path` from, creating the current root. */
+function capabilityPaths(path: string): string[] {
+  agentRuntimeRoot(AGENT_CAPABILITIES_ROOT, { create: true });
+  const legacy = legacyCapabilityPath(path);
+  return legacy ? [path, legacy] : [path];
 }
 
 /**

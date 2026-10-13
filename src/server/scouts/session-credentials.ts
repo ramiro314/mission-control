@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { sessionScoutCredentialDirectory } from "@shared/harness-runtime.mjs";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { Registry } from "../registry.ts";
-import { provisionSessionScoutCredential, verifyScoutSubmissionCredential } from "./submission-auth.ts";
+import { legacyCapabilityPath, provisionSessionScoutCredential, verifyScoutSubmissionCredential } from "./submission-auth.ts";
 
 /** Registry-owned capability projection. No client can mint authority by claiming an id. */
 export function maintainScoutSessionCredentials(registry: Registry): () => void {
@@ -45,11 +45,24 @@ export function maintainScoutSessionCredentials(registry: Registry): () => void 
     }
   });
   const unobserve = registry.onSessionsObserved(() => {
-    // Restoration/discovery has completed before old files can be judged stale.
+    // Restoration/discovery has completed before old files can be judged stale. On Linux the
+    // legacy temp-dir root received copies too, so its stale ones are pruned the same way.
+    let directories: string[];
     try {
-      for (const name of readdirSync(sessionScoutCredentialDirectory())) {
+      const current = sessionScoutCredentialDirectory();
+      const legacy = legacyCapabilityPath(current);
+      directories = legacy ? [current, legacy] : [current];
+    } catch (error) {
+      console.error("[scout] capability reconciliation failed", error);
+      return;
+    }
+    for (const directory of directories) reconcileDirectory(directory);
+  });
+  function reconcileDirectory(directory: string): void {
+    try {
+      for (const name of readdirSync(directory)) {
         if (!/^[a-f0-9]{64}$/.test(name)) continue;
-        const path = join(sessionScoutCredentialDirectory(), name);
+        const path = join(directory, name);
         const authority = verifyScoutSubmissionCredential(readFileSync(path, "utf8").trim());
         if (authority?.sessionId) {
           if (registry.getSession(authority.sessionId)) {
@@ -64,6 +77,6 @@ export function maintainScoutSessionCredentials(registry: Registry): () => void 
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("[scout] capability reconciliation failed", error);
     }
-  });
+  }
   return () => { unsubscribe(); unobserve(); };
 }
