@@ -271,10 +271,12 @@ The emulator registry currently contains WezTerm, Ghostty, iTerm2, and the Linux
 **Default terminal** (`xdg-terminal`) in that order. The default terminal is the Linux fallback
 for Focus and the new-session launcher when nothing more precise is installed: it opens a window
 through `xdg-terminal-exec <attach argv>`, then, if that is missing or refuses, through
-`$TERMINAL -e <attach argv>`. A dispatched agent's argv is wrapped in `sh -c 'cd -- "$1" ...'`
-so it starts in its worktree whichever terminal runs it. The default terminal opens windows and
-does nothing else: list, write, capture, focus, retitle, and restore are all null, so a second
-Focus on a session it opened opens a second window. It is supported on Linux only and, unlike an
+`$TERMINAL -e <attach argv>`. The default terminal opens windows and does nothing else: list,
+write, capture, focus, retitle, and restore are all null, so a second Focus on a session it
+opened opens a second window. For the same reason it never hosts a dispatched agent on its own
+(`raiseOnly`): dispatch skips it, the dispatch chooser shows it disabled, and the dispatch error
+does not recommend it. An agent dispatched on such a machine lives in tmux or Herdr, which the
+default terminal then shows. It is supported on Linux only and, unlike an
 uninstalled emulator, has no row at all on macOS, in Setup or in any terminal picker. A stored
 terminal preference still wins over its place in the attempt order.
 

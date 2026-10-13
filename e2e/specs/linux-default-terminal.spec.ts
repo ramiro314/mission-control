@@ -62,6 +62,38 @@ test("on Linux the default terminal is offered last among the terminal apps", as
     .toBe("xdg-terminal");
 });
 
+test("on Linux the dispatch chooser shows the default terminal disabled, with why", async ({
+  page,
+  daemon,
+}) => {
+  test.skip(process.platform !== "linux", "the default terminal exists on Linux only");
+
+  await page.goto(`${daemon.baseURL}/#/settings`);
+  await page.getByRole("tab", { name: /Harnesses/ }).click();
+  await page
+    .getByRole("combobox", { name: "Session runtime for dispatched Claude Code sessions" })
+    .selectOption("terminal");
+  await page.getByRole("button", { name: /Terminal preference for Claude Code/ }).click();
+  const menu = page.getByRole("menu", { name: "Choose a terminal for dispatched Claude Code sessions" });
+  await expect(menu).toBeVisible();
+
+  // Installed and able to open a window (the Setup picker above enables it), yet it can
+  // never be a dispatched agent's home, so a dispatch preference cannot choose it.
+  const row = menu.getByRole("menuitemradio", { name: /Default terminal/ });
+  await expect(row).toBeDisabled();
+  await expect(row).toContainText(
+    "Default terminal only shows multiplexer sessions - it cannot host a dispatched agent",
+  );
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("linux-default-terminal");
+    mkdirSync(evidence, { recursive: true });
+    await page.screenshot({ path: join(evidence, "dispatch-picker-linux.png"), fullPage: true });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/linux-default-terminal/dispatch-picker-linux.png");
+  }
+});
+
 test("on macOS the picker has no default terminal row at all", async ({ page, daemon }) => {
   test.skip(process.platform !== "darwin", "the macOS gate is observable on macOS only");
 

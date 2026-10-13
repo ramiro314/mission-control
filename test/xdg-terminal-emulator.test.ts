@@ -25,6 +25,7 @@ import type { ResolvedExecutable } from "../src/server/executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
 import { MUX_BIN, OK, FAIL, fakeEmulator, fakeMultiplexer } from "./helpers/terminal-fakes.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
+import { homeBackends, launchHome, type HomeDeps } from "../src/server/terminal/home.ts";
 
 // The catalog override names a file that does not exist, so a developer's installed
 // xdg-terminal-exec cannot decide what this file observes. Read at resolve time, never at import.
@@ -349,4 +350,53 @@ test("the detached launch reports a refusal, a missing command, and an open wind
   );
   assert.equal(missing.ok, false);
   assert.match(missing.error ?? "", /^ghost: .*ENOENT/);
+});
+
+test("it never hosts a dispatched agent: dispatch skips it and its chooser row says why", async () => {
+  // Only the default terminal can open a window here, and it is installed and supported.
+  const { deps, started } = targets("linux", {
+    installed: (spec) => spec === XDG_TERMINAL_BIN,
+  });
+  const home: HomeDeps = {
+    multiplexers: {
+      tmux: deps.multiplexers.tmux!,
+      herdr: fakeMultiplexer({ id: "herdr" }),
+      cmux: fakeMultiplexer({ id: "cmux" }),
+    },
+    emulators: {
+      wezterm: deps.emulators.wezterm!,
+      ghostty: deps.emulators.ghostty!,
+      iterm: deps.emulators.iterm!,
+      "xdg-terminal": deps.emulators["xdg-terminal"]!,
+    },
+    installed: deps.installed,
+    unsupported: deps.unsupported,
+    focusEmulator: deps.focusEmulator,
+  };
+  assert.equal(EMULATORS["xdg-terminal"].raiseOnly, true);
+  assert.deepEqual(homeBackends(home), []);
+  assert.deepEqual(homeBackends(home, "xdg-terminal"), []);
+
+  const spec = { name: "api", cwd: "/w/api", argv: ["claude"], sidePane: false };
+  const automatic = await launchHome(spec, home);
+  assert.equal(automatic.ok, false);
+  // The install hint names only backends that could host the agent.
+  assert.equal(
+    automatic.ok ? null : automatic.error,
+    "no terminal backend can host a dispatched agent - install one of tmux, herdr, cmux, wezterm, ghostty, iterm",
+  );
+  const preferred = await launchHome(spec, home, "xdg-terminal");
+  assert.equal(
+    preferred.ok ? null : preferred.error,
+    "the selected terminal backend xdg-terminal cannot host a dispatched agent on this machine",
+  );
+  assert.equal(started.length, 0, "no window was opened for a dispatch");
+
+  // Still offered to Focus: the window-opening row is available, the dispatch row is not.
+  const row = terminalTargetViews(deps).find((view) => view.id === "xdg-terminal");
+  assert.equal(row?.unavailable, null);
+  assert.equal(
+    row?.dispatchUnavailable,
+    "Default terminal only shows multiplexer sessions - it cannot host a dispatched agent",
+  );
 });

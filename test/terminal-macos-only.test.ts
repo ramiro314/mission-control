@@ -100,7 +100,7 @@ test("the dispatch error recommends only backends this platform can run", async 
   );
   assert.equal(
     errors.linux,
-    "no terminal backend can host a dispatched agent - install one of tmux, herdr, wezterm, ghostty, xdg-terminal",
+    "no terminal backend can host a dispatched agent - install one of tmux, herdr, wezterm, ghostty",
   );
 });
 

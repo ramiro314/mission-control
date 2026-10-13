@@ -129,13 +129,12 @@ test("writes prefer the innermost handle", () => {
 });
 
 test("an emulator-only session binds to its emulator", () => {
-  for (const emulator of EMULATOR_IDS) {
+  // A raise-only emulator never hosts an agent, so no session holds a handle on it.
+  for (const emulator of EMULATOR_IDS.filter((id) => !EMULATORS[id].raiseOnly)) {
     const bound = bindPane([{ ...EMU_HANDLE, backend: emulator }]);
     assert.equal(bound?.kind, "emulator");
     assert.equal(bound?.token, `${emulator}:5`);
-    // The binding never invents a capability: the Linux default terminal can type into
-    // nothing, so its bound pane has no write rather than one that fails.
-    assert.equal(Boolean(bound?.write), Boolean(EMULATORS[emulator].write), `${emulator} write`);
+    assert.ok(bound?.write, `${emulator} supports interrupt keystrokes`);
     // No multiplexer mode probe exists for a standalone emulator.
     assert.equal(bound?.mode, null);
   }

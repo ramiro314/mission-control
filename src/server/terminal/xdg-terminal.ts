@@ -26,6 +26,8 @@ import type { SpawnResult, TabSpec, TerminalEmulator, TerminalResult } from "./t
  * registry cannot list.
  *
  * Linux only, and absent everywhere else rather than greyed out (`hiddenWhereUnsupported`).
+ * It never hosts a dispatched agent (`raiseOnly`): an agent in a window nothing can address
+ * could be neither messaged, interrupted, nor found again after a restart.
  */
 
 /** How long a launcher has to refuse before the window counts as open. */
@@ -126,8 +128,8 @@ export const launchDetached: DetachedLaunch = (launcher, args, opts) =>
  *
  * Through `sh` rather than the spawn's own `cwd` alone, because a terminal that hands the
  * window to a running server (gnome-terminal, `kitty --single-instance`) starts the command
- * in the SERVER's directory. `TabSpec.cwd` says an emulator must not open a dispatched agent
- * anywhere else, and `cd` failing ends the command rather than running it in the wrong place.
+ * in the SERVER's directory. `TabSpec.cwd` says an emulator must not open a launch anywhere
+ * else, and `cd` failing ends the command rather than running it in the wrong place.
  */
 export function rootedArgv(argv: readonly string[], cwd: string | null): readonly string[] {
   if (!cwd) return argv;
@@ -148,6 +150,9 @@ export function xdgTerminalEmulator(deps: XdgTerminalDeps = defaultDeps): Termin
     glyph: "□",
     bin: XDG_TERMINAL_BIN,
     hiddenWhereUnsupported: true,
+    // Focus and the new-session launcher only: it raises tmux and Herdr sessions, which keep
+    // the agent reachable, and never becomes a dispatched agent's home on its own.
+    raiseOnly: true,
     list: null,
     hostProcess: null,
     write: null,

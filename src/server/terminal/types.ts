@@ -513,6 +513,15 @@ export interface TerminalEmulator {
    */
   hiddenWhereUnsupported?: true;
   /**
+   * True for an emulator that only shows a multiplexer session, never hosts a dispatched
+   * agent itself. Dispatch skips it, and its row says so in a dispatch chooser.
+   *
+   * A dispatched agent's home must be one Mission Control can reach again: type into,
+   * interrupt, capture, and find after a restart. An emulator that can do none of that
+   * would start an agent nothing can steer, where refusing at least names what to install.
+   */
+  raiseOnly?: true;
+  /**
    * What a TAB TITLE may be on this backend - see `NameRules`.
    *
    * Required for the same reason `MuxSessions.names` is, and declared even by a backend

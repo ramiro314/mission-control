@@ -176,16 +176,20 @@ function emulatorView(
       dispatchUnavailable: reason,
     };
   }
+  // Said before installation: no install would let it host a dispatched agent.
+  const raiseOnly = emulator.raiseOnly
+    ? `${emulator.label} only shows multiplexer sessions - it cannot host a dispatched agent`
+    : null;
   const unavailable = binUnavailableReason(emulator.bin, emulator.label, deps);
   if (unavailable) {
-    return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: unavailable };
+    return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: raiseOnly ?? unavailable };
   }
   return {
     ...base,
     blurb: "New window in the worktree.",
     detail: null,
     unavailable: null,
-    dispatchUnavailable: null,
+    dispatchUnavailable: raiseOnly,
   };
 }
 
