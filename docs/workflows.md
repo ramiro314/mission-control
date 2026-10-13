@@ -2698,7 +2698,7 @@ Palette buttons add a node at the current viewport center; pointer drag remains 
 The canvas snaps to its visible grid and includes zoom in, zoom out, fit, 100% reset, and a
 pannable minimap. **Auto-layout** changes positions only, then fits once. Local draft undo and redo
 hold the last 50 meaningful edits and use <kbd>⌘/Ctrl</kbd><kbd>Z</kbd> and
-<kbd>⌘/Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd>. Autosave does not consume history entries.
+<kbd>⌘/Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd>; off macOS, <kbd>Ctrl</kbd><kbd>Y</kbd> is redo too. Autosave does not consume history entries.
 Duplicate applies to Persona, Check, Join, and End nodes, never Session.
 
 Tab enters the graph through one roving node focus. Selected nodes move one grid unit with an Arrow

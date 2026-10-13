@@ -7,8 +7,8 @@
 const NO_TTY = new Set(["", "?", "??", "-"]);
 
 /**
- * Normalize a raw tty string to the `ttysNNN` form (no `/dev/` prefix), or null
- * when there's no real controlling terminal.
+ * Normalize a raw tty string to its bare form (`ttys012` on macOS, `pts/3` on Linux, no
+ * `/dev/` prefix), or null when there's no real controlling terminal.
  */
 export function normTty(raw: string | null | undefined): string | null {
   if (!raw) return null;

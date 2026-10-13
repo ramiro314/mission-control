@@ -3374,6 +3374,12 @@ export type ServerEvent =
        * baselines it; a reconnect compares it with the marker seen before the stream gap.
        */
       latestSettingsRestore: import("./settings-backups.ts").SettingsRestoredEvent | null;
+      /**
+       * The daemon's home directory, so paths under it can be written as `~`. Only the daemon
+       * can read it, and it is `/Users/<name>` on macOS and `/home/<name>` on Linux. Optional
+       * for an older daemon, which sends none and whose paths are then shown in full.
+       */
+      home?: string;
     }
   | { type: "session_transfers"; page: import("./session-transfer.ts").SessionTransferPage; changed?: import("./session-transfer.ts").SessionTransferSummary }
   | { type: "session_upsert"; session: Session }

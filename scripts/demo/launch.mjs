@@ -641,11 +641,22 @@ async function waitForForemanLease(foreman) {
   }
 }
 
+/** The command that opens a URL in the desktop's default browser, or null where there is none. */
+export function browserOpener(platform) {
+  if (platform === "darwin") return "open";
+  if (platform === "linux") return "xdg-open";
+  return null;
+}
+
 function openDashboard(baseURL, open = true) {
   console.log(`[demo] dashboard: ${baseURL}`);
-  if (open && process.platform === "darwin") {
-    spawn("open", [baseURL], { stdio: "ignore", detached: true }).unref();
-  }
+  const opener = open ? browserOpener(process.platform) : null;
+  if (!opener) return;
+  // The URL is already printed, so a missing opener (a headless box without `xdg-utils`)
+  // costs the operator a click, not the demo.
+  const child = spawn(opener, [baseURL], { stdio: "ignore", detached: true });
+  child.on("error", () => {});
+  child.unref();
 }
 
 // --- --check ---------------------------------------------------------------------------------

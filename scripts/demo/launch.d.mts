@@ -27,6 +27,9 @@ export function createShutdownGate(onStop: (reason: string) => Promise<void> | v
   stop: (reason: string) => Promise<boolean>;
 };
 
+/** The command that opens a URL in the desktop's default browser, or null where there is none. */
+export function browserOpener(platform: NodeJS.Platform): string | null;
+
 /**
  * Wire SIGINT/SIGTERM to `stop`; the returned function unwires them again.
  *

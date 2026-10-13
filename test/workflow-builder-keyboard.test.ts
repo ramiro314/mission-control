@@ -81,8 +81,10 @@ test("keyboard editing covers move, connect, confirmed delete, undo, redo, and d
   assert.match(librarySource, /setConfirm\(\{/);
   assert.match(librarySource, /confirmLabel: "Remove"/);
   assert.doesNotMatch(librarySource, /window\.confirm/);
-  assert.match(librarySource, /event\.metaKey \|\| event\.ctrlKey/);
-  assert.match(librarySource, /if \(event\.shiftKey\) draft\.redo\(\)/);
+  // Which chord is undo or redo is `draftHistoryStep`'s, pinned by behavior in
+  // `test/workflow-draft.test.ts`; the builder only asks it with the client's platform.
+  assert.match(librarySource, /draftHistoryStep\(event, isMacClient\(\)\)/);
+  assert.match(librarySource, /if \(step === "redo"\) draft\.redo\(\)/);
   // The rule lives in `duplicableIds`, which is also what GATES the control, so the button
   // can no longer light up for a selection it would then refuse. Two exclusions, for two
   // reasons. Session, because a graph has exactly one. And a session

@@ -48,6 +48,7 @@ import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { NEW_NODE_MIME, type NewWorkflowNode } from "./new-node.ts";
 import { useSessionActionCapabilities } from "./sessionActionApi.ts";
 import {
+  draftHistoryStep,
   useWorkflowDraft,
   workflowArchiveBlocked,
   workflowPublishBlocked,
@@ -60,6 +61,7 @@ import {
   rememberWorkflowId,
 } from "./workflowSelection.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { isMacClient } from "../lib/platform.ts";
 import { DeleteButton } from "../components/DeleteButton.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
@@ -833,11 +835,12 @@ export function WorkflowLibrary({
     <section
       className="workflow-builder"
       onKeyDown={(event) => {
-        if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+        const step = draftHistoryStep(event, isMacClient());
+        if (!step) return;
         const target = event.target as HTMLElement;
         if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
         event.preventDefault();
-        if (event.shiftKey) draft.redo();
+        if (step === "redo") draft.redo();
         else draft.undo();
       }}
     >

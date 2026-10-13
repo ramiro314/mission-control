@@ -8,7 +8,7 @@ import type { AgentType } from "@shared/types.ts";
 export interface Proc {
   pid: number;
   ppid: number;
-  /** tty normalized without /dev/ (e.g. "ttys012"), or null when not attached. */
+  /** tty normalized without /dev/ (e.g. "ttys012", "pts/3"), or null when not attached. */
   tty: string | null;
   /** Raw `lstart` string, used as a stable component of session identity. */
   startRaw: string;
@@ -49,6 +49,9 @@ const WRAPPERS = new Set([
   "yarn", "bun", "sudo", "ssh", "script", "timeout", "gtimeout", "nice",
   "stdbuf", "caffeinate", "uv", "poetry", "direnv",
   "watchexec", "entr", "mise", "asdf",
+  // Linux launchers: a scope or inhibitor around the agent, a new session, or a Flatpak
+  // sandbox reaching out to the host.
+  "systemd-run", "systemd-inhibit", "setsid", "flatpak-spawn",
 ]);
 
 /**

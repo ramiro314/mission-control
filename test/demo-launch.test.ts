@@ -4,6 +4,7 @@ import test from "node:test";
 import { LAYOUT_MODES, UI_CONFIG_DEFAULTS, UiConfigPatchSchema } from "../src/shared/protocol.ts";
 import {
   DEMO_LAYOUT,
+  browserOpener,
   buildDaemonEnv,
   createShutdownGate,
   demoLayoutAccepted,
@@ -159,4 +160,11 @@ test("a caller that loses the race never sees onStop's return value or throws on
   assert.equal(order.filter((e) => e === "cleanup-start").length, 1);
   assert.ok(order.includes("loser-lost") || order.includes("winner-lost"));
   assert.equal(order.filter((e) => e === "winner-done" || e === "loser-done").length, 1);
+});
+
+test("the demo opens its dashboard with the desktop's own opener", () => {
+  assert.equal(browserOpener("darwin"), "open");
+  assert.equal(browserOpener("linux"), "xdg-open");
+  // Anywhere else the printed URL is the whole answer.
+  assert.equal(browserOpener("win32"), null);
 });
