@@ -198,6 +198,11 @@ On Linux this checkout is the install: there is no packaged Linux app, and updat
 app is macOS only; on Linux run from a checkout (see docs/setup.md)." Settings -> Setup
 shows the same line in place of updates.
 
+To launch the desktop shell from the app menu instead of `npm run dev:desktop`, run
+`make desktop-entry`. It builds the bundles and installs a desktop entry that runs this
+checkout's Electron against them with no dev server; update it with `git pull && make build`.
+See [The Linux desktop entry](desktop-and-packaging.md#the-linux-desktop-entry).
+
 The daemon's default state directory is `~/.mission-control`. It contains the SQLite
 database, token, logs, native worktree pools, disposable worktrees, and the
 [archive library](archives.md). Set

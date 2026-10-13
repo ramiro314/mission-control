@@ -175,6 +175,12 @@ and the windows it opens run in [scopes of their
 own](harnesses-and-terminals.md#linux-display-and-process-scopes), so restarting the unit leaves
 them running.
 
+On Linux, `make desktop-entry` adds the built desktop shell to the desktop's app menu, and its
+tray's **Start at login** writes an XDG autostart copy of that entry. A shell that starts while
+the unit is starting waits for the unit's daemon and adopts it, so the unit and an autostarted
+shell together still run one daemon (see [The Linux desktop
+entry](desktop-and-packaging.md#the-linux-desktop-entry)).
+
 ## Desktop app (macOS)
 
 Prefer a real menu-bar app over a browser tab? Mission Control packages into a native

@@ -31,6 +31,18 @@ restart on 75, so `systemctl --user status mission-control` shows it failed with
 `status=75/TEMPFAIL` and `journalctl --user -u mission-control` holds the message. Once the other
 daemon is stopped, `systemctl --user restart mission-control` starts it again.
 
+The Linux desktop shell does not restart a daemon of its own that exits with 75: it adopts the
+daemon that owns the state instead, and `daemon.log` says "another daemon owns this state;
+adopting it".
+
+## The desktop shell says the Mission Control service is not answering
+
+On Linux the shell found the `mission-control` systemd user unit running, waited 30 seconds for
+its daemon to answer `/api/health`, and gave up. It does not start a second daemon beside the
+unit. `journalctl --user -u mission-control` shows why the unit's daemon is not answering; the
+window loads as soon as it does. To run the shell's own daemon instead, stop the unit with
+`systemctl --user stop mission-control`, then quit and reopen the shell.
+
 ## A launch fails with "Mission Control refused" a path
 
 Each launch writes its wrapper script and disposable state home under

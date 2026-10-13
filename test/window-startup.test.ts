@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WindowStartup, type StartupScreen } from "../src/main/window-startup.ts";
+import { startupPage } from "../src/main/startup-page.ts";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -11,6 +12,7 @@ function fixture(show?: (screen: StartupScreen, signal: AbortSignal) => Promise<
   let loads = 0;
   let loaded = 0;
   let rejectLoad = false;
+  let notice: StartupScreen | null = null;
   const screens: StartupScreen[] = [];
   const errors: unknown[] = [];
   const startup = new WindowStartup({
@@ -20,6 +22,8 @@ function fixture(show?: (screen: StartupScreen, signal: AbortSignal) => Promise<
     load: async () => { loads++; if (rejectLoad) throw new Error("connection lost after health"); },
     loaded: () => { loaded++; },
     log: (error) => { errors.push(error); },
+    notice: () => notice,
+    clearNotice: () => { notice = null; },
     pause: (signal) => new Promise<void>((resolve) => {
       const finish = () => { signal.removeEventListener("abort", finish); resolve(); };
       resume = finish;
@@ -30,6 +34,8 @@ function fixture(show?: (screen: StartupScreen, signal: AbortSignal) => Promise<
     startup, screens, errors,
     ready: (value: boolean) => { ready = value; },
     failLoad: (value: boolean) => { rejectLoad = value; },
+    notice: (value: StartupScreen) => { notice = value; },
+    currentNotice: () => notice,
     loads: () => loads,
     loaded: () => loaded,
     async tick(time: number) { now = time; resume?.(); await flush(); },
@@ -56,6 +62,79 @@ test("startup waits for readiness, reports a delay at 60 seconds, then recovers 
   assert.equal(f.loaded(), 1);
   await f.startup.start();
   assert.equal(f.loads(), 1, "a completed startup cannot reload active work");
+});
+
+test("a notice from the background start replaces the wait at once, survives Retry, and still loads when ready", async () => {
+  const f = fixture();
+  const first = f.startup.start();
+  await flush();
+  await f.tick(30_000);
+  assert.deepEqual(f.screens, ["starting"]);
+  f.notice("service");
+  await f.tick(31_000);
+  assert.deepEqual(f.screens, ["starting", "service"]);
+  await f.tick(90_000);
+  assert.deepEqual(f.screens, ["starting", "service"], "the notice is not replaced by the generic delay");
+  const second = f.startup.start();
+  await flush();
+  await first;
+  assert.deepEqual(f.screens, ["starting", "service", "starting", "service"]);
+  f.ready(true);
+  await f.tick(91_000);
+  await second;
+  assert.equal(f.loaded(), 1);
+  assert.equal(f.currentNotice(), null, "a loaded dashboard ends the wait the notice explained");
+});
+
+test("a window opened after the dashboard loaded never shows the earlier run's notice during a brief outage", async () => {
+  // One notice for the process, as window.ts keeps it, shared by the first window and a later one.
+  let notice: StartupScreen | null = null;
+  let ready = false;
+  let resume: (() => void) | undefined;
+  const startup = (screens: StartupScreen[]) => new WindowStartup({
+    now: () => 0,
+    show: async (screen) => { screens.push(screen); },
+    ready: async () => ready,
+    load: async () => {},
+    loaded: () => {},
+    log: assert.fail,
+    notice: () => notice,
+    clearNotice: () => { notice = null; },
+    pause: (signal) => new Promise<void>((resolve) => {
+      resume = resolve;
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    }),
+  });
+
+  const first: StartupScreen[] = [];
+  const firstRun = startup(first).start();
+  await flush();
+  notice = "service";
+  resume?.();
+  await flush();
+  assert.deepEqual(first, ["starting", "service"]);
+  ready = true;
+  resume?.();
+  await firstRun;
+
+  // The unit restarts: the daemon is unreachable for a moment when the window is recreated.
+  ready = false;
+  const second: StartupScreen[] = [];
+  const later = startup(second);
+  const secondRun = later.start();
+  await flush();
+  resume?.();
+  await flush();
+  assert.deepEqual(second, ["starting"], "no claim of a 30 s silence nobody waited through");
+  later.stop();
+  await secondRun;
+});
+
+test("the service screen names the unit's journal and offers Retry", () => {
+  const page = startupPage("service", "linux");
+  assert.match(page, /<h1>The Mission Control service is not answering<\/h1>/);
+  assert.match(page, /<code>journalctl --user -u mission-control<\/code>/);
+  assert.match(page, /Retry now/);
 });
 
 test("a healthy startup loads immediately without waiting for the timeout", async () => {

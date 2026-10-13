@@ -8,6 +8,7 @@ import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { trayIcon } from "./platform-icons.ts";
+import { startAtLogin } from "./login-item.ts";
 
 interface ReportCounts {
   needsYou: number;
@@ -58,6 +59,10 @@ function render(handlers: TrayHandlers): void {
     shownIcon = icon.path;
   }
 
+  const login = startAtLogin(process.platform, {
+    get: () => app.getLoginItemSettings().openAtLogin,
+    set: (openAtLogin) => app.setLoginItemSettings({ openAtLogin }),
+  });
   const template: MenuItemConstructorOptions[] = [
     { label: `Mission Control`, enabled: false },
     { label: summary(c), enabled: false },
@@ -68,9 +73,19 @@ function render(handlers: TrayHandlers): void {
     {
       label: "Start at login",
       type: "checkbox",
-      checked: app.getLoginItemSettings().openAtLogin,
-      click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+      checked: login.checked,
+      enabled: login.enabled,
+      click: (item) => {
+        try {
+          login.set(item.checked);
+        } catch (error) {
+          console.error("[mission-control] could not change Start at login:", error);
+        }
+        // Show what is on disk now, whether or not the change took.
+        render(handlers);
+      },
     },
+    ...(login.hint ? [{ label: login.hint, enabled: false }] : []),
     { label: "Install Claude integrations…", click: () => handlers.onInstallIntegrations() },
     { label: "Remove Claude integrations", click: () => handlers.onRemoveIntegrations() },
     { type: "separator" },

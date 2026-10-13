@@ -42,6 +42,7 @@ async function gatedDaemon(target: string) {
   return {
     origin: `http://127.0.0.1:${address.port}`,
     release: () => { ready = true; failDashboard = false; dashboardStatus = 200; },
+    hold: () => { ready = false; },
     loseNavigation: () => { ready = true; failDashboard = true; },
     httpError: (status: number) => { ready = true; dashboardStatus = status; },
     dashboardRequests: () => dashboardRequests,
@@ -114,7 +115,7 @@ async function expectPlatformChrome(application: ElectronApplication, page: Page
   expect(region, "only the macOS topbar drags the window").toBe(mac ? "drag" : "none");
 }
 
-for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation"] as const) {
+for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation", "unresponsive systemd unit"] as const) {
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
     const gate = await gatedDaemon(daemon.baseURL);
@@ -146,6 +147,15 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
         return;
       } else if (scenario === "local page failure") {
         expect(await application.evaluate(() => Reflect.get(globalThis, "startupPageFailures"))).toBe(1);
+      } else if (scenario === "unresponsive systemd unit") {
+        await application.evaluate(({ app }) => { app.emit("fixture:unit-unresponsive"); });
+        await expect(page.getByRole("heading", { name: "The Mission Control service is not answering" })).toBeVisible();
+        await expect(page.getByRole("status")).toContainText("journalctl --user -u mission-control");
+        await expect(page.getByRole("link", { name: "Retry now" })).toBeVisible();
+        await evidence(page, "service-unresponsive");
+        // Retry starts over and the notice comes straight back while the unit stays silent.
+        await page.getByRole("link", { name: "Retry now" }).click();
+        await expect(page.getByRole("heading", { name: "The Mission Control service is not answering" })).toBeVisible();
       } else if (scenario === "late readiness") {
         // Cross the old 15-second retry budget before making health reachable.
         await page.waitForTimeout(17_000);
@@ -180,6 +190,21 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
       // A completed startup must not keep navigating over an active dashboard.
       await page.waitForTimeout(2200);
       expect(gate.dashboardRequests()).toBe(requests);
+      if (scenario === "unresponsive systemd unit") {
+        // The unit restarts while the window is recreated: the earlier notice must not come back.
+        gate.hold();
+        const reopened = application.waitForEvent("window");
+        await application.evaluate(({ app }) => { app.emit("fixture:reopen-window"); });
+        const next = await reopened;
+        await expect(next.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
+        // Past several health polls, each of which would show a notice that was still set.
+        await next.waitForTimeout(3500);
+        await expect(next.getByRole("heading", { name: "The Mission Control service is not answering" })).toHaveCount(0);
+        await expect(next.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
+        await evidence(next, "service-notice-cleared");
+        gate.release();
+        await expect(next.getByRole("button", { name: "Dispatch" }).first()).toBeVisible();
+      }
     } finally {
       await application.close();
       await gate.close();

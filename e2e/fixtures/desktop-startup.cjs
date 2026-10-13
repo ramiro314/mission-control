@@ -6,7 +6,7 @@ const [origin, windowModule, profile, scenario, menuModule] = process.argv.slice
 process.env.MISSION_PORT = new URL(origin).port;
 delete process.env.MISSION_DEV_SERVER_URL;
 app.setPath("userData", profile);
-const { createWindow, stopWindowStartup } = require(windowModule);
+const { createWindow, setStartupNotice, stopWindowStartup } = require(windowModule);
 
 // Inject only the failed or unsettled Electron operation, leaving recovery to window.ts.
 const loadURL = BrowserWindow.prototype.loadURL;
@@ -37,6 +37,20 @@ BrowserWindow.prototype.loadURL = function (url, ...args) {
   return loadURL.call(this, url, ...args);
 };
 app.on("fixture:stop-startup", stopWindowStartup);
+// What index.ts does when startDaemon's wait for a running systemd unit times out.
+app.on("fixture:unit-unresponsive", () => setStartupNotice("service"));
+// A window destroyed and recreated later, as showWindow does after the first one is gone.
+// The app stays up in between, as the tray keeps it in the shell.
+let reopening = false;
+app.on("fixture:reopen-window", () => {
+  const old = BrowserWindow.getAllWindows()[0];
+  reopening = true;
+  old.once("closed", () => {
+    createWindow(path.join(process.cwd(), "dist/preload/index.cjs"));
+    reopening = false;
+  });
+  old.destroy();
+});
 
 app.whenReady().then(() => {
   ipcMain.handle("mission:update-get-state", () => ({
@@ -49,6 +63,6 @@ app.whenReady().then(() => {
   require(menuModule).installAppMenu({ onOpenSettings: () => {}, onCheckForUpdates: () => {} });
   createWindow(path.join(process.cwd(), "dist/preload/index.cjs"));
 });
-app.on("window-all-closed", () => app.quit());
+app.on("window-all-closed", () => { if (!reopening) app.quit(); });
 // The fixture imports window.ts without index.ts, which normally owns before-quit.
 app.on("before-quit", () => { for (const window of BrowserWindow.getAllWindows()) window.destroy(); });

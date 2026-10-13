@@ -66,6 +66,45 @@ was. [`platform-icons.ts`](../src/main/platform-icons.ts) chooses between them:
 (stock GNOME). Both call the same main-process handlers through the preload bridge. The
 section renders only in the desktop shell; a browser tab has no bridge to call.
 
+## The Linux desktop entry
+
+Linux has no packaged app: the checkout is the install. `make desktop-entry` builds the bundles
+and installs `~/.local/share/applications/mission-control.desktop` (under `$XDG_DATA_HOME` when
+set), which runs the checkout's own Electron (`node_modules/electron/dist/electron`) with the
+checkout as its app. The shell then loads the built bundles in `dist/`, with no
+`MISSION_DEV_SERVER_URL`, and uses `build/icon.png`. Updating is `git pull && make build`; the
+entry points at paths that do not change, so it is never rewritten. `node
+scripts/install-desktop-entry.mjs --uninstall` removes it. The text comes from
+[`scripts/desktop-entry.mjs`](../scripts/desktop-entry.mjs), and the target refuses any other
+platform before it builds.
+
+**Start at login** in the tray menu is Electron's login item on macOS. Electron has none on
+Linux, so there it reads and toggles `~/.config/autostart/mission-control.desktop` (under
+`$XDG_CONFIG_HOME` when set), an exact copy of the installed entry
+([`login-item.ts`](../src/main/login-item.ts)). Until the entry is installed the checkbox is
+disabled, with a line under it naming `make desktop-entry`. Reinstalling the entry refreshes an
+enabled copy.
+
+### Adopting the systemd unit's daemon
+
+A [systemd user unit](overview.md#quick-start) and an autostarted shell both start at login.
+[`daemon-start.ts`](../src/main/daemon-start.ts) keeps them from racing for the state lock:
+
+- A daemon that answers `/api/health` is adopted, as on macOS. Quitting the shell leaves it
+  running.
+- On Linux, when nothing answers, the shell runs `systemctl --user is-active
+  mission-control.service` with a 1 second timeout. On `active`, `activating` or `reloading` it
+  does not spawn: it polls health every 500 ms for up to 30 seconds and adopts the unit's
+  daemon. If the unit never answers, the startup page says the service is not answering and
+  names `journalctl --user -u mission-control`, and the window keeps polling.
+- Any other answer, including a missing `systemctl`, supervises the shell's own daemon and
+  Foreman, and quitting the shell stops both.
+- A daemon that loses the state lock exits with status 75. On Linux the shell's supervisor
+  answers that by deciding again instead of restarting: it adopts the daemon that owns the
+  state, waits for a starting unit, or restarts only when nothing else holds it.
+
+macOS never asks systemd and restarts its daemon after any exit, 75 included.
+
 ## Startup while SDK sessions restore
 
 The shell immediately shows **Starting Mission Control** from a local page that does not

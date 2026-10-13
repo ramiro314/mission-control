@@ -6,11 +6,13 @@
 // works under Electron's bundled Node (verified on Electron 43 / Node 24), so
 // nothing about the daemon changes.
 //
-// Adopt-or-spawn: if a daemon already answers on the port (a LaunchAgent or
-// `make up`), we adopt it and never spawn a second one that would fight over the
-// port. We only supervise/stop a daemon we started. Development does not call
-// this supervisor; `dev:server` owns that daemon lifecycle.
+// Adopt-or-spawn: if a daemon already answers on the port (a LaunchAgent, a systemd
+// unit or `make up`), we adopt it and never spawn a second one that would fight over
+// the port. On Linux a unit that is still starting is waited for rather than raced
+// (see daemon-start.ts). We only supervise/stop a daemon we started. Development does
+// not call this supervisor; `dev:server` owns that daemon lifecycle.
 
+import { setTimeout as delay } from "node:timers/promises";
 import { BASE_URL, PORT } from "@shared/harness-runtime.mjs";
 import { migrationPortOccupied } from "../../scripts/migration-runtime.mjs";
 import {
@@ -21,6 +23,12 @@ import {
 import { executableChildEnv } from "../server/executables/locator.ts";
 import { serveProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
+import {
+  afterDaemonExit,
+  decideDaemonStart,
+  unitStateProbe,
+  type DaemonStartDeps,
+} from "./daemon-start.ts";
 
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
@@ -61,7 +69,12 @@ export interface StartDaemonOptions {
   webDir: string;
   /** Where to append the daemon's stdout/stderr. */
   logPath: string;
+  /** Linux: the systemd unit is running but did not answer health within the wait. */
+  onUnitUnresponsive?: () => void;
 }
+
+const INCOMPATIBLE_DAEMON =
+  "A running Mission Control daemon is from an older build. Stop it before opening this version.";
 
 /**
  * Adopt a running daemon, or spawn + supervise our own. The spawned daemon is
@@ -72,14 +85,17 @@ export interface StartDaemonOptions {
 export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonController> {
   const compatibility = await daemonCompatibility();
   if (opts.requireFresh && (compatibility !== "unreachable" || await migrationPortOccupied(PORT))) throw new Error("A previous daemon is still running. Stop it, then reopen the personal app.");
-  if (compatibility === "compatible") {
-    return { adopted: true, stop: () => {} };
-  }
-  if (compatibility === "incompatible") {
-    throw new Error(
-      "A running Mission Control daemon is from an older build. Stop it before opening this version.",
-    );
-  }
+  const deps: DaemonStartDeps = {
+    platform: process.platform,
+    probe: () => daemonCompatibility(),
+    unitState: unitStateProbe(),
+    sleep: (ms) => delay(ms),
+    now: () => Date.now(),
+  };
+  const start = await decideDaemonStart(compatibility, deps);
+  if (start === "incompatible") throw new Error(INCOMPATIBLE_DAEMON);
+  if (start === "unit-unresponsive") opts.onUnitUnresponsive?.();
+  if (start !== "supervise") return { adopted: true, stop: () => {} };
 
   const controller = superviseUtilityProcess({
     entry: opts.serverEntry,
@@ -89,6 +105,19 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
     // A Report click is armed in the shell over IPC and consumed here over the private
     // utility-process port. A loopback caller has access to neither side of that handoff.
     onSpawn: serveProductIssueAuthorization,
+    // Linux: a daemon that lost the state lock to another one (a unit, `make up`) is not
+    // restarted into the same contention; the shell decides again and adopts the owner.
+    afterExit: process.platform === "linux"
+      ? async (code) => {
+        const next = await afterDaemonExit(process.platform, code, async () =>
+          decideDaemonStart(await deps.probe(), deps));
+        if (next === "restart") return null;
+        if (next === "unit-unresponsive") opts.onUnitUnresponsive?.();
+        return next === "incompatible"
+          ? "another daemon from an older build owns this state; not restarting"
+          : "another daemon owns this state; adopting it";
+      }
+      : undefined,
   });
   return {
     adopted: false,
