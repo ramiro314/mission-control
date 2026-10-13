@@ -86,6 +86,7 @@ function setup(over: {
   forceKillAfterMs?: number;
   loadNativeBinding?: () => NativeKeepAwakeBinding;
   locateInhibitor?: () => string | null;
+  isExecutable?: (path: string) => boolean;
   processLifetime?: ProcessLifetime;
 } = {}) {
   const spawns: {
@@ -116,6 +117,7 @@ function setup(over: {
     forceKillAfterMs: over.forceKillAfterMs ?? 50,
     loadNativeBinding: over.loadNativeBinding,
     locateInhibitor: over.locateInhibitor ?? (() => null),
+    isExecutable: over.isExecutable ?? (() => true),
     processLifetime: over.processLifetime,
     onStatus: (s) => statuses.push(s),
   });
@@ -667,6 +669,26 @@ test("Linux without systemd-inhibit is unavailable and says so", async () => {
   assert.equal(status.provider, null);
   assert.equal(status.state, "off");
   assert.match(status.unavailableReason ?? "", /systemd-inhibit was not found/);
+  assert.equal(spawns.length, 0);
+});
+
+test("Linux without an executable /usr/bin/tail is unavailable and names it", async () => {
+  const checked: string[] = [];
+  const { manager, spawns } = setup({
+    platform: "linux",
+    override: null,
+    locateInhibitor: () => "/usr/bin/systemd-inhibit",
+    isExecutable: (path) => {
+      checked.push(path);
+      return false;
+    },
+  });
+  const status = await manager.setEnabled(true);
+  assert.deepEqual(checked, ["/usr/bin/tail"]);
+  assert.equal(status.supported, false);
+  assert.equal(status.provider, null);
+  assert.equal(status.state, "off");
+  assert.match(status.unavailableReason ?? "", /\/usr\/bin\/tail was not found/);
   assert.equal(spawns.length, 0);
 });
 

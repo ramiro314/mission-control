@@ -99,7 +99,8 @@ dies any other way ends it too, because `tail` exits with the daemon's PID. logi
 inhibitors on lid close by default (`LidSwitchIgnoreInhibited=yes`) and does not hold your
 own account's sleep request against your own lock, so lid close and choosing Sleep still work.
 `systemd-inhibit --list` shows the lock while it is held. Without `systemd-inhibit` on the
-daemon's `PATH` (or `SYSTEMD_INHIBIT_BIN`), the switch is unavailable and says so.
+daemon's `PATH` (or `SYSTEMD_INHIBIT_BIN`), or without an executable `/usr/bin/tail`, the
+switch is unavailable and names what is missing.
 
 While it is on, the indicator reads **`live · awake`** with a purple dot - the word
 carries the mode, so color is never the only signal. A native load failure makes the control

@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import type { KeepAwakeStatus } from "@shared/types.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
@@ -66,6 +67,8 @@ export interface KeepAwakeDeps {
   loadNativeBinding?: () => NativeKeepAwakeBinding;
   /** Linux: the absolute `systemd-inhibit`, or null when it does not resolve. */
   locateInhibitor?: () => string | null;
+  /** Linux: whether a fixed path, the inhibitor's `tail`, is an executable file. */
+  isExecutable?: (path: string) => boolean;
   /** How a Linux inhibitor's tree is started and ended. Defaults to the platform's seam. */
   processLifetime?: ProcessLifetime;
   setTimeoutFn?: (fn: () => void, ms: number) => NodeJS.Timeout;
@@ -101,6 +104,15 @@ export function systemdInhibitArgs(daemonPid: number): string[] {
     "-f",
     "/dev/null",
   ];
+}
+
+function executableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function bounded(text: string): string {
@@ -154,18 +166,27 @@ export class KeepAwakeManager {
       const locateInhibitor =
         deps.locateInhibitor ?? (() => locateExecutableSync("systemd-inhibit")?.path ?? null);
       const bin = locateInhibitor();
-      this.provider = bin
+      // `tail` is checked here too: without it `systemd-inhibit` exits the moment it starts,
+      // which would read as a failure on every switch instead of an honest unavailable.
+      const tail = FIXED_OS_EXECUTABLES.tail;
+      const isExecutable = deps.isExecutable ?? executableFile;
+      this.provider = !bin
         ? {
-            kind: "command",
-            name: "systemd-inhibit",
-            bin,
-            args: systemdInhibitArgs(this.daemonPid),
-            tree: true,
-          }
-        : {
             kind: "unavailable",
             reason: "Keep awake is unavailable on this system - systemd-inhibit was not found",
-          };
+          }
+        : !isExecutable(tail)
+          ? {
+              kind: "unavailable",
+              reason: `Keep awake is unavailable on this system - ${tail} was not found`,
+            }
+          : {
+              kind: "command",
+              name: "systemd-inhibit",
+              bin,
+              args: systemdInhibitArgs(this.daemonPid),
+              tree: true,
+            };
     } else if (platform !== "darwin") {
       this.provider = {
         kind: "unavailable",
