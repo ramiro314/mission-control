@@ -441,3 +441,21 @@ test("even maximal names, paths and summary still yield a valid failing verdict 
   const verdict = assertWithinBudget(checkVerdict(failedTwice(failures, 58, note), "attempt-1"));
   assert.match(verdict.requestedChanges[0]!.title, /^Fix the failing test "0 😀/);
 });
+
+test("a single failure squeezed to its floor still quotes a whole character, not just the ellipsis", () => {
+  const failure = {
+    file: `test/${"漢".repeat(AFFECTED_TESTS_LIMITS.path - 10)}.ts`,
+    name: "😀".repeat(AFFECTED_TESTS_LIMITS.testName / 2),
+    message: "😀".repeat(AFFECTED_TESTS_LIMITS.failureMessage / 2),
+  };
+  // The longest summary that still leaves the failure room is where its message cap is smallest.
+  // A control character is six bytes as JSON, so the summary alone can fill the budget.
+  for (let length = WORKFLOW_EXECUTION_LIMITS.verdictSummary; length > 0; length--) {
+    const verdict = checkVerdict(failedTwice([failure], 1, "\u0001".repeat(length)), "attempt-1");
+    if (verdict?.verdict !== "fail" || !verdict.requestedChanges[0]!.title.startsWith("Fix the failing test")) continue;
+    assertWithinBudget(verdict);
+    assert.match(verdict.requestedChanges[0]!.evidence[0]!.quote, /^😀/);
+    return;
+  }
+  assert.fail("the failure never fit");
+});

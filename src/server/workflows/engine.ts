@@ -413,8 +413,8 @@ function failingTestsVerdict(
   const longest = Math.max(...failures.map((failure) => utf8Bytes(failure.message)));
   for (let listed = failures.length; listed > 0; listed--) {
     const build = (cap: number) => failingTestsVerdictAt(summary, failures, listed, total, attemptId, cap);
-    // The longest a single character's UTF-8 can be, so the clip never empties a message.
-    let low = listed === 1 ? 4 : FAILURE_MESSAGE_FLOOR_BYTES;
+    // The widest UTF-8 character plus the 3-byte "…", so the clip never empties a message.
+    let low = listed === 1 ? 7 : FAILURE_MESSAGE_FLOOR_BYTES;
     let best = build(low);
     if (!best) continue;
     // The verdict only grows with the cap, so the largest cap that fits is found by bisection.
