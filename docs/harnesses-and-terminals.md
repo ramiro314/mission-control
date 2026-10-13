@@ -173,6 +173,10 @@ available rather than silently opening somewhere else. The setting is read at di
 a change reaches the next launch without a daemon restart. It is retained while the harness uses
 the Agent SDK runtime and becomes visible again if the runtime returns to Terminal.
 
+On Linux the backends that can host a dispatched agent are tmux, Herdr and WezTerm. Ghostty and
+the default terminal are raise-only there, and cmux and iTerm2 require macOS, so the chooser shows
+all four disabled with their reason.
+
 The backend that created an explicitly selected terminal home is stored on the task beside its
 home name. Liveness checks and cleanup use that durable backend identity, so changing the setting
 later cannot re-aim an already-running task at another terminal. Historical and Automatic tasks
@@ -197,6 +201,11 @@ choice is tried first and the registry order still follows it, so a chosen termi
 uninstalled or fails to open still ends with a window rather than an error. Focus now also
 checks that a terminal app is installed before spawning it, so a machine with no terminal app
 attempts nothing and reports the existing refusal.
+
+On Linux the chooser offers WezTerm, Ghostty and the desktop's **Default terminal**, and
+Automatic tries them in that order, so a machine with only `xdg-terminal-exec` or a `TERMINAL`
+setting still gets a window. Every one of them takes its display from the graphical session (see
+[Linux display and process scopes](#linux-display-and-process-scopes)).
 
 The preference is read at focus time, so a change reaches the next Focus without a daemon
 restart, and it is recorded in settings backups under the `terminals` domain.
@@ -326,7 +335,7 @@ does not refuse without a display: the WezTerm GUI that answered its socket is t
 daemon reaching it from outside a desktop session (over SSH, for example) runs the call exactly
 as before. The endpoint lookup, focus and every other WezTerm call run as before. macOS spawns are unchanged.
 
-iTerm2
+iTerm2, on macOS only,
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
 windows, tabs, and split sessions, addresses every action by the session's stable unique ID,
 correlates by normalized TTY, writes text and keys, bracket-pastes prompts, captures visible

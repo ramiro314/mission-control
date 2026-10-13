@@ -363,7 +363,7 @@
           </tr>
           <tr>
             <td>A Mac with Apple Silicon <span class="chip chip-optional">desktop app only</span></td>
-            <td>The desktop app is macOS only. The browser version runs anywhere.</td>
+            <td>The packaged desktop app is macOS only. On Linux, run from a checkout.</td>
             <td class="cmd"><code>uname -m</code></td>
           </tr>
         </tbody>
@@ -373,8 +373,9 @@
         <p class="callout-title">You do not have to get this right first</p>
         <p>
           Install first. Mission Control inspects your machine and tells you what is missing in
-          <a href="#setup-panel">Settings &rarr; Setup</a>, with an install command or a link on
-          every row that needs one.
+          <a href="#setup-panel">Settings &rarr; Setup</a>, with a fix on every row that needs one: an
+          install command, a link, or on Linux the package to install with your distribution's
+          package manager.
         </p>
       </div>
     </section>
@@ -428,6 +429,15 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
         <code>make init</code> is safe to repeat. It installs dependencies, builds the app, and
         wires up the Claude status hooks that give you precise
         <em>working / idle / needs you</em> states instead of a plain "running".
+      </p>
+
+      <h3>On Linux</h3>
+      <p>
+        The checkout above is the install; there is no packaged Linux app. Run
+        <code>make desktop-entry</code> to put the desktop shell in your app menu, and
+        <code>npm run install-service</code> to keep the daemon running as a systemd user unit.
+        The <a href="setup.md#platform-support">platform-support matrix</a> lists everything that
+        differs from macOS.
       </p>
 
       <div class="callout callout-warn">
@@ -786,7 +796,7 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
         have fixed it.
       </p>
 
-      <h3>If you run it in the browser</h3>
+      <h3>If you run it from a checkout (always, on Linux)</h3>
       <p>Update it the way you would any checkout, then rebuild:</p>
       <pre><code>git pull
 make init</code></pre>

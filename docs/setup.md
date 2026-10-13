@@ -9,6 +9,36 @@ If you are installing Mission Control to use rather than to work on, read the il
 side, with screenshots, a required-versus-optional breakdown of every row, and how updates
 arrive.
 
+## Platform support
+
+Mission Control runs on macOS and Linux. Linux runs from a source checkout: there is no packaged
+Linux app. A feature either works on both, or the Linux column says what replaces it or that it
+is unavailable there. Windows is not supported.
+
+| Feature | macOS | Linux | How to get it on Linux |
+| --- | --- | --- | --- |
+| Dashboard in a browser | Yes | Yes | `make init`, then `npm run dev` (or `npm run build && npm start`) |
+| Packaged desktop app (`make install`, `make app`, `make install-app`, the Bash installer, `npm run package`) | Yes, Apple Silicon | No | Run from a checkout. These commands refuse Linux with "The packaged app is macOS only" |
+| Updates | In-app updater | No updater | `git pull && make build` |
+| Database recovery (`npm run recover:database`) | Yes | No | Packaged app only; refused on Linux |
+| Desktop shell (Electron) | Packaged app, or `make desktop` | Yes | `make desktop` or `make start` from a checkout, or `make desktop-entry` for the built shell in the app menu ([desktop entry](desktop-and-packaging.md#the-linux-desktop-entry)) |
+| Window frame and menu | Hidden title bar, macOS app menu | Window manager's frame; <kbd>Alt</kbd> shows the menu bar | Nothing to do |
+| Tray, and closing the window to hide it | Menu bar | Where a StatusNotifier host runs (KDE Plasma does, stock GNOME does not) | Without a tray host, closing the window quits; **Settings → Setup → Integrations** replaces the tray's integration items ([closing the window](desktop-and-packaging.md#closing-the-window)) |
+| Shell **Start at login** | Login item | XDG autostart entry | `make desktop-entry` first; until then the checkbox is disabled |
+| Always-on daemon (`npm run install-service`) | LaunchAgent | systemd user unit | Stops at logout unless you run `loginctl enable-linger` ([always-on](overview.md#quick-start)) |
+| Keep Awake | IOKit idle-sleep assertion | `systemd-inhibit --what=idle:sleep` | Needs `systemd-inhibit`; without it the switch reports unavailable |
+| Shortcuts | <kbd>⌘</kbd> is Command | <kbd>⌘</kbd> is <kbd>Ctrl</kbd>; keycaps read Ctrl | **Reset checkout** (<kbd>⌃</kbd><kbd>R</kbd>) has no default key; bind one in **Settings → Keyboard** ([shortcuts](ui.md#keyboard-shortcuts)) |
+| tmux, Herdr, WezTerm | Yes | Yes | Install them; Setup names the package or links each one's install guide |
+| Ghostty | Full adapter (hosts agents, Focus) | Spawn only: opens Focus windows, never hosts an agent | `ghostty` on `PATH` |
+| cmux, iTerm2 | Yes | No | Shown disabled with **requires macOS**; use tmux or Herdr |
+| Default terminal (`xdg-terminal-exec`, then `$TERMINAL`) | Not offered | Opens Focus and new-session windows, never hosts an agent | Install `xdg-terminal-exec` or set `TERMINAL` |
+| Focus and **Open in** windows | Yes | Yes, from a graphical session | A daemon under the systemd unit reads the user manager's display; see [Linux display and process scopes](harnesses-and-terminals.md#linux-display-and-process-scopes) |
+| Setup remedies | Homebrew commands with **Run in a terminal** | Package names for your distribution, no **Run in a terminal** | `npm install -g` rows (Claude Code, Pi) run on both |
+| `lsof` | Ships with the OS | Required, not always installed | Install the `lsof` package; `make init` and Setup check for it |
+| Native build toolchain | Xcode command line tools | C++ compiler, `make`, `python3` | For example `build-essential python3` (Debian, Ubuntu) or `base-devel python` (Arch) |
+| Headless model runs' directory | Per-user temp dir | `~/.mission-control/headless` | Nothing to do; old `~/.claude/projects/-tmp/` transcripts can be [removed by hand](troubleshooting.md#old-headless-transcripts-remain-in-claudeprojects-tmp) |
+| Electron tests (`npm test`, `npm run test:electron`) | Yes | Yes, with `--no-sandbox` | Run under `xvfb-run -a` when there is no display |
+
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
@@ -152,12 +182,21 @@ On Linux, also install `lsof`, which some base systems (Arch's `base`, for one) 
 daemon uses it to see which processes are working in a worktree; without it that answer is
 unknown, so worktree release and cleanup are refused. macOS ships it.
 
+On Linux, install tmux or Herdr too if you want terminal-runtime agents. Ghostty and the
+desktop's default terminal only open windows there, so an agent that runs in a terminal lives in
+tmux, Herdr or WezTerm.
+
 Browser tests also need Playwright Chromium once per machine. `npm install` does not
 download it, so install it explicitly when you need e2e coverage:
 
 ```sh
 npx playwright install chromium
 ```
+
+On Linux, Chromium also needs system libraries that a desktop install usually has and a minimal
+or container install may not. On Debian or Ubuntu, `npx playwright install --with-deps chromium`
+installs them through apt; on other distributions, install the libraries Playwright names when
+it fails to launch.
 
 ## Bootstrap the checkout
 

@@ -138,7 +138,7 @@ CI contention needs the whole suite, not one file:
 MISSION_TEST_CONCURRENCY=4 npm test
 ```
 
-On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
+On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags. On Linux, `--no-sandbox` and `xvfb-run -a` are the sanctioned Electron test setup, and "do not add Chromium flags" refers to the macOS Seatbelt preflight.
 
 CI reports thirty-two non-package jobs on a push to `main`, a tag or a manual run, plus the
 "Flaky tests" check run that `flake report` publishes. A pull request runs twenty-four of them:
