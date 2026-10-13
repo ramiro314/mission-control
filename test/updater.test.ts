@@ -222,6 +222,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     over.stagedBundleIdentity ?? (() => ({ version: "1.2.4", revision: "staged-1" }));
   const port: UpdaterPort = {
     packaged: true,
+    platform: "darwin",
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => null,
@@ -315,7 +316,11 @@ function fixture(over: Partial<UpdaterPort> = {}) {
 
 test("ineligible installations disable before any release query", async () => {
   const cases: Array<[Partial<UpdaterPort>, RegExp]> = [
-    [{ packaged: false }, /packaged app/],
+    [{ packaged: false }, /Updates are available only in the packaged app/],
+    // A Linux checkout is never packaged, so its reason names the checkout instead of an app it
+    // will never get; on macOS the same unpackaged shell keeps the line above.
+    [{ platform: "linux", packaged: false }, /^The packaged app is macOS only; on Linux run from a checkout/],
+    [{ platform: "linux" }, /^The packaged app is macOS only; on Linux run from a checkout/],
     [{ arch: "x64" }, /Apple silicon/],
     [{ installSnapshot: () => ({ receipt: null, problem: null }) }, /managed install/],
     [

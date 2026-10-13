@@ -29,6 +29,11 @@ was. [`platform-icons.ts`](../src/main/platform-icons.ts) chooses between them:
   `tray-light.png`, a white glyph for a dark panel. Tray titles are macOS-only, so while the
   needs-you count is above zero the tray swaps to `tray-badged.png` instead.
 
+**Install Claude integrations** and **Remove Claude integrations** are in the tray menu and in
+**Settings → Setup → Integrations**, so they are reachable on a desktop with no tray host
+(stock GNOME). Both call the same main-process handlers through the preload bridge. The
+section renders only in the desktop shell; a browser tab has no bridge to call.
+
 ## Startup while SDK sessions restore
 
 The shell immediately shows **Starting Mission Control** from a local page that does not
@@ -63,7 +68,13 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 `make install` and the [Bash installer](../scripts/install.sh) both use
 [`scripts/install-app.mjs`](../scripts/install-app.mjs) for managed installation;
 `make app` and `make install-app` remain the developer path that packages the current
-worktree. The difference that matters is not the build - it is who owns the source tree the app
+worktree. All of them, `npm run package` and `npm run recover:database` are macOS only:
+anywhere else they refuse before starting work with the one message in
+[`src/shared/macos-only.mjs`](../src/shared/macos-only.mjs), and the updater shows it as its
+disabled reason. The bundle-path code (`runningBundlePath` in
+[`startup-handover.ts`](../src/main/startup-handover.ts)) answers null off macOS, so a Linux
+shell never reaches bundle identity, hand-over or migration. Linux runs from a checkout
+([setup.md](setup.md#run-mission-control)). The difference that matters is not the build - it is who owns the source tree the app
 was built from, and whether an install left a record of itself.
 
 By default, `make install` builds in a clone **only the updater touches**, at `app-src` inside the state

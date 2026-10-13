@@ -63,12 +63,12 @@ and get your decision back.
   moment a session needs input, a review lands, a session **gets stuck**, or a
   dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
-- **Keeps the Mac awake**, if you ask it to: the live indicator opens a **Keep awake**
+- **Keeps the computer awake**, if you ask it to: the live indicator opens a **Keep awake**
   dropdown whose switch prevents idle system sleep while the display still dims and locks,
   so agents keep working with the screen dark. Deliberately transient - on until Mission
   Control quits or restarts, never persisted or reacquired - and lid close, manual Sleep,
-  and the battery safeguards all still win. macOS only; elsewhere it says so instead of
-  pretending. See [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep).
+  and the battery safeguards all still win. macOS, and Linux with `systemd-inhibit`; elsewhere
+  it says so instead of pretending. See [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep).
 - **Tracks fleet economics**: a badge on every priced session detail and a topbar cost chip whose
   popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
   cost per pull request, and rate-limit runway. A separate automation figure attributes the
@@ -253,8 +253,9 @@ The app is self-contained: the daemon runs on Electron's bundled Node (with `nod
 so no system `node` is required to run it. On launch it **adopts** an already-running daemon
 (a LaunchAgent or `make up`) instead of starting a second one. Closing the window hides it
 (the app stays in the menu bar so alerts keep firing); quit from the tray menu. Enable
-**Start at login** and **Install Claude integrations…** (wires the status hooks + MCP review
-server at the app's bundled paths) from the tray menu.
+**Start at login** from the tray menu. **Install Claude integrations** (wires the status hooks +
+MCP review server at the app's bundled paths) is in the tray menu and in **Settings → Setup →
+Integrations**, which is the way in on a desktop with no tray.
 
 Both paths build on your own Mac and copy the result into place, so nothing crosses a
 download boundary and Gatekeeper never quarantines the bundle: the app opens normally, with no

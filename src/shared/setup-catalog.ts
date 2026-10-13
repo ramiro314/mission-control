@@ -552,7 +552,7 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     remedy: {
       kind: "command",
       argv: ["npm", "run", "install-hooks"],
-      note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings instead.",
+      note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings → Setup → Integrations instead.",
     },
   },
 };

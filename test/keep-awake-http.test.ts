@@ -114,7 +114,7 @@ test("the body schema is strict: missing, mistyped, and surplus fields are 400",
 });
 
 test("an unsupported host refuses with 409 and its reason, and never spawns", async () => {
-  const { manager, statuses } = workingManager({ platform: "linux" });
+  const { manager, statuses } = workingManager({ platform: "win32" });
   const app = appWith(manager);
   const res = await put(app, { enabled: true });
   assert.equal(res.status, 409);
@@ -130,7 +130,7 @@ test("an unsupported host still honours a disable: off is always achievable", as
   // off it already holds, so a caller ensuring the mode is off - a startup script, a
   // defensive re-request from a non-UI client - must get 200 off, not an error for a
   // state the host cannot help but be in.
-  const { manager } = workingManager({ platform: "linux" });
+  const { manager } = workingManager({ platform: "win32" });
   const app = appWith(manager);
   const res = await put(app, { enabled: false });
   assert.equal(res.status, 200);

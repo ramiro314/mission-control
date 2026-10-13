@@ -13,7 +13,8 @@ test("the package command builds mac artifacts without publishing", () => {
 
   assert.equal(
     manifest.scripts?.package,
-    "npm run build && electron-builder --mac --publish never",
+    // The macOS guard runs first, so a non-macOS host refuses before it builds anything.
+    "node scripts/require-macos.mjs && npm run build && electron-builder --mac --publish never",
     "packaging a release tag must build the local artifacts without publishing them",
   );
 });

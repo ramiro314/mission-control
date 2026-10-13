@@ -169,6 +169,8 @@ test("the Setup row's remedy names the desktop button as well as the npm script"
   if (remedy.kind !== "command") return;
   assert.deepEqual([...remedy.argv], ["npm", "run", "install-hooks"]);
   assert.match(remedy.note, /Install Claude integrations/);
+  // Where that button actually is: the desktop Settings section, not only the tray.
+  assert.match(remedy.note, /Settings → Setup → Integrations/);
   assert.match(remedy.note, /durable clone/);
 });
 
@@ -203,6 +205,7 @@ test("a renamed checkout is named, counted, and given the command that repairs i
   // And both repairs, because the operator may have installed from either.
   assert.match(view.warning, /npm run install-hooks/);
   assert.match(view.warning, /Install Claude integrations/);
+  assert.match(view.warning, /Settings → Setup → Integrations/);
   // The evidence names the file that holds the dead path.
   assert.ok(view.detail?.includes(SETTINGS), view.detail ?? "");
   assert.ok(view.detail?.includes(STALE), view.detail ?? "");

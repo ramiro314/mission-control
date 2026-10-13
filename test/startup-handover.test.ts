@@ -68,15 +68,22 @@ test("the running bundle is the app three directories above the packaged app roo
   // derivation wrong would compare the receipt against a path that is not a bundle at all, and
   // every identity answer after it would be drawn from the wrong subject.
   assert.equal(
-    runningBundlePath("/Applications/Mission Control.app/Contents/Resources/app", true),
+    runningBundlePath("/Applications/Mission Control.app/Contents/Resources/app", true, "darwin"),
     "/Applications/Mission Control.app",
   );
   assert.equal(
-    runningBundlePath(join(PERSONAL, "Contents", "Resources", "app"), true),
+    runningBundlePath(join(PERSONAL, "Contents", "Resources", "app"), true, "darwin"),
     PERSONAL,
   );
   // Development is a checkout, not a bundle, so there is no installed identity to compare.
-  assert.equal(runningBundlePath("/work/mission-control", false), null);
+  assert.equal(runningBundlePath("/work/mission-control", false, "darwin"), null);
+});
+
+test("the bundle path stays macOS only, so a packaged Linux shell has no bundle identity", () => {
+  // Linux runs from a checkout. A Linux shell someone packaged anyway must not derive a `.app`
+  // path, read an `Info.plist`, or hand over through Launch Services.
+  assert.equal(runningBundlePath("/opt/mission-control/resources/app", true, "linux"), null);
+  assert.equal(runningBundlePath("/work/mission-control", false, "linux"), null);
 });
 
 test("a redirect opens the exact personal bundle and this process starts nothing", () => {

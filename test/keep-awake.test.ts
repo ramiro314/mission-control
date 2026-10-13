@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { SpawnOptions } from "node:child_process";
 import type { KeepAwakeStatus } from "../src/shared/types.ts";
 import {
   KeepAwakeManager,
   type KeepAwakeChild,
   type NativeKeepAwakeBinding,
 } from "../src/server/keep-awake.ts";
+import type { ProcessLifetime } from "../src/server/platform/process-lifetime.ts";
 
 /**
  * What is at stake: this manager is the only thing standing between a dashboard click
@@ -36,11 +38,15 @@ class FakeChild implements KeepAwakeChild {
   }
   kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
     this.killed.push(signal);
-    if (this.obeys === "never") return true;
+    this.deliver(signal);
+    return true;
+  }
+  /** A signal reaching the process by any route: its own `kill`, or its process group. */
+  deliver(signal: NodeJS.Signals): void {
+    if (this.obeys === "never") return;
     if (signal === "SIGKILL" || this.obeys === "sigterm") {
       queueMicrotask(() => this.emit("exit", null, signal));
     }
-    return true;
   }
 }
 
@@ -79,8 +85,16 @@ function setup(over: {
   obeys?: "sigterm" | "sigkill-only" | "never";
   forceKillAfterMs?: number;
   loadNativeBinding?: () => NativeKeepAwakeBinding;
+  locateInhibitor?: () => string | null;
+  isExecutable?: (path: string) => boolean;
+  processLifetime?: ProcessLifetime;
 } = {}) {
-  const spawns: { bin: string; args: string[]; child: FakeChild }[] = [];
+  const spawns: {
+    bin: string;
+    args: string[];
+    options: Readonly<SpawnOptions>;
+    child: FakeChild;
+  }[] = [];
   const statuses: KeepAwakeStatus[] = [];
   const timers = fakeTimers();
   const manager = new KeepAwakeManager({
@@ -88,9 +102,9 @@ function setup(over: {
     override: over.override === undefined ? "/usr/bin/caffeinate" : over.override,
     daemonPid: 7317,
     now: () => 1_700_000_000_000,
-    spawn: (bin, args) => {
+    spawn: (bin, args, options) => {
       const child = new FakeChild(over.obeys ?? "sigterm");
-      spawns.push({ bin, args, child });
+      spawns.push({ bin, args, options, child });
       const script = over.script ?? "spawn";
       if (script === "spawn") queueMicrotask(() => child.emit("spawn"));
       else if (script === "spawn-error")
@@ -102,6 +116,9 @@ function setup(over: {
     clearTimeoutFn: timers.clearTimeoutFn,
     forceKillAfterMs: over.forceKillAfterMs ?? 50,
     loadNativeBinding: over.loadNativeBinding,
+    locateInhibitor: over.locateInhibitor ?? (() => null),
+    isExecutable: over.isExecutable ?? (() => true),
+    processLifetime: over.processLifetime,
     onStatus: (s) => statuses.push(s),
   });
   return { manager, spawns, statuses, timers };
@@ -455,7 +472,7 @@ test("on is published only after the child's spawn event, never off the request"
 });
 
 test("an unsupported platform refuses without spawning anything", async () => {
-  const { manager, spawns } = setup({ platform: "linux", override: null });
+  const { manager, spawns } = setup({ platform: "win32", override: null });
   const status = await manager.setEnabled(true);
   assert.equal(status.supported, false);
   assert.equal(status.state, "off");
@@ -581,4 +598,173 @@ test("disable while a previous run failed clears the error to off", async () => 
   const status = await manager.setEnabled(false);
   assert.equal(status.state, "off");
   assert.equal(status.error, null);
+});
+
+// ---- Linux: systemd-inhibit ----
+
+/** A process-lifetime seam that records tree signals and forwards them to the fake child. */
+function recordingLifetime(children: () => FakeChild[]) {
+  const signals: { pid: number; signal: NodeJS.Signals | 0 }[] = [];
+  const lifetime: ProcessLifetime = {
+    treeRootOptions: Object.freeze({ detached: true }),
+    signalTree(pid, signal) {
+      signals.push({ pid, signal });
+      const child = children().find((c) => c.pid === pid);
+      if (!child) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      // Delivered without `kill`, so the child's own `killed` log stays the direct path's.
+      if (signal !== 0) child.deliver(signal);
+    },
+    killTree() {
+      throw new Error("keep awake ends its tree through signalTree, not killTree");
+    },
+  };
+  return { lifetime, signals };
+}
+
+function linuxSetup(over: Parameters<typeof setup>[0] = {}) {
+  const children: FakeChild[] = [];
+  const { lifetime, signals } = recordingLifetime(() => children);
+  const harness = setup({
+    platform: "linux",
+    override: null,
+    locateInhibitor: () => "/usr/bin/systemd-inhibit",
+    processLifetime: lifetime,
+    ...over,
+  });
+  const spawns = harness.spawns;
+  return {
+    ...harness,
+    signals,
+    track: () => children.splice(0, children.length, ...spawns.map((s) => s.child)),
+  };
+}
+
+test("provider selection: darwin is iokit, Linux is systemd-inhibit, others are unavailable", () => {
+  const native = () => ({ create: () => 1, release: () => {} });
+  const pick = (platform: NodeJS.Platform, inhibitor: string | null) =>
+    setup({ platform, override: null, loadNativeBinding: native, locateInhibitor: () => inhibitor })
+      .manager.status();
+  assert.deepEqual(
+    {
+      darwin: pick("darwin", "/usr/bin/systemd-inhibit").provider,
+      linux: pick("linux", "/usr/bin/systemd-inhibit").provider,
+      linuxSupported: pick("linux", "/usr/bin/systemd-inhibit").supported,
+      win32: pick("win32", "/usr/bin/systemd-inhibit").provider,
+      win32Supported: pick("win32", "/usr/bin/systemd-inhibit").supported,
+    },
+    {
+      darwin: "iokit",
+      linux: "systemd-inhibit",
+      linuxSupported: true,
+      win32: null,
+      win32Supported: false,
+    },
+  );
+});
+
+test("Linux without systemd-inhibit is unavailable and says so", async () => {
+  const { manager, spawns } = setup({ platform: "linux", override: null, locateInhibitor: () => null });
+  const status = await manager.setEnabled(true);
+  assert.equal(status.supported, false);
+  assert.equal(status.provider, null);
+  assert.equal(status.state, "off");
+  assert.match(status.unavailableReason ?? "", /systemd-inhibit was not found/);
+  assert.equal(spawns.length, 0);
+});
+
+test("Linux without an executable /usr/bin/tail is unavailable and names it", async () => {
+  const checked: string[] = [];
+  const { manager, spawns } = setup({
+    platform: "linux",
+    override: null,
+    locateInhibitor: () => "/usr/bin/systemd-inhibit",
+    isExecutable: (path) => {
+      checked.push(path);
+      return false;
+    },
+  });
+  const status = await manager.setEnabled(true);
+  assert.deepEqual(checked, ["/usr/bin/tail"]);
+  assert.equal(status.supported, false);
+  assert.equal(status.provider, null);
+  assert.equal(status.state, "off");
+  assert.match(status.unavailableReason ?? "", /\/usr\/bin\/tail was not found/);
+  assert.equal(spawns.length, 0);
+});
+
+test("MISSION_KEEP_AWAKE_BIN still outranks systemd-inhibit on Linux", async () => {
+  const { manager, spawns } = setup({
+    platform: "linux",
+    override: "/tmp/fake-caffeinate",
+    locateInhibitor: () => "/usr/bin/systemd-inhibit",
+  });
+  assert.equal(manager.status().provider, "caffeinate");
+  await manager.setEnabled(true);
+  assert.equal(spawns[0]!.bin, "/tmp/fake-caffeinate");
+  assert.deepEqual(spawns[0]!.args, ["-i", "-w", "7317"]);
+  assert.deepEqual(spawns[0]!.options, {}, "the fixture is not a process-tree root");
+});
+
+test("Linux enable spawns the exact systemd-inhibit argv as a process-tree root", async () => {
+  const { manager, spawns } = linuxSetup();
+  const status = await manager.setEnabled(true);
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0]!.bin, "/usr/bin/systemd-inhibit");
+  // idle AND sleep, blocked rather than delayed, around a command that lives exactly as
+  // long as the daemon PID does.
+  assert.deepEqual(spawns[0]!.args, [
+    "--what=idle:sleep",
+    "--who=Mission Control",
+    "--why=Mission Control is keeping this computer awake while agent work is active",
+    "--mode=block",
+    "/usr/bin/tail",
+    "--pid=7317",
+    "-f",
+    "/dev/null",
+  ]);
+  assert.deepEqual(spawns[0]!.options, { detached: true });
+  assert.equal(status.state, "on");
+  assert.equal(status.provider, "systemd-inhibit");
+});
+
+test("Linux off ends the inhibitor's whole tree through the process-lifetime seam", async () => {
+  const { manager, spawns, signals, statuses, track } = linuxSetup();
+  await manager.setEnabled(true);
+  track();
+  const status = await manager.setEnabled(false);
+  assert.deepEqual(signals, [{ pid: 4242, signal: "SIGTERM" }]);
+  assert.deepEqual(spawns[0]!.child.killed, [], "the tree was signalled, not the child alone");
+  assert.equal(status.state, "off");
+  assert.deepEqual(statuses.map((s) => s.state), ["starting", "on", "stopping", "off"]);
+});
+
+test("Linux SIGKILL escalation also goes to the tree", async () => {
+  const { manager, signals, timers, track } = linuxSetup({ obeys: "sigkill-only" });
+  await manager.setEnabled(true);
+  track();
+  const pending = manager.setEnabled(false);
+  await settle();
+  timers.fire(50);
+  const status = await pending;
+  assert.deepEqual(signals.map((s) => s.signal), ["SIGTERM", "SIGKILL"]);
+  assert.equal(status.state, "off");
+});
+
+test("Linux falls back to the child itself when its tree is already gone", async () => {
+  // `track()` is never called, so the recording seam answers ESRCH for every pid.
+  const { manager, spawns, signals } = linuxSetup();
+  await manager.setEnabled(true);
+  const status = await manager.setEnabled(false);
+  assert.deepEqual(signals, [{ pid: 4242, signal: "SIGTERM" }]);
+  assert.deepEqual(spawns[0]!.child.killed, ["SIGTERM"]);
+  assert.equal(status.state, "off");
+});
+
+test("Linux: the inhibitor ending on its own, as when the daemon dies, is an error and not restarted", async () => {
+  const { manager, spawns } = linuxSetup();
+  await manager.setEnabled(true);
+  spawns[0]!.child.emit("exit", 0, null);
+  assert.equal(manager.status().state, "error");
+  assert.match(manager.status().error ?? "", /systemd-inhibit process exited unexpectedly/);
+  assert.equal(spawns.length, 1);
 });

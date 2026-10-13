@@ -29,6 +29,7 @@ import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { UpdateSettingsPanel } from "./UpdateSettingsPanel.tsx";
+import { IntegrationsSettingsPanel } from "./IntegrationsSettingsPanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { SetupPanel } from "./SetupPanel.tsx";
 import type { SetupChecksState } from "../useSetupChecks.ts";
@@ -590,6 +591,7 @@ export function SettingsPage({
         return (
           <>
             <UpdateSettingsPanel />
+            <IntegrationsSettingsPanel />
             <SetupPanel
               state={setup}
               jumpAnchor={unhandledJump?.anchor ?? null}

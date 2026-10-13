@@ -79,17 +79,28 @@ fall back to wrapping; phone layouts are not a supported target.
 ### Keep awake (prevent idle system sleep)
 
 The pulse's leading **live** segment opens a compact **Keep awake** dropdown anchored to
-the indicator. Its one switch keeps this Mac from going to sleep just because you stepped
+the indicator. Its one switch, **Keep this computer awake**, keeps the machine from going to
+sleep just because you stepped
 away - so long-running agents, Recurring Missions catch-up, and the Foreman keep working
 while the screen is dark.
 
-What it does, exactly: the daemon owns an in-process IOKit
+What it does on macOS, exactly: the daemon owns an in-process IOKit
 `PreventUserIdleSystemSleep` assertion, which prevents **user-idle system sleep** and
 nothing else. The display still dims and locks on your normal schedule. Lid close,
 choosing Sleep yourself, shutdown, power loss, and the thermal and low-battery safeguards
 all still win - this is an idle-sleep inhibitor, not a wake scheduler, and it never keeps
 the display awake or simulates activity. It does use more battery than letting the machine
 sleep, and the dropdown says so.
+
+On Linux the daemon runs `systemd-inhibit --what=idle:sleep --mode=block` around
+`tail --pid=<daemon PID>`, so logind holds an idle and sleep lock named **Mission Control**
+for as long as the daemon lives. Turning the switch off ends that process tree; a daemon that
+dies any other way ends it too, because `tail` exits with the daemon's PID. logind ignores
+inhibitors on lid close by default (`LidSwitchIgnoreInhibited=yes`) and does not hold your
+own account's sleep request against your own lock, so lid close and choosing Sleep still work.
+`systemd-inhibit --list` shows the lock while it is held. Without `systemd-inhibit` on the
+daemon's `PATH` (or `SYSTEMD_INHIBIT_BIN`), or without an executable `/usr/bin/tail`, the
+switch is unavailable and names what is missing.
 
 While it is on, the indicator reads **`live · awake`** with a purple dot - the word
 carries the mode, so color is never the only signal. A native load failure makes the control
@@ -100,7 +111,8 @@ reconciling an exact retained handle before reacquiring when a release failed.
 
 The mode is **deliberately transient**: on until Mission Control quits or restarts, never
 persisted, never reacquired at boot. An orderly shutdown releases the assertion itself,
-and a crash releases it too because IOKit assertions are owned by the daemon process.
+and a crash releases it too: IOKit assertions are owned by the daemon process, and the Linux
+inhibitor exits with the daemon's PID.
 The tradeoff is stated in the dropdown rather than hidden: a daemon restart
 while you are away returns the mode to off. Keep awake is also independent of
 [Away mode](attention-and-alerts.md#away-mode) - alert delivery and host power are different decisions, and
@@ -108,7 +120,7 @@ neither implies the other.
 
 Because the **daemon** owns the assertion (not the Electron shell), the switch behaves
 identically in every launch mode: browser dashboard, desktop app, adopted daemon, or a
-LaunchAgent. Unsupported platforms show **unavailable on this system** instead of drawing
+LaunchAgent. Unsupported hosts show **unavailable on this system** instead of drawing
 an on state, and while the dashboard is `reconnecting` the switch is disabled - a stale
 `on` must never read as a current claim about the OS. Every open window converges on the
 same observed state over the live channel. The manual verification runbook, including the

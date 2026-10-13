@@ -239,8 +239,8 @@ Three things worth knowing before you switch one on:
   that both removes every link and records that you wanted them gone, so nothing brings
   them back. Removing the links any other way is temporary - the daemon reconciles
   every declared directory against this config on every start, so a config still saying
-  "on" re-creates them. (The tray's "Remove Claude integrations" is hooks and the MCP
-  server only; it does not touch skills.)
+  "on" re-creates them. ("Remove Claude integrations", in the tray or in Settings → Setup →
+  Integrations, is hooks and the MCP server only; it does not touch skills.)
 - **Enabling a skill loads it; it does not oblige the agent to use it.** Native skills
   are model-invoked, so each row carries an **enforcement badge** saying which rung it
   sits on. "When relevant" means exactly that.

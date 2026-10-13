@@ -28,7 +28,7 @@ import { Tooltip } from "./Tooltip.tsx";
 /** The dropdown's visible copy, shared with the render test so the two cannot drift. */
 export const KEEP_AWAKE_COPY = {
   title: "Keep awake",
-  sub: "Keep this Mac awake",
+  sub: "Keep this computer awake",
   lock: "The screen can dim and lock normally. Prevents idle sleep.",
   lid: "Lid close and manual Sleep still work. Uses more battery power.",
   lifecycle: "On until Mission Control quits or restarts.",

@@ -20156,6 +20156,12 @@ button.wf-carried.is-link:focus-visible {
   line-height: 1.5;
   color: var(--dim);
 }
+.integrations-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
 /* The one link style for in-page settings navigation and in-place fixes: the console
    panels' "Manage in Trust", Shipping's dependency warnings, Trust's dagger fixes, and the
    door a refused dispatch offers under the Dispatch form. A

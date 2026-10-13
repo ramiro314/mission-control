@@ -921,9 +921,9 @@ async function shutdown(): Promise<void> {
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
   archives.stop();
-  // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
-  // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
-  // orderly half of a two-part cleanup, not the only one.
+  // Release the idle-sleep assertion while we can still do it gracefully. IOKit drops the
+  // native assertion with this process, and the Linux inhibitor's `tail --pid=<daemon PID>`
+  // exits with it, so this is the orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
   // Stop taking new export work, commit whatever is captured but unprojected, and release this
   // process's leases. Time-bounded by construction: the local commit gets a budget and the

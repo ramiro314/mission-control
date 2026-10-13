@@ -36,7 +36,7 @@ init: ## First-run bootstrap: deps, build, and hooks (ARGS="--with-e2e" also che
 # lets the app keep itself current. `app` and `install-app` below stay the DEVELOPER path:
 # they install this worktree and write no receipt, so a work-in-progress build is never
 # mistaken for a managed install.
-install: ## Install Mission Control.app from a clean, updater-owned clone (ARGS="--ref v1.2.3")
+install: ## [macOS] Install Mission Control.app from a clean, updater-owned clone (ARGS="--ref v1.2.3")
 	node scripts/install-app.mjs $(ARGS)
 
 session: ## Ask the running daemon for a manual worktree lease (e.g. make session ARGS="-- claude")
@@ -104,12 +104,12 @@ db: ## Open the Mission Control SQLite database in a read-only shell
 build: $(NPM_STAMP) ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build
 
-app: ## Build and package the macOS app (.app + .dmg) into release/
+app: ## [macOS] Build and package the app (.app + .dmg) into release/
 	npm run package
 
 # APPS_DIR overrides the destination; it must already exist. The default is this account's own
 # ~/Applications, created when missing, matching what `make install` now uses.
-install-app: app ## Build, package, and install THIS worktree's app into ~/Applications (no receipt)
+install-app: app ## [macOS] Build, package, and install THIS worktree's app into ~/Applications (no receipt)
 	@node scripts/install-dev-app.mjs $(if $(APPS_DIR),--apps-dir "$(APPS_DIR)",)
 
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
