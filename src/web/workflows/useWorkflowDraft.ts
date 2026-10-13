@@ -144,6 +144,22 @@ export function workflowSavePreflight(
   return "save";
 }
 
+/**
+ * The draft history step a keydown asks for, or null. Undo is Cmd/Ctrl+Z and redo is
+ * Cmd/Ctrl+Shift+Z everywhere; off macOS Ctrl+Y is redo too, the way Linux and Windows editors
+ * spell it. On a Mac Cmd+Y is not redo, so it is left alone there.
+ */
+export function draftHistoryStep(
+  event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey">,
+  mac: boolean,
+): "undo" | "redo" | null {
+  if (!(event.metaKey || event.ctrlKey)) return null;
+  const key = event.key.toLowerCase();
+  if (key === "z") return event.shiftKey ? "redo" : "undo";
+  if (key === "y" && !mac && event.ctrlKey && !event.shiftKey) return "redo";
+  return null;
+}
+
 export interface WorkflowDraftState {
   workflow: WorkflowDefinition | null;
   versions: WorkflowVersionMetadata[];

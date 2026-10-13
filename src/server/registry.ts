@@ -8,6 +8,7 @@ import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
+import { homedir } from "node:os";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
@@ -1253,6 +1254,7 @@ export class Registry extends EventEmitter {
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     latestSettingsRestore: SettingsRestoredEvent | null;
+    home: string;
   } {
     return {
       sessionTransfers: sessionTransferPage(),
@@ -1298,6 +1300,7 @@ export class Registry extends EventEmitter {
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
       latestSettingsRestore: this.latestSettingsRestore,
+      home: homedir(),
     };
   }
 

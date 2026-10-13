@@ -153,6 +153,15 @@ test("a bare command name counts only under a known wrapper", () => {
       for (const wrapper of ["make", "sh -c", "docker exec -it ctr zsh -lc", "sudo"]) {
         assert.equal(classifyAgent(`${wrapper} ${name}`), h.id, `${wrapper} ${name}`);
       }
+      for (const wrapper of [
+        "/usr/bin/systemd-run --user --scope",
+        "systemd-inhibit --what=idle",
+        "setsid",
+        "flatpak-spawn --host",
+      ]) {
+        assert.equal(classifyAgent(`${wrapper} ${name}`), h.id, `${wrapper} ${name}`);
+        assert.equal(nativeAgent(`${wrapper} ${name}`), null, `launcher is not native: ${wrapper}`);
+      }
       // The reason the wrapper list exists: a command that merely mentions the agent.
       assert.equal(classifyAgent(`git commit -m "fix ${name} bug"`), null, name);
       assert.equal(classifyAgent(`vim ${name}.md`), null, name);

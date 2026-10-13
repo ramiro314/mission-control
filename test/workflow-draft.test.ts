@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { WorkflowDefinition } from "../src/shared/workflow.ts";
 import {
+  draftHistoryStep,
   editableFingerprint,
   restoreWorkflowEditableSnapshot,
   reconcileWorkflowSave,
@@ -102,4 +103,21 @@ test("same-revision publish metadata reloads a clean editor", () => {
   const local = workflow("saved", 2);
   assert.equal(workflowSummaryAction({ local, summary: { ...summary(2, "v1"), updatedAt: 3 }, dirty: false, saving: false }), "reload");
   assert.equal(workflowSummaryAction({ local, summary: { ...summary(2, "v1"), updatedAt: 3 }, dirty: true, saving: false }), "ignore");
+});
+
+test("draft history keys: Ctrl+Y is redo off macOS only", () => {
+  const key = (k: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boolean } = {}) => ({
+    key: k, metaKey: !!mods.meta, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift,
+  });
+  for (const mac of [true, false]) {
+    assert.equal(draftHistoryStep(key("z", { meta: true }), mac), "undo");
+    assert.equal(draftHistoryStep(key("z", { ctrl: true }), mac), "undo");
+    assert.equal(draftHistoryStep(key("Z", { ctrl: true, shift: true }), mac), "redo");
+    assert.equal(draftHistoryStep(key("z"), mac), null);
+    assert.equal(draftHistoryStep(key("y"), mac), null);
+  }
+  assert.equal(draftHistoryStep(key("y", { ctrl: true }), false), "redo");
+  assert.equal(draftHistoryStep(key("y", { ctrl: true }), true), null);
+  assert.equal(draftHistoryStep(key("y", { meta: true }), true), null);
+  assert.equal(draftHistoryStep(key("Y", { ctrl: true, shift: true }), false), null);
 });

@@ -34,6 +34,7 @@ import {
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
+import { setDaemonHome } from "./lib/format.ts";
 import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
@@ -326,6 +327,8 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          // Before the sessions below, so their first render already shortens their paths.
+          setDaemonHome(msg.home ?? "");
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));

@@ -152,7 +152,7 @@ test('committed installation distinguishes incomplete integration repair and tar
   await capture(dashboard, 'repair-required.png');
   await banner.getByRole('button', {name: 'Retry integration repair'}).click();
   await expect(banner).toContainText('Personal installation complete');
-  await expect(banner).toContainText('Replace the old Dock shortcut');
+  await expect(banner).toContainText('Replace any shortcut to the system copy');
   await expect(banner.getByRole('button', {name: 'Retry integration repair'})).toHaveCount(0);
   expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['repair']);
   await capture(dashboard, 'complete.png');

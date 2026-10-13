@@ -23,11 +23,11 @@ export interface UpdatePhaseCopy {
 }
 
 export function migrationReadyDetail(source: string, target: string): string {
-  return `This update moves Mission Control from ${source} to ${target}. The system copy is retained for other accounts and existing sessions. Your state stays where it is. Mission Control will close and reopen from your personal Applications folder.`;
+  return `This update moves Mission Control from ${source} to ${target}. The system copy is retained for other accounts and existing sessions. Your state stays where it is. Mission Control will close and reopen from ${target}.`;
 }
 
 export function migrationCompleteDetail(target: string): string {
-  return `Mission Control is installed at ${target}. The system copy was retained. Replace the old Dock shortcut with the personal app, and start fresh agent sessions to use repaired integration paths.`;
+  return `Mission Control is installed at ${target}. The system copy was retained. Replace any shortcut to the system copy with one to the personal install, and start fresh agent sessions to use repaired integration paths.`;
 }
 
 export const UPDATE_COPY: {

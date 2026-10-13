@@ -165,10 +165,9 @@ export const browserTarget: OpenTargetImpl = {
       };
     }
     if (deps.platform === "linux") return linuxLauncher(deps);
-    // Refused by NAME rather than attempted, because there is no candidate to try: the
-    // desktop build is macOS-only (`electron-builder.yml`) and the daemon runs on Linux
-    // for development. A Windows branch is a `start`-shaped command and a registry read,
-    // and it goes here.
+    // Refused by NAME rather than attempted, because there is no candidate to try: macOS
+    // and Linux are the platforms the daemon runs on. A Windows branch is a `start`-shaped
+    // command and a registry read, and it goes here.
     return { ok: false, reason: `opening files in a browser is not supported on ${deps.platform} yet` };
   },
 };

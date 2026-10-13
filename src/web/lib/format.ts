@@ -2,6 +2,7 @@ import { activePaneDialog } from "@shared/session.ts";
 import type { AgentType, PermissionMode, Session, SessionState } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canRename, type PaneHandles } from "@shared/pane.ts";
+import { homeRelative } from "@shared/setup-catalog.ts";
 
 export function relativeTime(ms: number | null, now = Date.now()): string {
   if (!ms) return "";
@@ -251,15 +252,23 @@ export function repoLeaf(repoRoot: string | null | undefined): string {
   return leaf && leaf.length > 0 ? leaf : trimmed;
 }
 
-export function shortenCwd(cwd: string | null): string {
+let daemonHome = "";
+
+/** Record the daemon's home directory from its snapshot, for `shortenCwd`. */
+export function setDaemonHome(home: string): void {
+  daemonHome = home;
+}
+
+/**
+ * `cwd` with the daemon's home written as `~`, or `-` when there is none.
+ *
+ * The daemon's home, not a `/Users/` pattern: a session's cwd is a path on the daemon's
+ * machine, which may be Linux, and the browser cannot read that home itself. Until a snapshot
+ * has named it, paths are shown in full.
+ */
+export function shortenCwd(cwd: string | null, home: string = daemonHome): string {
   if (!cwd) return "-";
-  const home = "/Users/";
-  let p = cwd;
-  if (p.startsWith(home)) {
-    const rest = p.slice(home.length).split("/").slice(1).join("/");
-    p = "~/" + rest;
-  }
-  return p;
+  return homeRelative(cwd, home);
 }
 
 /**
