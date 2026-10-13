@@ -5,6 +5,7 @@ import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
 import { appleScriptString } from "./applescript.ts";
+import { prepareGuiSpawn, type PrepareGuiSpawn } from "../graphical-session.ts";
 import type {
   EmulatorPane,
   EmulatorTarget,
@@ -203,8 +204,9 @@ export function parseSurfaces(stdout: string): TerminalInventory<EmulatorPane> {
 export function ghosttyEmulator(
   exec: TerminalExec = defaultExec,
   platform: NodeJS.Platform = process.platform,
+  prepareGui: PrepareGuiSpawn = prepareGuiSpawn,
 ): TerminalEmulator {
-  return platform === "linux" ? linuxGhostty(exec) : appleScriptGhostty(exec);
+  return platform === "linux" ? linuxGhostty(exec, prepareGui) : appleScriptGhostty(exec);
 }
 
 /**
@@ -229,7 +231,7 @@ const SPAWN_TIMEOUT_MS = 10_000;
  * For the same reason it never hosts a dispatched agent (`raiseOnly`), like the Linux default
  * terminal: an agent in a window nothing can address could be neither messaged nor found again.
  */
-function linuxGhostty(exec: TerminalExec): TerminalEmulator {
+function linuxGhostty(exec: TerminalExec, prepareGui: PrepareGuiSpawn): TerminalEmulator {
   return {
     id: "ghostty",
     label: "Ghostty",
@@ -250,9 +252,13 @@ function linuxGhostty(exec: TerminalExec): TerminalEmulator {
           "-e",
           ...spec.argv,
         ];
-        const r = await exec(resolveBin(GHOSTTY_BIN), args, {
+        // A live display, and a scope of its own: when no instance is running this process
+        // becomes it, and the window must outlive a daemon restart.
+        const prepared = await prepareGui(resolveBin(GHOSTTY_BIN), args, binEnv(GHOSTTY_BIN));
+        if (!prepared.ok) return { ok: false, error: prepared.error, outcomeUnknown: false, target: null };
+        const r = await exec(prepared.bin, prepared.args, {
           timeoutMs: SPAWN_TIMEOUT_MS,
-          env: binEnv(GHOSTTY_BIN),
+          env: prepared.env,
         });
         // A window opened and nothing can address it - `SpawnResult`'s honest split.
         return { ...toResult(r, "ghostty could not open a window"), target: null };

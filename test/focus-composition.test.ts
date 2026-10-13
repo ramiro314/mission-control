@@ -23,6 +23,7 @@ import { mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.t
 import type { MuxSessions } from "../src/server/terminal/types.ts";
 import { GHOSTTY_BIN } from "../src/server/terminal/bin.ts";
 import { ghosttyEmulator } from "../src/server/terminal/ghostty.ts";
+import { unpreparedGuiSpawn } from "../src/server/graphical-session.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 
 // What is at stake: that Focus is a COMPOSITION of two axes and not a tmux special case.
@@ -214,7 +215,7 @@ test("on Linux with Ghostty and no WezTerm, Focus opens a Ghostty window on the 
     const ghostty = ghosttyEmulator(async (_bin, args) => {
       calls.push(args);
       return stubRun({ stdout: "", stderr: "", code: 0 });
-    }, "linux");
+    }, "linux", unpreparedGuiSpawn);
     const mux = fakeMultiplexer({ sessions: sessions(), clients: async () => clients, select: async () => OK });
     const deps = {
       ...fakeTerminals(mux, fakeEmulator(), undefined, ghostty),

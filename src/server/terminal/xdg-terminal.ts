@@ -8,6 +8,7 @@ import {
 } from "../executables/locator.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
+import { prepareGuiSpawn, type PrepareGuiSpawn } from "../graphical-session.ts";
 import type { SpawnResult, TabSpec, TerminalEmulator, TerminalResult } from "./types.ts";
 
 /**
@@ -58,6 +59,8 @@ export interface XdgTerminalDeps {
   launchers: () => readonly XdgTerminalLauncher[];
   launch: DetachedLaunch;
   settleMs: number;
+  /** The display environment and scope every launcher runs in (`graphical-session.ts`). */
+  prepareGui: PrepareGuiSpawn;
 }
 
 function launcher(
@@ -89,7 +92,8 @@ export function xdgTerminalLaunchers(
 export const launchDetached: DetachedLaunch = (launcher, args, opts) =>
   new Promise((resolve) => {
     let child: ChildProcess;
-    // Resolved by `xdgTerminalLaunchers` through the shared locator before it gets here.
+    // Resolved through the shared locator before it gets here: the launcher itself, or the
+    // `systemd-run` that scopes it.
     const executable = launcher.path;
     try {
       // The root of its own process tree, so the window outlives a daemon restart, and no
@@ -142,6 +146,7 @@ const defaultDeps: XdgTerminalDeps = {
   launchers: () => xdgTerminalLaunchers(),
   launch: launchDetached,
   settleMs: XDG_TERMINAL_SETTLE_MS,
+  prepareGui: prepareGuiSpawn,
 };
 
 export function xdgTerminalEmulator(deps: XdgTerminalDeps = defaultDeps): TerminalEmulator {
@@ -167,7 +172,14 @@ export function xdgTerminalEmulator(deps: XdgTerminalDeps = defaultDeps): Termin
         const argv = rootedArgv(spec.argv, spec.cwd);
         const refusals: string[] = [];
         for (const entry of deps.launchers()) {
-          const result = await deps.launch(entry, argv, { cwd: spec.cwd, settleMs: deps.settleMs });
+          // No display is the same answer for every launcher, so it ends the attempt here.
+          const prepared = await deps.prepareGui(entry.path, [...entry.prefix, ...argv], entry.env);
+          if (!prepared.ok) return { ok: false, error: prepared.error, outcomeUnknown: false, target: null };
+          const result = await deps.launch(
+            { ...entry, path: prepared.bin, env: prepared.env, prefix: [] },
+            prepared.args,
+            { cwd: spec.cwd, settleMs: deps.settleMs },
+          );
           // An unknown outcome may be an open window; trying the next launcher could open a
           // second one, so it is reported rather than retried.
           if (result.ok || result.outcomeUnknown) return { ...result, target: null };

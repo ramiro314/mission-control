@@ -1,6 +1,7 @@
 import { OPEN_TARGET_IDS, type OpenTargetId, type OpenTargetView } from "@shared/open-targets.ts";
 import { run } from "../util/exec.ts";
 import { locateCommandSync } from "../executables/locator.ts";
+import { prepareGuiSpawn, unpreparedGuiSpawn } from "../graphical-session.ts";
 import { browserTarget } from "./browser.ts";
 import type { OpenDeps, OpenTargetImpl } from "./types.ts";
 
@@ -29,6 +30,7 @@ export const defaultOpenDeps: OpenDeps = {
   env: process.env,
   installed: (bin) => locateCommandSync(bin) !== null,
   resolveBin: (bin) => locateCommandSync(bin)?.path ?? null,
+  prepareGui: prepareGuiSpawn,
 };
 
 /**
@@ -98,9 +100,15 @@ export async function openFile(
   }
   const { bin, args } = resolved.launcher.command(file);
   const detail = resolved.launcher.detail;
+  // On Linux the launcher gets a live display, and a scope of its own: it may start the
+  // browser itself, which must not close when the daemon restarts.
+  const prepared = await (deps.prepareGui ?? unpreparedGuiSpawn)(bin, args, deps.env);
+  if (!prepared.ok) {
+    return { ok: false, label: target.label, detail, error: prepared.error, status: 409 };
+  }
   // Launchers hand the file to an already-running (or freshly started) application and
   // exit; they do not stay attached to it, so waiting for one is bounded and cheap.
-  const result = await deps.run(bin, args, { timeoutMs: 15_000, env: deps.env });
+  const result = await deps.run(prepared.bin, prepared.args, { timeoutMs: 15_000, env: prepared.env });
   if (result.code === 0) return { ok: true, label: target.label, detail, status: 200 };
   if (result.outcomeUnknown) {
     // `run`'s narrowing flag, honoured: the child never reported its own exit, so the file

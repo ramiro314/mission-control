@@ -1030,7 +1030,10 @@ checkout, so a row that says "Browser" resolves the application you actually cho
 web - on macOS the bundle LaunchServices hands `https` to, on Linux what
 `xdg-settings` reports (falling back to `xdg-open`, which can no longer name the
 application, and says so rather than guessing). The row names what it found, so you can see
-*Browser · Chrome* before clicking.
+*Browser · Chrome* before clicking. On Linux the launcher runs with a display the daemon can
+actually reach, in a scope of its own, and with no reachable desktop it refuses with "No
+graphical session is reachable" instead (see
+[Linux display and process scopes](harnesses-and-terminals.md#linux-display-and-process-scopes)).
 
 - **What opens is what you are looking at.** Autosave is 750ms behind the keystroke and
   every target reads the file from disk, so a pending save is flushed and waited on first.
