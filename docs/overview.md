@@ -253,8 +253,9 @@ The app is self-contained: the daemon runs on Electron's bundled Node (with `nod
 so no system `node` is required to run it. On launch it **adopts** an already-running daemon
 (a LaunchAgent or `make up`) instead of starting a second one. Closing the window hides it
 (the app stays in the menu bar so alerts keep firing); quit from the tray menu. Enable
-**Start at login** and **Install Claude integrations…** (wires the status hooks + MCP review
-server at the app's bundled paths) from the tray menu.
+**Start at login** from the tray menu. **Install Claude integrations** (wires the status hooks +
+MCP review server at the app's bundled paths) is in the tray menu and in **Settings → Setup →
+Integrations**, which is the way in on a desktop with no tray.
 
 Both paths build on your own Mac and copy the result into place, so nothing crosses a
 download boundary and Gatekeeper never quarantines the bundle: the app opens normally, with no

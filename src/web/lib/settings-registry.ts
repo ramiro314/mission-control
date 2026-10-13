@@ -146,10 +146,10 @@ export const SETTINGS_CATEGORIES = [
     id: "setup",
     label: "Setup",
     icon: "✓",
-    blurb: "Application updates, external tools, and what is still missing",
+    blurb: "Application updates, Claude integrations, external tools, and what is still missing",
     group: "sessions",
     scope: "installation",
-    keywords: ["install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
+    keywords: ["install", "alpha", "updates", "integrations", "hooks", "mcp", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
   },
   {
     id: "harnesses",
