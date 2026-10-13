@@ -74,7 +74,9 @@ export function installTerminalBoundary(deps: TerminalDeps): void {
 
 /** Pane writes build fresh adapters too, so every Ghostty factory call uses this boundary. */
 export function ghosttyEmulator(exec?: TerminalExec): ReturnType<typeof nativeGhosttyEmulator> {
-  const ghostty = nativeGhosttyEmulator(exec);
+  // The AppleScript Ghostty on every host: these specs drive its list, write and host
+  // correlation, which the spawn-only Linux adapter does not have.
+  const ghostty = nativeGhosttyEmulator(exec, "darwin");
   ghostty.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
   ghostty.spawn = {
     tab: async (spec) => {

@@ -354,7 +354,7 @@ export class ExecutableLocator {
       overrideEnv: null,
       legacyEnv: [],
       candidates: () => [],
-      searchPath: true,
+      searchPath: () => true,
       dropEnv: [],
     };
   }
@@ -412,7 +412,7 @@ export class ExecutableLocator {
       if (!isAbsolute(candidate) || !this.isExecutable(candidate)) continue;
       return this.result(spec, candidate, "supported-location", candidate, snapshot, baseEnv);
     }
-    const found = spec.searchPath ? this.find(spec.command, snapshot.entries) : null;
+    const found = spec.searchPath(this.platform) ? this.find(spec.command, snapshot.entries) : null;
     return found
       ? this.result(spec, found.path, found.entry.source, found.entry.detail, snapshot, baseEnv)
       : null;

@@ -38,6 +38,9 @@ function recorder(results: RunResult[] = []) {
   return { calls, exec };
 }
 
+/** The AppleScript adapter, pinned to macOS so this file means the same thing on a Linux CI. */
+const macGhostty = (exec?: Parameters<typeof ghosttyEmulator>[0]) => ghosttyEmulator(exec, "darwin");
+
 const TARGET = { paneId: "9F022DDA-3FD6-42AB-8388-D35E74B22ADA", tabId: "tab-bd55d7600" };
 const US = "";
 const RS = "";
@@ -51,7 +54,7 @@ function onlyScript(calls: Call[]): string {
 }
 
 test("the capabilities it declares, and the two nulls that survived a real install", () => {
-  const g = ghosttyEmulator();
+  const g = macGhostty();
 
   // Not null, against the plan's prediction. Each of these was driven against Ghostty 1.3.1.
   assert.ok(g.list, "Ghostty enumerates - its AppleScript dictionary lists windows/tabs/surfaces");
@@ -82,11 +85,11 @@ test("the catalog declares the detection binary and the adapter never runs it", 
     `${process.env.HOME}/Applications/Ghostty.app/Contents/MacOS/ghostty`,
   ]);
 
-  // No bare PATH candidate, deliberately: `ghostty` is normally absent from PATH on macOS
-  // and normally PRESENT on Linux, where the AppleScript this adapter depends on does not
-  // exist. A bare candidate would report "installed" on exactly the platform where every
-  // call must fail.
-  assert.equal(declared.searchPath, false);
+  // No PATH search on macOS, deliberately: `ghostty` is normally absent from PATH there, and
+  // a binary found on it is still not what the AppleScript adapter runs. Linux searches PATH
+  // because its spawn-only adapter runs exactly that binary.
+  assert.equal(declared.searchPath("darwin"), false);
+  assert.equal(declared.searchPath("linux"), true);
   assert.equal(declared.candidates(executableCandidateContext()).includes("ghostty"), false);
   assert.equal(
     binPresent({ env: null, candidates: ["/nope/ghostty"], dropEnv: [] }),
@@ -94,7 +97,7 @@ test("the catalog declares the detection binary and the adapter never runs it", 
   );
 
   const { calls, exec } = recorder();
-  await ghosttyEmulator(exec).list!();
+  await macGhostty(exec).list!();
   assert.equal(calls[0]?.bin, "/usr/bin/osascript", "the adapter runs osascript, not ghostty");
 });
 
@@ -126,7 +129,7 @@ test("every key renders into Ghostty's own convention, which is a third one", as
 
   for (const key of ALL_KEYS) {
     const { calls, exec } = recorder();
-    await ghosttyEmulator(exec).write!.keys(TARGET, [key]);
+    await macGhostty(exec).write!.keys(TARGET, [key]);
     const script = onlyScript(calls);
     assert.ok(
       script.includes(expected[key]!),
@@ -143,7 +146,7 @@ test("text types literally with newlines SUBMITTING, assembled from two primitiv
   // INTERPRETS BACKSLASH ESCAPES - `text:a\nb` was measured arriving as a<LF>b - so a reply
   // containing a literal backslash-n would submit itself halfway through.
   const { calls, exec } = recorder();
-  await ghosttyEmulator(exec).write!.text(TARGET, "first\nsecond");
+  await macGhostty(exec).write!.text(TARGET, "first\nsecond");
   const script = onlyScript(calls);
 
   assert.ok(script.includes('input text "first"'));
@@ -165,7 +168,7 @@ test("a body starting with a dash reaches the surface untouched", async () => {
   // no parser to escape from. Pinned because the absence of a terminator reads like an
   // oversight next to the other two adapters.
   const { calls, exec } = recorder();
-  await ghosttyEmulator(exec).write!.text(TARGET, "-v is what broke it");
+  await macGhostty(exec).write!.text(TARGET, "-v is what broke it");
   assert.ok(onlyScript(calls).includes('input text "-v is what broke it"'));
 });
 
@@ -181,7 +184,7 @@ test("paste is one bracketed block, not the line-by-line path", async () => {
   // The distinction `PaneWrite` is built on: a multi-line prompt must reach the composer as
   // one block rather than being shredded into a submission per line.
   const { calls, exec } = recorder();
-  await ghosttyEmulator(exec).write!.paste!(TARGET, "line one\nline two");
+  await macGhostty(exec).write!.paste!(TARGET, "line one\nline two");
   const script = onlyScript(calls);
   assert.ok(script.includes('input text "line one\\nline two"'));
   assert.equal(script.includes('send key "enter"'), false, "a paste submits nothing");
@@ -229,13 +232,13 @@ test("a failed list preserves unknown inventory", async () => {
   // permission not granted (osascript exits non-zero with -1743). Neither is actionable from
   // a session card and both resolve themselves.
   const { exec } = recorder([stubRun({ stdout: "", stderr: "-1743", code: 1 })]);
-  assert.deepEqual(await ghosttyEmulator(exec).list!(), null);
+  assert.deepEqual(await macGhostty(exec).list!(), null);
 });
 
 test("spawn splits 'a window opened' from 'we can address it'", async () => {
   // `SpawnResult`'s whole reason to exist, and Ghostty is what it was written for.
   const ok = recorder([stubRun({ stdout: `UUID-NEW${US}tab-NEW`, stderr: "", code: 0 })]);
-  const made = await ghosttyEmulator(ok.exec).spawn!.tab({
+  const made = await macGhostty(ok.exec).spawn!.tab({
     argv: ["/bin/zsh", "-l"],
     title: "ignored",
     cwd: null,
@@ -246,7 +249,7 @@ test("spawn splits 'a window opened' from 'we can address it'", async () => {
   // Exit 0 with nothing readable back: the human got their window and nothing may be typed
   // into it. `ok: true` with a null target is a complete answer, not a failure.
   const mute = recorder([stubRun({ stdout: "", stderr: "", code: 0 })]);
-  const quiet = await ghosttyEmulator(mute.exec).spawn!.tab({
+  const quiet = await macGhostty(mute.exec).spawn!.tab({
     argv: ["/bin/zsh"],
     title: "t",
     cwd: null,
@@ -256,7 +259,7 @@ test("spawn splits 'a window opened' from 'we can address it'", async () => {
 
   // A spawn that failed opened nothing to address.
   const bad = recorder([stubRun({ stdout: "", stderr: "boom", code: 1 })]);
-  const failed = await ghosttyEmulator(bad.exec).spawn!.tab({
+  const failed = await macGhostty(bad.exec).spawn!.tab({
     argv: ["/bin/zsh"],
     title: "t",
     cwd: null,
@@ -272,7 +275,7 @@ test("a spawn asked for a cwd roots the surface there, never somewhere else", as
   // Ghostty can honour it - `surface configuration` carries `initial working directory` - so
   // what this pins is that it is actually sent rather than silently omitted.
   const { calls, exec } = recorder([stubRun({ stdout: `UUID-A${US}tab-A`, stderr: "", code: 0 })]);
-  await ghosttyEmulator(exec).spawn!.tab({
+  await macGhostty(exec).spawn!.tab({
     argv: ["/bin/zsh", "-l", "it's $HOME; $(printf injected)\nnext"],
     title: "t",
     cwd: "/w/alpha",
@@ -288,7 +291,7 @@ test("a spawn asked for a cwd roots the surface there, never somewhere else", as
   // And no cwd asked for means the key is absent entirely, not set to an empty string -
   // which Ghostty would read as a directory and refuse.
   const none = recorder([stubRun({ stdout: `UUID-B${US}tab-B`, stderr: "", code: 0 })]);
-  await ghosttyEmulator(none.exec).spawn!.tab({ argv: ["/bin/zsh"], title: "t", cwd: null });
+  await macGhostty(none.exec).spawn!.tab({ argv: ["/bin/zsh"], title: "t", cwd: null });
   assert.equal(onlyScript(none.calls).includes("initial working directory"), false);
 });
 
@@ -301,14 +304,14 @@ test("a killed write is reported as outcome-unknown, never as a clean refusal", 
   const { exec } = recorder([
     { stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false },
   ]);
-  const r = await ghosttyEmulator(exec).write!.text(TARGET, "hello");
+  const r = await macGhostty(exec).write!.text(TARGET, "hello");
   assert.equal(r.ok, false);
   assert.equal(r.outcomeUnknown, true);
 });
 
 test("focus raises the app and the surface, addressed by bundle id", async () => {
   const { calls, exec } = recorder();
-  const focus = ghosttyEmulator(exec).focus!;
+  const focus = macGhostty(exec).focus!;
   assert.equal(focus.granularity, "pane");
   await (focus as { raise(t: typeof TARGET): Promise<unknown> }).raise(TARGET);
   const script = onlyScript(calls);
@@ -325,7 +328,80 @@ test("failed or malformed inventory cannot prove an owned surface absent", async
     stubRun({ code: 1, stderr: "Not authorized to send Apple events (-1743)", stdout: "" }),
     stubRun({ code: 0, stdout: "malformed record", stderr: "" }),
   ]) {
-    assert.equal(await ghosttyEmulator(recorder([result]).exec).list!(), null);
+    assert.equal(await macGhostty(recorder([result]).exec).list!(), null);
   }
-  assert.deepEqual(await ghosttyEmulator(recorder([stubRun({ code: 0, stdout: "", stderr: "" })]).exec).list!(), []);
+  assert.deepEqual(await macGhostty(recorder([stubRun({ code: 0, stdout: "", stderr: "" })]).exec).list!(), []);
+});
+
+test("on Linux Ghostty is spawn-only: it opens a window and declares everything else null", () => {
+  const g = ghosttyEmulator(undefined, "linux");
+  assert.equal(g.id, "ghostty");
+  assert.equal(g.label, "Ghostty");
+  assert.ok(g.spawn, "it opens a window");
+  // No Linux transport lists, types into or reads a surface; the multiplexer it attaches to
+  // already does all three. With nothing listed there is nothing to raise or restore.
+  assert.equal(g.list, null);
+  assert.equal(g.write, null);
+  assert.equal(g.capture, null);
+  assert.equal(g.focus, null);
+  assert.equal(g.hostProcess, null);
+  assert.equal(g.restoreTarget, null);
+  assert.equal(g.retitle, null);
+  // An agent in a window nothing can address could be neither messaged nor found again, so
+  // dispatch never homes one here - the Linux default terminal's rule.
+  assert.equal(g.raiseOnly, true);
+  assert.equal(macGhostty().raiseOnly, undefined, "the AppleScript adapter still hosts agents");
+});
+
+test("on Linux a spawn runs the resolved ghostty with +new-window and the argv after -e", async () => {
+  const { calls, exec } = recorder();
+  const opened = await ghosttyEmulator(exec, "linux").spawn!.tab({
+    argv: ["tmux", "attach-session", "-t", "=mc work"],
+    title: "mc work",
+    cwd: null,
+  });
+  assert.deepEqual(opened, { ok: true, outcomeUnknown: false, target: null });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.bin, /ghostty$/, "the CLI is what runs, not osascript");
+  // `-e` is last before the command, because Ghostty takes every argument after it as the
+  // command's own argv. An argument with a space stays one argument.
+  assert.deepEqual(calls[0]!.args, [
+    "+new-window",
+    "--title=mc work",
+    "-e",
+    "tmux",
+    "attach-session",
+    "-t",
+    "=mc work",
+  ]);
+});
+
+test("on Linux a spawn asked for a cwd roots the window there", async () => {
+  const { calls, exec } = recorder();
+  await ghosttyEmulator(exec, "linux").spawn!.tab({
+    argv: ["claude"],
+    title: "dispatch",
+    cwd: "/work/tree",
+  });
+  assert.deepEqual(calls[0]!.args, [
+    "+new-window",
+    "--working-directory=/work/tree",
+    "--title=dispatch",
+    "-e",
+    "claude",
+  ]);
+});
+
+test("on Linux a refused or killed spawn keeps its error and its unknown outcome", async () => {
+  const refused = recorder([stubRun({ code: 1, stderr: "D-Bus activation failed", stdout: "" })]);
+  assert.deepEqual(
+    await ghosttyEmulator(refused.exec, "linux").spawn!.tab({ argv: ["sh"], title: "t", cwd: null }),
+    { ok: false, error: "D-Bus activation failed", outcomeUnknown: false, target: null },
+  );
+  const killed = recorder([
+    { stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false },
+  ]);
+  const r = await ghosttyEmulator(killed.exec, "linux").spawn!.tab({ argv: ["sh"], title: "t", cwd: null });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcomeUnknown, true, "the window may be open; nothing may tear it down");
 });

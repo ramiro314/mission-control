@@ -25,7 +25,7 @@ export interface ExecutableSpec {
   /** Absolute supported locations checked before PATH. */
   candidates: (context: ExecutableCandidateContext) => readonly string[];
   /** Whether the command name is eligible for PATH lookup after absolute candidates. */
-  searchPath: boolean;
+  searchPath: (platform: NodeJS.Platform) => boolean;
   /** Variables removed from children of this executable. */
   dropEnv: readonly string[];
 }
@@ -45,7 +45,7 @@ function spec(
     legacyEnv?: readonly string[];
     candidates?: ExecutableSpec["candidates"];
     dropEnv?: readonly string[];
-    searchPath?: boolean;
+    searchPath?: ExecutableSpec["searchPath"];
   } = {},
 ): ExecutableSpec {
   return {
@@ -55,7 +55,7 @@ function spec(
     overrideEnv,
     legacyEnv: options.legacyEnv ?? [],
     candidates: options.candidates ?? none,
-    searchPath: options.searchPath ?? true,
+    searchPath: options.searchPath ?? (() => true),
     dropEnv: options.dropEnv ?? [],
   };
 }
@@ -99,15 +99,17 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     candidates: appCandidates("WezTerm.app", "Contents/MacOS/wezterm"),
     dropEnv: ["WEZTERM_UNIX_SOCKET"],
   }),
+  // macOS: the app bundle only, because the bundled binary is not what the adapter runs.
+  // Linux: the `ghostty` on PATH, which the spawn-only adapter runs. See `GHOSTTY_BIN`.
   ghostty: spec("ghostty", "Ghostty", "ghostty", "GHOSTTY_BIN", {
     legacyEnv: ["GHOSTTY_BIN"],
     candidates: appCandidates("Ghostty.app", "Contents/MacOS/ghostty"),
-    searchPath: false,
+    searchPath: (platform) => platform === "linux",
   }),
   iterm: spec("iterm", "iTerm2", "iTerm2", "ITERM_BIN", {
     legacyEnv: ["ITERM_BIN"],
     candidates: appCandidates("iTerm.app", "Contents/MacOS/iTerm2"),
-    searchPath: false,
+    searchPath: () => false,
   }),
   open: spec("open", "macOS application launcher", "open", "OPEN_BIN", {
     candidates: () => ["/usr/bin/open"],

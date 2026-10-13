@@ -19,6 +19,11 @@ import type {
   TerminalResult,
 } from "../src/server/terminal/types.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
+import { GHOSTTY_BIN } from "../src/server/terminal/bin.ts";
+import { ghosttyEmulator } from "../src/server/terminal/ghostty.ts";
+import { itermEmulator } from "../src/server/terminal/iterm.ts";
+import { weztermEmulator } from "../src/server/terminal/wezterm.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import { EMU_BIN, FAIL, MUX_BIN, OK, fakeEmulator, fakeMultiplexer } from "./helpers/terminal-fakes.ts";
 
 // What is at stake: every row of the terminal menu is a PROMISE that pressing it puts a
@@ -239,6 +244,39 @@ test("the raiser named in the blurb is the one that will actually run the attach
 
   assert.equal(views[0]?.unavailable, null);
   assert.equal(views[0]?.blurb, "New session, raised in Ghostty.");
+});
+
+test("on Linux with Ghostty and no WezTerm, sessions are raised in Ghostty", async () => {
+  // The Linux machine the spawn-only adapter was written for: tmux and Herdr installed,
+  // Ghostty on PATH, no WezTerm. Before it, both rows read "open detached".
+  const ghosttyCalls: string[][] = [];
+  const ghostty = ghosttyEmulator(async (_bin, args) => {
+    ghosttyCalls.push(args);
+    return stubRun({ stdout: "", stderr: "", code: 0 });
+  }, "linux");
+  const tmux = recordingMux();
+  const machine = deps({
+    multiplexers: {
+      tmux: tmux.backend,
+      herdr: recordingMux({ mux: { id: "herdr", label: "Herdr" } }).backend,
+    },
+    emulators: { wezterm: weztermEmulator(), ghostty, iterm: itermEmulator() },
+    installed: (spec) => spec === MUX_BIN || spec === GHOSTTY_BIN,
+    unsupported: () => null,
+  });
+
+  const views = terminalTargetViews(machine);
+  assert.equal(views.find((v) => v.id === "tmux")?.blurb, "New session, raised in Ghostty.");
+  assert.equal(views.find((v) => v.id === "herdr")?.blurb, "New session, raised in Ghostty.");
+  assert.equal(views.find((v) => v.id === "ghostty")?.unavailable, null);
+
+  const outcome = await launchTerminal("tmux", SPEC, machine);
+  assert.equal(outcome.ok, true);
+  const name = tmux.created[0]?.name;
+  assert.ok(name);
+  assert.deepEqual(ghosttyCalls, [
+    ["+new-window", `--title=${name}`, "-e", "fake-mux", "attach", "-t", name],
+  ]);
 });
 
 test("a multiplexer whose sessions are never without a window needs no emulator at all", () => {

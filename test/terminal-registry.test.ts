@@ -58,9 +58,10 @@ test("the interface admits an emulator that can only be launched into", () => {
   // The launch-only pole of the emulator axis: something that opens a window and answers
   // nothing else. This was written as "Ghostty" on the belief that Ghostty was that shape.
   // It is not - the real adapter lists, writes, focuses and spawns (`ghostty.ts`) - so the
-  // case is kept as the hypothetical it always really was. It still earns its place: no
-  // shipped backend exercises these nulls, and a path first exercised by a new adapter is a
-  // path that ships broken.
+  // case is kept as the hypothetical it always really was. It still earns its place: the
+  // Linux Ghostty shares these nulls but cannot focus at all, so no shipped backend exercises
+  // the app-granularity raise, and a path first exercised by a new adapter is a path that
+  // ships broken.
   const launchOnly: Omit<TerminalEmulator, "id"> = {
     label: "Launch-only",
     glyph: "▦",
