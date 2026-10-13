@@ -948,8 +948,9 @@ the lease is taken only after selection, so a change that selects nothing never 
 
 **The repair packet names each test that failed twice**, one requested change per test, with the
 runner's message and detail, instead of quoting the end of the output. At most 20 tests are
-listed; the outcome keeps the full counts of failures and flakes, and both the card and the
-packet say how many were left out.
+listed, and fewer when their messages would not fit the verdict's 12,000-byte budget: the
+messages share that budget, so each is shortened as more tests fail. The outcome keeps the full
+counts of failures and flakes, and both the card and the packet say how many were left out.
 
 **`.mission/testing.json`** is committed and reviewed like code:
 

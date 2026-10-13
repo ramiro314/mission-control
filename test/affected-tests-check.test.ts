@@ -7,6 +7,8 @@ import {
   WorkflowCheckOutcomeSchema,
 } from "../src/shared/protocol.ts";
 import {
+  AFFECTED_TESTS_LIMITS,
+  WORKFLOW_EXECUTION_LIMITS,
   commandTemplateProblem,
   emptyWorkflowCommandView,
   type WorkflowCheckOutcome,
@@ -190,6 +192,47 @@ test("a test that fails twice fails the check, with one requested change naming 
   assert.equal(verdict.requestedChanges.length, 1);
   assert.equal(verdict.requestedChanges[0]!.title, "Fix the failing test \"adds numbers\" in test/a.test.ts");
   assert.match(verdict.requestedChanges[0]!.rationale, /1 !== 2/);
+});
+
+test("many failing tests with long messages still make a valid failing verdict that fits its budget", () => {
+  // Every failure at the caps: multi-byte text, and newlines and quotes that JSON escaping inflates.
+  const line = "断言失败: \"expected\" ≠ \"actual\"\n";
+  const message = line.repeat(AFFECTED_TESTS_LIMITS.failureMessage).slice(0, AFFECTED_TESTS_LIMITS.failureMessage);
+  const failures = Array.from({ length: AFFECTED_TESTS_LIMITS.failures }, (_, index) => ({
+    file: `test/suite-${index}.test.ts`,
+    name: `case ${index} keeps its invariant`,
+    message,
+  }));
+  const outcome: WorkflowCheckOutcome = WorkflowCheckOutcomeSchema.parse({
+    status: "failed",
+    slot: "affected-tests",
+    command: TEMPLATE,
+    exitCode: 1,
+    output: "",
+    truncatedBytes: 0,
+    note: "Ran 542 selected test files; 58 tests failed twice.",
+    affected: {
+      selectedCount: 542,
+      selected: [],
+      flakeCount: 0,
+      flakes: [],
+      failureCount: 58,
+      failures,
+      settings: { patterns: ["test/*.test.ts"], includeImporters: true, smokeSet: [], localKeys: [] },
+    },
+  });
+
+  const verdict = checkVerdict(outcome, "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict !== "fail") return;
+  assert.ok(Buffer.byteLength(JSON.stringify(verdict)) <= WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes);
+  const [first] = verdict.requestedChanges;
+  assert.equal(first!.title, "Fix the failing test \"case 0 keeps its invariant\" in test/suite-0.test.ts");
+  assert.equal(first!.evidence[0]!.kind, "check");
+  assert.ok(message.startsWith(first!.evidence[0]!.quote!));
+  const listed = verdict.requestedChanges.length;
+  assert.ok(listed >= 1 && listed <= failures.length);
+  assert.match(first!.rationale, new RegExp(`58 tests failed twice in this check; only the first ${listed} are listed`));
 });
 
 test("missing JUnit results fail with the output tail rather than guessing", async () => {
