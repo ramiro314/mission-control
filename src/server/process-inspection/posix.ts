@@ -18,15 +18,31 @@ export interface CommandRunner {
   runSync(bin: ExecutableId, args: string[], opts: { timeoutMs: number; maxBuffer: number }): string | null;
 }
 
+/**
+ * Every command runs in the C locale, as `resume-guard.ts` already does. `ps lstart` is
+ * localized text that `Date.parse` reads, so a non-English `LC_TIME` would turn every start
+ * time into 0 and fail launch verification. Under an English locale the output is identical.
+ */
+export const POSIX_COMMAND_LOCALE = Object.freeze({ LC_ALL: "C" });
+
+/**
+ * The child env for `run`: the daemon's env in the C locale. PATH is left out so the locator
+ * supplies its own snapshot, rather than treating the daemon's PATH as an explicit child PATH.
+ */
+function commandEnv(): NodeJS.ProcessEnv {
+  const { PATH: _path, ...env } = process.env;
+  return { ...env, ...POSIX_COMMAND_LOCALE };
+}
+
 export const defaultCommandRunner: CommandRunner = {
-  run: (bin, args, opts) => run(bin, args, opts),
+  run: (bin, args, opts) => run(bin, args, { ...opts, env: commandEnv() }),
   runSync(bin, args, opts) {
     try {
       const executable = locateExecutableSync(bin);
       if (!executable) return null;
       return execFileSync(executable.path, args, {
         encoding: "utf8",
-        env: executable.env,
+        env: { ...executable.env, ...POSIX_COMMAND_LOCALE },
         timeout: opts.timeoutMs,
         maxBuffer: opts.maxBuffer,
         // stderr discarded: a dead pid is an ordinary answer here, not something to print.
@@ -65,6 +81,15 @@ const PS_TIMEOUT_MS = 30_000;
  * produce the evidence cleanup requires.
  */
 const CWD_LIST_TIMEOUT_MS = 30_000;
+
+/**
+ * Whether an `lsof` name record is a resolved path. For a process it may not read, `lsof`
+ * prints `n/proc/<pid>/cwd (readlink: Permission denied)` and still exits 0; that is an
+ * unresolved cwd, not a directory the process sits in.
+ */
+function isResolvedPath(name: string): boolean {
+  return name.startsWith("/") && !name.includes("(readlink:");
+}
 
 /** Pair `lsof -F` records: `p<pid>` opens a process, each following `n<path>` belongs to it. */
 function parseLsofNames(text: string): Map<number, string[]> {
@@ -134,6 +159,8 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
     /**
      * One batched `lsof`. `-Fpn` prints `p<pid>` then `n<path>` records; we pair them.
      * lsof may exit non-zero when some pids vanish mid-call, but still prints the survivors.
+     * A record that is not a resolved path leaves its pid out, which callers read as
+     * unresolved rather than as a cwd.
      */
     async readCwds(pids) {
       const result = await runner.run("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fpn"], {
@@ -145,7 +172,7 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
         if (line.startsWith("p")) {
           const n = Number(line.slice(1));
           pid = Number.isNaN(n) ? null : n;
-        } else if (line.startsWith("n") && pid !== null) {
+        } else if (line.startsWith("n") && pid !== null && isResolvedPath(line.slice(1))) {
           cwds.set(pid, line.slice(1));
         }
       }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -97,6 +98,19 @@ test("lsof field records pair each path with the pid before it", async () => {
   assert.deepEqual((await inspector.readOpenFiles([7])).files, new Map([[7, ["/dev/null", "/tmp/x.jsonl"]]]));
 });
 
+test("an lsof cwd record that is not a resolved path leaves its pid unresolved", async () => {
+  const { runner } = recordingRunner({
+    "lsof -a -d cwd -p 7,8,9 -Fpn": stubRun({
+      // What lsof prints, with exit 0, for a same-user process it may not read on Linux.
+      stdout: "p7\nfcwd\nn/proc/7/cwd (readlink: Permission denied)\np8\nfcwd\nnrelative/dir\np9\nfcwd\nn/work/c\n",
+      stderr: "",
+      code: 0,
+    }),
+  });
+  const { cwds } = await createPosixProcessInspector(runner).readCwds([7, 8, 9]);
+  assert.deepEqual(cwds, new Map([[9, "/work/c"]]));
+});
+
 test("a start-and-command read splits the five lstart tokens from a flattened command", () => {
   const { runner } = recordingRunner({
     "ps -ww -o lstart=,command= -p 5": "Fri Jul  3 15:15:37 2026     node  -e\tshim\n",
@@ -146,4 +160,28 @@ test("the default runner reads through the catalog's ps, and answers null when i
   } finally {
     if (previous === undefined) delete process.env.MISSION_PS_BIN; else process.env.MISSION_PS_BIN = previous;
   }
+});
+
+/** Points the catalog's ps at a script that prints the locale it was started with. */
+function withLocaleEchoingPs(t: test.TestContext): void {
+  const root = mkdtempSync(join(tmpdir(), "mission-locale-ps-"));
+  const ps = join(root, "ps");
+  writeFileSync(ps, "#!/bin/sh\nprintf '%s' \"$LC_ALL\"\n");
+  chmodSync(ps, 0o755);
+  const previous = { bin: process.env.MISSION_PS_BIN, locale: process.env.LC_ALL };
+  process.env.MISSION_PS_BIN = ps;
+  process.env.LC_ALL = "de_DE.UTF-8";
+  t.after(() => {
+    if (previous.bin === undefined) delete process.env.MISSION_PS_BIN; else process.env.MISSION_PS_BIN = previous.bin;
+    if (previous.locale === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = previous.locale;
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test("the default runner starts every command in the C locale, over the daemon's own", async (t) => {
+  withLocaleEchoingPs(t);
+  assert.equal(defaultCommandRunner.runSync("ps", [], { timeoutMs: 5000, maxBuffer: 4096 }), "C");
+  const result = await defaultCommandRunner.run("ps", [], { timeoutMs: 5000 });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "C");
 });

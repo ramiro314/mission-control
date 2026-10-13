@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { link, lstat, unlink } from "node:fs/promises";
+import { link, lstat, realpath, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
@@ -49,7 +49,14 @@ export async function withWeztermSocket<T>(
     env: { ...env, WEZTERM_LOG: "wezterm_client::client=trace" },
     timeoutMs: locatorTimeoutMs,
   });
-  const path = located.code === 0 ? selectedSocket(located.stderr) : null;
+  const selected = located.code === 0 ? selectedSocket(located.stderr) : null;
+  // WezTerm may report its `default-<class>` symlink. Darwin's link() follows a symlink and
+  // Linux's does not, so resolve it first: otherwise the alias pins the symlink, is not a
+  // socket, and WezTerm silently goes unavailable. A path that is not a symlink is kept as
+  // reported, so resolving a symlinked parent never lengthens it past the sockaddr_un limit.
+  const path = selected && (await lstat(selected).catch(() => null))?.isSymbolicLink()
+    ? await realpath(selected).catch(() => null)
+    : selected;
   if (!path) return null;
   // Do not lengthen an already near-limit sockaddr_un path (notably a private macOS HOME).
   // link is exclusive, so a collision refuses without altering anybody else's entry.

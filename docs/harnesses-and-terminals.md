@@ -18,9 +18,11 @@ daemons, and the separate Foreman worker. Resolution has a fixed order:
 2. Supported absolute application locations, including `/Applications` and `~/Applications`.
 3. Absolute directories from `MISSION_EXECUTABLE_PATHS` and its legacy prefix forms.
 4. Supported per-user tool locations: `~/.local/bin`, mise shims, asdf shims, Volta's bin,
-   and `~/go/bin`, in that order.
+   and `~/go/bin`, in that order. Linux adds `~/.nix-profile/bin`, cargo's bin and bun's bin
+   after them.
 5. The PATH inherited by the process, then one bounded login-shell PATH reading.
-6. Supported OS locations.
+6. Supported OS locations. Linux adds `/home/linuxbrew/.linuxbrew/bin` first and `/snap/bin`
+   last.
 7. Any `node_modules/.bin` directory found in step 5, ranked last.
 
 Per-user locations precede inherited and login-shell directories so a Finder or Dock launch
@@ -40,12 +42,15 @@ No step scans the filesystem. Login-shell reads time out after five seconds, con
 coalesce, and misses share a 30-second negative cache. An explicit Setup re-check forces a new
 snapshot, so an install or shell PATH change becomes visible without restarting the daemon. The
 resolver honors `XDG_DATA_HOME`, `MISE_DATA_DIR`, `MISE_SHIMS_DIR`, `ASDF_DATA_DIR`, and `VOLTA_HOME`
-before their standard per-user locations.
+before their standard per-user locations, and on Linux `CARGO_HOME` and `BUN_INSTALL`.
 
 The platform's locations in steps 2, 4 and 6, and the command that reads the login-shell PATH,
 come from one per-platform table in
 [`src/server/platform/executable-environment.ts`](../src/server/platform/executable-environment.ts).
-macOS and Linux share its POSIX row; no other platform registers one yet.
+macOS uses its POSIX row. Linux registers a row built on it: the extra locations above, and a
+login-shell read that, when `SHELL` is unset (as under systemd or a desktop launcher), uses the
+passwd entry's login shell, then `/bin/sh`, where macOS falls back to `/bin/zsh`. No other
+platform registers a row yet.
 
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's
@@ -359,7 +364,9 @@ need no incarnation field, and their restoration behavior is unchanged.
 The adapter first asks WezTerm to select its normal default endpoint with
 `--no-auto-start` and the inherited `WEZTERM_UNIX_SOCKET` removed. The CLI's socket trace
 locates that endpoint; its preliminary pane list does not establish target identity.
-The adapter then hard-links the socket and enumerates through that private alias. Its
+The adapter then hard-links the socket and enumerates through that private alias. When the
+trace names a symlink, such as WezTerm's `default-<class>` link, the adapter resolves it with
+`realpath` first, because Linux `link()` does not follow a symlink the way Darwin's does. Its
 incarnation records device, inode and birth time. Every target operation repeats endpoint
 selection, pins the socket, compares the incarnation and keeps the link until the command
 finishes. A restart between validation and execution cannot redirect the alias to the new

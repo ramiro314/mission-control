@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { createConnection, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,9 +10,12 @@ import { stubRun } from "../src/server/util/exec.ts";
 
 // Real Unix sockets, with only WezTerm's CLI protocol faked. In particular a restart
 // unlinks and rebinds the SAME pathname between discovery, validation and delivery.
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, opts: { reportSymlink?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "mc-wez-incarnation-"));
   const socket = join(dir, "sock");
+  // WezTerm's own `default-<class>` symlink beside the socket it names.
+  const reported = opts.reportSymlink ? join(dir, "default-org.wezfurlong.wezterm") : socket;
+  if (opts.reportSymlink) await symlink(socket, reported);
   let server: Server;
   let received: string[] = [];
   let diagnostic = true;
@@ -41,7 +44,8 @@ async function fixture(t: test.TestContext) {
   const exec: TerminalExec = async (_bin, args, opts) => {
     assert.ok(args.includes("--no-auto-start"));
     assert.equal(opts?.env?.WEZTERM_UNIX_SOCKET, undefined, "never inherit a stale socket");
-    const selected = args.find((arg) => arg.startsWith("WEZTERM_UNIX_SOCKET="))?.slice("WEZTERM_UNIX_SOCKET=".length) ?? socket;
+    const pinned = args.find((arg) => arg.startsWith("WEZTERM_UNIX_SOCKET="))?.slice("WEZTERM_UNIX_SOCKET=".length);
+    const selected = pinned ?? socket;
     if (args.includes("send-text") && beforeSend) {
       const action = beforeSend; beforeSend = undefined; await action();
     }
@@ -53,7 +57,7 @@ async function fixture(t: test.TestContext) {
       client.once("error", () => resolve(stubRun({ code: 1, stdout: "", stderr: "socket unavailable" })));
       client.once("end", () => {
         const result = JSON.parse(output);
-        result.stderr = diagnostic ? `TRACE wezterm_client::client > connect to Socket(${JSON.stringify(selected)})\n` : "unrecognized endpoint";
+        result.stderr = diagnostic ? `TRACE wezterm_client::client > connect to Socket(${JSON.stringify(pinned ?? reported)})\n` : "unrecognized endpoint";
         resolve(result);
       });
     });
@@ -75,6 +79,14 @@ test("WezTerm refuses a stale pane after native socket replacement and accepts f
   assert.equal(current.paneId, old.paneId, "numeric IDs are reused");
   assert.equal((await f.adapter.write!.text(current, "fresh")).ok, true);
   assert.deepEqual(f.received(), ["fresh"]);
+});
+
+test("WezTerm stays available when it reports its default symlink rather than the socket", async (t) => {
+  const f = await fixture(t, { reportSymlink: true });
+  const pane = (await f.adapter.list!())?.[0];
+  assert.ok(pane, "a symlinked endpoint is still a live WezTerm");
+  assert.equal((await f.adapter.write!.text(pane, "through the link")).ok, true);
+  assert.deepEqual(f.received(), ["through the link"]);
 });
 
 test("WezTerm cannot redirect a write when the socket is replaced at the final exec boundary", async (t) => {
