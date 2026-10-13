@@ -3,7 +3,8 @@ import {
   type SetupServiceId,
 } from "@shared/setup-catalog.ts";
 
-import { cmuxAppStart } from "../terminal/cmux.ts";
+import { binUnsupportedReason } from "../terminal/bin.ts";
+import { CMUX_BIN, cmuxAppStart } from "../terminal/cmux.ts";
 import { herdrServerStart } from "../terminal/herdr.ts";
 import type { TerminalResult } from "../terminal/types.ts";
 import { enableCmuxSocketControl } from "./cmux-config.ts";
@@ -40,16 +41,31 @@ export interface SetupServiceResult {
 
 export type SetupServiceStarters = Record<SetupServiceId, () => Promise<TerminalResult>>;
 
+/**
+ * A cmux repair, refused before it runs on a host cmux does not support. The Setup row never
+ * offers one there, so this closes the route to a request that names one anyway.
+ */
+export function cmuxStarter(
+  start: () => Promise<TerminalResult>,
+  platform: NodeJS.Platform = process.platform,
+): () => Promise<TerminalResult> {
+  return async () => {
+    const unsupported = binUnsupportedReason(CMUX_BIN, platform);
+    if (unsupported) return { ok: false, error: `cmux ${unsupported}`, outcomeUnknown: false };
+    return await start();
+  };
+}
+
 export const DEFAULT_SETUP_SERVICE_STARTERS: SetupServiceStarters = {
   "herdr-server": () => herdrServerStart(),
-  "cmux-app": () => cmuxAppStart(),
-  "cmux-socket-control": async () => {
+  "cmux-app": cmuxStarter(() => cmuxAppStart()),
+  "cmux-socket-control": cmuxStarter(async () => {
     const written = enableCmuxSocketControl();
     if (!written.ok) return { ok: false, error: written.error, outcomeUnknown: false };
     // No reload is asked for: under `cmuxOnly` that call is refused too, and cmux picks the
     // file up by watching it. See `setup/cmux-config.ts` for where that was measured.
     return { ok: true, outcomeUnknown: false };
-  },
+  }),
 };
 
 export interface SetupServiceResponse {

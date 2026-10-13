@@ -1,7 +1,7 @@
 import type { TerminalInventory } from "./inventory.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { normTty } from "../discovery/tty.ts";
-import { binEnv, resolveBin } from "./bin.ts";
+import { binEnv, macOSOnly, resolveBin } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
 import { shellCommand } from "./shell.ts";
@@ -77,7 +77,7 @@ import type {
  * stale, and if the daemon was started inside cmux it names the very instance whose panes we
  * want.
  */
-export const CMUX_BIN: BinSpec = { id: "cmux" };
+export const CMUX_BIN: BinSpec = { id: "cmux", unsupportedReason: macOSOnly("cmux") };
 
 /**
  * cmux takes key NAMES like tmux, and its spelling happens to be this interface's own -

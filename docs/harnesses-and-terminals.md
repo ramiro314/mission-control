@@ -86,6 +86,13 @@ real paste verb delivers them correctly and appends a carriage return that no pa
 suppresses. The adapter reports that the paste submitted and prompt delivery skips its own
 Enter, which is why the paste result carries the fact rather than the caller assuming it.
 
+cmux and iTerm2 run only on macOS. Off macOS both stay in the terminal pickers, disabled with
+the reason **requires macOS**; the dispatch error that names backends to install leaves them out;
+and Setup offers no cmux service, which the service route also refuses. Ghostty carries no such
+reason. An operator override (`CMUX_BIN`, `ITERM_BIN`, or their `MISSION_` forms) that resolves to
+an executable is taken on trust on any platform, as `MISSION_KEEP_AWAKE_BIN` is, which is how the
+browser tests drive their fake cmux on Linux CI.
+
 ## Managed terminal resumes
 
 `harness/resume.ts` prepares native resume arguments through `resumeArgvFor`, then uses the
