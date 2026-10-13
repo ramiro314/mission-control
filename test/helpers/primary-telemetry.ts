@@ -24,6 +24,8 @@ export async function runPrimaryOwnerFixture(repo: string) {
   upsertSdkSession({ id: session.id, agent: "claude", cwd: repo, status: "running", agentSessionId: null, taskId: null, model: null, effort: null, permissionMode: null, turnInProgress: false });
   const app = buildApp({ registry, tasks, queues, reviews, schedules, sessionActions, fileComments,
     launchSessionTerminal: async (_backend, spec) => ({ ok: true, label: "fake", homeName: spec.name, status: 200 }),
+    // The Node.js remedy is a command only on macOS; Linux names a package and runs nothing.
+    setupInstallDeps: { platform: "darwin" },
   });
   let sequence = 0;
   const request = async (path: string, body: unknown, method = "POST") => {
