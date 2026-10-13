@@ -26,7 +26,10 @@ ELECTRON_MATCH := [e]lectronmon
 NPM_STAMP := node_modules/.install-stamp
 # The daemon targets ask the daemon itself, not `lsof`, which a Linux base system may not
 # ship. `/api/health` answers with the daemon's pid; curl exits 7 when nothing accepts a
-# connection on the port at all, which is the one answer that means "no daemon".
+# connection on the port at all, which is the one answer that means "no daemon". That holds
+# only when curl itself runs, so each of those targets starts with CURL_CHECK: without curl
+# every probe would read as "no daemon" or, to `make claude`, as a live one.
+CURL_CHECK := command -v curl >/dev/null 2>&1 || { echo "curl not found: install curl to manage the daemon"; exit 1; }
 HEALTH     := curl -fsS --max-time 1 http://127.0.0.1:$(PORT)/api/health
 HEALTH_PID := $(HEALTH) 2>/dev/null | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p'
 
@@ -53,7 +56,8 @@ session: ## Ask the running daemon for a manual worktree lease (e.g. make sessio
 
 claude: ## One shot: bootstrap, ensure the daemon, lease a worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"
 	@$(MAKE) --no-print-directory init
-	@$(HEALTH) >/dev/null 2>&1; rc=$$?; \
+	@$(CURL_CHECK); \
+		$(HEALTH) >/dev/null 2>&1; rc=$$?; \
 		if [ $$rc -eq 7 ]; then $(MAKE) --no-print-directory up; \
 		else echo "✓ harness daemon already up on http://127.0.0.1:$(PORT)"; fi
 	node scripts/new-session.mjs -- claude $(ARGS)
@@ -76,7 +80,8 @@ web: ## Just the Vite web dev server
 # Waits up to 10 s for a health answer from a pid other than the one answering before, so a
 # daemon that is still shutting down, or one `down` cannot stop, is never taken for the new one.
 up: ## Start the daemon in the background (auto-reload); logs to .harness.log
-	@old=$$($(HEALTH_PID)); \
+	@$(CURL_CHECK); \
+		old=$$($(HEALTH_PID)); \
 		$(MAKE) --no-print-directory down >/dev/null 2>&1 || true; \
 		nohup npm run dev:server > $(LOG) 2>&1 & \
 		i=0; while [ $$i -lt 20 ]; do \
@@ -107,7 +112,8 @@ stop-all: ## Stop every harness dev process (daemon, Vite, Electron shell, Forem
 	@sleep 1
 
 status: ## Show whether the daemon is running
-	@pid=$$($(HEALTH_PID)); \
+	@$(CURL_CHECK); \
+	pid=$$($(HEALTH_PID)); \
 	if [ -n "$$pid" ]; then echo "running (pid $$pid) on http://127.0.0.1:$(PORT)"; \
 	else echo "not running"; fi
 
