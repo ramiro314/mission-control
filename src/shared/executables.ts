@@ -31,6 +31,7 @@ export const EXECUTABLE_IDS = [
   "treehouse",
   "systemd-inhibit",
   "xdg-terminal-exec",
+  "busctl",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

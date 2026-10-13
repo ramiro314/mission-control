@@ -252,7 +252,9 @@ the app closed. A failed install restores the previous working bundle. See
 The app is self-contained: the daemon runs on Electron's bundled Node (with `node:sqlite`),
 so no system `node` is required to run it. On launch it **adopts** an already-running daemon
 (a LaunchAgent or `make up`) instead of starting a second one. Closing the window hides it
-(the app stays in the menu bar so alerts keep firing); quit from the tray menu. Enable
+(the app stays in the menu bar so alerts keep firing); quit from the tray menu. On a Linux
+desktop with no tray host, such as stock GNOME, closing the window quits instead (see
+[Closing the window](desktop-and-packaging.md#closing-the-window)). Enable
 **Start at login** from the tray menu. **Install Claude integrations** (wires the status hooks +
 MCP review server at the app's bundled paths) is in the tray menu and in **Settings → Setup →
 Integrations**, which is the way in on a desktop with no tray.

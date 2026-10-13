@@ -135,6 +135,7 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     "xdg-terminal-exec",
     "XDG_TERMINAL_EXEC_BIN",
   ),
+  busctl: spec("busctl", "systemd D-Bus client", "busctl", "BUSCTL_BIN"),
 };
 
 /** Truly fixed OS utilities. They are never searched and must be invoked by this path. */

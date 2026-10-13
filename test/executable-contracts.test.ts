@@ -62,6 +62,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "execFileSync", command: "command.path", contract: "locator-result", reason: "Migration MCP inspection uses the configured harness CLI and its resolved child environment." },
     { operation: "execFile", command: 'join(plan.source, "Contents/MacOS/Mission Control")', contract: "verified-migration-source", reason: "Login cleanup launches the retained source only after validating its pinned bundle identity; its nonce-bound entry exits before runtime startup." },
   ],
+  "src/main/tray-host.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "bounded D-Bus tray-host probe through the locator-resolved busctl" },
+  ],
   "src/main/update-build.ts": [
     { operation: "spawn", command: "request.node", contract: "current-runtime", reason: "absolute runtime selected by Electron" },
   ],

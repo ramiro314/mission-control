@@ -31,6 +31,22 @@ The renderer learns which from the preload's `platform` field: `main.tsx` adds `
 `is-linux` beside `is-desktop`, and only `is-mac` applies the traffic-light inset and the
 topbar drag region. The startup page makes the same split.
 
+## Closing the window
+
+Closing the window hides it, and the shell stays resident so alerts keep firing; the tray (the
+menu bar on macOS) brings it back. A Linux desktop draws the tray only when a StatusNotifier
+host is running: KDE runs one, stock GNOME does not, and there a hidden window could only come
+back through a second launch. [`tray-host.ts`](../src/main/tray-host.ts) decides:
+
+- On Linux the shell asks the session bus whether `org.kde.StatusNotifierWatcher` has an owner,
+  with `busctl --user call ... NameHasOwner` and a 1 second timeout. `busctl` resolves through
+  the executable catalog, so `MISSION_BUSCTL_BIN` overrides it.
+- It asks at startup, which records the answer in the shell's log, and again on every close,
+  because a tray host can start or stop after the shell does.
+- Only `b true` hides the window. `b false`, a missing `busctl`, a failed call and a timeout all
+  quit the shell, so a probe failure never hides a window nobody can reopen.
+- macOS always hides and never probes.
+
 ## Icons and the tray
 
 The app icons and tray images in `build/` are generated from the SVGs beside them by
