@@ -96,6 +96,9 @@ test('migration names both paths, preserves Later, sends explicit acceptance, an
   await expect(banner).toContainText(migration.source);
   await expect(banner).toContainText(migration.target);
   await expect(banner).toContainText('system copy is retained');
+  // Names the destination rather than a macOS "personal Applications folder".
+  await expect(banner).toContainText(`Mission Control will close and reopen from ${migration.target}.`);
+  await expect(banner).not.toContainText('Applications folder');
   await capture(dashboard, 'ready-banner.png');
   await banner.getByRole('button', {name: 'Later', exact: true}).click();
   await expect(banner).toBeHidden();
@@ -153,6 +156,7 @@ test('committed installation distinguishes incomplete integration repair and tar
   await banner.getByRole('button', {name: 'Retry integration repair'}).click();
   await expect(banner).toContainText('Personal installation complete');
   await expect(banner).toContainText('Replace any shortcut to the system copy');
+  await expect(banner).not.toContainText('Dock');
   await expect(banner.getByRole('button', {name: 'Retry integration repair'})).toHaveCount(0);
   expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['repair']);
   await capture(dashboard, 'complete.png');

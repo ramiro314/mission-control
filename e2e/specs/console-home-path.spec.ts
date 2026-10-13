@@ -67,6 +67,11 @@ test("a session under the daemon's home shows its path from ~ in the console", a
   const path = page.locator(".cdetail .detail-sub dd.mono").first();
   await expect(path).toHaveText(/^~\//);
   await expect(path).not.toContainText(daemon.home);
+  // The same cell is monospace, and its stack reaches the common Linux monospace fonts before
+  // the generic family, rather than falling straight through to whatever `monospace` is.
+  expect(await path.evaluate((node) => getComputedStyle(node).fontFamily)).toMatch(
+    /Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace$/,
+  );
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
     await page.locator(".cdetail .detail-sub").screenshot({ path: `${EVIDENCE}path-from-home.png` });
