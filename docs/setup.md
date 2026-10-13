@@ -168,6 +168,13 @@ npm run dev
 This starts the daemon and Vite dashboard. Open `http://127.0.0.1:5173`. To run the
 desktop shell too, use `npm run dev:desktop`; `npm run dev:start` also starts Foreman.
 
+On Linux this checkout is the install: there is no packaged Linux app, and updating is
+`git pull`. The packaged-app commands, which `make help` marks `[macOS]` (`make install`,
+`make app`, `make install-app`), plus `npm run package`, the Bash installer and
+`npm run recover:database`, refuse Linux before they start work. Each prints "The packaged
+app is macOS only; on Linux run from a checkout (see docs/setup.md)." Settings -> Setup
+shows the same line in place of updates.
+
 The daemon's default state directory is `~/.mission-control`. It contains the SQLite
 database, token, logs, native worktree pools, disposable worktrees, and the
 [archive library](archives.md). Set

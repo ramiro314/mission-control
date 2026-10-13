@@ -15,6 +15,7 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
   const message = "This update requires Node.js 24 or newer (found 22.0.0). Install or select Node.js 24+, then choose Check again. Mission Control will keep running.";
   const controller = new UpdateController({
     packaged: true,
+    platform: "darwin",
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => null,

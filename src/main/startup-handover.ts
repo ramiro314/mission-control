@@ -65,9 +65,17 @@ export interface StartupDecision {
  * Packaged, that path is `<bundle>/Contents/Resources/app`, so the bundle is three directories
  * up. Unpackaged it is the checkout, which is not a bundle and has no installed identity to
  * compare, so development answers null and classifies as unmanaged.
+ *
+ * macOS only, and guarded rather than ported: the `.app` layout, its `Info.plist` and Launch
+ * Services hand-over exist only there. Linux runs from a checkout, so a Linux shell answers
+ * null even if someone packages one, and never reaches the bundle identity or migration paths.
  */
-export function runningBundlePath(appPath: string, packaged: boolean): string | null {
-  return packaged ? dirname(dirname(dirname(appPath))) : null;
+export function runningBundlePath(
+  appPath: string,
+  packaged: boolean,
+  platform: string = process.platform,
+): string | null {
+  return packaged && platform === "darwin" ? dirname(dirname(dirname(appPath))) : null;
 }
 
 /**

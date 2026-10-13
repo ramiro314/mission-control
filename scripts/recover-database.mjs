@@ -24,6 +24,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { readReceipt } from "../src/shared/install-receipt.mjs";
+import { MACOS_ONLY_MESSAGE, macOSOnlyRefusal } from "../src/shared/macos-only.mjs";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
 
 export const APP_BUNDLE_ID = "com.mission-control.app";
@@ -725,9 +726,7 @@ export async function runDatabaseRecovery(
     beforeAppliedLedgerWrite = null,
   } = {},
 ) {
-  if (process.platform !== "darwin" && ops === null) {
-    throw new Error("product-app database recovery is supported only on macOS");
-  }
+  if (macOSOnlyRefusal(process.platform) && ops === null) throw new Error(MACOS_ONLY_MESSAGE);
   const recoveryOps = ops ?? realRecoveryOperations();
   const prune =
     pruneRollbacks ?? ((targetHome, keepId) =>
@@ -990,6 +989,11 @@ export async function runDatabaseRecovery(
 }
 
 async function main(argv) {
+  const refusal = macOSOnlyRefusal(process.platform);
+  if (refusal) {
+    console.error(refusal);
+    return 1;
+  }
   const parsed = parseArgs(argv);
   if (!parsed.args) {
     console.error(parsed.problem);

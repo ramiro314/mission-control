@@ -118,6 +118,7 @@ import {
 import { readReceipt, receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
 import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
 import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "../src/shared/github-sso.mjs";
+import { macOSOnlyRefusal } from "../src/shared/macos-only.mjs";
 import {
   archPrerequisiteMessage,
   ghPrerequisiteMessage,
@@ -1236,11 +1237,15 @@ function installApp(options) {
 const invokedPath = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : "";
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const { options, help, problem } = parseArgs(process.argv.slice(2));
+  const refusal = macOSOnlyRefusal(process.platform);
   if (help) {
     console.log(USAGE);
     process.exitCode = 0;
   } else if (problem) {
     console.error(`${problem}\n\n${USAGE}`);
+    process.exitCode = 1;
+  } else if (refusal) {
+    console.error(refusal);
     process.exitCode = 1;
   } else {
     process.exitCode = installApp(options);

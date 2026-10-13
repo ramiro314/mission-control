@@ -33,6 +33,8 @@ backup, retention, validation, failure-handling, and offline-restore procedure.
 
 Use the supported recovery command from a current Mission Control checkout. Pass the absolute
 path to the candidate's `harness.db`; adjacent `-wal` and `-shm` files are included when present.
+It recovers the packaged macOS app, so it refuses any other platform before it reads its
+arguments.
 
 ```sh
 npm run recover:database -- /absolute/path/to/backup/harness.db
