@@ -7,7 +7,9 @@ import test from "node:test";
 import { executableSpec } from "../src/server/executables/catalog.ts";
 import { ExecutableLocator, probeLoginShellPath } from "../src/server/executables/locator.ts";
 import {
+  createLinuxExecutableEnvironment,
   executableEnvironmentFor,
+  linuxExecutableEnvironment,
   posixExecutableEnvironment,
 } from "../src/server/platform/executable-environment.ts";
 
@@ -31,8 +33,18 @@ async function ladder(
   return snapshot.entries.map((entry) => [entry.directory, entry.source, entry.detail]);
 }
 
-test("main registers no win32 row, so every platform resolves to the POSIX row", () => {
-  for (const platform of [...POSIX_PLATFORMS, "win32"] as const) {
+/** The rungs the Linux row adds to the POSIX row, by ladder section. */
+const LINUX_ONLY = {
+  versionManagers: [`${HOME}/.nix-profile/bin`, `${HOME}/.cargo/bin`, `${HOME}/.bun/bin`],
+  osDefaultsFirst: ["/home/linuxbrew/.linuxbrew/bin"],
+  osDefaultsLast: ["/snap/bin"],
+};
+const linuxOnly = (platform: NodeJS.Platform, key: keyof typeof LINUX_ONLY) =>
+  platform === "linux" ? LINUX_ONLY[key] : [];
+
+test("linux registers its own row, and darwin and win32 resolve to the POSIX row", () => {
+  assert.equal(executableEnvironmentFor("linux"), linuxExecutableEnvironment);
+  for (const platform of ["darwin", "win32"] as const) {
     assert.equal(executableEnvironmentFor(platform), posixExecutableEnvironment, platform);
   }
 });
@@ -52,15 +64,24 @@ for (const platform of POSIX_PLATFORMS) {
         [`${HOME}/.asdf/shims`, "version-manager", "supported per-user tool locations"],
         [`${HOME}/.volta/bin`, "version-manager", "supported per-user tool locations"],
         [`${HOME}/go/bin`, "version-manager", "supported per-user tool locations"],
+        ...linuxOnly(platform, "versionManagers").map(
+          (directory): [string, string, string] => [directory, "version-manager", "supported per-user tool locations"],
+        ),
         ["/inherited/bin", "inherited-path", "PATH inherited by Mission Control"],
         ["/usr/bin", "inherited-path", "PATH inherited by Mission Control"],
         ["/login/bin", "login-shell", "/bin/bash"],
+        ...linuxOnly(platform, "osDefaultsFirst").map(
+          (directory): [string, string, string] => [directory, "os-default", `${platform} supported defaults`],
+        ),
         ["/opt/homebrew/bin", "os-default", `${platform} supported defaults`],
         ["/opt/homebrew/sbin", "os-default", `${platform} supported defaults`],
         ["/usr/local/bin", "os-default", `${platform} supported defaults`],
         ["/bin", "os-default", `${platform} supported defaults`],
         ["/usr/sbin", "os-default", `${platform} supported defaults`],
         ["/sbin", "os-default", `${platform} supported defaults`],
+        ...linuxOnly(platform, "osDefaultsLast").map(
+          (directory): [string, string, string] => [directory, "os-default", `${platform} supported defaults`],
+        ),
         [
           "/repo/node_modules/.bin",
           "project-local",
@@ -79,7 +100,14 @@ for (const platform of POSIX_PLATFORMS) {
     });
     assert.deepEqual(
       entries.filter(([, source]) => source === "version-manager").map(([directory]) => directory),
-      [`${HOME}/.local/bin`, "/xdg/mise/shims", "/asdf/shims", "/volta/bin", `${HOME}/go/bin`],
+      [
+        `${HOME}/.local/bin`,
+        "/xdg/mise/shims",
+        "/asdf/shims",
+        "/volta/bin",
+        `${HOME}/go/bin`,
+        ...linuxOnly(platform, "versionManagers"),
+      ],
     );
     const shims = await ladder(platform, { PATH: "", MISE_DATA_DIR: "/mise", XDG_DATA_HOME: "/xdg" });
     assert.equal(shims[1]?.[0], "/mise/shims");
@@ -95,15 +123,42 @@ for (const platform of POSIX_PLATFORMS) {
     ]);
   });
 
-  test(`${platform} reads PATH through the same interactive login-shell command`, () => {
-    const row = executableEnvironmentFor(platform);
-    assert.deepEqual(row.loginShellPathRead({ SHELL: " /bin/bash " }), {
+  test(`${platform} reads PATH through SHELL with the same interactive login-shell command`, () => {
+    assert.deepEqual(executableEnvironmentFor(platform).loginShellPathRead({ SHELL: " /bin/bash " }), {
       command: "/bin/bash",
       args: LOGIN_SHELL_ARGS,
     });
-    assert.deepEqual(row.loginShellPathRead({}), { command: "/bin/zsh", args: LOGIN_SHELL_ARGS });
   });
 }
+
+test("darwin falls back to zsh when SHELL is unset", () => {
+  assert.deepEqual(executableEnvironmentFor("darwin").loginShellPathRead({}), {
+    command: "/bin/zsh",
+    args: LOGIN_SHELL_ARGS,
+  });
+});
+
+test("linux falls back to the passwd login shell, then /bin/sh, when SHELL is unset", () => {
+  const command = (passwd: string | null, env: NodeJS.ProcessEnv = {}) =>
+    createLinuxExecutableEnvironment(() => passwd).loginShellPathRead(env);
+  assert.deepEqual(command("/usr/bin/fish"), { command: "/usr/bin/fish", args: LOGIN_SHELL_ARGS });
+  assert.equal(command("/usr/bin/fish", { SHELL: "/bin/bash" }).command, "/bin/bash", "SHELL still wins");
+  assert.equal(command("/usr/bin/fish", { SHELL: "  " }).command, "/usr/bin/fish", "a blank SHELL is unset");
+  for (const passwd of [null, "", "bash", "/usr/sbin/nologin", "/sbin/nologin", "/bin/false"]) {
+    assert.deepEqual(command(passwd), { command: "/bin/sh", args: LOGIN_SHELL_ARGS }, String(passwd));
+  }
+  assert.equal(
+    createLinuxExecutableEnvironment(() => { throw new Error("no passwd entry"); }).loginShellPathRead({}).command,
+    "/bin/sh",
+  );
+});
+
+test("linux cargo and bun rungs follow CARGO_HOME and BUN_INSTALL", () => {
+  assert.deepEqual(
+    linuxExecutableEnvironment.userToolDirectories(HOME, { CARGO_HOME: "/cargo", BUN_INSTALL: "/bun" }).slice(-2),
+    ["/cargo/bin", "/bun/bin"],
+  );
+});
 
 test("the login-shell probe spawns the table's command with the table's arguments", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-executable-environment-"));

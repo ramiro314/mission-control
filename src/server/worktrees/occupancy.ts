@@ -141,10 +141,16 @@ export async function inspectWorktreeOccupancy(
   // stable process identity so only independently proven PID churn is ignored. A failed cwd
   // read starts with every PID unresolved: an all-empty `lsof` result is safe only when the
   // fresh snapshot proves every process in the original scope exited during the read.
+  //
+  // A PID the system refused outright is not an omission. Linux denies a same-user process
+  // that is not dumpable (the user's systemd, ssh-agent, the compositor, a sandboxed app), so
+  // like another user's process on macOS it sits outside the boundary the daemon can observe.
+  // Counting it as unresolved made occupancy unknown, and cleanup refused, on every desktop.
   const cwdFailure = cwdSnapshot.unknownReason;
+  const unreadable = cwdSnapshot.unreadable ?? new Set<number>();
   let unresolved = cwdFailure
     ? processes
-    : processes.filter((process) => !cwdSnapshot.cwds.has(process.pid));
+    : processes.filter((process) => !cwdSnapshot.cwds.has(process.pid) && !unreadable.has(process.pid));
   if (unresolved.length > 0) {
     let confirmation: ProcessSnapshot;
     try {

@@ -15,8 +15,16 @@ import type { RunResult } from "../util/exec.ts";
 export interface ProcessInspector {
   /** Every process on the system: identity, parentage, state, terminal, start and argv. */
   listProcesses(): Promise<ProcessTable>;
-  /** The working directory of each pid. Omission is not proof a pid exited. */
-  readCwds(pids: readonly number[]): Promise<{ cwds: Map<number, string>; result: RunResult }>;
+  /**
+   * The working directory of each pid. Omission is not proof a pid exited. `unreadable` holds
+   * the pids whose cwd the system refused to this user (a same-user process that is not
+   * dumpable, on Linux): a definite answer that no cwd can be observed, never a cwd.
+   */
+  readCwds(pids: readonly number[]): Promise<{
+    cwds: Map<number, string>;
+    unreadable: Set<number>;
+    result: RunResult;
+  }>;
   /** Every path each pid has open, in the order the system reported them. */
   readOpenFiles(pids: readonly number[]): Promise<{ files: Map<number, string[]>; result: RunResult }>;
   /**

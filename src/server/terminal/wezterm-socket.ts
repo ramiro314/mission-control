@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { link, lstat, unlink } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { link, lstat, readlink, unlink } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
@@ -22,6 +22,29 @@ function selectedSocket(stderr: string): string | null {
     const path: unknown = JSON.parse(matches[0]![1]!);
     return typeof path === "string" && path.startsWith("/") && !path.includes("\0") ? path : null;
   } catch { return null; }
+}
+
+/** Symlink hops followed from the reported endpoint before giving up. */
+const MAX_SOCKET_LINK_HOPS = 8;
+
+/**
+ * The reported endpoint with its own symlinks followed, and nothing else resolved. WezTerm may
+ * report its `default-<class>` symlink. Darwin's link() follows a symlink and Linux's does not,
+ * so without this the alias pins the symlink, is not a socket, and WezTerm silently goes
+ * unavailable. Each hop resolves against the link's own directory rather than through
+ * `realpath`, so a symlinked parent (macOS `/var`, a symlinked HOME) is kept as written and
+ * never lengthens the alias past the sockaddr_un limit.
+ */
+async function followSocketLinks(reported: string): Promise<string | null> {
+  let path = reported;
+  for (let hop = 0; hop <= MAX_SOCKET_LINK_HOPS; hop++) {
+    const stat = await lstat(path).catch(() => null);
+    if (!stat?.isSymbolicLink()) return path;
+    const target = await readlink(path).catch(() => null);
+    if (target === null) return null;
+    path = resolve(dirname(path), target);
+  }
+  return null;
 }
 
 /** Production budget for the endpoint locator: a native `wezterm cli list` answers well inside it. */
@@ -49,7 +72,8 @@ export async function withWeztermSocket<T>(
     env: { ...env, WEZTERM_LOG: "wezterm_client::client=trace" },
     timeoutMs: locatorTimeoutMs,
   });
-  const path = located.code === 0 ? selectedSocket(located.stderr) : null;
+  const selected = located.code === 0 ? selectedSocket(located.stderr) : null;
+  const path = selected ? await followSocketLinks(selected) : null;
   if (!path) return null;
   // Do not lengthen an already near-limit sockaddr_un path (notably a private macOS HOME).
   // link is exclusive, so a collision refuses without altering anybody else's entry.
