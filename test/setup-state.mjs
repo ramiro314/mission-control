@@ -138,6 +138,9 @@ if (process.env.NODE_TEST_CONTEXT) {
   for (const name of Object.keys(process.env)) {
     if (/^(?:MISSION|FLEET|HARNESS)_\w+_BIN$/.test(name)) delete process.env[name];
   }
+  // The desktop's `$TERMINAL` is the default-terminal emulator's second launcher, so a
+  // developer's value would let a test reaching the real registry open a real window.
+  delete process.env.TERMINAL;
 
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a

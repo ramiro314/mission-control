@@ -17,6 +17,7 @@ import { herdrMultiplexer } from "./herdr.ts";
 import { itermEmulator } from "./iterm.ts";
 import { tmuxMultiplexer } from "./tmux.ts";
 import { weztermEmulator } from "./wezterm.ts";
+import { xdgTerminalEmulator } from "./xdg-terminal.ts";
 import type {
   BinSpec,
   EmulatorId,
@@ -93,7 +94,14 @@ export function multiplexers(exec: TerminalExec = defaultExec): Record<Multiplex
 }
 
 export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, TerminalEmulator> {
-  return { wezterm: weztermEmulator(exec), ghostty: ghosttyEmulator(exec), iterm: itermEmulator(exec) };
+  return {
+    wezterm: weztermEmulator(exec),
+    ghostty: ghosttyEmulator(exec),
+    iterm: itermEmulator(exec),
+    // No `exec`: it only ever starts a detached GUI process, which the run-to-completion
+    // seam cannot express. Its own deps are the seam - see `xdg-terminal.ts`.
+    "xdg-terminal": xdgTerminalEmulator(),
+  };
 }
 
 export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = multiplexers();
@@ -151,6 +159,16 @@ export function emulatorAttemptOrder(
   const preferred = mux ? deps.focusEmulator(mux) : null;
   if (!preferred) return EMULATOR_IDS;
   return [preferred, ...EMULATOR_IDS.filter((id) => id !== preferred)];
+}
+
+/**
+ * Whether this host offers the emulator at all. False only for a platform's own fallback on
+ * a host that does not support it (`TerminalEmulator.hiddenWhereUnsupported`); every other
+ * unsupported emulator stays listed, disabled with its reason.
+ */
+export function emulatorListed(emulator: TerminalEmulator, deps: BinAvailabilityDeps): boolean {
+  if (!emulator.hiddenWhereUnsupported) return true;
+  return !(deps.unsupported ?? binUnsupportedReason)(emulator.bin);
 }
 
 export interface TerminalDeps extends BinAvailabilityDeps, FocusEmulatorPreference {

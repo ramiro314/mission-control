@@ -267,7 +267,18 @@ reported once, where it can be acted on: the Herdr row in **Settings > Setup** p
 and offers **Start the Herdr server**, which runs the daemon's own startup rather than opening a
 terminal. See [First-run setup](setup.md).
 
-The emulator registry currently contains WezTerm, Ghostty, and iTerm2 in that order. iTerm2
+The emulator registry currently contains WezTerm, Ghostty, iTerm2, and the Linux desktop's
+**Default terminal** (`xdg-terminal`) in that order. The default terminal is the Linux fallback
+for Focus and the new-session launcher when nothing more precise is installed: it opens a window
+through `xdg-terminal-exec <attach argv>`, then, if that is missing or refuses, through
+`$TERMINAL -e <attach argv>`. A dispatched agent's argv is wrapped in `sh -c 'cd -- "$1" ...'`
+so it starts in its worktree whichever terminal runs it. The default terminal opens windows and
+does nothing else: list, write, capture, focus, retitle, and restore are all null, so a second
+Focus on a session it opened opens a second window. It is supported on Linux only and, unlike an
+uninstalled emulator, has no row at all on macOS, in Setup or in any terminal picker. A stored
+terminal preference still wins over its place in the attempt order.
+
+iTerm2
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
 windows, tabs, and split sessions, addresses every action by the session's stable unique ID,
 correlates by normalized TTY, writes text and keys, bracket-pastes prompts, captures visible

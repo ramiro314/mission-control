@@ -29,6 +29,7 @@ export const EXECUTABLE_IDS = [
   "lsof",
   "du",
   "treehouse",
+  "xdg-terminal-exec",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

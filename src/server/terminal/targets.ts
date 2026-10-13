@@ -38,6 +38,7 @@ import {
 import {
   automaticFocusEmulator,
   emulatorAttemptOrder,
+  emulatorListed,
   EMULATORS,
   MULTIPLEXERS,
   type FocusEmulatorPreference,
@@ -192,7 +193,8 @@ function emulatorView(
  * Every registered backend, in `TERMINAL_BACKEND_IDS` order, each saying whether it can be
  * used and why not.
  *
- * Unavailable rows are RETURNED, not filtered. The browser renders them disabled with the
+ * Unavailable rows are RETURNED, not filtered - except an emulator that is only another
+ * platform's fallback (`emulatorListed`), which is no row at all on a host that cannot use it. The browser renders them disabled with the
  * sentence, because "we found no terminal" and "we did not look" read identically as an
  * empty menu, and the fix for the first is a sentence away.
  *
@@ -210,7 +212,7 @@ export function terminalTargetViews(
   }
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
-    if (emulator) views.push({ id, ...emulatorView(emulator, deps) });
+    if (emulator && emulatorListed(emulator, deps)) views.push({ id, ...emulatorView(emulator, deps) });
   }
   return views;
 }
