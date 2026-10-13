@@ -21,6 +21,7 @@ import type {
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
 import { GHOSTTY_BIN } from "../src/server/terminal/bin.ts";
 import { ghosttyEmulator } from "../src/server/terminal/ghostty.ts";
+import { unpreparedGuiSpawn } from "../src/server/graphical-session.ts";
 import { itermEmulator } from "../src/server/terminal/iterm.ts";
 import { weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -253,7 +254,7 @@ test("on Linux with Ghostty and no WezTerm, sessions are raised in Ghostty", asy
   const ghostty = ghosttyEmulator(async (_bin, args) => {
     ghosttyCalls.push(args);
     return stubRun({ stdout: "", stderr: "", code: 0 });
-  }, "linux");
+  }, "linux", unpreparedGuiSpawn);
   const tmux = recordingMux();
   const machine = deps({
     multiplexers: {

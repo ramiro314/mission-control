@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
+import { inUserScope, type ScopeCommand } from "../graphical-session.ts";
 import type { BinSpec, TerminalResult } from "./types.ts";
 
 /**
@@ -199,6 +200,8 @@ export interface HerdrClientDeps {
     on?(event: "error", listener: (error: Error) => void): void;
     unref(): void;
   };
+  /** Wraps the server start in a scope of its own on Linux (`graphical-session.ts`). */
+  scope: ScopeCommand;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   nextId: () => string;
@@ -210,6 +213,7 @@ export interface HerdrClientDeps {
 const defaultDeps: HerdrClientDeps = {
   connect: (socketPath) => createConnection(socketPath) as Socket,
   spawnDetached: (executable, args, options) => spawn(executable, [...args], options),
+  scope: inUserScope,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: Date.now,
   nextId: (() => {
@@ -643,11 +647,14 @@ export function createHerdrClient(
       return notReady();
     }
     try {
-      const executable = bin();
-      const child = deps.spawnDetached(executable, ["server"], {
+      // In a scope of its own on Linux, so the server and every agent in it outlive a daemon
+      // restart instead of dying with the daemon's cgroup.
+      const serverEnv = env();
+      const command = deps.scope(bin(), ["server"], serverEnv);
+      const child = deps.spawnDetached(command.bin, command.args, {
         detached: true,
         stdio: "ignore",
-        env: env(),
+        env: serverEnv,
       });
       // Spawn failures may arrive asynchronously. The readiness loop below owns the
       // actionable error and also covers a concurrent creator winning the socket race.

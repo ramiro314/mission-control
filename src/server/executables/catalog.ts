@@ -138,6 +138,8 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     "XDG_TERMINAL_EXEC_BIN",
   ),
   busctl: spec("busctl", "systemd D-Bus client", "busctl", "BUSCTL_BIN"),
+  "systemd-run": spec("systemd-run", "systemd transient unit runner", "systemd-run", "SYSTEMD_RUN_BIN"),
+  systemctl: spec("systemctl", "systemd manager control", "systemctl", "SYSTEMCTL_BIN"),
 };
 
 /** Truly fixed OS utilities. They are never searched and must be invoked by this path. */

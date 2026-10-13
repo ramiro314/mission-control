@@ -12,6 +12,7 @@ import {
 } from "../src/server/terminal/herdr-client.ts";
 import { HERDR_BIN } from "../src/server/terminal/herdr.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
+import { unscoped } from "../src/server/graphical-session.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { fakeHerdrSocket, refuse, reply } from "./helpers/herdr-socket.ts";
 
@@ -346,6 +347,7 @@ test("creation readiness alone starts a stopped server and polls until compatibl
   }
   try {
     const client = createHerdrClient(exec, HERDR_BIN, {
+      scope: unscoped,
       spawnDetached: (_bin, args, options) => {
         spawned += 1;
         assert.deepEqual(args, ["server"]);

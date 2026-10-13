@@ -8,6 +8,7 @@ import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
 import { TMUX_ADDRESS_FORMAT } from "../src/server/terminal/tmux-target.ts";
 import { parseClients, parsePanes, SEP, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
+import { unscoped } from "../src/server/graphical-session.ts";
 import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { shellCommand, shellWords } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
@@ -330,7 +331,7 @@ test("a detached session gets its shell pane, and the session survives a failed 
     stubRun({ stdout: "", stderr: "no room", code: 1 }),
   ]);
   const argv = ["pi", "--session-id", "pi-id", "it's $HOME; $(printf injected)\nnext"];
-  const res = await tmuxMultiplexer(exec).sessions!.spawnDetached({
+  const res = await tmuxMultiplexer(exec, unscoped).sessions!.spawnDetached({
     name: "api",
     cwd: "/w/api",
     argv,

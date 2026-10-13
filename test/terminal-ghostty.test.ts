@@ -21,6 +21,7 @@ import {
 } from "../src/server/executables/catalog.ts";
 import { binPresent } from "../src/server/terminal/bin.ts";
 import { asQuote, ghosttyEmulator, parseSurfaces } from "../src/server/terminal/ghostty.ts";
+import { unpreparedGuiSpawn } from "../src/server/graphical-session.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
 
 interface Call {
@@ -355,7 +356,7 @@ test("on Linux Ghostty is spawn-only: it opens a window and declares everything 
 
 test("on Linux a spawn runs the resolved ghostty with +new-window and the argv after -e", async () => {
   const { calls, exec } = recorder();
-  const opened = await ghosttyEmulator(exec, "linux").spawn!.tab({
+  const opened = await ghosttyEmulator(exec, "linux", unpreparedGuiSpawn).spawn!.tab({
     argv: ["tmux", "attach-session", "-t", "=mc work"],
     title: "mc work",
     cwd: null,
@@ -378,7 +379,7 @@ test("on Linux a spawn runs the resolved ghostty with +new-window and the argv a
 
 test("on Linux a spawn asked for a cwd roots the window there", async () => {
   const { calls, exec } = recorder();
-  await ghosttyEmulator(exec, "linux").spawn!.tab({
+  await ghosttyEmulator(exec, "linux", unpreparedGuiSpawn).spawn!.tab({
     argv: ["claude"],
     title: "dispatch",
     cwd: "/work/tree",
@@ -395,13 +396,13 @@ test("on Linux a spawn asked for a cwd roots the window there", async () => {
 test("on Linux a refused or killed spawn keeps its error and its unknown outcome", async () => {
   const refused = recorder([stubRun({ code: 1, stderr: "D-Bus activation failed", stdout: "" })]);
   assert.deepEqual(
-    await ghosttyEmulator(refused.exec, "linux").spawn!.tab({ argv: ["sh"], title: "t", cwd: null }),
+    await ghosttyEmulator(refused.exec, "linux", unpreparedGuiSpawn).spawn!.tab({ argv: ["sh"], title: "t", cwd: null }),
     { ok: false, error: "D-Bus activation failed", outcomeUnknown: false, target: null },
   );
   const killed = recorder([
     { stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false },
   ]);
-  const r = await ghosttyEmulator(killed.exec, "linux").spawn!.tab({ argv: ["sh"], title: "t", cwd: null });
+  const r = await ghosttyEmulator(killed.exec, "linux", unpreparedGuiSpawn).spawn!.tab({ argv: ["sh"], title: "t", cwd: null });
   assert.equal(r.ok, false);
   assert.equal(r.outcomeUnknown, true, "the window may be open; nothing may tear it down");
 });
