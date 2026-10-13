@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 
 import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/check-env.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
+import { agentRuntimeBase } from "../src/shared/harness-runtime.mjs";
 
 // What a check command is allowed to see.
 //
@@ -18,6 +19,9 @@ const TOKEN = "4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a998877665";
 function canonicalPath(): string {
   return executableLocator.snapshot().path;
 }
+
+/** Every check is handed the daemon's resolved agent runtime root, never one it chose. */
+const RUNTIME_DIR = { MISSION_AGENT_RUNTIME_DIR: agentRuntimeBase() };
 
 const CASES: ReadonlyArray<{ name: string; value?: string; kept: boolean; why: string }> = [
   // --- kept: a build has to be able to find and run its own toolchain -----------------
@@ -102,7 +106,7 @@ test("the daemon's token is dropped by VALUE, whatever the variable is called", 
   );
   assert.deepEqual(
     Object.keys(scrubbed).filter((name) => name !== "MISSION_HOME"),
-    ["KEPT", "PATH"],
+    ["KEPT", "PATH", "MISSION_AGENT_RUNTIME_DIR"],
   );
   assert.ok(scrubbed.PATH, "workflow checks inherit the shared executable search path");
 });
@@ -117,7 +121,7 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
   );
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), MISSION_HOME: undefined, ...RUNTIME_DIR },
   );
 
   // Down to a single character, which is where the collateral is worst and the ordering is
@@ -125,7 +129,7 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
   const single = scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a");
   assert.deepEqual(
     { ...single, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), MISSION_HOME: undefined, ...RUNTIME_DIR },
   );
 });
 
@@ -135,7 +139,7 @@ test("a whitespace-only token scrubs nothing, like an unminted one", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", SPACED: "a b" }, "   ");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), SPACED: "a b", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), SPACED: "a b", MISSION_HOME: undefined, ...RUNTIME_DIR },
   );
 });
 
@@ -146,7 +150,7 @@ test("an unminted token scrubs no values, rather than every value", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me" }, "");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), HOME: "/home/me", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), HOME: "/home/me", MISSION_HOME: undefined, ...RUNTIME_DIR },
   );
 });
 
@@ -161,7 +165,7 @@ test("an undefined value is dropped rather than passed through as undefined", ()
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", EMPTY: undefined }, TOKEN);
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), MISSION_HOME: undefined, ...RUNTIME_DIR },
   );
 });
 

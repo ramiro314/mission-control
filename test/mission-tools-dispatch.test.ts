@@ -107,11 +107,13 @@ for (const agent of ["claude", "codex"] as const) {
     const argv = captured.argv;
     assert.ok(argv, registry.getTask(id)?.error ?? "spawn must receive argv");
     // Captured from dispatcher.ts at cc709c01, before this capability change. Only
-    // machine paths, the inherited PATH and temporary credential locations vary.
+    // machine paths, the inherited PATH, the agent runtime root and temporary credential
+    // locations vary.
     // Every flag, other value, ordering and escaped byte is pinned.
     const stable = argv.map((arg) => arg
       .replace(/"PATH"="[^"]*"/, '"PATH"="<PATH>"')
       .replace(/"MISSION_HOME"="[^"]*"/, '"MISSION_HOME"="<AGENT_HOME>"')
+      .replace(/"MISSION_AGENT_RUNTIME_DIR"="[^"]*"/, '"MISSION_AGENT_RUNTIME_DIR"="<AGENT_RUNTIME_DIR>"')
       .replace(/"MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE"="[^"]*"/,
         '"MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE"="<CREDENTIAL_FILE>"'));
     const serialized = JSON.stringify(stable, null, 2)
