@@ -624,25 +624,50 @@ const MIN_REDACTED_FRAGMENT = 4;
  * of which may carry a claim variable's value. Each whole occurrence becomes `[NAME redacted]`.
  * The tail ring drops output from the front, so a tail can also START partway through a value:
  * a leading piece of at least four characters that ends a value is redacted too.
+ *
+ * Every match is found in the ORIGINAL text before anything is replaced, so no replacement can
+ * hide another value's match: one value's suffix overlapping the start of another value, a
+ * value inside another, and overlapping occurrences are all covered. Overlapping and touching
+ * spans merge into one marker naming every variable they cover.
  */
 export function redactClaimValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>,
 ): string {
-  const ordered = secrets
-    .filter((secret) => secret.value.length > 0)
-    .sort((a, b) => b.value.length - a.value.length);
-  let redacted = text;
-  for (const { name, value } of ordered) {
+  const spans: Array<{ start: number; end: number; name: string }> = [];
+  for (const { name, value } of secrets) {
+    if (value.length === 0) continue;
+    // Every complete occurrence, overlapping ones included.
+    for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+      spans.push({ start: at, end: at + value.length, name });
+    }
+    // The longest leading piece of the text that ends this value, as the ring's cut leaves it.
     for (let length = value.length - 1; length >= MIN_REDACTED_FRAGMENT; length -= 1) {
-      if (redacted.startsWith(value.slice(-length))) {
-        redacted = `[${name} redacted]${redacted.slice(length)}`;
+      if (text.startsWith(value.slice(-length))) {
+        spans.push({ start: 0, end: length, name });
         break;
       }
     }
   }
-  for (const { name, value } of ordered) redacted = redacted.split(value).join(`[${name} redacted]`);
-  return redacted;
+  if (spans.length === 0) return text;
+  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged: Array<{ start: number; end: number; names: string[] }> = [];
+  for (const span of spans) {
+    const last = merged.at(-1);
+    if (last && span.start <= last.end) {
+      last.end = Math.max(last.end, span.end);
+      if (!last.names.includes(span.name)) last.names.push(span.name);
+    } else {
+      merged.push({ start: span.start, end: span.end, names: [span.name] });
+    }
+  }
+  let redacted = "";
+  let cursor = 0;
+  for (const span of merged) {
+    redacted += `${text.slice(cursor, span.start)}[${span.names.join(", ")} redacted]`;
+    cursor = span.end;
+  }
+  return redacted + text.slice(cursor);
 }
 
 /** A backtick run longer than any in `text`, at least `minimum` long, so `text` cannot close it. */

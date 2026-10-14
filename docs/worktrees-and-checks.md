@@ -205,7 +205,9 @@ on a claim step to give it back.
   or written into the agent's note, every value the step received is replaced in its tail and
   reason with `[NAME redacted]`. The tail keeps only the end of the output, so a tail that
   starts partway through a value has that leading piece redacted too, when it is at least four
-  characters long. A value the step transformed before printing, for example by encoding it,
+  characters long. Every match is found in the original output before anything is replaced, so
+  values that overlap or contain one another are all removed, and overlapping matches become one
+  marker naming each variable, such as `[A_TOKEN, B_TOKEN redacted]`. A value the step transformed before printing, for example by encoding it,
   is not recognized.
 - The slot row records a failure as a versioned JSON record: the step, the step count, the
   command (cut to 512 bytes), the reason, the tail and how many bytes the tail dropped.

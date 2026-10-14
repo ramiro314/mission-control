@@ -358,6 +358,34 @@ test("redaction removes every received value, including one the tail ring cut in
   assert.equal(redactClaimValues("nothing to hide", []), "nothing to hide");
 });
 
+test("one value's match never hides another's: overlapping values are both redacted whole", () => {
+  // `xABCD` ends with `ABCD`, which is how the second value begins. Matching one value and
+  // rewriting the text before looking for the other would leave `-super-secret-value` behind.
+  const overlapping = [
+    { name: "SHORT_TOKEN", value: "xABCD" },
+    { name: "LONG_TOKEN", value: "ABCD-super-secret-value" },
+  ];
+  for (const secrets of [overlapping, [...overlapping].reverse()]) {
+    const redacted = redactClaimValues("ABCD-super-secret-value\nE401\n", secrets);
+    assert.equal(redacted.includes("super-secret"), false, `nothing of LONG_TOKEN survives (${redacted})`);
+    assert.match(redacted, /^\[[A-Z_, ]*LONG_TOKEN[A-Z_, ]* redacted\]\nE401\n$/);
+  }
+  // Each in the middle of the output, overlapping where they meet.
+  const middle = redactClaimValues("token xABCD-super-secret-value end", overlapping);
+  assert.equal(middle, "token [SHORT_TOKEN, LONG_TOKEN redacted] end");
+
+  // A value that contains another value is removed whole, not left with a hole in it.
+  const nested = [
+    { name: "INNER", value: "secret" },
+    { name: "OUTER", value: "my-secret-key" },
+  ];
+  assert.equal(redactClaimValues("use my-secret-key and secret", nested), "use [OUTER, INNER redacted] and [INNER redacted]");
+
+  // Overlapping and touching occurrences of one value leave nothing between them.
+  assert.equal(redactClaimValues("aaaaa", [{ name: "A", value: "aaa" }]), "[A redacted]");
+  assert.equal(redactClaimValues("k3yk3y!", [{ name: "K", value: "k3y" }]), "[K redacted]!");
+});
+
 test("a step that prints its own variable and fails stores, warns and shows only the redaction", async () => {
   const value = "s3cr3t-fixture-claim-value";
   const outcome = await runClaimSteps({
