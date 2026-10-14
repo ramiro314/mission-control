@@ -34,14 +34,14 @@ other. Ticket 7 follows ticket 4, and ticket 8 follows tickets 6 and 7.
 
 | # | Title | Kind | Labels | Blocked by | Task |
 | --- | --- | --- | --- | --- | --- |
-| 1 | GitHub Inspector findings ledger: posted state and read route | ship | inspector-findings | None | not filed yet |
-| 2 | GitHub Inspector findings link to their GitHub comments | ship | inspector-findings | 1 | not filed yet |
-| 3 | Shared GitHub Inspector findings renderer with posted markers | ship | inspector-findings | 1 | not filed yet |
-| 4 | Foreman relays every unresolved GitHub Inspector finding as text | ship | inspector-findings | 1, 3 | not filed yet |
-| 5 | Shared GitHub Inspector findings table with a Posted column | ship | inspector-findings | 1 | not filed yet |
-| 6 | Findings modal in Settings, GitHub Inspector, Inspections | ship | inspector-findings | 1, 5 | not filed yet |
-| 7 | Drafted GitHub Inspector findings are posted after a switch to live | bugfix | inspector-findings | 4 | not filed yet |
-| 8 | Refused GitHub Inspector drafts show their refusal count and reason | ship | inspector-findings | 6, 7 | not filed yet |
+| 1 | GitHub Inspector findings ledger: posted state and read route | ship | inspector-findings | None | `40d0a02c-d273-4b63-8553-85bd71e843d1` |
+| 2 | GitHub Inspector findings link to their GitHub comments | ship | inspector-findings | 1 | `c1271aff-5361-4011-acb2-e89e2039814b` |
+| 3 | Shared GitHub Inspector findings renderer with posted markers | ship | inspector-findings | 1 | `aaec8418-48e9-4ddf-ac42-0cff840a0181` |
+| 4 | Foreman relays every unresolved GitHub Inspector finding as text | ship | inspector-findings | 1, 3 | `fed0cc48-692b-43a0-92f4-190a2132e510` |
+| 5 | Shared GitHub Inspector findings table with a Posted column | ship | inspector-findings | 1 | `ef173762-abfb-41ca-83b4-3c28381d9973` |
+| 6 | Findings modal in Settings, GitHub Inspector, Inspections | ship | inspector-findings | 1, 5 | `eaa135ed-62e5-494a-92b4-1eb21b78a58e` |
+| 7 | Drafted GitHub Inspector findings are posted after a switch to live | bugfix | inspector-findings | 4 | `093ba188-a632-47bd-9e03-23288548fcc7` |
+| 8 | Refused GitHub Inspector drafts show their refusal count and reason | ship | inspector-findings | 6, 7 | `4f8554f2-e263-44e1-8a23-3732863ccb27` |
 
 ## Ticket 1: GitHub Inspector findings ledger: posted state and read route
 
