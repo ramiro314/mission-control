@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worktree claims, Warm, and monorepo testing settings - tickets</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f7f8fa;
+    --page-fg: #1b2028;
+    --page-muted: #59616e;
+    --page-dim: #7b838f;
+    --page-line: #dde1e7;
+    --page-card: #ffffff;
+    --page-accent: #1f6f4f;
+    --page-code-bg: #f0f2f5;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1013;
+      --page-fg: #e7ebf1;
+      --page-muted: #99a3b1;
+      --page-dim: #7c8798;
+      --page-line: #242b34;
+      --page-card: #14181e;
+      --page-accent: #35c08a;
+      --page-code-bg: #11151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 15px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 56px 28px 120px; }
+  @media (max-width: 640px) { .wrap { padding: 32px 16px 80px; } }
+  header.doc { border-bottom: 1px solid var(--page-line); padding-bottom: 20px; margin-bottom: 32px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 52px 0 14px; letter-spacing: -0.01em; padding-top: 14px; border-top: 1px solid var(--page-line); }
+  h3 { font-size: 17px; margin: 34px 0 10px; }
+  p { margin: 0 0 14px; max-width: 86ch; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; max-width: 86ch; }
+  li { margin-bottom: 6px; }
+  li > input[type="checkbox"] { margin: 0 8px 0 -2px; vertical-align: -1px; }
+  ul:has(> li > input[type="checkbox"]) { list-style: none; padding-left: 4px; }
+  a { color: var(--page-accent); }
+  code {
+    font: 12.5px/1.5 var(--mono);
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  .scroll { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--page-line); border-radius: 10px; background: var(--page-card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  th { background: var(--page-code-bg); font-weight: 620; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td code { overflow-wrap: normal; white-space: nowrap; }
+</style>
+</head>
+<body>
+<main class="wrap">
+<header class="doc"><h1>Worktree claims, Warm, and monorepo testing settings - tickets</h1></header>
+<p>Sliced from the approved <a href="plan.html">plan</a>, merged in <a href="https://github.com/ramiro314/mission-control/pull/515">#515</a>. The breakdown review was approved on
+2026-10-13: fifteen new tasks, kept in Mission Control only, because no task source is
+configured for this repository. The tickets are filed as Mission Control backlog tasks after this file is pushed, and the Task column is then filled with each task&#39;s id.</p>
+<p>Every ticket is also gated on the session that filed it, so none starts before the pull request
+that adds this file merges. The tasks are created enabled, so the backlog autopilot may pick
+each one up once that pull request and its own blockers have merged.</p>
+<h2 id="how-these-tickets-were-filed">How these tickets were filed</h2>
+<p>The plan&#39;s own shape task chose &quot;Create tickets after the plan merges&quot; in its plan review, but
+its tickets choice ended <code>lapsed</code>: no follow-up task started when <a href="https://github.com/ramiro314/mission-control/pull/515">#515</a> merged, and <strong>Create
+tickets</strong> was not offered on its card. A new shape task was dispatched instead. Its contract
+leaves filing to a follow-up, so the human was asked first, and chose to file the tickets from
+that session, gated on its own pull request (round 1, <code>ticket-route</code>).</p>
+<h2 id="tickets">Tickets</h2>
+<p>Two tracks run in parallel. The worktree track is tickets 2 to 8 (plan slices 1 and 2). The
+testing track is tickets 9 to 15 (plan slices 3 to 5). Ticket 1 stands alone.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Title</th>
+<th>Kind</th>
+<th>Labels</th>
+<th>Blocked by</th>
+<th>Task</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Loopback boundary and MCP-only Command write, stated in the docs</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>None</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Pool claim steps run on every task lease</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>None</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Claim settings and slot dependency state in Settings › Worktrees</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>2</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Stopping a running claim from the slot and task cards</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>3</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Check leases run the pool&#39;s claim</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>2</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Manual leases claim through 202-and-poll</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>2</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Copy-on-write seeding of cold slots from an idle sibling</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>4, 5</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Warm and Warm idle slots</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>7</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Stored testing settings at the repository root</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>None</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Subdirectory testing scopes</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>9</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Per-app import resolution for affected-test selection</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>10</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Partitioned affected-tests gate per app</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>10</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Commands documents: import, preview, apply and export</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>10</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Agent-proposed Commands documents</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>13</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Set up testing chooses committed or stored settings</td>
+<td>ship</td>
+<td>worktree-claims</td>
+<td>14</td>
+<td>not filed yet</td>
+</tr>
+</tbody></table></div>
+<p><strong>What can run at once:</strong></p>
+<ul>
+<li>Tickets 1, 2 and 9 have no blockers.</li>
+<li>Once ticket 2 merges, tickets 3, 5 and 6 can run side by side.</li>
+<li>Ticket 7 waits on tickets 4 and 5, and ticket 8 waits on ticket 7.</li>
+<li>Once ticket 10 merges, tickets 11, 12 and 13 can run side by side.</li>
+<li>Ticket 14 waits on ticket 13, and ticket 15 waits on ticket 14.</li>
+</ul>
+<p><strong>Fork tracking,</strong> from the plan&#39;s fork-tracking section:</p>
+<ul>
+<li>Ticket 2 creates the <code>fork:worktree-dependency-claims</code> label and its tracking issue, and
+tickets 3 to 8 carry that label.</li>
+<li>Ticket 13 creates <code>fork:commands-bulk-config</code>, and ticket 14 carries it.</li>
+<li>Tickets 1, 9 to 12 and 15 extend <a href="https://github.com/ramiro314/mission-control/issues/296">#296</a> <code>fork:flake-aware-testing</code>.</li>
+</ul>
+<h2 id="decisions">Decisions</h2>
+<p>Recorded as answered. &quot;Rec.&quot; marks an answer that took the recommended option. The plan&#39;s own
+decisions, plan review and repair rounds were not reopened.</p>
+<h3 id="round-1-route-and-slicing">Round 1: route and slicing</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ticket-route</code></td>
+<td>How the tickets get filed, given that this session&#39;s shape contract leaves filing to a follow-up</td>
+<td>File them from this session, gated on its pull request, with this file beside the plan. The human authorized this departure from the shape contract (rec.)</td>
+</tr>
+<tr>
+<td><code>granularity</code></td>
+<td>How finely to cut the plan&#39;s five slices</td>
+<td>Tickets sized to one agent&#39;s context window, about fifteen (rec.)</td>
+</tr>
+<tr>
+<td><code>tracks</code></td>
+<td>Whether the worktree work and the testing work block each other</td>
+<td>Two parallel tracks: slice 1 then 2, and slice 3 then 4 and 5 (rec.)</td>
+</tr>
+<tr>
+<td><code>docs-ticket</code></td>
+<td>Where section 7&#39;s docs fixes that are already true today go</td>
+<td>One small docs ticket with no blockers. The claim docs and the &quot;build rather than an install&quot; rewrite stay with the claim tickets (rec.)</td>
+</tr>
+<tr>
+<td><code>labels</code></td>
+<td>Backlog labels</td>
+<td>One label for the whole set, <code>worktree-claims</code>. Fork labels stay on the pull requests (rec.)</td>
+</tr>
+<tr>
+<td><code>follow-ups</code></td>
+<td>Whether the plan&#39;s follow-ups become tasks now</td>
+<td>No, only the plan&#39;s five slices (rec.)</td>
+</tr>
+</tbody></table></div>
+<h3 id="round-2-draft-breakdown">Round 2: draft breakdown</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>lease-kind-rollout</code></td>
+<td>Whether ticket 2 claims on task leases only, with check and manual leases claiming in tickets 5 and 6</td>
+<td>Yes: each lease kind starts claiming in the ticket that makes waiting on it safe (rec.)</td>
+</tr>
+<tr>
+<td><code>derived-details</code></td>
+<td>Whether the seven derived details stand</td>
+<td>Accepted as written (rec.)</td>
+</tr>
+</tbody></table></div>
+<p>The seven derived details, accepted as written:</p>
+<ol>
+<li>Ticket 2 has no UI. It is proved through the worktrees settings API and unit tests, and
+ticket 3 adds the editor and the slot states.</li>
+<li>The claim registry, maintenance skipping a claiming slot and shutdown killing claims land
+in ticket 2. Without them, the first long claim would block maintenance and hang shutdown.</li>
+<li>Ticket 4 waits on ticket 3, because the slot card&#39;s Stop sits on ticket 3&#39;s &quot;installing&quot;
+state.</li>
+<li>Ticket 7 waits on tickets 4 and 5: a Stop during a seed sets <code>interrupted</code>, and the cold
+check fallback seeds too.</li>
+<li>Slice 3 is split by scope: the root first (ticket 9), then subdirectories (ticket 10).</li>
+<li>Ticket 13 waits on ticket 10, not only ticket 9, because a document carries subdirectory
+testing rows.</li>
+<li>The tickets are created enabled.</li>
+</ol>
+<h3 id="breakdown-review">Breakdown review</h3>
+<p>Every ticket was approved as a new task. None of the seven open backlog tasks, all labelled
+<code>inspector-findings</code>, was adopted. Mirroring was declined, because no task source is
+configured for this repository.</p>
+<h2 id="ticket-1-loopback-boundary-and-mcp-only-command-write-stated-in-the-docs">Ticket 1: Loopback boundary and MCP-only Command write, stated in the docs</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: None. Plan slice: 7. Task: not filed yet.</p>
+<p><strong>What to build:</strong> The docs and code comments stop overstating what keeps an agent from writing settings. The security docs say plainly that the loopback boundary has no token on <code>/api/*</code>, so any local process, an agent&#39;s shell included, can call settings routes, and they name the write-hardening follow-up. Every place that calls <code>set_affected_tests_command</code> the one Command write an agent may make says instead that it bounds what an agent may do through MCP.</p>
+<p><strong>Blocked by:</strong> None - can start immediately.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The security docs state that <code>/api/*</code> accepts any loopback caller without a token, and name the tokenless-loopback-writes follow-up from the plan.</li>
+<li><input disabled="" type="checkbox"> The protocol, testing-setup and route comments and the flaky-tests docs that describe <code>set_affected_tests_command</code> as the only agent Command write say it bounds agents through MCP, and that <code>/api/*</code> routes accept any loopback caller.</li>
+<li><input disabled="" type="checkbox"> No behavior changes. The docs link check passes, and every unit test that reads these docs still passes.</li>
+<li><input disabled="" type="checkbox"> The PR follows the plan&#39;s fork-tracking section: the <code>set_affected_tests_command</code> wording belongs to <a href="https://github.com/ramiro314/mission-control/issues/296">#296</a> <code>fork:flake-aware-testing</code>.</li>
+</ul>
+<p><strong>Test seams:</strong> the docs link check and the unit tests that read the repository&#39;s docs.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (sections &quot;Checks and affected tests&quot;, &quot;Decisions this plan supersedes&quot; and 7) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-2-pool-claim-steps-run-on-every-task-lease">Ticket 2: Pool claim steps run on every task lease</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: None. Plan slice: 1. Task: not filed yet.</p>
+<p><strong>What to build:</strong> A pool can be given a claim: ordered dependency steps that run inside every task lease, after reset or add and setup, and before the final proof, so a dispatched task&#39;s slot has dependencies for its commit. Steps get the scrubbed check environment plus only the variables each names. A slot whose fingerprint matches skips them, and a failed claim hands the slot over with a warning instead of quarantining it. The claim is configured through the worktrees settings API here. Check and manual leases keep today&#39;s behavior until their own tickets.</p>
+<p><strong>Blocked by:</strong> None - can start immediately.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The pool&#39;s <code>worktrees</code> entry accepts <code>claim.steps</code> (argv plus variable names), <code>timeoutMinutes</code> (default 10, max 240) and <code>fingerprintPaths</code>, strict and bounded like <code>setupArgv</code>, and settings backups capture it.</li>
+<li><input disabled="" type="checkbox"> Each step gets the scrubbed check base plus only its named variables, from the daemon environment or the login-shell snapshot, with stdin closed. Setup moves onto the same base with the union of the pool&#39;s names, and the release notes say so.</li>
+<li><input disabled="" type="checkbox"> The fingerprint hashes the blob ids of matching paths at the leased commit (read from objects), every argv and every variable name. A match skips the steps. A mismatch, or an empty <code>fingerprintPaths</code>, runs them.</li>
+<li><input disabled="" type="checkbox"> One durable write sets <code>deps_state</code> and clears the fingerprint before any step runs. Success records <code>current</code> with the fingerprint, and failure records <code>failed</code>. Startup quarantines a slot whose claim was interrupted, with <code>deps_state = interrupted</code>, and no later claim skips on a stale fingerprint.</li>
+<li><input disabled="" type="checkbox"> Output streams into a bounded tail and never fails a claim, and a timeout kills the process group. A failure hands the slot over with a warning, and the agent&#39;s launch prompt names the failing step and its tail. A claim that dirties a tracked file still fails the final proof.</li>
+<li><input disabled="" type="checkbox"> A claim registry tracks running claims. Maintenance skips a claiming slot instead of waiting, and retries it next pass. Shutdown kills running claims and grants nothing.</li>
+<li><input disabled="" type="checkbox"> Worktree docs cover the claim, fingerprints, both environments and crash recovery, and rewrite the &quot;build rather than an install&quot; line.</li>
+<li><input disabled="" type="checkbox"> This PR creates the <code>fork:worktree-dependency-claims</code> label and tracking issue.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests on the worktree manager with fake steps: fingerprint skip and mismatch, failure handover, dirty-file quarantine, timeout, output size, per-step environments, login-shell fallback, setup environment, crash injection after the write-ahead and mid-step, maintenance skip, shutdown kill.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1, &quot;Crash and restart recovery&quot;, and &quot;Delivery order&quot; item 1) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-3-claim-settings-and-slot-dependency-state-in-settings-worktrees">Ticket 3: Claim settings and slot dependency state in Settings › Worktrees</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 2. Plan slice: 1. Task: not filed yet.</p>
+<p><strong>What to build:</strong> In Settings › Worktrees an operator edits a pool&#39;s claim (its steps, each step&#39;s variable names, the timeout and the fingerprint paths) and sees each name marked present or missing, never its value. Each slot card shows its dependency state: current, stale against origin&#39;s default branch, never installed, installing (with the step and elapsed time), failed (with the tail) or interrupted.</p>
+<p><strong>Blocked by:</strong> ticket 2 (Pool claim steps run on every task lease).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The pool row edits the claim fields and saves them through the existing worktrees settings route, with schema errors shown inline.</li>
+<li><input disabled="" type="checkbox"> Each variable name shows present or missing in the daemon environment or the login-shell snapshot. No value reaches the browser.</li>
+<li><input disabled="" type="checkbox"> The slot view carries the dependency state and the fingerprint&#39;s commit. Stale is computed against the last fetched default-branch ref, so building the inventory never fetches. Changes arrive through the existing worktrees revision bump.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers the claim editor with present and missing indicators and the slot card states, with every agent binary faked and no <code>data-testid</code>.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests for the inventory&#39;s dependency state and the presence check; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1, &quot;Environment&quot; and &quot;What the operator sees&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-4-stopping-a-running-claim-from-the-slot-and-task-cards">Ticket 4: Stopping a running claim from the slot and task cards</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 3. Plan slice: 1. Task: not filed yet.</p>
+<p><strong>What to build:</strong> While a dispatch waits on a claim, its task card shows &quot;Installing dependencies&quot; with the running step and elapsed time, and both the task card and the slot card offer Stop. Stop kills the claim&#39;s process group and hands the slot over as a failed claim, so the dispatch continues with the warning. Cancelling the dispatching task stops its claim too, instead of waiting it out.</p>
+<p><strong>Blocked by:</strong> ticket 3 (Claim settings and slot dependency state in Settings › Worktrees).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The task view carries a provisioning phase while its dispatch waits on a claim, delivered through the existing task upsert event. After the lease, a failed claim leaves a warning on the task.</li>
+<li><input disabled="" type="checkbox"> Stop on either card finds the claim through the claim registry, kills its process group and hands the slot over as a failed claim. <code>deps_state</code> follows the plan&#39;s Stop rule.</li>
+<li><input disabled="" type="checkbox"> Task cancel during a claim stops it, and the dispatcher tears down as it does today.</li>
+<li><input disabled="" type="checkbox"> A dispatching task still counts toward Foreman&#39;s session limit while it claims.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec shows &quot;Installing dependencies&quot; with Stop on the task card, and Stop on the slot card, with every agent binary faked.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests for Stop and task cancel through the claim registry; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1, &quot;Stop&quot;, &quot;What the operator sees&quot; and &quot;Who waits on a claim&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-5-check-leases-run-the-pools-claim">Ticket 5: Check leases run the pool&#39;s claim</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 2. Plan slice: 1. Task: not filed yet.</p>
+<p><strong>What to build:</strong> Check attempts, including the cold fallback worktree, run the pool&#39;s claim before the check&#39;s Command. A failed claim does not run the Command. The attempt records a dependency failure with the tail, and the change owns it only when the branch changed a fingerprint input against its merge base. Otherwise it is infrastructure and is retried. While a claim runs, the attempt gives up its check-concurrency slot, and cancelling the run stops its claims.</p>
+<p><strong>Blocked by:</strong> ticket 2 (Pool claim steps run on every task lease).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> Check leases and the cold check fallback run the claim under the same rules as task leases.</li>
+<li><input disabled="" type="checkbox"> A failed claim skips the Command and records a dependency failure with the tail.</li>
+<li><input disabled="" type="checkbox"> If a fingerprint-input blob differs between head and merge base, the check fails with the tail as its output. If none differs, or the pool has no fingerprint paths, it is infrastructure, retried up to the existing infrastructure cap with the run budget handed back.</li>
+<li><input disabled="" type="checkbox"> The attempt releases its check slot while claiming and takes one again before spawn. Ladder order, budget reservation and the test lease are unchanged, and a third check runs while two claim.</li>
+<li><input disabled="" type="checkbox"> The command timeout still starts at spawn, so a slow install ends as a dependency failure, never a timed-out check.</li>
+<li><input disabled="" type="checkbox"> Run cancel stops the running claims of its attempts.</li>
+<li><input disabled="" type="checkbox"> The worktree docs&#39; check-lease section covers the claim and the slot release.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests on the check-lease manager and the engine with fake claims: the verdict for changed, unchanged and absent fingerprint inputs, the cold fallback claiming, the slot release, run cancel.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1, &quot;Failure&quot;, &quot;Check verdict on a failed claim&quot; and &quot;Who waits on a claim&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-6-manual-leases-claim-through-202-and-poll">Ticket 6: Manual leases claim through 202-and-poll</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 2. Plan slice: 1. Task: not filed yet.</p>
+<p><strong>What to build:</strong> <code>make session</code> and <code>make claude</code> get a slot whose dependencies match, even when the claim runs longer than one HTTP request. For a pool with a claim, the manual acquire route accepts with 202 and a request id and runs the acquire in the background, and the session script polls until the lease is granted or fails, printing the step and elapsed time. A pool with no claim still answers 201 synchronously, so older scripts keep working.</p>
+<p><strong>Blocked by:</strong> ticket 2 (Pool claim steps run on every task lease).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> For a pool with a claim, manual acquire pins HEAD, returns 202 with a request id, and runs the acquire under the same manual owner.</li>
+<li><input disabled="" type="checkbox"> A request status route returns <code>claiming</code> (step and elapsed time), <code>granted</code> (the lease and any claim warning) or <code>failed</code> (the reason). A request unknown after a restart is a 404.</li>
+<li><input disabled="" type="checkbox"> A grant not picked up within 10 minutes is returned through the ordinary owner-authorized return, with the clean and occupancy checks. An occupied slot stays leased.</li>
+<li><input disabled="" type="checkbox"> A pool with no claim answers 201 with the lease, as today.</li>
+<li><input disabled="" type="checkbox"> The session script accepts 201 and 202, polls every 2 seconds, and reports a 404 after a 202 as a daemon restart during the claim.</li>
+<li><input disabled="" type="checkbox"> The <code>make session</code> docs describe the 202-and-poll.</li>
+</ul>
+<p><strong>Test seams:</strong> route tests for 202 through claiming to granted and to failed, the pickup window, 201 compatibility and 404 after a restart; a script test against both 201 and 202.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1, &quot;Who waits on a claim&quot; and &quot;The manual route, when the pool has a claim&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-7-copy-on-write-seeding-of-cold-slots-from-an-idle-sibling">Ticket 7: Copy-on-write seeding of cold slots from an idle sibling</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 4, 5. Plan slice: 2. Task: not filed yet.</p>
+<p><strong>What to build:</strong> A claim on a slot with no fingerprint, or with a stale one where an idle sibling matches exactly, first clones the pool&#39;s seed paths copy-on-write from an idle sibling, so a cold slot inherits a sibling&#39;s dependency trees instead of paying a full install. The source is held under a new <code>warm</code> lease while it is copied. Where the filesystem cannot clone there is no seed, never a byte copy. A slot interrupted mid-seed loses its verified-ignored seed paths and starts cold.</p>
+<p><strong>Blocked by:</strong> ticket 4 (Stopping a running claim from the slot and task cards), ticket 5 (Check leases run the pool&#39;s claim).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The pool claim gains <code>seed.paths</code> and <code>seed.exclude</code>, editable in the claim editor.</li>
+<li><input disabled="" type="checkbox"> A <code>warm</code> lease owner kind is granted and released through the ordinary lease paths and never shown as a task. Its owner is referenced exactly while its operation runs, and definitely not referenced at startup.</li>
+<li><input disabled="" type="checkbox"> The source is an idle sibling whose fingerprint matches the target commit, else the most recently claimed idle sibling, never the main checkout. With none idle there is no seed.</li>
+<li><input disabled="" type="checkbox"> Each path is cloned into staging in the pool directory and renamed into place, with exclusions removed first, so the checkout never holds a half tree. A failed clone abandons the seed and the steps run. After a seed the target inherits the source&#39;s fingerprint.</li>
+<li><input disabled="" type="checkbox"> A Stop during a seed sets <code>interrupted</code>. The next claim removes only seed paths git confirms are ignored, fails with a warning on a tracked or not-ignored match, and reruns every step when no seed paths are configured.</li>
+<li><input disabled="" type="checkbox"> Startup applies the plan&#39;s crash-recovery rows for seeds and sources and removes leftover staging. The cold check fallback seeds under the same rule.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers the seed fields, with every agent binary faked. Worktree docs cover seeding.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests with a fake copy command that refuses reflink: source order, the <code>warm</code> lease preventing an occupancy quarantine, staging and rename, exclusions, no seed without copy-on-write, the interrupted wipe, crash injection between renames and mid-copy with a source held.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 2 up to &quot;Warm&quot;, and &quot;Crash and restart recovery&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-8-warm-and-warm-idle-slots">Ticket 8: Warm and Warm idle slots</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 7. Plan slice: 2. Task: not filed yet.</p>
+<p><strong>What to build:</strong> An operator prepares idle slots ahead of time. <strong>Warm</strong> on an available slot&#39;s card, and <strong>Warm idle slots</strong> on a pool row, queue an operation that takes a <code>warm</code> lease on each target, fetches, resets it to origin&#39;s current default branch, seeds or claims under the existing rules, then releases it. The operation shows a live output tail and a Cancel control, and its full log stays reachable from the slot card after a restart.</p>
+<p><strong>Blocked by:</strong> ticket 7 (Copy-on-write seeding of cold slots from an idle sibling).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The worktree action vocabulary gains <code>warm</code>, through preview and execute, per slot and per pool.</li>
+<li><input disabled="" type="checkbox"> Warm never touches a leased or quarantined slot. A slot leased while a pool Warm is queued is skipped and listed as skipped.</li>
+<li><input disabled="" type="checkbox"> The operation view shows a live tail, refreshed through the worktrees revision bump at most once a second, and links the full log under the state directory. The slot keeps the path of its most recent log.</li>
+<li><input disabled="" type="checkbox"> Cancel kills the process group and returns the slot as available, with <code>deps_state</code> following the Stop rule.</li>
+<li><input disabled="" type="checkbox"> Startup returns a slot still held by a <code>warm</code> owner through the ordinary return path with <code>deps_state = interrupted</code>, quarantining only on doubt. A log no live operation or slot references is removed.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers Warm and Warm idle slots with the live tail and Cancel, and calls <code>expectContentClearsBorder</code> for any new modal, with every agent binary faked.</li>
+<li><input disabled="" type="checkbox"> Worktree docs cover Warm.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests on the worktree operations service: idle-only targeting, Cancel during a seed and during a step, crash injection mid-Warm and with leftover logs; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 2, &quot;Warm&quot; and &quot;Crash and restart recovery&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-9-stored-testing-settings-at-the-repository-root">Ticket 9: Stored testing settings at the repository root</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: None. Plan slice: 3. Task: not filed yet.</p>
+<p><strong>What to build:</strong> A repository can have an affected-tests gate configured entirely in Mission Control. On the affected-tests page in Library › Commands, a &quot;Testing settings&quot; section edits the root&#39;s <code>tests.patterns</code>, <code>tests.includeImporters</code> and <code>tests.smokeSet</code>. Stored settings overlay the committed testing file key by key, and the local file stays the operator&#39;s last word. The gate runs with stored settings and no committed file, and run detail says where every effective key came from.</p>
+<p><strong>Blocked by:</strong> None - can start immediately.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> A new stored testing settings catalog, keyed by the same canonical path as Command overrides and carrying a revision, is added through the migration path.</li>
+<li><input disabled="" type="checkbox"> Its schema allows only the three <code>tests.*</code> keys, strict and within today&#39;s limits, and refuses <code>flakes</code>. The committed and local schemas and the merge stay compatible, so the CI action still bundles them.</li>
+<li><input disabled="" type="checkbox"> At the root, layers merge committed, then stored, then local. The gate runs when any layer exists and is skipped when none does. An invalid stored row cannot be saved, and the committed and local file rules are unchanged.</li>
+<li><input disabled="" type="checkbox"> Run detail labels each effective key <code>committed</code>, <code>stored (&lt;scope&gt;)</code> or <code>local</code>, extending today&#39;s local-keys line.</li>
+<li><input disabled="" type="checkbox"> A stale save is refused with 409 and the row reloads.</li>
+<li><input disabled="" type="checkbox"> A <code>testing-settings</code> settings-backup domain ships with a missing-domain migration, so older snapshots restore with it empty.</li>
+<li><input disabled="" type="checkbox"> Workflow docs cover stored settings, layering and the supersession of &quot;committed and reviewed like code&quot; for <code>tests.*</code>.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec edits the root row and sees the run detail sources, with every agent binary faked.</li>
+<li><input disabled="" type="checkbox"> The PR extends <a href="https://github.com/ramiro314/mission-control/issues/296">#296</a> <code>fork:flake-aware-testing</code>, whose behavior contract changes.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests for layer order and per-key sources, the gate with no committed file, the schema refusing <code>flakes</code> and the backup migration; a route test for the 409; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 3 up to &quot;Scopes and the test universe&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-10-subdirectory-testing-scopes">Ticket 10: Subdirectory testing scopes</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 9. Plan slice: 3. Task: not filed yet.</p>
+<p><strong>What to build:</strong> Testing settings can be stored for a subdirectory, such as one app of a monorepo, and they take effect on which tests the gate selects. A subdirectory&#39;s keys replace the root&#39;s for files inside it, its patterns and smoke set are relative to it, and keys it does not set fall through. Selected files still run through today&#39;s single invocation until per-app partitioning lands.</p>
+<p><strong>Blocked by:</strong> ticket 9 (Stored testing settings at the repository root).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> A server resolver produces a browser-safe <code>TestingScopes</code> value: ordered scopes, each with its repository-relative path, effective settings and the source of every key, plus a nearest-scope lookup. Nested scopes apply nearest first, and the local file stays root-only.</li>
+<li><input disabled="" type="checkbox"> Per scope, the test universe is the tracked files matching that scope&#39;s effective patterns, resolved relative to the scope that set them. <code>includeImporters</code> and <code>smokeSet</code> apply per scope.</li>
+<li><input disabled="" type="checkbox"> Test selection takes <code>TestingScopes</code> in place of one flat config. Selected files run through the one override the session&#39;s cwd resolves, as today, and the selection diagnostics record that per-app aliases are not yet resolved.</li>
+<li><input disabled="" type="checkbox"> The Testing settings section lists the root and every subdirectory with stored settings or an affected-tests override, each editable.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec edits a subdirectory row, with every agent binary faked.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests on a fixture monorepo with two subdirectory scopes and no root tsconfig, including relative patterns and smokeSet; <code>TestingScopes</code> shape tests that tickets 11 and 12 reuse; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 3, &quot;Layers&quot; and &quot;Scopes and the test universe&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-11-per-app-import-resolution-for-affected-test-selection">Ticket 11: Per-app import resolution for affected-test selection</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 10. Plan slice: 4. Task: not filed yet.</p>
+<p><strong>What to build:</strong> An import inside a monorepo app selects its importer&#39;s tests even when it goes through that app&#39;s own path aliases or a workspace package name. Selection resolves each file&#39;s imports through the nearest tsconfig or jsconfig at or above it, following <code>extends</code>, and through the root workspaces&#39; package names.</p>
+<p><strong>Blocked by:</strong> ticket 10 (Subdirectory testing scopes).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> Each scanned file uses the nearest <code>tsconfig.json</code> or <code>jsconfig.json</code> up to the tree root, following relative <code>extends</code> and any package <code>extends</code> resolvable inside the tree, with its <code>paths</code> and <code>baseUrl</code> and today&#39;s extension swaps. An unresolvable <code>extends</code> is a diagnostic, not fatal. Parsed configs are cached per gate.</li>
+<li><input disabled="" type="checkbox"> Wildcard replacement handles every <code>*</code>, not only the first.</li>
+<li><input disabled="" type="checkbox"> Workspace globs, in array or <code>{packages}</code> form, map package names to directories. A bare name resolves through a string <code>exports</code>, else <code>main</code>, else <code>index</code>, and <code>name/sub</code> resolves inside the workspace. Richer <code>exports</code> maps are reported in diagnostics.</li>
+<li><input disabled="" type="checkbox"> Resolution still refuses anything outside the tree, and scope universes are unchanged.</li>
+<li><input disabled="" type="checkbox"> The diagnostics no longer report per-app aliases as unresolved.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests on test selection: the nearest tsconfig with relative <code>extends</code>, workspace names bare and with a subpath, the wildcard fix.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 4, &quot;Resolving imports&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-12-partitioned-affected-tests-gate-per-app">Ticket 12: Partitioned affected-tests gate per app</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 10. Plan slice: 4. Task: not filed yet.</p>
+<p><strong>What to build:</strong> A monorepo change runs each touched app&#39;s tests in that app. The gate selects once, assigns each selected test to the deepest affected-tests override whose subdirectory contains it, runs one invocation per partition in its subdirectory, and passes only if every partition passes. Run detail lists every partition, and any selected test no command could run.</p>
+<p><strong>Blocked by:</strong> ticket 10 (Subdirectory testing scopes).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> A test outside every subdirectory override goes to the root override or the slot&#39;s global default. A test none of them can run is listed as selected but unrun, and the gate decides on the partitions that ran.</li>
+<li><input disabled="" type="checkbox"> Each partition runs its override&#39;s command in its subdirectory, with files relative to it and its own temporary JUnit path mapped back to tree paths, and reruns its failed files once.</li>
+<li><input disabled="" type="checkbox"> Partitions run sequentially, all of them, inside the one check-test lease.</li>
+<li><input disabled="" type="checkbox"> One gate attempt spends one run of the budget however many partitions it has. An attempt that selects nothing hands the run back.</li>
+<li><input disabled="" type="checkbox"> Partitioning does not depend on the session&#39;s cwd, which still picks the test, lint, typecheck and build overrides.</li>
+<li><input disabled="" type="checkbox"> Run detail lists each partition&#39;s subdirectory, command, file count, outcome and output tail, and the unrun tests.</li>
+<li><input disabled="" type="checkbox"> Workflow docs cover partitions.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec shows partitions in run detail, with every agent binary faked.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests on a fixture monorepo with two apps and a package: partitions, one budget run per attempt, sequential execution, the unrun listing; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 4, &quot;Partitioning&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-13-commands-documents-import-preview-apply-and-export">Ticket 13: Commands documents: import, preview, apply and export</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 10. Plan slice: 5. Task: not filed yet.</p>
+<p><strong>What to build:</strong> An operator configures a repository&#39;s Command overrides and stored testing settings from one document. In Library › Commands they paste or upload a versioned JSON document, pick the repository, review a preview of every add, change and removal, and apply it in one step. They can also export a repository&#39;s current overrides and testing settings as a document, and importing it back changes nothing.</p>
+<p><strong>Blocked by:</strong> ticket 10 (Subdirectory testing scopes).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> A versioned document schema sits in the shared wire contracts, with repository-relative paths (empty for the root), command overrides per slot, testing settings and explicit removal entries. It never touches global defaults, run budgets or pool settings.</li>
+<li><input disabled="" type="checkbox"> Each entry is checked against its catalog&#39;s existing rules: the affected-tests template rule, duplicate refusal and the override cap.</li>
+<li><input disabled="" type="checkbox"> Unmentioned rows are untouched, listed rows are added or replaced, and only explicit removals remove.</li>
+<li><input disabled="" type="checkbox"> Apply writes everything in one transaction, using each slot&#39;s compare-and-swap and the testing catalog&#39;s revisions. A stale preview is refused with 409 and recomputed.</li>
+<li><input disabled="" type="checkbox"> Export, then import, round-trips.</li>
+<li><input disabled="" type="checkbox"> Library and settings docs cover documents and export.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers import preview and apply, and export. Every new modal calls <code>expectContentClearsBorder</code>, and every agent binary stays faked.</li>
+<li><input disabled="" type="checkbox"> This PR creates the <code>fork:commands-bulk-config</code> label and tracking issue.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests for schema validation, the merge with removals, the template rule, the stale 409 and the round trip; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 5, &quot;Format&quot;, &quot;Applying&quot;, and the import and export parts of &quot;Two producers, one screen&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-14-agent-proposed-commands-documents">Ticket 14: Agent-proposed Commands documents</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 13. Plan slice: 5. Task: not filed yet.</p>
+<p><strong>What to build:</strong> An agent session can propose a Commands document for its own task repository through a new MCP tool, <code>propose_command_document</code>, without writing any live row. The proposal shows as a banner on that repository in Library › Commands and as an attention item, and opens the same preview, where the operator applies or dismisses it.</p>
+<p><strong>Blocked by:</strong> ticket 13 (Commands documents: import, preview, apply and export).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The tool accepts only the calling session&#39;s own task repositories, using the guard <code>set_affected_tests_command</code> uses, without its testing-setup label restriction.</li>
+<li><input disabled="" type="checkbox"> It stores one pending proposal per repository, and a newer one replaces the older. Pending proposals are not in backups.</li>
+<li><input disabled="" type="checkbox"> The banner and the attention item lead to the import preview. Applying or dismissing clears the proposal.</li>
+<li><input disabled="" type="checkbox"> Docs say the approval step bounds the MCP surface only, because <code>/api/*</code> accepts any loopback caller.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers the banner, the attention item and applying a proposal, with every agent binary faked.</li>
+<li><input disabled="" type="checkbox"> The PR carries <code>fork:commands-bulk-config</code>.</li>
+</ul>
+<p><strong>Test seams:</strong> unit tests for the guard refusing another repository and for a newer proposal replacing an older one; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 5, the proposal part of &quot;Two producers, one screen&quot;) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+<h2 id="ticket-15-set-up-testing-chooses-committed-or-stored-settings">Ticket 15: Set up testing chooses committed or stored settings</h2>
+<p>Kind: <code>ship</code>. Labels: <code>worktree-claims</code>. Blocked by: 14. Plan slice: 5. Task: not filed yet.</p>
+<p><strong>What to build:</strong> The &quot;Set up testing&quot; action asks the operator to choose committed or stored before the task starts. Committed is today&#39;s path. Stored has the agent work out per-app overrides and testing settings and submit them as a Commands document proposal, which the operator applies from the preview, so a repository that will not commit a testing file still gets a gate.</p>
+<p><strong>Blocked by:</strong> ticket 14 (Agent-proposed Commands documents).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> The action offers committed or stored before the task starts.</li>
+<li><input disabled="" type="checkbox"> The testing-setup skill text and the task&#39;s launch prompt carry the choice. Committed still writes the testing file and calls <code>set_affected_tests_command</code> unchanged. Stored submits with <code>propose_command_document</code>.</li>
+<li><input disabled="" type="checkbox"> Docs describe both paths.</li>
+<li><input disabled="" type="checkbox"> A Playwright spec covers the choice, with every agent binary faked.</li>
+<li><input disabled="" type="checkbox"> The PR extends <a href="https://github.com/ramiro314/mission-control/issues/296">#296</a> <code>fork:flake-aware-testing</code>.</li>
+</ul>
+<p><strong>Test seams:</strong> prompt and skill contract tests for both choices; the e2e spec.</p>
+<p>Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 6) first. The plan is the proposed route, not a specification: follow it where the repository agrees, use your judgement where it doesn&#39;t, and record any deviation in the pull request. Implement only this ticket.</p>
+</main>
+</body>
+</html>
