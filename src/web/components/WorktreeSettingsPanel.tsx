@@ -300,6 +300,12 @@ function DependencyDetail({
             </Tooltip>
           )}
           <p className="wt-deps-detail">The next lease runs the claim again.</p>
+          {failure.tailWithheld && (
+            <p className="wt-deps-detail">
+              This failure was recorded by an earlier version, before claim variable values were
+              redacted from step output, so its output is not shown.
+            </p>
+          )}
           {failure.tail && (
             <pre className="wt-deps-tail" aria-label={`Slot ${ordinal} dependency output tail`} tabIndex={0}>{failure.tail.replace(/\n+$/, "")}</pre>
           )}

@@ -470,7 +470,10 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
         dependencies: {
           ...at,
           state: "failed",
-          failure: { step: 1, stepCount: 1, command: "pnpm install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0 },
+          failure: {
+            step: 1, stepCount: 1, command: "pnpm install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0,
+            tailWithheld: false,
+          },
         },
       },
       { ...base, id: "d6", ordinal: 6, dependencies: { ...at, state: "interrupted" } },
@@ -482,7 +485,10 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
         dependencies: {
           ...at,
           state: "failed",
-          failure: { step: null, stepCount: null, command: null, reason: "legacy summary line", tail: "", truncatedBytes: 0 },
+          failure: {
+            step: null, stepCount: null, command: null, reason: "legacy summary line", tail: "", truncatedBytes: 0,
+            tailWithheld: true,
+          },
         },
       },
     ],
@@ -505,7 +511,12 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
   assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?starts cold/);
   const legacy = html.slice(html.indexOf('aria-label="Slot 7 dependencies"'));
   assert.match(legacy, /^[\s\S]*?>failed<[\s\S]*?<p class="wt-deps-detail">legacy summary line<\/p>/);
-  assert.doesNotMatch(legacy.slice(0, legacy.indexOf("</section>")), /Failed command|<pre/, "nothing guessed, nothing empty");
+  const legacyCard = legacy.slice(0, legacy.indexOf("</section>"));
+  assert.doesNotMatch(legacyCard, /Failed command|<pre/, "nothing guessed, no output shown");
+  assert.match(legacyCard, /recorded by an earlier version, before claim variable values were\s+redacted from step output, so its output is not shown\./);
+  // A failure this build recorded says nothing about withheld output.
+  const current = html.slice(html.indexOf('aria-label="Slot 5 dependencies"'));
+  assert.doesNotMatch(current.slice(0, current.indexOf("</section>")), /its output is not shown/);
 });
 
 test("a pool without a claim shows no slot dependency state and offers to add a step", () => {

@@ -127,6 +127,7 @@ test("the claim editor saves through the settings route and every slot shows its
     };
     await acquire("never claimed");
     const cutOff = await acquire("claim cut off by a restart");
+    const beforeRedaction = await acquire("failed under an earlier build");
 
     const pool = await openPool(dashboard, daemon);
     const editor = pool.getByRole("group", { name: "Dependency claim, run on every task lease" });
@@ -185,6 +186,12 @@ test("the claim editor saves through the settings route and every slot shows its
     // daemon's back because a restart mid-claim is not something a browser can do.
     withDaemonDb(daemon, (db) => {
       db.prepare("UPDATE worktree_slots SET deps_state = 'interrupted' WHERE path = ?").run(cutOff.path);
+      // An earlier build stored failures as text, output included, before values were redacted
+      // from it. This one holds the daemon's value, as a step that printed it would have.
+      db.prepare("UPDATE worktree_slots SET deps_state = 'failed', deps_last_error = ? WHERE path = ?").run(
+        `step 1 of 1 (pnpm install) exited with code 1\nusing token ${DAEMON_VALUE}\nE401 Unauthorized\n`,
+        beforeRedaction.path,
+      );
     });
     await dashboard.getByRole("button", { name: "Refresh" }).click();
     await expect(pool.getByRole("region", { name: "Slot 1 dependencies" })).toContainText("never installed");
@@ -193,6 +200,18 @@ test("the claim editor saves through the settings route and every slot shows its
     await expect(pool.getByRole("region", { name: "Slot 2 dependencies" })).toContainText("interrupted");
     await expect(pool.getByRole("region", { name: "Slot 2 dependencies" }))
       .toContainText("A restart cut off this slot’s last claim. Its next claim starts cold.");
+    // That earlier build's output is withheld, whatever it holds: only its summary line shows.
+    const legacy = pool.getByRole("region", { name: "Slot 3 dependencies" });
+    await expect(legacy).toContainText("failed");
+    await expect(legacy).toContainText("step 1 of 1 (pnpm install) exited with code 1");
+    await expect(legacy).toContainText(
+      "This failure was recorded by an earlier version, before claim variable values were redacted from step output, so its output is not shown.",
+    );
+    await expect(legacy.getByLabel("Slot 3 dependency output tail")).toHaveCount(0);
+    await expect(legacy).not.toContainText("E401 Unauthorized");
+    const servedLegacy = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).text();
+    expect(servedLegacy).not.toContain(DAEMON_VALUE);
+    expect(await dashboard.content()).not.toContain(DAEMON_VALUE);
 
     // A dispatched task leases a slot and runs the claim: installing, with the step and a
     // counting elapsed time, arriving through the worktrees revision bump without a refresh.
@@ -255,6 +274,7 @@ test("the claim editor saves through the settings route and every slot shows its
     await shoot(dashboard, pool.getByRole("article", { name: `Slot ${second}` }), "06-slot-failed");
     await shoot(dashboard, pool.getByRole("article", { name: "Slot 1" }), "07-slot-never-installed");
     await shoot(dashboard, pool.getByRole("article", { name: "Slot 2" }), "08-slot-interrupted");
+    await shoot(dashboard, pool.getByRole("article", { name: "Slot 3" }), "09-slot-failed-before-redaction");
 
     const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
     const states = inventory.repositories.flatMap((repo) => repo.slots).map((slot) => slot.dependencies?.state);

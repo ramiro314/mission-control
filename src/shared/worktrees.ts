@@ -96,6 +96,11 @@ export interface WorktreeClaimFailureView {
   tail: string;
   /** Output bytes dropped from the front of the tail. */
   truncatedBytes: number;
+  /**
+   * An earlier build stored this failure's output before values were redacted from it, so the
+   * daemon does not send it at all. `tail` is then empty.
+   */
+  tailWithheld: boolean;
 }
 
 /**

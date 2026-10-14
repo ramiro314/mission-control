@@ -98,7 +98,10 @@ test("each durable dependency state maps to the state Settings names", () => {
     state: "failed",
     fingerprintSha: null,
     claimedAt: null,
-    failure: { step: 1, stepCount: 1, command: "yarn install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0 },
+    failure: {
+      step: 1, stepCount: 1, command: "yarn install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0,
+      tailWithheld: false,
+    },
   }, "a failure reaches the view as fields, never as prose to parse");
 
   assert.equal(view(row({ depsState: "interrupted" }))?.state, "interrupted");
@@ -285,20 +288,49 @@ test("a failure record round-trips field for field, whatever the command and rea
     reason: "stopped before it started",
     tail: "line one\nline two\n",
     truncatedBytes: 12,
+    tailWithheld: false,
   }, "no reason vocabulary and no parenthesis in the command can confuse a record");
 
-  // A row an earlier build wrote as text keeps its first line as the reason and the rest as the
-  // tail, and claims no step or command it would have to guess at.
+  // A row an earlier build wrote as text keeps its first line as the reason, claims no step or
+  // command it would have to guess at, and withholds the output it stored before redaction.
   assert.deepEqual(decodeClaimFailure(describeClaimFailure(warning)), {
     step: null,
     stepCount: null,
     command: null,
     reason: "step 2 of 3 (node -e console.log(1)) exited with code 9 (fake) stopped before it started",
-    tail: "line one\nline two\n",
+    tail: "",
     truncatedBytes: 0,
+    tailWithheld: true,
   });
-  assert.deepEqual(decodeClaimFailure(""), { step: null, stepCount: null, command: null, reason: "", tail: "", truncatedBytes: 0 });
+  assert.deepEqual(decodeClaimFailure("step 1 of 1 (pnpm) exited with code 1"), {
+    step: null, stepCount: null, command: null, reason: "step 1 of 1 (pnpm) exited with code 1", tail: "", truncatedBytes: 0, tailWithheld: false,
+  }, "a text row that stored no output has nothing withheld");
+  assert.deepEqual(decodeClaimFailure(""), {
+    step: null, stepCount: null, command: null, reason: "", tail: "", truncatedBytes: 0, tailWithheld: false,
+  });
   assert.equal(decodeClaimFailure(JSON.stringify({ version: 99, step: 1 })).step, null, "an unknown record version is not trusted");
+});
+
+test("an earlier build's failure text never sends its stored output, whatever value it holds", () => {
+  // Written before redaction existed: the step printed a value that may since have rotated, so
+  // nothing the daemon knows now could recognize it.
+  const rotated = "s3cr3t-rotated-registry-value";
+  const legacy = `step 1 of 1 (pnpm install) exited with code 1\nusing token ${rotated}\nE401 Unauthorized\n`;
+  const view = slotDependencies({
+    hasClaim: true,
+    slot: row({ depsState: "failed", depsLastError: legacy }),
+    running: null,
+    defaultSha: null,
+    defaultFingerprint: null,
+  });
+  assert.equal(view?.state, "failed");
+  if (view?.state !== "failed") return;
+  assert.equal(view.failure.reason, "step 1 of 1 (pnpm install) exited with code 1");
+  assert.equal(view.failure.tail, "");
+  assert.equal(view.failure.tailWithheld, true);
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes(rotated), false, "the stored value never reaches the view");
+  assert.equal(serialized.includes("E401"), false, "nor any of the stored output");
 });
 
 test("redaction removes every received value, including one the tail ring cut into", () => {
@@ -537,8 +569,6 @@ test("a failure tail is kept whole up to its byte bound, and cut on a character 
   const overAscii = `head-${"y".repeat(bound)}`;
   assert.equal(failedTail(record(overAscii)), "y".repeat(bound), "past the bound, exactly the last bytes remain");
 
-  // A text row an earlier build wrote is bounded the same way when it is read back.
-  assert.equal(failedTail(`step 1 of 1 (pnpm) exited with code 1\n${overAscii}`), "y".repeat(bound));
 });
 
 test("a running claim shows installing with its step, and a failed one keeps its tail", async () => {

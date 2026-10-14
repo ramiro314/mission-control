@@ -210,7 +210,10 @@ on a claim step to give it back.
 - The slot row records a failure as a versioned JSON record: the step, the step count, the
   command (cut to 512 bytes), the reason, the tail and how many bytes the tail dropped.
   Settings reads those fields directly. A failure an earlier build stored as plain text shows
-  its first line as the reason and the rest as the tail.
+  only its first line, the command and the reason. Its output is never sent to the browser,
+  because it was stored before redaction existed and may hold a value that cannot be
+  recognized now, for example one since rotated. The card says the output is withheld, and the
+  slot's next claim replaces the record.
 - A timeout sends SIGTERM to the step's process group, then SIGKILL after five seconds, and
   counts as a failed claim.
 - A failure is a non-zero exit, a timeout, or a step that cannot start. The remaining steps do

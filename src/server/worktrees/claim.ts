@@ -537,6 +537,11 @@ export interface ClaimFailureRecord {
   tail: string;
   /** Output bytes the tail ring dropped from the front. */
   truncatedBytes: number;
+  /**
+   * True when an earlier build stored output for this failure that is not shown: it predates
+   * redaction, so it is withheld rather than trusted.
+   */
+  tailWithheld: boolean;
 }
 
 const FAILURE_RECORD_VERSION = 1;
@@ -566,8 +571,10 @@ export function encodeClaimFailure(warning: WorktreeClaimWarning): string {
 
 /**
  * Read a slot row's failure back. A record this build wrote decodes field for field. Anything
- * else is text an earlier build wrote (`describeClaimFailure`'s shape): its first line becomes
- * the reason and the rest the tail, without guessing where the command ends inside it.
+ * else is text an earlier build wrote (`describeClaimFailure`'s shape), and fails closed: its
+ * first line, the operator's own command and the reason, becomes the reason, and the step's
+ * output is withheld. That output was stored before redaction existed, so it may hold a value
+ * the step printed, and a value since rotated cannot be recognized to redact it now.
  */
 export function decodeClaimFailure(stored: string): ClaimFailureRecord {
   try {
@@ -589,6 +596,7 @@ export function decodeClaimFailure(stored: string): ClaimFailureRecord {
         reason: boundedHead(parsed.reason, MAX_FAILURE_REASON_BYTES),
         tail: boundedText(parsed.tail, MAX_FAILURE_TAIL_BYTES),
         truncatedBytes: parsed.truncatedBytes as number,
+        tailWithheld: false,
       };
     }
   } catch {
@@ -601,8 +609,9 @@ export function decodeClaimFailure(stored: string): ClaimFailureRecord {
     stepCount: null,
     command: null,
     reason: boundedHead(head, MAX_FAILURE_REASON_BYTES),
-    tail: newline < 0 ? "" : boundedText(stored.slice(newline + 1), MAX_FAILURE_TAIL_BYTES),
+    tail: "",
     truncatedBytes: 0,
+    tailWithheld: newline >= 0 && stored.slice(newline + 1).length > 0,
   };
 }
 
