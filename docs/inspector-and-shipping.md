@@ -254,6 +254,25 @@ A model is a **cost** choice here, not a latency one. The same 10KB PR measured 
 Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
 `MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
 
+### Whether a finding reached GitHub
+
+Every finding records whether, and when, it was posted. The time is stamped when GitHub
+accepts the review that carried it, or when the next round finds the comment of a review
+whose response was lost. It is never cleared, so a finding that was posted and later
+resolved still reads as posted, and one raised again in dry run reads as "not posted again,
+posted earlier".
+
+Findings recorded before Mission Control tracked posting report only what their row
+proves. An open finding, or one with replies, was on GitHub. A dry-run draft never was. A
+resolved finding with no replies could be either, and it reads as **unknown** rather than
+guessing.
+
+`GET /api/inspector/findings?pr=owner/repo%23123` returns one pull request's ledger row and
+every finding on it, in every status, unresolved first and then by severity, path and line.
+It answers 400 for a missing or malformed key and 404 for a pull request the GitHub
+Inspector never adopted. It is read-only, and it is how Foreman's worker, which never
+touches the database, can read finding text.
+
 ### Dry run
 
 `dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
