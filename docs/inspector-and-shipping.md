@@ -267,6 +267,16 @@ proves. An open finding, or one with replies, was on GitHub. A dry-run draft nev
 resolved finding with no replies could be either, and it reads as **unknown** rather than
 guessing.
 
+A posted finding also records where it is. An inline finding links to the first comment of
+its thread. A finding folded into the review body, because it had no line to anchor to,
+links to the review that carried it. The link comes from the pull request read each tick
+already makes, so it costs no extra GitHub call, and it lands on the tick after the review
+is posted. Until then the finding reads as posted without a link. The same ownership rule
+that decides which threads are the GitHub Inspector's own decides which comment or review a
+finding links to, so a comment someone else wrote is never linked. The link is kept when a
+finding is raised again, so a finding that is not posted again still points at the comment
+where it was posted earlier.
+
 `GET /api/inspector/findings?pr=owner/repo%23123` returns one pull request's ledger row and
 every finding on it, in every status, unresolved first and then by severity, path and line.
 It answers 400 for a missing or malformed key and 404 for a pull request the GitHub

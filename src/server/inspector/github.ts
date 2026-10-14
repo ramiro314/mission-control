@@ -2,10 +2,18 @@ import { ghBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
-import { BODY_ONLY_FINDINGS_MARKER, isCleanReview, isOurs, parseMarker } from "./marker.ts";
+import {
+  BODY_ONLY_FINDINGS_MARKER,
+  isCleanReview,
+  isOurBodyFindingsReview,
+  isOurs,
+  parseMarker,
+  reviewHeader,
+} from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
+import type { InspectorComment } from "@shared/types.ts";
 import { parseFlakeSummary, type FlakeReport } from "@shared/flake-report.ts";
 import { ciCheckRunsFromRollup, type CiCheckRun } from "@shared/wait-for-ci.ts";
 import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "@shared/github-sso.mjs";
@@ -195,6 +203,8 @@ export interface ThreadSnapshot {
   path: string | null;
   comments: {
     databaseId: number | null;
+    /** The comment's GitHub link, or null when GitHub did not report one. */
+    url: string | null;
     body: string;
     author: string;
     createdAt: string;
@@ -202,6 +212,8 @@ export interface ThreadSnapshot {
 }
 
 export interface ReviewSnapshot {
+  /** The review's GitHub link, or null when GitHub did not report one. */
+  url: string | null;
   body: string;
   author: string;
   headSha: string;
@@ -241,13 +253,13 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
         nodes{
           id isResolved path
           comments(first:100){
-            nodes{ databaseId body createdAt author{ login } }
+            nodes{ databaseId url body createdAt author{ login } }
           }
         }
         pageInfo{ hasNextPage endCursor }
       }
       reviews(last:100){
-        nodes{ body author{ login } commit{ oid } }
+        nodes{ url body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
     }
@@ -258,7 +270,7 @@ const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$befo
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       reviews(last:100,before:$before){
-        nodes{ body author{ login } commit{ oid } }
+        nodes{ url body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
     }
@@ -269,7 +281,7 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       reviewThreads(first:100,after:$after){
-        nodes{ id isResolved path comments(first:1){ nodes{ databaseId body createdAt author{ login } } } }
+        nodes{ id isResolved path comments(first:1){ nodes{ databaseId url body createdAt author{ login } } } }
         pageInfo{ hasNextPage endCursor }
       }
     }
@@ -407,6 +419,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
           const o = c as Record<string, unknown>;
           return {
             databaseId: typeof o.databaseId === "number" ? o.databaseId : null,
+            url: linkOf(o.url),
             body: typeof o.body === "string" ? o.body : "",
             author: String((o.author as { login?: unknown } | null)?.login ?? "unknown"),
             createdAt: String(o.createdAt ?? ""),
@@ -418,6 +431,11 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     reviews: reviewPage.reviews,
     reviewsPageInfo: reviewPage.pageInfo,
   };
+}
+
+/** A link GitHub reported, or null for anything that is not a non-empty string. */
+function linkOf(raw: unknown): string | null {
+  return typeof raw === "string" && raw ? raw : null;
 }
 
 function threadPageInfo(raw: unknown): ThreadPageInfo {
@@ -441,6 +459,7 @@ function threadPage(raw: unknown): ThreadPage {
         const comment = rawComment as Record<string, unknown>;
         return {
           databaseId: typeof comment.databaseId === "number" ? comment.databaseId : null,
+          url: linkOf(comment.url),
           body: typeof comment.body === "string" ? comment.body : "",
           author: String((comment.author as { login?: unknown } | null)?.login ?? "unknown"),
           createdAt: String(comment.createdAt ?? ""),
@@ -460,6 +479,7 @@ function toReviewPage(raw: unknown): ReviewPage {
     reviews: (connection.nodes ?? []).filter(Boolean).map((item) => {
       const review = item as Record<string, unknown>;
       return {
+        url: linkOf(review.url),
         body: typeof review.body === "string" ? review.body : "",
         author: String((review.author as { login?: unknown } | null)?.login ?? "unknown"),
         headSha: String((review.commit as { oid?: unknown } | null)?.oid ?? ""),
@@ -711,6 +731,57 @@ export function ourThreads(snapshot: PrSnapshot, login: string | null): Map<stri
   return out;
 }
 
+/** What `findingUrls` needs from a ledger row. */
+export type FindingLinkRow = Pick<InspectorComment, "fingerprint" | "line" | "round" | "githubUrl">;
+
+/**
+ * The GitHub link each ledger row should now hold, for only the rows whose stored link is
+ * missing or different. Read from the snapshot the tick already has, so it costs no call.
+ *
+ * - **A thread finding** links to the first comment of our thread carrying its marker,
+ *   owned by the same two-part `isOurs` rule as `ourThreads`. A finding raised again after
+ *   it was resolved has a thread per post, so the one with the highest marker round wins:
+ *   the newest post, whatever order GitHub lists the threads in.
+ * - **A demoted finding** (`line` null) links to our review for that row's round that
+ *   carries the body-only findings marker (`isOurBodyFindingsReview`). The newest one wins
+ *   if a round somehow has two. A demoted row with no such review in the snapshot falls
+ *   back to its marker thread, which a version raised earlier with a line may have left.
+ *
+ * A row that matches nothing is left out, so its stored link stays as it is. That is what
+ * carries a link forward to a drafted row whose earlier version was posted: the earlier
+ * comment either is still seen, giving the same link, or is not, and nothing overwrites it.
+ * A null `login` matches nothing, the same fail-closed answer as `ourThreads`.
+ */
+export function findingUrls(
+  snapshot: Pick<PrSnapshot, "threads" | "reviews">,
+  login: string | null,
+  rows: Iterable<FindingLinkRow>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!login) return out;
+  const threads = new Map<string, { url: string; round: number }>();
+  for (const t of snapshot.threads) {
+    const first = t.comments[0];
+    if (!first?.url || !isOurs(first, login)) continue;
+    const marker = parseMarker(first.body)!;
+    const seen = threads.get(marker.fingerprint);
+    if (!seen || marker.round >= seen.round) {
+      threads.set(marker.fingerprint, { url: first.url, round: marker.round });
+    }
+  }
+  for (const row of rows) {
+    let url: string | null = null;
+    if (row.line === null) {
+      for (const review of snapshot.reviews) {
+        if (review.url && isOurBodyFindingsReview(review, login, row.round)) url = review.url;
+      }
+    }
+    url ??= threads.get(row.fingerprint)?.url ?? null;
+    if (url && url !== row.githubUrl) out.set(row.fingerprint, url);
+  }
+  return out;
+}
+
 /**
  * How much of a diff we will hold in memory to slice `maxBytes` off the front of it.
  *
@@ -917,7 +988,7 @@ export function renderComment(marker: string, c: PlannedComment): string {
 export function renderCleanReview(marker: string, round: number): string {
   return [
     marker,
-    `**⌕ GitHub Inspector** · round ${round}`,
+    reviewHeader(round),
     "",
     "No further issues found. This pull request is safe to merge.",
   ].join("\n");

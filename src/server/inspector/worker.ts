@@ -54,6 +54,7 @@ import {
   hasBodyOnlyFindings,
   fetchDiff,
   fetchPr,
+  findingUrls,
   ourThreads,
   ownedThreadsResolved,
   parsePrUrl,
@@ -630,6 +631,7 @@ async function processPr(
   }
 
   const rows = existingByFingerprint(pr.key);
+  recordFindingUrls(rows, s, login);
   const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
   const post = posture === "live";
   const readDiff = diffOncePerTick(dir, pr);
@@ -1095,6 +1097,29 @@ async function reviewRound(
   await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
     post, login, now, tick, resolvedThreadIds);
   return true;
+}
+
+/**
+ * Write each finding's GitHub link, read from the snapshot this tick already fetched.
+ *
+ * Runs on every tick that knows its login, before reconciliation and before any write
+ * below, so that the map those writes copy from already holds the link. That matters for
+ * a round that raises a finding again: its row is built from `prior.githubUrl`, so the
+ * earlier comment's link survives as the "posted earlier" link.
+ *
+ * A review posted later in this same tick is not in this snapshot, so its links land on
+ * the next tick. Until then the finding reads as posted, without a link.
+ *
+ * `updatedAt` is left alone on purpose. Learning where a finding lives on GitHub does not
+ * change the finding, and the Completion pane's "Last change" and the prompt's ordering
+ * both read that field.
+ */
+function recordFindingUrls(rows: Map<string, InspectorComment>, s: PrSnapshot, login: string): void {
+  for (const [fp, url] of findingUrls(s, login, rows.values())) {
+    const next: InspectorComment = { ...rows.get(fp)!, githubUrl: url };
+    rows.set(fp, next);
+    upsertInspectorComment(next);
+  }
 }
 
 /** Close one ledger row, in the map we are working from as well as in the DB. */
