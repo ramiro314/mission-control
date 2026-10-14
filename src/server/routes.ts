@@ -1595,6 +1595,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // leak task prompts, repo paths, and transcripts. Require a loopback Host on every
   // data endpoint - the same-origin UI and Vite's changeOrigin proxy both qualify,
   // but a rebound cross-site request can't forge it.
+  //
+  // This Host check is the only gate on `/api/*`; there is no token. Any local process, an
+  // agent's shell included, can call these routes, settings writes among them. docs/security.md
+  // says so and links the follow-up that would require a token for executable-settings writes.
   const requireLoopback: MiddlewareHandler = async (c, next) => {
     if (!hostIsLoopback(c.req.header("host"))) return c.json({ error: "forbidden" }, 403);
     await next();
@@ -5034,7 +5038,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   /**
-   * `set_affected_tests_command`: the testing-setup skill's one Command write.
+   * `set_affected_tests_command`: the testing-setup skill's one Command write through MCP.
+   *
+   * It bounds what an agent may do through MCP, not every route to a Command:
+   * `PUT /api/workflow-commands/:slot` sits behind `requireLoopback` alone, so any loopback
+   * caller, an agent's shell included, can write any override there without a token.
    *
    * The body names neither a slot nor a repository. The session is established from its env
    * first, then the task it runs, and `setAffectedTestsCommand` refuses any session whose task

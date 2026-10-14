@@ -1,4 +1,6 @@
-// The "Set up flake-aware testing" repository action, and the one Command write its agent may make.
+// The "Set up flake-aware testing" repository action, and the one Command write its agent may make
+// through MCP. That bounds the agent's MCP tools only: the `/api/*` Command routes accept any
+// loopback caller without a token, an agent's shell included (see docs/security.md).
 //
 // Two halves of one supervised task. `startTestingSetup` files and launches a ship task whose
 // intent invokes the `testing-setup` skill; the skill audits the repository, asks the human in

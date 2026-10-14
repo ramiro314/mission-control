@@ -1076,7 +1076,9 @@ server.registerTool(
   },
 );
 
-// The testing-setup skill's one Command write. It names no slot and no repository: the daemon
+// The testing-setup skill's one Command write through MCP. That bounds the MCP tool surface only:
+// the daemon's `/api/*` Command routes accept any loopback caller without a token, an agent's
+// shell included. It names no slot and no repository: the daemon
 // derives the calling session's testing-setup task and writes only that task repository's
 // `affected-tests` override, refusing any other session. The argv bound mirrors
 // `WorkflowCommandArgvSchema`; the `{files}` / `{junit}` rule is checked by the daemon.
