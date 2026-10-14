@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>GitHub Inspector findings: relay them to the session and show them to the operator</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --surface-2: #edf2f8;
+  --text: #18212d;
+  --muted: #566579;
+  --border: #cad4e1;
+  --accent: #1769c2;
+  --accent-soft: #e5f1ff;
+  --good: #157454;
+  --good-soft: #e3f4ec;
+  --warn: #9a5b00;
+  --warn-soft: #fbf0dc;
+  --danger: #b42318;
+  --shadow: 0 18px 50px rgba(34, 50, 71, .11);
+  --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0d12;
+    --surface: #121820;
+    --surface-2: #0d131b;
+    --text: #e6edf5;
+    --muted: #9aa8ba;
+    --border: #2a3543;
+    --accent: #62adff;
+    --accent-soft: #122943;
+    --good: #57c69d;
+    --good-soft: #10291f;
+    --warn: #f0ad4e;
+    --warn-soft: #2d2210;
+    --danger: #ff7b72;
+    --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+main {
+  width: min(1080px, calc(100% - 32px));
+  margin: 38px auto 72px;
+  padding: clamp(24px, 5vw, 62px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+h1, h2, h3, h4 { line-height: 1.2; text-wrap: balance; }
+h1 { margin: 0 0 18px; font-size: clamp(1.9rem, 4.4vw, 3rem); letter-spacing: -.035em; }
+h2 { margin: 48px 0 16px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 1.5rem; letter-spacing: -.015em; }
+h3 { margin: 30px 0 11px; font-size: 1.14rem; }
+h4 { margin: 22px 0 8px; font-size: 1rem; }
+p { margin: 0 0 14px; max-width: 86ch; }
+ul, ol { margin: 0 0 16px; padding-left: 1.45rem; max-width: 90ch; }
+li { margin: 5px 0; }
+li > ul, li > ol { margin: 6px 0 8px; }
+li > p { margin: 0 0 8px; }
+a { color: var(--accent); text-underline-offset: 3px; }
+code {
+  font-family: var(--mono);
+  font-size: .88em;
+  padding: .1em .35em;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+pre {
+  margin: 10px 0 18px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  line-height: 1.5;
+}
+pre code { padding: 0; background: none; border: 0; font-size: .86rem; white-space: pre; }
+.source { color: var(--muted); font-size: .9rem; }
+.table-wrap {
+  margin: 12px 0 22px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+table { width: 100%; border-collapse: collapse; font-size: .93rem; }
+th, td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+th { background: var(--surface-2); font-weight: 650; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; }
+figure.diagram {
+  margin: 18px 0 26px;
+  padding: 16px;
+  overflow-x: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+figure.diagram svg { display: block; min-width: 760px; width: 100%; height: auto; }
+figcaption { margin-top: 10px; color: var(--muted); font-size: .88rem; }
+svg .box { fill: var(--surface); stroke: var(--border); stroke-width: 1.5; }
+svg .box-new { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+svg .box-good { fill: var(--good-soft); stroke: var(--good); stroke-width: 1.5; }
+svg .box-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+svg .panel { fill: none; stroke: var(--border); stroke-dasharray: 5 5; stroke-width: 1.2; }
+svg .t { fill: var(--text); font: 600 13px var(--sans); }
+svg .s { fill: var(--muted); font: 12px var(--sans); }
+svg .m { fill: var(--text); font: 12px var(--mono); }
+svg .h { fill: var(--muted); font: 700 12px var(--sans); letter-spacing: .08em; }
+svg .arrow { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+svg .arrow-new { stroke: var(--accent); stroke-width: 2; fill: none; }
+svg .life { stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 4; }
+svg .head { fill: var(--muted); }
+svg .head-new { fill: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+<p class="source">Rendered from <code>docs/plans/inspector-findings/plan.md</code>, which is the source of truth.</p>
+<h1 id="github-inspector-findings-relay-them-to-the-session-and-show-them-to-the-operator">GitHub Inspector findings: relay them to the session and show them to the operator</h1>
+<p><strong>Status:</strong> Approved 2026-10-13. Tickets are filed in a follow-up task after this plan merges. The decisions from three interview rounds and the plan review are recorded below.</p>
+<p><strong>Date:</strong> 2026-10-13</p>
+<p><strong>Owner:</strong> GitHub Inspector (daemon), Foreman review follow-through, Settings dashboard</p>
+<p><strong>Fork feature:</strong> <code>fork:inspector-findings</code>, new (see <a href="#fork-feature-tracking">Fork feature tracking</a>)</p>
+<h2 id="goals">Goals</h2>
+<ol><li>A session can act on GitHub Inspector findings as soon as a review round produces them, in both Live and Dry run mode.</li>
+<li>The operator can read every finding the Inspector generated for a pull request, and see whether each one was posted to GitHub.</li></ol>
+<h2 id="current-state">Current state</h2>
+<p>Checked against the code at <code>0ce9e004</code>.</p>
+<h3 id="how-findings-reach-a-session">How findings reach a session</h3>
+<ul><li><strong>Workflow-owned sessions</strong> get every unresolved finding, dry-run drafts included, through the Inspector final gate's <code>inspector_feedback</code> packet:
+<ul><li><code>src/server/workflows/manager.ts</code> loads <code>loadInspectorComments(prKey)</code> minus the resolved rows.</li>
+<li><code>renderInspectorFeedback</code> (<code>src/server/workflows/feedback.ts</code>) renders each finding's severity, title, location, body and fingerprint.</li>
+<li>The packet is clipped mid-text at 4 KB per field and 8 KB overall (<code>WORKFLOW_LIMITS</code>).</li></ul></li>
+<li><strong>Every other session</strong> hears about findings only through Foreman's review follow-through (<code>src/server/foreman/review-followup.ts</code>):
+<ul><li>It triggers on <code>inspector.postedOpen &gt; 0</code>, so a dry-run draft never triggers it.</li>
+<li>Its payload says "GitHub Inspector left N unresolved review comments" and points at <code>gh pr view &lt;url&gt; --comments</code>. A draft is not on GitHub, so the agent has nowhere to read it.</li></ul></li>
+<li><strong>Foreman can't read findings at all.</strong> Its worker talks to the daemon over HTTP only (<code>src/server/foreman/client.ts</code>) and never touches SQLite. No daemon route returns a pull request's individual findings. The only route that carries finding rows is <code>GET /api/workflow-runs/:id</code>, and only for runs that have an Inspector gate.</li></ul>
+<h3 id="what-the-operator-can-see">What the operator can see</h3>
+<ul><li><strong>Settings → GitHub Inspector → Inspections</strong> (<code>InspectorSettingsPanel.tsx</code>) lists per-PR counts from <code>GET /api/inspector/prs</code>: a finding count, a closed count, the last review time and a PR-level <strong>Resolve</strong>. Its footer says the table "is the only place GitHub Inspector's findings exist" in dry run, yet it shows no finding text.</li>
+<li><strong>Finding text</strong> is visible only in a gated workflow run's Completion tab (<code>CompletionPane</code> in <code>src/web/workflows/WorkflowRuns.tsx</code>), as an inline table.</li></ul>
+<h3 id="what-the-ledger-records">What the ledger records</h3>
+<ul><li><code>inspector_comments</code> (<code>src/server/db.ts</code>) holds one row per <code>(pr_key, fingerprint)</code>. Rows are never deleted, and a finding raised again reuses its row.</li>
+<li><code>status</code> is one of <code>drafted | posting | open | resolved</code>:
+<ul><li><code>open</code> means confirmed on GitHub.</li>
+<li><code>drafted</code> means never posted: dry run, a repository not on the allowlist, or a review GitHub refused.</li>
+<li>Once a row is <code>resolved</code>, nothing records whether it was ever posted.</li></ul></li>
+<li>No GitHub comment URL is stored. <code>postReview</code> returns nothing by design, and each tick finds threads again by the marker in their first comment (<code>ourThreads</code>).</li>
+<li>One upsert, <code>upsertInspectorComment</code>, is the only statement that writes a row, and <code>test/inspector-resolution-writer.test.ts</code> pins that.</li></ul>
+<h3 id="a-related-bug-this-plan-also-fixes">A related bug this plan also fixes</h3>
+<p>After a switch from dry run to live, <code>reviewNeedsLiveRerun</code> forces a re-review of the same head. The review prompt then misleads the model:</p>
+<ul><li>It lists every unresolved row, drafted ones included, under "Issues you raised earlier that are still open" (<code>worker.ts:925</code>, <code>prompt.ts:207</code>).</li>
+<li>It tells the model that such an issue "is already on the pull request, and repeating it posts a duplicate".</li>
+<li>The planner would post a draft that the model raised again (<code>verdict.ts:212</code>), but the prompt tells the model not to raise it.</li></ul>
+<p>From reading the code, drafted findings most likely stay unposted for good. This is about 90% confidence and inferred, not observed. Phase 4 starts by reproducing it.</p>
+<h2 id="constraints">Constraints</h2>
+<ul><li>The Inspector worker does not type into sessions. Relaying stays with Foreman or the workflow.</li>
+<li>The workflow Inspector gate, Shipping and YOLO mode keep their current behavior. This plan changes the text of the <code>inspector_feedback</code> packet (D-14). It does not change when the gate fires, what it blocks, or how it delivers.</li>
+<li>Foreman never touches SQLite. The daemon stays the only database writer.</li>
+<li>No GitHub call is added to an ordinary tick.</li></ul>
+<h2 id="decisions">Decisions</h2>
+<p>The human settled these in three rounds. Each answer is recorded as given.</p>
+<h3 id="round-1">Round 1</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-1</td><td>Which gates does the relay keep?</td><td>All of them. "Dry run" in goal 1 is the Inspector's mode. Foreman still types only in Live mode on an allowlisted repo, into a session that is settled-idle, invited and drivable, with no work queue and no active workflow.</td></tr><tr><td>D-2</td><td>How does the finding text reach the session?</td><td>Inline in the typed message, size-capped, rendered by one shared renderer used by both the workflow <code>inspector_feedback</code> packet and Foreman's relay. No separate Foreman template.</td></tr><tr><td>D-3</td><td>Which findings trigger a relay?</td><td>Every unresolved finding (<code>drafted</code>, <code>posting</code>, <code>open</code>), each marked posted or not posted.</td></tr><tr><td>D-4</td><td>What does a later round carry?</td><td>The full current unresolved set, at most once per Inspector round.</td></tr><tr><td>D-5</td><td>Which setting controls it?</td><td>The existing "Keep sessions on track with review comments" toggle (<code>trackReviewFeedback</code>). Only its copy changes.</td></tr><tr><td>D-6</td><td>How is "posted" recorded?</td><td>A nullable <code>posted_at</code> column. <code>status</code> keeps its four values.</td></tr><tr><td>D-7</td><td>What do legacy rows show?</td><td>Whatever the row proves. Anything else shows "unknown".</td></tr><tr><td>D-8</td><td>Where does the operator open findings?</td><td>A <strong>Findings</strong> control on each Inspections row, which opens a modal.</td></tr><tr><td>D-9</td><td>Is the view reachable from the session too?</td><td>No, Settings only. The session's ⌕ chip keeps opening the PR.</td></tr><tr><td>D-10</td><td>Does a posted finding link to GitHub?</td><td>Yes. Store the comment URL and link to it.</td></tr><tr><td>D-11</td><td>Can one finding be resolved on its own?</td><td>No. Resolve stays per PR, and the view is read-only.</td></tr><tr><td>D-12</td><td>Is the drafted-to-live bug in scope?</td><td>Yes, as its own phase. The phase starts with an end-to-end reproduction: a dry-run round drafts findings, the config switches to live, the forced re-review runs, and the drafts stay unposted. Then comes the fix, then a <code>node:test</code> regression test in <code>test/</code>.</td></tr></tbody></table></div>
+<h3 id="round-2">Round 2</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-13</td><td>What is the shared renderer?</td><td>The findings section, extracted into one pure function that both packets call. Each packet keeps its own header and closing steps.</td></tr><tr><td>D-14</td><td>What changes in the workflow packet?</td><td>It gains a posted marker per finding. Past the size cap it drops whole findings and states how many, instead of clipping mid-text.</td></tr><tr><td>D-15</td><td>How do Foreman and the modal read findings?</td><td>Through one new route, <code>GET /api/inspector/findings?pr=&lt;prKey&gt;</code>.</td></tr><tr><td>D-16</td><td>What if Foreman's read fails?</td><td>Foreman holds and retries on the next pass. The round is not recorded as relayed.</td></tr><tr><td>D-17</td><td>How is the comment URL captured?</td><td>From the PR snapshot that is already read every tick. A demoted finding links to the review that carried it.</td></tr><tr><td>D-18</td><td>How does a switch to live post drafts?</td><td>Deterministically, through the planner's checks: the path must still be in the diff, the line is snapped, and the per-round cap applies. The prompt stops calling drafts "already on the pull request". A GitHub refusal is recorded on the row. After a bounded number of refusals the draft stops being retried and shows as not posted, with the reason. The refusal path is covered in the regression test.</td></tr><tr><td>D-19</td><td>Does the modal share the Completion tab's table?</td><td>Yes. One findings table is extracted and used by both.</td></tr><tr><td>D-20</td><td>What is the fork label?</td><td><code>fork:inspector-findings</code>, "GitHub Inspector findings relay and view".</td></tr></tbody></table></div>
+<h3 id="round-3">Round 3</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-21</td><td>How is a refused review attributed?</td><td>If the refused review carried earlier drafts, it is retried once straight away without them. Those drafts get a refusal recorded, with GitHub's reason, only if the retry is accepted. Whole-review failures, such as rate limits or auth errors, never count against a row.</td></tr><tr><td>D-22</td><td>After how many refusals does a draft stop?</td><td>3.</td></tr><tr><td>D-23</td><td>How does a session dispute a draft?</td><td>There is no new channel. The relay asks the agent to fix each finding, or to say which ones it disagrees with and why. The operator's per-PR Resolve closes them.</td></tr></tbody></table></div>
+<h3 id="plan-review">Plan review</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-24</td><td>Keep the <code>legacy_posted</code> column that D-6 and D-7 together require?</td><td>Yes, keep <code>legacy_posted</code>.</td></tr><tr><td>D-25</td><td>Which phase order?</td><td>1, then 2 and 3 in parallel, then 4.</td></tr><tr><td>D-26</td><td>Is the plan approved as written?</td><td>Yes.</td></tr><tr><td>D-27</td><td>What happens after approval?</td><td>Create tickets after the plan merges.</td></tr></tbody></table></div>
+<h2 id="how-the-flows-change">How the flows change</h2>
+<figure class="diagram"><svg viewBox="0 0 980 560" role="img" aria-labelledby="flow-title flow-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="flow-title">Findings flow before and after</title>
+  <desc id="flow-desc">Before: Foreman sees only counts on the session snapshot and relays posted findings as a count with a gh pr view pointer, and the Inspections table shows counts. After: a new read route serves the findings with posted state to Foreman, which types the finding text with posted markers, and to a new Findings modal.</desc>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ahn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-new" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <rect class="panel" x="8" y="8" width="964" height="226" rx="14"/>
+  <text class="h" x="26" y="34">BEFORE</text>
+
+  <rect class="box" x="26" y="58" width="150" height="56" rx="10"/>
+  <text class="t" x="101" y="91" text-anchor="middle">Inspector worker</text>
+
+  <rect class="box" x="216" y="58" width="170" height="56" rx="10"/>
+  <text class="t" x="301" y="83" text-anchor="middle">inspector_comments</text>
+  <text class="s" x="301" y="102" text-anchor="middle">status only</text>
+
+  <rect class="box" x="426" y="58" width="170" height="56" rx="10"/>
+  <text class="t" x="511" y="83" text-anchor="middle">Session snapshot</text>
+  <text class="s" x="511" y="102" text-anchor="middle">InspectorSummary counts</text>
+
+  <rect class="box" x="636" y="58" width="150" height="56" rx="10"/>
+  <text class="t" x="711" y="83" text-anchor="middle">Foreman</text>
+  <text class="s" x="711" y="102" text-anchor="middle">postedOpen &gt; 0</text>
+
+  <rect class="box" x="826" y="58" width="130" height="56" rx="10"/>
+  <text class="t" x="891" y="83" text-anchor="middle">Session pane</text>
+  <text class="s" x="891" y="102" text-anchor="middle">"run gh pr view"</text>
+
+  <rect class="box" x="426" y="156" width="170" height="56" rx="10"/>
+  <text class="t" x="511" y="181" text-anchor="middle">Inspections table</text>
+  <text class="s" x="511" y="200" text-anchor="middle">counts only</text>
+
+  <path class="arrow" d="M176,86 H214" marker-end="url(#ah)"/>
+  <path class="arrow" d="M386,86 H424" marker-end="url(#ah)"/>
+  <path class="arrow" d="M596,86 H634" marker-end="url(#ah)"/>
+  <path class="arrow" d="M786,86 H824" marker-end="url(#ah)"/>
+  <path class="arrow" d="M301,114 V184 H424" marker-end="url(#ah)"/>
+  <text class="s" x="312" y="142">GET /api/inspector/prs</text>
+
+  <rect class="panel" x="8" y="252" width="964" height="300" rx="14"/>
+  <text class="h" x="26" y="278">AFTER</text>
+
+  <rect class="box" x="26" y="302" width="150" height="56" rx="10"/>
+  <text class="t" x="101" y="335" text-anchor="middle">Inspector worker</text>
+
+  <rect class="box-new" x="216" y="302" width="170" height="70" rx="10"/>
+  <text class="t" x="301" y="327" text-anchor="middle">inspector_comments</text>
+  <text class="s" x="301" y="346" text-anchor="middle">+ posted_at, github_url</text>
+  <text class="s" x="301" y="362" text-anchor="middle">+ legacy_posted, refusals</text>
+
+  <rect class="box" x="426" y="302" width="170" height="56" rx="10"/>
+  <text class="t" x="511" y="327" text-anchor="middle">Session snapshot</text>
+  <text class="s" x="511" y="346" text-anchor="middle">InspectorSummary counts</text>
+
+  <rect class="box-new" x="426" y="404" width="170" height="56" rx="10"/>
+  <text class="t" x="511" y="428" text-anchor="middle">GET /api/inspector/</text>
+  <text class="t" x="511" y="446" text-anchor="middle">findings?pr=</text>
+
+  <rect class="box-new" x="636" y="302" width="150" height="70" rx="10"/>
+  <text class="t" x="711" y="327" text-anchor="middle">Foreman</text>
+  <text class="s" x="711" y="346" text-anchor="middle">open &gt; 0, then reads</text>
+  <text class="s" x="711" y="362" text-anchor="middle">shared renderer</text>
+
+  <rect class="box-good" x="826" y="302" width="130" height="70" rx="10"/>
+  <text class="t" x="891" y="327" text-anchor="middle">Session pane</text>
+  <text class="s" x="891" y="346" text-anchor="middle">finding text +</text>
+  <text class="s" x="891" y="362" text-anchor="middle">posted marker</text>
+
+  <rect class="box-good" x="636" y="476" width="150" height="56" rx="10"/>
+  <text class="t" x="711" y="501" text-anchor="middle">Findings modal</text>
+  <text class="s" x="711" y="520" text-anchor="middle">Settings, read-only</text>
+
+  <path class="arrow" d="M176,330 H214" marker-end="url(#ah)"/>
+  <path class="arrow" d="M386,330 H424" marker-end="url(#ah)"/>
+  <path class="arrow" d="M596,330 H634" marker-end="url(#ah)"/>
+  <path class="arrow-new" d="M786,337 H824" marker-end="url(#ahn)"/>
+  <path class="arrow-new" d="M301,372 V432 H424" marker-end="url(#ahn)"/>
+  <path class="arrow-new" d="M596,424 H660 V374" marker-end="url(#ahn)"/>
+  <path class="arrow-new" d="M596,446 H620 V504 H634" marker-end="url(#ahn)"/>
+</svg>
+<figcaption>How findings reach the session and the operator, before and after. Its text definition is the mermaid block in plan.md.</figcaption></figure>
+<figure class="diagram"><svg viewBox="0 0 980 470" role="img" aria-labelledby="retry-title retry-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="retry-title">Posting carried drafts, and attributing a refusal</title>
+  <desc id="retry-desc">The worker posts one review carrying new findings and carried drafts. If GitHub accepts, rows become open and posted_at is stamped. If GitHub refuses and the review carried drafts, the worker retries once with new findings only. If that retry is accepted, each carried draft records one refusal and the reason. If the retry is also refused, today's failure path runs and no row records a refusal.</desc>
+  <defs>
+    <marker id="rh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="rhn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-new" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <rect class="box" x="60" y="14" width="250" height="46" rx="10"/>
+  <text class="t" x="185" y="42" text-anchor="middle">Inspector worker (live round)</text>
+  <rect class="box" x="690" y="14" width="200" height="46" rx="10"/>
+  <text class="t" x="790" y="42" text-anchor="middle">GitHub</text>
+  <line class="life" x1="185" y1="60" x2="185" y2="456"/>
+  <line class="life" x1="790" y1="60" x2="790" y2="456"/>
+
+  <rect class="box-new" x="70" y="78" width="230" height="40" rx="8"/>
+  <text class="s" x="185" y="103" text-anchor="middle">plan new findings + carried drafts</text>
+
+  <path class="arrow" d="M185,140 H788" marker-end="url(#rh)"/>
+  <text class="m" x="487" y="132" text-anchor="middle">POST review (new + carried)</text>
+
+  <rect class="box-good" x="230" y="158" width="520" height="44" rx="8"/>
+  <text class="t" x="250" y="180">accepted</text>
+  <text class="s" x="330" y="180">every row goes to open, posted_at stamped</text>
+  <text class="s" x="330" y="195">github_url captured on the next tick</text>
+
+  <rect class="box-warn" x="230" y="218" width="520" height="34" rx="8"/>
+  <text class="t" x="250" y="240">refused, and the review carried drafts</text>
+
+  <path class="arrow-new" d="M185,282 H788" marker-end="url(#rhn)"/>
+  <text class="m" x="487" y="274" text-anchor="middle">POST review (new findings only, re-planned)</text>
+
+  <rect class="box-good" x="230" y="300" width="520" height="58" rx="8"/>
+  <text class="t" x="250" y="322">retry accepted</text>
+  <text class="s" x="364" y="322">new findings go to open</text>
+  <text class="s" x="364" y="340">each carried draft: post_refusals + 1, last_post_error</text>
+  <text class="s" x="364" y="354">at 3 refusals it is no longer offered and reads "refused"</text>
+
+  <rect class="box-warn" x="230" y="374" width="520" height="58" rx="8"/>
+  <text class="t" x="250" y="396">retry refused</text>
+  <text class="s" x="364" y="396">today's failure path: rows back to drafted,</text>
+  <text class="s" x="364" y="414">head not advanced, backoff</text>
+  <text class="s" x="364" y="428">no refusal counted on any row</text>
+</svg>
+<figcaption>A live round that carries earlier drafts, and how a GitHub refusal is pinned on them. Its text definition is the mermaid block in plan.md.</figcaption></figure>
+<h2 id="design">Design</h2>
+<h3 id="1-ledger-posted-state-and-github-link">1. Ledger: posted state and GitHub link</h3>
+<p>New columns, each added in <code>migrate()</code> with <code>addColumn</code> and never in the <code>CREATE TABLE</code> block:</p>
+<div class="table-wrap"><table><thead><tr><th>Column</th><th>Type</th><th>Written by</th><th>Meaning</th></tr></thead><tbody><tr><td><code>posted_at</code></td><td>INTEGER, nullable, no default</td><td>worker</td><td>When this build confirmed the finding on GitHub</td></tr><tr><td><code>github_url</code></td><td>TEXT, nullable</td><td>worker tick</td><td>The finding's GitHub comment, or for a finding demoted to the review body, the review that carried it</td></tr><tr><td><code>legacy_posted</code></td><td>TEXT, nullable</td><td>one-time backfill only</td><td><code>posted</code>, <code>unposted</code> or <code>unknown</code> for a row that predates <code>posted_at</code>. NULL on every row this build creates.</td></tr></tbody></table></div>
+<p><strong>Why <code>legacy_posted</code> exists.</strong> Under D-6 and D-7, an old resolved row needs three possible answers: posted, not posted, or unknown. A NULL <code>posted_at</code> can only carry one of them.</p>
+<ul><li>If NULL meant both "never posted" and "unknown", the panel would say a finding was never posted when it was.</li>
+<li>The codebase's rule for legacy rows is that NULL stays truthful (<code>body</code> is the precedent). Inventing a <code>posted_at</code> time for a backfilled row would break that rule.</li>
+<li>The column carries no time and is written once. The upsert never names it, so <code>ON CONFLICT DO UPDATE</code> leaves it as it is.</li></ul>
+<p><strong>Backfill.</strong> It runs once, inside <code>if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT"))</code>, the same shape as <code>backfillBacklogRank</code>:</p>
+<ul><li><code>posted</code>: status <code>open</code>, or <code>replies &gt; 0</code>, or <code>answered_comment_id IS NOT NULL</code>. Replies only exist on a GitHub thread.</li>
+<li><code>unposted</code>: status <code>drafted</code>.</li>
+<li><code>unknown</code>: everything else, meaning a resolved row with no replies, or a row left in <code>posting</code>.</li></ul>
+<p><strong>Stamping <code>posted_at</code>.</strong></p>
+<ul><li>Stamped when an accepted review promotes its rows from <code>posting</code> to <code>open</code>, after <code>postReview</code>.</li>
+<li>Stamped when <code>reconcilePosting</code> finds a <code>posting</code> row published.</li>
+<li>Never cleared. A row that is resolved and later raised again keeps its earlier <code>posted_at</code> until the new post is confirmed and re-stamps it.</li>
+<li>The worker's row builder carries <code>postedAt</code> and <code>githubUrl</code> forward from the prior row, as it already does for <code>replies</code> and <code>createdAt</code>. <code>closeRow</code> and <code>resolveInspectorFindings</code> carry them through <code>...row</code>.</li></ul>
+<p><strong>Capturing <code>github_url</code></strong> (D-17).</p>
+<ul><li>Add <code>url</code> to the comment nodes of both thread queries in <code>src/server/inspector/github.ts</code> (the first page and the pagination query), and to the review nodes the snapshot already reads. This adds no call.</li>
+<li><code>ourThreads</code> returns each thread's first-comment <code>url</code>.</li>
+<li>After reconciliation, each tick writes <code>github_url</code> on every row whose marker thread it sees and whose stored URL is missing or different.</li>
+<li>A demoted finding (<code>line IS NULL</code>, posted in the review body) takes the URL of our review whose body carries <code>BODY_ONLY_FINDINGS_MARKER</code> and the round header for that row's round. Ownership follows the same <code>isOurs</code> rule as threads.</li>
+<li>Until a tick sees it, a posted row has no URL, and the view says "Posted" without a link.</li></ul>
+<p><strong>One derivation.</strong> A browser-safe function in <code>src/shared/inspector-findings.ts</code>:</p>
+<pre><code>findingPublication(row): {
+  state: "posted" | "posting" | "not-posted" | "refused" | "unknown";
+  url: string | null;
+  postedAt: number | null;
+  reason: string | null;    // GitHub's refusal, when state is "refused"
+  earlierPost: boolean;     // a drafted row whose earlier version was posted
+}</code></pre>
+<p>Rules, first match wins:</p>
+<ol><li><code>status = posting</code> gives <code>posting</code>.</li>
+<li><code>status = drafted</code> gives <code>refused</code> when <code>post_refusals &gt;= 3</code> (phase 4), and <code>not-posted</code> otherwise. <code>earlierPost</code> is set when <code>posted_at</code> is set or <code>legacy_posted = posted</code>.</li>
+<li><code>status = open</code> gives <code>posted</code>.</li>
+<li><code>status = resolved</code> gives <code>posted</code> when <code>posted_at</code> is set or <code>legacy_posted = posted</code>, <code>unknown</code> when <code>legacy_posted = unknown</code>, and <code>not-posted</code> otherwise.</li></ol>
+<p>Missing fields, as in an older frozen snapshot, read as <code>unknown</code>. The renderer, the route's clients and the table all call this function, and none of them re-derives it.</p>
+<h3 id="2-the-read-route">2. The read route</h3>
+<p><code>GET /api/inspector/findings?pr=&lt;prKey&gt;</code>, next to <code>GET /api/inspector/prs</code> in <code>src/server/routes.ts</code>.</p>
+<ul><li>The key travels as a query parameter, not a path segment, because a <code>prKey</code> looks like <code>owner/repo#123</code>.</li>
+<li>The route answers <code>400</code> when <code>pr</code> is missing or is not a valid key shape, and <code>404</code> when no <code>inspector_prs</code> row has that key.</li>
+<li>The response is <code>{ pr: InspectorInspection, findings: InspectorComment[] }</code>, with the new fields and every status.</li>
+<li>Findings come back unresolved first, then by severity, path, line and fingerprint. That is the renderer's comparator, shared rather than copied.</li>
+<li>The response schema lives in <code>src/shared/protocol.ts</code>, so Foreman and the web client parse the same shape.</li>
+<li>New client calls: <code>client.inspectorFindings(prKey)</code> for Foreman, and <code>fetchInspectorFindings(prKey)</code> in <code>src/web/lib/api.ts</code> for the web.</li>
+<li>The route is read-only. No write path changes.</li></ul>
+<h3 id="3-the-shared-findings-renderer-d-13-d-14">3. The shared findings renderer (D-13, D-14)</h3>
+<p>The findings section moves out of <code>renderInspectorFeedback</code> into a pure module, <code>src/server/inspector/findings-text.ts</code>. It imports nothing that touches the database or the network, so Foreman's worker can load it.</p>
+<pre><code>renderInspectorFindings(
+  findings: InspectorComment[],
+  opts: { budgetBytes: number },
+): { text: string; shown: number; omitted: number; truncated: boolean }</code></pre>
+<ul><li>It keeps today's dedupe by fingerprint and today's sort (severity, path, line, fingerprint).</li>
+<li><p>Each finding renders as it does today, plus one line from <code>findingPublication</code>:</p>
+<pre><code>## MAJOR - Title
+Location: src/a.ts:12
+Posted on GitHub: https://github.com/o/r/pull/7#discussion_r123
+&lt;body&gt;
+Fingerprint: &lt;fp&gt;</code></pre></li></ul>
+<ul><li>The posted line reads one of:
+<ul><li><code>Posted on GitHub: &lt;url&gt;</code></li>
+<li><code>Posted on GitHub (link not captured yet)</code></li>
+<li><code>Posted on GitHub in the review summary: &lt;url&gt;</code></li>
+<li><code>Not posted on GitHub. This message is the only copy.</code></li>
+<li><code>Not posted. GitHub refused it 3 times: &lt;reason&gt;</code></li>
+<li><code>Being posted now</code></li></ul></li>
+<li>Fields still clip at <code>feedbackFieldBytes</code>.</li>
+<li>Past <code>budgetBytes</code>, whole findings are dropped from the tail, lowest severity first, and a closing line says how many: "N more unresolved findings are not listed here, to keep this message short. They stay open and come back in the next relay."</li>
+<li><code>renderInspectorFeedback</code> keeps its header (goal, workflow, run, PR, pinned head, round and posture) and its <code>finalizePacket</code> closing. It calls the new function with whatever budget is left under <code>feedbackPayloadBytes</code> after them. <code>failedPersonaCount</code> stays the total, not the number shown.</li>
+<li>An already-prepared delivery keeps the payload and hash it was frozen with, and nothing renders it again. Only packets prepared after the change carry the new text.</li></ul>
+<h3 id="4-foremans-relay-d-1-to-d-5-d-16-d-23">4. Foreman's relay (D-1 to D-5, D-16, D-23)</h3>
+<p><strong><code>review-followup.ts</code>.</strong></p>
+<ul><li><code>feedbackState</code> now triggers on <code>pr.inspector.open &gt; 0</code> instead of <code>postedOpen &gt; 0</code>. <code>open</code> already counts <code>drafted</code>, <code>posting</code> and <code>open</code> rows (<code>INSPECTION_TALLY_FROM</code>).</li>
+<li>Every gate in <code>decideReviewFollowup</code> stays, in the same order.</li>
+<li>The mark stays keyed on the Inspector round, so the relay goes out at most once per round and carries the full unresolved set.</li>
+<li><code>decideReviewFollowup</code> stays zero-I/O. A <code>nudge</code> that includes findings now says so, and the worker builds the payload after it reads the findings.</li></ul>
+<p><strong><code>worker.ts</code> (<code>runReviewFollowup</code>).</strong></p>
+<ul><li>After it re-reads config and sessions, and only for a nudge that includes findings, the worker calls <code>client.inspectorFindings(prKey)</code>.</li>
+<li>If the read fails, the worker logs it, does not stamp the mark, and types nothing. The next pass tries again.</li>
+<li>If the unresolved set comes back empty, because findings resolved between the snapshot and the read, the findings part is dropped. When nothing else is open, the pass skips without stamping.</li></ul>
+<p><strong><code>buildPayload(pr, fb, findings)</code>.</strong></p>
+<ul><li>First line: "PR #7 needs follow-through: GitHub Inspector has 3 unresolved findings on it (1 posted on GitHub, 2 not posted)."</li>
+<li>The steps keep the "do NOT open a new pull request" line and the multi-repo qualifiers.</li>
+<li>The findings step becomes: "Address every GitHub Inspector finding listed below. A finding marked Not posted exists only in this message: do not look for it on GitHub or reply to it there. If you think a posted finding is wrong, you may answer in its GitHub thread. If you disagree with a finding that was not posted, say which one and why in your reply." The <code>gh pr view --comments</code> pointer is removed.</li>
+<li>The CI and conflict steps don't change, followed by "Commit and push" and the watch line.</li>
+<li>The findings section is <code>renderInspectorFindings(findings, { budgetBytes })</code>, appended after the steps. Its budget is whatever is left under the same 8,000-byte ceiling (<code>WORKFLOW_LIMITS.feedbackPayloadBytes</code>).</li></ul>
+<p><strong>Foreman popover copy.</strong> The toggle reads "Keep sessions on track with GitHub Inspector findings", with the hint "Relays every unresolved finding, including dry-run drafts that were never posted." The setting key <code>trackReviewFeedback</code> does not change.</p>
+<h3 id="5-the-findings-modal-and-the-shared-table-d-8-to-d-11-d-19">5. The Findings modal and the shared table (D-8 to D-11, D-19)</h3>
+<p><strong>The shared table.</strong></p>
+<ul><li>The Completion tab's inline findings table moves into <code>src/web/components/InspectorFindingsTable.tsx</code>. Its helpers (<code>inspectorFindingSeverityStatus</code>, <code>inspectorFindingStatusStatus</code>, <code>inspectorFindingLocation</code> and <code>inspectorFindingBody</code>) move out of <code>run-model.ts</code> to sit beside it.</li>
+<li><code>CompletionPane</code> renders the shared table. Its caption and empty-state copy stay with the caller.</li>
+<li>The table gains a <strong>Posted</strong> column, driven by <code>findingPublication</code>:
+<ul><li>"Posted", linking to <code>github_url</code> on GitHub.</li>
+<li>"Posted" with no link, while the URL is not captured yet.</li>
+<li>"Not posted".</li>
+<li>"Refused", with the reason in a tooltip and in the detail row.</li>
+<li>"Posting".</li>
+<li>"Unknown", with the tooltip "Recorded before Mission Control tracked posting".</li></ul></li>
+<li>The body rule stays as it is: an unresolved finding's body is always shown, and a resolved one's opens with <strong>Show finding</strong>.</li></ul>
+<p><strong>Settings → GitHub Inspector → Inspections.</strong></p>
+<ul><li>Each row's action cell gets a <strong>Findings</strong> button next to Resolve, with the label <code>View GitHub Inspector's findings on owner/repo#N</code>.</li>
+<li>The button appears on every row with at least one finding, open or closed. A row with none shows no button.</li></ul>
+<p><strong>The modal.</strong></p>
+<ul><li>It is an <code>Overlay className="modal inspector-findings-modal"</code> with the heading "GitHub Inspector findings", the PR link and its state, and the round count.</li>
+<li>It shows a mode line, "Dry run: nothing on this pull request was posted", when the PR's review posture was not live.</li>
+<li>The shared table sits inside a <code>.modal-bleed</code> band, with a <strong>Close</strong> button in <code>.modal-foot</code>.</li>
+<li>It fetches when it opens, and refreshes on <code>useInspector</code>'s 4-second tick while it stays open.</li>
+<li>It is read-only, with no Resolve inside it.</li></ul>
+<p><strong>Footer copy.</strong> The table footer becomes "In dry run nothing is posted to GitHub. Open a pull request's Findings to read what GitHub Inspector found."</p>
+<h3 id="6-posting-drafts-after-a-switch-to-live-d-12-d-18-d-21-d-22">6. Posting drafts after a switch to live (D-12, D-18, D-21, D-22)</h3>
+<p>Phase 4 runs in this order.</p>
+<p><strong>Reproduction first.</strong> It is a <code>node:test</code> integration test that drives the real worker with the fake <code>gh</code> and the fake model runner the existing <code>test/inspector-*.test.ts</code> integration files use, so it spends no model tokens.</p>
+<ol><li>In dry run, one round drafts two findings.</li>
+<li>The config switches to live, on an allowlisted repository.</li>
+<li>The next tick forces a re-review of the same head. Following the prompt, the fake model raises nothing new and resolves nothing.</li>
+<li>The test asserts what happened to the drafted rows, and whether a review was posted.</li></ol>
+<p>Phase 4 commits the reproduction as a failing test and attaches its run output to the PR. If it shows the drafts do get posted, the 90% reading was wrong. In that case the phase records that, keeps the test as a regression guard, and ships only the prompt wording change below.</p>
+<p><strong>Fix.</strong></p>
+<ul><li><strong>Prompt</strong> (<code>prompt.ts</code>). The open list splits in two:
+<ul><li>Posted rows (<code>open</code>, <code>posting</code>) keep today's heading and text.</li>
+<li>Drafted rows get their own section: "Found earlier but never posted. If this push fixes one, put its fingerprint in <code>resolved</code>. Otherwise say nothing: Mission Control posts it."</li></ul></li>
+<li><p><strong>Planner</strong> (<code>planReview</code> in <code>verdict.ts</code>). In a live round, a drafted row becomes a carried candidate when all of these hold:</p>
+<ul><li>the model neither resolved it nor raised it again;</li>
+<li>its path is still in this diff, and its line snaps with <code>snapToLine</code>;</li>
+<li>its <code>post_refusals</code> is below 3.</li></ul>
+<p>Carried candidates go through the same scrub, severity sort and <code>maxCommentsPerRound</code> cap. At equal severity, new findings come first. A draft whose path has left the diff stays drafted and is not posted. A draft the model raises again counts as a new finding, as it does today, and the refusal cap does not apply to it.</p></li>
+<li><strong>Worker.</strong> When <code>postReview</code> is refused (<code>wasRefused</code>) and the review carried drafts, the worker retries once straight away without them. The retry is re-planned, so the review body and the over-cap note match what it carries.
+<ul><li><strong>Retry accepted.</strong> The new findings go to <code>open</code>. Each carried draft gets <code>post_refusals + 1</code> and <code>last_post_error</code>, scrubbed and clipped to 300 bytes like other GitHub errors.</li>
+<li><strong>Retry also refused.</strong> No row records a refusal, and today's failure path runs.</li>
+<li><strong>Response lost</strong> (<code>outcomeUnknown</code>). Today's <code>posting</code> reconciliation runs. A lost response never counts as a refusal.</li></ul></li>
+<li><strong>New columns</strong>, added in <code>migrate()</code>: <code>post_refusals INTEGER NOT NULL DEFAULT 0</code> and <code>last_post_error TEXT</code>. Both are written through <code>upsertInspectorComment</code> and carried forward like <code>replies</code>.</li>
+<li><strong>Refused state.</strong> <code>findingPublication</code> returns <code>refused</code> at 3 refusals. A refused draft stays unresolved, so it still blocks Shipping and YOLO, and Foreman still relays it, marked "Not posted. GitHub refused it 3 times: &lt;reason&gt;". The operator's per-PR Resolve closes it.</li></ul>
+<p><strong>Regression tests</strong> (<code>node:test</code>, in <code>test/</code>):</p>
+<ul><li>The reproduction, now passing: after the switch, the drafted findings are posted and stamped with <code>posted_at</code>.</li>
+<li>A refused review that carried drafts, with the retry accepted: each carried draft gets one refusal and the reason, and the new findings are <code>open</code>.</li>
+<li>A refused review whose retry is also refused: no row counts a refusal.</li>
+<li>A draft at 3 refusals is not offered, and a draft whose path has left the diff is not posted.</li>
+<li>The prompt lists drafted rows in their own section.</li></ul>
+<h2 id="phases">Phases</h2>
+<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Scope</th><th>Depends on</th></tr></thead><tbody><tr><td>1. Ledger and read route</td><td><code>posted_at</code>, <code>github_url</code>, <code>legacy_posted</code> and its backfill; URL capture from the snapshot; <code>findingPublication</code>; <code>GET /api/inspector/findings</code>; the Foreman and web client calls</td><td>none</td></tr><tr><td>2. Shared renderer and Foreman relay</td><td><code>findings-text.ts</code>; <code>renderInspectorFeedback</code> rewired; the relay trigger and payload; the worker's read-and-hold; the popover copy</td><td>1</td></tr><tr><td>3. Findings modal and shared table</td><td><code>InspectorFindingsTable</code>; the Completion tab rewired; the Findings button and modal; the footer copy</td><td>1</td></tr><tr><td>4. Drafts after a switch to live</td><td>Reproduction; the prompt split; the planner carry; the retry without carried drafts; the refusal columns; the <code>refused</code> state; regression tests</td><td>1, then 3</td></tr></tbody></table></div>
+<p>Phase 1 lands first. Phases 2 and 3 can run in parallel after it: they touch different files, and both read <code>findingPublication</code> from phase 1. Phase 4 needs phase 1's stamping. It also extends <code>findingPublication</code> and the phase 3 spec, so it lands after phase 3 to keep two branches from editing the same spec.</p>
+<h3 id="tests-and-verification-per-phase">Tests and verification per phase</h3>
+<p>Each phase meets the repository's definition of done: relevant tests, <code>npm run typecheck</code>, <code>npm run lint</code>, and, where UI or runtime code changes, <code>npm run build</code>, <code>npm run smoke</code> and <code>npm run test:e2e</code>.</p>
+<ul><li><strong>Phase 1.</strong>
+<ul><li>Migration on a database created before the columns existed, including backfill rules for every legacy status.</li>
+<li><code>posted_at</code> stamped at both confirmation points and carried through resolution.</li>
+<li>URL capture from a snapshot fixture, for an inline finding and a demoted one.</li>
+<li>The route's <code>400</code>, <code>404</code> and <code>200</code> cases.</li>
+<li><code>findingPublication</code>'s rule table.</li>
+<li><code>test/inspector-resolution-writer.test.ts</code> still passes, so there is still one writer.</li></ul></li>
+<li><strong>Phase 2.</strong>
+<ul><li>Renderer tests: every posted marker, the byte budget, whole-finding drops and the omitted count.</li>
+<li><code>test/workflow-inspector-feedback.test.ts</code> updated for the new packet text.</li>
+<li><code>test/foreman-review-followup.test.ts</code>: a draft now triggers; the payload carries finding text and no <code>gh pr view</code> pointer; a failed read holds without stamping; every existing gate still refuses.</li>
+<li>The popover copy change updates the Foreman pull-request spec in <code>e2e/specs/dispatch-and-converse.spec.ts</code>.</li></ul></li>
+<li><strong>Phase 3.</strong>
+<ul><li>A new <code>e2e/specs/inspector-findings.spec.ts</code>. It seeds <code>inspector_prs</code> and <code>inspector_comments</code> the way <code>inspector-resolve-findings.spec.ts</code> does, with five rows: a posted finding with a link, a posted one without a link, a draft, a resolved posted finding, and a legacy unknown row.</li>
+<li>The spec opens the modal by its accessible label, asserts every Posted cell and every body that should be visible, and calls <code>expectContentClearsBorder</code>.</li>
+<li><code>e2e/specs/workflow-completion-pane.spec.ts</code> asserts the Posted column on its drafted finding.</li></ul></li>
+<li><strong>Phase 4.</strong> The regression tests above, and the phase 3 spec extended with a refused row.</li></ul>
+<h2 id="docs-to-update">Docs to update</h2>
+<ul><li><code>docs/inspector-and-shipping.md</code>:
+<ul><li>The Dry run section says where to read drafts.</li>
+<li>A new "Reading a pull request's findings" section.</li>
+<li>How drafts get posted after a switch to live, and the refusal cap.</li></ul></li>
+<li><code>docs/work-queues.md</code>, in "Keeping a PR on track":
+<ul><li>the control's new name;</li>
+<li>the bullet that says the review half "counts only GitHub Inspector findings already posted on the PR" is replaced;</li>
+<li>the relay now carries finding text.</li></ul></li>
+<li><code>docs/workflows.md</code>: the <code>inspector_feedback</code> paragraph mentions posted markers and whole-finding truncation.</li></ul>
+<h2 id="risks">Risks</h2>
+<ul><li><strong>Message length in a terminal pane.</strong> The ceiling stays at 8,000 bytes, which the workflow already types into panes today.</li>
+<li><strong>Workflow packet idempotency.</strong> Before changing the text, phase 2 checks that nothing renders a stored packet again and compares hashes (<code>transitionInspectorFindingsWithDelivery</code>, restart recovery). If something does, the renderer change must leave a stored delivery's text alone.</li>
+<li><strong>Links for demoted findings.</strong> These links depend on matching our review's round header and marker. A finding that does not match still reads "Posted", without a link.</li>
+<li><strong>Posting an already-fixed draft.</strong> Deterministic posting could post a draft that a later push already fixed, if the model didn't name it as resolved. Two things reduce this: the model sees drafts in their own section with an explicit instruction to resolve them, and the planner only carries a draft whose path is still in the diff. This risk is accepted.</li>
+<li><strong>One extra request on refusal.</strong> The retry adds at most one more POST, and only for a refused review that carried drafts.</li></ul>
+<h2 id="out-of-scope">Out of scope</h2>
+<ul><li>Opening the findings view from the session (D-9).</li>
+<li>Resolving a single finding (D-11).</li>
+<li>A way to dispute a draft (D-23).</li>
+<li>Any change to when the workflow gate fires, or to Shipping or YOLO.</li>
+<li>Storing the conversation text of review threads.</li></ul>
+<h2 id="fork-feature-tracking">Fork feature tracking</h2>
+<p>The first implementation PR creates the <code>fork:inspector-findings</code> label and the tracking issue "Fork feature: GitHub Inspector findings relay and view", under the repository's standing grant. This is the draft body:</p>
+<h3 id="intent">Intent</h3>
+<p>Relay every unresolved GitHub Inspector finding to a Foreman-driven session as text, in both dry run and live, and let the operator read every finding for a pull request with whether it was posted.</p>
+<h3 id="behavior-contracts">Behavior contracts</h3>
+<ul><li>Foreman's review follow-through triggers on any unresolved finding, carries the finding text, and marks each one as posted or not posted. All of its existing gates still hold.</li>
+<li>Foreman's relay and the workflow <code>inspector_feedback</code> packet render findings through one shared renderer.</li>
+<li><code>inspector_comments</code> records <code>posted_at</code> and <code>github_url</code>. A finding that was posted and later resolved still reads as posted.</li>
+<li>Settings → GitHub Inspector → Inspections opens a read-only Findings modal for each pull request.</li>
+<li>After a switch to live, drafted findings are posted. A draft GitHub refuses three times, with the refusal pinned on it, stops being offered.</li></ul>
+<h3 id="upstream-behavior-it-assumes">Upstream behavior it assumes</h3>
+<ul><li><code>inspector_comments.status</code> keeps its four values.</li>
+<li>A single upsert writes every row.</li>
+<li>The per-tick PR snapshot reads review threads and reviews.</li>
+<li><code>decideReviewFollowup</code> stays zero-I/O.</li></ul>
+<h3 id="upstream-surfaces-touched">Upstream surfaces touched</h3>
+<ul><li><code>src/server/db.ts</code> (<code>inspector_comments</code> columns)</li>
+<li><code>src/server/inspector/github.ts</code>, <code>worker.ts</code>, <code>verdict.ts</code> and <code>prompt.ts</code></li>
+<li><code>src/server/workflows/feedback.ts</code></li>
+<li><code>src/server/foreman/review-followup.ts</code>, <code>worker.ts</code> and <code>client.ts</code></li>
+<li><code>src/server/routes.ts</code> (<code>GET /api/inspector/findings</code>)</li>
+<li><code>src/shared/protocol.ts</code> and <code>src/shared/types.ts</code></li>
+<li><code>InspectorSettingsPanel.tsx</code></li>
+<li><code>WorkflowRuns.tsx</code> (<code>CompletionPane</code>)</li>
+<li>the Foreman popover in <code>ForemanBar.tsx</code></li></ul>
+<h3 id="fork-only-files">Fork-only files</h3>
+<ul><li><code>src/shared/inspector-findings.ts</code></li>
+<li><code>src/server/inspector/findings-text.ts</code></li>
+<li><code>src/web/components/InspectorFindingsTable.tsx</code></li>
+<li><code>e2e/specs/inspector-findings.spec.ts</code></li></ul>
+<h3 id="plan-docs">Plan docs</h3>
+<p><code>docs/plans/inspector-findings/plan.md</code></p>
+<h3 id="upstream-candidate">Upstream candidate</h3>
+<p>Yes. Nothing here is fork-specific.</p>
+<p><strong>Related features.</strong> This work shares <code>review-followup.ts</code> with <code>fork:pr-merge-conflict-reactions</code> (#299) and touches the PR snapshot query that <code>fork:sso-free-github-calls</code> (#398) governs. It changes neither feature's contracts.</p>
+</main>
+</body>
+</html>
