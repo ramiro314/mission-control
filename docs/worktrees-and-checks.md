@@ -157,8 +157,9 @@ repository's `worktrees` entry, so settings backups capture it, and it is set th
   variable **names**; Mission Control never stores a value. `PATH` and names starting with
   `MISSION_`, `FLEET_` or `HARNESS_` are refused, because those are the daemon's own.
 - `timeoutMinutes` covers the whole claim, every step together, including the time spent
-  building each step's environment (a login-shell read among it). It defaults to 10 and may be
-  at most 240.
+  building each step's environment and resolving its executable (either may wait on a
+  login-shell read). A step only starts with time left, and gets only that remainder. It
+  defaults to 10 and may be at most 240.
 - `fingerprintPaths` holds up to 64 repository-relative globs. They are matched with Node's
   `path.matchesGlob`, so a wildcard does not match a segment that starts with a dot, and a
   dotfile directory is named literally (`.yarn/releases/**`). A glob that cannot be a

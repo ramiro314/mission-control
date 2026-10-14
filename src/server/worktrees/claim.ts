@@ -192,13 +192,38 @@ export type ClaimStepResult =
  * Output size never fails a step: the ring drops the front and counts what it dropped. A
  * timeout or a Stop sends SIGTERM to the group, SIGKILL after a grace, and reports which.
  */
-export async function runClaimStep(request: ClaimStepRequest): Promise<ClaimStepResult> {
+export async function runClaimStep(
+  request: ClaimStepRequest,
+  deps: {
+    /** Defaults to the one locator. A cold or refreshing locator may probe the login shell. */
+    resolveCommand?: (
+      command: string,
+      options: { env: NodeJS.ProcessEnv; cwd: string },
+    ) => Promise<{ path: string; env: NodeJS.ProcessEnv } | null>;
+    now?: () => number;
+  } = {},
+): Promise<ClaimStepResult> {
+  const now = deps.now ?? Date.now;
+  // The step's budget starts here, before the executable is resolved: resolution can wait on a
+  // login-shell probe, and that wait belongs to the claim's deadline like everything else.
+  const deadline = now() + Math.max(0, request.timeoutMs);
   const command = request.argv[0];
   if (!command) return { outcome: "spawnFailed", reason: "the step has no command" };
-  const executable = await executableLocator.resolveCommand(command, {
-    env: request.env,
-    cwd: request.cwd,
-  });
+  const resolveCommand = deps.resolveCommand ??
+    ((name, options) => executableLocator.resolveCommand(name, options));
+  const resolved = await withinDeadline(
+    resolveCommand(command, { env: request.env, cwd: request.cwd }),
+    Math.max(0, request.timeoutMs),
+    request.signal,
+  );
+  // Nothing has started, so there is no output and no process group to tear down. A resolution
+  // that lands after this point is ignored: no process is ever launched for it.
+  if (resolved.kind === "failed") return { outcome: "spawnFailed", reason: resolved.reason };
+  if (resolved.kind !== "built") return { outcome: resolved.kind, tail: "", truncatedBytes: 0 };
+  const executable = resolved.value;
+  const remainingMs = deadline - now();
+  if (remainingMs <= 0) return { outcome: "timedOut", tail: "", truncatedBytes: 0 };
+  if (request.signal.aborted) return { outcome: "stopped", tail: "", truncatedBytes: 0 };
   if (!executable) {
     return {
       outcome: "spawnFailed",
@@ -259,7 +284,7 @@ export async function runClaimStep(request: ClaimStepRequest): Promise<ClaimStep
         ? { outcome: ending, tail: text, truncatedBytes }
         : { outcome: "exited", code, signal, tail: text, truncatedBytes });
     });
-    timers.push(setTimeout(() => terminate("timedOut"), Math.max(0, request.timeoutMs)));
+    timers.push(setTimeout(() => terminate("timedOut"), remainingMs));
     if (request.signal.aborted) terminate("stopped");
     else request.signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -281,15 +306,16 @@ export type ClaimStepsOutcome =
   | { ok: false; stopped: boolean; warning: WorktreeClaimWarning };
 
 /**
- * Wait for a step's environment for at most `ms`, or until the claim is stopped. An environment
- * that arrives after the wait gave up still minted a disposable home, which is released then.
+ * Wait for `pending` for at most `ms`, or until the claim is stopped. `onLate` receives a value
+ * that arrives after the wait gave up, so whatever it holds is released rather than leaked.
  */
-async function withinDeadline(
-  pending: Promise<ClaimEnvironment>,
+async function withinDeadline<T>(
+  pending: Promise<T>,
   ms: number,
   signal: AbortSignal,
+  onLate: (value: T) => void = () => {},
 ): Promise<
-  | { kind: "built"; value: ClaimEnvironment }
+  | { kind: "built"; value: T }
   | { kind: "failed"; reason: string }
   | { kind: "timedOut" | "stopped" }
 > {
@@ -298,7 +324,7 @@ async function withinDeadline(
   let abandoned = false;
   const settled = pending.then(
     (value) => {
-      if (abandoned) cleanupAgentSubprocessEnv(value.env);
+      if (abandoned) onLate(value);
       return { kind: "built" as const, value };
     },
     (error: unknown) => ({
@@ -307,7 +333,7 @@ async function withinDeadline(
     }),
   );
   // `abandoned` is set in the same callback that gives up, so whichever of the two settles
-  // first decides both the race and who releases the environment.
+  // first decides both the race and who releases the late value.
   const gaveUp = new Promise<{ kind: "timedOut" | "stopped" }>((resolve) => {
     timer = setTimeout(() => {
       abandoned = true;
@@ -359,7 +385,12 @@ export async function runClaimSteps(input: {
     const beforeEnvironment = deadline - input.now();
     if (beforeEnvironment <= 0) return fail(timedOut);
     // Building the environment can probe the login shell, so it spends the same deadline.
-    const prepared = await withinDeadline(input.environment(step.env), beforeEnvironment, input.signal);
+    const prepared = await withinDeadline(
+      input.environment(step.env),
+      beforeEnvironment,
+      input.signal,
+      (late) => cleanupAgentSubprocessEnv(late.env),
+    );
     if (prepared.kind === "failed") return fail(`its environment could not be built: ${prepared.reason}`);
     if (prepared.kind !== "built") {
       return prepared.kind === "stopped" ? fail("was stopped", "", 0, true) : fail(timedOut);

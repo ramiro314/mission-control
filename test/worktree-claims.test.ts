@@ -702,6 +702,54 @@ test("building a step's environment spends the claim's deadline, and the step ge
   assert.equal(!stopped.ok && stopped.stopped, true);
 });
 
+test("resolving a step's executable spends the step's budget, and a late resolution launches nothing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-claim-resolve-"));
+  const marker = join(root, "launched");
+  const launches = node(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x");setInterval(()=>{},1000)`);
+  const real = { path: process.execPath, env: { PATH: process.env.PATH } };
+  const delayed = (ms: number) => () =>
+    new Promise<typeof real>((resolve) => setTimeout(() => resolve(real), ms));
+  const request = (timeoutMs: number, signal = new AbortController().signal) => ({
+    argv: launches,
+    cwd: root,
+    env: { PATH: process.env.PATH },
+    timeoutMs,
+    signal,
+  });
+  try {
+    // Resolution outlasts the whole budget: the step times out, and the resolver's answer,
+    // arriving afterwards, never starts a process.
+    const late = await runClaimStep(request(100), { resolveCommand: delayed(400) });
+    assert.deepEqual(late, { outcome: "timedOut", tail: "", truncatedBytes: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(existsSync(marker), false, "no process was launched for a late resolution");
+
+    // Resolution spends most of the budget: the process gets only what is left. The clock reads
+    // 1,400 ms gone after resolving, so a 2,000 ms budget leaves the process 600 ms, which is
+    // enough for it to start and well short of the 2,000 ms a stale budget would give it.
+    let reads = 0;
+    const started = Date.now();
+    const squeezed = await runClaimStep(request(2_000), {
+      resolveCommand: delayed(10),
+      now: () => (reads++ === 0 ? 0 : 1_400),
+    });
+    assert.equal(squeezed.outcome, "timedOut");
+    assert.ok(Date.now() - started < 1_500, "the process was not handed the stale full budget");
+    assert.equal(existsSync(marker), true, "it did start, with the remainder");
+    rmSync(marker, { force: true });
+
+    // A stop while resolving reports stopped and launches nothing.
+    const controller = new AbortController();
+    const stopping = runClaimStep(request(10_000, controller.signal), { resolveCommand: delayed(300) });
+    controller.abort("shutdown");
+    assert.deepEqual(await stopping, { outcome: "stopped", tail: "", truncatedBytes: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(existsSync(marker), false, "no process was launched after the stop");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("output size never fails a step, and the tail keeps the last 4,000 bytes", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-claim-output-"));
   try {
