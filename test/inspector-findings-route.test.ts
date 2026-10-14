@@ -107,6 +107,22 @@ test("a missing or malformed pull request key is a 400, before the ledger is ask
   }
 });
 
+test("a pull request number may be at most ten digits", async () => {
+  adopt(7);
+  // Ten digits is a well-formed key, so it reaches the ledger lookup and misses: a 404.
+  const ten = await app.request(`/api/inspector/findings?pr=${encodeURIComponent("owner/repo#1234567890")}`, {
+    headers: LOOPBACK,
+  });
+  assert.equal(ten.status, 404);
+  assert.deepEqual(await ten.json(), { error: "no adopted pull request with that key" });
+  // Eleven is refused by shape before the ledger is asked: a 400.
+  const eleven = await app.request(`/api/inspector/findings?pr=${encodeURIComponent("owner/repo#12345678901")}`, {
+    headers: LOOPBACK,
+  });
+  assert.equal(eleven.status, 400);
+  assert.match(((await eleven.json()) as { error: string }).error, /owner\/repo#123/);
+});
+
 test("a well-formed key for a pull request the ledger never adopted is a 404", async () => {
   adopt(7);
   const res = await app.request(`/api/inspector/findings?pr=${encodeURIComponent("owner/repo#8")}`, {
@@ -206,4 +222,33 @@ test("the web client reads the same route through the same schema, and a refusal
     assert.equal(await fetchInspectorFindings("owner/repo#404"), null);
     assert.equal(await fetchInspectorFindings("not a key"), null);
   });
+});
+
+test("both clients refuse a successful response that does not match the shared schema", async () => {
+  // HTTP 200 bodies that a cast would pass through: a finding with an unknown status, a
+  // pull request missing its tallies, and a body that is not the response shape at all.
+  const missingTallies = {
+    pr: { key: KEY },
+    findings: [],
+  };
+  const bodies: unknown[] = [
+    { ...missingTallies, findings: [{ fingerprint: "f", status: "refused" }] },
+    missingTallies,
+    { findings: "nope" },
+    null,
+  ];
+  const real = globalThis.fetch;
+  try {
+    for (const body of bodies) {
+      globalThis.fetch = (async () => new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+      await assert.rejects(new ForemanClient().inspectorFindings(KEY), (err: unknown) =>
+        err instanceof Error && err.name === "ZodError", `Foreman must reject ${JSON.stringify(body)}`);
+      assert.equal(await fetchInspectorFindings(KEY), null, `the web client must reject ${JSON.stringify(body)}`);
+    }
+  } finally {
+    globalThis.fetch = real;
+  }
 });

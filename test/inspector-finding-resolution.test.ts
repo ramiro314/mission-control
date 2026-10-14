@@ -626,8 +626,12 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resoluti
 // pinned at the worker's confirmation points rather than at the upsert alone.
 
 test("an accepted live review stamps posted_at on every row it carried", async () => {
+  // Three findings in one review, so a promotion loop that stamped only its first row
+  // cannot pass.
   process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
     { path: "src/example.ts", line: 1, title: "Posted finding", body: "Needs attention", severity: "major" },
+    { path: "src/example.ts", line: 1, title: "Second posted finding", body: "Also this", severity: "minor" },
+    { path: "src/example.ts", line: 1, title: "Third posted finding", body: "And this", severity: "nit" },
   ]);
   writeGithubState({});
   setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
@@ -637,20 +641,29 @@ test("an accepted live review stamps posted_at on every row it carried", async (
   await runOneSweep();
   const after = Date.now();
 
-  assert.equal(readGithubState().posts.length, 1, "the review was accepted");
-  const [row] = loadInspectorComments(key);
-  assert.equal(row?.status, "open");
-  assert.ok(row?.postedAt != null && row.postedAt >= before && row.postedAt <= after,
-    `posted_at ${row?.postedAt} is the confirmation time`);
-  assert.equal(row?.githubUrl, null, "the link is captured by a later ticket, not here");
-  assert.equal(row?.legacyPosted, null);
-  assert.equal(findingPublication(row!).state, "posted");
+  assert.equal(readGithubState().posts.length, 1, "one review carried every finding and was accepted");
+  const rows = loadInspectorComments(key);
+  assert.deepEqual(
+    rows.map((r) => r.title).sort(),
+    ["Posted finding", "Second posted finding", "Third posted finding"],
+  );
+  for (const row of rows) {
+    assert.equal(row.status, "open", `${row.title} was promoted`);
+    assert.ok(row.postedAt != null && row.postedAt >= before && row.postedAt <= after,
+      `${row.title}: posted_at ${row.postedAt} is the confirmation time`);
+    assert.equal(row.githubUrl, null, "the link is captured by a later ticket, not here");
+    assert.equal(row.legacyPosted, null);
+    assert.equal(findingPublication(row).state, "posted");
+  }
 
   // Resolution carries it, so a posted finding still reads posted once it is closed.
-  assert.equal(resolveInspectorFindings(key, Date.now()), 1);
-  const resolved = loadInspectorComments(key)[0]!;
-  assert.equal(resolved.postedAt, row!.postedAt);
-  assert.equal(findingPublication(resolved).state, "posted");
+  assert.equal(resolveInspectorFindings(key, Date.now()), rows.length);
+  const stamped = new Map(rows.map((r) => [r.fingerprint, r.postedAt]));
+  for (const resolved of loadInspectorComments(key)) {
+    assert.equal(resolved.status, "resolved");
+    assert.equal(resolved.postedAt, stamped.get(resolved.fingerprint));
+    assert.equal(findingPublication(resolved).state, "posted");
+  }
 });
 
 test("posting reconciliation stamps a row it finds published, and only that row", async () => {
