@@ -18144,6 +18144,73 @@ td.wf-command-rule-action {
   margin: 0;
 }
 
+/* The affected-tests page's stored testing settings: one bordered row per repository root,
+   below the Command's rules, each with its own Save. */
+.wf-testing-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.wf-testing-settings > h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.wf-testing-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.wf-testing-settings-row > legend {
+  padding: 0 4px;
+}
+.wf-testing-settings-path {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+}
+.wf-testing-settings-path > .wf-command-rule-path {
+  overflow-wrap: anywhere;
+}
+.wf-testing-settings-row > button {
+  align-self: flex-start;
+}
+.wf-testing-settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wf-testing-settings-fields > label,
+.wf-testing-settings-add > label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.wf-testing-settings-fields > textarea {
+  font-family: var(--mono);
+  resize: vertical;
+}
+.wf-testing-settings-fields > select {
+  width: max-content;
+  min-width: 160px;
+}
+.wf-testing-settings-add {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
 /* Phase 2 workflow builder: one bounded three-pane surface around React Flow. */
 .workflow-builder {
   position: relative;

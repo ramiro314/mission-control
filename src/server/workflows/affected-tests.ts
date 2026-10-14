@@ -11,7 +11,7 @@ import {
   type WorkflowSelectedTest,
   type WorkflowTestFailure,
 } from "@shared/workflow.ts";
-import type { MergedTestingConfig } from "@shared/testing-config.ts";
+import type { LayeredTestingConfig, StoredTestingLayer } from "@shared/testing-config.ts";
 import { readTestingConfig } from "../testing-config.ts";
 import { realpathOr } from "../util/repo-doc.ts";
 import { selectAffectedTests, type TestSelectionDeps } from "../test-selection.ts";
@@ -43,6 +43,12 @@ export interface AffectedTestsContext {
   localRoot: string | null;
   /** The task's base branch the change is measured from, or null for origin's default. */
   baseBranch: string | null;
+  /**
+   * The repository root's stored testing settings, read when selection starts rather than when
+   * the context is built, so a failed read is caught with the rest of selection. Absent or null
+   * means none are stored.
+   */
+  readStoredSettings?: () => StoredTestingLayer | null;
   selection?: TestSelectionDeps;
 }
 
@@ -51,12 +57,13 @@ export type AffectedTestsPlan =
   | { kind: "done"; result: CheckExecutionResult }
   | { kind: "run"; files: WorkflowSelectedTest[]; report: WorkflowAffectedTestsReport };
 
-function settingsOf(merged: MergedTestingConfig): WorkflowAffectedTestsReport["settings"] {
+function settingsOf(merged: LayeredTestingConfig): WorkflowAffectedTestsReport["settings"] {
   return {
     patterns: merged.config.tests.patterns,
     includeImporters: merged.config.tests.includeImporters,
     smokeSet: merged.config.tests.smokeSet,
     localKeys: merged.localKeys,
+    sources: merged.sources,
   };
 }
 
@@ -73,7 +80,7 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
   const problem = commandTemplateProblem("affected-tests", ctx.template);
   if (problem) return { kind: "done", result: decided("failed", problem) };
 
-  const read = readTestingConfig(ctx.treeRoot, ctx.localRoot);
+  const read = readTestingConfig(ctx.treeRoot, ctx.localRoot, ctx.readStoredSettings?.() ?? null);
   if (!read.ok) {
     if (read.kind === "missing") return { kind: "done", result: decided("skipped", read.note) };
     if (read.kind === "invalid-local") {

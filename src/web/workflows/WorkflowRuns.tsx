@@ -34,6 +34,7 @@ import {
   workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
 import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
+import { testingSettingsSourceLabel } from "@shared/testing-config.ts";
 import { WAIT_FOR_CI_LABEL, nodeLabel } from "@shared/workflow-stages.ts";
 import { WaitForCiPanel } from "./WaitForCiPanel.tsx";
 import { waitForCiStateOf } from "./run-model.ts";
@@ -453,12 +454,47 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
           <UnlistedTests total={report.failureCount} listed={report.failures.length} />
         </>
       )}
-      {report.settings.localKeys.length > 0 && (
-        <p className="wf-run-meta">
-          From <code>.mission/testing.local.json</code>: {report.settings.localKeys.join(", ")}
-        </p>
-      )}
+      <TestingSettingsSourcesLine settings={report.settings} />
     </div>
+  );
+}
+
+/**
+ * Where each effective selection key came from: the committed file, stored settings at a scope,
+ * the local file, or no layer at all. An outcome recorded before stored settings existed carries
+ * no sources, and keeps the line it always had: the keys that came from the local file.
+ *
+ * `flakes.*` keys never select tests, so they are not among the sources; one the local file set
+ * is still named, as the old line did, so the line never claims less than the file changed.
+ */
+function TestingSettingsSourcesLine({
+  settings,
+}: {
+  settings: WorkflowAffectedTestsReport["settings"];
+}): React.JSX.Element | null {
+  const sources = settings.sources;
+  if (!sources || sources.length === 0) {
+    if (settings.localKeys.length === 0) return null;
+    return (
+      <p className="wf-run-meta">
+        From <code>.mission/testing.local.json</code>: {settings.localKeys.join(", ")}
+      </p>
+    );
+  }
+  const otherLocal = settings.localKeys.filter((key) => !sources.some((source) => source.key === key));
+  return (
+    <p className="wf-run-meta wf-run-settings-sources">
+      Settings:{" "}
+      {sources.map((source, index) => (
+        <Fragment key={source.key}>
+          {index > 0 && ", "}
+          <code>{source.key}</code> {testingSettingsSourceLabel(source)}
+        </Fragment>
+      ))}
+      {otherLocal.length > 0 && (
+        <>. Also from <code>.mission/testing.local.json</code>: {otherLocal.join(", ")}</>
+      )}
+    </p>
   );
 }
 

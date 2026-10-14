@@ -18,6 +18,7 @@ import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { CheckSpawnOutcome, SupervisedCheckRequest } from "../src/server/workflows/check-supervisor.ts";
 import { runCheck } from "../src/server/workflows/checks.ts";
 import { checkVerdict } from "../src/server/workflows/engine.ts";
+import type { StoredTestingSettings } from "../src/shared/testing-config.ts";
 
 // The affected-tests executor, end to end through `runCheck`, with only the two things that
 // would need a real pool and a real suite stubbed: the lease manager hands back a fixture tree,
@@ -51,6 +52,8 @@ function harness(options: {
   answer: (run: Run, index: number) => Answer;
   template?: string[];
   budget?: { released: number };
+  /** The repository root's stored testing settings, as the daemon's catalog would answer. */
+  stored?: StoredTestingSettings;
 }) {
   const runs: Run[] = [];
   let released = 0;
@@ -88,6 +91,7 @@ function harness(options: {
       deletedPaths: async () => ({ ok: true, repoRoot: options.root, paths: [] }),
       trackedFiles: async () => options.tracked,
     },
+    storedTestingSettings: (repoRoot) => (repoRoot === options.root ? options.stored ?? null : null),
   });
   const execute = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
   const check = async (): Promise<WorkflowCheckOutcome> => {
@@ -129,6 +133,45 @@ test("a repository with no .mission/testing.json skips with the file named", asy
   const outcome = await h.check();
   assert.equal(outcome.status, "skipped");
   assert.match(outcome.note, /\.mission\/testing\.json/);
+});
+
+test("stored testing settings run the gate with no committed file, and the outcome names each source", async () => {
+  const root = tree(null);
+  const h = harness({
+    root,
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    stored: { tests: { patterns: ["test/*.test.ts"], smokeSet: ["test/smoke.test.ts"] } },
+    answer: () => ({ exitCode: 0 }),
+  });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed");
+  assert.deepEqual(h.runs[0]!.files, ["test/a.test.ts", "test/smoke.test.ts"]);
+  assert.deepEqual(outcome.affected?.settings.sources, [
+    { key: "tests.patterns", layer: "stored", scope: "" },
+    { key: "tests.includeImporters", layer: "default", scope: null },
+    { key: "tests.smokeSet", layer: "stored", scope: "" },
+  ]);
+
+  // Stored over committed, key by key: the committed smoke set is replaced, its patterns kept.
+  const both = tree({ tests: { patterns: ["test/*.test.ts"], smokeSet: ["test/other.test.ts"] } });
+  const layered = harness({
+    root: both,
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    stored: { tests: { smokeSet: ["test/smoke.test.ts"] } },
+    answer: () => ({ exitCode: 0 }),
+  });
+  const second = await layered.check();
+  assert.deepEqual(layered.runs[0]!.files, ["test/a.test.ts", "test/smoke.test.ts"]);
+  assert.deepEqual(second.affected?.settings.sources?.map((source) => source.layer), ["committed", "committed", "stored"]);
+});
+
+test("a stored row that sets nothing skips like a repository with no settings at all", async () => {
+  const h = harness({ root: tree(null), changed: [], tracked: TRACKED, stored: {}, answer: () => assert.fail("must not run") });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "skipped");
+  assert.match(outcome.note, /no stored testing settings/);
 });
 
 test("a pass runs only the selection, one argv element per file, and records the template", async () => {

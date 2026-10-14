@@ -15,6 +15,7 @@ import type {
 import { providerModelDefault } from "./model.ts";
 import { launchEffortLevels } from "./harness-capabilities.ts";
 import type { ThinkingLevel } from "./types.ts";
+import type { TestingSettingsSource } from "./testing-config.ts";
 import { AFFECTED_TESTS_FILES_PLACEHOLDER, AFFECTED_TESTS_JUNIT_PLACEHOLDER } from "./command-template.ts";
 import { repoAllowlisted } from "./allowlist.ts";
 import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
@@ -3840,6 +3841,11 @@ export interface WorkflowAffectedTestsReport {
     includeImporters: boolean;
     smokeSet: string[];
     localKeys: string[];
+    /**
+     * Which layer supplied each `tests.*` key. Absent on outcomes recorded before stored
+     * testing settings existed, which run detail then describes by `localKeys` alone.
+     */
+    sources?: TestingSettingsSource[];
   };
 }
 

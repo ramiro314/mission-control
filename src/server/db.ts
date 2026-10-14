@@ -175,7 +175,8 @@ let db: DatabaseSync | undefined;
  */
 // 3: bounded telemetry source checkpoints for immutable workflow context and timing.
 // 4: explicit final-completion worktree-return obligations, with no historical backfill.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 4;
+// 5: the stored testing settings catalog (`testing_settings`), empty on an upgraded database.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 5;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -965,6 +966,21 @@ function createSchemaObjects(d: DatabaseSync): void {
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL,
       PRIMARY KEY (slot, repo_root)
+    );
+
+    -- A repository's stored testing settings: the affected-tests selection keys
+    -- (tests.patterns, tests.includeImporters, tests.smokeSet) for a repository that will not
+    -- commit .mission/testing.json, laid over the committed file key by key and under the local
+    -- file. Keyed by the same canonical path a Command override uses. settings_json is validated
+    -- against StoredTestingSettingsSchema on every write, so the flakes block is never stored.
+    -- A new table on an upgrading database is this CREATE, which runs on every open; it starts
+    -- empty, which is exactly what a database that never stored a setting means.
+    CREATE TABLE IF NOT EXISTS testing_settings (
+      repo_root     TEXT PRIMARY KEY,
+      settings_json TEXT NOT NULL,
+      revision      INTEGER NOT NULL DEFAULT 1,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
     );
 
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,

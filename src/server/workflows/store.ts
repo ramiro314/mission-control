@@ -197,10 +197,17 @@ import { repeatOffenders } from "./repeat-offender.ts";
 import type {
   SettingsBackupPersona,
   SettingsBackupSessionAction,
+  SettingsBackupTestingSettings,
   SettingsBackupWorkflowCommand,
   SettingsBackupWorkflowDefinition,
   SettingsBackupWorkflowVersion,
 } from "../settings-backups/catalogs.ts";
+import {
+  StoredTestingSettingsSchema,
+  TESTING_CONFIG_LIMITS,
+  type StoredTestingSettings,
+  type TestingSettingsView,
+} from "@shared/testing-config.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -420,6 +427,7 @@ export const WORKFLOW_TABLES = [
   "session_actions",
   "workflow_commands",
   "workflow_command_overrides",
+  "testing_settings",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
@@ -1090,6 +1098,52 @@ function parseWorkflowCommandRow(
     ),
     maxRuns: readCommandMaxRuns(row.max_runs),
     overrides,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const TestingSettingsRowSchema = z.object({
+  repo_root: nonempty.max(WORKFLOW_LIMITS.checkRepoRoot),
+  settings_json: z.string(),
+  revision: positive,
+  created_at: integer,
+  updated_at: integer,
+});
+
+/**
+ * One stored testing settings row, or null when its shape cannot be read at all.
+ *
+ * The settings column degrades on its own, for the reason `readCommandArgv` gives: the row also
+ * carries the revision every save compares against, so an unreadable `settings_json` reads as
+ * "sets nothing" (no layer, the gate behaves as if nothing were stored) while the revision stays
+ * writable and the next save repairs it.
+ */
+function parseTestingSettingsRow(value: unknown): TestingSettingsView | null {
+  const shape = TestingSettingsRowSchema.safeParse(value);
+  if (!shape.success) {
+    const id = String((value as { repo_root?: unknown } | null)?.repo_root ?? "(unknown)");
+    diagnose(new WorkflowRowError("testing_settings", id, shape.error.message));
+    return null;
+  }
+  const row = shape.data;
+  let settings: StoredTestingSettings = {};
+  try {
+    settings = parseJson(
+      "testing_settings",
+      row.repo_root,
+      "settings_json",
+      row.settings_json,
+      StoredTestingSettingsSchema,
+      TESTING_CONFIG_LIMITS.fileBytes,
+    );
+  } catch (error) {
+    diagnose(error);
+  }
+  return {
+    repoRoot: row.repo_root,
+    settings,
     revision: row.revision,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -2542,6 +2596,15 @@ export type WorkflowCommandStoreWrite =
     };
 
 /**
+ * A stored testing settings write. `revision_conflict` carries the committed row (null when the
+ * path has none) so the editor can reload it; `invalid` is a settings object the schema refuses,
+ * which the route has already turned away and only a caller that skipped it can reach.
+ */
+export type TestingSettingsStoreWrite =
+  | { ok: true; view: TestingSettingsView }
+  | { ok: false; reason: "revision_conflict" | "invalid"; current: TestingSettingsView | null };
+
+/**
  * Deliberately the same refusal vocabulary as `PersonaStoreWrite`, not a wider one. The two
  * catalogs answer to the same CAS, name-reservation and built-in rules, and a route that had
  * to translate two error sets would be the place they quietly diverged.
@@ -2819,6 +2882,7 @@ export interface WorkflowSettingsCatalogRestore {
   personas: readonly SettingsBackupPersona[];
   sessionActions: readonly SettingsBackupSessionAction[];
   workflowCommands: readonly SettingsBackupWorkflowCommand[];
+  testingSettings: readonly SettingsBackupTestingSettings[];
   workflows: readonly SettingsBackupWorkflowDefinition[];
   workflowVersions: readonly SettingsBackupWorkflowVersion[];
 }
@@ -3712,6 +3776,57 @@ export class WorkflowStore {
     });
   }
 
+  /** Every stored testing settings row, sorted by path. A row whose shape is unreadable is skipped. */
+  listTestingSettings(): TestingSettingsView[] {
+    return (this.db.prepare(`SELECT * FROM testing_settings ORDER BY repo_root`).all() as unknown[])
+      .map(parseTestingSettingsRow)
+      .filter((view): view is TestingSettingsView => view !== null);
+  }
+
+  /** The row stored at exactly this path, or null. */
+  getTestingSettings(repoRoot: string): TestingSettingsView | null {
+    const row = this.db.prepare(`SELECT * FROM testing_settings WHERE repo_root = ?`).get(repoRoot);
+    return row ? parseTestingSettingsRow(row) : null;
+  }
+
+  /**
+   * Replace one path's stored testing settings under an expected revision.
+   *
+   * Revision 0 means "no row yet", so the first save from two windows cannot both land. The row
+   * is never deleted: saving one that sets no key keeps it (and bumps its revision) so a later
+   * save from a window that loaded an older revision is still refused. Validated here as well as
+   * at the route, because the store is the boundary a future caller reaches without the schema.
+   */
+  replaceTestingSettingsCas(
+    repoRoot: string,
+    expectedRevision: number,
+    settings: StoredTestingSettings,
+    now = Date.now(),
+  ): TestingSettingsStoreWrite {
+    const parsed = StoredTestingSettingsSchema.safeParse(settings);
+    if (!parsed.success) return { ok: false, reason: "invalid", current: this.getTestingSettings(repoRoot) };
+    const json = JSON.stringify(parsed.data);
+    return transaction(this.db, () => {
+      const current = this.getTestingSettings(repoRoot);
+      if ((current?.revision ?? 0) !== expectedRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      const changed = current
+        ? this.db.prepare(
+          `UPDATE testing_settings SET settings_json = ?, revision = revision + 1, updated_at = ?
+            WHERE repo_root = ? AND revision = ?`,
+        ).run(json, now, repoRoot, expectedRevision)
+        : this.db.prepare(
+          `INSERT INTO testing_settings (repo_root, settings_json, revision, created_at, updated_at)
+           VALUES (?, ?, 1, ?, ?) ON CONFLICT(repo_root) DO NOTHING`,
+        ).run(repoRoot, json, now, now);
+      if (Number(changed.changes) !== 1) {
+        return { ok: false, reason: "revision_conflict", current: this.getTestingSettings(repoRoot) };
+      }
+      return { ok: true, view: this.getTestingSettings(repoRoot)! };
+    });
+  }
+
   /**
    * Import legacy `checkCommands` rows as overrides, once, and only into an empty catalog.
    *
@@ -3958,6 +4073,33 @@ export class WorkflowStore {
           now,
         );
       }
+    }
+
+    // Stored testing settings: the snapshot's rows win, and a current row the snapshot does not
+    // carry is CLEARED rather than deleted, so its revision keeps rising and an editor holding
+    // an older revision is still refused. An unchanged row keeps its revision.
+    const stagedTestingRoots = new Set(staged.testingSettings.map((row) => row.repoRoot));
+    const writeTesting = this.db.prepare(
+      `INSERT INTO testing_settings (repo_root, settings_json, revision, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(repo_root) DO UPDATE SET
+         settings_json=excluded.settings_json, revision=excluded.revision,
+         updated_at=excluded.updated_at`,
+    );
+    for (const row of staged.testingSettings) {
+      const current = this.getTestingSettings(row.repoRoot);
+      if (current && canonical(current.settings) === canonical(row.settings)) continue;
+      writeTesting.run(
+        row.repoRoot,
+        JSON.stringify(row.settings),
+        current ? Math.max(current.revision, row.revision) + 1 : Math.max(1, row.revision),
+        current?.createdAt ?? row.createdAt,
+        current ? now : row.updatedAt,
+      );
+    }
+    for (const current of this.listTestingSettings()) {
+      if (stagedTestingRoots.has(current.repoRoot) || canonical(current.settings) === canonical({})) continue;
+      writeTesting.run(current.repoRoot, JSON.stringify({}), current.revision + 1, current.createdAt, now);
     }
 
     const currentWorkflows = (this.db.prepare(`SELECT * FROM workflow_definitions`).all() as unknown[])

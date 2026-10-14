@@ -48,7 +48,8 @@ The loopback `Host` check stops a web page, not a local process. `/api/*` carrie
 any process on this machine that connects to loopback with a loopback `Host` is served, and
 that includes an agent's own shell. Such a caller can do anything the dashboard can, settings
 writes among them, including the ones that decide what runs: worktree pool policy
-(`PUT /api/worktrees/config`) and Commands (`PUT /api/workflow-commands/:slot`). The
+(`PUT /api/worktrees/config`), Commands (`PUT /api/workflow-commands/:slot`) and stored
+testing settings (`PUT /api/testing-settings`). The
 per-machine token above guards ingress only. The narrow agent tools, such as
 `set_affected_tests_command`, bound what an agent may do **through MCP**; they do not stop the
 same agent from calling the `/api/*` route directly.

@@ -1,10 +1,12 @@
 import { z } from "zod";
 
-// A project's testing settings: `.mission/testing.json`, committed and reviewed like code, and
-// `.mission/testing.local.json`, a gitignored per-checkout override merged over it key by key.
+// A project's testing settings, in three layers merged key by key, lowest first:
+// `.mission/testing.json`, committed to the repository; stored settings, kept in Mission
+// Control's database for a repository that will not commit the file (`tests.*` keys only); and
+// `.mission/testing.local.json`, a gitignored per-checkout override that has the last word.
 //
 // Browser-safe on purpose (no `node:` imports): the daemon reads it to select affected tests,
-// run detail shows it, and the CI flake report action bundles it unchanged. The schema, its
+// run detail shows it, and the CI flake report action bundles it unchanged. The schemas, their
 // defaults and `mergeTestingConfig` are a cross-phase contract - later changes must stay
 // backward compatible, because a committed file outlives any one release.
 
@@ -143,4 +145,104 @@ export function mergeTestingConfig(
     }
   }
   return { config: { tests, flakes }, localKeys: localKeys.sort() };
+}
+
+// ---- Stored testing settings ---------------------------------------------------------------
+//
+// A repository that will not commit `.mission/testing.json` can still have an affected-tests
+// gate: Mission Control stores the selection keys itself, per canonical repository path (the
+// same key Command overrides use). Only the three `tests.*` keys can be stored. `flakes` is read
+// by the CI flake report action, and CI cannot read this machine's database, so a stored copy
+// would be a setting that silently does nothing.
+
+/** The `tests.*` keys a layer can set, in display order. */
+export const TESTING_SETTINGS_KEYS = ["tests.patterns", "tests.includeImporters", "tests.smokeSet"] as const;
+export type TestingSettingsKey = (typeof TESTING_SETTINGS_KEYS)[number];
+
+/**
+ * One stored row's settings: the local file's `tests` shape and nothing else. Every key is
+ * optional (absent means "the layer below decides") and both levels are strict, so `flakes` or a
+ * typo is refused on save rather than stored and ignored.
+ */
+export const StoredTestingSettingsSchema = z.object({
+  tests: z.object(TestsFields).partial().strict().optional(),
+}).strict();
+export type StoredTestingSettings = z.output<typeof StoredTestingSettingsSchema>;
+
+/** The keys a stored row sets. A row that sets none is not a layer. */
+export function storedTestingSettingsKeys(settings: StoredTestingSettings | null): TestingSettingsKey[] {
+  const tests: Record<string, unknown> = settings?.tests ?? {};
+  return TESTING_SETTINGS_KEYS.filter((key) => tests[key.slice(6)] !== undefined);
+}
+
+/** One stored testing settings row, as the daemon serves it. */
+export interface TestingSettingsView {
+  /** The canonical path the row is keyed by: a main checkout's realpath. */
+  repoRoot: string;
+  settings: StoredTestingSettings;
+  /** Compare-and-swap revision. A path with no row has none and is written with revision 0. */
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Which layer supplied a key's effective value. `default` means no layer set it. */
+export const TESTING_SETTINGS_LAYERS = ["default", "committed", "stored", "local"] as const;
+export type TestingSettingsLayer = (typeof TESTING_SETTINGS_LAYERS)[number];
+
+export interface TestingSettingsSource {
+  key: TestingSettingsKey;
+  layer: TestingSettingsLayer;
+  /** For `stored`, the scope's repository-relative path, `""` at the root. Otherwise null. */
+  scope: string | null;
+}
+
+/** A stored layer and the scope it was stored at. */
+export interface StoredTestingLayer {
+  settings: StoredTestingSettings;
+  /** Repository-relative, `""` for the repository root. */
+  scope: string;
+}
+
+export interface LayeredTestingConfig extends MergedTestingConfig {
+  /** Where each `tests.*` key's effective value came from, in `TESTING_SETTINGS_KEYS` order. */
+  sources: TestingSettingsSource[];
+}
+
+/**
+ * Merge the root's layers, lowest first: the committed file, the stored settings, the local file.
+ *
+ * Every layer replaces key by key, and a list replaces a list. With no committed file the base is
+ * the schema's defaults, and a key nobody set is reported as `default`. The local file is merged
+ * through `mergeTestingConfig` unchanged, so `localKeys` keeps its meaning: every key, `flakes.*`
+ * included, that came from the local file.
+ */
+export function mergeTestingLayers(
+  committed: TestingConfig | null,
+  stored: StoredTestingLayer | null,
+  local: TestingLocalConfig | null,
+): LayeredTestingConfig {
+  const base: TestingConfig = committed ?? TestingConfigSchema.parse({});
+  const sources = new Map<string, TestingSettingsSource>(TESTING_SETTINGS_KEYS.map((key) => [
+    key,
+    { key, layer: committed ? "committed" : "default", scope: null },
+  ]));
+  const tests = { ...base.tests };
+  for (const key of storedTestingSettingsKeys(stored?.settings ?? null)) {
+    const name = key.slice(6) as keyof typeof tests;
+    (tests as Record<string, unknown>)[name] = stored!.settings.tests![name];
+    sources.set(key, { key, layer: "stored", scope: stored!.scope });
+  }
+  const merged = mergeTestingConfig({ tests, flakes: base.flakes }, local);
+  for (const key of merged.localKeys) {
+    const source = sources.get(key);
+    if (source) sources.set(key, { key: source.key, layer: "local", scope: null });
+  }
+  return { ...merged, sources: TESTING_SETTINGS_KEYS.map((key) => sources.get(key)!) };
+}
+
+/** A source as run detail prints it: `committed`, `stored (root)`, `stored (apps/web)`, `local`. */
+export function testingSettingsSourceLabel(source: Pick<TestingSettingsSource, "layer" | "scope">): string {
+  if (source.layer !== "stored") return source.layer;
+  return `stored (${source.scope ? source.scope : "root"})`;
 }
