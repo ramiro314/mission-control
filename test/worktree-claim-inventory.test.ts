@@ -30,6 +30,9 @@ import {
   claimFromDraft,
   draftFromClaim,
   draftNames,
+  emptyClaimErrors,
+  hasClaimErrors,
+  hasClaimFieldErrors,
   type ClaimDraft,
 } from "../src/web/lib/worktree-claim-draft.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -269,7 +272,13 @@ test("the route's schema refusal lands beside the claim field that caused it", (
   });
   assert.equal(claimErrorsFrom(refusedEmpty.error!.message, noSteps).steps.length, 1);
 
-  assert.deepEqual(claimErrorsFrom("worktree operations unavailable", draft).general, ["worktree operations unavailable"]);
+  const unreachable = claimErrorsFrom("worktree operations unavailable", draft);
+  assert.deepEqual(unreachable.general, ["worktree operations unavailable"]);
+  // A refusal that names no field is still an error, but there is no field to send anyone to.
+  assert.equal(hasClaimErrors(unreachable), true);
+  assert.equal(hasClaimFieldErrors(unreachable), false);
+  assert.equal(hasClaimFieldErrors(errors), true);
+  assert.equal(hasClaimErrors(emptyClaimErrors()), false);
 });
 
 test("a failure record round-trips field for field, whatever the command and reason contain", () => {

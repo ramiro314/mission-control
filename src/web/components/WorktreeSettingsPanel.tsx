@@ -14,7 +14,7 @@ import type {
   WorktreeSlotDependencyState,
 } from "@shared/worktrees.ts";
 import { worktreeRetryRequest } from "@shared/worktrees.ts";
-import type { WorktreesState } from "../useWorktrees.ts";
+import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { openWorktreeTerminal } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
@@ -28,6 +28,7 @@ import {
   draftNames,
   emptyClaimErrors,
   hasClaimErrors,
+  hasClaimFieldErrors,
   type ClaimDraft,
   type ClaimDraftErrors,
   type ClaimStepDraft,
@@ -568,11 +569,19 @@ function ClaimEditor({
     setSaving(true);
     setSaved(null);
     setErrors(emptyClaimErrors());
-    const result = await updateConfig(
-      { repositories: { [repo.commonDirectory]: { claim: claim as WorktreeClaim | null } } },
-      { inline: true },
-    );
-    setSaving(false);
+    let result: WorktreesConfigUpdate;
+    try {
+      result = await updateConfig(
+        { repositories: { [repo.commonDirectory]: { claim: claim as WorktreeClaim | null } } },
+        { inline: true },
+      );
+    } catch (error) {
+      // `updateConfig` reports every outcome as a value; this is the editor's own guard, so a
+      // future rejection still leaves Save usable and says why.
+      result = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      setSaving(false);
+    }
     if (result.ok) {
       setSaved(claim === null ? "Claim removed." : "Claim saved.");
       return;
@@ -668,7 +677,13 @@ function ClaimEditor({
         <p className="wt-claim-note">With no fingerprint paths the claim runs on every lease.</p>
       </div>
       <FieldErrors id={`${base}-general`} messages={errors.general} />
-      {invalid && <p className="settings-error" role="alert">The claim was not saved. Fix the fields marked above.</p>}
+      {invalid && (
+        <p className="settings-error" role="alert">
+          {!hasClaimFieldErrors(errors)
+            ? "The claim was not saved."
+            : "The claim was not saved. Fix the fields marked above."}
+        </p>
+      )}
       {saved && <p className="wt-claim-saved" role="status">{saved}</p>}
       <div className="wt-argv-actions">
         <Tooltip label="Add one dependency step after the others">

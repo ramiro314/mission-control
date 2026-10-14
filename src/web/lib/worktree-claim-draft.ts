@@ -74,8 +74,15 @@ export function emptyClaimErrors(): ClaimDraftErrors {
 }
 
 export function hasClaimErrors(errors: ClaimDraftErrors): boolean {
-  return errors.general.length > 0 ||
-    errors.steps.length > 0 ||
+  return errors.general.length > 0 || hasClaimFieldErrors(errors);
+}
+
+/**
+ * Whether any error belongs to a field the operator can fix. A refusal that names no field,
+ * such as a request that never reached the daemon, has only general errors.
+ */
+export function hasClaimFieldErrors(errors: ClaimDraftErrors): boolean {
+  return errors.steps.length > 0 ||
     errors.timeoutMinutes.length > 0 ||
     errors.fingerprintPaths.length > 0 ||
     Object.keys(errors.argv).length > 0 ||

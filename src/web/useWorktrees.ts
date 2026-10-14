@@ -134,15 +134,28 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setPreview(null);
     setPreviewError(null);
     setPreviewChanged(false);
+    // Never rejects: every outcome, a thrown request included, comes back as a
+    // `WorktreesConfigUpdate`, so a caller holding a pending state always gets to clear it.
     const operation = writeChain.current.then(async (): Promise<WorktreesConfigUpdate> => {
-      const result = await updateWorktreesConfig(patch);
-      if (!result.ok) {
+      const refused = (error: string): WorktreesConfigUpdate => {
         if (inventoryRef.current === optimistic) setInventory(before);
-        if (!options.inline) setError(`That policy change did not stick: ${result.error}`);
-        return { ok: false, error: result.error };
+        if (!options.inline) setError(`That policy change did not stick: ${error}`);
+        return { ok: false, error };
+      };
+      let result: Awaited<ReturnType<typeof updateWorktreesConfig>>;
+      try {
+        result = await updateWorktreesConfig(patch);
+      } catch (error) {
+        return refused(error instanceof Error ? error.message : String(error));
       }
+      if (!result.ok) return refused(result.error);
       setError(null);
-      await refresh();
+      try {
+        await refresh();
+      } catch {
+        // The change was saved. A refresh that throws is an inventory read problem, and the
+        // next worktrees_changed bump or the backstop reads it again.
+      }
       return { ok: true };
     });
     writeChain.current = operation.then(() => {}, () => {});

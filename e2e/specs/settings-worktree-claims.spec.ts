@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -165,6 +165,25 @@ test("the claim editor saves through the settings route and every slot shows its
     await variables.fill("MC_E2E_CLAIM_DAEMON_TOKEN MC_E2E_CLAIM_SHELL_TOKEN MC_E2E_CLAIM_ABSENT_TOKEN");
     await editor.getByLabel("Claim timeout in minutes, for every step together").fill("5");
     await editor.getByLabel("Fingerprint paths, one repository-relative glob per line").fill("README.md");
+
+    // A save whose request never reaches the daemon reports that inline and leaves the editor
+    // usable: it does not stay "Saving…" with every action disabled.
+    const dropPut = async (route: Route) => {
+      if (route.request().method() === "PUT") await route.abort("failed");
+      else await route.continue();
+    };
+    await dashboard.route("**/api/worktrees/config", dropPut);
+    await editor.getByRole("button", { name: "Save claim" }).click();
+    // No field is at fault, so the alert does not send the operator looking for one.
+    await expect(editor.getByRole("alert")).toHaveText("The claim was not saved.");
+    await expect(editor.locator(".wt-claim-errors .settings-error")).toHaveCount(1);
+    await expect(variables).not.toHaveAttribute("aria-invalid", "true");
+    await expect(editor.getByRole("button", { name: "Save claim" })).toBeEnabled();
+    await expect(editor.getByRole("button", { name: "Saving…" })).toHaveCount(0);
+    await expect(editor.getByLabel("Step 1 variable names"))
+      .toHaveValue("MC_E2E_CLAIM_DAEMON_TOKEN MC_E2E_CLAIM_SHELL_TOKEN MC_E2E_CLAIM_ABSENT_TOKEN");
+    await dashboard.unroute("**/api/worktrees/config", dropPut);
+
     await editor.getByRole("button", { name: "Save claim" }).click();
     await expect(editor.getByRole("status")).toHaveText("Claim saved.");
     await expect(editor.getByRole("alert")).toHaveCount(0);
