@@ -18,7 +18,8 @@ Settled through a three-round grilling session (46 decisions, listed at the end)
 answer differs from the recommendation offered, the decision table says so. The human approved
 the plan as written on 2026-10-13 and chose to create tickets after it merges (see "Plan
 review"). A workflow repair round then added the handoff between slice 3 and slice 4, and crash
-recovery, from three further human decisions (see "Repair round 1").
+recovery, from three further human decisions (see "Repair round 1"). A second added how each
+caller of `acquire` waits on a long claim, from two more (see "Repair round 2").
 
 ## Goals
 
@@ -327,6 +328,57 @@ flowchart LR
   ST <--> REG[(package registry)]
   P --> G[grant lease]
 ```
+
+#### Who waits on a claim, and for how long
+
+A claim can run for up to 240 minutes inside `WorktreeManager.acquire`, and `acquire` takes no
+AbortSignal (`manager.ts:503-509`). Each of its three callers was checked for whether it
+tolerates that (repair round 2):
+
+| Caller | What waits today | What changes |
+|---|---|---|
+| **Task dispatch.** `dispatcher.ts:2437`, reached by every task kind | Nothing outside the dispatcher. `TaskManager.dispatch` starts it with `void this.dispatcher.dispatch(id, options)` and returns (`tasks.ts:3423`). `create`, ensembles and pipeline starts do the same. The task sits in `dispatching`, with no runtime timeout. Startup reconcile already covers a dispatching task (`tasks.ts:581-583`). The dispatcher's 30 s ready wait starts only after provisioning (`dispatcher.ts:875`) | Tolerated as is. Cancelling a dispatching task stops its running claim, like Stop. Today a cancel is noticed only after provisioning (`dispatcher.ts:574`), so it would otherwise wait out the claim. A dispatching task still counts toward Foreman's session limit while it claims (`foreman/backlog-machine.ts:152-158`) |
+| **Check attempt.** `check-lease.ts:553`, including the cold fallback | The attempt's `runAttempt`, inside the daemon-wide check limiter (`checkLimit`, `engine.ts:1098-1107`), which allows **2** at once (`DEFAULT_CHECK_CONCURRENCY`, `checks.ts:172`). The command's timeout starts at spawn, after the lease (`check-runtime.ts:326`). So claim time never counts against it, and a slow install ends as a **dependency failure** under the claim's own timeout, never as a timed-out check | While the claim runs, the attempt **gives up its check slot**, and it takes one again before the command spawns (repair round 2, `check-claim-limiter`). The ladder order, the budget reservation and the test lease are unchanged. Cancelling the run stops the running claims of its attempts. Today `cancelRun` only updates the database |
+| **Manual lease.** `POST /api/worktrees/manual/acquire` (`routes.ts:1722-1752`), called by `make session` and `make claude` through `scripts/new-session.mjs` | The HTTP request. The script's `fetch` has no timeout (`new-session.mjs:70-77`), and Node's built-in fetch gives up after 300 s without response headers. The script then prints "Mission Control is not running". The route never reads the request's abort signal, so the lease is still granted, to an owner nobody holds. Manual owners survive restarts until an explicit return (`owners.ts:53-63`), so the slot leaks | The route **accepts, then the client polls** (repair round 2, `manual-acquire-shape`), described below |
+
+**The manual route, when the pool has a claim.** This is the shape the existing worktree
+operations already use: 202, then the client polls.
+
+- `POST /api/worktrees/manual/acquire` pins HEAD as today. It then returns `202` with a
+  `requestId`, and runs the acquire in the background under the same `manual:<key>` owner.
+- `GET /api/worktrees/manual/requests/:requestId` returns one of three states:
+  - `claiming`, with the running step and elapsed time;
+  - `granted`, with the lease and any claim warning;
+  - `failed`, with the reason.
+- `new-session.mjs` polls every 2 s and prints the step and elapsed time. It treats a `404` after
+  a `202` as "the daemon restarted while claiming". The slot is then recovered by crash table
+  row 1.
+- A request granted but not polled within 10 minutes is returned by the daemon. It uses the
+  ordinary owner-authorized return with `requireClean` and an occupancy check, so a lease nobody
+  received cannot leak. An occupied slot stays leased.
+- Pending requests live in daemon memory. After a restart, a granted lease that was never picked
+  up is an ordinary manual lease, which Settings › Worktrees shows and can Return.
+- **Compatibility.** A pool **with no claim configured** still answers `201` with the lease,
+  synchronously, as today. A `new-session.mjs` from an older checkout therefore keeps working
+  against a newer daemon for every pool that has not opted in. The script accepts both `201` and
+  `202`.
+
+**When the daemon, not the caller, stops waiting.** A running claim holds its slot's lock, so
+three more rules follow.
+
+- **Claim registry.** The manager keeps an in-memory registry of running claims, keyed by slot,
+  with each claim's owner and process group. Stop, task cancel, run cancel and shutdown all find
+  claims through it.
+- **Maintenance.** Periodic maintenance takes every slot lock in turn (`manager.ts:1048`) before
+  it reclaims leaked leases, and it reschedules only after finishing (`manager.ts:1505-1513`).
+  It **skips** a slot whose claim holds the lock, instead of waiting on it, records the slot as
+  skipped in the reconciliation record, and retries it next pass.
+- **Shutdown.** `engine.stop()` and `worktrees.stop()` have no deadline today
+  (`engine.ts:635`, `manager.ts:1540-1544`). Shutdown kills every running claim's process group
+  first and grants no lease while stopping.
+  - The slot stays `provisioning`, with `deps_state = claiming` or `seeding`. The next startup
+    applies crash table row 1 or 2: quarantine, and `interrupted`.
+  - This is the same cost a restart during setup has today.
 
 ### 2. Seeding and Warm
 
@@ -667,8 +719,13 @@ The testing-setup skill text and the task's launch prompt carry the choice.
 - `docs/worktrees-and-checks.md:413-417`. Rewrite "your `node_modules` survives, so a check is a
   build rather than an install". Clean `-fd` preserves whatever is installed, and the claim is
   what makes it current.
-- `docs/worktrees-and-checks.md`. Document the claim, fingerprints, seeding, Warm, the claim
-  environment and the setup environment change.
+- `docs/worktrees-and-checks.md`. Document:
+  - the claim and fingerprints;
+  - seeding and Warm;
+  - the claim environment and the setup environment change;
+  - crash recovery;
+  - in the `make session` section, the manual acquire's 202-and-poll;
+  - in the check-lease section, the check-slot release during a claim.
 - `src/shared/protocol.ts:6456`, `src/server/testing-setup.ts:1`, `src/server/routes.ts:5037` and
   `docs/flaky-tests.md:49-52`. State that `set_affected_tests_command` (and later
   `propose_command_document`) bounds what an agent may do **through MCP**, and that `/api/*`
@@ -709,6 +766,14 @@ slices within this order.
    - the cold check fallback;
    - the `deps_state` write-ahead, with startup recovery for an interrupted claim. Until slice 2
      adds `seed.paths`, an interrupted slot has nothing to wipe and reruns every step;
+   - everything in "Who waits on a claim":
+     - the claim registry;
+     - task cancel and run cancel stopping a running claim;
+     - the check-slot release during a claim;
+     - the manual route's 202-and-poll, with the pickup window and the `201` compatibility path;
+     - the `new-session.mjs` poller;
+     - maintenance skipping a claiming slot;
+     - shutdown killing running claims;
    - the docs fixes in section 7 that do not depend on later slices.
 
    This slice alone fixes the observed `capital-markets` failure.
@@ -763,6 +828,21 @@ spec, and no `data-testid`.
 - Crash injection after the write-ahead and before the first step, and mid-step. Startup must
   quarantine the `provisioning` slot with `deps_state = interrupted` and no fingerprint, and a
   later claim must never skip on a stale fingerprint.
+- Long claims and callers that stop waiting:
+  - a dispatch whose claim outlasts any HTTP timeout still provisions, and the route that started
+    it has already returned;
+  - task cancel during a claim stops it, and the dispatcher tears down as today;
+  - run cancel stops an attempt's claim;
+  - a check claim does not hold a check-concurrency slot, so a third check runs while two claim;
+  - a slow check claim ends as a dependency failure, never as a timed-out check;
+  - maintenance skips, and does not wait on, a claiming slot;
+  - shutdown kills a running claim and grants nothing.
+- The manual route:
+  - `202` then polling through `claiming` to `granted` and to `failed`;
+  - an unpolled grant returned after the pickup window;
+  - `201` for a pool with no claim;
+  - `new-session.mjs` against both `201` and `202`;
+  - `404` after a restart reported as such.
 
 **Seeding and Warm (unit).**
 
@@ -957,3 +1037,29 @@ round rather than asked:
 - the crash-injection tests.
 
 Nothing else in the plan changed.
+
+### Repair round 2 (2026-10-13)
+
+The Plan Feasibility judge (run `5a646a33`) asked how each synchronous caller of `acquire`
+tolerates a claim of up to 240 minutes. The repair session audited the three callers in the code.
+The findings and citations are in section 1, "Who waits on a claim, and for how long":
+
+- dispatch does not wait;
+- a check waits inside a check slot, but its command timeout starts after the lease;
+- the manual route's client gives up at Node's 300 s fetch limit and leaks the lease.
+
+The human answered:
+
+| Id | Question | Answer |
+|---|---|---|
+| `manual-acquire-shape` | How a manual lease survives a claim longer than one HTTP request | The route returns 202 with a pending id; `new-session.mjs` polls until granted or failed (rec.) |
+| `check-claim-limiter` | Whether a check's claim holds a check-concurrency slot | No: the attempt gives up its check slot while claiming and takes one again before spawn (rec.) |
+
+Some changes follow directly from the audit, and were stated in the repair round rather than
+asked:
+
+- task cancel and run cancel stop a running claim;
+- maintenance skips a claiming slot;
+- shutdown kills running claims and grants nothing;
+- Foreman's session limit counts a claiming dispatch;
+- the manual route's pickup window and `201` compatibility path.
