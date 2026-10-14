@@ -495,7 +495,12 @@ function toReviewPage(raw: unknown): ReviewPage {
   };
 }
 
-async function fetchReviewPage(
+/**
+ * One earlier page of reviews, for the traversals that read past the snapshot's newest
+ * hundred. Exported so tests can reach the query and the parser directly, because every
+ * caller in the tick reduces the page to a boolean.
+ */
+export async function fetchReviewPage(
   cwd: string | null,
   owner: string,
   repo: string,
@@ -537,7 +542,11 @@ async function fetchReviewPage(
   }
 }
 
-async function fetchThreadPage(
+/**
+ * One later page of review threads, past the snapshot's first hundred. Exported for the
+ * same reason as `fetchReviewPage`: its only caller in the tick reduces it to a boolean.
+ */
+export async function fetchThreadPage(
   cwd: string | null,
   owner: string,
   repo: string,

@@ -86,6 +86,21 @@ if (args[0] === "api" && args[1] === "user") {
 } else if (args.includes("graphql")) {
   const query = args.find((arg) => arg.startsWith("query=")) || "";
   const state = load();
+  // The continuation pages, past GitHub's first hundred threads or newest hundred reviews.
+  const page = query.includes("reviewThreads(first:100,after:$after)")
+    ? { kind: "thread page", body: { reviewThreads: {
+        nodes: state.threadPage, pageInfo: { hasNextPage: false, endCursor: null } } } }
+    : query.includes("reviews(last:100,before:$before)")
+      ? { kind: "review page", body: { reviews: {
+          nodes: state.reviewPage, pageInfo: { hasPreviousPage: false, startCursor: null } } } }
+      : null;
+  if (page) {
+    log("graphql " + page.kind);
+    state.lastQuery = query;
+    save(state);
+    process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: page.body } } }));
+    process.exit(0);
+  }
   if (!query.includes("reviewThreads(first:100){")) {
     log("graphql other");
     process.stderr.write("unexpected graphql query");
@@ -185,7 +200,7 @@ const { adoptPr, startInspector } = await import("../src/server/inspector/worker
 const { BODY_ONLY_FINDINGS_MARKER, fingerprint, formatMarker, reviewHeader } = await import(
   "../src/server/inspector/marker.ts"
 );
-const { fetchPr, findingUrls, resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
+const { fetchPr, fetchReviewPage, fetchThreadPage, findingUrls, resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 const { findingPublication } = await import("../src/shared/inspector-findings.ts");
 
 const US = "operator";
@@ -211,11 +226,13 @@ interface FakeGithubState {
   reviews: FakeReview[];
   posts: number;
   nextId: number;
+  threadPage: FakeThread[];
+  reviewPage: FakeReview[];
   lastQuery?: string;
 }
 
 function writeGithubState(state: Partial<FakeGithubState>): void {
-  const full: FakeGithubState = { headSha: "head-1", threads: [], reviews: [], posts: 0, nextId: 100, ...state };
+  const full: FakeGithubState = { headSha: "head-1", threads: [], reviews: [], threadPage: [], reviewPage: [], posts: 0, nextId: 100, ...state };
   const tmp = `${statePath}.seed.tmp`;
   writeFileSync(tmp, JSON.stringify(full, null, 2));
   renameSync(tmp, statePath);
@@ -331,6 +348,36 @@ test("the snapshot query asks for each comment's and review's link, and the pars
   assert.match(query, /comments\(first:100\)\{\s*nodes\{ databaseId url body/);
   assert.match(query, /reviews\(last:100\)\{\s*nodes\{ url body/);
   assert.deepEqual(ghCalls(), ["graphql snapshot"], "one read, as before");
+});
+
+// The continuation pages are separate queries with separate parsers, so each is pinned on
+// its own: the query must ask for the link, and the parser must keep it.
+test("a later page of review threads asks for each comment's link, and the parser keeps it", async () => {
+  const url = `${PR}7#discussion_r301`;
+  writeGithubState({
+    threadPage: [thread("T_101", url, formatMarker({ id: "a", fingerprint: "fp-page-2", round: 2 }))],
+  });
+  const page = await fetchThreadPage(null, "mission", "control", 7, "cursor-1");
+  assert.ok(page.ok && page.value);
+  assert.equal(page.value.threads[0]!.comments[0]!.url, url);
+  assert.match(readGithubState().lastQuery ?? "", /comments\(first:1\)\{ nodes\{ databaseId url body/);
+  assert.deepEqual(ghCalls(), ["graphql thread page"]);
+});
+
+test("an earlier page of reviews asks for each review's link, and the parser keeps it", async () => {
+  const url = `${PR}7#pullrequestreview-401`;
+  writeGithubState({ reviewPage: [findingsReview(url, 2)] });
+  const page = await fetchReviewPage(null, "mission", "control", 7, "cursor-1");
+  assert.ok(page.ok && page.value);
+  assert.equal(page.value.reviews[0]!.url, url);
+  // The page's review is the same shape the snapshot's is, so the matching rule reads it.
+  assert.equal(
+    findingUrls({ threads: [], reviews: page.value.reviews }, US,
+      [{ fingerprint: "fp-demoted", line: null, round: 2, githubUrl: null }]).get("fp-demoted"),
+    url,
+  );
+  assert.match(readGithubState().lastQuery ?? "", /reviews\(last:100,before:\$before\)\{\s*nodes\{ url body/);
+  assert.deepEqual(ghCalls(), ["graphql review page"]);
 });
 
 test("an inline finding takes the link of our marker thread, and a demoted one our review's", async () => {
