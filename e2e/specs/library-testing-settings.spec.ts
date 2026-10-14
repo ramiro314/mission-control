@@ -225,3 +225,58 @@ test("a repository's root testing settings are edited in Library and run the gat
   await card.scrollIntoViewIfNeeded();
   await shoot(dashboard, "run-detail-settings-sources");
 });
+
+test("a repository with no override is added to Testing settings by its root, never by a folder inside it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // No affected-tests override and nothing stored: the section starts with no rows at all.
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/affected-tests`);
+  const section = dashboard.getByRole("region", { name: "Testing settings" });
+  await expect(section).toBeVisible();
+  const rows = section.getByRole("group", { name: /^Testing settings for / });
+  await expect(rows).toHaveCount(0);
+  expect(await api<TestingSettingsView[]>(daemon, "/api/testing-settings")).toEqual([]);
+
+  const box = section.getByRole("combobox", { name: "Add a repository" });
+  const add = section.getByRole("button", { name: "Add repository" });
+
+  // A folder inside the repository is refused in words, and adds no row.
+  const nested = join(daemon.repo, "packages", "web");
+  mkdirSync(nested, { recursive: true });
+  await box.fill(nested);
+  await add.click();
+  await expect(section.getByRole("alert")).toContainText("Testing settings are stored for a repository root");
+  await expect(section.getByRole("alert")).toContainText(basename(daemon.repo));
+  await expect(rows).toHaveCount(0);
+
+  // The repository itself adds one row, under its canonical root, with nothing stored yet.
+  await box.fill(daemon.repo);
+  await add.click();
+  await expect(rows).toHaveCount(1);
+  const row = rows.first();
+  await expect(row).toHaveAccessibleName(new RegExp(`^Testing settings for .*${basename(daemon.repo)}$`));
+  await expect(row).toContainText("Nothing stored yet");
+  await expect(section.getByRole("alert")).toHaveCount(0);
+  await expect(box).toHaveValue("");
+
+  // Adding it again does not duplicate the row.
+  await box.fill(daemon.repo);
+  await add.click();
+  await expect(rows).toHaveCount(1);
+
+  await row.getByLabel("Test patterns").fill("test/**/*.test.ts");
+  await row.getByLabel("Include importers").selectOption("off");
+  await row.getByRole("button", { name: "Save testing settings" }).click();
+  await expect(row).toContainText("Stored revision 1");
+  const stored = await api<TestingSettingsView[]>(daemon, "/api/testing-settings");
+  expect(stored).toHaveLength(1);
+  expect(stored[0]!.settings).toEqual({ tests: { patterns: ["test/**/*.test.ts"], includeImporters: false } });
+  expect(stored[0]!.repoRoot.endsWith(`/${basename(daemon.repo)}`)).toBe(true);
+  await shoot(dashboard, "testing-settings-added-repository");
+
+  // A reload lists the stored row by itself, with no override behind it.
+  await dashboard.reload();
+  await expect(section.getByRole("group", { name: /^Testing settings for / })).toHaveCount(1);
+  await expect(section).toContainText("Stored revision 1");
+});

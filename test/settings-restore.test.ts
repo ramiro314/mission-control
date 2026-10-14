@@ -966,6 +966,28 @@ test("stored testing settings round-trip, and a snapshot taken before them resto
     ["/repo/stored", {}],
   ]);
 
+  // Two rows for one path name two settings and only one can be stored: refused in preflight,
+  // before a safety snapshot or any write, naming the path.
+  const settingsBefore = workflowStore.listTestingSettings();
+  const duplicated = resign(snapshot(), (body) => {
+    const rows = body.domains.find((entry) => entry.domain === "testing-settings")!.payload as
+      Array<Record<string, unknown>>;
+    rows.push({ ...rows[0], settings: { tests: { smokeSet: ["other.ts"] } } });
+  });
+  const duplicateRoot = join(home, "duplicate-testing-settings");
+  new SettingsBackupStore(duplicateRoot).write(duplicated);
+  const duplicateRestore = service(duplicateRoot);
+  const blocked = duplicateRestore.previewRestore(duplicated.id);
+  assert.equal(blocked.status, "preflight_blocked");
+  assert.ok(
+    blocked.status === "preflight_blocked"
+      && blocked.preview.blockers.includes("Duplicate testing settings path: /repo/later"),
+    JSON.stringify(blocked),
+  );
+  assert.equal((await duplicateRestore.restore(duplicated.id, duplicated.digest)).status, "preflight_blocked");
+  assert.deepEqual(workflowStore.listTestingSettings(), settingsBefore, "a refused restore writes nothing");
+  assert.equal(readdirSync(duplicateRoot).some((name) => name.startsWith("pre-restore-")), false);
+
   // A catalog that was in the first published snapshot is still refused when missing.
   const noPersonas = resign(snapshot(), (body) => {
     body.domains = body.domains.filter((entry) => entry.domain !== "personas");
