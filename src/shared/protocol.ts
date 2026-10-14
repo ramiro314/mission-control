@@ -6453,7 +6453,11 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
- * `set_affected_tests_command`: the one Command write an agent may make.
+ * `set_affected_tests_command`: the one Command write an agent may make through MCP.
+ *
+ * That bounds the Mission MCP tool surface, not every route to a Command: the `/api/*`
+ * Command routes accept any loopback caller without a token, an agent's shell included (see
+ * docs/security.md).
  *
  * Carries no slot and no repository on purpose. The slot is always `affected-tests` and the
  * repository is always the calling session's task repository, both decided by the daemon, so a

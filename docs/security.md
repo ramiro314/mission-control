@@ -42,6 +42,21 @@ items that source itself swept. Nothing about writing relaxes a rule that govern
 the same credential the sweep uses does the write, no new token or host is introduced, and
 every egress guard the read path applies applies here unchanged.
 
+## What the loopback boundary does not cover
+
+The loopback `Host` check stops a web page, not a local process. `/api/*` carries **no token**:
+any process on this machine that connects to loopback with a loopback `Host` is served, and
+that includes an agent's own shell. Such a caller can do anything the dashboard can, settings
+writes among them, including the ones that decide what runs: worktree pool policy
+(`PUT /api/worktrees/config`) and Commands (`PUT /api/workflow-commands/:slot`). The
+per-machine token above guards ingress only. The narrow agent tools, such as
+`set_affected_tests_command`, bound what an agent may do **through MCP**; they do not stop the
+same agent from calling the `/api/*` route directly.
+
+Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
+Commands, testing settings and bulk apply) is a recorded follow-up:
+[tokenless loopback writes](plans/worktree-claims-and-monorepo-testing/plan.md#follow-ups-not-in-this-plan).
+
 ## Public product issue reporting
 
 Product reports are public GitHub issues, not private support messages. The agent tool is defined

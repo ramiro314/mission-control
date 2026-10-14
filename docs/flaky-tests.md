@@ -51,6 +51,12 @@ not running a testing-setup task (the task carries the `testing-setup` label), c
 `{files}` / `{junit}` rule, and writes only that task repository's `affected-tests` override,
 keeping every other override, the default and the run budget.
 
+That bounds what an agent may do **through MCP**: `set_affected_tests_command` is the only
+Command write the Mission MCP tools offer. It is not a boundary on the agent itself. The
+`/api/*` routes, the Command editor's `PUT /api/workflow-commands/:slot` among them, accept any
+loopback caller without a token, so a process in the agent's shell can write any Command
+override directly. See [Security](security.md#what-the-loopback-boundary-does-not-cover).
+
 The copy the skill installs is `skills/testing-setup/assets/mission-flake-report/`, the second
 output of the same generator as this repository's copy (see [Changing the action](#changing-the-action)),
 because the packaged app ships `skills/` but not `.github/`. Run the setup again later and the
