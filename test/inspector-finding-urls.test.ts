@@ -501,6 +501,29 @@ test("capturing links adds no GitHub call to a tick, and leaves each finding's u
   assert.deepEqual(capturing, alreadyStored, "the tick that writes links makes the calls the tick with nothing to write makes");
 });
 
+test("a tick replaces a stored link that no longer matches what GitHub shows", async () => {
+  // Missing and already-correct links are covered above. This is the third case: a link is
+  // stored, but it is not the one the snapshot now names, so a worker that skipped every
+  // row already holding a link would leave it stale.
+  const inline = "cccccccccccc";
+  const demoted = "dddddddddddd";
+  writeGithubState({
+    threads: [thread("T_1", `${PR}704#discussion_r11`, formatMarker({ id: "a", fingerprint: inline, round: 2 }))],
+    reviews: [findingsReview(`${PR}704#pullrequestreview-21`, 2)],
+  });
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  const key = adopt(704);
+  updateInspectorPr(key, { headSha: "head-1", reviewPosture: "live", round: 2, lastReviewedAt: 1 }, Date.now());
+  seedRow(key, { fingerprint: inline, githubUrl: `${PR}704#discussion_r1` });
+  seedRow(key, { fingerprint: demoted, line: null, githubUrl: `${PR}704#pullrequestreview-1` });
+
+  await runOneSweep();
+  const rows = byFingerprint(key);
+  assert.equal(rows.get(inline)?.githubUrl, `${PR}704#discussion_r11`);
+  assert.equal(rows.get(demoted)?.githubUrl, `${PR}704#pullrequestreview-21`);
+  assert.deepEqual(ghCalls(), ["graphql snapshot", "user"], "still no extra call");
+});
+
 test("a drafted row whose earlier version was posted takes, and keeps, that earlier comment's link", async () => {
   const title = "Came back";
   const fp = fingerprint("src/example.ts", title);
