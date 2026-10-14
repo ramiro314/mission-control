@@ -12,6 +12,7 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 import type { InspectorComment } from "@shared/types.ts";
+import { compareInspectorFindings } from "@shared/inspector-findings.ts";
 import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 import { openPullRequestCommand } from "@shared/pr-command.mjs";
@@ -509,13 +510,6 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
   };
 }
 
-const INSPECTOR_SEVERITY: Record<InspectorComment["severity"], number> = {
-  blocker: 0,
-  major: 1,
-  minor: 2,
-  nit: 3,
-};
-
 /** Render one frozen Inspector finding snapshot without reusing model prose as framing. */
 export function renderInspectorFeedback(input: InspectorFeedbackInput): RenderedWorkflowFeedback {
   let truncated = false;
@@ -546,11 +540,8 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
       unique.set(finding.fingerprint, finding);
     }
   }
-  const findings = [...unique.values()].sort((a, b) =>
-    INSPECTOR_SEVERITY[a.severity] - INSPECTOR_SEVERITY[b.severity]
-    || (a.path ?? "").localeCompare(b.path ?? "")
-    || (a.line ?? Number.MAX_SAFE_INTEGER) - (b.line ?? Number.MAX_SAFE_INTEGER)
-    || a.fingerprint.localeCompare(b.fingerprint));
+  // The shared comparator, so the findings route lists them in the order this packet does.
+  const findings = [...unique.values()].sort(compareInspectorFindings);
   const policyInstruction = input.policy === "restart_workflow"
     // `restart_workflow` no longer asks for a signal, for `FINAL_INSTRUCTION`'s reason. The
     // `inspector_only` arm below still ends in "wait for Inspector to review that new head",

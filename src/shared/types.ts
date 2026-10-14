@@ -2994,9 +2994,29 @@ export interface InspectorComment {
   answeredCommentId: number | null;
   /** Inspector agreed to resolve the finding; its GitHub thread mutation is still pending. */
   resolutionPending?: boolean;
+  /**
+   * When this build confirmed the finding on GitHub, epoch ms. Stamped when an accepted
+   * review promotes the row to `open`, or when posting reconciliation finds it published;
+   * never cleared, so a posted finding that was later resolved still reads as posted.
+   *
+   * Null: not confirmed by a build that tracks posting. Absent: an older snapshot taken
+   * before the field existed, which `findingPublication` reads as unknown.
+   */
+  postedAt?: number | null;
+  /** The finding's GitHub comment, or the review that carried a demoted one. */
+  githubUrl?: string | null;
+  /** What a row recorded before `postedAt` existed proves about posting. Null on newer rows. */
+  legacyPosted?: InspectorLegacyPosted | null;
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * The one-time backfill's answer for a finding recorded before posting was tracked.
+ * Persisted values: never rename or reorder them.
+ */
+export const INSPECTOR_LEGACY_POSTED = ["posted", "unposted", "unknown"] as const;
+export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
 
 /**
  * The compact per-session view, denormalized onto a Session card like `TaskSummary`.

@@ -1031,6 +1031,10 @@ async function reviewRound(
       // by the issue coming back.
       replies: prior?.replies ?? 0,
       answeredCommentId: prior?.answeredCommentId ?? null,
+      // Carried, never reset: a finding raised again keeps the record of its earlier post
+      // until this post is confirmed and re-stamps it.
+      postedAt: prior?.postedAt ?? null,
+      githubUrl: prior?.githubUrl ?? null,
       createdAt: prior?.createdAt ?? now,
       updatedAt: now,
     };
@@ -1065,8 +1069,9 @@ async function reviewRound(
       }
       return noteFailure(pr, res.error ?? "could not post the review", now, tick);
     }
-    // Published. Promote every row this review carried out of `posting`.
-    for (const row of planned) upsertInspectorComment({ ...row, status: "open" });
+    // Published. Promote every row this review carried out of `posting`, and stamp when
+    // GitHub confirmed it.
+    for (const row of planned) upsertInspectorComment({ ...row, status: "open", postedAt: now });
   }
 
   updateInspectorPr(
@@ -1130,6 +1135,9 @@ function reconcilePosting(
     const next: InspectorComment = {
       ...row,
       status: published ? "open" : "drafted",
+      // Confirmed now, so stamped now. An unpublished row keeps whatever an earlier post of
+      // the same finding recorded.
+      ...(published ? { postedAt: now } : {}),
       updatedAt: now,
     };
     rows.set(fp, next);

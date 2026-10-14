@@ -188,7 +188,8 @@ const {
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
-const { formatMarker } = await import("../src/server/inspector/marker.ts");
+const { fingerprint, formatMarker } = await import("../src/server/inspector/marker.ts");
+const { findingPublication } = await import("../src/shared/inspector-findings.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 const { INSPECTOR_LIMITS } = await import("../src/shared/inspector.ts");
 
@@ -617,3 +618,107 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resoluti
     assert.equal(loadInspectorComments(key)[0]?.resolutionPending ?? false, false);
   });
 }
+
+// ---- Posting state: when GitHub confirmed a finding ----
+//
+// `posted_at` is stamped at the two points where this build learns a finding is on GitHub,
+// and carried, never cleared, everywhere else. These drive the real loop so the stamp is
+// pinned at the worker's confirmation points rather than at the upsert alone.
+
+test("an accepted live review stamps posted_at on every row it carried", async () => {
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
+    { path: "src/example.ts", line: 1, title: "Posted finding", body: "Needs attention", severity: "major" },
+  ]);
+  writeGithubState({});
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(610);
+  const before = Date.now();
+  await runOneSweep();
+  const after = Date.now();
+
+  assert.equal(readGithubState().posts.length, 1, "the review was accepted");
+  const [row] = loadInspectorComments(key);
+  assert.equal(row?.status, "open");
+  assert.ok(row?.postedAt != null && row.postedAt >= before && row.postedAt <= after,
+    `posted_at ${row?.postedAt} is the confirmation time`);
+  assert.equal(row?.githubUrl, null, "the link is captured by a later ticket, not here");
+  assert.equal(row?.legacyPosted, null);
+  assert.equal(findingPublication(row!).state, "posted");
+
+  // Resolution carries it, so a posted finding still reads posted once it is closed.
+  assert.equal(resolveInspectorFindings(key, Date.now()), 1);
+  const resolved = loadInspectorComments(key)[0]!;
+  assert.equal(resolved.postedAt, row!.postedAt);
+  assert.equal(findingPublication(resolved).state, "posted");
+});
+
+test("posting reconciliation stamps a row it finds published, and only that row", async () => {
+  const publishedFp = "aaaaaaaaaaaa";
+  const lostFp = "bbbbbbbbbbbb";
+  const marker = formatMarker({ id: "finding-1", fingerprint: publishedFp, round: 1 });
+  writeGithubState({
+    headSha: "head-fixed",
+    threadBody: marker,
+    threadComments: [
+      { databaseId: 101, body: marker, createdAt: "2026-07-23T12:00:00Z", author: { login: "operator" } },
+    ],
+  });
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(611);
+  // A round whose response was lost: both rows were written in `posting` ahead of a POST,
+  // on a head the next push has moved past.
+  updateInspectorPr(key, { headSha: "head-old", reviewPosture: "live", round: 1, lastReviewedAt: 1 }, Date.now());
+  for (const [id, fp, line] of [["finding-1", publishedFp, 1], ["finding-2", lostFp, 3]] as const) {
+    upsertInspectorComment({
+      id, prKey: key, fingerprint: fp, path: "src/example.ts", line, title: `Issue ${fp}`,
+      body: "detail", severity: "major", round: 1, status: "posting", replies: 0,
+      answeredCommentId: null, postedAt: null, createdAt: 1, updatedAt: 1,
+    });
+  }
+  const before = Date.now();
+  await runOneSweep();
+
+  assert.equal(readFileSync(reviewCountPath, "utf8"), "1", "the new head was reviewed");
+  const rows = new Map(loadInspectorComments(key).map((r) => [r.fingerprint, r]));
+  const published = rows.get(publishedFp)!;
+  assert.equal(published.status, "open", "its marker thread is on the pull request");
+  assert.ok(published.postedAt != null && published.postedAt >= before);
+  const lost = rows.get(lostFp)!;
+  assert.equal(lost.status, "drafted", "no thread carries its marker, so it never posted");
+  assert.equal(lost.postedAt, null);
+});
+
+test("a finding raised again carries its earlier post until a new one is confirmed", async () => {
+  const title = "Retained finding";
+  const fp = fingerprint("src/example.ts", title);
+  const url = "https://github.com/mission/control/pull/612#discussion_r9";
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
+    { path: "src/example.ts", line: 1, title, body: "Back again", severity: "major" },
+  ]);
+  writeGithubState({});
+  // Dry run, so the re-raise is drafted rather than posted, and nothing re-stamps it.
+  setInspectorConfig({ enabled: true, mode: "dry-run", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(612);
+  upsertInspectorComment({
+    id: "finding-1", prKey: key, fingerprint: fp, path: "src/example.ts", line: 1, title,
+    body: "First time", severity: "major", round: 1, status: "resolved", replies: 1,
+    answeredCommentId: 7, postedAt: 1_234, githubUrl: url, createdAt: 1, updatedAt: 1,
+  });
+  await runOneSweep();
+
+  assert.equal(readGithubState().posts.length, 0, "dry run posts nothing");
+  const row = loadInspectorComments(key)[0]!;
+  assert.equal(row.status, "drafted");
+  assert.equal(row.body, "Back again", "the row really was raised again");
+  assert.equal(row.postedAt, 1_234);
+  assert.equal(row.githubUrl, url);
+  assert.deepEqual(findingPublication(row), {
+    state: "not-posted",
+    url,
+    postedAt: 1_234,
+    earlierPost: true,
+  });
+});

@@ -87,6 +87,7 @@ import {
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
+  INSPECTOR_PR_KEY_PATTERN,
   ResolveFindingsSchema,
   SetupBannerDismissRequestSchema,
   ShippingConfigPatchSchema,
@@ -211,8 +212,10 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
+  InspectorFindingsResponse,
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
@@ -485,6 +488,8 @@ import {
   loadHumanResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  loadInspectorInspection,
+  loadInspectorComments,
   getInspectorPr,
   resolveInspectorFindings,
   updateInspectorPr,
@@ -7033,6 +7038,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
     }
     return c.json(loadInspectionsAdoptedSince(since));
+  });
+  /**
+   * One pull request's findings, every one of them and in every status, with whether each
+   * reached GitHub - for Foreman's relay and the dashboard's findings view, which have no
+   * other way to read finding text: Foreman's worker never touches SQLite.
+   *
+   * The key is a query parameter rather than a path segment because it is `owner/repo#123`,
+   * and its shape is checked before the ledger is asked, so a malformed key is a 400 rather
+   * than a confident "no such pull request". Read-only.
+   */
+  app.get("/api/inspector/findings", (c) => {
+    const prKey = c.req.query("pr");
+    if (!prKey || !INSPECTOR_PR_KEY_PATTERN.test(prKey)) {
+      return c.json({ error: "pr must be a pull request key like owner/repo#123" }, 400);
+    }
+    const pr = loadInspectorInspection(prKey);
+    if (!pr) return c.json({ error: "no adopted pull request with that key" }, 404);
+    const findings = orderInspectorFindings(loadInspectorComments(prKey));
+    return c.json({ pr, findings } satisfies InspectorFindingsResponse);
   });
   /**
    * Close the findings the Inspector is carrying on one pull request.

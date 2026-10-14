@@ -73,6 +73,7 @@ import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
 import {
   AGENT_TYPES,
+  INSPECTOR_LEGACY_POSTED,
   PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
@@ -81,7 +82,13 @@ import {
   TASK_KINDS,
   THINKING_LEVELS,
 } from "./types.ts";
-import type { AgentType, SessionRuntime, Task } from "./types.ts";
+import type {
+  AgentType,
+  InspectorComment,
+  InspectorInspection,
+  SessionRuntime,
+  Task,
+} from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
@@ -2527,6 +2534,86 @@ export type ResolveFindings = z.infer<typeof ResolveFindingsSchema>;
 export interface ResolveFindingsResult {
   resolved: number;
 }
+
+/**
+ * A pull request key as the Inspector mints it from a PR URL (`parsePrUrl`):
+ * `owner/repo#123`. Carried in a query parameter by the findings route, so its shape is
+ * checked rather than trusted.
+ */
+export const INSPECTOR_PR_KEY_PATTERN = /^[\w.-]+\/[\w.-]+#\d{1,10}$/;
+
+const InspectorSeveritySchema = z.enum(["blocker", "major", "minor", "nit"]);
+
+export const InspectorCommentSchema = z.object({
+  id: z.string(),
+  prKey: z.string(),
+  fingerprint: z.string(),
+  path: z.string().nullable(),
+  line: z.number().int().nullable(),
+  title: z.string(),
+  body: z.string().nullable(),
+  severity: InspectorSeveritySchema,
+  round: z.number().int(),
+  status: z.enum(["drafted", "posting", "open", "resolved"]),
+  replies: z.number().int(),
+  answeredCommentId: z.number().int().nullable(),
+  resolutionPending: z.boolean().optional(),
+  postedAt: z.number().int().nullable().optional(),
+  githubUrl: z.string().nullable().optional(),
+  legacyPosted: z.enum(INSPECTOR_LEGACY_POSTED).nullable().optional(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+}) satisfies z.ZodType<InspectorComment>;
+
+export const InspectorInspectionSchema = z.object({
+  key: z.string(),
+  url: z.string(),
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  repoRoot: z.string().nullable(),
+  cwd: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  source: z.enum(["hook", "legacy", "pipeline"]),
+  state: z.enum(["open", "closed"]),
+  headSha: z.string().nullable(),
+  reviewPosture: z.enum(["live", "off", "dry-run", "not-allowlisted"]).nullable(),
+  reviewComplete: z.boolean().nullable().optional(),
+  cleanReviewHeadSha: z.string().nullable().optional(),
+  round: z.number().int(),
+  lastReviewedAt: z.number().nullable(),
+  lastError: z.string().nullable(),
+  failCount: z.number().int(),
+  lastFailKind: z.enum(["push-fixable", "persistent"]).nullable(),
+  nextAttemptAt: z.number().nullable(),
+  lastAttemptSha: z.string().nullable(),
+  mergedAt: z.number().nullable(),
+  mergeBlock: z.string().nullable(),
+  observedHeadSha: z.string().nullable(),
+  observedState: z.enum(["OPEN", "CLOSED", "MERGED"]).nullable(),
+  observedAt: z.number().nullable(),
+  headRefName: z.string().nullable(),
+  title: z.string().nullable(),
+  adoptedAt: z.number(),
+  updatedAt: z.number(),
+  openFindings: z.number().int(),
+  postedOpenFindings: z.number().int(),
+  resolvedFindings: z.number().int(),
+}) satisfies z.ZodType<InspectorInspection>;
+
+/**
+ * `GET /api/inspector/findings?pr=<prKey>`: one pull request's ledger row and every finding
+ * the Inspector recorded on it, in every status, unresolved first and then in the order
+ * the findings renderer uses (`orderInspectorFindings`).
+ *
+ * One schema, parsed by both Foreman's client and the dashboard's, so the two readers
+ * cannot disagree about the shape. Read-only: nothing here writes the ledger.
+ */
+export const InspectorFindingsResponseSchema = z.object({
+  pr: InspectorInspectionSchema,
+  findings: z.array(InspectorCommentSchema),
+});
+export type InspectorFindingsResponse = z.infer<typeof InspectorFindingsResponseSchema>;
 
 // ---- Shipping (landing the pull requests we opened, unattended) ----
 
