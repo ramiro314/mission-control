@@ -1,0 +1,1070 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worktree claims, Warm, and monorepo testing settings</title>
+<style>
+:root{color-scheme:light dark;--page-bg:#f7f8fa;--page-fg:#1b2028;--page-muted:#59616e;--page-dim:#7b838f;--page-line:#dde1e7;--page-card:#ffffff;--page-accent:#1f6f4f;--page-code-bg:#f0f2f5;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--page-bg:#0d1013;--page-fg:#e7ebf1;--page-muted:#99a3b1;--page-dim:#7c8798;--page-line:#242b34;--page-card:#14181e;--page-accent:#35c08a;--page-code-bg:#11151a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page-bg);color:var(--page-fg);font:15px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:56px 28px 120px}
+header.doc{border-bottom:1px solid var(--page-line);padding-bottom:24px;margin-bottom:32px}
+h1{font-size:30px;line-height:1.2;margin:0 0 14px;letter-spacing:-.02em}
+h2{font-size:21px;margin:52px 0 14px;letter-spacing:-.01em;padding-top:14px;border-top:1px solid var(--page-line)}
+h3{font-size:17px;margin:34px 0 10px}
+h4{font-size:14px;margin:22px 0 8px}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 14px;padding-left:22px}
+li{margin-bottom:6px}
+a{color:var(--page-accent)}
+code{font:12.5px/1.5 var(--mono);background:var(--page-code-bg);border:1px solid var(--page-line);border-radius:4px;padding:1px 5px}
+.meta{list-style:none;padding:0;margin:0;color:var(--page-muted);font-size:14px}
+.meta li{margin-bottom:4px}
+.scroll{overflow-x:auto;margin:0 0 18px;border:1px solid var(--page-line);border-radius:10px;background:var(--page-card)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--page-line);vertical-align:top}
+th{background:var(--page-code-bg);font-weight:620;white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+pre{margin:0 0 18px;padding:16px 18px;background:var(--page-code-bg);border:1px solid var(--page-line);border-radius:10px;overflow-x:auto;font:12px/1.55 var(--mono)}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+.fig{margin:8px 0 6px}
+.svgwrap{padding:14px}
+.svgwrap svg{display:block;width:100%;min-width:900px;height:auto}
+figcaption{color:var(--page-dim);font-size:13px;margin:-8px 0 8px}
+.n{fill:var(--page-card);stroke:var(--page-dim);stroke-width:1.3}
+.n.new{stroke:var(--page-accent);stroke-width:2.2}
+.n.ext{stroke-dasharray:5 4}
+.t{fill:var(--page-fg);font:13px var(--sans)}
+.lbl{fill:var(--page-muted);font:12px var(--sans)}
+.e{stroke:var(--page-muted);stroke-width:1.5;fill:none}
+.ah{fill:var(--page-muted)}
+.div{stroke:var(--page-line);stroke-dasharray:4 4}
+details.src{margin:0 0 22px;color:var(--page-muted);font-size:13px}
+details.src summary{cursor:pointer}
+</style>
+</head>
+<body>
+<main class="wrap">
+<header class="doc"><h1>Worktree claims, Warm, and monorepo testing settings</h1><ul class="meta"><li>Status: approved 2026-10-13, nothing implemented; tickets follow after merge</li><li>Date: 2026-10-13</li><li>Source of truth: <code>docs/plans/worktree-claims-and-monorepo-testing/plan.md</code>; this page is its rendering</li></ul></header>
+<p>A pool slot should arrive with the dependencies its commit needs, and a monorepo that will not
+commit <code>.mission/testing.json</code> should still get an affected-tests gate. This plan adds a
+per-pool <strong>claim</strong> that runs on every lease, a <strong>Warm</strong> action that prepares idle slots ahead of
+time by cloning dependencies from a sibling, <strong>stored testing settings</strong> per repository and
+subdirectory, <strong>per-app affected-test selection</strong>, and <strong>bulk documents</strong> for configuring
+Commands and testing settings in one step.</p>
+<p>The prompt was <code>upstart-web-frontend</code> (uwf), a Yarn 4 and Turbo monorepo with 25 apps and 2
+packages. It runs Mission Control Commands per app through repository and subdirectory
+overrides in Library › Commands, with nothing committed to uwf. Its checks fail on missing or
+stale <code>node_modules</code> (seen: <code>capital-markets</code> failing on <code>@octokit/auth-app</code>). The setup command
+cannot install a monorepo, and the affected-tests gate needs a committed file that uwf will not
+accept.</p>
+<p>Settled through a three-round grilling session (46 decisions, listed at the end). Where the
+answer differs from the recommendation offered, the decision table says so. The human approved
+the plan as written on 2026-10-13 and chose to create tickets after it merges (see &quot;Plan
+review&quot;).</p>
+<h2>Goals</h2>
+<ul>
+<li>A leased slot has dependencies installed for <strong>its</strong> commit, whoever leased it: a task, a
+check, or a manual session.</li>
+<li>A slot whose dependencies already match pays nothing. A cold slot is seeded copy-on-write
+from an idle sibling instead of paying a full monorepo install.</li>
+<li>The registry credential an install needs reaches the install, and nothing else does. In
+particular it does not reach the third-party build scripts the install runs.</li>
+<li>A failed install never removes a slot from the pool, and a check can tell &quot;this branch broke
+its lockfile&quot; from &quot;the registry or the token failed&quot;.</li>
+<li>A repository can have an affected-tests gate configured entirely in Mission Control, per app.</li>
+<li>A monorepo change runs each touched app&#39;s tests in that app, with that app&#39;s import aliases.</li>
+<li>A dozen override rows can be configured from one document, written by the operator or proposed
+by an agent and approved by the operator.</li>
+</ul>
+<h2>Non-goals</h2>
+<ul>
+<li>Secret storage. Mission Control stores variable <strong>names</strong>, never values. Values come from the
+daemon&#39;s environment or the login shell, as decided in round 3.</li>
+<li>Hardening tokenless loopback writes to <code>/api/*</code>. This plan corrects the docs that overstate
+the boundary and records the hardening as a follow-up (round 1, <code>loopback-writes</code>).</li>
+<li>Jest <code>moduleNameMapper</code> resolution. Selection resolves aliases through tsconfig/jsconfig
+<code>paths</code> and workspace package names, and nothing else.</li>
+<li>Storing the <code>flakes</code> block. Only the CI flake-report action reads it, and CI cannot read
+Mission Control&#39;s database.</li>
+<li>Committing uwf&#39;s configuration anywhere. uwf is the motivating case. Proof is fixtures and e2e
+(round 3, <code>uwf-acceptance</code>).</li>
+<li>Changing when the setup command runs, or its limits. Setup still runs once, on slot creation.
+Only its environment changes (round 2, <code>setup-env</code>).</li>
+</ul>
+<h2>Background: how things work today</h2>
+<h3>Pools and leases</h3>
+<ul>
+<li><p><code>WorktreeManager.acquire</code> (<code>src/server/worktrees/manager.ts:503-776</code>) screens candidates,
+reserves a slot under the pool lock, then works under the slot lock:</p>
+<ol>
+<li>it resets a reused slot (<code>checkout --force --detach</code>, <code>reset --hard</code>, <code>clean -fd</code>) or adds
+a new one;</li>
+<li>it runs <code>setupArgv</code> <strong>only for a new slot</strong> (<code>:708-722</code>);</li>
+<li>it proves path, common dir, exact HEAD, clean and detached (<code>:724-743</code>);</li>
+<li>it grants the lease with <code>store.finalizeLease</code>.</li>
+</ol>
+</li>
+<li><p>The setup runner (<code>manager.ts:145-159</code>) has a 120 s timeout and a 64 KiB <code>maxBuffer</code>. An
+overflow counts as a failure, and a failure quarantines the new slot. Its output is discarded
+apart from stderr in <code>last_error</code>.</p>
+</li>
+<li><p><strong>Setup runs with the full daemon environment.</strong> <code>runSetup</code> passes no <code>env</code>, so every
+<code>*_TOKEN</code> variable reaches it. Checks get <code>scrubCheckEnv</code>
+(<code>src/server/workflows/check-env.ts:116-148</code>) followed by <code>agentSubprocessEnv</code>. There is no
+allowlist.</p>
+</li>
+<li><p><strong>Occupancy.</strong> Any process whose cwd is inside an <em>available</em> slot makes the next <code>acquire</code>
+quarantine that slot (<code>manager.ts:599-601</code>). Setup argv is explicitly not an &quot;own&quot; process
+(<code>own-processes.ts:11-14</code>). Background work in a slot must therefore hold the slot under a
+lease.</p>
+</li>
+<li><p>Quarantine has no &quot;unquarantine&quot; action. A slot leaves quarantine only by an owner Return or
+by Destroy.</p>
+</li>
+<li><p><code>acquire</code> has three callers:</p>
+<ul>
+<li>task dispatch (<code>dispatcher.ts:2437</code>), which every task kind, ensemble and Foreman dispatch
+reaches;</li>
+<li>check attempts (<code>workflows/check-lease.ts:553</code>);</li>
+<li>manual leases (<code>POST /api/worktrees/manual/acquire</code>, used by <code>make session</code>).</li>
+</ul>
+<p>A check the pool refuses falls back to a cold <code>git worktree add --detach</code> with no setup
+(<code>check-lease.ts:434-482</code>). Pipelines do not use the pool.</p>
+</li>
+<li><p>Pool policy <code>{enabled, maxSlots, setupArgv}</code> is <code>WorktreesConfigSchema</code>
+(<code>src/shared/protocol.ts:2834-2937</code>). It lives in the <code>worktrees</code> app-config entry, keyed by
+Git common dir, and <strong>settings backups already capture it</strong>. Lowering <code>maxSlots</code> never prunes.</p>
+</li>
+<li><p>The UI is <code>src/web/components/WorktreeSettingsPanel.tsx</code>. Slot actions are Copy path, Open
+terminal, Return and Destroy. The action vocabulary is closed (<code>return | prune | reconcile | destroy | legacyReturn</code>). Mutations go preview, then execute, through
+<code>WorktreeOperationsService</code> (<code>operations.ts:970-1051</code>), whose operation views have queued,
+running and failed states and Dismiss, but no output and no cancel. The only event is the
+content-free <code>worktrees_changed</code>, and inventory stays out of <code>MissionState</code>.</p>
+</li>
+<li><p>Nothing records a slot&#39;s dependency state. <code>scripts/worktree-setup.mjs</code> checks only whether
+<code>node_modules</code> exists.</p>
+</li>
+</ul>
+<h3>uwf&#39;s installed tree</h3>
+<p>These facts are from reading the main checkout and pool slots read-only on 2026-10-13.</p>
+<ul>
+<li>Root <code>node_modules</code> is 3.1 GB, with <code>nodeLinker: node-modules</code>, <code>nmMode: classic</code> and
+<code>enableGlobalCache: true</code>.</li>
+<li><strong>Every symlink is relative,</strong> including <code>.bin</code> entries and workspace links such as
+<code>node_modules/uwf-my-account -&gt; ../apps/my-account</code>. So is every location in
+<code>node_modules/.yarn-state.yml</code> and <code>.yarn/install-state.gz</code>. A full search found zero absolute
+symlinks. A clone of the dependency trees therefore works in place in a sibling slot.</li>
+<li>Absolute paths appear only in disposable caches: <code>.next</code>, and
+<code>node_modules/.cache/storybook</code> (135-359 MB per app). Node-gyp <code>.pyc</code> files also carry them,
+which is harmless.</li>
+<li>APFS, so <code>cp -c</code> (clonefile) works. The pools live on the same volume as <code>~/code</code>.</li>
+<li>There are no workspace lifecycle scripts. Third-party ones exist: esbuild, sharp, dd-trace,
+<code>@datadog/*</code>, protobufjs, <code>@bugsnag/cli</code>, msw, core-js and others. <strong>An allowlisted token is
+visible to every one of them</strong> if the install that runs them has it.</li>
+<li><code>.yarnrc.yml</code> references its two environment variables with <code>${VAR:-}</code> fallbacks, so a Yarn
+step run without the token still parses its configuration.</li>
+<li>There is no root <code>tsconfig.json</code>. Each app&#39;s tsconfig is standalone, with no <code>extends</code>, and
+has its own <code>paths</code> (<code>@components/*</code>, <code>@hooks/*</code>, and others).</li>
+<li>The daemon started from a shell has <code>ARTIFACTORY_AUTH_TOKEN</code> (checked for presence only). The
+executable locator&#39;s login-shell snapshot reads only <code>PATH</code> today
+(<code>src/server/executables/locator.ts:130</code>).</li>
+</ul>
+<h3>Checks and affected tests</h3>
+<ul>
+<li><strong>Command resolution.</strong> <code>resolveWorkflowCommand</code> (<code>src/shared/workflow.ts:3545-3566</code>) picks
+the longest applicable override. Overrides are keyed by <strong>absolute canonical path</strong>, either
+the main checkout&#39;s realpath or a subdirectory below it. The command runs in that
+subdirectory of the leased tree.</li>
+<li><strong>Run budget.</strong> <code>maxRuns</code> counts <strong>executions</strong> (<code>workflow.ts:3100-3114</code>). An infrastructure
+retry is the same execution asked again, capped at <code>MAX_INFRA_ATTEMPTS = 3</code>
+(<code>engine.ts:87, 1713</code>), after which the run blocks with <code>infrastructure_error</code>.</li>
+<li><strong>Testing config.</strong> <code>readTestingConfig</code> (<code>src/server/testing-config.ts:37</code>) reads the
+committed <code>.mission/testing.json</code> from the check tree and <code>.mission/testing.local.json</code> from
+the main checkout. A missing committed file skips the gate. <code>mergeTestingConfig</code>
+(<code>src/shared/testing-config.ts:124-146</code>) replaces key by key, list for list. The schema is
+strict, its keys are <code>tests.{patterns, includeImporters, smokeSet}</code> and <code>flakes.*</code>, and the
+header calls it a cross-phase contract.</li>
+<li><strong>Selection.</strong> Selection is <strong>one per repository, at the tree root</strong>
+(<code>workflows/affected-tests.ts:76, 88</code>). Files reach <code>{files}</code> relative to the override&#39;s
+subdirectory, so a file outside it arrives as <code>../…</code> (<code>:163</code>). Aliases resolve only through
+<code>&lt;treeRoot&gt;/tsconfig.json</code>, with no <code>extends</code>, no nested tsconfigs and no workspace packages
+(<code>src/server/test-selection.ts:122-147</code>).</li>
+<li><strong>Agent writes.</strong> <code>set_affected_tests_command</code> is the only Command write exposed over MCP. It
+is restricted to testing-setup tasks and writes only the repository-root override. <strong>The
+HTTP routes behind it accept any loopback caller without a token</strong> (<code>routes.ts:1598-1603</code>),
+and <code>docs/security.md:3-6</code> describes the loopback <code>Host</code> check.</li>
+<li><strong>Commands catalog.</strong> It is DB-only: <code>workflow_commands</code> and <code>workflow_command_overrides</code>,
+edited in <code>src/web/workflows/CommandLibrary.tsx</code>, with whole-slot compare-and-swap. There is
+no import or export.</li>
+<li><strong>Backups.</strong> <code>src/server/settings-backups/catalogs.ts</code> captures the Commands catalog. A new
+relational catalog needs a backup domain and a missing-domain migration so older snapshots
+still restore (precedent: <code>withSlotsAddedSinceSnapshot</code>, <code>restore.ts:106-133</code>).</li>
+</ul>
+<h3>Decisions this plan supersedes</h3>
+<ul>
+<li><code>docs/plans/flake-aware-testing/plan.md:95-96</code> says &quot;Selection settings are knowledge about
+the project, so they are committed to the repository and reviewed like code.&quot; For the
+<code>tests.*</code> keys, stored settings now overlay the committed file key by key (round 2,
+<code>testing-precedence</code>). The committed file is still read, and is still the only source of
+<code>flakes</code>.</li>
+<li><code>docs/worktrees-and-checks.md:413-417</code> says a check is &quot;a build rather than an install&quot;. That
+is true only after something has installed, and the claim is that something.</li>
+<li>The &quot;one Command write an agent may make&quot; wording (<code>src/shared/protocol.ts:6456</code>,
+<code>src/server/testing-setup.ts:1</code>, <code>routes.ts:5037</code>) holds for the MCP tool surface only.</li>
+</ul>
+<h2>Design</h2>
+<h3>1. The claim: dependency steps on every lease</h3>
+<p><strong>Settings.</strong> The claim is per pool, with no global default (round 3, <code>claim-defaults</code>). It is
+stored beside <code>setupArgv</code> under <code>worktrees.repositories[&lt;commonDir&gt;]</code>, so backups capture it with
+no new domain:</p>
+<pre><code class="language-jsonc">&quot;claim&quot;: {
+  &quot;steps&quot;: [
+    { &quot;argv&quot;: [&quot;yarn&quot;, &quot;install&quot;, &quot;--immutable&quot;, &quot;--mode=skip-build&quot;], &quot;env&quot;: [&quot;ARTIFACTORY_AUTH_TOKEN&quot;] },
+    { &quot;argv&quot;: [&quot;yarn&quot;, &quot;rebuild&quot;], &quot;env&quot;: [] }
+  ],
+  &quot;timeoutMinutes&quot;: 10,
+  &quot;fingerprintPaths&quot;: [&quot;yarn.lock&quot;, &quot;.yarnrc.yml&quot;, &quot;package.json&quot;, &quot;apps/*/package.json&quot;,
+                       &quot;packages/*/package.json&quot;, &quot;.yarn/releases/**&quot;, &quot;.yarn/patches/**&quot;],
+  &quot;seed&quot;: {
+    &quot;paths&quot;: [&quot;node_modules&quot;, &quot;apps/*/node_modules&quot;, &quot;packages/*/node_modules&quot;, &quot;.yarn/install-state.gz&quot;],
+    &quot;exclude&quot;: [&quot;**/node_modules/.cache&quot;]
+  }
+}
+</code></pre>
+<p>That is the uwf configuration this plan has in mind. It is illustrative and was not run against
+uwf. <code>yarn rebuild</code> running every skipped build from the cache without the token is the
+expectation to confirm when someone configures uwf.</p>
+<ul>
+<li><code>steps</code> is an ordered list of argvs, never a shell (round 3, <code>claim-steps</code>). Each step names
+the variables it may receive, and any failing step fails the claim.</li>
+<li><code>timeoutMinutes</code> covers the whole claim. It defaults to 10, and the schema caps it at 240
+(round 2, <code>claim-limits</code>, Other answer).</li>
+<li><code>fingerprintPaths</code> and <code>seed</code> are explained below. An empty <code>fingerprintPaths</code> means the claim
+always runs.</li>
+<li>The schema stays <code>.strict()</code> and bounded like <code>setupArgv</code> (32 arguments of up to 4096 bytes
+each), with caps on steps, variable names and globs that the slice sets.</li>
+</ul>
+<p><strong>Where it runs.</strong> Inside <code>acquire</code>, under the slot lock, after reset or add and after setup on
+a new slot, and <strong>before</strong> the final proof. Every lease kind runs it (round 2,
+<code>claim-lease-kinds</code>):</p>
+<ul>
+<li>task dispatch;</li>
+<li>check attempts;</li>
+<li>manual leases;</li>
+<li>the cold check fallback in <code>check-lease.ts</code>, which runs the same claim against its disposable
+worktree.</li>
+</ul>
+<p>There is no extra concurrency limit, so parallel checks claim in parallel and the slot count
+bounds them (round 2, <code>claim-concurrency</code>).</p>
+<p><strong>Environment.</strong> Each step runs with <code>scrubCheckEnv</code> then <code>agentSubprocessEnv</code>, the same base as
+a check (round 1, <code>deps-env</code>). On top of that base it gets only the variables its own <code>env</code>
+list names (round 3, <code>claim-steps</code>):</p>
+<ul>
+<li>A value comes from the daemon&#39;s environment, else from the login-shell snapshot. The locator&#39;s
+shell read is extended to capture the named variables alongside <code>PATH</code> (round 3,
+<code>allowlist-source</code>).</li>
+<li>The pool settings show each name as <strong>present</strong> or <strong>missing</strong>, never its value.</li>
+<li>The setup command moves onto the same base, with setup&#39;s allowlist being the union of names
+the pool lists (round 2, <code>setup-env</code>). This is a behavior change for a setup command that
+relied on an unlisted credential, and the release notes say so.</li>
+</ul>
+<p>Stdin is closed, as it is for checks.</p>
+<p><strong>Fingerprint.</strong> A slot&#39;s fingerprint is a hash over three inputs (round 2, <code>fingerprint</code>):</p>
+<ul>
+<li>the git blob ids of every path matching <code>fingerprintPaths</code> at the leased commit, read with
+<code>git ls-tree</code> from objects, not the checkout;</li>
+<li>every step&#39;s argv;</li>
+<li>every step&#39;s variable names.</li>
+</ul>
+<p>The claim records it on the slot row only after every step succeeds. A claim whose fingerprint
+equals the slot&#39;s recorded one skips the steps entirely. The slot row gains nullable columns for
+the fingerprint, the commit it was taken at, and the last claim&#39;s outcome and tail, added in
+<code>migrate()</code> next to their upgrade path.</p>
+<p><strong>Output and limits.</strong> Each step&#39;s output streams into a 4,000-byte tail, the same bound and
+<code>TailRing</code> as checks (<code>check-spawn.ts:254</code>). Output size never fails a claim. A timeout kills
+the process group and counts as a failed claim.</p>
+<p><strong>Failure.</strong> A failure is a non-zero exit, a timeout, or a Stop. The slot is <strong>handed over with
+a warning and is never quarantined for the exit code</strong> (round 2, <code>claim-failure</code>):</p>
+<ul>
+<li>The slot&#39;s fingerprint is cleared, so the next claim runs the steps again.</li>
+<li>A <strong>task</strong> lease is granted. The task card shows the warning and tail, and the agent&#39;s launch
+prompt gets a short note naming the failing step with its output tail (round 3,
+<code>agent-warning</code>).</li>
+<li>A <strong>manual</strong> lease is granted, and the warning is returned to the caller.</li>
+<li>A <strong>check</strong> lease does not run the check&#39;s Command. The attempt records a dependency failure
+with the tail, and the verdict rule below decides what it means.</li>
+<li>A claim that leaves a <strong>tracked</strong> file modified, or a branch attached, still fails the final
+proof and quarantines the slot as today. Claim steps must not rewrite tracked files, and
+<code>--immutable</code> is how uwf&#39;s first step honors that.</li>
+</ul>
+<p><strong>Check verdict on a failed claim</strong> (round 2, <code>claim-check-verdict</code>):</p>
+<ul>
+<li>If any <code>fingerprintPaths</code> blob differs between the check&#39;s head and its merge base with the
+base branch, the change owns the failure. The check fails, with the tail as its output.</li>
+<li>If none differs, it is infrastructure. The engine&#39;s existing infrastructure path retries it,
+up to <code>MAX_INFRA_ATTEMPTS</code>, and the run budget is handed back, as for a selection that ran
+nothing.</li>
+<li>A pool with no <code>fingerprintPaths</code> treats every failed claim in a check as infrastructure
+(round 3, <code>no-fingerprint-verdict</code>).</li>
+</ul>
+<p><strong>Stop.</strong> A running claim has a Stop control on its slot card and on the task card of the
+dispatch waiting on it (round 3, <code>claim-stop</code>). Stop kills the process group and hands the slot
+over as a failed claim, so the dispatch continues with the warning.</p>
+<p><strong>What the operator sees</strong> (round 2, <code>claim-progress-ui</code>):</p>
+<ul>
+<li><strong>Slot card.</strong> The slot view gains a dependency state: current, stale versus origin&#39;s default
+branch, never installed, installing (with the running step and elapsed time), or failed (with
+the tail). Stale is computed against the last fetched <code>origin/&lt;default&gt;</code> ref, so building the
+inventory never fetches. Changes reach the dashboard through the existing <code>worktrees_changed</code>
+revision bump.</li>
+<li><strong>Task card.</strong> The task view carries a provisioning phase while its dispatch waits on a claim:
+&quot;Installing dependencies&quot;, with the step and elapsed time. It arrives through the existing
+<code>task_upsert</code> event. After the lease, a failed claim leaves a warning on the task.</li>
+</ul>
+<figure class="fig"><div class="scroll svgwrap"><svg viewBox="0 0 1160 420" role="img" aria-label="Lease path before and after the claim" xmlns="http://www.w3.org/2000/svg"><defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker><marker id="a1-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M10,0 L0,5 L10,10 z"/></marker></defs><text class="lbl" x="20" y="26" text-anchor="start">Today</text><rect class="n " x="20" y="40" width="160" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="100" y="66.5">reset or add</tspan></text><rect class="n " x="220" y="40" width="230" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="335" y="66.5">setup argv, new slot only</tspan></text><rect class="n " x="490" y="40" width="150" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="565" y="66.5">final proof</tspan></text><rect class="n " x="680" y="40" width="140" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="750" y="66.5">grant lease</tspan></text><path class="e" d="M180,62 L218,62" marker-end="url(#a1)"/><path class="e" d="M450,62 L488,62" marker-end="url(#a1)"/><path class="e" d="M640,62 L678,62" marker-end="url(#a1)"/><line class="div" x1="20" y1="112" x2="1140" y2="112"/><text class="lbl" x="20" y="142" text-anchor="start">With the claim</text><rect class="n " x="20" y="155" width="160" height="48" rx="8"/><text class="t" text-anchor="middle"><tspan x="100" y="183.5">reset or add</tspan></text><rect class="n new" x="220" y="155" width="230" height="48" rx="8"/><text class="t" text-anchor="middle"><tspan x="335" y="175.5">setup argv, new slot only</tspan><tspan x="335" y="191.5">(scrubbed env + named variables)</tspan></text><rect class="n new" x="490" y="155" width="210" height="48" rx="8"/><text class="t" text-anchor="middle"><tspan x="595" y="183.5">fingerprint matches the slot?</tspan></text><rect class="n " x="880" y="155" width="130" height="48" rx="8"/><text class="t" text-anchor="middle"><tspan x="945" y="183.5">final proof</tspan></text><rect class="n " x="1030" y="155" width="110" height="48" rx="8"/><text class="t" text-anchor="middle"><tspan x="1085" y="183.5">grant lease</tspan></text><path class="e" d="M180,179 L218,179" marker-end="url(#a1)"/><path class="e" d="M450,179 L488,179" marker-end="url(#a1)"/><path class="e" d="M700,179 L878,179" marker-end="url(#a1)"/><text class="lbl" x="789" y="170" text-anchor="middle">yes: skip the steps</text><path class="e" d="M1010,179 L1028,179" marker-end="url(#a1)"/><rect class="n new" x="360" y="270" width="270" height="56" rx="8"/><text class="t" text-anchor="middle"><tspan x="495" y="286.5">seed from an idle sibling</tspan><tspan x="495" y="302.5">copy-on-write, under a warm lease</tspan><tspan x="495" y="318.5">(only if cold, or exact sibling match)</tspan></text><rect class="n new" x="670" y="270" width="220" height="56" rx="8"/><text class="t" text-anchor="middle"><tspan x="780" y="294.5">claim steps</tspan><tspan x="780" y="310.5">scrubbed env + each step's names</tspan></text><rect class="n ext" x="670" y="362" width="220" height="36" rx="8"/><text class="t" text-anchor="middle"><tspan x="780" y="384.5">package registry</tspan></text><path class="e" d="M595,203 L595,238 L495,238 L495,268" marker-end="url(#a1)"/><text class="lbl" x="605" y="230" text-anchor="start">no</text><path class="e" d="M630,298 L668,298" marker-end="url(#a1)"/><path class="e" d="M780,328 L780,360" marker-end="url(#a1)" marker-start="url(#a1-start)"/><path class="e" d="M890,298 L945,298 L945,205" marker-end="url(#a1)"/><text class="lbl" x="955" y="262" text-anchor="start">ok: record fingerprint</text><text class="lbl" x="955" y="280" text-anchor="start">failure: clear it, warn,</text><text class="lbl" x="955" y="298" text-anchor="start">never quarantine</text></svg></div><figcaption>Lease path before and after the claim. Accent border: new in this plan. Dashed: external, or not run.</figcaption></figure><details class="src"><summary>Diagram text definition (from plan.md)</summary><pre><code>flowchart LR
+  D[Dispatcher / CheckLeaseManager / manual acquire] --&gt; A[WorktreeManager.acquire]
+  A --&gt; R[reset or add]
+  R --&gt; S{new slot?}
+  S -- yes --&gt; SU[setup argv]
+  S -- no --&gt; C
+  SU --&gt; C{fingerprint matches?}
+  C -- yes --&gt; P[final proof]
+  C -- no --&gt; SEED{cold, or stale with exact sibling match?}
+  SEED -- yes --&gt; CL[copy-on-write seed from idle sibling under maintenance lease]
+  SEED -- no --&gt; ST
+  CL --&gt; ST[claim steps, scrubbed env + per-step names]
+  ST -- every step ok --&gt; FP[record fingerprint] --&gt; P
+  ST -- failure --&gt; W[clear fingerprint, warning] --&gt; P
+  ST &lt;--&gt; REG[(package registry)]
+  P --&gt; G[grant lease]</code></pre></details><h3>2. Seeding and Warm</h3>
+<p><strong>Why a maintenance lease.</strong> Because of the occupancy rule, nothing may run inside an available
+slot. Warm and seed sources therefore hold their slots under a new lease owner kind, <code>warm</code>,
+alongside <code>task</code>, <code>check</code> and <code>manual</code>. A <code>warm</code> lease is granted and released through the same
+<code>finalizeLease</code> and <code>release</code> paths, and it is never visible as a task.</p>
+<p><strong>When to seed</strong> (round 3, <code>warm-seed-when</code>). A Warm or a claim seeds from a sibling when either
+of these holds:</p>
+<ul>
+<li>the target has no recorded fingerprint, because it is new, was never warmed, or its last claim
+failed;</li>
+<li>the target&#39;s fingerprint is stale <strong>and</strong> an idle sibling&#39;s fingerprint matches the target
+commit&#39;s exactly.</li>
+</ul>
+<p>Otherwise the claim runs in place, so a small lockfile change stays an incremental install.
+Claims seed under the same rule as Warm (round 2, <code>seed-on-cold-claim</code>), including the cold
+check fallback.</p>
+<p><strong>Choosing the source</strong> (round 2, <code>warm-source</code>):</p>
+<ul>
+<li>The first choice is an idle sibling whose fingerprint matches the target commit&#39;s. The next is
+the idle sibling most recently claimed successfully.</li>
+<li>The source is held under a <code>warm</code> lease for the length of the copy. It returns to the pool
+through the ordinary release path afterwards.</li>
+<li>The main checkout is never a source.</li>
+<li>If no sibling is idle, or no idle sibling has a fingerprint, there is no seed. The claim steps
+run alone.</li>
+</ul>
+<p><strong>Copying</strong> (round 2, <code>seed-copy</code>):</p>
+<ul>
+<li>The copy is copy-on-write only: <code>cp -c -R</code> on macOS and <code>cp -R --reflink=always</code> on Linux.
+Where the filesystem cannot clone, the seed is skipped, never replaced by a byte copy.</li>
+<li>The copy covers only the operator&#39;s <code>seed.paths</code> globs, matched in the source, and
+<code>seed.exclude</code> removes paths from the clone before it is placed.</li>
+<li>Each matched path is cloned into a staging directory in the pool&#39;s directory, on the same
+volume and outside the checkout. The existing target path is then removed and the staged copy
+renamed into place. The checkout never holds a half-copied tree.</li>
+<li>After a seed the target inherits the source&#39;s fingerprint, and the claim&#39;s ordinary skip rule
+decides whether the steps run.</li>
+<li>A failed clone is not a failed claim. The seed is abandoned and its staging removed, and the
+steps run.</li>
+</ul>
+<p><strong>Warm</strong> (round 2, <code>warm-scope</code>, <code>warm-output</code>; round 3, <code>warm-target</code>):</p>
+<ul>
+<li>Warm has two triggers:<ul>
+<li><strong>Warm</strong> on an available slot&#39;s card;</li>
+<li><strong>Warm idle slots</strong> on a pool row, which warms every available slot of the pool.</li>
+</ul>
+</li>
+<li>Both go through preview and execute in <code>WorktreeOperationsService</code>, so the action vocabulary
+gains <code>warm</code>.</li>
+<li>A Warm takes a <code>warm</code> lease on the target, fetches, resets the slot to origin&#39;s current default
+branch, seeds or claims under the rules above, then releases.</li>
+<li>The operation view gains a live output tail and a <strong>Cancel</strong> control:<ul>
+<li>The tail is updated with a <code>worktrees_changed</code> bump at most once per second while a Warm
+runs.</li>
+<li>Cancel kills the process group, clears the slot&#39;s fingerprint, and returns the slot to the
+pool as available.</li>
+</ul>
+</li>
+<li>The full log is written under the state directory, at <code>logs/worktree-warm/&lt;operationId&gt;.log</code>.
+The operation view links it, and dismissing or pruning the operation prunes the log.</li>
+<li>Warm never touches a leased or quarantined slot. A slot leased while a &quot;Warm idle slots&quot;
+operation is queued is skipped and listed as skipped.</li>
+</ul>
+<h3>3. Stored testing settings</h3>
+<p><strong>Catalog</strong> (round 2, <code>testing-storage</code>, <code>testing-flakes</code>):</p>
+<ul>
+<li>A new table, <code>testing_settings</code>, holds <code>repo_root</code> (primary key), <code>settings_json</code>, <code>revision</code>,
+<code>created_at</code> and <code>updated_at</code>.</li>
+<li>It is keyed by the <strong>same canonical path</strong> as Command overrides, either the main checkout&#39;s
+realpath or a subdirectory below it.</li>
+<li><code>settings_json</code> is validated by a new <code>StoredTestingSettingsSchema</code> in
+<code>src/shared/testing-config.ts</code>. It allows only <code>tests.patterns</code>, <code>tests.includeImporters</code> and
+<code>tests.smokeSet</code>, all optional, <code>.strict()</code>, and within the existing limits.</li>
+<li>The committed and local schemas and <code>mergeTestingConfig</code> do not change incompatibly. The CI
+action keeps bundling them.</li>
+</ul>
+<p><strong>Layers.</strong></p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Lowest</th>
+<th>Then</th>
+<th>Highest</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Repository root</td>
+<td>committed <code>.mission/testing.json</code> (check tree)</td>
+<td>stored settings at the root</td>
+<td><code>.mission/testing.local.json</code> (main checkout)</td>
+</tr>
+<tr>
+<td>Subdirectory (<code>apps/my-account</code>)</td>
+<td>the root&#39;s merged result</td>
+<td>stored settings at that subdirectory</td>
+<td>none</td>
+</tr>
+</tbody></table></div>
+<ul>
+<li>Stored settings overlay the committed file key by key (round 2, <code>testing-precedence</code>, against
+the recommendation). The local file stays the operator&#39;s last word at the root (round 3,
+<code>testing-layer-order</code>).</li>
+<li>A subdirectory&#39;s stored keys apply <strong>to files inside that subdirectory</strong> (round 3,
+<code>testing-subdir-semantics</code>):<ul>
+<li>A key it sets replaces the root&#39;s value there.</li>
+<li>Its <code>patterns</code> and <code>smokeSet</code> are relative to the subdirectory.</li>
+<li>A key it does not set falls through to the root.</li>
+</ul>
+</li>
+<li>Nested subdirectory scopes apply nearest first.</li>
+<li>The local file stays flat and root-only.</li>
+</ul>
+<p><strong>Behavior.</strong></p>
+<ul>
+<li>The gate runs when any layer exists at any scope. With no committed file and no stored
+settings it is skipped, as today.</li>
+<li>An invalid stored row cannot be saved: the route validates it on write. The committed file&#39;s
+rules stay as they are: an invalid committed file fails the gate, and an invalid local file
+makes it unavailable.</li>
+<li>Run detail labels the source of every effective key: <code>committed</code>, <code>stored (&lt;scope&gt;)</code> or
+<code>local</code>. This extends today&#39;s <code>settings.localKeys</code>.</li>
+<li><code>flakes</code> is never stored, and continues to come from the committed file or its defaults.</li>
+</ul>
+<p><strong>UI.</strong></p>
+<ul>
+<li>The settings are edited on the <strong>affected-tests</strong> page in Library › Commands
+(<code>CommandLibrary.tsx</code>), as a &quot;Testing settings&quot; section listing the root and every
+subdirectory that has stored settings or an affected-tests override.</li>
+<li>Each row edits patterns, includeImporters and smokeSet. A stale save is refused with 409 and
+the row reloads.</li>
+</ul>
+<p><strong>Backups</strong> (round 2, <code>backups</code>). A new settings-backup domain, <code>testing-settings</code>, with a
+missing-domain migration so snapshots taken before it restore with the domain empty.</p>
+<h3>4. Per-app affected-test selection</h3>
+<p><strong>Resolving imports</strong> (round 2, <code>alias-resolution</code>).</p>
+<ul>
+<li><strong>tsconfig and jsconfig.</strong> For each scanned file, <code>test-selection.ts</code> finds the nearest
+<code>tsconfig.json</code> or <code>jsconfig.json</code> at or above the file&#39;s directory, stopping at the tree root.<ul>
+<li>It follows relative <code>extends</code>, and package <code>extends</code> it can resolve inside the tree.</li>
+<li>An unresolvable <code>extends</code> is reported in the selection diagnostics, not fatal.</li>
+<li>It uses that config&#39;s <code>paths</code> and <code>baseUrl</code>. It keeps today&#39;s extension and JS-to-TS swaps.</li>
+<li>It fixes the first-<code>*</code>-only wildcard replacement (<code>:165</code>).</li>
+<li>It caches parsed configs per gate.</li>
+</ul>
+</li>
+<li><strong>Workspace packages.</strong> The root <code>package.json</code> <code>workspaces</code> globs (array or <code>{packages}</code> form)
+map each workspace&#39;s <code>name</code> to its directory.<ul>
+<li>A bare specifier <code>name</code> resolves through the workspace&#39;s <code>package.json</code>: a string <code>exports</code>
+for <code>.</code>, else <code>main</code>, else <code>index</code>.</li>
+<li>A specifier <code>name/sub</code> resolves inside the workspace&#39;s directory.</li>
+<li>Package <code>exports</code> maps beyond a single string are out of scope for this slice and are
+reported in diagnostics.</li>
+</ul>
+</li>
+<li>Resolution still refuses anything outside the tree.</li>
+</ul>
+<p><strong>The test universe.</strong> Per scope (section 3), the tests are the tracked files matching that
+scope&#39;s effective <code>patterns</code>, resolved relative to the scope that set them. A file belongs to its
+nearest scope. <code>includeImporters</code> and <code>smokeSet</code> apply per scope in the same way.</p>
+<p><strong>Partitioning</strong> (round 2, <code>selection-unit</code>). The gate selects once across the repository, then
+assigns each selected test to the <strong>deepest affected-tests override</strong> whose subdirectory
+contains it:</p>
+<ul>
+<li>A test outside every subdirectory override goes to the repository-root override, or to the
+slot&#39;s global default, which runs at the root.</li>
+<li>A test no override or default can run is listed in run detail as <strong>selected but unrun</strong>. The
+gate decides on the partitions that ran (round 3, <code>uncovered-tests</code>).</li>
+<li>Each partition runs its own override&#39;s command in that override&#39;s subdirectory, with <code>{files}</code>
+relative to it. <code>{junit}</code> gets a temporary path per partition, and results map back to tree
+paths.</li>
+<li>Partitions run <strong>sequentially</strong>, all of them, inside the one check-test lease (round 3,
+<code>partition-order</code>). Each partition reruns its failed files once, as today.</li>
+<li>The gate passes only if every partition passes.</li>
+<li>The gate attempt spends <strong>one run</strong> of the budget however many partitions it has (round 3,
+<code>partition-budget</code>). An attempt that selects nothing hands the run back, as today.</li>
+<li>Run detail lists each partition: its subdirectory, command, file count, outcome and output
+tail.</li>
+</ul>
+<p>Partitioning does not depend on the session&#39;s cwd. The change decides which apps run. The
+session&#39;s cwd still decides which <code>test</code>, <code>lint</code>, <code>typecheck</code> and <code>build</code> override a check uses,
+as today.</p>
+<figure class="fig"><div class="scroll svgwrap"><svg viewBox="0 0 1160 330" role="img" aria-label="Testing settings layering, selection and partitions" xmlns="http://www.w3.org/2000/svg"><defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker><marker id="a2-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M10,0 L0,5 L10,10 z"/></marker></defs><rect class="n " x="20" y="20" width="250" height="40" rx="8"/><text class="t" text-anchor="middle"><tspan x="145" y="44.5">committed testing.json (check tree)</tspan></text><rect class="n new" x="20" y="75" width="250" height="40" rx="8"/><text class="t" text-anchor="middle"><tspan x="145" y="99.5">stored settings by path (database)</tspan></text><rect class="n " x="20" y="130" width="250" height="40" rx="8"/><text class="t" text-anchor="middle"><tspan x="145" y="154.5">testing.local.json (main checkout)</tspan></text><rect class="n new" x="310" y="60" width="180" height="70" rx="8"/><text class="t" text-anchor="middle"><tspan x="400" y="91.5">merge per scope:</tspan><tspan x="400" y="107.5">committed, stored, local</tspan></text><path class="e" d="M270,40 L308,80" marker-end="url(#a2)"/><path class="e" d="M270,95 L308,95" marker-end="url(#a2)"/><path class="e" d="M270,150 L308,112" marker-end="url(#a2)"/><rect class="n new" x="295" y="180" width="210" height="56" rx="8"/><text class="t" text-anchor="middle"><tspan x="400" y="204.5">nearest tsconfig/jsconfig</tspan><tspan x="400" y="220.5">+ workspace package names</tspan></text><rect class="n " x="530" y="95" width="190" height="70" rx="8"/><text class="t" text-anchor="middle"><tspan x="625" y="126.5">select: changed tests,</tspan><tspan x="625" y="142.5">importers, smoke set</tspan></text><path class="e" d="M490,95 L528,118" marker-end="url(#a2)"/><path class="e" d="M505,208 L528,145" marker-end="url(#a2)"/><rect class="n new" x="760" y="95" width="170" height="70" rx="8"/><text class="t" text-anchor="middle"><tspan x="845" y="126.5">partition by deepest</tspan><tspan x="845" y="142.5">affected-tests override</tspan></text><path class="e" d="M720,130 L758,130" marker-end="url(#a2)"/><rect class="n " x="970" y="20" width="170" height="36" rx="8"/><text class="t" text-anchor="middle"><tspan x="1055" y="42.5">apps/my-account</tspan></text><rect class="n " x="970" y="70" width="170" height="36" rx="8"/><text class="t" text-anchor="middle"><tspan x="1055" y="92.5">apps/personal-loans</tspan></text><rect class="n " x="970" y="120" width="170" height="36" rx="8"/><text class="t" text-anchor="middle"><tspan x="1055" y="142.5">root override or default</tspan></text><rect class="n ext" x="970" y="170" width="170" height="36" rx="8"/><text class="t" text-anchor="middle"><tspan x="1055" y="192.5">selected but unrun</tspan></text><path class="e" d="M930,112 L968,38" marker-end="url(#a2)"/><path class="e" d="M930,122 L968,88" marker-end="url(#a2)"/><path class="e" d="M930,132 L968,138" marker-end="url(#a2)"/><path class="e" d="M930,145 L968,188" marker-end="url(#a2)"/><rect class="n " x="690" y="262" width="450" height="48" rx="8"/><text class="t" text-anchor="middle"><tspan x="915" y="282.5">gate passes only if every partition passes</tspan><tspan x="915" y="298.5">one run of the budget per attempt</tspan></text><path class="e" d="M845,165 L845,260" marker-end="url(#a2)"/><text class="lbl" x="855" y="222" text-anchor="start">partitions run sequentially in one test lease</text></svg></div><figcaption>Testing settings layering, selection and partitions. Accent border: new in this plan. Dashed: external, or not run.</figcaption></figure><details class="src"><summary>Diagram text definition (from plan.md)</summary><pre><code>flowchart LR
+  CF[committed testing.json in check tree] --&gt; M[merge per scope]
+  SS[(stored testing settings, by path)] --&gt; M
+  LF[testing.local.json in main checkout] --&gt; M
+  M --&gt; U[test universe per scope]
+  TS[nearest tsconfig/jsconfig + workspace names] --&gt; SEL[select: changed tests, importers, smoke set]
+  U --&gt; SEL
+  SEL --&gt; PT[partition by deepest affected-tests override]
+  PT --&gt; I1[apps/my-account invocation]
+  PT --&gt; I2[apps/personal-loans invocation]
+  PT --&gt; I3[root override or default]
+  PT --&gt; UN[selected but unrun]
+  I1 --&gt; V[gate: passes only if every partition passes]
+  I2 --&gt; V
+  I3 --&gt; V</code></pre></details><h3>5. Bulk documents for Commands and testing settings</h3>
+<p><strong>Format</strong> (round 3, <code>bulk-format</code>). The format is versioned JSON, with its schema in
+<code>src/shared</code> beside the other wire contracts:</p>
+<pre><code class="language-json">{
+  &quot;version&quot;: 1,
+  &quot;commands&quot;: {
+    &quot;lint&quot;:           [{ &quot;path&quot;: &quot;&quot;, &quot;argv&quot;: [&quot;yarn&quot;, &quot;turbo&quot;, &quot;run&quot;, &quot;lint&quot;, &quot;--filter=...[origin/main...HEAD]&quot;] },
+                       { &quot;path&quot;: &quot;apps/my-account&quot;, &quot;argv&quot;: [&quot;yarn&quot;, &quot;lint&quot;] }],
+    &quot;affected-tests&quot;: [{ &quot;path&quot;: &quot;apps/my-account&quot;, &quot;argv&quot;: [&quot;yarn&quot;, &quot;test:affected&quot;, &quot;--junit-file={junit}&quot;, &quot;{files}&quot;] }],
+    &quot;test&quot;:           [{ &quot;path&quot;: &quot;apps/legacy-app&quot;, &quot;remove&quot;: true }]
+  },
+  &quot;testing&quot;: [
+    { &quot;path&quot;: &quot;apps/my-account&quot;, &quot;settings&quot;: { &quot;tests&quot;: { &quot;patterns&quot;: [&quot;src/**/*.test.{ts,tsx}&quot;] } } },
+    { &quot;path&quot;: &quot;apps/old-app&quot;, &quot;remove&quot;: true }
+  ]
+}
+</code></pre>
+<ul>
+<li><code>path</code> is repository-relative, and <code>&quot;&quot;</code> is the root.</li>
+<li>The <code>affected-tests</code> argv above is a placeholder. A real one must contain <code>{files}</code> as a whole
+element and <code>{junit}</code> somewhere (<code>commandTemplateProblem</code>, <code>src/shared/workflow.ts:3205</code>), and
+how an app&#39;s Jest writes JUnit to a given path is for whoever configures it.</li>
+<li>The target repository is chosen when the operator imports, or is the proposing session&#39;s task
+repository.</li>
+<li>Each entry is checked against the rules its catalog already enforces: the template rule for
+<code>affected-tests</code>, duplicate refusal and the override cap.</li>
+<li>A document sets Command overrides for every slot, plus stored testing settings, for <strong>one</strong>
+repository (round 2, <code>bulk-coverage</code>). It never touches global defaults, <code>maxRuns</code> or pool
+settings.</li>
+</ul>
+<p><strong>Applying</strong> (round 3, <code>bulk-apply</code>):</p>
+<ul>
+<li>Rows the document does not mention are untouched. A listed row is added or replaced. Removal
+happens only through an explicit <code>remove</code> entry.</li>
+<li>The preview lists every add, change and removal, per slot and for testing settings.</li>
+<li>Apply writes everything in one transaction, using each slot&#39;s compare-and-swap and the testing
+catalog&#39;s revisions. A preview that went stale is refused with 409 and recomputed.</li>
+</ul>
+<p><strong>Two producers, one screen</strong> (round 2, <code>bulk-mode</code>):</p>
+<ul>
+<li><strong>Import.</strong> The operator pastes or uploads a document in Library › Commands, picks the
+repository and gets the preview.</li>
+<li><strong>Export.</strong> Library › Commands exports a repository&#39;s current overrides and testing settings as
+a document (round 3, <code>bulk-export</code>). Export then import round-trips.</li>
+<li><strong>Proposal.</strong> A new MCP tool, <code>propose_command_document</code>, takes a document from a session
+(round 3, <code>bulk-proposal-rules</code>):<ul>
+<li>It accepts only the calling session&#39;s own task repositories, using the guard
+<code>set_affected_tests_command</code> already uses, without the testing-setup label restriction.</li>
+<li>It never writes a live row. It stores one pending proposal per repository, and a newer one
+replaces it.</li>
+<li>The proposal shows as a banner on that repository in Library › Commands and as an attention
+item. Opening it leads to the same preview, where the operator applies or dismisses it.</li>
+</ul>
+</li>
+<li>Pending proposals are machine state and are <strong>not</strong> in backups.</li>
+</ul>
+<p>The approval step is a boundary on the MCP surface only. The apply route is under <code>/api/*</code>,
+which accepts any loopback caller without a token, and the docs say so plainly (section 7).</p>
+<figure class="fig"><div class="scroll svgwrap"><svg viewBox="0 0 1160 260" role="img" aria-label="Bulk documents: two producers, one preview" xmlns="http://www.w3.org/2000/svg"><defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker><marker id="a3-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M10,0 L0,5 L10,10 z"/></marker></defs><rect class="n " x="20" y="30" width="240" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="140" y="56.5">operator: paste or upload</tspan></text><rect class="n new" x="20" y="130" width="240" height="56" rx="8"/><text class="t" text-anchor="middle"><tspan x="140" y="154.5">agent session:</tspan><tspan x="140" y="170.5">propose_command_document (MCP)</tspan></text><rect class="n new" x="300" y="130" width="220" height="56" rx="8"/><text class="t" text-anchor="middle"><tspan x="410" y="154.5">one pending proposal</tspan><tspan x="410" y="170.5">per repository</tspan></text><path class="e" d="M260,158 L298,158" marker-end="url(#a3)"/><rect class="n new" x="570" y="70" width="230" height="56" rx="8"/><text class="t" text-anchor="middle"><tspan x="685" y="94.5">preview: adds, changes,</tspan><tspan x="685" y="110.5">removals</tspan></text><path class="e" d="M260,52 L568,90" marker-end="url(#a3)"/><path class="e" d="M520,158 L568,112" marker-end="url(#a3)"/><text class="lbl" x="530" y="186" text-anchor="start">banner + attention item</text><rect class="n " x="880" y="20" width="260" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="1010" y="46.5">Commands catalog overrides</tspan></text><rect class="n new" x="880" y="100" width="260" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="1010" y="126.5">testing settings catalog</tspan></text><path class="e" d="M800,88 L878,44" marker-end="url(#a3)"/><path class="e" d="M800,108 L878,122" marker-end="url(#a3)"/><text class="lbl" x="685" y="146" text-anchor="middle">apply: one transaction, CAS</text><rect class="n new" x="880" y="196" width="260" height="44" rx="8"/><text class="t" text-anchor="middle"><tspan x="1010" y="222.5">export document</tspan></text><path class="e" d="M1010,144 L1010,194" marker-end="url(#a3)"/><text class="lbl" x="1020" y="176" text-anchor="start">export</text></svg></div><figcaption>Bulk documents: two producers, one preview. Accent border: new in this plan. Dashed: external, or not run.</figcaption></figure><details class="src"><summary>Diagram text definition (from plan.md)</summary><pre><code>flowchart LR
+  OP[operator: paste or upload] --&gt; PV[preview: adds, changes, removals]
+  AG[agent session: propose_command_document over MCP] --&gt; PP[(one pending proposal per repository)]
+  PP --&gt; BN[banner + attention item] --&gt; PV
+  PV -- apply, one transaction with CAS --&gt; CC[(Commands catalog overrides)]
+  PV -- apply --&gt; TC[(testing settings catalog)]
+  CC --&gt; EX[export document]
+  TC --&gt; EX</code></pre></details><h3>6. Testing setup for a repository that will not commit a file</h3>
+<p>The &quot;Set up testing&quot; action asks the operator to choose <strong>committed</strong> or <strong>stored</strong> before the
+task starts (round 3, <code>testing-setup-flow</code>):</p>
+<ul>
+<li><strong>Committed</strong> is today&#39;s path. The agent writes <code>.mission/testing.json</code> in its change and
+calls <code>set_affected_tests_command</code>, which is unchanged.</li>
+<li><strong>Stored.</strong> The agent works out per-app overrides and testing settings and submits them with
+<code>propose_command_document</code>. The operator applies them from the preview.</li>
+</ul>
+<p>The testing-setup skill text and the task&#39;s launch prompt carry the choice.</p>
+<h3>7. Docs</h3>
+<ul>
+<li><code>docs/worktrees-and-checks.md:413-417</code>. Rewrite &quot;your <code>node_modules</code> survives, so a check is a
+build rather than an install&quot;. Clean <code>-fd</code> preserves whatever is installed, and the claim is
+what makes it current.</li>
+<li><code>docs/worktrees-and-checks.md</code>. Document the claim, fingerprints, seeding, Warm, the claim
+environment and the setup environment change.</li>
+<li><code>src/shared/protocol.ts:6456</code>, <code>src/server/testing-setup.ts:1</code>, <code>src/server/routes.ts:5037</code> and
+<code>docs/flaky-tests.md:49-52</code>. State that <code>set_affected_tests_command</code> (and later
+<code>propose_command_document</code>) bounds what an agent may do <strong>through MCP</strong>, and that <code>/api/*</code>
+routes accept any loopback caller.</li>
+<li><code>docs/security.md</code>. Add that the loopback boundary has no token on <code>/api/*</code>, so any local
+process, an agent&#39;s shell included, can call settings routes. Link the follow-up.</li>
+<li><code>docs/workflows.md</code> (testing config sections). Cover stored settings, layering, subdirectory
+scopes, partitions and the supersession above.</li>
+<li>Library and settings docs. Cover bulk documents, export and proposals.</li>
+</ul>
+<h2>Fork tracking</h2>
+<p>Fork tracking was settled in round 2 (<code>fork-slugs</code>):</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Work</th>
+<th>Fork feature</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Claim, fingerprints, claim environment, setup environment, seeding, Warm</td>
+<td>new <code>fork:worktree-dependency-claims</code></td>
+</tr>
+<tr>
+<td>Stored testing settings, layering, per-app selection, testing-setup stored path</td>
+<td>extends #296 <code>fork:flake-aware-testing</code> (its behavior contracts change: stored settings overlay the committed file)</td>
+</tr>
+<tr>
+<td>Bulk documents, export, <code>propose_command_document</code></td>
+<td>new <code>fork:commands-bulk-config</code></td>
+</tr>
+<tr>
+<td>Docs fixes</td>
+<td>under the feature whose slice carries them</td>
+</tr>
+</tbody></table></div>
+<p>Each implementing PR carries its label and a &quot;Fork feature changes&quot; section in the
+<code>docs/fork/README.md</code> format. The first PR of a new feature creates its label and tracking issue.
+This plan&#39;s own PR only adds <code>docs/plans/</code>, so its section is <code>none</code>.</p>
+<h2>Delivery order</h2>
+<p>Each slice stands alone and lands in order (round 3, <code>delivery-order</code>). The tickets follow-up
+slices within this order.</p>
+<ol>
+<li><p><strong>Claim.</strong> This slice covers:</p>
+<ul>
+<li>claim settings and schema;</li>
+<li>the scrubbed environment with per-step names and the login-shell capture;</li>
+<li>the setup environment change;</li>
+<li>fingerprints and the skip rule;</li>
+<li>limits, failure handling, the check verdict rule and Stop;</li>
+<li>the agent note, the slot and task card states;</li>
+<li>the cold check fallback;</li>
+<li>the docs fixes in section 7 that do not depend on later slices.</li>
+</ul>
+<p>This slice alone fixes the observed <code>capital-markets</code> failure.</p>
+</li>
+<li><p><strong>Seeding and Warm.</strong> The <code>warm</code> lease kind, copy-on-write seeding for claims and Warm, source
+selection, the Warm operation with tail, log and Cancel, and the slot and pool controls.</p>
+</li>
+<li><p><strong>Stored testing settings.</strong> The catalog, schema, layering, run-detail sources, the
+affected-tests page section, and the backup domain with its migration.</p>
+</li>
+<li><p><strong>Per-app selection.</strong> Nearest tsconfig/jsconfig with <code>extends</code>, workspace names,
+per-scope test universes, partitions, unrun listing, and partition run detail.</p>
+</li>
+<li><p><strong>Bulk documents and testing setup.</strong> Format, preview and apply, import, export,
+<code>propose_command_document</code> with its banner and attention item, and the testing-setup
+committed-or-stored choice.</p>
+</li>
+</ol>
+<h2>Verification</h2>
+<p>Proof is fixtures and e2e (round 3, <code>uwf-acceptance</code>). Every slice meets the repository&#39;s
+definition of done: relevant tests, <code>npm run typecheck</code>, <code>npm run lint</code>, and <code>npm run build</code>
+with <code>npm run smoke</code> for runtime surfaces. UI changes also need <code>npm run test:e2e</code> with a
+spec, and no <code>data-testid</code>.</p>
+<p><strong>Claim (unit, <code>test/</code>).</strong></p>
+<ul>
+<li>Fingerprint skip, and a mismatch running every step.</li>
+<li>A failing step clearing the fingerprint and handing the slot over.</li>
+<li>A dirty tracked file after a claim quarantining as today.</li>
+<li>Timeout and Stop killing the process group.</li>
+<li>Output never failing on size.</li>
+<li>Per-step environments receiving exactly their named variables, with credential-shaped names
+absent otherwise.</li>
+<li>Login-shell fallback for a name missing from the daemon environment.</li>
+<li>Setup on the scrubbed base.</li>
+<li>The check verdict for changed versus unchanged fingerprint inputs, and for no fingerprint
+paths.</li>
+<li>The cold fallback running the claim.</li>
+<li>Every lease kind running it.</li>
+</ul>
+<p><strong>Seeding and Warm (unit).</strong></p>
+<ul>
+<li>Source selection order.</li>
+<li>The <code>warm</code> lease preventing an occupancy quarantine.</li>
+<li>Staging and rename leaving no half tree.</li>
+<li>Exclusions applied.</li>
+<li>No seed where cloning is unsupported, using a fake <code>cp</code> that refuses <code>--reflink=always</code>.</li>
+<li>Cancel clearing the fingerprint.</li>
+<li>&quot;Warm idle slots&quot; skipping leased slots.</li>
+</ul>
+<p><strong>Testing settings and selection (unit).</strong></p>
+<ul>
+<li>Layer order and per-key sources.</li>
+<li>Subdirectory scope semantics, including relative patterns and smokeSet.</li>
+<li>The gate running with stored settings and no committed file.</li>
+<li>The schema refusing <code>flakes</code>.</li>
+<li>Missing-domain backup migration.</li>
+<li>Nearest tsconfig with relative <code>extends</code>.</li>
+<li>Workspace package names, bare and subpath.</li>
+<li>Partitions in a fixture monorepo with two apps and a package.</li>
+<li>One budget run per attempt.</li>
+<li>Sequential execution.</li>
+<li>Selected-but-unrun listing.</li>
+</ul>
+<p><strong>Bulk (unit).</strong></p>
+<ul>
+<li>Schema validation.</li>
+<li>Merge with explicit removals.</li>
+<li>Template rule enforcement.</li>
+<li>Stale preview 409.</li>
+<li>The proposal guard refusing another repository.</li>
+<li>A newer proposal replacing an older one.</li>
+<li>Export, then import, round-tripping.</li>
+</ul>
+<p><strong>e2e (<code>e2e/</code>).</strong></p>
+<ul>
+<li>Pool claim settings, with present and missing indicators for names.</li>
+<li>The slot card dependency states.</li>
+<li>The task card &quot;Installing dependencies&quot; with Stop.</li>
+<li>Warm and &quot;Warm idle slots&quot;, with live tail and Cancel.</li>
+<li>The affected-tests page testing settings section.</li>
+<li>Run detail sources and partitions.</li>
+<li>Import preview and apply.</li>
+<li>Export.</li>
+<li>The proposal banner and attention item, and the Set up testing choice.</li>
+<li>Every new modal, including the document preview, calls <code>expectContentClearsBorder</code>.</li>
+<li>Every agent binary stays faked.</li>
+</ul>
+<h2>Follow-ups (not in this plan)</h2>
+<ul>
+<li><strong>Tokenless loopback writes.</strong> Require the daemon token, or an equivalent, for writes to
+executable settings: pool policy, Commands, testing settings and bulk apply (round 1,
+<code>loopback-writes</code>).</li>
+<li><strong>Configuring uwf on this machine</strong> with the example above, as operator configuration, once
+slices 1 and 2 land.</li>
+<li><strong>Jest <code>moduleNameMapper</code> resolution</strong>, if tsconfig <code>paths</code> turn out to diverge from what an
+app&#39;s Jest config maps.</li>
+<li><strong>Package <code>exports</code> maps</strong> beyond a single string, if a workspace needs them.</li>
+</ul>
+<h2>Decisions</h2>
+<p>Recorded as answered. &quot;Rec.&quot; marks an answer that took the recommended option.</p>
+<h3>Round 1: scope and strategy</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>scope</code></td>
+<td>What the plan covers beyond slot dependencies</td>
+<td>Testing settings outside the repository; per-app affected-test selection; bulk configuration of Commands; docs accuracy fixes (bulk was not recommended; the rest rec.)</td>
+</tr>
+<tr>
+<td><code>deps-strategy</code></td>
+<td>How slots get current dependencies</td>
+<td>A claim command on every lease, plus a manual Warm action (rec.)</td>
+</tr>
+<tr>
+<td><code>deps-env</code></td>
+<td>Environment for dependency commands</td>
+<td>Scrubbed like checks, plus a per-pool allowlist of named variables (rec.)</td>
+</tr>
+<tr>
+<td><code>loopback-writes</code></td>
+<td>Tokenless loopback writes</td>
+<td>Correct the docs; record write hardening as a separate follow-up (rec.)</td>
+</tr>
+</tbody></table></div>
+<h3>Round 2: claim, Warm, testing, bulk, fork</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>claim-failure</code></td>
+<td>A claim fails</td>
+<td>Hand the slot over with a warning; never quarantine for the exit code (rec.)</td>
+</tr>
+<tr>
+<td><code>claim-check-verdict</code></td>
+<td>A failed claim inside a check</td>
+<td>Fingerprint inputs changed on the branch versus the merge base means the change failed; unchanged means infrastructure (rec.)</td>
+</tr>
+<tr>
+<td><code>claim-limits</code></td>
+<td>Timeout and output</td>
+<td><strong>Other:</strong> per-pool timeout, default 10 minutes, max 240; bounded tail, never fail on output size</td>
+</tr>
+<tr>
+<td><code>claim-lease-kinds</code></td>
+<td>Which leases claim</td>
+<td>Every lease kind (task, check, manual), and the cold check fallback (rec.)</td>
+</tr>
+<tr>
+<td><code>seed-on-cold-claim</code></td>
+<td>Seed cold claims</td>
+<td>Yes (rec.)</td>
+</tr>
+<tr>
+<td><code>fingerprint</code></td>
+<td>Fingerprint and staleness</td>
+<td>Git blob hashes of operator-listed path globs at the leased commit, plus argv and allowlist names; shown on each slot card (rec.)</td>
+</tr>
+<tr>
+<td><code>claim-progress-ui</code></td>
+<td>What the operator sees</td>
+<td>&quot;Installing dependencies&quot; on the task card and the slot card, tail on failure (rec.)</td>
+</tr>
+<tr>
+<td><code>claim-concurrency</code></td>
+<td>Concurrent claims</td>
+<td>No extra limit (rec.)</td>
+</tr>
+<tr>
+<td><code>setup-env</code></td>
+<td>Setup environment</td>
+<td>Setup and claim share one environment (rec.)</td>
+</tr>
+<tr>
+<td><code>warm-scope</code></td>
+<td>Warm triggers</td>
+<td>Per slot and per pool (rec.)</td>
+</tr>
+<tr>
+<td><code>warm-source</code></td>
+<td>Seed source</td>
+<td>Matching idle sibling, else most recently claimed idle sibling, held under a maintenance lease; none idle means claim alone; never the main checkout (rec.)</td>
+</tr>
+<tr>
+<td><code>seed-copy</code></td>
+<td>Seed copy</td>
+<td>Copy-on-write only, operator-listed paths with exclusions; no CoW means no seed (rec.)</td>
+</tr>
+<tr>
+<td><code>warm-output</code></td>
+<td>Observing and stopping Warm</td>
+<td>Queued operation with Cancel, live tail, full log under the state dir (rec.)</td>
+</tr>
+<tr>
+<td><code>testing-precedence</code></td>
+<td>Stored versus committed</td>
+<td><strong>Stored settings overlay the committed file key by key, like the local file</strong> (the recommendation was &quot;committed file wins whole&quot;)</td>
+</tr>
+<tr>
+<td><code>testing-storage</code></td>
+<td>Where stored settings live</td>
+<td>Their own catalog keyed by the Command override paths, edited on the affected-tests page (rec.)</td>
+</tr>
+<tr>
+<td><code>testing-flakes</code></td>
+<td>Which keys are stored</td>
+<td><code>tests.*</code> only (rec.)</td>
+</tr>
+<tr>
+<td><code>selection-unit</code></td>
+<td>Monorepo gate shape</td>
+<td>Select once, partition by the deepest affected-tests override, one invocation per partition, gate passes only if all pass (rec.)</td>
+</tr>
+<tr>
+<td><code>alias-resolution</code></td>
+<td>Alias resolution</td>
+<td>Nearest tsconfig/jsconfig following <code>extends</code>, plus workspace package names (rec.)</td>
+</tr>
+<tr>
+<td><code>bulk-mode</code></td>
+<td>Bulk configuration</td>
+<td>One document format; operator import and agent MCP proposal; one preview-and-apply screen (rec.)</td>
+</tr>
+<tr>
+<td><code>bulk-coverage</code></td>
+<td>What a document sets</td>
+<td>Command overrides (every slot) and stored testing settings for one repository (rec.)</td>
+</tr>
+<tr>
+<td><code>backups</code></td>
+<td>Backup coverage</td>
+<td>Every new setting, never per-slot state or variable values (rec.)</td>
+</tr>
+<tr>
+<td><code>fork-slugs</code></td>
+<td>Fork features</td>
+<td>New <code>fork:worktree-dependency-claims</code>; testing work extends #296; new <code>fork:commands-bulk-config</code> (rec.)</td>
+</tr>
+</tbody></table></div>
+<h3>Round 3: claim details, testing scopes, bulk, delivery</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>claim-steps</code></td>
+<td>One command or steps</td>
+<td>Ordered steps, each with its own allowlist; any failing step fails the claim (rec.)</td>
+</tr>
+<tr>
+<td><code>claim-defaults</code></td>
+<td>Global default for claim settings</td>
+<td>Per pool only (rec.)</td>
+</tr>
+<tr>
+<td><code>allowlist-source</code></td>
+<td>Where values come from</td>
+<td>Daemon environment, else the login-shell snapshot; UI shows present or missing, never the value (rec.)</td>
+</tr>
+<tr>
+<td><code>claim-stop</code></td>
+<td>Stopping a claim</td>
+<td>Stop on the slot and task card hands the slot over as a failed claim (rec.)</td>
+</tr>
+<tr>
+<td><code>agent-warning</code></td>
+<td>Telling the agent</td>
+<td>A note in its launch prompt with the failing step and tail (rec.)</td>
+</tr>
+<tr>
+<td><code>no-fingerprint-verdict</code></td>
+<td>Verdict with no fingerprint paths</td>
+<td>Infrastructure (rec.)</td>
+</tr>
+<tr>
+<td><code>warm-seed-when</code></td>
+<td>Seed or claim in place</td>
+<td>Seed when the target has no fingerprint, or it is stale and an idle sibling matches exactly; otherwise claim in place (rec.)</td>
+</tr>
+<tr>
+<td><code>warm-target</code></td>
+<td>Warm&#39;s commit</td>
+<td>Fetch, reset to origin&#39;s current default branch, then seed or claim (rec.)</td>
+</tr>
+<tr>
+<td><code>testing-layer-order</code></td>
+<td>Root layer order</td>
+<td>Committed, then stored, then local (rec.)</td>
+</tr>
+<tr>
+<td><code>testing-subdir-semantics</code></td>
+<td>Subdirectory settings</td>
+<td>Keys set replace the root&#39;s for files inside; patterns and smokeSet relative to the subdirectory; unset keys fall through (rec.)</td>
+</tr>
+<tr>
+<td><code>partition-budget</code></td>
+<td>Budget for a partitioned gate</td>
+<td>One run per gate attempt (rec.)</td>
+</tr>
+<tr>
+<td><code>partition-order</code></td>
+<td>Partition execution</td>
+<td>Sequential, all of them, then the gate decides (rec.)</td>
+</tr>
+<tr>
+<td><code>uncovered-tests</code></td>
+<td>Selected tests no command can run</td>
+<td>Listed as selected but unrun; the gate decides on the partitions that ran (rec.)</td>
+</tr>
+<tr>
+<td><code>testing-setup-flow</code></td>
+<td>Testing setup without a committed file</td>
+<td>Operator chooses committed or stored; stored means a bulk proposal (rec.)</td>
+</tr>
+<tr>
+<td><code>bulk-format</code></td>
+<td>Document format</td>
+<td>Versioned JSON, repository-relative paths, repository chosen on import (rec.)</td>
+</tr>
+<tr>
+<td><code>bulk-apply</code></td>
+<td>Unmentioned rows</td>
+<td>Untouched; explicit removal entries; preview shows every add, change and removal (rec.)</td>
+</tr>
+<tr>
+<td><code>bulk-export</code></td>
+<td>Export</td>
+<td>Yes, from Library › Commands (rec.)</td>
+</tr>
+<tr>
+<td><code>bulk-proposal-rules</code></td>
+<td>Who proposes</td>
+<td>Any session, own task repositories only; one pending proposal per repository; banner and attention item (rec.)</td>
+</tr>
+<tr>
+<td><code>delivery-order</code></td>
+<td>Order of work</td>
+<td>Claim and docs; seeding and Warm; stored testing settings; per-app selection; bulk and testing setup (rec.)</td>
+</tr>
+<tr>
+<td><code>uwf-acceptance</code></td>
+<td>Proof against uwf</td>
+<td><strong>No, fixtures and e2e only</strong> (the recommendation was a uwf run per slice)</td>
+</tr>
+</tbody></table></div>
+<h3>Plan review (2026-10-13)</h3>
+<p>The human reviewed this plan in the Mission Control dashboard. A first review request failed
+in transport and got no answer. The second was answered as follows.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>plan-approval</code></td>
+<td>Is this plan approved as written, including the derived details?</td>
+<td>Approve as written</td>
+</tr>
+<tr>
+<td><code>shape-follow-up</code></td>
+<td>What should happen after this plan is approved?</td>
+<td>Create tickets after the plan merges</td>
+</tr>
+</tbody></table></div>
+<p>The review listed these details for the human to flag, because no grilling round decided them
+explicitly. Approval accepts them as written:</p>
+<ul>
+<li>the setup command&#39;s allowlist is the union of the variable names the pool&#39;s claim steps list;</li>
+<li>the <code>warm</code> lease owner kind holds Warm targets and seed sources;</li>
+<li>the Warm log is written to <code>logs/worktree-warm/&lt;operationId&gt;.log</code> under the state directory;</li>
+<li>the MCP tool is named <code>propose_command_document</code>;</li>
+<li>the claim settings sit beside <code>setupArgv</code> in the <code>worktrees</code> app-config entry;</li>
+<li>stored testing settings are a <code>testing_settings</code> table with a <code>testing-settings</code> backup domain;</li>
+<li>the uwf claim example is illustrative and was not run.</li>
+</ul>
+<p>Mission Control records the tickets choice. A linked follow-up task slices the merged plan into
+tickets in the delivery order above. This planning turn files no tasks.</p>
+
+</main>
+</body>
+</html>
