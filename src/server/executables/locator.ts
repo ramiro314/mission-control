@@ -15,6 +15,7 @@ import {
 import {
   executableEnvironmentFor,
   LOGIN_SHELL_PATH_MARKER,
+  loginShellVariableMarker,
 } from "../platform/executable-environment.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
 
@@ -53,13 +54,22 @@ export interface ResolvedExecutable extends Omit<ExecutableDiagnostic, "id"> {
 export interface LoginShellResult {
   path: string | null;
   problem: string | null;
+  /**
+   * The non-empty values of the variables the read was asked for, by name. Present only when
+   * some were asked for. Values are held in memory and handed to the children that named
+   * them; they are never logged, persisted or put in the daemon's own environment.
+   */
+  variables?: Record<string, string>;
 }
 
 export interface ExecutableLocatorDeps {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   now?: () => number;
-  probeLoginShell?: (env: NodeJS.ProcessEnv) => Promise<LoginShellResult>;
+  probeLoginShell?: (
+    env: NodeJS.ProcessEnv,
+    variables: readonly string[],
+  ) => Promise<LoginShellResult>;
   executable?: (path: string) => boolean;
 }
 
@@ -122,12 +132,30 @@ function isPathCommand(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
 
+/** Each requested variable's value between its own markers, or nothing for an empty one. */
+function parseLoginShellVariables(stdout: string, names: readonly string[]): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const name of names) {
+    const marker = loginShellVariableMarker(name);
+    const start = stdout.indexOf(marker);
+    const end = start < 0 ? -1 : stdout.indexOf(marker, start + marker.length);
+    if (start < 0 || end < 0) continue;
+    const value = stdout.slice(start + marker.length, end);
+    if (value) values[name] = value;
+  }
+  return values;
+}
+
 export async function probeLoginShellPath(
   env: NodeJS.ProcessEnv = process.env,
   timeoutMs = LOGIN_SHELL_TIMEOUT_MS,
   platform: NodeJS.Platform = process.platform,
+  variables: readonly string[] = [],
 ): Promise<LoginShellResult> {
-  const { command: shell, args } = executableEnvironmentFor(platform).loginShellPathRead(env);
+  const { command: shell, args } = executableEnvironmentFor(platform).loginShellPathRead(
+    env,
+    variables,
+  );
   return await new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -173,9 +201,11 @@ export async function probeLoginShellPath(
         const path = start >= 0 && end >= 0
           ? stdout.slice(start + marker.length, end).trim()
           : "";
-        finish(path
+        const result: LoginShellResult = path
           ? { path, problem: null }
-          : { path: null, problem: "login shell returned no PATH" });
+          : { path: null, problem: "login shell returned no PATH" };
+        if (variables.length > 0) result.variables = parseLoginShellVariables(stdout, variables);
+        finish(result);
       });
       timer = setTimeout(() => {
         // Signalling only the direct shell leaves startup-file grandchildren alive. A
@@ -195,7 +225,10 @@ export class ExecutableLocator {
   private readonly env: NodeJS.ProcessEnv;
   private readonly platform: NodeJS.Platform;
   private readonly now: () => number;
-  private readonly probe: (env: NodeJS.ProcessEnv) => Promise<LoginShellResult>;
+  private readonly probe: (
+    env: NodeJS.ProcessEnv,
+    variables: readonly string[],
+  ) => Promise<LoginShellResult>;
   private readonly isExecutable: (path: string) => boolean;
   private inheritedPath: string | null = null;
   private initialized = false;
@@ -206,13 +239,17 @@ export class ExecutableLocator {
   private forcedRefreshQueued: Promise<ExecutableEnvironmentSnapshot> | null = null;
   private readonly positive = new Map<string, ResolvedExecutable>();
   private readonly negative = new Map<string, { generation: number; at: number }>();
+  /** Variable names the login-shell read captures alongside PATH. Only ever grows. */
+  private readonly capturedNames = new Set<string>();
+  private loginShellValues: Readonly<Record<string, string>> = {};
 
   constructor(deps: ExecutableLocatorDeps = {}) {
     this.env = deps.env ?? process.env;
     this.platform = deps.platform ?? process.platform;
     this.now = deps.now ?? Date.now;
     this.probe = deps.probeLoginShell ??
-      ((env) => probeLoginShellPath(env, LOGIN_SHELL_TIMEOUT_MS, this.platform));
+      ((env, variables) =>
+        probeLoginShellPath(env, LOGIN_SHELL_TIMEOUT_MS, this.platform, variables));
     this.isExecutable = deps.executable ?? executableFile;
   }
 
@@ -251,7 +288,7 @@ export class ExecutableLocator {
       return await this.forcedRefreshQueued;
     }
     this.inheritedPath ??= this.env.PATH ?? "";
-    const pending = this.probe({ ...this.env, PATH: this.inheritedPath })
+    const pending = this.probe({ ...this.env, PATH: this.inheritedPath }, [...this.capturedNames])
       .catch((): LoginShellResult => ({ path: null, problem: "login shell failed" }))
       .then((shell) => this.installSnapshot(shell));
     this.refreshInFlight = pending;
@@ -268,6 +305,24 @@ export class ExecutableLocator {
         this.refreshInFlightForced = false;
       }
     }
+  }
+
+  /**
+   * The login shell's values for these names, read by the same probe that reads PATH. A name
+   * the probe was not yet capturing forces one refresh, so it is read once; after that the
+   * snapshot's ordinary refresh keeps it. A name the shell leaves empty or unset is absent.
+   */
+  async loginShellVariables(names: readonly string[]): Promise<Record<string, string>> {
+    const missing = names.filter((name) => !this.capturedNames.has(name));
+    for (const name of missing) this.capturedNames.add(name);
+    if (missing.length > 0) await this.refresh({ force: true });
+    else await this.initialize();
+    const values: Record<string, string> = {};
+    for (const name of names) {
+      const value = this.loginShellValues[name];
+      if (value) values[name] = value;
+    }
+    return values;
   }
 
   environment(
@@ -488,6 +543,9 @@ export class ExecutableLocator {
   }
 
   private installSnapshot(shell: LoginShellResult): ExecutableEnvironmentSnapshot {
+    // Replaced with what this read returned, including nothing: a failed read reports every
+    // name missing rather than handing on a value it can no longer vouch for.
+    this.loginShellValues = { ...shell.variables };
     const groups: PathEntryGroup[] = [];
     const custom = prefixedEnv(this.env, "EXECUTABLE_PATHS");
     if (custom) {
@@ -590,4 +648,9 @@ export function locateExecutableSync(
 
 export function locateCommandSync(command: string): ResolvedExecutable | null {
   return executableLocator.resolveCommandSync(command);
+}
+
+/** The login shell's values for these variable names, from the one locator's PATH read. */
+export async function loginShellVariables(names: readonly string[]): Promise<Record<string, string>> {
+  return await executableLocator.loginShellVariables(names);
 }

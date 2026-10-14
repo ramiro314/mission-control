@@ -14,6 +14,21 @@ import { basename, isAbsolute, join } from "node:path";
 /** Brackets the PATH a login shell prints, so startup-file output around it is ignored. */
 export const LOGIN_SHELL_PATH_MARKER = "__MISSION_PATH__";
 
+/**
+ * Brackets one named variable's value in the same read. The name sits between colons, which
+ * no variable name contains, so one name's marker is never a prefix of another's (`A` and
+ * `A__B` would otherwise collide).
+ */
+export function loginShellVariableMarker(name: string): string {
+  return `__MISSION_VAR:${name}:__`;
+}
+
+/**
+ * Only plain identifiers reach the shell command, so a name can never be shell syntax. The
+ * worktree claim schema already refuses anything else; this is the leaf's own guard.
+ */
+const SHELL_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export interface LoginShellPathRead {
   command: string;
   args: readonly string[];
@@ -26,14 +41,34 @@ export interface ExecutableEnvironmentPlatform {
   userToolDirectories(home: string, env: NodeJS.ProcessEnv): readonly string[];
   /** The OS defaults, the ladder's last installed rung. */
   readonly osDefaultDirectories: readonly string[];
-  /** The command whose stdout carries the login shell's PATH between two markers. */
-  loginShellPathRead(env: NodeJS.ProcessEnv): LoginShellPathRead;
+  /**
+   * The command whose stdout carries the login shell's PATH between two markers, and each
+   * requested variable's value between its own pair. With no variables the command is exactly
+   * the PATH read, byte for byte.
+   */
+  loginShellPathRead(env: NodeJS.ProcessEnv, variables?: readonly string[]): LoginShellPathRead;
 }
 
 const LOGIN_SHELL_PATH_ARGS = Object.freeze([
   "-ilc",
   `printf '${LOGIN_SHELL_PATH_MARKER}%s${LOGIN_SHELL_PATH_MARKER}' "$PATH"`,
 ]);
+
+/**
+ * The same read with variables appended. Each value is printed with `"$NAME"`, the one
+ * spelling fish and POSIX shells share, so asking for a variable cannot turn a login shell
+ * that reads PATH today into one that fails to parse. The price is that an empty value and an
+ * unset one look the same, and both are reported missing.
+ */
+function loginShellReadArgs(variables: readonly string[] = []): readonly string[] {
+  const names = variables.filter((name) => SHELL_VARIABLE_NAME.test(name));
+  if (names.length === 0) return LOGIN_SHELL_PATH_ARGS;
+  const reads = names.map((name) => {
+    const marker = loginShellVariableMarker(name);
+    return `printf '${marker}%s${marker}' "$${name}"`;
+  });
+  return Object.freeze(["-ilc", [LOGIN_SHELL_PATH_ARGS[1]!, ...reads].join("; ")]);
+}
 
 /** The POSIX row: the macOS app roots, Unix version managers, and an interactive login shell. */
 export const posixExecutableEnvironment: ExecutableEnvironmentPlatform = {
@@ -61,9 +96,9 @@ export const posixExecutableEnvironment: ExecutableEnvironmentPlatform = {
     "/usr/sbin",
     "/sbin",
   ]),
-  loginShellPathRead: (env) => ({
+  loginShellPathRead: (env, variables) => ({
     command: env.SHELL?.trim() || "/bin/zsh",
-    args: LOGIN_SHELL_PATH_ARGS,
+    args: loginShellReadArgs(variables),
   }),
 };
 
@@ -109,9 +144,9 @@ export function createLinuxExecutableEnvironment(
       ...posixExecutableEnvironment.osDefaultDirectories,
       "/snap/bin",
     ]),
-    loginShellPathRead: (env) => ({
+    loginShellPathRead: (env, variables) => ({
       command: env.SHELL?.trim() || passwdLoginShell(readPasswdShell) || "/bin/sh",
-      args: LOGIN_SHELL_PATH_ARGS,
+      args: loginShellReadArgs(variables),
     }),
   };
 }

@@ -135,6 +135,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
   ],
+  "src/server/worktrees/claim.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "operator-authored dependency claim step, resolved through the locator and streamed into a bounded tail in its own process group" },
+  ],
   // Not daemon code: the CI flake report action, bundled into `.github/actions/`, runs on a
   // GitHub runner and never through the executable locator.
   "src/flake-report-action/index.ts": [

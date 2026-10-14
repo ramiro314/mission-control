@@ -851,6 +851,14 @@ function createSchemaObjects(d: DatabaseSync): void {
       last_used_at              INTEGER,
       quarantine_reason         TEXT,
       last_error                TEXT,
+      -- Dependency claim state. NULL is "never claimed". The vocabulary is append-only
+      -- (WORKTREE_DEPS_STATES). A claim writes its intent and clears the fingerprint in one
+      -- write before any step runs, so a crash never leaves a fingerprint to trust.
+      deps_state                TEXT,
+      deps_fingerprint          TEXT,
+      deps_fingerprint_sha      TEXT,
+      deps_claimed_at           INTEGER,
+      deps_last_error           TEXT,
       created_at                INTEGER NOT NULL,
       updated_at                INTEGER NOT NULL
     );
@@ -3101,6 +3109,13 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
+  // Dependency claims. Null on every existing slot, which is exact: no slot was ever claimed
+  // before these columns existed, so each one's next claim runs every step.
+  addColumn(d, "worktree_slots", "deps_state", "TEXT");
+  addColumn(d, "worktree_slots", "deps_fingerprint", "TEXT");
+  addColumn(d, "worktree_slots", "deps_fingerprint_sha", "TEXT");
+  addColumn(d, "worktree_slots", "deps_claimed_at", "INTEGER");
+  addColumn(d, "worktree_slots", "deps_last_error", "TEXT");
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline
