@@ -135,7 +135,7 @@ svg .head-new { fill: var(--accent); }
 <main>
 <p class="source">Rendered from <code>docs/plans/inspector-findings/plan.md</code>, which is the source of truth.</p>
 <h1 id="github-inspector-findings-relay-them-to-the-session-and-show-them-to-the-operator">GitHub Inspector findings: relay them to the session and show them to the operator</h1>
-<p><strong>Status:</strong> Approved 2026-10-13. Tickets are filed in a follow-up task after this plan merges. The decisions from three interview rounds and the plan review are recorded below.</p>
+<p><strong>Status:</strong> Approved 2026-10-13, revised in workflow repair round 1 (D-28). Tickets are filed in a follow-up task after this plan merges. The decisions from three interview rounds, the plan review and the repair round are recorded below.</p>
 <p><strong>Date:</strong> 2026-10-13</p>
 <p><strong>Owner:</strong> GitHub Inspector (daemon), Foreman review follow-through, Settings dashboard</p>
 <p><strong>Fork feature:</strong> <code>fork:inspector-findings</code>, new (see <a href="#fork-feature-tracking">Fork feature tracking</a>)</p>
@@ -185,6 +185,14 @@ svg .head-new { fill: var(--accent); }
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-21</td><td>How is a refused review attributed?</td><td>If the refused review carried earlier drafts, it is retried once straight away without them. Those drafts get a refusal recorded, with GitHub's reason, only if the retry is accepted. Whole-review failures, such as rate limits or auth errors, never count against a row.</td></tr><tr><td>D-22</td><td>After how many refusals does a draft stop?</td><td>3.</td></tr><tr><td>D-23</td><td>How does a session dispute a draft?</td><td>There is no new channel. The relay asks the agent to fix each finding, or to say which ones it disagrees with and why. The operator's per-PR Resolve closes them.</td></tr></tbody></table></div>
 <h3 id="plan-review">Plan review</h3>
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-24</td><td>Keep the <code>legacy_posted</code> column that D-6 and D-7 together require?</td><td>Yes, keep <code>legacy_posted</code>.</td></tr><tr><td>D-25</td><td>Which phase order?</td><td>1, then 2 and 3 in parallel, then 4.</td></tr><tr><td>D-26</td><td>Is the plan approved as written?</td><td>Yes.</td></tr><tr><td>D-27</td><td>What happens after approval?</td><td>Create tickets after the plan merges.</td></tr></tbody></table></div>
+<h3 id="workflow-repair-round-1">Workflow repair round 1</h3>
+<p>The plan-validation workflow found four gaps:</p>
+<ul><li><code>earlierPost</code> was defined, but nothing rendered it.</li>
+<li>Phase 1 tested a rule that reads a phase 4 column.</li>
+<li>Phase 4's dependencies did not match D-25.</li>
+<li>Phase 4 did not say what happens when a refused review carried only drafts.</li></ul>
+<p>The first three are corrected in place below. The fourth needed a human decision:</p>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Question</th><th>Answer</th></tr></thead><tbody><tr><td>D-28</td><td>What happens when GitHub refuses a review that carried only drafts, so there is nothing left to retry?</td><td>Classify the refusal by GitHub's answer first. A rate limit, an auth or SSO refusal, a server error, or a moved head runs today's path, and no row records a refusal. The same check runs before D-21's retry in a mixed review. For a validation refusal (for example a 422): if the review carried exactly one draft, that draft records one refusal with GitHub's reason. If it carried several, each carried draft is retried in its own review, so the refusal is pinned to the exact draft and a valid draft never counts toward the cap because of a bad sibling. In both cases the round then finishes without the refused drafts, so the head is not reviewed again on every backoff. One helper does the classification, called by both the drafts-only path and the mixed-review retry, with <code>node:test</code> coverage for each refusal class and for the isolation path.</td></tr></tbody></table></div>
 <h2 id="how-the-flows-change">How the flows change</h2>
 <figure class="diagram"><svg viewBox="0 0 980 560" role="img" aria-labelledby="flow-title flow-desc" xmlns="http://www.w3.org/2000/svg">
   <title id="flow-title">Findings flow before and after</title>
@@ -269,9 +277,9 @@ svg .head-new { fill: var(--accent); }
   <path class="arrow-new" d="M596,446 H620 V504 H634" marker-end="url(#ahn)"/>
 </svg>
 <figcaption>How findings reach the session and the operator, before and after. Its text definition is the mermaid block in plan.md.</figcaption></figure>
-<figure class="diagram"><svg viewBox="0 0 980 470" role="img" aria-labelledby="retry-title retry-desc" xmlns="http://www.w3.org/2000/svg">
-  <title id="retry-title">Posting carried drafts, and attributing a refusal</title>
-  <desc id="retry-desc">The worker posts one review carrying new findings and carried drafts. If GitHub accepts, rows become open and posted_at is stamped. If GitHub refuses and the review carried drafts, the worker retries once with new findings only. If that retry is accepted, each carried draft records one refusal and the reason. If the retry is also refused, today's failure path runs and no row records a refusal.</desc>
+<figure class="diagram"><svg viewBox="0 0 980 640" role="img" aria-labelledby="retry-title retry-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="retry-title">Posting carried drafts, and pinning a refusal on the right draft</title>
+  <desc id="retry-desc">The worker posts one review carrying new findings and carried drafts. If GitHub accepts it, the rows become open and posted_at is stamped. A whole-review refusal (rate limit, auth or SSO, server error, or a moved head) runs today's failure path with no refusal counted. A validation refusal (422) first retries the new findings alone when the review had any; if that retry is refused too, today's failure path runs. Then one carried draft takes the refusal itself, or several are each posted in their own review so that only the bad one counts. The round then finishes, the head advances, and refused drafts stay drafted.</desc>
   <defs>
     <marker id="rh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
     <marker id="rhn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-new" d="M0,0 L10,5 L0,10 z"/></marker>
@@ -281,39 +289,54 @@ svg .head-new { fill: var(--accent); }
   <text class="t" x="185" y="42" text-anchor="middle">Inspector worker (live round)</text>
   <rect class="box" x="690" y="14" width="200" height="46" rx="10"/>
   <text class="t" x="790" y="42" text-anchor="middle">GitHub</text>
-  <line class="life" x1="185" y1="60" x2="185" y2="456"/>
-  <line class="life" x1="790" y1="60" x2="790" y2="456"/>
+  <line class="life" x1="185" y1="60" x2="185" y2="628"/>
+  <line class="life" x1="790" y1="60" x2="790" y2="628"/>
 
-  <rect class="box-new" x="70" y="78" width="230" height="40" rx="8"/>
-  <text class="s" x="185" y="103" text-anchor="middle">plan new findings + carried drafts</text>
+  <rect class="box-new" x="70" y="76" width="230" height="36" rx="8"/>
+  <text class="s" x="185" y="99" text-anchor="middle">plan new findings + carried drafts</text>
 
-  <path class="arrow" d="M185,140 H788" marker-end="url(#rh)"/>
-  <text class="m" x="487" y="132" text-anchor="middle">POST review (new + carried)</text>
+  <path class="arrow" d="M185,134 H788" marker-end="url(#rh)"/>
+  <text class="m" x="487" y="126" text-anchor="middle">POST review (new + carried)</text>
 
-  <rect class="box-good" x="230" y="158" width="520" height="44" rx="8"/>
-  <text class="t" x="250" y="180">accepted</text>
-  <text class="s" x="330" y="180">every row goes to open, posted_at stamped</text>
-  <text class="s" x="330" y="195">github_url captured on the next tick</text>
+  <rect class="box-good" x="230" y="146" width="520" height="34" rx="8"/>
+  <text class="t" x="250" y="168">accepted</text>
+  <text class="s" x="364" y="168">every row goes to open, posted_at stamped</text>
 
-  <rect class="box-warn" x="230" y="218" width="520" height="34" rx="8"/>
-  <text class="t" x="250" y="240">refused, and the review carried drafts</text>
+  <rect class="box-warn" x="230" y="190" width="520" height="48" rx="8"/>
+  <text class="t" x="250" y="210">whole-review refusal</text>
+  <text class="s" x="420" y="210">rate limit, auth or SSO, 5xx, moved head</text>
+  <text class="s" x="420" y="228">today's failure path, nothing counted, no retry</text>
 
-  <path class="arrow-new" d="M185,282 H788" marker-end="url(#rhn)"/>
-  <text class="m" x="487" y="274" text-anchor="middle">POST review (new findings only, re-planned)</text>
+  <rect class="box-new" x="230" y="248" width="520" height="30" rx="8"/>
+  <text class="t" x="250" y="268">validation refusal (422), decided by classifyReviewRefusal</text>
 
-  <rect class="box-good" x="230" y="300" width="520" height="58" rx="8"/>
-  <text class="t" x="250" y="322">retry accepted</text>
-  <text class="s" x="364" y="322">new findings go to open</text>
-  <text class="s" x="364" y="340">each carried draft: post_refusals + 1, last_post_error</text>
-  <text class="s" x="364" y="354">at 3 refusals it is no longer offered and reads "refused"</text>
+  <path class="arrow-new" d="M185,304 H788" marker-end="url(#rhn)"/>
+  <text class="m" x="487" y="296" text-anchor="middle">if the review had new findings: POST them alone</text>
+  <rect class="box-warn" x="230" y="314" width="520" height="30" rx="8"/>
+  <text class="s" x="250" y="334">refused again: today's failure path, nothing counted, stop</text>
 
-  <rect class="box-warn" x="230" y="374" width="520" height="58" rx="8"/>
-  <text class="t" x="250" y="396">retry refused</text>
-  <text class="s" x="364" y="396">today's failure path: rows back to drafted,</text>
-  <text class="s" x="364" y="414">head not advanced, backoff</text>
-  <text class="s" x="364" y="428">no refusal counted on any row</text>
+  <rect class="box" x="230" y="356" width="520" height="30" rx="8"/>
+  <text class="t" x="250" y="376">exactly one carried draft</text>
+  <text class="s" x="440" y="376">it records one refusal and GitHub's reason</text>
+
+  <rect class="box" x="230" y="396" width="520" height="30" rx="8"/>
+  <text class="t" x="250" y="416">several carried drafts</text>
+  <text class="s" x="440" y="416">post each one in its own review</text>
+
+  <path class="arrow-new" d="M185,450 H788" marker-end="url(#rhn)"/>
+  <text class="m" x="487" y="442" text-anchor="middle">POST review (this draft alone), for each</text>
+  <rect class="box-good" x="230" y="460" width="520" height="62" rx="8"/>
+  <text class="s" x="250" y="480">accepted: open, posted_at stamped</text>
+  <text class="s" x="250" y="497">422: only this draft records a refusal</text>
+  <text class="s" x="250" y="514">whole-review: stop isolating, the rest stay drafted, nothing counted</text>
+
+  <rect class="box-good" x="230" y="540" width="520" height="66" rx="8"/>
+  <text class="t" x="250" y="562">round finishes</text>
+  <text class="s" x="364" y="562">head advances, refused drafts stay drafted with their reason</text>
+  <text class="s" x="364" y="580">no model review of this head on every backoff</text>
+  <text class="s" x="364" y="597">offered again on the next push; at 3 refusals, "refused"</text>
 </svg>
-<figcaption>A live round that carries earlier drafts, and how a GitHub refusal is pinned on them. Its text definition is the mermaid block in plan.md.</figcaption></figure>
+<figcaption>A live round that carries earlier drafts, and how a GitHub refusal is classified and pinned on the right draft (D-21, D-28). Its text definition is the mermaid block in plan.md.</figcaption></figure>
 <h2 id="design">Design</h2>
 <h3 id="1-ledger-posted-state-and-github-link">1. Ledger: posted state and GitHub link</h3>
 <p>New columns, each added in <code>migrate()</code> with <code>addColumn</code> and never in the <code>CREATE TABLE</code> block:</p>
@@ -337,19 +360,27 @@ svg .head-new { fill: var(--accent); }
 <li>After reconciliation, each tick writes <code>github_url</code> on every row whose marker thread it sees and whose stored URL is missing or different.</li>
 <li>A demoted finding (<code>line IS NULL</code>, posted in the review body) takes the URL of our review whose body carries <code>BODY_ONLY_FINDINGS_MARKER</code> and the round header for that row's round. Ownership follows the same <code>isOurs</code> rule as threads.</li>
 <li>Until a tick sees it, a posted row has no URL, and the view says "Posted" without a link.</li></ul>
-<p><strong>One derivation.</strong> A browser-safe function in <code>src/shared/inspector-findings.ts</code>:</p>
-<pre><code>findingPublication(row): {
-  state: "posted" | "posting" | "not-posted" | "refused" | "unknown";
-  url: string | null;
+<p><strong>One derivation.</strong> A browser-safe function in <code>src/shared/inspector-findings.ts</code>. Phase 1 ships it with the four states and the fields below. It reads no refusal column, because those columns do not exist until phase 4.</p>
+<pre><code>// Phase 1
+findingPublication(row): {
+  state: "posted" | "posting" | "not-posted" | "unknown";
+  url: string | null;       // github_url: this finding's comment, or an earlier version's
   postedAt: number | null;
-  reason: string | null;    // GitHub's refusal, when state is "refused"
   earlierPost: boolean;     // a drafted row whose earlier version was posted
 }</code></pre>
-<p>Rules, first match wins:</p>
+<p>Phase 1 rules, first match wins:</p>
 <ol><li><code>status = posting</code> gives <code>posting</code>.</li>
-<li><code>status = drafted</code> gives <code>refused</code> when <code>post_refusals &gt;= 3</code> (phase 4), and <code>not-posted</code> otherwise. <code>earlierPost</code> is set when <code>posted_at</code> is set or <code>legacy_posted = posted</code>.</li>
+<li><code>status = drafted</code> gives <code>not-posted</code>. <code>earlierPost</code> is set when <code>posted_at</code> is set or <code>legacy_posted = posted</code>, and <code>url</code> is then the earlier version's comment, carried forward on the row.</li>
 <li><code>status = open</code> gives <code>posted</code>.</li>
 <li><code>status = resolved</code> gives <code>posted</code> when <code>posted_at</code> is set or <code>legacy_posted = posted</code>, <code>unknown</code> when <code>legacy_posted = unknown</code>, and <code>not-posted</code> otherwise.</li></ol>
+<p><strong>Phase 4 extends it</strong> (section 6). It adds the <code>refused</code> state and two fields, <code>refusals: number</code> from <code>post_refusals</code> and <code>reason: string | null</code> from <code>last_post_error</code>. Rule 2 becomes:</p>
+<ul><li><code>refused</code> when <code>post_refusals &gt;= 3</code>;</li>
+<li>otherwise <code>not-posted</code>, carrying <code>refusals</code> and <code>reason</code> from the first counted refusal, so GitHub's reason shows straight away and not only once the cap is reached.</li></ul>
+<p>Phase 4 also updates the two consumers of the new state, the renderer's marker (section 3) and the table's Posted cell (section 5). They switch over <code>state</code> exhaustively, so the new member fails the build until both handle it.</p>
+<p>Each consumer shows <code>earlierPost</code> as its own case and never as "only copy":</p>
+<ul><li>the relay's line is "Not posted again. An earlier version was posted on GitHub: &lt;url&gt;";</li>
+<li>the table shows "Not posted (posted earlier)", linking to the earlier comment.</li></ul>
+<p>The earlier thread is resolved on GitHub, because the finding was closed before it was raised again. It is still the place to read what was said.</p>
 <p>Missing fields, as in an older frozen snapshot, read as <code>unknown</code>. The renderer, the route's clients and the table all call this function, and none of them re-derives it.</p>
 <h3 id="2-the-read-route">2. The read route</h3>
 <p><code>GET /api/inspector/findings?pr=&lt;prKey&gt;</code>, next to <code>GET /api/inspector/prs</code> in <code>src/server/routes.ts</code>.</p>
@@ -373,13 +404,16 @@ Location: src/a.ts:12
 Posted on GitHub: https://github.com/o/r/pull/7#discussion_r123
 &lt;body&gt;
 Fingerprint: &lt;fp&gt;</code></pre></li></ul>
-<ul><li>The posted line reads one of:
+<ul><li>In phase 2, the posted line reads one of:
 <ul><li><code>Posted on GitHub: &lt;url&gt;</code></li>
 <li><code>Posted on GitHub (link not captured yet)</code></li>
 <li><code>Posted on GitHub in the review summary: &lt;url&gt;</code></li>
 <li><code>Not posted on GitHub. This message is the only copy.</code></li>
-<li><code>Not posted. GitHub refused it 3 times: &lt;reason&gt;</code></li>
+<li><code>Not posted again. An earlier version was posted on GitHub: &lt;url&gt;</code>, for <code>earlierPost</code></li>
 <li><code>Being posted now</code></li></ul></li>
+<li>Phase 4 adds two lines when it adds the refusal fields:
+<ul><li><code>Not posted yet. GitHub refused it N time(s): &lt;reason&gt;. Mission Control offers it again on the next push.</code>, for a draft with one or two refusals;</li>
+<li><code>Not posted. GitHub refused it 3 times: &lt;reason&gt;</code>, for <code>refused</code>.</li></ul></li>
 <li>Fields still clip at <code>feedbackFieldBytes</code>.</li>
 <li>Past <code>budgetBytes</code>, whole findings are dropped from the tail, lowest severity first, and a closing line says how many: "N more unresolved findings are not listed here, to keep this message short. They stay open and come back in the next relay."</li>
 <li><code>renderInspectorFeedback</code> keeps its header (goal, workflow, run, PR, pinned head, round and posture) and its <code>finalizePacket</code> closing. It calls the new function with whatever budget is left under <code>feedbackPayloadBytes</code> after them. <code>failedPersonaCount</code> stays the total, not the number shown.</li>
@@ -405,13 +439,16 @@ Fingerprint: &lt;fp&gt;</code></pre></li></ul>
 <p><strong>The shared table.</strong></p>
 <ul><li>The Completion tab's inline findings table moves into <code>src/web/components/InspectorFindingsTable.tsx</code>. Its helpers (<code>inspectorFindingSeverityStatus</code>, <code>inspectorFindingStatusStatus</code>, <code>inspectorFindingLocation</code> and <code>inspectorFindingBody</code>) move out of <code>run-model.ts</code> to sit beside it.</li>
 <li><code>CompletionPane</code> renders the shared table. Its caption and empty-state copy stay with the caller.</li>
-<li>The table gains a <strong>Posted</strong> column, driven by <code>findingPublication</code>:
+<li>In phase 3, the table gains a <strong>Posted</strong> column, driven by <code>findingPublication</code>:
 <ul><li>"Posted", linking to <code>github_url</code> on GitHub.</li>
 <li>"Posted" with no link, while the URL is not captured yet.</li>
 <li>"Not posted".</li>
-<li>"Refused", with the reason in a tooltip and in the detail row.</li>
+<li>"Not posted (posted earlier)", linking to the earlier version's comment, for <code>earlierPost</code>.</li>
 <li>"Posting".</li>
 <li>"Unknown", with the tooltip "Recorded before Mission Control tracked posting".</li></ul></li>
+<li>Phase 4 adds two cells to the same column:
+<ul><li>"Not posted" with "GitHub refused it N time(s)", and the reason in a tooltip and in the detail row, for one or two refusals;</li>
+<li>"Refused", with the reason in a tooltip and in the detail row, at 3.</li></ul></li>
 <li>The body rule stays as it is: an unresolved finding's body is always shown, and a resolved one's opens with <strong>Show finding</strong>.</li></ul>
 <p><strong>Settings → GitHub Inspector → Inspections.</strong></p>
 <ul><li>Each row's action cell gets a <strong>Findings</strong> button next to Resolve, with the label <code>View GitHub Inspector's findings on owner/repo#N</code>.</li>
@@ -423,7 +460,7 @@ Fingerprint: &lt;fp&gt;</code></pre></li></ul>
 <li>It fetches when it opens, and refreshes on <code>useInspector</code>'s 4-second tick while it stays open.</li>
 <li>It is read-only, with no Resolve inside it.</li></ul>
 <p><strong>Footer copy.</strong> The table footer becomes "In dry run nothing is posted to GitHub. Open a pull request's Findings to read what GitHub Inspector found."</p>
-<h3 id="6-posting-drafts-after-a-switch-to-live-d-12-d-18-d-21-d-22">6. Posting drafts after a switch to live (D-12, D-18, D-21, D-22)</h3>
+<h3 id="6-posting-drafts-after-a-switch-to-live-d-12-d-18-d-21-d-22-d-28">6. Posting drafts after a switch to live (D-12, D-18, D-21, D-22, D-28)</h3>
 <p>Phase 4 runs in this order.</p>
 <p><strong>Reproduction first.</strong> It is a <code>node:test</code> integration test that drives the real worker with the fake <code>gh</code> and the fake model runner the existing <code>test/inspector-*.test.ts</code> integration files use, so it spends no model tokens.</p>
 <ol><li>In dry run, one round drafts two findings.</li>
@@ -440,21 +477,57 @@ Fingerprint: &lt;fp&gt;</code></pre></li></ul>
 <li>its path is still in this diff, and its line snaps with <code>snapToLine</code>;</li>
 <li>its <code>post_refusals</code> is below 3.</li></ul>
 <p>Carried candidates go through the same scrub, severity sort and <code>maxCommentsPerRound</code> cap. At equal severity, new findings come first. A draft whose path has left the diff stays drafted and is not posted. A draft the model raises again counts as a new finding, as it does today, and the refusal cap does not apply to it.</p></li>
-<li><strong>Worker.</strong> When <code>postReview</code> is refused (<code>wasRefused</code>) and the review carried drafts, the worker retries once straight away without them. The retry is re-planned, so the review body and the over-cap note match what it carries.
-<ul><li><strong>Retry accepted.</strong> The new findings go to <code>open</code>. Each carried draft gets <code>post_refusals + 1</code> and <code>last_post_error</code>, scrubbed and clipped to 300 bytes like other GitHub errors.</li>
-<li><strong>Retry also refused.</strong> No row records a refusal, and today's failure path runs.</li>
-<li><strong>Response lost</strong> (<code>outcomeUnknown</code>). Today's <code>posting</code> reconciliation runs. A lost response never counts as a refusal.</li></ul></li>
+<li><strong>One classifier</strong> (D-28). <code>classifyReviewRefusal</code> in <code>src/server/inspector/github.ts</code> takes a refused <code>postReview</code> result (<code>wasRefused</code>) and returns <code>whole-review</code> or <code>validation</code>.
+<ul><li><strong>Whole-review:</strong> a rate limit (HTTP 429, or a 403 naming a secondary rate limit), an auth or SSO refusal (HTTP 401, or what <code>classifyGitHubSsoRefusal</code> already recognizes), a server error (HTTP 5xx), or a moved head. Any other status that is not 422 also counts here, so nothing unrecognized is ever pinned on a row.</li>
+<li><strong>Validation:</strong> HTTP 422 on a head that has not moved.</li>
+<li><strong>How it reads the status:</strong> from <code>gh</code>'s stderr, the same text <code>classifyGitHubSsoRefusal</code> already reads.</li>
+<li><strong>The moved-head check:</strong> one PR head read, made only after a refusal.</li>
+<li>Both the drafts-only path and the mixed-review retry call this helper, and nothing else decides the class.</li></ul></li>
+<li><strong>Worker.</strong> When <code>postReview</code> is refused and the review carried drafts:
+<ul><li><strong>Whole-review refusal.</strong> Today's failure path runs: rows go back to drafted, the head is not advanced, and backoff applies. No retry is sent and no row records a refusal. This holds for every review shape, so a rate limit never triggers D-21's retry.</li>
+<li><strong>Validation refusal, review also carried new findings</strong> (D-21). The worker retries once, straight away, without the carried drafts.
+<ul><li>If that retry is refused, today's failure path runs, nothing is counted, and the worker stops there.</li>
+<li>If it is accepted, the new findings go to <code>open</code>, and the carried drafts are pinned as below.</li></ul></li>
+<li><strong>Validation refusal, review carried only drafts.</strong> The drafts are pinned as below. No review without them exists to send.</li>
+<li><strong>Pinning, exactly one carried draft.</strong> That draft records one refusal: <code>post_refusals + 1</code>, and <code>last_post_error</code> set to GitHub's reason, scrubbed and clipped to 300 bytes like other GitHub errors.</li>
+<li><strong>Pinning, several carried drafts.</strong> Each carried draft is retried in its own review, so a valid draft never counts toward the cap because of a bad sibling. For each one:
+<ul><li>accepted: the draft goes to <code>open</code> and <code>posted_at</code> is stamped;</li>
+<li>validation refusal: that draft alone records a refusal;</li>
+<li>whole-review refusal: isolation stops, and the drafts not yet tried stay drafted with no refusal recorded.</li></ul></li>
+<li><strong>The round finishes</strong> after pinning. The head advances, <code>reviewPosture</code> is recorded, and refused drafts stay drafted. Because they stay unresolved, step 3 of the tick reuses this reviewed head, so the model does not review it again on every backoff. A refused draft is next offered on the next push's round.</li>
+<li><strong>The retry and isolated reviews reuse this round's verdict and plan.</strong> There is no second model call. Each isolated review carries the round header and a one-line note that the finding is posted on its own.</li>
+<li><strong>Response lost</strong> (<code>outcomeUnknown</code>), on any of these posts. Today's <code>posting</code> reconciliation runs. A lost response never counts as a refusal.</li></ul></li>
 <li><strong>New columns</strong>, added in <code>migrate()</code>: <code>post_refusals INTEGER NOT NULL DEFAULT 0</code> and <code>last_post_error TEXT</code>. Both are written through <code>upsertInspectorComment</code> and carried forward like <code>replies</code>.</li>
-<li><strong>Refused state.</strong> <code>findingPublication</code> returns <code>refused</code> at 3 refusals. A refused draft stays unresolved, so it still blocks Shipping and YOLO, and Foreman still relays it, marked "Not posted. GitHub refused it 3 times: &lt;reason&gt;". The operator's per-PR Resolve closes it.</li></ul>
+<li><strong>Refusal state</strong> (extends section 1's derivation).
+<ul><li>A draft with one or two refusals reads <code>not-posted</code>, with its reason shown from the first refusal.</li>
+<li>At 3, it reads <code>refused</code> and is no longer carried.</li>
+<li>Either way it stays unresolved, so it still blocks Shipping and YOLO. Foreman still relays it, with the phase 4 markers in section 3. The operator's per-PR Resolve closes it.</li>
+<li>Phase 4 updates the renderer's marker and the table's Posted cell for these states.</li></ul></li></ul>
 <p><strong>Regression tests</strong> (<code>node:test</code>, in <code>test/</code>):</p>
 <ul><li>The reproduction, now passing: after the switch, the drafted findings are posted and stamped with <code>posted_at</code>.</li>
-<li>A refused review that carried drafts, with the retry accepted: each carried draft gets one refusal and the reason, and the new findings are <code>open</code>.</li>
-<li>A refused review whose retry is also refused: no row counts a refusal.</li>
-<li>A draft at 3 refusals is not offered, and a draft whose path has left the diff is not posted.</li>
+<li><code>classifyReviewRefusal</code>, one case per class:
+<ul><li>422 on an unmoved head gives <code>validation</code>;</li>
+<li>429, a 403 secondary rate limit, 401, an SSO refusal, a 5xx, a moved head, and an unrecognized non-422 status each give <code>whole-review</code>.</li></ul></li>
+<li>A whole-review refusal of a review carrying drafts: no retry is sent, no row counts a refusal, and today's failure path runs.</li>
+<li>A mixed review refused with 422, retry accepted, one carried draft: that draft gets one refusal and the reason, and the new findings are <code>open</code>.</li>
+<li>A mixed review refused with 422, retry also refused: no row counts a refusal.</li>
+<li>A drafts-only review refused with 422, one draft: it gets one refusal, the round finishes, and the head advances. The fake model runner is called once, not once per backoff.</li>
+<li>A drafts-only review refused with 422, three drafts, one with a bad anchor (isolation):
+<ul><li>the two valid drafts are posted and stamped;</li>
+<li>only the bad one counts a refusal;</li>
+<li>a whole-review refusal partway through stops isolation with nothing counted.</li></ul></li>
+<li>The reason shows from the first refusal: <code>findingPublication</code> returns <code>not-posted</code> with <code>refusals: 1</code> and the reason.</li>
+<li>A draft at 3 refusals reads <code>refused</code> and is not offered.</li>
+<li>A draft whose path has left the diff is not posted.</li>
 <li>The prompt lists drafted rows in their own section.</li></ul>
 <h2 id="phases">Phases</h2>
-<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Scope</th><th>Depends on</th></tr></thead><tbody><tr><td>1. Ledger and read route</td><td><code>posted_at</code>, <code>github_url</code>, <code>legacy_posted</code> and its backfill; URL capture from the snapshot; <code>findingPublication</code>; <code>GET /api/inspector/findings</code>; the Foreman and web client calls</td><td>none</td></tr><tr><td>2. Shared renderer and Foreman relay</td><td><code>findings-text.ts</code>; <code>renderInspectorFeedback</code> rewired; the relay trigger and payload; the worker's read-and-hold; the popover copy</td><td>1</td></tr><tr><td>3. Findings modal and shared table</td><td><code>InspectorFindingsTable</code>; the Completion tab rewired; the Findings button and modal; the footer copy</td><td>1</td></tr><tr><td>4. Drafts after a switch to live</td><td>Reproduction; the prompt split; the planner carry; the retry without carried drafts; the refusal columns; the <code>refused</code> state; regression tests</td><td>1, then 3</td></tr></tbody></table></div>
-<p>Phase 1 lands first. Phases 2 and 3 can run in parallel after it: they touch different files, and both read <code>findingPublication</code> from phase 1. Phase 4 needs phase 1's stamping. It also extends <code>findingPublication</code> and the phase 3 spec, so it lands after phase 3 to keep two branches from editing the same spec.</p>
+<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Scope</th><th>Depends on</th></tr></thead><tbody><tr><td>1. Ledger and read route</td><td><code>posted_at</code>, <code>github_url</code>, <code>legacy_posted</code> and its backfill; URL capture from the snapshot; <code>findingPublication</code>; <code>GET /api/inspector/findings</code>; the Foreman and web client calls</td><td>none</td></tr><tr><td>2. Shared renderer and Foreman relay</td><td><code>findings-text.ts</code>; <code>renderInspectorFeedback</code> rewired; the relay trigger and payload; the worker's read-and-hold; the popover copy</td><td>1</td></tr><tr><td>3. Findings modal and shared table</td><td><code>InspectorFindingsTable</code>; the Completion tab rewired; the Findings button and modal; the footer copy</td><td>1</td></tr><tr><td>4. Drafts after a switch to live</td><td>Reproduction; the prompt split; the planner carry; <code>classifyReviewRefusal</code>; the retry without carried drafts and per-draft isolation; the refusal columns; the refusal states in <code>findingPublication</code>, the renderer and the table; regression tests</td><td>1, 2 and 3</td></tr></tbody></table></div>
+<p>Phase 1 lands first. Phases 2 and 3 can run in parallel after it: they touch different files, and both read phase 1's <code>findingPublication</code>. Phase 4 starts only after <strong>both</strong> 2 and 3 have merged (D-25), because it:</p>
+<ul><li>needs phase 1's stamping;</li>
+<li>extends <code>findingPublication</code> with the refusal states;</li>
+<li>updates phase 2's renderer marker and phase 3's Posted cell for those states;</li>
+<li>extends phase 3's spec.</li></ul>
+<p>It also must not land before phase 2. Phase 4 makes refused drafts possible, and phase 2's relay is what keeps those unresolved drafts visible to sessions.</p>
 <h3 id="tests-and-verification-per-phase">Tests and verification per phase</h3>
 <p>Each phase meets the repository's definition of done: relevant tests, <code>npm run typecheck</code>, <code>npm run lint</code>, and, where UI or runtime code changes, <code>npm run build</code>, <code>npm run smoke</code> and <code>npm run test:e2e</code>.</p>
 <ul><li><strong>Phase 1.</strong>
@@ -462,18 +535,27 @@ Fingerprint: &lt;fp&gt;</code></pre></li></ul>
 <li><code>posted_at</code> stamped at both confirmation points and carried through resolution.</li>
 <li>URL capture from a snapshot fixture, for an inline finding and a demoted one.</li>
 <li>The route's <code>400</code>, <code>404</code> and <code>200</code> cases.</li>
-<li><code>findingPublication</code>'s rule table.</li>
+<li><code>findingPublication</code>'s phase 1 rule table: the four states, plus <code>earlierPost</code> for a drafted row with <code>posted_at</code> set, and for one with <code>legacy_posted = posted</code>. No refusal case, because those columns arrive in phase 4.</li>
 <li><code>test/inspector-resolution-writer.test.ts</code> still passes, so there is still one writer.</li></ul></li>
 <li><strong>Phase 2.</strong>
-<ul><li>Renderer tests: every posted marker, the byte budget, whole-finding drops and the omitted count.</li>
+<ul><li>Renderer tests: every phase 2 posted marker, including the <code>earlierPost</code> line and never the "only copy" line for such a row; the byte budget; whole-finding drops and the omitted count.</li>
 <li><code>test/workflow-inspector-feedback.test.ts</code> updated for the new packet text.</li>
 <li><code>test/foreman-review-followup.test.ts</code>: a draft now triggers; the payload carries finding text and no <code>gh pr view</code> pointer; a failed read holds without stamping; every existing gate still refuses.</li>
 <li>The popover copy change updates the Foreman pull-request spec in <code>e2e/specs/dispatch-and-converse.spec.ts</code>.</li></ul></li>
 <li><strong>Phase 3.</strong>
-<ul><li>A new <code>e2e/specs/inspector-findings.spec.ts</code>. It seeds <code>inspector_prs</code> and <code>inspector_comments</code> the way <code>inspector-resolve-findings.spec.ts</code> does, with five rows: a posted finding with a link, a posted one without a link, a draft, a resolved posted finding, and a legacy unknown row.</li>
-<li>The spec opens the modal by its accessible label, asserts every Posted cell and every body that should be visible, and calls <code>expectContentClearsBorder</code>.</li>
+<ul><li>A new <code>e2e/specs/inspector-findings.spec.ts</code>. It seeds <code>inspector_prs</code> and <code>inspector_comments</code> the way <code>inspector-resolve-findings.spec.ts</code> does, with six rows:
+<ul><li>a posted finding with a link;</li>
+<li>a posted one without a link;</li>
+<li>a draft;</li>
+<li>a draft whose earlier version was posted;</li>
+<li>a resolved posted finding;</li>
+<li>a legacy unknown row.</li></ul></li>
+<li>The spec opens the modal by its accessible label, asserts every Posted cell (including "Not posted (posted earlier)" and its link) and every body that should be visible, and calls <code>expectContentClearsBorder</code>.</li>
 <li><code>e2e/specs/workflow-completion-pane.spec.ts</code> asserts the Posted column on its drafted finding.</li></ul></li>
-<li><strong>Phase 4.</strong> The regression tests above, and the phase 3 spec extended with a refused row.</li></ul>
+<li><strong>Phase 4.</strong>
+<ul><li>The regression tests above.</li>
+<li>The phase 2 renderer tests extended with the two refusal markers.</li>
+<li>The phase 3 spec extended with a once-refused row, showing "Not posted", the refusal count and the reason, and a refused row at 3.</li></ul></li></ul>
 <h2 id="docs-to-update">Docs to update</h2>
 <ul><li><code>docs/inspector-and-shipping.md</code>:
 <ul><li>The Dry run section says where to read drafts.</li>
@@ -489,7 +571,13 @@ Fingerprint: &lt;fp&gt;</code></pre></li></ul>
 <li><strong>Workflow packet idempotency.</strong> Before changing the text, phase 2 checks that nothing renders a stored packet again and compares hashes (<code>transitionInspectorFindingsWithDelivery</code>, restart recovery). If something does, the renderer change must leave a stored delivery's text alone.</li>
 <li><strong>Links for demoted findings.</strong> These links depend on matching our review's round header and marker. A finding that does not match still reads "Posted", without a link.</li>
 <li><strong>Posting an already-fixed draft.</strong> Deterministic posting could post a draft that a later push already fixed, if the model didn't name it as resolved. Two things reduce this: the model sees drafts in their own section with an explicit instruction to resolve them, and the planner only carries a draft whose path is still in the diff. This risk is accepted.</li>
-<li><strong>One extra request on refusal.</strong> The retry adds at most one more POST, and only for a refused review that carried drafts.</li></ul>
+<li><p><strong>Extra requests on refusal.</strong> These happen only after a refusal of a review that carried drafts:</p>
+<ul><li>the moved-head check makes one PR read;</li>
+<li>D-21's retry makes at most one POST;</li>
+<li>isolation makes at most one POST per carried draft, bounded by <code>maxCommentsPerRound</code>.</li></ul>
+<p>An ordinary tick makes no new call.</p></li>
+<li><strong>Extra notifications from isolation.</strong> Each isolated review is its own notification on the PR. It happens only after a validation refusal, which a snapped line should make rare. This was accepted in D-28, as the price of never counting a valid draft for a bad sibling.</li>
+<li><strong>Classification relies on <code>gh</code>'s stderr.</strong> It reads the HTTP status the way <code>classifyGitHubSsoRefusal</code> already does. An unrecognized status is whole-review, so a change in that text can make the cap engage less often, but it can never pin a refusal on the wrong row.</li></ul>
 <h2 id="out-of-scope">Out of scope</h2>
 <ul><li>Opening the findings view from the session (D-9).</li>
 <li>Resolving a single finding (D-11).</li>
@@ -505,7 +593,10 @@ Fingerprint: &lt;fp&gt;</code></pre></li></ul>
 <li>Foreman's relay and the workflow <code>inspector_feedback</code> packet render findings through one shared renderer.</li>
 <li><code>inspector_comments</code> records <code>posted_at</code> and <code>github_url</code>. A finding that was posted and later resolved still reads as posted.</li>
 <li>Settings → GitHub Inspector → Inspections opens a read-only Findings modal for each pull request.</li>
-<li>After a switch to live, drafted findings are posted. A draft GitHub refuses three times, with the refusal pinned on it, stops being offered.</li></ul>
+<li>After a switch to live, drafted findings are posted.</li>
+<li>A refusal counts against a draft only when one classifier calls it a validation refusal and it is pinned on that draft alone, by D-21's retry or by per-draft isolation. Whole-review failures never count.</li>
+<li>A draft refused three times stops being offered.</li>
+<li>A refused round finishes, so the model does not review the same head again on every backoff.</li></ul>
 <h3 id="upstream-behavior-it-assumes">Upstream behavior it assumes</h3>
 <ul><li><code>inspector_comments.status</code> keeps its four values.</li>
 <li>A single upsert writes every row.</li>
