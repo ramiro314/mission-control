@@ -375,12 +375,94 @@ test("the inventory reports current, then stale only once the default ref is fet
   assert.equal(stale.slot.dependencies?.defaultSha, fetched);
   assert.equal(stale.slot.dependencies?.fingerprintSha, fixture.sha);
 
-  // A change outside the fingerprint paths is not a dependency change.
+});
+
+test("a fetched change outside the fingerprint paths leaves a current slot current", async () => {
+  const fixture = repository("mission-claim-inventory-unlisted-");
+  const claim = WorktreeClaimSchema.parse({
+    steps: [{ argv: node("process.exit(0)") }],
+    fingerprintPaths: ["lock.txt"],
+  });
+  const { manager, operations } = harness(claim, async () => []);
+  const lease = leased(await manager.acquire({
+    repositoryPath: fixture.clone,
+    baseSha: fixture.sha,
+    owner: { kind: "task", key: "task-unlisted:0" },
+    runClaim: true,
+  })).lease;
+  assert.equal((await slotView(operations, lease.slotId)).slot.dependencies?.state, "current");
+
+  // Only an unlisted path moves on origin, and the clone fetches it: the default commit
+  // changes, but the claim's fingerprint at that commit does not.
   writeFileSync(join(fixture.origin, "README.md"), "docs only\n");
   gitIn(fixture.origin, "add", "-A");
   gitIn(fixture.origin, "commit", "-qm", "docs");
   gitIn(fixture.clone, "fetch", "-q", "origin");
-  assert.equal((await slotView(operations, lease.slotId)).slot.dependencies?.state, "stale", "still stale against lock v2");
+  const fetched = gitIn(fixture.clone, "rev-parse", "origin/main");
+  assert.notEqual(fetched, fixture.sha, "the default branch really moved");
+  const after = await slotView(operations, lease.slotId);
+  assert.equal(after.slot.dependencies?.state, "current", "README.md is not a fingerprint path");
+  assert.equal(after.slot.dependencies?.defaultSha, fetched, "judged against the moved default, not the old one");
+  assert.equal(after.slot.dependencies?.fingerprintSha, fixture.sha);
+});
+
+test("a presence probe that fails leaves the inventory available and every name missing", async () => {
+  const fixture = repository("mission-claim-inventory-presence-fails-");
+  const claim = WorktreeClaimSchema.parse({
+    steps: [{ argv: node("process.exit(0)"), env: ["PRESENT_TOKEN", "OTHER_TOKEN"] }],
+  });
+  let asked: readonly string[] = [];
+  const { manager, operations } = harness(claim, async (names) => {
+    asked = names;
+    throw new Error("login shell exploded with s3cr3t-in-error");
+  });
+  const lease = leased(await manager.acquire({
+    repositoryPath: fixture.clone,
+    baseSha: fixture.sha,
+    owner: { kind: "task", key: "task-presence-fails:0" },
+    runClaim: true,
+  })).lease;
+
+  const { inventory, slot } = await slotView(operations, lease.slotId);
+  assert.deepEqual(asked, ["OTHER_TOKEN", "PRESENT_TOKEN"], "the probe was asked, once, for every name");
+  assert.equal(slot.dependencies?.state, "current", "the rest of the inventory is unaffected");
+  assert.deepEqual(inventory.repositories[0]!.claimVariables, [
+    { name: "OTHER_TOKEN", present: false, source: null },
+    { name: "PRESENT_TOKEN", present: false, source: null },
+  ]);
+  const serialized = JSON.stringify(inventory);
+  for (const leak of ["s3cr3t", "exploded"]) {
+    assert.equal(serialized.includes(leak), false, `${leak} must not reach the inventory`);
+  }
+});
+
+test("a failure tail is kept whole up to its byte bound, and cut on a character boundary past it", () => {
+  const failed = (depsLastError: string) =>
+    slotDependencies({
+      hasClaim: true,
+      slot: row({ depsState: "failed", depsLastError }),
+      running: null,
+      defaultSha: null,
+      defaultFingerprint: null,
+    })?.failure;
+  const bound = 6_144;
+
+  const ascii = "x".repeat(bound);
+  assert.equal(failed(ascii), ascii, "exactly at the bound, single-byte text is untouched");
+  const wide = "€".repeat(bound / 3);
+  assert.equal(Buffer.byteLength(wide), bound);
+  assert.equal(failed(wide), wide, "exactly at the bound, multi-byte text is untouched");
+
+  // 2,100 three-byte characters and a final "z" are 6,301 bytes. Keeping the last 6,144
+  // starts one byte into a character, which must be dropped rather than shown as U+FFFD.
+  const over = `${"€".repeat(2_100)}z`;
+  const kept = failed(over)!;
+  assert.equal(kept, `${"€".repeat(2_047)}z`, "the newest output, the end, is what is kept");
+  assert.equal(kept.includes("�"), false, "no replacement character from the cut");
+  assert.ok(Buffer.byteLength(kept) <= bound);
+
+  const overAscii = `head-${"y".repeat(bound)}`;
+  assert.equal(failed(overAscii), "y".repeat(bound), "past the bound, exactly the last bytes remain");
 });
 
 test("a running claim shows installing with its step, and a failed one keeps its tail", async () => {
