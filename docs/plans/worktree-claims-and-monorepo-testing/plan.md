@@ -17,7 +17,8 @@ accept.
 Settled through a three-round grilling session (46 decisions, listed at the end). Where the
 answer differs from the recommendation offered, the decision table says so. The human approved
 the plan as written on 2026-10-13 and chose to create tickets after it merges (see "Plan
-review").
+review"). A workflow repair round then added the handoff between slice 3 and slice 4, and crash
+recovery, from three further human decisions (see "Repair round 1").
 
 ## Goals
 
@@ -233,9 +234,36 @@ Stdin is closed, as it is for checks.
 - every step's variable names.
 
 The claim records it on the slot row only after every step succeeds. A claim whose fingerprint
-equals the slot's recorded one skips the steps entirely. The slot row gains nullable columns for
-the fingerprint, the commit it was taken at, and the last claim's outcome and tail, added in
-`migrate()` next to their upgrade path.
+equals the slot's recorded one skips the steps entirely.
+
+**Dependency state, written ahead.** The slot row gains these nullable columns, added in
+`migrate()` next to their upgrade path:
+
+- `deps_state`, one of `never`, `current`, `claiming`, `seeding`, `failed` or `interrupted`;
+- the fingerprint, and the commit it was taken at;
+- the last claim's outcome and tail;
+- `deps_log_path`, the last Warm's log.
+
+Before any claim step or seed touches the tree, **one durable write** sets `deps_state` to
+`claiming` or `seeding` and clears the fingerprint (repair round 1). Success writes the new
+fingerprint with `current`, and failure writes `failed`. A crash at any point therefore leaves
+no fingerprint for a later lease to trust. Recovery is in section 2, "Crash and restart
+recovery".
+
+**Interrupted dependencies** (repair round 1, `interrupted-deps`). A claim that finds
+`deps_state = interrupted` first removes the pool's `seed.paths`, then proceeds as cold: it
+seeds if a sibling qualifies, else it runs every step.
+
+- `git check-ignore` verifies every matched path is ignored before it is removed.
+- A matched path that is tracked, or not ignored, is never removed. The claim fails with a
+  warning instead, under the ordinary failure rules.
+- A pool with no `seed.paths` has nothing to remove, and the claim runs every step.
+
+A Stop, timeout or Cancel decides `deps_state` by when it lands:
+
+- during a seed, it sets `interrupted`, because the renames may be half done;
+- during a step, it sets `failed`, like any failed claim, and the next claim reruns the steps in
+  place.
 
 **Output and limits.** Each step's output streams into a 4,000-byte tail, the same bound and
 `TailRing` as checks (`check-spawn.ts:254`). Output size never fails a claim. A timeout kills
@@ -272,8 +300,9 @@ over as a failed claim, so the dispatch continues with the warning.
 **What the operator sees** (round 2, `claim-progress-ui`):
 
 - **Slot card.** The slot view gains a dependency state: current, stale versus origin's default
-  branch, never installed, installing (with the running step and elapsed time), or failed (with
-  the tail). Stale is computed against the last fetched `origin/<default>` ref, so building the
+  branch, never installed, installing (with the running step and elapsed time), failed (with
+  the tail), or interrupted (a restart, or a Stop or Cancel during a seed; the next claim starts
+  cold). Stale is computed against the last fetched `origin/<default>` ref, so building the
   inventory never fetches. Changes reach the dashboard through the existing `worktrees_changed`
   revision bump.
 - **Task card.** The task view carries a provisioning phase while its dispatch waits on a claim:
@@ -354,12 +383,53 @@ check fallback.
 - The operation view gains a live output tail and a **Cancel** control:
   - The tail is updated with a `worktrees_changed` bump at most once per second while a Warm
     runs.
-  - Cancel kills the process group, clears the slot's fingerprint, and returns the slot to the
-    pool as available.
+  - Cancel kills the process group and returns the slot to the pool as available. The fingerprint
+    was already cleared by the write-ahead, and `deps_state` follows the Stop rule in section 1.
 - The full log is written under the state directory, at `logs/worktree-warm/<operationId>.log`.
-  The operation view links it, and dismissing or pruning the operation prunes the log.
+  - The operation view links it.
+  - The target slot's `deps_log_path` keeps the most recent log reachable from the slot card,
+    including after a restart.
+  - A log no live operation and no slot row references is removed.
 - Warm never touches a leased or quarantined slot. A slot leased while a "Warm idle slots"
   operation is queued is skipped and listed as skipped.
+
+#### Crash and restart recovery (claims, seeds and Warm)
+
+The native-worktree contract applies unchanged: persist intent before mutation, reconcile every
+transitional state at startup, quarantine ambiguity
+(`docs/plans/native-worktree-management/plan.md:190-193, 444`). This plan adds two intents:
+
+- `deps_state` (section 1);
+- the `warm` lease, owned by `warm:<operationId>`.
+
+**Whether a `warm` owner exists.** Warm operations live only in daemon memory
+(`WorktreeOperationsService` keeps them in a `Map`), so no Warm operation survives a restart.
+
+- **At runtime,** `nativeWorktreeOwnerReferenced` reports a `warm` owner as referenced exactly
+  while its operation is queued or running.
+- **At startup reconcile,** which runs before the operations service accepts work, it reports a
+  definite "not referenced". It never reports "unknown".
+
+**Crash points.** Startup reconcile handles each one deterministically:
+
+| Crash during | Durable state startup finds | Startup does | Afterwards |
+|---|---|---|---|
+| Claim steps inside a task, check or manual lease | slot `provisioning`, `deps_state = claiming`, no fingerprint | Quarantines "interrupted provisioning intent", as today; sets `deps_state = interrupted` | If the slot later returns to the pool, its next claim wipes the seed paths and starts cold |
+| A seed inside a lease, including between renames | slot `provisioning`, `deps_state = seeding`, no fingerprint | Same as above | Same as above |
+| A Warm on its target | slot `leased` by `warm:<op>`, `deps_state` = `claiming` or `seeding` | Owner provably absent, so the ordinary return path runs: occupancy check, reset to origin's default, clean and detached verification. The slot becomes available with `deps_state = interrupted` (repair round 1, `warm-restart`) | Its next claim wipes the seed paths and starts cold |
+| A seed, on its source | slot `leased` by `warm:<op>`, `deps_state` unchanged | The same return path. A source is only read, so its fingerprint stays valid | The ordinary skip rule |
+| Any of the above, with doubt | unknown occupancy, a claim or seed process still running in the slot, a dirty tree, or a failed verification | Quarantine, as today | Return or Destroy, as today |
+| A claim in the cold check fallback | check-lease attempt row | check-lease's existing recovery removes the disposable worktree, and the attempt is infrastructure | Nothing to carry over: the fallback has no slot row |
+| Seed staging | directories under `<pool dir>/.seed-staging/` | Removed | n/a |
+| Warm log | files under `logs/worktree-warm/` | Kept while a slot row's `deps_log_path` names it, otherwise removed | n/a |
+
+**Two further rules.**
+
+- **Orphaned processes.** A claim step's process group can outlive a crashed daemon. Its cwd is
+  inside the slot, so the occupancy check sees it and the slot is quarantined. It is never handed
+  out.
+- **Task card.** The task card's "Installing dependencies" phase is not persisted, so a restart
+  drops it. The dispatch's existing recovery reports the outcome.
 
 ### 3. Stored testing settings
 
@@ -415,6 +485,35 @@ check fallback.
 **Backups** (round 2, `backups`). A new settings-backup domain, `testing-settings`, with a
 missing-domain migration so snapshots taken before it restore with the domain empty.
 
+**Scopes and the test universe.** This ships with stored settings, in slice 3 (repair round 1,
+`slice3-subdir-handoff`).
+
+- **`resolveTestingScopes(treeRoot, repoRoot)`** is the server module that resolves the layers
+  above into `TestingScopes`. That is a browser-safe type in `src/shared/testing-config.ts`
+  holding the ordered scopes, each with:
+  - its repository-relative path;
+  - its effective settings;
+  - the source of every key.
+- **`scopeOf(path)`** returns a file's nearest scope.
+- **The test universe.** Per scope, the tests are the tracked files matching that scope's
+  effective `patterns`, resolved relative to the scope that set them. A file belongs to its
+  nearest scope. `includeImporters` and `smokeSet` apply per scope in the same way.
+
+The selector in `test-selection.ts` takes `TestingScopes` in place of one flat config.
+
+**Until slice 4 lands,** the gate behaves like this:
+
+- Subdirectory settings take full effect on **which tests are selected**.
+- Selected files still run through **today's single invocation**. That is the one override the
+  session's cwd resolves, with files relative to its subdirectory (`../…` outside it), exactly
+  as today.
+- Import scanning still resolves aliases through the root `tsconfig.json` only. A per-app alias
+  import therefore does not yet select its importer, and run detail says so in the selection
+  diagnostics.
+
+Slice 4 consumes `TestingScopes` and `resolveTestingScopes` unchanged. It adds per-app
+resolution and partitioning on top of them.
+
 ### 4. Per-app affected-test selection
 
 **Resolving imports** (round 2, `alias-resolution`).
@@ -435,9 +534,9 @@ missing-domain migration so snapshots taken before it restore with the domain em
     reported in diagnostics.
 - Resolution still refuses anything outside the tree.
 
-**The test universe.** Per scope (section 3), the tests are the tracked files matching that
-scope's effective `patterns`, resolved relative to the scope that set them. A file belongs to its
-nearest scope. `includeImporters` and `smokeSet` apply per scope in the same way.
+**The test universe** comes from section 3's `resolveTestingScopes`, which this slice consumes
+unchanged. The resolver changes above do not change any scope's universe. They change which of its
+tests `includeImporters` selects, because more imports now resolve.
 
 **Partitioning** (round 2, `selection-unit`). The gate selects once across the repository, then
 assigns each selected test to the **deepest affected-tests override** whose subdirectory
@@ -608,15 +707,33 @@ slices within this order.
    - limits, failure handling, the check verdict rule and Stop;
    - the agent note, the slot and task card states;
    - the cold check fallback;
+   - the `deps_state` write-ahead, with startup recovery for an interrupted claim. Until slice 2
+     adds `seed.paths`, an interrupted slot has nothing to wipe and reruns every step;
    - the docs fixes in section 7 that do not depend on later slices.
 
    This slice alone fixes the observed `capital-markets` failure.
-2. **Seeding and Warm.** The `warm` lease kind, copy-on-write seeding for claims and Warm, source
-   selection, the Warm operation with tail, log and Cancel, and the slot and pool controls.
-3. **Stored testing settings.** The catalog, schema, layering, run-detail sources, the
-   affected-tests page section, and the backup domain with its migration.
-4. **Per-app selection.** Nearest tsconfig/jsconfig with `extends`, workspace names,
-   per-scope test universes, partitions, unrun listing, and partition run detail.
+2. **Seeding and Warm.** This slice covers:
+   - the `warm` lease kind and its owner rule at runtime and at startup;
+   - copy-on-write seeding for claims and Warm, and source selection;
+   - the interrupted-slot wipe;
+   - the Warm operation with tail, log and Cancel;
+   - the slot and pool controls;
+   - the rest of the crash-recovery table: Warm targets and sources, staging and logs.
+3. **Stored testing settings.** This slice covers:
+   - the catalog, schema and layering;
+   - `resolveTestingScopes` and `TestingScopes`, with per-scope test universes, so subdirectory
+     settings take effect on selection through today's single invocation;
+   - run-detail sources and the affected-tests page section;
+   - the backup domain with its migration.
+
+   It stands alone: with no subdirectory rows the gate behaves exactly as today, and with them,
+   section 3's intermediate behavior applies.
+4. **Per-app selection.** This slice covers:
+   - nearest tsconfig/jsconfig with `extends`, and workspace names;
+   - partitions, the unrun listing, and partition run detail.
+
+   It consumes slice 3's `TestingScopes` and `resolveTestingScopes` unchanged, and adds no new
+   settings.
 5. **Bulk documents and testing setup.** Format, preview and apply, import, export,
    `propose_command_document` with its banner and attention item, and the testing-setup
    committed-or-stored choice.
@@ -643,6 +760,9 @@ spec, and no `data-testid`.
   paths.
 - The cold fallback running the claim.
 - Every lease kind running it.
+- Crash injection after the write-ahead and before the first step, and mid-step. Startup must
+  quarantine the `provisioning` slot with `deps_state = interrupted` and no fingerprint, and a
+  later claim must never skip on a stale fingerprint.
 
 **Seeding and Warm (unit).**
 
@@ -651,13 +771,31 @@ spec, and no `data-testid`.
 - Staging and rename leaving no half tree.
 - Exclusions applied.
 - No seed where cloning is unsupported, using a fake `cp` that refuses `--reflink=always`.
-- Cancel clearing the fingerprint.
+- Cancel during a seed setting `interrupted`, and during a step setting `failed`.
 - "Warm idle slots" skipping leased slots.
+- Crash injection at each row of the crash-recovery table:
+  - between seed renames;
+  - mid-Warm on the target;
+  - mid-copy with a source held;
+  - with an orphaned process still in the slot;
+  - with leftover staging and logs.
+
+  Startup must produce exactly the table's outcome. The `warm` owner must be reported "not
+  referenced" at startup and "referenced" while its operation runs.
+- The interrupted-slot wipe:
+  - removing only verified ignored seed paths;
+  - refusing a tracked or not-ignored match as a failed claim;
+  - rerunning every step when no seed paths are configured.
 
 **Testing settings and selection (unit).**
 
 - Layer order and per-key sources.
 - Subdirectory scope semantics, including relative patterns and smokeSet.
+- Slice 3's intermediate state. Use a fixture monorepo with two subdirectory scopes and no root
+  tsconfig. Each scope's own patterns and smokeSet select its tests, through one invocation of
+  the override the session's cwd resolves, with `../` paths outside it as today. The selection
+  diagnostics must record that per-app aliases are not yet resolved.
+- `TestingScopes` shape tests that slice 4 reuses unchanged.
 - The gate running with stored settings and no committed file.
 - The schema refusing `flakes`.
 - Missing-domain backup migration.
@@ -791,3 +929,31 @@ explicitly. Approval accepts them as written:
 
 Mission Control records the tickets choice. A linked follow-up task slices the merged plan into
 tickets in the delivery order above. This planning turn files no tasks.
+
+### Repair round 1 (2026-10-13)
+
+The Plan Validation workflow (run `5a646a33`) asked for two repairs:
+
+- the Phase Dependencies judge asked for a defined handoff between slice 3 and slice 4 for
+  subdirectory testing settings;
+- the Plan Feasibility judge asked for crash and restart recovery for claims, seeds, Warm and
+  the `warm` lease.
+
+The human answered:
+
+| Id | Question | Answer |
+|---|---|---|
+| `slice3-subdir-handoff` | What slice 3 does with subdirectory testing settings before slice 4 | Move per-scope resolution (`resolveTestingScopes`, `TestingScopes`, per-scope test universes) into slice 3; slice 4 consumes it (rec.) |
+| `warm-restart` | A slot still held by a `warm` lease after a restart | Release it through the ordinary return path; quarantine only on doubt (rec.) |
+| `interrupted-deps` | The next claim on an interrupted slot | Remove the pool's verified-ignored seed paths and start cold (rec.) |
+
+Some changes follow directly from the native-worktree contract, and were stated in the repair
+round rather than asked:
+
+- the `deps_state` write-ahead;
+- the crash-recovery table;
+- staging and log cleanup;
+- the Stop, timeout and Cancel rule for `deps_state`;
+- the crash-injection tests.
+
+Nothing else in the plan changed.

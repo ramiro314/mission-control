@@ -47,7 +47,7 @@ details.src summary{cursor:pointer}
 </head>
 <body>
 <main class="wrap">
-<header class="doc"><h1>Worktree claims, Warm, and monorepo testing settings</h1><ul class="meta"><li>Status: approved 2026-10-13, nothing implemented; tickets follow after merge</li><li>Date: 2026-10-13</li><li>Source of truth: <code>docs/plans/worktree-claims-and-monorepo-testing/plan.md</code>; this page is its rendering</li></ul></header>
+<header class="doc"><h1>Worktree claims, Warm, and monorepo testing settings</h1><ul class="meta"><li>Status: approved 2026-10-13, repair round 1 applied, nothing implemented; tickets follow after merge</li><li>Date: 2026-10-13</li><li>Source of truth: <code>docs/plans/worktree-claims-and-monorepo-testing/plan.md</code>; this page is its rendering</li></ul></header>
 <p>A pool slot should arrive with the dependencies its commit needs, and a monorepo that will not
 commit <code>.mission/testing.json</code> should still get an affected-tests gate. This plan adds a
 per-pool <strong>claim</strong> that runs on every lease, a <strong>Warm</strong> action that prepares idle slots ahead of
@@ -63,7 +63,8 @@ accept.</p>
 <p>Settled through a three-round grilling session (46 decisions, listed at the end). Where the
 answer differs from the recommendation offered, the decision table says so. The human approved
 the plan as written on 2026-10-13 and chose to create tickets after it merges (see &quot;Plan
-review&quot;).</p>
+review&quot;). A workflow repair round then added the handoff between slice 3 and slice 4, and crash
+recovery, from three further human decisions (see &quot;Repair round 1&quot;).</p>
 <h2>Goals</h2>
 <ul>
 <li>A leased slot has dependencies installed for <strong>its</strong> commit, whoever leased it: a task, a
@@ -280,9 +281,35 @@ relied on an unlisted credential, and the release notes say so.</li>
 <li>every step&#39;s variable names.</li>
 </ul>
 <p>The claim records it on the slot row only after every step succeeds. A claim whose fingerprint
-equals the slot&#39;s recorded one skips the steps entirely. The slot row gains nullable columns for
-the fingerprint, the commit it was taken at, and the last claim&#39;s outcome and tail, added in
-<code>migrate()</code> next to their upgrade path.</p>
+equals the slot&#39;s recorded one skips the steps entirely.</p>
+<p><strong>Dependency state, written ahead.</strong> The slot row gains these nullable columns, added in
+<code>migrate()</code> next to their upgrade path:</p>
+<ul>
+<li><code>deps_state</code>, one of <code>never</code>, <code>current</code>, <code>claiming</code>, <code>seeding</code>, <code>failed</code> or <code>interrupted</code>;</li>
+<li>the fingerprint, and the commit it was taken at;</li>
+<li>the last claim&#39;s outcome and tail;</li>
+<li><code>deps_log_path</code>, the last Warm&#39;s log.</li>
+</ul>
+<p>Before any claim step or seed touches the tree, <strong>one durable write</strong> sets <code>deps_state</code> to
+<code>claiming</code> or <code>seeding</code> and clears the fingerprint (repair round 1). Success writes the new
+fingerprint with <code>current</code>, and failure writes <code>failed</code>. A crash at any point therefore leaves
+no fingerprint for a later lease to trust. Recovery is in section 2, &quot;Crash and restart
+recovery&quot;.</p>
+<p><strong>Interrupted dependencies</strong> (repair round 1, <code>interrupted-deps</code>). A claim that finds
+<code>deps_state = interrupted</code> first removes the pool&#39;s <code>seed.paths</code>, then proceeds as cold: it
+seeds if a sibling qualifies, else it runs every step.</p>
+<ul>
+<li><code>git check-ignore</code> verifies every matched path is ignored before it is removed.</li>
+<li>A matched path that is tracked, or not ignored, is never removed. The claim fails with a
+warning instead, under the ordinary failure rules.</li>
+<li>A pool with no <code>seed.paths</code> has nothing to remove, and the claim runs every step.</li>
+</ul>
+<p>A Stop, timeout or Cancel decides <code>deps_state</code> by when it lands:</p>
+<ul>
+<li>during a seed, it sets <code>interrupted</code>, because the renames may be half done;</li>
+<li>during a step, it sets <code>failed</code>, like any failed claim, and the next claim reruns the steps in
+place.</li>
+</ul>
 <p><strong>Output and limits.</strong> Each step&#39;s output streams into a 4,000-byte tail, the same bound and
 <code>TailRing</code> as checks (<code>check-spawn.ts:254</code>). Output size never fails a claim. A timeout kills
 the process group and counts as a failed claim.</p>
@@ -316,8 +343,9 @@ over as a failed claim, so the dispatch continues with the warning.</p>
 <p><strong>What the operator sees</strong> (round 2, <code>claim-progress-ui</code>):</p>
 <ul>
 <li><strong>Slot card.</strong> The slot view gains a dependency state: current, stale versus origin&#39;s default
-branch, never installed, installing (with the running step and elapsed time), or failed (with
-the tail). Stale is computed against the last fetched <code>origin/&lt;default&gt;</code> ref, so building the
+branch, never installed, installing (with the running step and elapsed time), failed (with
+the tail), or interrupted (a restart, or a Stop or Cancel during a seed; the next claim starts
+cold). Stale is computed against the last fetched <code>origin/&lt;default&gt;</code> ref, so building the
 inventory never fetches. Changes reach the dashboard through the existing <code>worktrees_changed</code>
 revision bump.</li>
 <li><strong>Task card.</strong> The task view carries a provisioning phase while its dispatch waits on a claim:
@@ -393,14 +421,102 @@ branch, seeds or claims under the rules above, then releases.</li>
 <li>The operation view gains a live output tail and a <strong>Cancel</strong> control:<ul>
 <li>The tail is updated with a <code>worktrees_changed</code> bump at most once per second while a Warm
 runs.</li>
-<li>Cancel kills the process group, clears the slot&#39;s fingerprint, and returns the slot to the
-pool as available.</li>
+<li>Cancel kills the process group and returns the slot to the pool as available. The fingerprint
+was already cleared by the write-ahead, and <code>deps_state</code> follows the Stop rule in section 1.</li>
 </ul>
 </li>
-<li>The full log is written under the state directory, at <code>logs/worktree-warm/&lt;operationId&gt;.log</code>.
-The operation view links it, and dismissing or pruning the operation prunes the log.</li>
+<li>The full log is written under the state directory, at <code>logs/worktree-warm/&lt;operationId&gt;.log</code>.<ul>
+<li>The operation view links it.</li>
+<li>The target slot&#39;s <code>deps_log_path</code> keeps the most recent log reachable from the slot card,
+including after a restart.</li>
+<li>A log no live operation and no slot row references is removed.</li>
+</ul>
+</li>
 <li>Warm never touches a leased or quarantined slot. A slot leased while a &quot;Warm idle slots&quot;
 operation is queued is skipped and listed as skipped.</li>
+</ul>
+<h4>Crash and restart recovery (claims, seeds and Warm)</h4>
+<p>The native-worktree contract applies unchanged: persist intent before mutation, reconcile every
+transitional state at startup, quarantine ambiguity
+(<code>docs/plans/native-worktree-management/plan.md:190-193, 444</code>). This plan adds two intents:</p>
+<ul>
+<li><code>deps_state</code> (section 1);</li>
+<li>the <code>warm</code> lease, owned by <code>warm:&lt;operationId&gt;</code>.</li>
+</ul>
+<p><strong>Whether a <code>warm</code> owner exists.</strong> Warm operations live only in daemon memory
+(<code>WorktreeOperationsService</code> keeps them in a <code>Map</code>), so no Warm operation survives a restart.</p>
+<ul>
+<li><strong>At runtime,</strong> <code>nativeWorktreeOwnerReferenced</code> reports a <code>warm</code> owner as referenced exactly
+while its operation is queued or running.</li>
+<li><strong>At startup reconcile,</strong> which runs before the operations service accepts work, it reports a
+definite &quot;not referenced&quot;. It never reports &quot;unknown&quot;.</li>
+</ul>
+<p><strong>Crash points.</strong> Startup reconcile handles each one deterministically:</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Crash during</th>
+<th>Durable state startup finds</th>
+<th>Startup does</th>
+<th>Afterwards</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Claim steps inside a task, check or manual lease</td>
+<td>slot <code>provisioning</code>, <code>deps_state = claiming</code>, no fingerprint</td>
+<td>Quarantines &quot;interrupted provisioning intent&quot;, as today; sets <code>deps_state = interrupted</code></td>
+<td>If the slot later returns to the pool, its next claim wipes the seed paths and starts cold</td>
+</tr>
+<tr>
+<td>A seed inside a lease, including between renames</td>
+<td>slot <code>provisioning</code>, <code>deps_state = seeding</code>, no fingerprint</td>
+<td>Same as above</td>
+<td>Same as above</td>
+</tr>
+<tr>
+<td>A Warm on its target</td>
+<td>slot <code>leased</code> by <code>warm:&lt;op&gt;</code>, <code>deps_state</code> = <code>claiming</code> or <code>seeding</code></td>
+<td>Owner provably absent, so the ordinary return path runs: occupancy check, reset to origin&#39;s default, clean and detached verification. The slot becomes available with <code>deps_state = interrupted</code> (repair round 1, <code>warm-restart</code>)</td>
+<td>Its next claim wipes the seed paths and starts cold</td>
+</tr>
+<tr>
+<td>A seed, on its source</td>
+<td>slot <code>leased</code> by <code>warm:&lt;op&gt;</code>, <code>deps_state</code> unchanged</td>
+<td>The same return path. A source is only read, so its fingerprint stays valid</td>
+<td>The ordinary skip rule</td>
+</tr>
+<tr>
+<td>Any of the above, with doubt</td>
+<td>unknown occupancy, a claim or seed process still running in the slot, a dirty tree, or a failed verification</td>
+<td>Quarantine, as today</td>
+<td>Return or Destroy, as today</td>
+</tr>
+<tr>
+<td>A claim in the cold check fallback</td>
+<td>check-lease attempt row</td>
+<td>check-lease&#39;s existing recovery removes the disposable worktree, and the attempt is infrastructure</td>
+<td>Nothing to carry over: the fallback has no slot row</td>
+</tr>
+<tr>
+<td>Seed staging</td>
+<td>directories under <code>&lt;pool dir&gt;/.seed-staging/</code></td>
+<td>Removed</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td>Warm log</td>
+<td>files under <code>logs/worktree-warm/</code></td>
+<td>Kept while a slot row&#39;s <code>deps_log_path</code> names it, otherwise removed</td>
+<td>n/a</td>
+</tr>
+</tbody></table></div>
+<p><strong>Two further rules.</strong></p>
+<ul>
+<li><strong>Orphaned processes.</strong> A claim step&#39;s process group can outlive a crashed daemon. Its cwd is
+inside the slot, so the occupancy check sees it and the slot is quarantined. It is never handed
+out.</li>
+<li><strong>Task card.</strong> The task card&#39;s &quot;Installing dependencies&quot; phase is not persisted, so a restart
+drops it. The dispatch&#39;s existing recovery reports the outcome.</li>
 </ul>
 <h3>3. Stored testing settings</h3>
 <p><strong>Catalog</strong> (round 2, <code>testing-storage</code>, <code>testing-flakes</code>):</p>
@@ -473,6 +589,35 @@ the row reloads.</li>
 </ul>
 <p><strong>Backups</strong> (round 2, <code>backups</code>). A new settings-backup domain, <code>testing-settings</code>, with a
 missing-domain migration so snapshots taken before it restore with the domain empty.</p>
+<p><strong>Scopes and the test universe.</strong> This ships with stored settings, in slice 3 (repair round 1,
+<code>slice3-subdir-handoff</code>).</p>
+<ul>
+<li><strong><code>resolveTestingScopes(treeRoot, repoRoot)</code></strong> is the server module that resolves the layers
+above into <code>TestingScopes</code>. That is a browser-safe type in <code>src/shared/testing-config.ts</code>
+holding the ordered scopes, each with:<ul>
+<li>its repository-relative path;</li>
+<li>its effective settings;</li>
+<li>the source of every key.</li>
+</ul>
+</li>
+<li><strong><code>scopeOf(path)</code></strong> returns a file&#39;s nearest scope.</li>
+<li><strong>The test universe.</strong> Per scope, the tests are the tracked files matching that scope&#39;s
+effective <code>patterns</code>, resolved relative to the scope that set them. A file belongs to its
+nearest scope. <code>includeImporters</code> and <code>smokeSet</code> apply per scope in the same way.</li>
+</ul>
+<p>The selector in <code>test-selection.ts</code> takes <code>TestingScopes</code> in place of one flat config.</p>
+<p><strong>Until slice 4 lands,</strong> the gate behaves like this:</p>
+<ul>
+<li>Subdirectory settings take full effect on <strong>which tests are selected</strong>.</li>
+<li>Selected files still run through <strong>today&#39;s single invocation</strong>. That is the one override the
+session&#39;s cwd resolves, with files relative to its subdirectory (<code>../…</code> outside it), exactly
+as today.</li>
+<li>Import scanning still resolves aliases through the root <code>tsconfig.json</code> only. A per-app alias
+import therefore does not yet select its importer, and run detail says so in the selection
+diagnostics.</li>
+</ul>
+<p>Slice 4 consumes <code>TestingScopes</code> and <code>resolveTestingScopes</code> unchanged. It adds per-app
+resolution and partitioning on top of them.</p>
 <h3>4. Per-app affected-test selection</h3>
 <p><strong>Resolving imports</strong> (round 2, <code>alias-resolution</code>).</p>
 <ul>
@@ -496,9 +641,9 @@ reported in diagnostics.</li>
 </li>
 <li>Resolution still refuses anything outside the tree.</li>
 </ul>
-<p><strong>The test universe.</strong> Per scope (section 3), the tests are the tracked files matching that
-scope&#39;s effective <code>patterns</code>, resolved relative to the scope that set them. A file belongs to its
-nearest scope. <code>includeImporters</code> and <code>smokeSet</code> apply per scope in the same way.</p>
+<p><strong>The test universe</strong> comes from section 3&#39;s <code>resolveTestingScopes</code>, which this slice consumes
+unchanged. The resolver changes above do not change any scope&#39;s universe. They change which of its
+tests <code>includeImporters</code> selects, because more imports now resolve.</p>
 <p><strong>Partitioning</strong> (round 2, <code>selection-unit</code>). The gate selects once across the repository, then
 assigns each selected test to the <strong>deepest affected-tests override</strong> whose subdirectory
 contains it:</p>
@@ -669,18 +814,40 @@ slices within this order.</p>
 <li>limits, failure handling, the check verdict rule and Stop;</li>
 <li>the agent note, the slot and task card states;</li>
 <li>the cold check fallback;</li>
+<li>the <code>deps_state</code> write-ahead, with startup recovery for an interrupted claim. Until slice 2
+adds <code>seed.paths</code>, an interrupted slot has nothing to wipe and reruns every step;</li>
 <li>the docs fixes in section 7 that do not depend on later slices.</li>
 </ul>
 <p>This slice alone fixes the observed <code>capital-markets</code> failure.</p>
 </li>
-<li><p><strong>Seeding and Warm.</strong> The <code>warm</code> lease kind, copy-on-write seeding for claims and Warm, source
-selection, the Warm operation with tail, log and Cancel, and the slot and pool controls.</p>
+<li><p><strong>Seeding and Warm.</strong> This slice covers:</p>
+<ul>
+<li>the <code>warm</code> lease kind and its owner rule at runtime and at startup;</li>
+<li>copy-on-write seeding for claims and Warm, and source selection;</li>
+<li>the interrupted-slot wipe;</li>
+<li>the Warm operation with tail, log and Cancel;</li>
+<li>the slot and pool controls;</li>
+<li>the rest of the crash-recovery table: Warm targets and sources, staging and logs.</li>
+</ul>
 </li>
-<li><p><strong>Stored testing settings.</strong> The catalog, schema, layering, run-detail sources, the
-affected-tests page section, and the backup domain with its migration.</p>
+<li><p><strong>Stored testing settings.</strong> This slice covers:</p>
+<ul>
+<li>the catalog, schema and layering;</li>
+<li><code>resolveTestingScopes</code> and <code>TestingScopes</code>, with per-scope test universes, so subdirectory
+settings take effect on selection through today&#39;s single invocation;</li>
+<li>run-detail sources and the affected-tests page section;</li>
+<li>the backup domain with its migration.</li>
+</ul>
+<p>It stands alone: with no subdirectory rows the gate behaves exactly as today, and with them,
+section 3&#39;s intermediate behavior applies.</p>
 </li>
-<li><p><strong>Per-app selection.</strong> Nearest tsconfig/jsconfig with <code>extends</code>, workspace names,
-per-scope test universes, partitions, unrun listing, and partition run detail.</p>
+<li><p><strong>Per-app selection.</strong> This slice covers:</p>
+<ul>
+<li>nearest tsconfig/jsconfig with <code>extends</code>, and workspace names;</li>
+<li>partitions, the unrun listing, and partition run detail.</li>
+</ul>
+<p>It consumes slice 3&#39;s <code>TestingScopes</code> and <code>resolveTestingScopes</code> unchanged, and adds no new
+settings.</p>
 </li>
 <li><p><strong>Bulk documents and testing setup.</strong> Format, preview and apply, import, export,
 <code>propose_command_document</code> with its banner and attention item, and the testing-setup
@@ -707,21 +874,54 @@ absent otherwise.</li>
 paths.</li>
 <li>The cold fallback running the claim.</li>
 <li>Every lease kind running it.</li>
+<li>Crash injection after the write-ahead and before the first step, and mid-step. Startup must
+quarantine the <code>provisioning</code> slot with <code>deps_state = interrupted</code> and no fingerprint, and a
+later claim must never skip on a stale fingerprint.</li>
 </ul>
 <p><strong>Seeding and Warm (unit).</strong></p>
 <ul>
-<li>Source selection order.</li>
-<li>The <code>warm</code> lease preventing an occupancy quarantine.</li>
-<li>Staging and rename leaving no half tree.</li>
-<li>Exclusions applied.</li>
-<li>No seed where cloning is unsupported, using a fake <code>cp</code> that refuses <code>--reflink=always</code>.</li>
-<li>Cancel clearing the fingerprint.</li>
-<li>&quot;Warm idle slots&quot; skipping leased slots.</li>
+<li><p>Source selection order.</p>
+</li>
+<li><p>The <code>warm</code> lease preventing an occupancy quarantine.</p>
+</li>
+<li><p>Staging and rename leaving no half tree.</p>
+</li>
+<li><p>Exclusions applied.</p>
+</li>
+<li><p>No seed where cloning is unsupported, using a fake <code>cp</code> that refuses <code>--reflink=always</code>.</p>
+</li>
+<li><p>Cancel during a seed setting <code>interrupted</code>, and during a step setting <code>failed</code>.</p>
+</li>
+<li><p>&quot;Warm idle slots&quot; skipping leased slots.</p>
+</li>
+<li><p>Crash injection at each row of the crash-recovery table:</p>
+<ul>
+<li>between seed renames;</li>
+<li>mid-Warm on the target;</li>
+<li>mid-copy with a source held;</li>
+<li>with an orphaned process still in the slot;</li>
+<li>with leftover staging and logs.</li>
+</ul>
+<p>Startup must produce exactly the table&#39;s outcome. The <code>warm</code> owner must be reported &quot;not
+referenced&quot; at startup and &quot;referenced&quot; while its operation runs.</p>
+</li>
+<li><p>The interrupted-slot wipe:</p>
+<ul>
+<li>removing only verified ignored seed paths;</li>
+<li>refusing a tracked or not-ignored match as a failed claim;</li>
+<li>rerunning every step when no seed paths are configured.</li>
+</ul>
+</li>
 </ul>
 <p><strong>Testing settings and selection (unit).</strong></p>
 <ul>
 <li>Layer order and per-key sources.</li>
 <li>Subdirectory scope semantics, including relative patterns and smokeSet.</li>
+<li>Slice 3&#39;s intermediate state. Use a fixture monorepo with two subdirectory scopes and no root
+tsconfig. Each scope&#39;s own patterns and smokeSet select its tests, through one invocation of
+the override the session&#39;s cwd resolves, with <code>../</code> paths outside it as today. The selection
+diagnostics must record that per-app aliases are not yet resolved.</li>
+<li><code>TestingScopes</code> shape tests that slice 4 reuses unchanged.</li>
 <li>The gate running with stored settings and no committed file.</li>
 <li>The schema refusing <code>flakes</code>.</li>
 <li>Missing-domain backup migration.</li>
@@ -1064,6 +1264,49 @@ explicitly. Approval accepts them as written:</p>
 </ul>
 <p>Mission Control records the tickets choice. A linked follow-up task slices the merged plan into
 tickets in the delivery order above. This planning turn files no tasks.</p>
+<h3>Repair round 1 (2026-10-13)</h3>
+<p>The Plan Validation workflow (run <code>5a646a33</code>) asked for two repairs:</p>
+<ul>
+<li>the Phase Dependencies judge asked for a defined handoff between slice 3 and slice 4 for
+subdirectory testing settings;</li>
+<li>the Plan Feasibility judge asked for crash and restart recovery for claims, seeds, Warm and
+the <code>warm</code> lease.</li>
+</ul>
+<p>The human answered:</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>slice3-subdir-handoff</code></td>
+<td>What slice 3 does with subdirectory testing settings before slice 4</td>
+<td>Move per-scope resolution (<code>resolveTestingScopes</code>, <code>TestingScopes</code>, per-scope test universes) into slice 3; slice 4 consumes it (rec.)</td>
+</tr>
+<tr>
+<td><code>warm-restart</code></td>
+<td>A slot still held by a <code>warm</code> lease after a restart</td>
+<td>Release it through the ordinary return path; quarantine only on doubt (rec.)</td>
+</tr>
+<tr>
+<td><code>interrupted-deps</code></td>
+<td>The next claim on an interrupted slot</td>
+<td>Remove the pool&#39;s verified-ignored seed paths and start cold (rec.)</td>
+</tr>
+</tbody></table></div>
+<p>Some changes follow directly from the native-worktree contract, and were stated in the repair
+round rather than asked:</p>
+<ul>
+<li>the <code>deps_state</code> write-ahead;</li>
+<li>the crash-recovery table;</li>
+<li>staging and log cleanup;</li>
+<li>the Stop, timeout and Cancel rule for <code>deps_state</code>;</li>
+<li>the crash-injection tests.</li>
+</ul>
+<p>Nothing else in the plan changed.</p>
 
 </main>
 </body>
