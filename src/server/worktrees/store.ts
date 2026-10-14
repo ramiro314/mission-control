@@ -10,6 +10,19 @@ export const WORKTREE_SLOT_STATES = [
 ] as const;
 export type WorktreeSlotState = (typeof WORKTREE_SLOT_STATES)[number];
 
+/**
+ * A slot's dependency claim state. Append-only, like the slot states: a later build adds a
+ * value, it never renames one. A NULL column is "never claimed".
+ *
+ * - `current`: every step of the last claim succeeded; the fingerprint beside it is trusted.
+ * - `claiming`: the write-ahead before a claim's first step. Only a live claim holds it, so
+ *   startup finding it means the claim was interrupted.
+ * - `failed`: the last claim failed, timed out or was stopped; it left no fingerprint.
+ * - `interrupted`: startup found `claiming`. The next claim starts cold.
+ */
+export const WORKTREE_DEPS_STATES = ["current", "claiming", "failed", "interrupted"] as const;
+export type WorktreeDepsState = (typeof WORKTREE_DEPS_STATES)[number];
+
 export interface WorktreePoolRow {
   id: string;
   gitCommonDirectory: string;
@@ -42,8 +55,20 @@ export interface WorktreeSlotRow {
   lastUsedAt: number | null;
   quarantineReason: string | null;
   lastError: string | null;
+  /** Read as string for the same fail-closed reason as `state`. Null is never claimed. */
+  depsState: string | null;
+  depsFingerprint: string | null;
+  /** The commit the fingerprint was taken at. */
+  depsFingerprintSha: string | null;
+  depsClaimedAt: number | null;
+  /** The last claim's failure: the failing step and its output tail. */
+  depsLastError: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 function poolRow(row: Record<string, unknown>): WorktreePoolRow {
@@ -83,6 +108,13 @@ function slotRow(row: Record<string, unknown>): WorktreeSlotRow {
     lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
     quarantineReason: row.quarantine_reason === null ? null : String(row.quarantine_reason),
     lastError: row.last_error === null ? null : String(row.last_error),
+    depsState: nullableString(row.deps_state),
+    depsFingerprint: nullableString(row.deps_fingerprint),
+    depsFingerprintSha: nullableString(row.deps_fingerprint_sha),
+    depsClaimedAt: row.deps_claimed_at === null || row.deps_claimed_at === undefined
+      ? null
+      : Number(row.deps_claimed_at),
+    depsLastError: nullableString(row.deps_last_error),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -398,6 +430,69 @@ export class WorktreeStore {
       )
       .run(now, slotId, version, leaseId);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
+  /**
+   * The claim's write-ahead: ONE durable write that records the intent and clears the
+   * fingerprint, before any step touches the tree. Only a reservation still provisioning at
+   * the exact version its claim holds can take it. The version is deliberately left alone:
+   * dependency state is not a slot transition, and the lease commit's compare-and-swap still
+   * names the reservation it was granted.
+   */
+  beginClaim(slotId: string, version: number, now: number): boolean {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET deps_state = 'claiming', deps_fingerprint = NULL,
+           deps_fingerprint_sha = NULL, updated_at = ?
+         WHERE id = ? AND state = 'provisioning' AND version = ?`,
+      )
+      .run(now, slotId, version);
+    return Number(changed.changes) === 1;
+  }
+
+  /** Settle a claim that held the write-ahead. A failure records no fingerprint. */
+  finishClaim(
+    slotId: string,
+    version: number,
+    outcome:
+      | { state: "current"; fingerprint: string | null; sha: string }
+      | { state: "failed"; error: string },
+    now: number,
+  ): boolean {
+    const current = outcome.state === "current";
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET deps_state = ?, deps_fingerprint = ?, deps_fingerprint_sha = ?,
+           deps_claimed_at = ?, deps_last_error = ?, updated_at = ?
+         WHERE id = ? AND state = 'provisioning' AND version = ? AND deps_state = 'claiming'`,
+      )
+      .run(
+        outcome.state,
+        current ? outcome.fingerprint : null,
+        current ? outcome.sha : null,
+        now,
+        current ? null : outcome.error,
+        now,
+        slotId,
+        version,
+      );
+    return Number(changed.changes) === 1;
+  }
+
+  /**
+   * Startup found a claim's write-ahead with no live claim behind it. The fingerprint was
+   * already cleared by the write-ahead; clearing it again here keeps that true for a row an
+   * older build might have touched.
+   */
+  markClaimInterrupted(slotId: string, now: number): boolean {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL,
+           deps_fingerprint_sha = NULL, updated_at = ?
+         WHERE id = ? AND deps_state = 'claiming'`,
+      )
+      .run(now, slotId);
+    return Number(changed.changes) === 1;
   }
 
   updateObserved(slotId: string, currentHeadSha: string | null, error: string | null, now: number): void {

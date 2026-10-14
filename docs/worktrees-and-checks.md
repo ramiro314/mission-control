@@ -123,6 +123,110 @@ Native capacity and enablement are configuration policy. The shipped policy is e
 slots per physical repository. A repository override affects its next acquisition, never an
 active lease.
 
+### Dependency claims
+
+A warm slot keeps whatever its last occupant installed, which is not necessarily what the next
+commit needs. A pool's **claim** closes that gap. It is an ordered list of dependency steps that
+runs inside every task lease, after the reset or add and after the setup command on a new slot,
+and before the final proof. A dispatched task's slot therefore has dependencies for the commit
+it was leased at. Check and manual leases do not run the claim yet: they lease exactly as they
+did before.
+
+The claim is per pool, with no global default. It is stored beside `setupArgv` in that
+repository's `worktrees` entry, so settings backups capture it, and it is set through
+`PUT /api/worktrees/config`:
+
+```json
+{
+  "repositories": {
+    "/Users/me/code/web/.git": {
+      "claim": {
+        "steps": [
+          { "argv": ["yarn", "install", "--immutable", "--mode=skip-build"], "env": ["ARTIFACTORY_AUTH_TOKEN"] },
+          { "argv": ["yarn", "rebuild"], "env": [] }
+        ],
+        "timeoutMinutes": 10,
+        "fingerprintPaths": ["yarn.lock", ".yarnrc.yml", "package.json", "apps/*/package.json", ".yarn/releases/**"]
+      }
+    }
+  }
+}
+```
+
+- `steps` holds 1 to 16 argvs, never a shell, each bounded like `setupArgv`. `env` lists up to 32
+  variable **names**; Mission Control never stores a value. `PATH` and names starting with
+  `MISSION_`, `FLEET_` or `HARNESS_` are refused, because those are the daemon's own.
+- `timeoutMinutes` covers the whole claim, every step together. It defaults to 10 and may be at
+  most 240.
+- `fingerprintPaths` holds up to 64 repository-relative globs. They are matched with Node's
+  `path.matchesGlob`, so a wildcard does not match a segment that starts with a dot, and a
+  dotfile directory is named literally (`.yarn/releases/**`).
+- A patch's `claim` replaces the whole claim, and `"claim": null` removes it.
+
+**Fingerprints.** Before a claim runs, Mission Control hashes three inputs:
+
+- the Git object ids of every path at the leased commit that matches `fingerprintPaths`, read
+  with `git ls-tree` from objects rather than from the checkout;
+- every step's argv;
+- every step's variable names.
+
+The hash is recorded on the slot only after every step succeeds. When the next task's lease
+computes the same hash, the steps are skipped, so a slot that already matches costs nothing. Any
+change to a matching file, an argv or a name runs the steps again. An empty `fingerprintPaths`
+means the claim runs on every lease.
+
+**The environment.** Each step gets the same scrubbed base a check command gets (see "A trimmed
+environment" under [Running a check command](#running-a-check-command)), plus only the variables
+its own `env` names:
+
+- A named value comes from the daemon's environment, or else from the operator's login shell.
+  The locator's login-shell read, the same one that reads `PATH`, captures the named variables
+  alongside it. A value that is empty everywhere is missing, and so is one that carries the
+  daemon's own token.
+- A credential reaches only the step that names it. Another step, the setup command and a check
+  never receive it by accident.
+- Stdin is closed, so a step that stops to ask a question fails at once.
+
+**The setup command's environment changed too.** Setup still runs once, when a slot is created,
+for every lease kind, with its 120-second limit. It now runs on the same scrubbed base, plus the
+union of every name the pool's claim lists. A setup command that relied on a credential-shaped
+variable from the daemon's environment, such as `NPM_TOKEN`, no longer receives it. List the name
+on a claim step to give it back.
+
+**Output, timeout and failure.**
+
+- Each step's stdout and stderr stream into one 4,000-byte tail, the same bound checks use.
+  Output size never fails a claim.
+- A timeout sends SIGTERM to the step's process group, then SIGKILL after five seconds, and
+  counts as a failed claim.
+- A failure is a non-zero exit, a timeout, or a step that cannot start. The remaining steps do
+  not run. The slot is **handed over with a warning and never quarantined for the exit code**.
+  The slot's fingerprint stays cleared, so the next lease runs the claim again.
+- The agent's launch prompt then opens with a "Dependency install warning" note. It names the
+  failing step and includes its output tail, so the agent can install or repair dependencies
+  itself, and can tell a dependency failure from one its own change caused.
+- Claim steps must not rewrite tracked files. A claim that leaves a tracked file modified, an
+  untracked file Git does not ignore, or a branch attached fails the final proof, and the slot
+  is quarantined as any other unproven materialization is. `yarn install --immutable` is one way
+  to honor that.
+
+**Crash and restart recovery.** Before any step runs, one durable write records the slot's
+`deps_state` as `claiming` and clears its fingerprint. Success then records `current` with the
+new fingerprint, and failure records `failed` with the failing step and its tail. A daemon that
+dies anywhere after that write leaves no fingerprint for a later lease to trust. Startup finds
+the slot still `provisioning` and quarantines it as an interrupted provisioning intent, exactly
+as it does after a restart during setup, and marks its `deps_state` as `interrupted`. If that
+slot ever returns to the pool, its next claim runs every step. A step's process group that
+outlived the daemon still has its working directory inside the slot. The occupancy check
+therefore sees it, and the slot is never handed out while it runs.
+
+**Maintenance and shutdown.** The manager keeps an in-memory registry of the claims running
+right now. Periodic maintenance skips a slot whose claim is running instead of waiting for it,
+because a claim may run for hours. The pool's reconciliation record names the skipped slot, and
+the next pass retries it. Shutdown kills every running claim's process group before anything
+else stops, and grants no claimed lease from then on. The slot is left `provisioning` with
+`deps_state = claiming`, and the next startup recovers it as above.
+
 ### Settings > Worktrees
 
 Open **Settings > Worktrees** to configure and inspect the allocator. The page answers one
@@ -150,7 +254,8 @@ this order:
   Opening a pool's disclosure shows its effective override, an optional setup argv, the maintenance
   actions, and the bounded slot detail. The argv is operator-authored, stored as separate arguments,
   and runs only when Mission Control creates a new slot. It never runs when a warm slot is leased
-  again. Each slot carries its exact manager path, observed HEAD, relationship to the remote
+  again. It runs on the scrubbed environment described under
+  [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD, relationship to the remote
   default, cleanliness, process count, disk estimate, and owner. **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.
@@ -412,9 +517,11 @@ What a Command gets:
   arguments, so there is no string for a repository's configured command to break out of.
 - **The captured commit, in a pooled worktree**, not your own working copy - so a check never
   sees, and can never disturb, whatever you have open. The tree is `reset --hard` to that exact
-  commit and cleaned with `clean -fd`, never `-fdx`, which is what preserves the pool's warm
-  ignored dependencies: your `node_modules` survives, so a check is a build rather than an
-  install. A subdirectory command runs in that subdirectory *of the leased tree*.
+  commit and cleaned with `clean -fd`, never `-fdx`, which preserves the pool's ignored
+  dependencies. That keeps whatever the slot last installed, which is not necessarily what this
+  commit needs. Making it current is the pool's [dependency claim](#dependency-claims), which
+  runs today in task leases only, so a check still runs against whatever it finds. A
+  subdirectory command runs in that subdirectory *of the leased tree*.
 - **A trimmed environment.** The daemon's auth token is removed, along with any variable that
   overrides where its state directory lives and anything whose name reads like a credential
   (`…_TOKEN`, `…_SECRET`, `…_PASSWORD`, `…_KEY`, `…_CREDENTIALS`). `PATH`, `HOME`, `SHELL`, the

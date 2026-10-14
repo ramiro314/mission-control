@@ -106,6 +106,7 @@ import type {
   PipelineEngineerRunSnapshot,
 } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
+import { claimWarningsBlock, type WorktreeClaimWarning } from "./worktrees/claim.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
@@ -517,7 +518,7 @@ export class Dispatcher {
         },
         baseSha,
       );
-      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases);
+      const { primary: wt, extras, claimWarnings } = await this.provisionAll(task, taskId, slug, shortId, bases);
       backlogRecoveryEligible = false;
       // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
       // The collection lands in the SAME patch so every durable native owner becomes visible
@@ -613,7 +614,11 @@ export class Dispatcher {
       // something the operator only said once. `standingInstructionsChannel` is the single
       // reading of which case this is, via the mechanism the composer already recorded.
       const standingPrefix = standing.mechanism === "prompt-prefix" ? standing.text : "";
+      // A failed dependency claim leads, ahead of the manifest: it is context about the trees
+      // themselves, and empty unless a claim actually failed, so every other launch is unchanged.
+      const claimNote = claimWarningsBlock(claimWarnings);
       const composeTurnOne = (standingBlock: string) =>
+        claimNote +
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
@@ -2048,7 +2053,12 @@ export class Dispatcher {
     slug: string,
     shortId: string,
     bases: TaskDispatchBases,
-  ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
+  ): Promise<{
+    primary: ProvisionedWorktree;
+    extras: TaskRepoEntry[];
+    /** Every tree whose dependency claim failed, primary first, for the launch prompt. */
+    claimWarnings: Array<{ path: string; warning: WorktreeClaimWarning }>;
+  }> {
     const primary = await provisionWorktree(
       task.repoRoot,
       taskId,
@@ -2109,7 +2119,10 @@ export class Dispatcher {
       }
       throw err;
     }
-    return { primary, extras };
+    const claimWarnings = taken.flatMap(({ wt }) =>
+      wt.claimWarning ? [{ path: wt.path, warning: wt.claimWarning }] : [],
+    );
+    return { primary, extras, claimWarnings };
   }
 
   private async teardownTaskResources(
@@ -2181,6 +2194,11 @@ export interface ProvisionedWorktree {
    * against to decide whether a repo changed at all.
    */
   baseSha: string | null;
+  /**
+   * The pool's dependency claim ran in this tree and failed. The tree is still handed over;
+   * the agent's launch prompt names the failing step and its output tail.
+   */
+  claimWarning?: WorktreeClaimWarning;
 }
 
 /**
@@ -2439,6 +2457,7 @@ export async function provisionWorktree(
       baseSha: exactBase,
       owner: { kind: "task", key: `${taskId}:${slot}` },
       awaitingDomainRecord: true,
+      runClaim: true,
     });
     if (acquired.outcome === "acquired") {
       return {
@@ -2447,6 +2466,7 @@ export async function provisionWorktree(
         provider: "mission",
         leaseId: acquired.lease.leaseId,
         baseSha: acquired.lease.baseSha,
+        ...(acquired.claimWarning ? { claimWarning: acquired.claimWarning } : {}),
       };
     }
     if (acquired.outcome === "outcomeUnknown") {

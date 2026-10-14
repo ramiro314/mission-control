@@ -4,7 +4,9 @@ import { existsSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import type { WorktreeClaim } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
+import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
 import { run } from "../util/exec.ts";
@@ -13,6 +15,21 @@ import {
   worktreeRepositoryIdentity,
   type WorktreeRepositoryIdentity,
 } from "../util/git.ts";
+import {
+  ClaimRegistry,
+  claimEnvironment,
+  claimFingerprint,
+  claimVariableNames,
+  describeClaimFailure,
+  readTreeBlobs,
+  runClaimStep,
+  runClaimSteps,
+  type ClaimEnvironment,
+  type ClaimStepRequest,
+  type ClaimStepResult,
+  type TreeBlob,
+  type WorktreeClaimWarning,
+} from "./claim.ts";
 import { resolveWorktreePolicy, type WorktreePolicy } from "./config.ts";
 import {
   NativeWorktreeGit,
@@ -39,6 +56,8 @@ const MAX_ERROR_BYTES = 2048;
 const DEFAULT_SWEEP_MS = 300_000;
 const MIN_SWEEP_MS = 30_000;
 const MAX_SWEEP_MS = 604_800_000;
+const STOPPING_REASON = "the daemon is stopping, so no dependency claim can start";
+const STOPPED_REASON = "the daemon stopped during this slot's dependency claim, so nothing was granted";
 
 export type WorktreeOwnerKind = "task" | "check" | "manual";
 export interface WorktreeOwner {
@@ -64,7 +83,15 @@ export interface WorktreeOwnerReference {
 }
 
 export type WorktreeAcquireResult =
-  | { outcome: "acquired"; lease: NativeWorktreeLease }
+  | {
+      outcome: "acquired";
+      lease: NativeWorktreeLease;
+      /**
+       * Present only when the pool's dependency claim ran and failed. The lease is granted
+       * anyway: a failed claim hands the slot over with this warning, never quarantines it.
+       */
+      claimWarning?: WorktreeClaimWarning;
+    }
   | { outcome: "notAcquired"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
 
@@ -128,7 +155,16 @@ export interface WorktreeManagerDeps {
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
   resolvePolicy: (commonDirectory: string) => WorktreePolicy;
   ownerReferenced: (reference: WorktreeOwnerReference) => Promise<boolean>;
-  runSetup: (argv: readonly string[], cwd: string) => Promise<SetupResult>;
+  /**
+   * `env` is the scrubbed check base with the pool's claim variables on top. The manager
+   * builds it and releases its disposable home afterwards.
+   */
+  runSetup: (argv: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<SetupResult>;
+  /** The scrubbed check base plus these names' values. */
+  claimEnvironment: (names: readonly string[]) => Promise<ClaimEnvironment>;
+  runClaimStep: (request: ClaimStepRequest) => Promise<ClaimStepResult>;
+  /** The blobs recorded at a commit, read from objects, for the claim fingerprint. */
+  treeBlobs: (cwd: string, sha: string) => Promise<GitResult<TreeBlob[]>>;
   publishChanged: () => void;
   now: () => number;
   randomId: () => string;
@@ -142,9 +178,10 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   // Focused callers may have no domain tables. Production injects the durable task/check
   // resolver so reconciliation never treats this permissive test seam as authority.
   ownerReferenced: async () => false,
-  runSetup: async (argv, cwd) => {
+  runSetup: async (argv, cwd, env) => {
     const result = await run(argv[0]!, argv.slice(1), {
       cwd,
+      env,
       timeoutMs: 120_000,
       maxBuffer: 64 * 1024,
     });
@@ -157,11 +194,23 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
           outcomeUnknown: result.outcomeUnknown,
         };
   },
+  claimEnvironment,
+  runClaimStep,
+  treeBlobs: readTreeBlobs,
   publishChanged: () => {},
   now: Date.now,
   randomId: randomUUID,
   poolsDirectory: WORKTREE_POOLS_DIR,
 };
+
+type ClaimRun =
+  | { kind: "skipped" }
+  | { kind: "succeeded" }
+  | { kind: "failed"; warning: WorktreeClaimWarning }
+  /** The daemon is stopping: nothing is recorded past the write-ahead and nothing is granted. */
+  | { kind: "shutdown" }
+  /** The write-ahead or its settlement could not be recorded. */
+  | { kind: "unrecorded"; reason: string };
 
 const SLOT_OBSERVATION_CONCURRENCY = 8;
 
@@ -272,6 +321,8 @@ export class WorktreeManager {
   private reclaimDomainLeases: () => Promise<void> = async () => {};
   /** Grants protected until their task/check row durably records the random lease ID. */
   private readonly pendingDomainLeases = new Set<string>();
+  /** Dependency claims running right now. Maintenance skips their slots; shutdown stops them. */
+  readonly claims = new ClaimRegistry();
   private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
 
   constructor(db: DatabaseSync = openDb(), deps: Partial<WorktreeManagerDeps> = {}) {
@@ -506,6 +557,11 @@ export class WorktreeManager {
     owner: WorktreeOwner;
     /** Protect the grant until its task/check row is durably written. */
     awaitingDomainRecord?: boolean;
+    /**
+     * Run the pool's dependency claim inside this lease. Task dispatch asks for it; check and
+     * manual leases keep their behavior until their own change.
+     */
+    runClaim?: boolean;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -524,6 +580,12 @@ export class WorktreeManager {
       return { outcome: "notAcquired", reason: `native worktree policy is invalid: ${bounded(String(error))}` };
     }
     if (!policy.enabled) return { outcome: "notAcquired", reason: "native worktrees are disabled for this repository" };
+    const claim = input.runClaim ? policy.claim ?? null : null;
+    if (claim && this.claims.stopping) {
+      // Not `notAcquired`: a task refused that way falls back to a disposable worktree, and
+      // the daemon is going away, not declining this repository.
+      return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
+    }
 
     const now = this.deps.now();
     let pool: WorktreePoolRow;
@@ -675,6 +737,15 @@ export class WorktreeManager {
     if (!reservation) {
       return { outcome: "notAcquired", reason: `native pool capacity ${policy.maxSlots} is exhausted` };
     }
+    // Registered BEFORE the slot lock is taken, in the same synchronous run as the
+    // reservation's return: maintenance asks the registry before it queues on a slot lock, so
+    // it can never queue behind a claim it did not see.
+    const claimControl = claim ? this.claims.register(reservation.id, input.owner, this.deps.now()) : null;
+    if (claim && !claimControl) {
+      // Shutdown began between the check above and the reservation. Startup quarantines the
+      // provisioning reservation; nothing was granted and nothing ran.
+      return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
+    }
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
@@ -706,7 +777,16 @@ export class WorktreeManager {
         }
 
         if (created && policy.setupArgv) {
-          const setup = await this.deps.runSetup(policy.setupArgv, reservation.path);
+          // The same base as a claim step, with the union of every name the pool's claim
+          // lists. A setup command that relied on an unlisted credential from the daemon's
+          // environment no longer receives it.
+          const setupEnvironment = await this.deps.claimEnvironment(claimVariableNames(policy.claim));
+          let setup: SetupResult;
+          try {
+            setup = await this.deps.runSetup(policy.setupArgv, reservation.path, setupEnvironment.env);
+          } finally {
+            cleanupAgentSubprocessEnv(setupEnvironment.env);
+          }
           if (!setup.ok || setup.outcomeUnknown) {
             const reason = setup.reason ??
               (setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed");
@@ -721,6 +801,24 @@ export class WorktreeManager {
           }
         }
 
+        let claimWarning: WorktreeClaimWarning | undefined;
+        if (claim && claimControl) {
+          const claimed = await this.claimDependencies(reservation, claim, input.baseSha, claimControl.signal);
+          if (claimed.kind === "shutdown") {
+            // Left exactly as the write-ahead left it. Startup finds the slot provisioning with
+            // `deps_state = claiming`, quarantines it and marks it interrupted: the same cost a
+            // restart during setup has.
+            return { outcome: "outcomeUnknown", reason: STOPPED_REASON };
+          }
+          if (claimed.kind === "unrecorded") {
+            this.quarantineReservation(reservation, "dependency claim state could not be recorded", claimed.reason);
+            return { outcome: "outcomeUnknown", reason: claimed.reason };
+          }
+          if (claimed.kind === "failed") claimWarning = claimed.warning;
+        }
+
+        // A claim step that modified a tracked file, or attached a branch, fails this proof and
+        // quarantines the slot like any other unproven materialization.
         const inspection = await this.deps.git.inspect(reservation.path);
         if (
           !inspection.ok ||
@@ -741,6 +839,8 @@ export class WorktreeManager {
           this.quarantineReservation(reservation, "materialized slot verification failed", reason);
           return { outcome: "outcomeUnknown", reason };
         }
+        // Shutdown grants no claimed lease, including one whose claim finished just before it.
+        if (claim && this.claims.stopping) return { outcome: "outcomeUnknown", reason: STOPPED_REASON };
 
         const leased = this.store.finalizeLease(
           reservation.id,
@@ -766,13 +866,82 @@ export class WorktreeManager {
             baseSha: input.baseSha,
             slotVersion: leased.version,
           },
+          ...(claimWarning ? { claimWarning } : {}),
         };
       } catch (error) {
         const reason = bounded(String(error));
         this.quarantineReservation(reservation, "native worktree materialization outcome is unknown", reason);
         return { outcome: "outcomeUnknown", reason };
+      } finally {
+        if (claimControl) this.claims.unregister(reservation.id, claimControl);
       }
     });
+  }
+
+  /**
+   * The claim, under the reservation's slot lock. A slot whose recorded fingerprint matches
+   * this commit's skips the steps. Otherwise one durable write records the intent and clears
+   * the fingerprint before any step runs, so a crash anywhere after it leaves nothing for a
+   * later lease to trust. Success records `current` with the new fingerprint; failure records
+   * `failed` and comes back as a warning, never as a quarantine.
+   */
+  private async claimDependencies(
+    reservation: WorktreeSlotRow,
+    claim: WorktreeClaim,
+    sha: string,
+    signal: AbortSignal,
+  ): Promise<ClaimRun> {
+    let fingerprint: string | null = null;
+    if (claim.fingerprintPaths.length > 0) {
+      let blobs: GitResult<TreeBlob[]>;
+      try {
+        blobs = await this.deps.treeBlobs(reservation.path, sha);
+      } catch (error) {
+        blobs = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+      }
+      // Unreadable inputs leave no fingerprint, which means the steps run and nothing a later
+      // lease could skip on is recorded.
+      if (blobs.ok) fingerprint = claimFingerprint(claim, blobs.value);
+      else console.warn(`[worktrees] claim fingerprint unavailable for ${reservation.path}: ${blobs.reason}`);
+    }
+    const recorded = this.store.slot(reservation.id);
+    if (
+      fingerprint !== null &&
+      recorded?.depsState === "current" &&
+      recorded.depsFingerprint === fingerprint
+    ) {
+      return { kind: "skipped" };
+    }
+    if (!this.store.beginClaim(reservation.id, reservation.version, this.deps.now())) {
+      return { kind: "unrecorded", reason: "the dependency claim intent could not be recorded" };
+    }
+    this.publish();
+    const outcome = await runClaimSteps({
+      claim,
+      cwd: reservation.path,
+      signal,
+      environment: this.deps.claimEnvironment,
+      runStep: this.deps.runClaimStep,
+      now: this.deps.now,
+    });
+    if (!outcome.ok && this.claims.stopping) return { kind: "shutdown" };
+    const failure = outcome.ok ? null : describeClaimFailure(outcome.warning);
+    const settled = this.store.finishClaim(
+      reservation.id,
+      reservation.version,
+      failure === null ? { state: "current", fingerprint, sha } : { state: "failed", error: failure },
+      this.deps.now(),
+    );
+    if (!settled) return { kind: "unrecorded", reason: "the dependency claim outcome could not be recorded" };
+    this.publish();
+    if (outcome.ok) return { kind: "succeeded" };
+    console.warn(`[worktrees] dependency claim failed in ${reservation.path}: ${failure!.split("\n", 1)[0]}`);
+    return { kind: "failed", warning: outcome.warning };
+  }
+
+  /** Shutdown: stop every running claim and start none. Called before anything else stops. */
+  stopClaims(): void {
+    this.claims.stopAll();
   }
 
   /**
@@ -1002,8 +1171,17 @@ export class WorktreeManager {
     const now = this.deps.now();
     const identity = this.identity(pool.mainCheckoutRoot);
     const slots = this.store.slots(pool.id);
+    // A slot whose claim holds its lock is skipped, never waited on: a claim may run for hours,
+    // and maintenance reschedules only once a pass finishes. The next pass retries it.
+    const skipped: string[] = [];
+    const skipClaiming = (slot: WorktreeSlotRow): boolean => {
+      if (!this.claims.has(slot.id)) return false;
+      skipped.push(`slot ${slot.ordinal}: skipped while its dependency claim runs`);
+      return true;
+    };
     const failPool = async (reason: string) => {
       for (const original of slots) {
+        if (skipClaiming(original)) continue;
         const releaseSlot = await this.acquireSlotLock(original.id);
         try {
           const slot = this.store.slot(original.id);
@@ -1014,7 +1192,7 @@ export class WorktreeManager {
           releaseSlot();
         }
       }
-      this.store.recordReconciliation(pool.id, now, bounded(reason));
+      this.store.recordReconciliation(pool.id, now, bounded([reason, ...skipped].join("; ")));
     };
     if (
       !identity ||
@@ -1045,11 +1223,18 @@ export class WorktreeManager {
     );
     const errors: string[] = [];
     for (const original of slots) {
+      if (skipClaiming(original)) continue;
       const releaseSlot = await this.acquireSlotLock(original.id);
       try {
         const current = this.store.slot(original.id);
         if (!current || current.version !== original.version) continue;
         const slot = current;
+        // A claim's write-ahead with no claim running behind it: the daemon that wrote it is
+        // gone. The write already cleared the fingerprint, so nothing can skip on it; this
+        // records that the claim was interrupted, and the slot's next claim starts cold.
+        if (slot.depsState === "claiming" && !this.claims.has(slot.id)) {
+          if (this.store.markClaimInterrupted(slot.id, now)) this.publish();
+        }
         const reject = (reason: string, detail: string | null = null) => {
           if (slot.state !== "quarantined") this.quarantine(slot, reason, detail);
           errors.push(`slot ${slot.ordinal}: ${reason}`);
@@ -1210,7 +1395,8 @@ export class WorktreeManager {
         releaseSlot();
       }
     }
-    this.store.recordReconciliation(pool.id, now, errors.length > 0 ? bounded(errors.join("; ")) : null);
+    const record = [...errors, ...skipped];
+    this.store.recordReconciliation(pool.id, now, record.length > 0 ? bounded(record.join("; ")) : null);
   }
 
   /**
@@ -1500,6 +1686,7 @@ export class WorktreeManager {
   startMaintenance(reclaimDomainLeases: () => Promise<void> = async () => {}): void {
     this.reclaimDomainLeases = reclaimDomainLeases;
     this.stopped = false;
+    this.claims.resume();
     const interval = worktreeSweepIntervalMs();
     if (interval === null || this.timer) return;
     const schedule = () => {
@@ -1537,6 +1724,7 @@ export class WorktreeManager {
   }
 
   async stop(): Promise<void> {
+    this.stopClaims();
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
