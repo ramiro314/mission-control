@@ -28,7 +28,6 @@ import {
   draftNames,
   emptyClaimErrors,
   hasClaimErrors,
-  splitClaimFailure,
   type ClaimDraft,
   type ClaimDraftErrors,
   type ClaimStepDraft,
@@ -245,6 +244,77 @@ const DEPENDENCY_CHIPS: Record<WorktreeSlotDependencyState, { label: string; ton
   interrupted: { label: "interrupted", tone: "attention" },
 };
 
+/** What one dependency state says beneath its chip. Exhaustive over the view's states. */
+function DependencyDetail({
+  ordinal,
+  dependencies,
+  now,
+}: {
+  ordinal: number;
+  dependencies: WorktreeSlotDependenciesView;
+  now: number;
+}): React.JSX.Element {
+  switch (dependencies.state) {
+    case "never":
+      return <p className="wt-deps-detail">No claim has run in this slot. Its next task lease runs every step.</p>;
+    case "current":
+      return (
+        <p className="wt-deps-detail">
+          {dependencies.defaultSha
+            ? <>Matches the fetched default branch at <code>{shortSha(dependencies.defaultSha)}</code>.</>
+            : "The last claim succeeded."}
+        </p>
+      );
+    case "stale":
+      return (
+        <p className="wt-deps-detail">
+          The fetched default branch at <code>{shortSha(dependencies.defaultSha)}</code> needs different
+          dependencies. The next lease runs the claim again.
+        </p>
+      );
+    case "installing":
+      return (
+        <>
+          <p className="wt-deps-detail">
+            {dependencies.step ? `Step ${dependencies.step.step} of ${dependencies.step.stepCount}` : "Reading the fingerprint"}
+            {" · "}
+            <span>{formatElapsed(now - dependencies.startedAt)} elapsed</span>
+          </p>
+          {dependencies.step && (
+            <Tooltip label={dependencies.step.command}>
+              <code className="wt-deps-clamp" aria-label={`Running command: ${dependencies.step.command}`}>{dependencies.step.command}</code>
+            </Tooltip>
+          )}
+        </>
+      );
+    case "failed": {
+      const { failure } = dependencies;
+      return (
+        <>
+          <p className="wt-deps-detail">
+            {failure.step !== null ? `Step ${failure.step} of ${failure.stepCount} ${failure.reason}.` : failure.reason}
+          </p>
+          {failure.command && (
+            <Tooltip label={failure.command}>
+              <code className="wt-deps-clamp" aria-label={`Failed command: ${failure.command}`}>{failure.command}</code>
+            </Tooltip>
+          )}
+          <p className="wt-deps-detail">The next lease runs the claim again.</p>
+          {failure.tail && (
+            <pre className="wt-deps-tail" aria-label={`Slot ${ordinal} dependency output tail`} tabIndex={0}>{failure.tail.replace(/\n+$/, "")}</pre>
+          )}
+        </>
+      );
+    }
+    case "interrupted":
+      return <p className="wt-deps-detail">A restart cut off this slot&rsquo;s last claim. Its next claim starts cold.</p>;
+    default: {
+      const unreachable: never = dependencies;
+      return unreachable;
+    }
+  }
+}
+
 /**
  * The slot's dependency claim state. Every state is said in words beside its chip, so none of
  * them is carried by colour. Stale is judged against the last fetched default ref; this view
@@ -257,11 +327,8 @@ function SlotDependencies({
   ordinal: number;
   dependencies: WorktreeSlotDependenciesView;
 }): React.JSX.Element {
-  const installing = dependencies.installing;
-  const now = useNow(installing !== null);
+  const now = useNow(dependencies.state === "installing");
   const chip = DEPENDENCY_CHIPS[dependencies.state];
-  const [summary, ...tail] = (dependencies.failure ?? "").split("\n");
-  const failure = summary ? splitClaimFailure(summary) : null;
   return (
     <section className="wt-deps" aria-label={`Slot ${ordinal} dependencies`}>
       <div className="wt-deps-head">
@@ -271,57 +338,7 @@ function SlotDependencies({
           <span className="wt-deps-commit">at <code>{shortSha(dependencies.fingerprintSha)}</code></span>
         )}
       </div>
-      {dependencies.state === "never" && (
-        <p className="wt-deps-detail">No claim has run in this slot. Its next task lease runs every step.</p>
-      )}
-      {dependencies.state === "current" && (
-        <p className="wt-deps-detail">
-          {dependencies.defaultSha
-            ? <>Matches the fetched default branch at <code>{shortSha(dependencies.defaultSha)}</code>.</>
-            : "The last claim succeeded."}
-        </p>
-      )}
-      {dependencies.state === "stale" && (
-        <p className="wt-deps-detail">
-          The fetched default branch at <code>{shortSha(dependencies.defaultSha)}</code> needs different
-          dependencies. The next lease runs the claim again.
-        </p>
-      )}
-      {installing && (
-        <>
-          <p className="wt-deps-detail">
-            {installing.step ? `Step ${installing.step.step} of ${installing.step.stepCount}` : "Reading the fingerprint"}
-            {" · "}
-            <span>{formatElapsed(now - installing.startedAt)} elapsed</span>
-          </p>
-          {installing.step && (
-            <Tooltip label={installing.step.command}>
-              <code className="wt-deps-clamp" aria-label={`Running command: ${installing.step.command}`}>{installing.step.command}</code>
-            </Tooltip>
-          )}
-        </>
-      )}
-      {dependencies.state === "failed" && (
-        <>
-          {failure && (
-            <p className="wt-deps-detail">
-              {failure.step ? `${failure.step[0]!.toUpperCase()}${failure.step.slice(1)} ${failure.reason}.` : failure.reason}
-            </p>
-          )}
-          {failure?.command && (
-            <Tooltip label={failure.command}>
-              <code className="wt-deps-clamp" aria-label={`Failed command: ${failure.command}`}>{failure.command}</code>
-            </Tooltip>
-          )}
-          <p className="wt-deps-detail">The next lease runs the claim again.</p>
-          {tail.length > 0 && (
-            <pre className="wt-deps-tail" aria-label={`Slot ${ordinal} dependency output tail`} tabIndex={0}>{tail.join("\n")}</pre>
-          )}
-        </>
-      )}
-      {dependencies.state === "interrupted" && (
-        <p className="wt-deps-detail">A restart cut off this slot&rsquo;s last claim. Its next claim starts cold.</p>
-      )}
+      <DependencyDetail ordinal={ordinal} dependencies={dependencies} now={now} />
     </section>
   );
 }

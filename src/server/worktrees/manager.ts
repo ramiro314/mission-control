@@ -21,6 +21,7 @@ import {
   claimFingerprint,
   claimVariableNames,
   describeClaimFailure,
+  encodeClaimFailure,
   readTreeBlobs,
   runClaimStep,
   runClaimSteps,
@@ -944,17 +945,19 @@ export class WorktreeManager {
       },
     });
     if (!outcome.ok && this.claims.stopping) return { kind: "shutdown" };
-    const failure = outcome.ok ? null : describeClaimFailure(outcome.warning);
     const settled = this.store.finishClaim(
       reservation.id,
       reservation.version,
-      failure === null ? { state: "current", fingerprint, sha } : { state: "failed", error: failure },
+      outcome.ok
+        ? { state: "current", fingerprint, sha }
+        : { state: "failed", error: encodeClaimFailure(outcome.warning) },
       this.deps.now(),
     );
     if (!settled) return { kind: "unrecorded", reason: "the dependency claim outcome could not be recorded" };
     this.publish();
     if (outcome.ok) return { kind: "succeeded" };
-    console.warn(`[worktrees] dependency claim failed in ${reservation.path}: ${failure!.split("\n", 1)[0]}`);
+    const summary = describeClaimFailure(outcome.warning).split("\n", 1)[0];
+    console.warn(`[worktrees] dependency claim failed in ${reservation.path}: ${summary}`);
     return { kind: "failed", warning: outcome.warning };
   }
 

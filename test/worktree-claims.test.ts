@@ -27,6 +27,7 @@ import {
   claimFingerprint,
   claimVariableNames,
   claimWarningsBlock,
+  decodeClaimFailure,
   describeClaimFailure,
   parseTreeBlobs,
   renderClaimArgv,
@@ -536,7 +537,11 @@ test("a failing step hands the slot over with a warning and clears the fingerpri
   assert.equal(slot.state, "leased", "never quarantined for an exit code");
   assert.equal(slot.depsState, "failed");
   assert.equal(slot.depsFingerprint, null);
-  assert.match(slot.depsLastError ?? "", /^step 2 of 3 .* exited with code 3\n[\s\S]*registry refused/);
+  const recorded = decodeClaimFailure(slot.depsLastError ?? "");
+  assert.equal(recorded.step, 2);
+  assert.equal(recorded.stepCount, 3);
+  assert.equal(recorded.reason, "exited with code 3");
+  assert.match(recorded.tail, /registry refused/);
   assert.equal((await m.release(result.lease)).outcome, "released");
 
   const retry = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-fail-2"));
@@ -568,7 +573,10 @@ test("a step that cannot start fails the claim and still hands the slot over", a
   assert.equal(slot.state, "leased", "never quarantined for a step that cannot start");
   assert.equal(slot.depsState, "failed");
   assert.equal(slot.depsFingerprint, null);
-  assert.match(slot.depsLastError ?? "", /^step 1 of 2 \(yarn install\) could not start/);
+  const recorded = decodeClaimFailure(slot.depsLastError ?? "");
+  assert.equal(recorded.step, 1);
+  assert.equal(recorded.command, "yarn install");
+  assert.match(recorded.reason, /^could not start/);
   await m.release(result.lease);
 });
 

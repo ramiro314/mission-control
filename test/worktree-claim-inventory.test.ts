@@ -12,7 +12,11 @@ import { openDb } from "../src/server/db.ts";
 import {
   ClaimRegistry,
   buildClaimEnvironment,
+  decodeClaimFailure,
+  describeClaimFailure,
   describeClaimVariables,
+  encodeClaimFailure,
+  redactClaimValues,
   runClaimSteps,
   type RunningClaimStep,
 } from "../src/server/worktrees/claim.ts";
@@ -26,7 +30,6 @@ import {
   claimFromDraft,
   draftFromClaim,
   draftNames,
-  splitClaimFailure,
   type ClaimDraft,
 } from "../src/web/lib/worktree-claim-draft.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -72,30 +75,31 @@ test("each durable dependency state maps to the state Settings names", () => {
   assert.equal(view(row())?.state, "never");
 
   const current = view(row({ depsState: "current", depsFingerprint: "fp-default", depsFingerprintSha: SHA_A, depsClaimedAt: 7 }));
-  assert.deepEqual(current, {
-    state: "current",
-    fingerprintSha: SHA_A,
-    claimedAt: 7,
-    defaultSha: SHA_B,
-    installing: null,
-    failure: null,
-  });
+  assert.deepEqual(current, { state: "current", fingerprintSha: SHA_A, claimedAt: 7, defaultSha: SHA_B });
 
   const stale = view(row({ depsState: "current", depsFingerprint: "fp-old", depsFingerprintSha: SHA_A }));
-  assert.equal(stale?.state, "stale");
-  assert.equal(stale?.defaultSha, SHA_B, "stale names the default commit it was judged against");
-  assert.equal(stale?.fingerprintSha, SHA_A, "and the commit the slot's fingerprint was taken at");
+  assert.deepEqual(stale, { state: "stale", fingerprintSha: SHA_A, claimedAt: null, defaultSha: SHA_B },
+    "stale names the default commit it was judged against, and the slot's fingerprint commit");
 
   // A claim with no fingerprint paths records no fingerprint and runs every lease: never stale.
   assert.equal(view(row({ depsState: "current", depsFingerprint: null, depsFingerprintSha: SHA_A }))?.state, "current");
   // An unknown default (no fetched ref, unreadable tree) is not evidence of staleness.
-  const unknown = view(row({ depsState: "current", depsFingerprint: "fp-old" }), null);
-  assert.equal(unknown?.state, "current");
-  assert.equal(unknown?.defaultSha, null, "a default it did not judge against is not named");
+  assert.deepEqual(view(row({ depsState: "current", depsFingerprint: "fp-old" }), null),
+    { state: "current", fingerprintSha: null, claimedAt: null, defaultSha: null },
+    "a default it did not judge against is not named");
 
-  const failed = view(row({ depsState: "failed", depsLastError: "step 1 of 1 (yarn install) exited with code 3\nE401 Unauthorized\n" }));
-  assert.equal(failed?.state, "failed");
-  assert.equal(failed?.failure, "step 1 of 1 (yarn install) exited with code 3\nE401 Unauthorized\n", "the tail keeps its lines");
+  const failed = view(row({
+    depsState: "failed",
+    depsLastError: encodeClaimFailure({
+      step: 1, stepCount: 1, argv: ["yarn", "install"], reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0,
+    }),
+  }));
+  assert.deepEqual(failed, {
+    state: "failed",
+    fingerprintSha: null,
+    claimedAt: null,
+    failure: { step: 1, stepCount: 1, command: "yarn install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0 },
+  }, "a failure reaches the view as fields, never as prose to parse");
 
   assert.equal(view(row({ depsState: "interrupted" }))?.state, "interrupted");
   // A write-ahead nobody is running behind is a claim a restart cut off.
@@ -113,7 +117,8 @@ test("a running claim is installing, with its step, command and start time", () 
     defaultSha: SHA_A,
     defaultFingerprint: "x",
   });
-  assert.deepEqual(reading?.installing, { startedAt: 100, step: null }, "before step 1 it is still reading the fingerprint");
+  assert.deepEqual(reading, { state: "installing", fingerprintSha: null, claimedAt: null, startedAt: 100, step: null },
+    "before step 1 it is still reading the fingerprint");
 
   const stepping = slotDependencies({
     hasClaim: true,
@@ -122,8 +127,10 @@ test("a running claim is installing, with its step, command and start time", () 
     defaultSha: SHA_A,
     defaultFingerprint: "x",
   });
-  assert.equal(stepping?.state, "installing");
-  assert.deepEqual(stepping?.installing, {
+  assert.deepEqual(stepping, {
+    state: "installing",
+    fingerprintSha: null,
+    claimedAt: null,
     startedAt: 100,
     step: { step: 2, stepCount: 3, command: "yarn rebuild", startedAt: 150 },
   });
@@ -262,16 +269,78 @@ test("the route's schema refusal lands beside the claim field that caused it", (
   assert.deepEqual(claimErrorsFrom("worktree operations unavailable", draft).general, ["worktree operations unavailable"]);
 });
 
-test("a failure summary splits into its step, its command and the reason, even with parentheses in the command", () => {
-  assert.deepEqual(
-    splitClaimFailure("step 2 of 3 (node -e console.log(1)) exited with code 3 (no value for NPM_TOKEN)"),
-    { step: "step 2 of 3", command: "node -e console.log(1)", reason: "exited with code 3 (no value for NPM_TOKEN)" },
+test("a failure record round-trips field for field, whatever the command and reason contain", () => {
+  const warning = {
+    step: 2,
+    stepCount: 3,
+    argv: ["node", "-e", "console.log(1)) exited with code 9 (fake"],
+    reason: "stopped before it started",
+    tail: "line one\nline two\n",
+    truncatedBytes: 12,
+  };
+  assert.deepEqual(decodeClaimFailure(encodeClaimFailure(warning)), {
+    step: 2,
+    stepCount: 3,
+    command: "node -e console.log(1)) exited with code 9 (fake",
+    reason: "stopped before it started",
+    tail: "line one\nline two\n",
+    truncatedBytes: 12,
+  }, "no reason vocabulary and no parenthesis in the command can confuse a record");
+
+  // A row an earlier build wrote as text keeps its first line as the reason and the rest as the
+  // tail, and claims no step or command it would have to guess at.
+  assert.deepEqual(decodeClaimFailure(describeClaimFailure(warning)), {
+    step: null,
+    stepCount: null,
+    command: null,
+    reason: "step 2 of 3 (node -e console.log(1)) exited with code 9 (fake) stopped before it started",
+    tail: "line one\nline two\n",
+    truncatedBytes: 0,
+  });
+  assert.deepEqual(decodeClaimFailure(""), { step: null, stepCount: null, command: null, reason: "", tail: "", truncatedBytes: 0 });
+  assert.equal(decodeClaimFailure(JSON.stringify({ version: 99, step: 1 })).step, null, "an unknown record version is not trusted");
+});
+
+test("redaction removes every received value, including one the tail ring cut into", () => {
+  const secrets = [
+    { name: "NPM_TOKEN", value: "npm_abcdefghijklmnop" },
+    { name: "SHORT", value: "xyz" },
+  ];
+  assert.equal(
+    redactClaimValues("auth=npm_abcdefghijklmnop failed; xyz again npm_abcdefghijklmnop", secrets),
+    "auth=[NPM_TOKEN redacted] failed; [SHORT redacted] again [NPM_TOKEN redacted]",
   );
-  assert.deepEqual(
-    splitClaimFailure("step 1 of 1 (pnpm) timed out at the claim's 10-minute limit"),
-    { step: "step 1 of 1", command: "pnpm", reason: "timed out at the claim's 10-minute limit" },
-  );
-  assert.deepEqual(splitClaimFailure("something else entirely"), { step: null, command: null, reason: "something else entirely" });
+  // The ring dropped the front of the output partway through the token.
+  assert.equal(redactClaimValues("ghijklmnop\nE401", secrets), "[NPM_TOKEN redacted]\nE401");
+  // Three characters that happen to end a value are not treated as a cut-off value.
+  assert.equal(redactClaimValues("nop is fine", secrets), "nop is fine");
+  assert.equal(redactClaimValues("nothing to hide", []), "nothing to hide");
+});
+
+test("a step that prints its own variable and fails stores, warns and shows only the redaction", async () => {
+  const value = "s3cr3t-fixture-claim-value";
+  const outcome = await runClaimSteps({
+    claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["fails"], env: ["REGISTRY_TOKEN"] }] }),
+    cwd: "/nowhere",
+    signal: new AbortController().signal,
+    environment: async (names) =>
+      buildClaimEnvironment({ names, daemonEnv: { REGISTRY_TOKEN: value }, daemonToken: "tok", loginShell: {} }),
+    runStep: async (request) => ({
+      outcome: "exited",
+      code: 1,
+      signal: null,
+      // The tail ring keeps the end, so the first occurrence arrives cut.
+      tail: `${String(request.env.REGISTRY_TOKEN).slice(6)}\nusing token ${String(request.env.REGISTRY_TOKEN)}\nE401\n`,
+      truncatedBytes: 40,
+    }),
+    now: () => 0,
+  });
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.equal(outcome.warning.tail, "[REGISTRY_TOKEN redacted]\nusing token [REGISTRY_TOKEN redacted]\nE401\n");
+  const stored = encodeClaimFailure(outcome.warning);
+  assert.equal(stored.includes("s3cr3t"), false, "the slot row never holds the value");
+  assert.equal(stored.includes(value.slice(6)), false, "nor the cut-off piece of it");
 });
 
 // ---- Through the real manager and inventory ----
@@ -437,32 +506,39 @@ test("a presence probe that fails leaves the inventory available and every name 
 });
 
 test("a failure tail is kept whole up to its byte bound, and cut on a character boundary past it", () => {
-  const failed = (depsLastError: string) =>
-    slotDependencies({
+  const record = (tail: string) =>
+    encodeClaimFailure({ step: 1, stepCount: 1, argv: ["pnpm", "install"], reason: "exited with code 1", tail, truncatedBytes: 0 });
+  const failedTail = (depsLastError: string) => {
+    const view = slotDependencies({
       hasClaim: true,
       slot: row({ depsState: "failed", depsLastError }),
       running: null,
       defaultSha: null,
       defaultFingerprint: null,
-    })?.failure;
-  const bound = 6_144;
+    });
+    assert.equal(view?.state, "failed");
+    return view?.state === "failed" ? view.failure.tail : null;
+  };
+  const bound = 4_096;
 
   const ascii = "x".repeat(bound);
-  assert.equal(failed(ascii), ascii, "exactly at the bound, single-byte text is untouched");
-  const wide = "€".repeat(bound / 3);
-  assert.equal(Buffer.byteLength(wide), bound);
-  assert.equal(failed(wide), wide, "exactly at the bound, multi-byte text is untouched");
+  assert.equal(failedTail(record(ascii)), ascii, "exactly at the bound, single-byte text is untouched");
+  const wide = "€".repeat(Math.floor(bound / 3));
+  assert.equal(failedTail(record(wide)), wide, "multi-byte text inside the bound is untouched");
 
-  // 2,100 three-byte characters and a final "z" are 6,301 bytes. Keeping the last 6,144
-  // starts one byte into a character, which must be dropped rather than shown as U+FFFD.
-  const over = `${"€".repeat(2_100)}z`;
-  const kept = failed(over)!;
-  assert.equal(kept, `${"€".repeat(2_047)}z`, "the newest output, the end, is what is kept");
+  // 1,400 three-byte characters and a final "zz" are 4,202 bytes. Keeping the last 4,096 starts
+  // one byte into a character, which must be dropped rather than shown as U+FFFD.
+  const over = `${"€".repeat(1_400)}zz`;
+  const kept = failedTail(record(over))!;
+  assert.equal(kept, `${"€".repeat(1_364)}zz`, "the newest output, the end, is what is kept");
   assert.equal(kept.includes("�"), false, "no replacement character from the cut");
   assert.ok(Buffer.byteLength(kept) <= bound);
 
   const overAscii = `head-${"y".repeat(bound)}`;
-  assert.equal(failed(overAscii), "y".repeat(bound), "past the bound, exactly the last bytes remain");
+  assert.equal(failedTail(record(overAscii)), "y".repeat(bound), "past the bound, exactly the last bytes remain");
+
+  // A text row an earlier build wrote is bounded the same way when it is read back.
+  assert.equal(failedTail(`step 1 of 1 (pnpm) exited with code 1\n${overAscii}`), "y".repeat(bound));
 });
 
 test("a running claim shows installing with its step, and a failed one keeps its tail", async () => {
@@ -472,10 +548,12 @@ test("a running claim shows installing with its step, and a failed one keeps its
     steps: [
       { argv: node("process.exit(0)") },
       {
+        // It prints the value it was given before failing, as a debug-minded install might.
         argv: node(
           `const fs=require("fs");const gate=${JSON.stringify(gate)};` +
-            `const wait=()=>{if(fs.existsSync(gate)){console.log("resolving packages");console.error("E401 Unauthorized: token rejected");process.exit(3)}setTimeout(wait,25)};wait();`,
+            `const wait=()=>{if(fs.existsSync(gate)){console.log("resolving packages with "+process.env.PRESENT_TOKEN);console.error("E401 Unauthorized: token rejected");process.exit(3)}setTimeout(wait,25)};wait();`,
         ),
+        env: ["PRESENT_TOKEN"],
       },
     ],
   });
@@ -497,18 +575,29 @@ test("a running claim shows installing with its step, and a failed one keeps its
 
   const installing = await slotView(operations, slotId);
   assert.equal(installing.slot.state, "provisioning");
-  assert.equal(installing.slot.dependencies?.state, "installing");
-  assert.equal(installing.slot.dependencies?.installing?.step?.step, 2);
-  assert.equal(installing.slot.dependencies?.installing?.step?.stepCount, 2);
-  assert.match(installing.slot.dependencies?.installing?.step?.command ?? "", /-e /);
+  const running = installing.slot.dependencies;
+  assert.equal(running?.state, "installing");
+  if (running?.state !== "installing") return;
+  assert.equal(running.step?.step, 2);
+  assert.equal(running.step?.stepCount, 2);
+  assert.match(running.step?.command ?? "", /-e /);
 
   writeFileSync(gate, "go\n");
   const result = leased(await pending);
   assert.ok(result.claimWarning, "a failed claim still hands the slot over, with a warning");
   assert.equal(existsSync(gate), true);
   const failed = await slotView(operations, slotId);
-  assert.equal(failed.slot.dependencies?.state, "failed");
-  assert.match(failed.slot.dependencies?.failure ?? "", /^step 2 of 2 .* exited with code 3\n/);
-  assert.match(failed.slot.dependencies?.failure ?? "", /E401 Unauthorized: token rejected/);
-  assert.equal(failed.slot.dependencies?.installing, null);
+  const deps = failed.slot.dependencies;
+  assert.equal(deps?.state, "failed");
+  if (deps?.state !== "failed") return;
+  assert.equal(deps.failure.step, 2);
+  assert.equal(deps.failure.stepCount, 2);
+  assert.equal(deps.failure.reason, "exited with code 3");
+  assert.match(deps.failure.command ?? "", /^\S+node -e /);
+  assert.match(deps.failure.tail, /resolving packages with \[PRESENT_TOKEN redacted\]/);
+  assert.match(deps.failure.tail, /E401 Unauthorized: token rejected/);
+  // The value the step printed reaches neither the inventory, the slot row nor the agent's note.
+  assert.equal(JSON.stringify(failed.inventory).includes("s3cr3t-daemon-value"), false);
+  assert.equal(String(db.prepare("SELECT deps_last_error FROM worktree_slots WHERE id = ?").get(slotId)?.deps_last_error).includes("s3cr3t"), false);
+  assert.equal(result.claimWarning.tail.includes("s3cr3t"), false);
 });

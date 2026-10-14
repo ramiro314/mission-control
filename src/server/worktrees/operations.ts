@@ -27,6 +27,7 @@ import type {
 import {
   claimVariableNames,
   claimVariablePresence,
+  decodeClaimFailure,
   renderClaimArgv,
   type RunningClaim,
 } from "./claim.ts";
@@ -225,16 +226,6 @@ function uniqRisks(risks: WorktreeActionRisk[]): WorktreeActionRisk[] {
   return [...unique.values()];
 }
 
-/** Bound on a failure tail carried to the browser; the slot row already holds at most 6,000. */
-const MAX_DEPENDENCY_FAILURE_BYTES = 6_144;
-
-function boundedTail(value: string | null): string | null {
-  if (value === null) return null;
-  const bytes = Buffer.from(value, "utf8");
-  if (bytes.length <= MAX_DEPENDENCY_FAILURE_BYTES) return value;
-  return bytes.subarray(bytes.length - MAX_DEPENDENCY_FAILURE_BYTES).toString("utf8").replace(/^\uFFFD+/, "");
-}
-
 /**
  * A slot's dependency state for Settings, from the durable row, the claim running in it right
  * now (if any) and the pool claim's fingerprint at the last fetched default branch. Pure: the
@@ -252,42 +243,39 @@ export function slotDependencies(input: {
 }): WorktreeSlotDependenciesView | null {
   if (!input.hasClaim) return null;
   const { slot, running } = input;
-  const base = {
-    fingerprintSha: slot.depsFingerprintSha,
-    claimedAt: slot.depsClaimedAt,
-    defaultSha: null,
-    installing: null,
-    failure: null,
-  };
+  const base = { fingerprintSha: slot.depsFingerprintSha, claimedAt: slot.depsClaimedAt };
   if (running) {
     return {
       ...base,
       state: "installing",
-      installing: {
-        startedAt: running.startedAt,
-        step: running.step
-          ? {
-              step: running.step.step,
-              stepCount: running.step.stepCount,
-              command: renderClaimArgv(running.step.argv),
-              startedAt: running.step.startedAt,
-            }
-          : null,
-      },
+      startedAt: running.startedAt,
+      step: running.step
+        ? {
+            step: running.step.step,
+            stepCount: running.step.stepCount,
+            command: renderClaimArgv(running.step.argv),
+            startedAt: running.step.startedAt,
+          }
+        : null,
     };
   }
   switch (slot.depsState) {
     case null:
       return { ...base, state: "never" };
     case "current": {
-      // Judged only when both sides have a fingerprint. A claim with no fingerprint paths
-      // runs on every lease, so it is never stale; an unknown default is not evidence of one.
-      const judged = slot.depsFingerprint !== null && input.defaultFingerprint !== null;
-      const stale = judged && slot.depsFingerprint !== input.defaultFingerprint;
-      return { ...base, state: stale ? "stale" : "current", defaultSha: judged ? input.defaultSha : null };
+      // Judged only when both sides have a fingerprint and the default commit is known. A claim
+      // with no fingerprint paths runs on every lease, so it is never stale; an unknown default
+      // is not evidence of staleness.
+      if (slot.depsFingerprint === null || input.defaultFingerprint === null || input.defaultSha === null) {
+        return { ...base, state: "current", defaultSha: null };
+      }
+      return slot.depsFingerprint === input.defaultFingerprint
+        ? { ...base, state: "current", defaultSha: input.defaultSha }
+        : { ...base, state: "stale", defaultSha: input.defaultSha };
     }
     case "failed":
-      return { ...base, state: "failed", failure: boundedTail(slot.depsLastError) };
+      // Decoded and bounded where the record is written; values were redacted before it was.
+      return { ...base, state: "failed", failure: decodeClaimFailure(slot.depsLastError ?? "") };
     // `claiming` with no claim running is a write-ahead whose daemon is gone; startup
     // reconcile is about to record it as interrupted, and the next claim starts cold either way.
     case "claiming":

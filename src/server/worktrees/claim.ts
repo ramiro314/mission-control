@@ -455,6 +455,10 @@ export async function runClaimSteps(input: {
       return prepared.kind === "stopped" ? fail("was stopped", "", 0, true) : fail(timedOut);
     }
     const built = prepared.value;
+    // Taken before the step runs: whatever it prints of these is removed before the failure
+    // reaches the slot row, Settings or the agent's prompt.
+    const secrets = built.received.map((name) => ({ name, value: String(built.env[name] ?? "") }));
+    const clean = (text: string): string => redactClaimValues(text, secrets);
     // Recomputed after the environment, so the step gets only what is truly left.
     const remaining = deadline - input.now();
     if (remaining <= 0) {
@@ -481,15 +485,15 @@ export async function runClaimSteps(input: {
         if (result.code === 0) continue;
         return fail(
           (result.signal ? `was killed by ${result.signal}` : `exited with code ${result.code}`) + missing,
-          result.tail,
+          clean(result.tail),
           result.truncatedBytes,
         );
       case "timedOut":
-        return fail(timedOut, result.tail, result.truncatedBytes);
+        return fail(timedOut, clean(result.tail), result.truncatedBytes);
       case "stopped":
-        return fail("was stopped", result.tail, result.truncatedBytes, true);
+        return fail("was stopped", clean(result.tail), result.truncatedBytes, true);
       case "spawnFailed":
-        return fail(`could not start: ${result.reason}`);
+        return fail(`could not start: ${clean(result.reason)}`);
     }
   }
   return { ok: true };
@@ -514,10 +518,122 @@ export function renderClaimArgv(argv: readonly string[]): string {
   return `${kept}... (${bytes.length - Buffer.byteLength(kept, "utf8")} more bytes)`;
 }
 
-/** The failing step's one-line summary, persisted on the slot with its tail. */
+/** The failing step's one-line summary with its tail, for the daemon's own log. */
 export function describeClaimFailure(warning: WorktreeClaimWarning): string {
   const head = `step ${warning.step} of ${warning.stepCount} (${renderClaimArgv(warning.argv)}) ${warning.reason}`;
   return boundedText(warning.tail ? `${head}\n${warning.tail}` : head, MAX_FAILURE_BYTES);
+}
+
+/**
+ * A failed claim as the slot row keeps it (`deps_last_error`) and Settings shows it. Stored as
+ * a versioned JSON record so nothing downstream has to parse prose back into its parts.
+ * `step`, `stepCount` and `command` are null only for a row an earlier build wrote as text.
+ */
+export interface ClaimFailureRecord {
+  step: number | null;
+  stepCount: number | null;
+  command: string | null;
+  reason: string;
+  tail: string;
+  /** Output bytes the tail ring dropped from the front. */
+  truncatedBytes: number;
+}
+
+const FAILURE_RECORD_VERSION = 1;
+const MAX_FAILURE_REASON_BYTES = 1_024;
+/** The tail ring already holds at most 4,000 bytes; this bounds a record whatever wrote it. */
+const MAX_FAILURE_TAIL_BYTES = 4_096;
+
+/** The first `maxBytes` of `value`, cut on a character boundary. */
+function boundedHead(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return value;
+  return bytes.subarray(0, maxBytes).toString("utf8").replace(/�+$/, "");
+}
+
+/** The record persisted on the slot row for a failed claim. */
+export function encodeClaimFailure(warning: WorktreeClaimWarning): string {
+  return JSON.stringify({
+    version: FAILURE_RECORD_VERSION,
+    step: warning.step,
+    stepCount: warning.stepCount,
+    command: renderClaimArgv(warning.argv),
+    reason: boundedHead(warning.reason, MAX_FAILURE_REASON_BYTES),
+    tail: boundedText(warning.tail, MAX_FAILURE_TAIL_BYTES),
+    truncatedBytes: warning.truncatedBytes,
+  });
+}
+
+/**
+ * Read a slot row's failure back. A record this build wrote decodes field for field. Anything
+ * else is text an earlier build wrote (`describeClaimFailure`'s shape): its first line becomes
+ * the reason and the rest the tail, without guessing where the command ends inside it.
+ */
+export function decodeClaimFailure(stored: string): ClaimFailureRecord {
+  try {
+    const parsed = JSON.parse(stored) as Record<string, unknown>;
+    if (
+      parsed && typeof parsed === "object" &&
+      parsed.version === FAILURE_RECORD_VERSION &&
+      Number.isSafeInteger(parsed.step) &&
+      Number.isSafeInteger(parsed.stepCount) &&
+      typeof parsed.command === "string" &&
+      typeof parsed.reason === "string" &&
+      typeof parsed.tail === "string" &&
+      Number.isSafeInteger(parsed.truncatedBytes)
+    ) {
+      return {
+        step: parsed.step as number,
+        stepCount: parsed.stepCount as number,
+        command: boundedHead(parsed.command, MAX_RENDERED_ARGV_BYTES * 2),
+        reason: boundedHead(parsed.reason, MAX_FAILURE_REASON_BYTES),
+        tail: boundedText(parsed.tail, MAX_FAILURE_TAIL_BYTES),
+        truncatedBytes: parsed.truncatedBytes as number,
+      };
+    }
+  } catch {
+    // Not a record: an earlier build's text.
+  }
+  const newline = stored.indexOf("\n");
+  const head = newline < 0 ? stored : stored.slice(0, newline);
+  return {
+    step: null,
+    stepCount: null,
+    command: null,
+    reason: boundedHead(head, MAX_FAILURE_REASON_BYTES),
+    tail: newline < 0 ? "" : boundedText(stored.slice(newline + 1), MAX_FAILURE_TAIL_BYTES),
+    truncatedBytes: 0,
+  };
+}
+
+/** The shortest trailing piece of a value that counts as that value when a tail starts with it. */
+const MIN_REDACTED_FRAGMENT = 4;
+
+/**
+ * Remove every value a step received from text that step produced. A step is free to print its
+ * own environment, and its output goes to the slot row, Settings and the agent's prompt, none
+ * of which may carry a claim variable's value. Each whole occurrence becomes `[NAME redacted]`.
+ * The tail ring drops output from the front, so a tail can also START partway through a value:
+ * a leading piece of at least four characters that ends a value is redacted too.
+ */
+export function redactClaimValues(
+  text: string,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+): string {
+  const ordered = secrets
+    .filter((secret) => secret.value.length > 0)
+    .sort((a, b) => b.value.length - a.value.length);
+  let redacted = text;
+  for (const { name, value } of ordered) {
+    for (let length = value.length - 1; length >= MIN_REDACTED_FRAGMENT; length -= 1) {
+      if (redacted.startsWith(value.slice(-length))) {
+        redacted = `[${name} redacted]${redacted.slice(length)}`;
+        break;
+      }
+    }
+  }
+  for (const { name, value } of ordered) redacted = redacted.split(value).join(`[${name} redacted]`);
+  return redacted;
 }
 
 /** A backtick run longer than any in `text`, at least `minimum` long, so `text` cannot close it. */

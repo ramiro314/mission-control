@@ -201,6 +201,16 @@ on a claim step to give it back.
 
 - Each step's stdout and stderr stream into one 4,000-byte tail, the same bound checks use.
   Output size never fails a claim.
+- A step may print the variables it was given. Before a failure is stored, shown in Settings
+  or written into the agent's note, every value the step received is replaced in its tail and
+  reason with `[NAME redacted]`. The tail keeps only the end of the output, so a tail that
+  starts partway through a value has that leading piece redacted too, when it is at least four
+  characters long. A value the step transformed before printing, for example by encoding it,
+  is not recognized.
+- The slot row records a failure as a versioned JSON record: the step, the step count, the
+  command (cut to 512 bytes), the reason, the tail and how many bytes the tail dropped.
+  Settings reads those fields directly. A failure an earlier build stored as plain text shows
+  its first line as the reason and the rest as the tail.
 - A timeout sends SIGTERM to the step's process group, then SIGKILL after five seconds, and
   counts as a failed claim.
 - A failure is a non-zero exit, a timeout, or a step that cannot start. The remaining steps do
@@ -256,7 +266,7 @@ Each slot card of a pool with a claim shows the slot's dependency state:
 | current | The last claim succeeded, and its fingerprint matches the claim's fingerprint at the fetched default branch. Also shown when no default can be read, or when the claim lists no fingerprint paths, since neither is evidence of staleness. |
 | stale | The last claim succeeded, but the fetched default branch's fingerprint differs from the slot's. The next lease runs the claim again. |
 | installing | A claim is running in the slot right now, with its step, its command and the elapsed time. |
-| failed | The last claim failed, timed out or was stopped. The card shows the failing step, its reason, its command and the output tail. |
+| failed | The last claim failed, timed out or was stopped. The card shows the failing step, its reason, its command and the output tail, with claim variable values redacted. |
 | interrupted | A restart cut off the slot's last claim. Its next claim starts cold. |
 
 The card also names the commit the slot's fingerprint was taken at. **Stale is judged against

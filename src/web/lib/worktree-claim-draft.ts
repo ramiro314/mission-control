@@ -31,19 +31,6 @@ export interface ClaimDraftErrors {
 
 export const DEFAULT_CLAIM_TIMEOUT_MINUTES = 10;
 
-/**
- * A failed claim's one-line summary, `step N of M (<command>) <reason>` as the daemon writes it
- * (`describeClaimFailure`), split so the card can lead with the reason and clamp the command,
- * which can run to hundreds of bytes. The command match is greedy, so a command containing a
- * parenthesis still ends at the reason. Anything else is returned whole as the reason.
- */
-export function splitClaimFailure(summary: string): { step: string | null; command: string | null; reason: string } {
-  const match = /^(step \d+ of \d+) \((.*)\) ((?:exited with code|was killed by|timed out|was stopped|could not start|its environment could not be built)[\s\S]*)$/
-    .exec(summary);
-  if (!match) return { step: null, command: null, reason: summary };
-  return { step: match[1]!, command: match[2]!, reason: match[3]! };
-}
-
 export function draftFromClaim(claim: WorktreeClaim | null): ClaimDraft {
   if (!claim) {
     return {

@@ -430,15 +430,7 @@ test("Dismiss never claims a failure without confirmed removals changed nothing"
 
 test("a pool with a claim shows its editor, each name's presence, and every slot dependency state", () => {
   const base = overCapacityPool.slots[0]!;
-  const deps = (over: Partial<NonNullable<typeof base.dependencies>>) => ({
-    state: "never" as const,
-    fingerprintSha: null,
-    claimedAt: null,
-    defaultSha: null,
-    installing: null,
-    failure: null,
-    ...over,
-  });
+  const at = { fingerprintSha: null, claimedAt: null };
   const claimPool: WorktreeRepositoryView = {
     ...roomToGrowPool,
     // An attention pool renders open, so its detail and slots reach the markup.
@@ -456,21 +448,43 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
       { name: "NPM_TOKEN", present: false, source: null },
     ],
     slots: [
-      { ...base, id: "d1", ordinal: 1, dependencies: deps({ state: "current", fingerprintSha: "c".repeat(40), defaultSha: "d".repeat(40) }) },
-      { ...base, id: "d2", ordinal: 2, dependencies: deps({ state: "stale", fingerprintSha: "c".repeat(40), defaultSha: "e".repeat(40) }) },
-      { ...base, id: "d3", ordinal: 3, dependencies: deps({}) },
+      { ...base, id: "d1", ordinal: 1, dependencies: { ...at, state: "current", fingerprintSha: "c".repeat(40), defaultSha: "d".repeat(40) } },
+      { ...base, id: "d2", ordinal: 2, dependencies: { ...at, state: "stale", fingerprintSha: "c".repeat(40), defaultSha: "e".repeat(40) } },
+      { ...base, id: "d3", ordinal: 3, dependencies: { ...at, state: "never" } },
       {
         ...base,
         id: "d4",
         ordinal: 4,
         state: "provisioning",
-        dependencies: deps({
+        dependencies: {
+          ...at,
           state: "installing",
-          installing: { startedAt: 0, step: { step: 1, stepCount: 2, command: "pnpm install --frozen-lockfile", startedAt: 0 } },
-        }),
+          startedAt: 0,
+          step: { step: 1, stepCount: 2, command: "pnpm install --frozen-lockfile", startedAt: 0 },
+        },
       },
-      { ...base, id: "d5", ordinal: 5, dependencies: deps({ state: "failed", failure: "step 1 of 1 (pnpm install) exited with code 3\nE401 Unauthorized" }) },
-      { ...base, id: "d6", ordinal: 6, dependencies: deps({ state: "interrupted" }) },
+      {
+        ...base,
+        id: "d5",
+        ordinal: 5,
+        dependencies: {
+          ...at,
+          state: "failed",
+          failure: { step: 1, stepCount: 1, command: "pnpm install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0 },
+        },
+      },
+      { ...base, id: "d6", ordinal: 6, dependencies: { ...at, state: "interrupted" } },
+      {
+        ...base,
+        id: "d7",
+        ordinal: 7,
+        // A failure an earlier build stored as text: the reason line and tail, no guessed command.
+        dependencies: {
+          ...at,
+          state: "failed",
+          failure: { step: null, stepCount: null, command: null, reason: "legacy summary line", tail: "", truncatedBytes: 0 },
+        },
+      },
     ],
   };
   const html = render({ inventory: { ...inventory, repositories: [claimPool] } });
@@ -489,6 +503,9 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
   assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?>installing<[\s\S]*?Step 1 of 2 · <span>[\s\S]*?elapsed<\/span>[\s\S]*?>pnpm install --frozen-lockfile<\/code>/);
   assert.match(html, /aria-label="Slot 5 dependencies"[\s\S]*?>failed<[\s\S]*?Step 1 of 1 exited with code 3\.<\/p>[\s\S]*?>pnpm install<\/code>[\s\S]*?<pre[^>]*>E401 Unauthorized<\/pre>/);
   assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?starts cold/);
+  const legacy = html.slice(html.indexOf('aria-label="Slot 7 dependencies"'));
+  assert.match(legacy, /^[\s\S]*?>failed<[\s\S]*?<p class="wt-deps-detail">legacy summary line<\/p>/);
+  assert.doesNotMatch(legacy.slice(0, legacy.indexOf("</section>")), /Failed command|<pre/, "nothing guessed, nothing empty");
 });
 
 test("a pool without a claim shows no slot dependency state and offers to add a step", () => {

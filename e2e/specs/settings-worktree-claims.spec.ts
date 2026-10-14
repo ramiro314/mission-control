@@ -55,6 +55,7 @@ const STEP_SCRIPT = [
   `  if (!fs.existsSync(gate)) return setTimeout(wait, 50);`,
   `  const code = Number(fs.readFileSync(gate, "utf8"));`,
   `  console.log("resolving fixture packages");`,
+  `  if (code) console.error("using token " + process.env.MC_E2E_CLAIM_DAEMON_TOKEN);`,
   `  if (code) console.error("E401 fixture registry refused the token");`,
   `  process.exit(code);`,
   `};`,
@@ -240,8 +241,16 @@ test("the claim editor saves through the settings route and every slot shows its
       "Step 1 of 1 exited with code 3 (no value for MC_E2E_CLAIM_ABSENT_TOKEN).",
     );
     await expect(secondDeps.getByLabel(/^Failed command: /)).toContainText(`${process.execPath} -e`);
-    await expect(secondDeps.getByLabel(`Slot ${second} dependency output tail`))
-      .toContainText("E401 fixture registry refused the token");
+    const tail = secondDeps.getByLabel(`Slot ${second} dependency output tail`);
+    await expect(tail).toContainText("E401 fixture registry refused the token");
+    // The step printed the value it was given. What reaches the card is the redaction.
+    await expect(tail).toContainText("using token [MC_E2E_CLAIM_DAEMON_TOKEN redacted]");
+    const servedAfterFailure = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).text();
+    expect(servedAfterFailure).toContain("[MC_E2E_CLAIM_DAEMON_TOKEN redacted]");
+    for (const value of [DAEMON_VALUE, SHELL_VALUE]) {
+      expect(servedAfterFailure).not.toContain(value);
+      expect(await dashboard.content()).not.toContain(value);
+    }
     await expect(secondDeps).toContainText("The next lease runs the claim again.");
     await shoot(dashboard, pool.getByRole("article", { name: `Slot ${second}` }), "06-slot-failed");
     await shoot(dashboard, pool.getByRole("article", { name: "Slot 1" }), "07-slot-never-installed");

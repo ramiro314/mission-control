@@ -74,24 +74,55 @@ export type WorktreeSlotDependencyState =
   | "failed"
   | "interrupted";
 
-export interface WorktreeSlotDependenciesView {
-  state: WorktreeSlotDependencyState;
+/** What every dependency state carries. */
+interface WorktreeSlotDependenciesBase {
   /** The commit the slot's recorded fingerprint was taken at. */
   fingerprintSha: string | null;
   /** When the last claim settled. */
   claimedAt: number | null;
-  /** The default-branch commit `current` or `stale` was judged against, when one was. */
-  defaultSha: string | null;
-  /** Present only while `installing`. */
-  installing: {
-    /** When this claim began, for its elapsed time. */
-    startedAt: number;
-    /** Null until the first step starts: the fingerprint is still being read. */
-    step: { step: number; stepCount: number; command: string; startedAt: number } | null;
-  } | null;
-  /** The last failure's one-line summary and output tail, for `failed`. */
-  failure: string | null;
 }
+
+/**
+ * A failed claim, field by field. The daemon decodes its own record; the browser never parses
+ * prose. Claim variable values are removed from `reason` and `tail` before they are stored.
+ */
+export interface WorktreeClaimFailureView {
+  /** Null, with `stepCount` and `command`, only for a failure an earlier build recorded as text. */
+  step: number | null;
+  stepCount: number | null;
+  command: string | null;
+  reason: string;
+  /** The step's last output. Empty when it printed nothing. */
+  tail: string;
+  /** Output bytes dropped from the front of the tail. */
+  truncatedBytes: number;
+}
+
+/**
+ * A slot's dependency state. Each state carries exactly its own facts, so a reader switches on
+ * `state` and never has to know which other fields happen to be null alongside it.
+ */
+export type WorktreeSlotDependenciesView =
+  | (WorktreeSlotDependenciesBase & { state: "never" })
+  | (WorktreeSlotDependenciesBase & {
+      state: "current";
+      /** The default-branch commit it was judged against; null when none could be. */
+      defaultSha: string | null;
+    })
+  | (WorktreeSlotDependenciesBase & {
+      state: "stale";
+      /** The fetched default-branch commit whose dependencies differ. */
+      defaultSha: string;
+    })
+  | (WorktreeSlotDependenciesBase & {
+      state: "installing";
+      /** When this claim began, for its elapsed time. */
+      startedAt: number;
+      /** Null until the first step starts: the fingerprint is still being read. */
+      step: { step: number; stepCount: number; command: string; startedAt: number } | null;
+    })
+  | (WorktreeSlotDependenciesBase & { state: "failed"; failure: WorktreeClaimFailureView })
+  | (WorktreeSlotDependenciesBase & { state: "interrupted" });
 
 export interface NativeWorktreeSlotView {
   id: string;
