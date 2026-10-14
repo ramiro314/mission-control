@@ -2867,6 +2867,23 @@ const WorktreeClaimVariableNameSchema = z
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a variable name is letters, digits and underscores")
   .refine((name) => !RESERVED_CLAIM_VARIABLE.test(name), "PATH and MISSION_/FLEET_/HARNESS_ names are reserved");
 
+/**
+ * One glob matched against Git's repository-relative tree paths (`apps/web/package.json`).
+ * Anything that cannot be such a path is refused rather than silently matching nothing: an
+ * absolute path, a `.` or `..` segment, an empty segment, or a backslash.
+ */
+const WorktreeClaimFingerprintPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    (glob) =>
+      !glob.startsWith("/") &&
+      !glob.includes("\\") &&
+      glob.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."),
+    "a fingerprint path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
 const WorktreeClaimStepSchema = z
   .object({
     /** Operator-authored argv, never a shell string. */
@@ -2897,7 +2914,7 @@ export const WorktreeClaimSchema = z
       .default(WORKTREES_CONFIG_LIMITS.defaultClaimTimeoutMinutes),
     /** Repository-relative globs whose blob ids decide whether a slot's claim is current. */
     fingerprintPaths: z
-      .array(z.string().min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes))
+      .array(WorktreeClaimFingerprintPathSchema)
       .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPaths)
       .default([]),
   })

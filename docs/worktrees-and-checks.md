@@ -156,11 +156,14 @@ repository's `worktrees` entry, so settings backups capture it, and it is set th
 - `steps` holds 1 to 16 argvs, never a shell, each bounded like `setupArgv`. `env` lists up to 32
   variable **names**; Mission Control never stores a value. `PATH` and names starting with
   `MISSION_`, `FLEET_` or `HARNESS_` are refused, because those are the daemon's own.
-- `timeoutMinutes` covers the whole claim, every step together. It defaults to 10 and may be at
-  most 240.
+- `timeoutMinutes` covers the whole claim, every step together, including the time spent
+  building each step's environment (a login-shell read among it). It defaults to 10 and may be
+  at most 240.
 - `fingerprintPaths` holds up to 64 repository-relative globs. They are matched with Node's
   `path.matchesGlob`, so a wildcard does not match a segment that starts with a dot, and a
-  dotfile directory is named literally (`.yarn/releases/**`).
+  dotfile directory is named literally (`.yarn/releases/**`). A glob that cannot be a
+  repository-relative path is refused: a leading `/`, a `.` or `..` segment, an empty segment,
+  or a backslash.
 - A patch's `claim` replaces the whole claim, and `"claim": null` removes it.
 
 **Fingerprints.** Before a claim runs, Mission Control hashes three inputs:
@@ -203,8 +206,8 @@ on a claim step to give it back.
   not run. The slot is **handed over with a warning and never quarantined for the exit code**.
   The slot's fingerprint stays cleared, so the next lease runs the claim again.
 - The agent's launch prompt then opens with a "Dependency install warning" note. It names the
-  failing step and includes its output tail, so the agent can install or repair dependencies
-  itself, and can tell a dependency failure from one its own change caused.
+  failing step, its command cut to 512 bytes, and its output tail, so the agent can install or
+  repair dependencies itself, and can tell a dependency failure from one its own change caused.
 - Claim steps must not rewrite tracked files. A claim that leaves a tracked file modified, an
   untracked file Git does not ignore, or a branch attached fails the final proof, and the slot
   is quarantined as any other unproven materialization is. `yarn install --immutable` is one way
@@ -215,7 +218,9 @@ on a claim step to give it back.
 new fingerprint, and failure records `failed` with the failing step and its tail. A daemon that
 dies anywhere after that write leaves no fingerprint for a later lease to trust. Startup finds
 the slot still `provisioning` and quarantines it as an interrupted provisioning intent, exactly
-as it does after a restart during setup, and marks its `deps_state` as `interrupted`. If that
+as it does after a restart during setup, and marks its `deps_state` as `interrupted`. That
+marking happens on every reconciliation path, including one that quarantines the whole pool
+because its identity or marker cannot be proven. If that
 slot ever returns to the pool, its next claim runs every step. A step's process group that
 outlived the daemon still has its working directory inside the slot. The occupancy check
 therefore sees it, and the slot is never handed out while it runs.

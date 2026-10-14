@@ -36,6 +36,8 @@ const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 5_000;
 /** Bound on the failure text persisted on the slot row and shown to the agent. */
 const MAX_FAILURE_BYTES = 6_000;
+/** Bound on the failing command as rendered into a prompt or a failure record. */
+const MAX_RENDERED_ARGV_BYTES = 512;
 
 /** Every variable name any of the claim's steps lists, once each, sorted. */
 export function claimVariableNames(claim: WorktreeClaim | null | undefined): string[] {
@@ -279,6 +281,54 @@ export type ClaimStepsOutcome =
   | { ok: false; stopped: boolean; warning: WorktreeClaimWarning };
 
 /**
+ * Wait for a step's environment for at most `ms`, or until the claim is stopped. An environment
+ * that arrives after the wait gave up still minted a disposable home, which is released then.
+ */
+async function withinDeadline(
+  pending: Promise<ClaimEnvironment>,
+  ms: number,
+  signal: AbortSignal,
+): Promise<
+  | { kind: "built"; value: ClaimEnvironment }
+  | { kind: "failed"; reason: string }
+  | { kind: "timedOut" | "stopped" }
+> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  let abandoned = false;
+  const settled = pending.then(
+    (value) => {
+      if (abandoned) cleanupAgentSubprocessEnv(value.env);
+      return { kind: "built" as const, value };
+    },
+    (error: unknown) => ({
+      kind: "failed" as const,
+      reason: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  // `abandoned` is set in the same callback that gives up, so whichever of the two settles
+  // first decides both the race and who releases the environment.
+  const gaveUp = new Promise<{ kind: "timedOut" | "stopped" }>((resolve) => {
+    timer = setTimeout(() => {
+      abandoned = true;
+      resolve({ kind: "timedOut" });
+    }, ms);
+    onAbort = () => {
+      abandoned = true;
+      resolve({ kind: "stopped" });
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([settled, gaveUp]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
  * Run every step in order under one deadline. Any failing step fails the claim and the rest
  * do not run. Each step's environment is built for it alone and released afterwards.
  */
@@ -306,13 +356,20 @@ export async function runClaimSteps(input: {
       warning: { step: index + 1, stepCount, argv: [...step.argv], reason, tail, truncatedBytes },
     });
     if (input.signal.aborted) return fail("stopped before it started", "", 0, true);
+    const beforeEnvironment = deadline - input.now();
+    if (beforeEnvironment <= 0) return fail(timedOut);
+    // Building the environment can probe the login shell, so it spends the same deadline.
+    const prepared = await withinDeadline(input.environment(step.env), beforeEnvironment, input.signal);
+    if (prepared.kind === "failed") return fail(`its environment could not be built: ${prepared.reason}`);
+    if (prepared.kind !== "built") {
+      return prepared.kind === "stopped" ? fail("was stopped", "", 0, true) : fail(timedOut);
+    }
+    const built = prepared.value;
+    // Recomputed after the environment, so the step gets only what is truly left.
     const remaining = deadline - input.now();
-    if (remaining <= 0) return fail(timedOut);
-    let built: ClaimEnvironment;
-    try {
-      built = await input.environment(step.env);
-    } catch (error) {
-      return fail(`its environment could not be built: ${error instanceof Error ? error.message : String(error)}`);
+    if (remaining <= 0) {
+      cleanupAgentSubprocessEnv(built.env);
+      return fail(timedOut);
     }
     let result: ClaimStepResult;
     try {
@@ -354,16 +411,36 @@ function boundedText(value: string, maxBytes: number): string {
   return bytes.subarray(bytes.length - maxBytes).toString("utf8").replace(/^�+/, "");
 }
 
+/**
+ * The failing step's command as text, cut to a fixed byte bound. A valid step may hold 32
+ * arguments of 4,096 bytes each, and the agent needs to recognize the command, not read all of
+ * it; the cut is deterministic and says how much it dropped.
+ */
+export function renderClaimArgv(argv: readonly string[]): string {
+  const full = argv.join(" ");
+  const bytes = Buffer.from(full, "utf8");
+  if (bytes.length <= MAX_RENDERED_ARGV_BYTES) return full;
+  const kept = bytes.subarray(0, MAX_RENDERED_ARGV_BYTES).toString("utf8").replace(/�+$/, "");
+  return `${kept}... (${bytes.length - Buffer.byteLength(kept, "utf8")} more bytes)`;
+}
+
 /** The failing step's one-line summary, persisted on the slot with its tail. */
 export function describeClaimFailure(warning: WorktreeClaimWarning): string {
-  const head = `step ${warning.step} of ${warning.stepCount} (${warning.argv.join(" ")}) ${warning.reason}`;
+  const head = `step ${warning.step} of ${warning.stepCount} (${renderClaimArgv(warning.argv)}) ${warning.reason}`;
   return boundedText(warning.tail ? `${head}\n${warning.tail}` : head, MAX_FAILURE_BYTES);
 }
 
-/** A Markdown fence longer than any backtick run in `text`, so the tail cannot close it. */
-function fenceFor(text: string): string {
+/** A backtick run longer than any in `text`, at least `minimum` long, so `text` cannot close it. */
+function fenceFor(text: string, minimum = 3): string {
   const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
-  return "`".repeat(Math.max(3, longest + 1));
+  return "`".repeat(Math.max(minimum, longest + 1));
+}
+
+/** Inline Markdown code that a backtick inside the command cannot end early. */
+function inlineCode(text: string): string {
+  const fence = fenceFor(text, 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
 }
 
 /**
@@ -380,7 +457,7 @@ export function claimWarningsBlock(
       `Mission Control's dependency claim for ${path} failed, so the installed dependencies in`,
       "that worktree may not match its commit.",
       "",
-      `Failing step ${warning.step} of ${warning.stepCount}: \`${warning.argv.join(" ")}\` ${warning.reason}.`,
+      `Failing step ${warning.step} of ${warning.stepCount}: ${inlineCode(renderClaimArgv(warning.argv))} ${warning.reason}.`,
     );
     if (warning.tail) {
       const fence = fenceFor(warning.tail);

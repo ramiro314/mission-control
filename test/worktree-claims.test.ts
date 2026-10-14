@@ -27,7 +27,9 @@ import {
   claimFingerprint,
   claimVariableNames,
   claimWarningsBlock,
+  describeClaimFailure,
   parseTreeBlobs,
+  renderClaimArgv,
   runClaimStep,
   runClaimSteps,
   type ClaimStepResult,
@@ -37,6 +39,7 @@ import {
   parseSettingPayload,
   settingPayloadForEntry,
 } from "../src/server/settings-backups/config-registry.ts";
+import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -205,6 +208,22 @@ test("the claim schema accepts every documented maximum exactly", () => {
   // One past each length limit that the table above does not already reach.
   assert.throws(() => claimOf({ steps: [{ argv: ["x"], env: ["N".repeat(129)] }] }));
   assert.throws(() => claimOf({ steps: [{ argv: ["x"] }], fingerprintPaths: ["f".repeat(1025)] }));
+});
+
+test("fingerprint paths must be repository-relative globs", () => {
+  const accepted = claimOf({
+    steps: [{ argv: ["x"] }],
+    fingerprintPaths: ["yarn.lock", "apps/*/package.json", ".yarn/releases/**", "packages/**/package.json"],
+  });
+  assert.equal(accepted.fingerprintPaths.length, 4);
+  for (const glob of ["/etc/passwd", "../outside.lock", "apps/../yarn.lock", "./yarn.lock", "apps//package.json", "apps/", "apps\\web\\package.json", ".."]) {
+    assert.throws(() => claimOf({ steps: [{ argv: ["x"] }], fingerprintPaths: [glob] }), glob);
+  }
+  assert.throws(() =>
+    WorktreesConfigPatchSchema.parse({
+      repositories: { "/one/.git": { claim: { steps: [{ argv: ["x"] }], fingerprintPaths: ["/abs/yarn.lock"] } } },
+    }),
+  );
 });
 
 test("the worktrees settings API stores, replaces and removes a pool's claim", () => {
@@ -606,6 +625,83 @@ test("the claim's deadline covers every step together", async () => {
   assert.equal(!outcome.ok && outcome.warning.reason, "timed out at the claim's 1-minute limit");
 });
 
+test("building a step's environment spends the claim's deadline, and the step gets what is left", async () => {
+  const exited: ClaimStepResult = { outcome: "exited", code: 0, signal: null, tail: "", truncatedBytes: 0 };
+  const emptyEnv = { env: {}, received: [], missing: [] };
+  const claim = claimOf({ steps: [{ argv: ["first"] }, { argv: ["second"] }], timeoutMinutes: 1 });
+
+  // A slow environment for the second step leaves it only the remainder.
+  let clock = 0;
+  const budgets: number[] = [];
+  const shared = await runClaimSteps({
+    claim,
+    cwd: "/nowhere",
+    signal: new AbortController().signal,
+    environment: async () => {
+      clock += 20_000;
+      return emptyEnv;
+    },
+    runStep: async (request) => {
+      budgets.push(request.timeoutMs);
+      clock += 10_000;
+      return exited;
+    },
+    now: () => clock,
+  });
+  assert.equal(shared.ok, true);
+  assert.deepEqual(budgets, [40_000, 10_000], "each step is handed the deadline as it stands after its environment");
+
+  // An environment that uses up the whole deadline never reaches its step.
+  clock = 0;
+  const ran: string[] = [];
+  const exhausted = await runClaimSteps({
+    claim,
+    cwd: "/nowhere",
+    signal: new AbortController().signal,
+    environment: async () => {
+      clock += 60_000;
+      return emptyEnv;
+    },
+    runStep: async (request) => {
+      ran.push(request.argv[0]!);
+      return exited;
+    },
+    now: () => clock,
+  });
+  assert.deepEqual(ran, []);
+  assert.equal(!exhausted.ok && exhausted.warning.step, 1);
+  assert.equal(!exhausted.ok && exhausted.warning.reason, "timed out at the claim's 1-minute limit");
+
+  // An environment that never answers is cut off by the deadline itself, in real time.
+  const started = Date.now();
+  let reads = 0;
+  const hung = await runClaimSteps({
+    claim,
+    cwd: "/nowhere",
+    signal: new AbortController().signal,
+    environment: () => new Promise(() => {}),
+    runStep: async () => exited,
+    // The deadline is set from the first read; every later read is 50 ms before it.
+    now: () => (reads++ === 0 ? 0 : 60_000 - 50),
+  });
+  assert.equal(!hung.ok && hung.warning.reason, "timed out at the claim's 1-minute limit");
+  assert.ok(Date.now() - started < 5_000, "the hung environment did not hold the claim");
+
+  // A stop while the environment is being built stops the claim.
+  const controller = new AbortController();
+  const stopping = runClaimSteps({
+    claim,
+    cwd: "/nowhere",
+    signal: controller.signal,
+    environment: () => new Promise(() => {}),
+    runStep: async () => exited,
+    now: () => 0,
+  });
+  controller.abort("shutdown");
+  const stopped = await stopping;
+  assert.equal(!stopped.ok && stopped.stopped, true);
+});
+
 test("output size never fails a step, and the tail keeps the last 4,000 bytes", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-claim-output-"));
   try {
@@ -774,6 +870,20 @@ for (const at of ["after-write-ahead", "mid-step"] as const) {
   });
 }
 
+test("a pool-wide startup failure still marks an interrupted claim before it quarantines the slot", async () => {
+  const { claim } = await crashedClaim("mission-claim-crash-pool-", "mid-step");
+  const restarted = manager(claim);
+  // A missing pool marker fails the whole pool before any per-slot reconciliation runs.
+  const pool = restarted.store.pools()[0]!;
+  rmSync(join(pool.poolPath, WORKTREE_POOL_MARKER));
+  await restarted.reconcile();
+  const recovered = onlySlot(restarted);
+  assert.equal(recovered.state, "quarantined");
+  assert.match(recovered.quarantineReason ?? "", /pool marker/);
+  assert.equal(recovered.depsState, "interrupted");
+  assert.equal(recovered.depsFingerprint, null);
+});
+
 test("maintenance skips a claiming slot instead of waiting on it, and retries it next pass", async () => {
   const fixture = repository("mission-claim-maintenance-");
   let started!: () => void;
@@ -867,6 +977,39 @@ test("the launch-prompt note names the failing step and fences its tail safely",
   assert.match(block, /12 earlier bytes were dropped/);
   assert.match(block, /\n````\nerror ```inside``` output\n````\n/, "the fence outgrows any backtick run in the tail");
   assert.match(block, /\n---\n$/, "the same separator the repository manifest uses");
+});
+
+test("the note and the failure record bound a huge failing command and keep the step and tail", () => {
+  const argv = Array.from({ length: 32 }, (_, i) => `${i}`.padEnd(4096, "a"));
+  const warning = {
+    step: 3,
+    stepCount: 4,
+    argv,
+    reason: "exited with code 1",
+    tail: "THE-USEFUL-TAIL",
+    truncatedBytes: 0,
+  };
+  const fullBytes = Buffer.byteLength(argv.join(" "));
+  const rendered = renderClaimArgv(argv);
+  assert.ok(Buffer.byteLength(rendered) < 600, `rendered command is ${Buffer.byteLength(rendered)} bytes`);
+  assert.match(rendered, new RegExp(`\\.\\.\\. \\(${fullBytes - 512} more bytes\\)$`));
+  assert.equal(renderClaimArgv(["yarn", "install"]), "yarn install", "a short command is untouched");
+
+  const block = claimWarningsBlock([
+    { path: "/pool/1/a", warning },
+    { path: "/pool/1/b", warning },
+  ]);
+  assert.ok(Buffer.byteLength(block) < 4_000, `two failed repositories add ${Buffer.byteLength(block)} bytes`);
+  assert.match(block, /Failing step 3 of 4: `0a+.*more bytes\)` exited with code 1\./);
+  assert.match(block, /THE-USEFUL-TAIL/);
+  const record = describeClaimFailure(warning);
+  assert.match(record, /^step 3 of 4 \(0a+.*more bytes\)\) exited with code 1\nTHE-USEFUL-TAIL$/);
+
+  // A backtick in the command cannot end its inline code span early.
+  assert.match(
+    claimWarningsBlock([{ path: "/p", warning: { ...warning, argv: ["sh", "-c", "echo `id`"] } }]),
+    /Failing step 3 of 4: `` sh -c echo `id` `` exited/,
+  );
 });
 
 test("a task lease's claim warning reaches provisionWorktree's caller", async () => {

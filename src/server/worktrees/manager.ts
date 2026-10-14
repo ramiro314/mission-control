@@ -939,6 +939,17 @@ export class WorktreeManager {
     return { kind: "failed", warning: outcome.warning };
   }
 
+  /**
+   * A claim's write-ahead with no claim running behind it: the daemon that wrote it is gone.
+   * The write already cleared the fingerprint, so nothing can skip on it; this records that the
+   * claim was interrupted, and the slot's next claim starts cold. Called under the slot lock on
+   * every reconciliation path, the pool-wide failure included, before any quarantine decision.
+   */
+  private markInterruptedClaim(slot: WorktreeSlotRow, now: number): void {
+    if (slot.depsState !== "claiming" || this.claims.has(slot.id)) return;
+    if (this.store.markClaimInterrupted(slot.id, now)) this.publish();
+  }
+
   /** Shutdown: stop every running claim and start none. Called before anything else stops. */
   stopClaims(): void {
     this.claims.stopAll();
@@ -1185,6 +1196,7 @@ export class WorktreeManager {
         const releaseSlot = await this.acquireSlotLock(original.id);
         try {
           const slot = this.store.slot(original.id);
+          if (slot) this.markInterruptedClaim(slot, now);
           if (slot?.version === original.version && slot.state !== "quarantined") {
             this.quarantine(slot, reason);
           }
@@ -1227,14 +1239,9 @@ export class WorktreeManager {
       const releaseSlot = await this.acquireSlotLock(original.id);
       try {
         const current = this.store.slot(original.id);
+        if (current) this.markInterruptedClaim(current, now);
         if (!current || current.version !== original.version) continue;
         const slot = current;
-        // A claim's write-ahead with no claim running behind it: the daemon that wrote it is
-        // gone. The write already cleared the fingerprint, so nothing can skip on it; this
-        // records that the claim was interrupted, and the slot's next claim starts cold.
-        if (slot.depsState === "claiming" && !this.claims.has(slot.id)) {
-          if (this.store.markClaimInterrupted(slot.id, now)) this.publish();
-        }
         const reject = (reason: string, detail: string | null = null) => {
           if (slot.state !== "quarantined") this.quarantine(slot, reason, detail);
           errors.push(`slot ${slot.ordinal}: ${reason}`);
