@@ -167,6 +167,18 @@ test("stored testing settings run the gate with no committed file, and the outco
   assert.deepEqual(second.affected?.settings.sources?.map((source) => source.layer), ["committed", "committed", "stored"]);
 });
 
+test("the operator's local file alone runs the gate, over the defaults", async () => {
+  // The harness's session repository is the tree itself, so the local file is read from there.
+  const root = tree(null);
+  mkdirSync(join(root, ".mission"), { recursive: true });
+  writeFileSync(join(root, ".mission/testing.local.json"), JSON.stringify({ tests: { smokeSet: ["test/smoke.test.ts"] } }));
+  const h = harness({ root, changed: [], tracked: TRACKED, answer: () => ({ exitCode: 0 }) });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed");
+  assert.deepEqual(h.runs[0]!.files, ["test/smoke.test.ts"]);
+  assert.deepEqual(outcome.affected?.settings.sources?.map((source) => source.layer), ["default", "default", "local"]);
+});
+
 test("a stored row that sets nothing skips like a repository with no settings at all", async () => {
   const h = harness({ root: tree(null), changed: [], tracked: TRACKED, stored: {}, answer: () => assert.fail("must not run") });
   const outcome = await h.check();

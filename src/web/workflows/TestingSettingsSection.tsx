@@ -27,18 +27,29 @@ import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
  * the refusal is how this window learns of another one.
  */
 
-/** A list field as typed: one glob per line. Blank means the key is not stored. */
+/**
+ * Whether a list key is stored by this row. `inherit` leaves the key unset, so the committed
+ * file or the default decides; `set` stores the typed list, and a `set` list with no globs
+ * stores an empty list - which REPLACES a committed one, the way the local file can.
+ */
+export type TestingListMode = "inherit" | "set";
+
+/** A row as typed. A list field is one glob per line. */
 export interface TestingSettingsDraft {
+  patternsMode: TestingListMode;
   patterns: string;
   includeImporters: "inherit" | "on" | "off";
+  smokeSetMode: TestingListMode;
   smokeSet: string;
 }
 
 export function testingSettingsDraftFrom(view: TestingSettingsView | null): TestingSettingsDraft {
   const tests = view?.settings.tests ?? {};
   return {
+    patternsMode: tests.patterns === undefined ? "inherit" : "set",
     patterns: (tests.patterns ?? []).join("\n"),
     includeImporters: tests.includeImporters === undefined ? "inherit" : tests.includeImporters ? "on" : "off",
+    smokeSetMode: tests.smokeSet === undefined ? "inherit" : "set",
     smokeSet: (tests.smokeSet ?? []).join("\n"),
   };
 }
@@ -48,21 +59,27 @@ function lines(text: string): string[] {
 }
 
 /**
- * The draft as the settings the route takes, or the schema's first refusal as one sentence.
- *
- * A blank list leaves its key unset, so the layer below decides; there is no way to store an
- * explicitly empty list from here, which the local file still expresses for the one checkout
- * that wants it.
+ * Typing into a list sets it: a glob typed under Inherit would otherwise be silently dropped
+ * on save. Emptying the field does NOT switch back to Inherit, because an empty list is a
+ * meaningful value; choosing Inherit is how the key is unset.
  */
+export function testingSettingsDraftTyped(
+  draft: TestingSettingsDraft,
+  key: "patterns" | "smokeSet",
+  text: string,
+): TestingSettingsDraft {
+  const mode = key === "patterns" ? "patternsMode" : "smokeSetMode";
+  return { ...draft, [key]: text, [mode]: text.trim() === "" ? draft[mode] : "set" };
+}
+
+/** The draft as the settings the route takes, or the schema's first refusal as one sentence. */
 export function testingSettingsFromDraft(
   draft: TestingSettingsDraft,
 ): { ok: true; settings: StoredTestingSettings } | { ok: false; error: string } {
   const tests: Record<string, unknown> = {};
-  const patterns = lines(draft.patterns);
-  const smokeSet = lines(draft.smokeSet);
-  if (patterns.length > 0) tests.patterns = patterns;
+  if (draft.patternsMode === "set") tests.patterns = lines(draft.patterns);
   if (draft.includeImporters !== "inherit") tests.includeImporters = draft.includeImporters === "on";
-  if (smokeSet.length > 0) tests.smokeSet = smokeSet;
+  if (draft.smokeSetMode === "set") tests.smokeSet = lines(draft.smokeSet);
   const parsed = StoredTestingSettingsSchema.safeParse(Object.keys(tests).length > 0 ? { tests } : {});
   if (parsed.success) return { ok: true, settings: parsed.data };
   const issue = parsed.error.issues[0]!;
@@ -71,9 +88,11 @@ export function testingSettingsFromDraft(
 
 export function testingSettingsDraftDirty(draft: TestingSettingsDraft, view: TestingSettingsView | null): boolean {
   const stored = testingSettingsDraftFrom(view);
-  return lines(draft.patterns).join("\n") !== stored.patterns
+  return draft.patternsMode !== stored.patternsMode
+    || (draft.patternsMode === "set" && lines(draft.patterns).join("\n") !== stored.patterns)
     || draft.includeImporters !== stored.includeImporters
-    || lines(draft.smokeSet).join("\n") !== stored.smokeSet;
+    || draft.smokeSetMode !== stored.smokeSetMode
+    || (draft.smokeSetMode === "set" && lines(draft.smokeSet).join("\n") !== stored.smokeSet);
 }
 
 /** The revision line under a row's path. */
@@ -178,9 +197,8 @@ export function TestingSettingsSection({
         Which tests this Command is given, for a repository that does not commit{" "}
         <code>{TESTING_CONFIG_PATH}</code>. Each key set here overrides the committed file&apos;s,
         and <code>{TESTING_LOCAL_CONFIG_PATH}</code> in your checkout overrides both, so the
-        order is committed, then stored, then local. Leave a field blank or on Inherit to let
-        the committed file decide. The gate runs when the repository commits the file or sets
-        a key here.
+        order is committed, then stored, then local. Choose Inherit to let the committed file or
+        the default decide. The gate runs when any of the three exists.
       </p>
       {loadError && <p className="wf-error" role="alert">{loadError}</p>}
       {stored === null && !loadError && <p className="wf-command-hint">Loading testing settings…</p>}
@@ -215,6 +233,34 @@ export function TestingSettingsSection({
         </div>
       )}
     </section>
+  );
+}
+
+/** Whether a list key comes from the layer below or from this row. */
+function ListModeSelect({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: TestingListMode;
+  onChange: (mode: TestingListMode) => void;
+}): React.JSX.Element {
+  return (
+    <Tooltip label="Inherit leaves this key to the committed file or the default. This row stores the list below, even when it is empty.">
+      <select
+        id={id}
+        aria-label={label}
+        className="field-input"
+        value={value}
+        onChange={(event) => onChange(event.target.value as TestingListMode)}
+      >
+        <option value="inherit">Inherit</option>
+        <option value="set">This row</option>
+      </select>
+    </Tooltip>
   );
 }
 
@@ -295,16 +341,25 @@ function TestingSettingsRow({
       </p>
       <div className="wf-testing-settings-fields">
         <label htmlFor={`${id}-patterns`}>Test patterns</label>
+        <ListModeSelect
+          id={`${id}-patterns-mode`}
+          label="Patterns come from"
+          value={draft.patternsMode}
+          onChange={(mode) => setDraft((current) => ({ ...current, patternsMode: mode }))}
+        />
         <textarea
           id={`${id}-patterns`}
           className="field-input"
           rows={3}
           spellCheck={false}
-          placeholder="test/**/*.test.ts"
+          placeholder={draft.patternsMode === "set" ? "No globs: an empty list" : "test/**/*.test.ts"}
           value={draft.patterns}
-          onChange={(event) => setDraft((current) => ({ ...current, patterns: event.target.value }))}
+          onChange={(event) => setDraft((current) => testingSettingsDraftTyped(current, "patterns", event.target.value))}
         />
-        <p className="wf-command-hint">tests.patterns: one repository-relative glob per line.</p>
+        <p className="wf-command-hint">
+          tests.patterns: one repository-relative glob per line. This row with no globs stores an
+          empty list, replacing the committed one.
+        </p>
         <label htmlFor={`${id}-importers`}>Include importers</label>
         <Tooltip label="Also select tests that import a changed file. Inherit lets the committed file or the default (on) decide.">
           <select
@@ -323,16 +378,25 @@ function TestingSettingsRow({
         </Tooltip>
         <p className="wf-command-hint">tests.includeImporters: also select tests that import a changed file.</p>
         <label htmlFor={`${id}-smoke`}>Smoke set</label>
+        <ListModeSelect
+          id={`${id}-smoke-mode`}
+          label="Smoke globs come from"
+          value={draft.smokeSetMode}
+          onChange={(mode) => setDraft((current) => ({ ...current, smokeSetMode: mode }))}
+        />
         <textarea
           id={`${id}-smoke`}
           className="field-input"
           rows={2}
           spellCheck={false}
-          placeholder="test/smoke.test.ts"
+          placeholder={draft.smokeSetMode === "set" ? "No globs: an empty list" : "test/smoke.test.ts"}
           value={draft.smokeSet}
-          onChange={(event) => setDraft((current) => ({ ...current, smokeSet: event.target.value }))}
+          onChange={(event) => setDraft((current) => testingSettingsDraftTyped(current, "smokeSet", event.target.value))}
         />
-        <p className="wf-command-hint">tests.smokeSet: globs that always run, one per line.</p>
+        <p className="wf-command-hint">
+          tests.smokeSet: globs that always run, one per line. This row with no globs stores an
+          empty list, so no smoke test runs.
+        </p>
       </div>
       {error && <p className="wf-error" role="alert">{error}</p>}
       {notice && !error && <p className="wf-command-hint" role="status">{notice}</p>}

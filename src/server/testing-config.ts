@@ -16,7 +16,7 @@ import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 /** A project's effective testing settings, or why there are none to use. */
 export type TestingConfigRead =
   | { ok: true; merged: LayeredTestingConfig }
-  /** No committed file and no stored settings: the project has not opted in. Not an error. */
+  /** No committed file, no stored settings and no local file: not opted in. Not an error. */
   | { ok: false; kind: "missing"; note: string }
   /** The committed file cannot be used: it is part of the change, so the change is at fault. */
   | { ok: false; kind: "invalid"; note: string }
@@ -38,10 +38,11 @@ function readFile(root: string, rel: string): { text: string } | { tooLarge: tru
  * not reliably carry it, while the checkout the operator edits does. Both are read through
  * `readRepoDoc`, so a symlink cannot point either read outside its repository.
  *
- * The gate has settings when the committed file exists or the stored row sets at least one key.
- * The local file alone does not opt a repository in, exactly as before stored settings existed:
- * it overrides settings, it is not a source of them. Stored rows were validated when they were
- * saved, so only the two files can be invalid here.
+ * The gate has settings when ANY layer exists: the committed file, a stored row that sets at
+ * least one key, or the local file. With none of the three it is skipped. A local file alone
+ * opts that checkout in, laid over the defaults. Stored rows were validated when they were saved,
+ * so only the two files can be invalid here, and each keeps its own rule: an invalid committed
+ * file fails the gate and an invalid local file makes it unavailable.
  */
 export function readTestingConfig(
   treeRoot: string,
@@ -50,11 +51,12 @@ export function readTestingConfig(
 ): TestingConfigRead {
   const layer = stored && storedTestingSettingsKeys(stored.settings).length > 0 ? stored : null;
   const committed = readFile(treeRoot, TESTING_CONFIG_PATH);
-  if (!committed && !layer) {
+  const local = localRoot ? readFile(localRoot, TESTING_LOCAL_CONFIG_PATH) : null;
+  if (!committed && !layer && !local) {
     return {
       ok: false,
       kind: "missing",
-      note: `This repository has no ${TESTING_CONFIG_PATH} and no stored testing settings, so no tests could be selected and this gate was skipped.`,
+      note: `This repository has no ${TESTING_CONFIG_PATH}, no stored testing settings and no ${TESTING_LOCAL_CONFIG_PATH}, so no tests could be selected and this gate was skipped.`,
     };
   }
   let base: TestingConfig | null = null;
@@ -67,7 +69,6 @@ export function readTestingConfig(
     base = parsed.config;
   }
 
-  const local = localRoot ? readFile(localRoot, TESTING_LOCAL_CONFIG_PATH) : null;
   if (local && "tooLarge" in local) {
     return { ok: false, kind: "invalid-local", note: `${TESTING_LOCAL_CONFIG_PATH} is larger than ${TESTING_CONFIG_LIMITS.fileBytes} bytes.` };
   }

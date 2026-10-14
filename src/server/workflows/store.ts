@@ -4075,9 +4075,12 @@ export class WorkflowStore {
       }
     }
 
-    // Stored testing settings: the snapshot's rows win, and a current row the snapshot does not
-    // carry is CLEARED rather than deleted, so its revision keeps rising and an editor holding
-    // an older revision is still refused. An unchanged row keeps its revision.
+    // Stored testing settings: the catalog becomes exactly the snapshot's. A snapshot row wins
+    // under a revision above both its own and the current one, so an editor holding an older
+    // revision is refused; an unchanged row keeps its revision. A current row the snapshot does
+    // not carry is DELETED, so no restored catalog lists a row the snapshot never had - which is
+    // also what makes a snapshot taken before this catalog existed restore it empty. An editor
+    // still holding a deleted row's revision is refused too: the path's revision is now 0.
     const stagedTestingRoots = new Set(staged.testingSettings.map((row) => row.repoRoot));
     const writeTesting = this.db.prepare(
       `INSERT INTO testing_settings (repo_root, settings_json, revision, created_at, updated_at)
@@ -4097,9 +4100,9 @@ export class WorkflowStore {
         current ? now : row.updatedAt,
       );
     }
-    for (const current of this.listTestingSettings()) {
-      if (stagedTestingRoots.has(current.repoRoot) || canonical(current.settings) === canonical({})) continue;
-      writeTesting.run(current.repoRoot, JSON.stringify({}), current.revision + 1, current.createdAt, now);
+    const deleteTesting = this.db.prepare(`DELETE FROM testing_settings WHERE repo_root = ?`);
+    for (const row of this.db.prepare(`SELECT repo_root FROM testing_settings`).all() as Array<{ repo_root: string }>) {
+      if (!stagedTestingRoots.has(row.repo_root)) deleteTesting.run(row.repo_root);
     }
 
     const currentWorkflows = (this.db.prepare(`SELECT * FROM workflow_definitions`).all() as unknown[])

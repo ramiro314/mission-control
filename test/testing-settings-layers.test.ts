@@ -105,18 +105,20 @@ test("the stored schema allows the three tests keys only, strict and within the 
   assert.deepEqual(storedTestingSettingsKeys(stored({})), []);
 });
 
-test("the gate has settings with a committed file or stored keys, and only then", () => {
+test("the gate has settings when any layer exists, and is skipped when none does", () => {
   const tree = mkdtempSync(join(tmpdir(), "testing-layers-tree-"));
   const checkout = mkdtempSync(join(tmpdir(), "testing-layers-checkout-"));
   const root = (settings: unknown) => ({ settings: stored(settings), scope: "" });
 
-  // Neither layer: skipped, as before stored settings existed, and the note names both.
+  // No layer at all: skipped, and the note names all three.
   const none = readTestingConfig(tree, checkout, null);
   assert.equal(none.ok, false);
   if (!none.ok) {
     assert.equal(none.kind, "missing");
-    assert.match(none.note, /\.mission\/testing\.json and no stored testing settings/);
+    assert.match(none.note, /\.mission\/testing\.json, no stored testing settings and no \.mission\/testing\.local\.json/);
   }
+  // Without an operator checkout there is no local layer to find either.
+  assert.equal(readTestingConfig(tree, null, null).ok, false);
   // A stored row that sets nothing is not a layer.
   const empty = readTestingConfig(tree, checkout, root({ tests: {} }));
   assert.equal(!empty.ok && empty.kind, "missing");
@@ -127,12 +129,20 @@ test("the gate has settings with a committed file or stored keys, and only then"
   assert.deepEqual(storedOnly.merged.config.tests.patterns, ["t/*.ts"]);
   assert.equal(storedOnly.merged.sources[0]!.layer, "stored");
 
-  // The local file alone still does not opt a repository in.
+  // The local file alone is a layer too: it runs the gate over the defaults.
   mkdirSync(join(checkout, ".mission"));
   writeFileSync(join(checkout, ".mission/testing.local.json"), JSON.stringify({ tests: { patterns: ["l/*.ts"] } }));
   const localOnly = readTestingConfig(tree, checkout, null);
-  assert.equal(!localOnly.ok && localOnly.kind, "missing");
-  // ...but it is still the last word over stored settings.
+  assert.ok(localOnly.ok);
+  assert.deepEqual(localOnly.merged.config.tests, { patterns: ["l/*.ts"], includeImporters: true, smokeSet: [] });
+  assert.deepEqual(localOnly.merged.sources.map((source) => source.layer), ["local", "default", "default"]);
+  assert.deepEqual(localOnly.merged.localKeys, ["tests.patterns"]);
+  // An invalid local file with nothing else is the operator's machine, so unavailable, not skipped.
+  writeFileSync(join(checkout, ".mission/testing.local.json"), "{\"tests\": {\"pattern\": []}}");
+  const badLocalOnly = readTestingConfig(tree, checkout, null);
+  assert.equal(!badLocalOnly.ok && badLocalOnly.kind, "invalid-local");
+  writeFileSync(join(checkout, ".mission/testing.local.json"), JSON.stringify({ tests: { patterns: ["l/*.ts"] } }));
+  // ...and it is still the last word over stored settings.
   const withLocal = readTestingConfig(tree, checkout, root({ tests: { patterns: ["t/*.ts"], smokeSet: ["t/s.ts"] } }));
   assert.ok(withLocal.ok);
   assert.deepEqual(withLocal.merged.config.tests.patterns, ["l/*.ts"]);

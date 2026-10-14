@@ -275,8 +275,33 @@ test("a repository with no override is added to Testing settings by its root, ne
   expect(stored[0]!.repoRoot.endsWith(`/${basename(daemon.repo)}`)).toBe(true);
   await shoot(dashboard, "testing-settings-added-repository");
 
-  // A reload lists the stored row by itself, with no override behind it.
+  // An explicit empty list is a value of its own: "This row" with no globs stores [] for the
+  // smoke set, which replaces a committed one, while Inherit leaves the key unset.
+  const smokeFrom = row.getByLabel("Smoke globs come from");
+  await expect(smokeFrom).toHaveValue("inherit");
+  await smokeFrom.selectOption("set");
+  await expect(row.getByLabel("Smoke set")).toHaveValue("");
+  await row.getByRole("button", { name: "Save testing settings" }).click();
+  await expect(row).toContainText("Stored revision 2");
+  const [emptySmoke] = await api<TestingSettingsView[]>(daemon, "/api/testing-settings");
+  expect(emptySmoke!.settings).toEqual({
+    tests: { patterns: ["test/**/*.test.ts"], includeImporters: false, smokeSet: [] },
+  });
+  await shoot(dashboard, "testing-settings-empty-smoke-set");
+
+  // A reload lists the stored row by itself, with no override behind it, and the empty list
+  // reads back as set by this row rather than inherited.
   await dashboard.reload();
-  await expect(section.getByRole("group", { name: /^Testing settings for / })).toHaveCount(1);
-  await expect(section).toContainText("Stored revision 1");
+  const reloaded = section.getByRole("group", { name: /^Testing settings for / });
+  await expect(reloaded).toHaveCount(1);
+  await expect(section).toContainText("Stored revision 2");
+  await expect(reloaded.getByLabel("Smoke globs come from")).toHaveValue("set");
+  await expect(reloaded.getByLabel("Patterns come from")).toHaveValue("set");
+
+  // Back to Inherit unsets the key again.
+  await reloaded.getByLabel("Smoke globs come from").selectOption("inherit");
+  await reloaded.getByRole("button", { name: "Save testing settings" }).click();
+  await expect(reloaded).toContainText("Stored revision 3");
+  const [inherited] = await api<TestingSettingsView[]>(daemon, "/api/testing-settings");
+  expect(inherited!.settings).toEqual({ tests: { patterns: ["test/**/*.test.ts"], includeImporters: false } });
 });

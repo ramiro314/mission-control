@@ -933,8 +933,9 @@ selected when:
    TS only; other languages get (1) and (3);
 3. it matches `tests.smokeSet`, which always runs.
 
-A repository with no `.mission/testing.json` and no stored testing settings skips the gate with a
-note naming both. An invalid committed file fails the gate with the error, because the file is
+A repository with no `.mission/testing.json`, no stored testing settings and no local
+`.mission/testing.local.json` skips the gate with a note naming all three. An invalid committed
+file fails the gate with the error, because the file is
 part of the change. An
 empty selection skips with "No tests were selected for this change." A gate that stops before
 running anything (no settings, an empty selection, a bad template) hands its run back, so it does
@@ -967,8 +968,9 @@ list rather than extending it:
 | Then | stored | Library › Commands › `affected-tests` › **Testing settings** | `tests.*` only |
 | Highest | local | `.mission/testing.local.json` in your own checkout | `tests.*` and `flakes.*` |
 
-The gate runs when the repository commits `.mission/testing.json` or its stored settings set at
-least one key. The local file alone does not opt a repository in.
+The gate runs when any layer exists: the repository commits `.mission/testing.json`, its stored
+settings set at least one key, or your checkout has `.mission/testing.local.json`. A local file
+alone opts that checkout in, laid over the defaults. With none of the three the gate is skipped.
 
 **`.mission/testing.json`** is committed to the repository:
 
@@ -997,8 +999,11 @@ The `flakes` block is read by [CI flake reporting](flaky-tests.md), not by this 
 in Library › Commands has a **Testing settings** section with one row per repository root: every
 root that has stored settings or an `affected-tests` override at its root, and any root you add.
 Each row edits `tests.patterns` and `tests.smokeSet` (one glob per line) and
-`tests.includeImporters` (Inherit, On or Off). A blank field or Inherit leaves the key unset, so
-the committed file or the default decides. Each row saves on its own through
+`tests.includeImporters` (Inherit, On or Off). Each list also says where it comes from:
+**Inherit** leaves the key unset, so the committed file or the default decides, and **This row**
+stores the list as typed. This row with no globs stores an empty list, which replaces the committed
+one: an empty smoke set runs no smoke test. Typing a glob switches a list to This row. Each row
+saves on its own through
 `PUT /api/testing-settings`, keyed by the repository's canonical main-checkout path, the same key a
 root Command override uses:
 
@@ -1028,8 +1033,9 @@ Outcomes recorded before stored settings existed keep their old line, which list
 that came from the local file.
 
 Stored settings are part of [settings snapshots](configuration.md#automatic-settings-snapshots),
-as the `testing-settings` domain. A snapshot taken before the domain existed restores the catalog
-empty.
+as the `testing-settings` domain. A restore makes the catalog exactly the snapshot's: a row the
+snapshot does not carry is removed, so a snapshot taken before the domain existed restores the
+catalog empty.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
