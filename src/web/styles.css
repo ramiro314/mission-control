@@ -18200,7 +18200,7 @@ td.wf-command-rule-action {
   font-family: var(--mono);
   resize: vertical;
 }
-.wf-testing-settings-fields > select {
+.wf-testing-settings-fields select {
   width: max-content;
   min-width: 160px;
 }

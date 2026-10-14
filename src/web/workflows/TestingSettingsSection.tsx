@@ -306,19 +306,21 @@ function TestingSettingsRow({
         />
         <p className="wf-command-hint">tests.patterns: one repository-relative glob per line.</p>
         <label htmlFor={`${id}-importers`}>Include importers</label>
-        <select
-          id={`${id}-importers`}
-          className="field-input"
-          value={draft.includeImporters}
-          onChange={(event) => setDraft((current) => ({
-            ...current,
-            includeImporters: event.target.value as TestingSettingsDraft["includeImporters"],
-          }))}
-        >
-          <option value="inherit">Inherit</option>
-          <option value="on">On</option>
-          <option value="off">Off</option>
-        </select>
+        <Tooltip label="Also select tests that import a changed file. Inherit lets the committed file or the default (on) decide.">
+          <select
+            id={`${id}-importers`}
+            className="field-input"
+            value={draft.includeImporters}
+            onChange={(event) => setDraft((current) => ({
+              ...current,
+              includeImporters: event.target.value as TestingSettingsDraft["includeImporters"],
+            }))}
+          >
+            <option value="inherit">Inherit</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </Tooltip>
         <p className="wf-command-hint">tests.includeImporters: also select tests that import a changed file.</p>
         <label htmlFor={`${id}-smoke`}>Smoke set</label>
         <textarea

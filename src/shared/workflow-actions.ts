@@ -9,6 +9,8 @@ export const WORKFLOW_ACTION_ROUTES = [
   ["PUT", "/api/workflows/config", "workflow.configure"],
   ["PUT", "/api/workflow-commands/:id", "workflow.command"],
   ["POST", "/mcp/workflow-commands/affected-tests", "workflow.command"],
+  // The affected-tests page's stored testing settings, edited beside the Command they configure.
+  ["PUT", "/api/testing-settings", "workflow.command"],
   ["PATCH", "/api/workflows/:id", "workflow.edit"],
   ["DELETE", "/api/workflows/:id", "workflow.archive"],
   ["POST", "/api/workflows/:id/unarchive", "workflow.unarchive"],
