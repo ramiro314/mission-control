@@ -73,7 +73,13 @@ import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
 import {
   AGENT_TYPES,
+  INSPECTOR_COMMENT_STATUSES,
+  INSPECTOR_FAIL_KINDS,
   INSPECTOR_LEGACY_POSTED,
+  INSPECTOR_OBSERVED_STATES,
+  INSPECTOR_PR_STATES,
+  INSPECTOR_SEVERITIES,
+  INSPECTOR_SOURCES,
   PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
@@ -91,7 +97,7 @@ import type {
 } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
-import { INSPECTOR_LIMITS } from "./inspector.ts";
+import { INSPECTOR_LIMITS, INSPECTOR_POSTURES } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   DEFAULT_WORKFLOW_POLICY,
@@ -2542,8 +2548,6 @@ export interface ResolveFindingsResult {
  */
 export const INSPECTOR_PR_KEY_PATTERN = /^[\w.-]+\/[\w.-]+#\d{1,10}$/;
 
-const InspectorSeveritySchema = z.enum(["blocker", "major", "minor", "nit"]);
-
 export const InspectorCommentSchema = z.object({
   id: z.string(),
   prKey: z.string(),
@@ -2552,9 +2556,9 @@ export const InspectorCommentSchema = z.object({
   line: z.number().int().nullable(),
   title: z.string(),
   body: z.string().nullable(),
-  severity: InspectorSeveritySchema,
+  severity: z.enum(INSPECTOR_SEVERITIES),
   round: z.number().int(),
-  status: z.enum(["drafted", "posting", "open", "resolved"]),
+  status: z.enum(INSPECTOR_COMMENT_STATUSES),
   replies: z.number().int(),
   answeredCommentId: z.number().int().nullable(),
   resolutionPending: z.boolean().optional(),
@@ -2563,7 +2567,7 @@ export const InspectorCommentSchema = z.object({
   legacyPosted: z.enum(INSPECTOR_LEGACY_POSTED).nullable().optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
-}) satisfies z.ZodType<InspectorComment>;
+});
 
 export const InspectorInspectionSchema = z.object({
   key: z.string(),
@@ -2574,23 +2578,23 @@ export const InspectorInspectionSchema = z.object({
   repoRoot: z.string().nullable(),
   cwd: z.string().nullable(),
   sessionId: z.string().nullable(),
-  source: z.enum(["hook", "legacy", "pipeline"]),
-  state: z.enum(["open", "closed"]),
+  source: z.enum(INSPECTOR_SOURCES),
+  state: z.enum(INSPECTOR_PR_STATES),
   headSha: z.string().nullable(),
-  reviewPosture: z.enum(["live", "off", "dry-run", "not-allowlisted"]).nullable(),
+  reviewPosture: z.enum(INSPECTOR_POSTURES).nullable(),
   reviewComplete: z.boolean().nullable().optional(),
   cleanReviewHeadSha: z.string().nullable().optional(),
   round: z.number().int(),
   lastReviewedAt: z.number().nullable(),
   lastError: z.string().nullable(),
   failCount: z.number().int(),
-  lastFailKind: z.enum(["push-fixable", "persistent"]).nullable(),
+  lastFailKind: z.enum(INSPECTOR_FAIL_KINDS).nullable(),
   nextAttemptAt: z.number().nullable(),
   lastAttemptSha: z.string().nullable(),
   mergedAt: z.number().nullable(),
   mergeBlock: z.string().nullable(),
   observedHeadSha: z.string().nullable(),
-  observedState: z.enum(["OPEN", "CLOSED", "MERGED"]).nullable(),
+  observedState: z.enum(INSPECTOR_OBSERVED_STATES).nullable(),
   observedAt: z.number().nullable(),
   headRefName: z.string().nullable(),
   title: z.string().nullable(),
@@ -2599,7 +2603,7 @@ export const InspectorInspectionSchema = z.object({
   openFindings: z.number().int(),
   postedOpenFindings: z.number().int(),
   resolvedFindings: z.number().int(),
-}) satisfies z.ZodType<InspectorInspection>;
+});
 
 /**
  * `GET /api/inspector/findings?pr=<prKey>`: one pull request's ledger row and every finding
@@ -2614,6 +2618,28 @@ export const InspectorFindingsResponseSchema = z.object({
   findings: z.array(InspectorCommentSchema),
 });
 export type InspectorFindingsResponse = z.infer<typeof InspectorFindingsResponseSchema>;
+
+// The two schemas above restate `InspectorComment` and `InspectorInspection`, whose owners
+// are in `types.ts`. Their enums come from the same const arrays the types are derived
+// from, and these checks hold the rest: the schema's output and the interface must each be
+// assignable to the other. `satisfies z.ZodType<T>` alone is one-way, so a value or a field
+// added to the type would still typecheck while every client refused the daemon's answer.
+// With this, adding a field or widening a type without updating the schema fails the build.
+//
+// Assignability alone ignores an OPTIONAL field present on one side only, so the key sets
+// are compared as well.
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type SameShape<A, B> = MutuallyAssignable<A, B> extends true ? MutuallyAssignable<keyof A, keyof B> : false;
+const inspectorCommentSchemaMatchesType: SameShape<
+  z.infer<typeof InspectorCommentSchema>,
+  InspectorComment
+> = true;
+const inspectorInspectionSchemaMatchesType: SameShape<
+  z.infer<typeof InspectorInspectionSchema>,
+  InspectorInspection
+> = true;
+void inspectorCommentSchemaMatchesType;
+void inspectorInspectionSchemaMatchesType;
 
 // ---- Shipping (landing the pull requests we opened, unattended) ----
 

@@ -2812,10 +2812,12 @@ export interface MissionReport {
 export type InspectorMode = "dry-run" | "live";
 
 /** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
-export type InspectorSource = "hook" | "legacy" | "pipeline";
+export const INSPECTOR_SOURCES = ["hook", "legacy", "pipeline"] as const;
+export type InspectorSource = (typeof INSPECTOR_SOURCES)[number];
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
-export type InspectorPrState = "open" | "closed";
+export const INSPECTOR_PR_STATES = ["open", "closed"] as const;
+export type InspectorPrState = (typeof INSPECTOR_PR_STATES)[number];
 
 /**
  * What a failed attempt says about whether the NEXT PUSH is worth trying immediately.
@@ -2826,9 +2828,11 @@ export type InspectorPrState = "open" | "closed";
  * not answer in time for a diff nobody has meaningfully changed. Pushing buys nothing
  * there, so those are the failures the push-escape is capped on.
  */
-export type InspectorFailKind = "push-fixable" | "persistent";
+export const INSPECTOR_FAIL_KINDS = ["push-fixable", "persistent"] as const;
+export type InspectorFailKind = (typeof INSPECTOR_FAIL_KINDS)[number];
 
-export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
+export const INSPECTOR_SEVERITIES = ["blocker", "major", "minor", "nit"] as const;
+export type InspectorSeverity = (typeof INSPECTOR_SEVERITIES)[number];
 
 /**
  * `drafted` is a dry-run finding: computed, deduped, never posted. It occupies the
@@ -2843,7 +2847,12 @@ export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
  * operator's name. A `posting` row is read as "already raised" for dedup, so the
  * duplicate cannot happen; the next round reconciles it against the live threads.
  */
-export type InspectorCommentStatus = "drafted" | "posting" | "open" | "resolved";
+export const INSPECTOR_COMMENT_STATUSES = ["drafted", "posting", "open", "resolved"] as const;
+export type InspectorCommentStatus = (typeof INSPECTOR_COMMENT_STATUSES)[number];
+
+/** What GitHub reports a polled pull request's state to be. */
+export const INSPECTOR_OBSERVED_STATES = ["OPEN", "CLOSED", "MERGED"] as const;
+export type InspectorObservedState = (typeof INSPECTOR_OBSERVED_STATES)[number];
 
 /** One adopted pull request. The row's existence IS the permission to comment on it. */
 export interface InspectorPr {
@@ -2938,7 +2947,7 @@ export interface InspectorPr {
    */
   observedHeadSha: string | null;
   /** What that same poll saw the pull request's state to be, or null when never polled. */
-  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  observedState: InspectorObservedState | null;
   /** When that observation was made, epoch ms, or null when never polled. */
   observedAt: number | null;
   /**

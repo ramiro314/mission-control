@@ -42,7 +42,8 @@ export const INSPECTOR_LIMITS = {
  * operator's GitHub identity, in a repo they trusted, with the feature switched on.
  * Every other value names which switch is withholding that.
  */
-export type InspectorPosture = "live" | "off" | "dry-run" | "not-allowlisted";
+export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted"] as const;
+export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];
 
 /**
  * Which posture the Inspector holds for this checkout.
