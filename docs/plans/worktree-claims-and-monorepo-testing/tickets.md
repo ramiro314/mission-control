@@ -2,7 +2,7 @@
 
 Sliced from the approved [plan](plan.md), merged in #515. The breakdown review was approved on
 2026-10-13: fifteen new tasks, kept in Mission Control only, because no task source is
-configured for this repository. The tickets are filed as Mission Control backlog tasks after this file is pushed, and the Task column is then filled with each task's id.
+configured for this repository. All fifteen tickets are filed as Mission Control backlog tasks. The Task column holds each task's id.
 
 Every ticket is also gated on the session that filed it, so none starts before the pull request
 that adds this file merges. The tasks are created enabled, so the backlog autopilot may pick
@@ -23,21 +23,21 @@ testing track is tickets 9 to 15 (plan slices 3 to 5). Ticket 1 stands alone.
 
 | # | Title | Kind | Labels | Blocked by | Task |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Loopback boundary and MCP-only Command write, stated in the docs | ship | worktree-claims | None | not filed yet |
-| 2 | Pool claim steps run on every task lease | ship | worktree-claims | None | not filed yet |
-| 3 | Claim settings and slot dependency state in Settings › Worktrees | ship | worktree-claims | 2 | not filed yet |
-| 4 | Stopping a running claim from the slot and task cards | ship | worktree-claims | 3 | not filed yet |
-| 5 | Check leases run the pool's claim | ship | worktree-claims | 2 | not filed yet |
-| 6 | Manual leases claim through 202-and-poll | ship | worktree-claims | 2 | not filed yet |
-| 7 | Copy-on-write seeding of cold slots from an idle sibling | ship | worktree-claims | 4, 5 | not filed yet |
-| 8 | Warm and Warm idle slots | ship | worktree-claims | 7 | not filed yet |
-| 9 | Stored testing settings at the repository root | ship | worktree-claims | None | not filed yet |
-| 10 | Subdirectory testing scopes | ship | worktree-claims | 9 | not filed yet |
-| 11 | Per-app import resolution for affected-test selection | ship | worktree-claims | 10 | not filed yet |
-| 12 | Partitioned affected-tests gate per app | ship | worktree-claims | 10 | not filed yet |
-| 13 | Commands documents: import, preview, apply and export | ship | worktree-claims | 10 | not filed yet |
-| 14 | Agent-proposed Commands documents | ship | worktree-claims | 13 | not filed yet |
-| 15 | Set up testing chooses committed or stored settings | ship | worktree-claims | 14 | not filed yet |
+| 1 | Loopback boundary and MCP-only Command write, stated in the docs | ship | worktree-claims | None | `5d7d284b-f0b3-40bf-8a57-78c8bb152f4c` |
+| 2 | Pool claim steps run on every task lease | ship | worktree-claims | None | `8aeb847d-b2f7-4d86-a36b-d8dc2d5edd1d` |
+| 3 | Claim settings and slot dependency state in Settings › Worktrees | ship | worktree-claims | 2 | `eae7ae2c-57b7-4901-a5e4-b9ed339e4cb5` |
+| 4 | Stopping a running claim from the slot and task cards | ship | worktree-claims | 3 | `c4547422-baf5-4bad-9395-53a5626de097` |
+| 5 | Check leases run the pool's claim | ship | worktree-claims | 2 | `f807f13e-045c-4490-9ada-e5fcd81b40d0` |
+| 6 | Manual leases claim through 202-and-poll | ship | worktree-claims | 2 | `85747d45-9e3e-4a9d-99ff-25c7200b9105` |
+| 7 | Copy-on-write seeding of cold slots from an idle sibling | ship | worktree-claims | 4, 5 | `c027be56-cce1-4a88-8afa-5ad162355af3` |
+| 8 | Warm and Warm idle slots | ship | worktree-claims | 7 | `7ae7686f-810b-405b-967c-e38460ebc260` |
+| 9 | Stored testing settings at the repository root | ship | worktree-claims | None | `8dee7115-2942-4bb1-96db-c3de9649ce18` |
+| 10 | Subdirectory testing scopes | ship | worktree-claims | 9 | `00c43fc5-7fff-470e-8796-104ea34cc94d` |
+| 11 | Per-app import resolution for affected-test selection | ship | worktree-claims | 10 | `651bf2fb-5026-411d-96ba-9b665cd19ed0` |
+| 12 | Partitioned affected-tests gate per app | ship | worktree-claims | 10 | `340cc707-0fd3-4de0-9c0c-7a55c8fc6cd6` |
+| 13 | Commands documents: import, preview, apply and export | ship | worktree-claims | 10 | `8662aa03-6482-49aa-98c6-2ecf3617a706` |
+| 14 | Agent-proposed Commands documents | ship | worktree-claims | 13 | `d95bb078-2ef9-49f1-b37a-205a50e671e3` |
+| 15 | Set up testing chooses committed or stored settings | ship | worktree-claims | 14 | `f5b782f9-09c9-45fd-88b5-58ec163f0bb6` |
 
 **What can run at once:**
 
@@ -100,7 +100,7 @@ configured for this repository.
 
 ## Ticket 1: Loopback boundary and MCP-only Command write, stated in the docs
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: None. Plan slice: 7. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: None. Plan slice: 7. Task: `5d7d284b-f0b3-40bf-8a57-78c8bb152f4c`.
 
 **What to build:** The docs and code comments stop overstating what keeps an agent from writing settings. The security docs say plainly that the loopback boundary has no token on `/api/*`, so any local process, an agent's shell included, can call settings routes, and they name the write-hardening follow-up. Every place that calls `set_affected_tests_command` the one Command write an agent may make says instead that it bounds what an agent may do through MCP.
 
@@ -118,7 +118,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (sections 
 
 ## Ticket 2: Pool claim steps run on every task lease
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: None. Plan slice: 1. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: None. Plan slice: 1. Task: `8aeb847d-b2f7-4d86-a36b-d8dc2d5edd1d`.
 
 **What to build:** A pool can be given a claim: ordered dependency steps that run inside every task lease, after reset or add and setup, and before the final proof, so a dispatched task's slot has dependencies for its commit. Steps get the scrubbed check environment plus only the variables each names. A slot whose fingerprint matches skips them, and a failed claim hands the slot over with a warning instead of quarantining it. The claim is configured through the worktrees settings API here. Check and manual leases keep today's behavior until their own tickets.
 
@@ -140,7 +140,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1
 
 ## Ticket 3: Claim settings and slot dependency state in Settings › Worktrees
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 2. Plan slice: 1. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 2. Plan slice: 1. Task: `eae7ae2c-57b7-4901-a5e4-b9ed339e4cb5`.
 
 **What to build:** In Settings › Worktrees an operator edits a pool's claim (its steps, each step's variable names, the timeout and the fingerprint paths) and sees each name marked present or missing, never its value. Each slot card shows its dependency state: current, stale against origin's default branch, never installed, installing (with the step and elapsed time), failed (with the tail) or interrupted.
 
@@ -158,7 +158,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1
 
 ## Ticket 4: Stopping a running claim from the slot and task cards
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 3. Plan slice: 1. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 3. Plan slice: 1. Task: `c4547422-baf5-4bad-9395-53a5626de097`.
 
 **What to build:** While a dispatch waits on a claim, its task card shows "Installing dependencies" with the running step and elapsed time, and both the task card and the slot card offer Stop. Stop kills the claim's process group and hands the slot over as a failed claim, so the dispatch continues with the warning. Cancelling the dispatching task stops its claim too, instead of waiting it out.
 
@@ -177,7 +177,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1
 
 ## Ticket 5: Check leases run the pool's claim
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 2. Plan slice: 1. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 2. Plan slice: 1. Task: `f807f13e-045c-4490-9ada-e5fcd81b40d0`.
 
 **What to build:** Check attempts, including the cold fallback worktree, run the pool's claim before the check's Command. A failed claim does not run the Command. The attempt records a dependency failure with the tail, and the change owns it only when the branch changed a fingerprint input against its merge base. Otherwise it is infrastructure and is retried. While a claim runs, the attempt gives up its check-concurrency slot, and cancelling the run stops its claims.
 
@@ -198,7 +198,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1
 
 ## Ticket 6: Manual leases claim through 202-and-poll
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 2. Plan slice: 1. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 2. Plan slice: 1. Task: `85747d45-9e3e-4a9d-99ff-25c7200b9105`.
 
 **What to build:** `make session` and `make claude` get a slot whose dependencies match, even when the claim runs longer than one HTTP request. For a pool with a claim, the manual acquire route accepts with 202 and a request id and runs the acquire in the background, and the session script polls until the lease is granted or fails, printing the step and elapsed time. A pool with no claim still answers 201 synchronously, so older scripts keep working.
 
@@ -218,7 +218,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 1
 
 ## Ticket 7: Copy-on-write seeding of cold slots from an idle sibling
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 4, 5. Plan slice: 2. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 4, 5. Plan slice: 2. Task: `c027be56-cce1-4a88-8afa-5ad162355af3`.
 
 **What to build:** A claim on a slot with no fingerprint, or with a stale one where an idle sibling matches exactly, first clones the pool's seed paths copy-on-write from an idle sibling, so a cold slot inherits a sibling's dependency trees instead of paying a full install. The source is held under a new `warm` lease while it is copied. Where the filesystem cannot clone there is no seed, never a byte copy. A slot interrupted mid-seed loses its verified-ignored seed paths and starts cold.
 
@@ -239,7 +239,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 2
 
 ## Ticket 8: Warm and Warm idle slots
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 7. Plan slice: 2. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 7. Plan slice: 2. Task: `7ae7686f-810b-405b-967c-e38460ebc260`.
 
 **What to build:** An operator prepares idle slots ahead of time. **Warm** on an available slot's card, and **Warm idle slots** on a pool row, queue an operation that takes a `warm` lease on each target, fetches, resets it to origin's current default branch, seeds or claims under the existing rules, then releases it. The operation shows a live output tail and a Cancel control, and its full log stays reachable from the slot card after a restart.
 
@@ -260,7 +260,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 2
 
 ## Ticket 9: Stored testing settings at the repository root
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: None. Plan slice: 3. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: None. Plan slice: 3. Task: `8dee7115-2942-4bb1-96db-c3de9649ce18`.
 
 **What to build:** A repository can have an affected-tests gate configured entirely in Mission Control. On the affected-tests page in Library › Commands, a "Testing settings" section edits the root's `tests.patterns`, `tests.includeImporters` and `tests.smokeSet`. Stored settings overlay the committed testing file key by key, and the local file stays the operator's last word. The gate runs with stored settings and no committed file, and run detail says where every effective key came from.
 
@@ -283,7 +283,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 3
 
 ## Ticket 10: Subdirectory testing scopes
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 9. Plan slice: 3. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 9. Plan slice: 3. Task: `00c43fc5-7fff-470e-8796-104ea34cc94d`.
 
 **What to build:** Testing settings can be stored for a subdirectory, such as one app of a monorepo, and they take effect on which tests the gate selects. A subdirectory's keys replace the root's for files inside it, its patterns and smoke set are relative to it, and keys it does not set fall through. Selected files still run through today's single invocation until per-app partitioning lands.
 
@@ -302,7 +302,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 3
 
 ## Ticket 11: Per-app import resolution for affected-test selection
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 10. Plan slice: 4. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 10. Plan slice: 4. Task: `651bf2fb-5026-411d-96ba-9b665cd19ed0`.
 
 **What to build:** An import inside a monorepo app selects its importer's tests even when it goes through that app's own path aliases or a workspace package name. Selection resolves each file's imports through the nearest tsconfig or jsconfig at or above it, following `extends`, and through the root workspaces' package names.
 
@@ -321,7 +321,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 4
 
 ## Ticket 12: Partitioned affected-tests gate per app
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 10. Plan slice: 4. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 10. Plan slice: 4. Task: `340cc707-0fd3-4de0-9c0c-7a55c8fc6cd6`.
 
 **What to build:** A monorepo change runs each touched app's tests in that app. The gate selects once, assigns each selected test to the deepest affected-tests override whose subdirectory contains it, runs one invocation per partition in its subdirectory, and passes only if every partition passes. Run detail lists every partition, and any selected test no command could run.
 
@@ -343,7 +343,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 4
 
 ## Ticket 13: Commands documents: import, preview, apply and export
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 10. Plan slice: 5. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 10. Plan slice: 5. Task: `8662aa03-6482-49aa-98c6-2ecf3617a706`.
 
 **What to build:** An operator configures a repository's Command overrides and stored testing settings from one document. In Library › Commands they paste or upload a versioned JSON document, pick the repository, review a preview of every add, change and removal, and apply it in one step. They can also export a repository's current overrides and testing settings as a document, and importing it back changes nothing.
 
@@ -365,7 +365,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 5
 
 ## Ticket 14: Agent-proposed Commands documents
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 13. Plan slice: 5. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 13. Plan slice: 5. Task: `d95bb078-2ef9-49f1-b37a-205a50e671e3`.
 
 **What to build:** An agent session can propose a Commands document for its own task repository through a new MCP tool, `propose_command_document`, without writing any live row. The proposal shows as a banner on that repository in Library › Commands and as an attention item, and opens the same preview, where the operator applies or dismisses it.
 
@@ -385,7 +385,7 @@ Context: read docs/plans/worktree-claims-and-monorepo-testing/plan.md (section 5
 
 ## Ticket 15: Set up testing chooses committed or stored settings
 
-Kind: `ship`. Labels: `worktree-claims`. Blocked by: 14. Plan slice: 5. Task: not filed yet.
+Kind: `ship`. Labels: `worktree-claims`. Blocked by: 14. Plan slice: 5. Task: `f5b782f9-09c9-45fd-88b5-58ec163f0bb6`.
 
 **What to build:** The "Set up testing" action asks the operator to choose committed or stored before the task starts. Committed is today's path. Stored has the agent work out per-app overrides and testing settings and submit them as a Commands document proposal, which the operator applies from the preview, so a repository that will not commit a testing file still gets a gate.
 
