@@ -497,8 +497,8 @@ function toReviewPage(raw: unknown): ReviewPage {
 
 /**
  * One earlier page of reviews, for the traversals that read past the snapshot's newest
- * hundred. Exported so tests can reach the query and the parser directly, because every
- * caller in the tick reduces the page to a boolean.
+ * hundred. Exported so the worker can see the pages its clean-review traversals load,
+ * and take the links on them, without reading any page a second time.
  */
 export async function fetchReviewPage(
   cwd: string | null,
@@ -544,7 +544,7 @@ export async function fetchReviewPage(
 
 /**
  * One later page of review threads, past the snapshot's first hundred. Exported for the
- * same reason as `fetchReviewPage`: its only caller in the tick reduces it to a boolean.
+ * same reason as `fetchReviewPage`.
  */
 export async function fetchThreadPage(
   cwd: string | null,
@@ -745,7 +745,7 @@ export type FindingLinkRow = Pick<InspectorComment, "fingerprint" | "line" | "ro
 
 /**
  * The GitHub link each ledger row should now hold, for only the rows whose stored link is
- * missing or different. Read from the snapshot the tick already has, so it costs no call.
+ * missing or different. Read from pages the tick has already loaded, so it costs no call.
  *
  * - **A thread finding** links to the first comment of our thread carrying its marker,
  *   owned by the same two-part `isOurs` rule as `ourThreads`. A finding raised again after
@@ -760,35 +760,101 @@ export type FindingLinkRow = Pick<InspectorComment, "fingerprint" | "line" | "ro
  * carries a link forward to a drafted row whose earlier version was posted: the earlier
  * comment either is still seen, giving the same link, or is not, and nothing overwrites it.
  * A null `login` matches nothing, the same fail-closed answer as `ourThreads`.
+ *
+ * **Partial reads.** `sources` may hold only some of a pull request's threads or reviews:
+ * the snapshot's first page, plus whatever continuation pages the tick happened to load.
+ * Such a set always FILLS a missing link, but it REPLACES a stored one only when no unread
+ * page could change the answer. Otherwise a finding whose older thread is on the first
+ * page and newer one on a later page would have its link rewritten back and forth, once
+ * per read. The answer is settled when:
+ * - a demoted finding's review for its round was found, since a round has one such review;
+ * - the newest thread seen carries the row's own round, since no later post can exist;
+ * - or every page of that kind was read.
+ * A demoted finding falls back to its thread only once every review has been read, because
+ * an unread page may still hold its review.
  */
 export function findingUrls(
-  snapshot: Pick<PrSnapshot, "threads" | "reviews">,
+  sources: LinkSources,
   login: string | null,
   rows: Iterable<FindingLinkRow>,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (!login) return out;
-  const threads = new Map<string, { url: string; round: number }>();
-  for (const t of snapshot.threads) {
+  const threads = newestOwnThreads(sources.threads, login);
+  const threadsComplete = sources.threadsComplete ?? true;
+  const reviewsComplete = sources.reviewsComplete ?? true;
+  for (const row of rows) {
+    const review = row.line === null ? bodyFindingsReviewUrl(sources.reviews, login, row.round) : null;
+    const thread = threads.get(row.fingerprint);
+    let url: string | null;
+    let settled: boolean;
+    if (review) {
+      url = review;
+      settled = true;
+    } else if (row.line === null && !reviewsComplete) {
+      url = null;
+      settled = false;
+    } else {
+      url = thread?.url ?? null;
+      settled = threadsComplete || (thread !== undefined && thread.round >= row.round);
+    }
+    if (!url || url === row.githubUrl) continue;
+    if (row.githubUrl && !settled) continue;
+    out.set(row.fingerprint, url);
+  }
+  return out;
+}
+
+/**
+ * The threads and reviews a tick has read, for `findingUrls`. The completeness flags default
+ * to true, which is right for a snapshot that GitHub reported as a single page.
+ */
+export interface LinkSources {
+  threads: readonly ThreadSnapshot[];
+  reviews: readonly ReviewSnapshot[];
+  /** Every page of review threads was read. */
+  threadsComplete?: boolean;
+  /** Every page of reviews was read, back to the first. */
+  reviewsComplete?: boolean;
+}
+
+/** A snapshot's first page as link sources, complete only where GitHub said there is no more. */
+export function snapshotLinkSources(snapshot: PrSnapshot): Required<LinkSources> {
+  return {
+    threads: [...snapshot.threads],
+    reviews: [...snapshot.reviews],
+    threadsComplete: !snapshot.threadsPageInfo?.hasNextPage,
+    reviewsComplete: !snapshot.reviewsPageInfo.hasPreviousPage,
+  };
+}
+
+/** Our threads with a link, keyed by fingerprint, keeping the highest marker round. */
+function newestOwnThreads(
+  threads: readonly ThreadSnapshot[],
+  login: string,
+): Map<string, { url: string; round: number }> {
+  const out = new Map<string, { url: string; round: number }>();
+  for (const t of threads) {
     const first = t.comments[0];
     if (!first?.url || !isOurs(first, login)) continue;
     const marker = parseMarker(first.body)!;
-    const seen = threads.get(marker.fingerprint);
-    if (!seen || marker.round >= seen.round) {
-      threads.set(marker.fingerprint, { url: first.url, round: marker.round });
-    }
-  }
-  for (const row of rows) {
-    let url: string | null = null;
-    if (row.line === null) {
-      for (const review of snapshot.reviews) {
-        if (review.url && isOurBodyFindingsReview(review, login, row.round)) url = review.url;
-      }
-    }
-    url ??= threads.get(row.fingerprint)?.url ?? null;
-    if (url && url !== row.githubUrl) out.set(row.fingerprint, url);
+    const seen = out.get(marker.fingerprint);
+    if (!seen || marker.round >= seen.round) out.set(marker.fingerprint, { url: first.url, round: marker.round });
   }
   return out;
+}
+
+/** The link of our body-only findings review for `round`, the newest if there are two. */
+function bodyFindingsReviewUrl(
+  reviews: readonly ReviewSnapshot[],
+  login: string,
+  round: number,
+): string | null {
+  let url: string | null = null;
+  for (const review of reviews) {
+    if (review.url && isOurBodyFindingsReview(review, login, round)) url = review.url;
+  }
+  return url;
 }
 
 /**

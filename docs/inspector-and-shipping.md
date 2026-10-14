@@ -270,8 +270,11 @@ guessing.
 A posted finding also records where it is. An inline finding links to the first comment of
 its thread. A finding folded into the review body, because it had no line to anchor to,
 links to the review that carried it. The link comes from the pull request read each tick
-already makes, so it costs no extra GitHub call, and it lands on the tick after the review
-is posted. Until then the finding reads as posted without a link. The same ownership rule
+already makes, and from any later page of threads or reviews that the clean-review check
+reads, so it costs no extra GitHub call. It lands on the tick after the review is posted.
+Until then the finding reads as posted without a link. When a tick has read only some of a
+pull request's pages, it fills a missing link but does not replace a stored one that an
+unread page could still prove out of date. The same ownership rule
 that decides which threads are the GitHub Inspector's own decides which comment or review a
 finding links to, so a comment someone else wrote is never linked. The link is kept when a
 finding is raised again, so a finding that is not posted again still points at the comment

@@ -123,8 +123,8 @@ if (args[0] === "api" && args[1] === "user") {
           mergeable: "MERGEABLE",
           reviewDecision: null,
           commits: { nodes: [{ commit: { oid: state.headSha, statusCheckRollup: { state: "PENDING" } } }] },
-          reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: false, endCursor: null } },
-          reviews: { nodes: state.reviews, pageInfo: { hasPreviousPage: false, startCursor: null } }
+          reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: !!state.threadsMore, endCursor: state.threadsMore ? "threads-2" : null } },
+          reviews: { nodes: state.reviews, pageInfo: { hasPreviousPage: !!state.reviewsMore, startCursor: state.reviewsMore ? "reviews-2" : null } }
         }
       }
     }
@@ -226,6 +226,10 @@ interface FakeGithubState {
   reviews: FakeReview[];
   posts: number;
   nextId: number;
+  /** The snapshot reports a further page of threads, served from `threadPage`. */
+  threadsMore?: boolean;
+  /** The snapshot reports an earlier page of reviews, served from `reviewPage`. */
+  reviewsMore?: boolean;
   threadPage: FakeThread[];
   reviewPage: FakeReview[];
   lastQuery?: string;
@@ -522,6 +526,113 @@ test("a tick replaces a stored link that no longer matches what GitHub shows", a
   assert.equal(rows.get(inline)?.githubUrl, `${PR}704#discussion_r11`);
   assert.equal(rows.get(demoted)?.githubUrl, `${PR}704#pullrequestreview-21`);
   assert.deepEqual(ghCalls(), ["graphql snapshot", "user"], "still no extra call");
+});
+
+// ---- Partial reads: a link a later page could still change is never rewritten ----
+
+test("a partial read fills a missing link but replaces a stored one only when no unread page could change it", async () => {
+  const fp = "fp-partial";
+  const older = thread("T_1", `${PR}7#discussion_r1`, formatMarker({ id: "a", fingerprint: fp, round: 1 }), US, true);
+  const current = thread("T_2", `${PR}7#discussion_r9`, formatMarker({ id: "a", fingerprint: fp, round: 3 }));
+  const stored = `${PR}7#discussion_r5`;
+  const inline = (round: number, githubUrl: string | null) => ({ fingerprint: fp, line: 2, round, githubUrl });
+  const linkFor = (sources: Parameters<typeof findingUrls>[0], row: ReturnType<typeof inline>) =>
+    findingUrls(sources, US, [row]).get(fp) ?? null;
+  const partial = (threads: FakeThread[], reviews: FakeReview[] = []) => ({
+    threads: threads.map((t) => ({ ...t, comments: t.comments.nodes.map((c) => ({ ...c, author: c.author.login })) })),
+    reviews: reviews.map((r) => ({ url: r.url, body: r.body, author: r.author.login, headSha: r.commit.oid })),
+    threadsComplete: false,
+    reviewsComplete: false,
+  });
+
+  // Threads: a newer post may sit on an unread page, unless the one seen is the row's own round.
+  assert.equal(linkFor(partial([older]), inline(3, null)), older.comments.nodes[0]!.url, "a missing link is filled");
+  assert.equal(linkFor(partial([older]), inline(3, stored)), null, "a stored link is kept while a newer post may be unread");
+  assert.equal(linkFor(partial([current]), inline(3, stored)), current.comments.nodes[0]!.url,
+    "a thread of the row's own round is the newest there can be");
+  assert.equal(linkFor({ ...partial([older]), threadsComplete: true }, inline(3, stored)), older.comments.nodes[0]!.url,
+    "with every page read, the newest thread seen is the answer");
+
+  // Demoted: the round's review settles it wherever it was found; the thread fallback waits for every review.
+  const demoted = (githubUrl: string | null) => ({ fingerprint: fp, line: null, round: 2, githubUrl });
+  const review = findingsReview(`${PR}7#pullrequestreview-21`, 2);
+  assert.equal(findingUrls(partial([current], [review]), US, [demoted(stored)]).get(fp), review.url);
+  assert.equal(findingUrls(partial([current]), US, [demoted(null)]).size, 0,
+    "its review may be on an unread page, so the thread is not taken");
+  assert.equal(findingUrls({ ...partial([current]), reviewsComplete: true }, US, [demoted(null)]).get(fp),
+    current.comments.nodes[0]!.url);
+});
+
+/** A pull request whose head was reviewed clean in live, with every finding resolved. */
+function seedResolvedPr(number: number): string {
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  const key = adopt(number);
+  updateInspectorPr(
+    key,
+    { headSha: "head-1", reviewPosture: "live", round: 3, reviewComplete: true, lastReviewedAt: 1 },
+    Date.now(),
+  );
+  return key;
+}
+
+test("links on the pages the clean-review traversals load are captured, at no extra call", async () => {
+  // An inline finding whose thread is on the second page of threads, and a demoted one whose
+  // review is on the earlier page of reviews. The first page holds neither.
+  const inline = "eeeeeeeeeeee";
+  const demoted = "ffffffffffff";
+  const threadUrl = `${PR}705#discussion_r300`;
+  const reviewUrl = `${PR}705#pullrequestreview-400`;
+  const run = async (stored: boolean): Promise<string[]> => {
+    openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+    resetAuthenticatedLogin();
+    writeGithubState({
+      threadsMore: true,
+      reviewsMore: true,
+      threadPage: [thread("T_300", threadUrl, formatMarker({ id: "a", fingerprint: inline, round: 2 }), US, true)],
+      reviewPage: [findingsReview(reviewUrl, 2)],
+    });
+    const key = seedResolvedPr(705);
+    seedRow(key, { fingerprint: inline, status: "resolved", githubUrl: stored ? threadUrl : null });
+    seedRow(key, { fingerprint: demoted, line: null, status: "resolved", githubUrl: stored ? reviewUrl : null });
+    writeFileSync(callsPath, "");
+    await runOneSweep();
+    const rows = byFingerprint(key);
+    assert.equal(rows.get(inline)?.githubUrl, threadUrl, "taken from the second page of threads");
+    assert.equal(rows.get(demoted)?.githubUrl, reviewUrl, "taken from the earlier page of reviews");
+    for (const row of rows.values()) assert.equal(row.updatedAt, 7);
+    return ghCalls();
+  };
+  const capturing = await run(false);
+  const alreadyStored = await run(true);
+  // The tick's own read, the login, the clean-review re-read, and the two traversals' pages.
+  // The review page is read once per review traversal, as it was before links existed: the
+  // body-only findings it finds there stop the clean review before the third traversal.
+  assert.deepEqual(capturing, ["graphql snapshot", "user", "graphql snapshot", "graphql thread page", "graphql review page"]);
+  assert.deepEqual(capturing, alreadyStored, "taking the links adds no call");
+});
+
+test("a finding with an older thread on the first page and a newer one later keeps the newer link", async () => {
+  // Without the partial-read rule, every tick's first capture would write the older link
+  // back, and only a tick that happened to read the later page would correct it.
+  const fp = "999999999999";
+  const olderUrl = `${PR}706#discussion_r1`;
+  const newerUrl = `${PR}706#discussion_r300`;
+  writeGithubState({
+    threadsMore: true,
+    threads: [thread("T_1", olderUrl, formatMarker({ id: "a", fingerprint: fp, round: 1 }), US, true)],
+    threadPage: [thread("T_300", newerUrl, formatMarker({ id: "a", fingerprint: fp, round: 3 }), US, true)],
+  });
+  const key = seedResolvedPr(706);
+  seedRow(key, { fingerprint: fp, round: 3, status: "resolved", githubUrl: null });
+
+  await runOneSweep();
+  assert.equal(byFingerprint(key).get(fp)?.githubUrl, newerUrl, "the later page's newer post wins");
+  assert.equal(readGithubState().posts, 1, "the clean review went out, so later ticks read no further pages");
+
+  writeFileSync(callsPath, "");
+  await runOneSweep();
+  assert.deepEqual(ghCalls(), ["graphql snapshot"], "this tick saw only the first page");
+  assert.equal(byFingerprint(key).get(fp)?.githubUrl, newerUrl, "the first page's older post does not overwrite it");
 });
 
 test("a drafted row whose earlier version was posted takes, and keeps, that earlier comment's link", async () => {
