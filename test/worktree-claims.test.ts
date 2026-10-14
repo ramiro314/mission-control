@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -186,6 +186,25 @@ test("the claim schema is strict, bounded and defaulted like setupArgv", () => {
   ]) {
     assert.throws(() => WorktreeClaimSchema.parse(bad), JSON.stringify(bad).slice(0, 80));
   }
+});
+
+test("the claim schema accepts every documented maximum exactly", () => {
+  const atMost = claimOf({
+    steps: [
+      { argv: Array.from({ length: 32 }, () => "a".repeat(4096)), env: Array.from({ length: 32 }, (_, i) => `V${i}`) },
+      ...Array.from({ length: 15 }, () => ({ argv: ["x"] })),
+    ],
+    timeoutMinutes: 240,
+    fingerprintPaths: [...Array.from({ length: 63 }, (_, i) => `p${i}`), "f".repeat(1024)],
+  });
+  assert.equal(atMost.steps.length, 16);
+  assert.equal(atMost.steps[0]!.env.length, 32);
+  assert.equal(atMost.fingerprintPaths.length, 64);
+  assert.equal(claimOf({ steps: [{ argv: ["x"], env: ["N".repeat(128)] }] }).steps[0]!.env[0]!.length, 128);
+  assert.equal(claimOf({ steps: [{ argv: ["x"] }], timeoutMinutes: 1 }).timeoutMinutes, 1);
+  // One past each length limit that the table above does not already reach.
+  assert.throws(() => claimOf({ steps: [{ argv: ["x"], env: ["N".repeat(129)] }] }));
+  assert.throws(() => claimOf({ steps: [{ argv: ["x"] }], fingerprintPaths: ["f".repeat(1025)] }));
 });
 
 test("the worktrees settings API stores, replaces and removes a pool's claim", () => {
@@ -415,6 +434,53 @@ test("an empty fingerprintPaths runs the claim on every lease", async () => {
   await m.release(second.lease);
 });
 
+test("fingerprint paths that match no file still fingerprint the steps, so an identical lease skips", async () => {
+  const unmatched = claimOf({ steps: [{ argv: ["yarn"], env: ["A_TOKEN"] }], fingerprintPaths: ["no-such.lock"] });
+  const fingerprint = claimFingerprint(unmatched, parseTreeBlobs("100644 blob aaa\tyarn.lock\0"));
+  assert.match(fingerprint ?? "", /^[0-9a-f]{64}$/, "zero matches is not the same as no fingerprint paths");
+  assert.notEqual(claimFingerprint({ ...unmatched, steps: [{ argv: ["npm"], env: ["A_TOKEN"] }] }, []), fingerprint);
+
+  const fixture = repository("mission-claim-unmatched-");
+  const m = manager(claimOf({ steps: [{ argv: recordStep("one") }], fingerprintPaths: ["no-such.lock"] }));
+  const first = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-unmatched-1"));
+  assert.match(onlySlot(m).depsFingerprint ?? "", /^[0-9a-f]{64}$/);
+  await m.release(first.lease);
+  const second = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-unmatched-2"));
+  assert.equal(runs(second.lease.path, "one").length, 1, "the identical second lease skipped the steps");
+  await m.release(second.lease);
+});
+
+test("on a new slot a task's claim runs after the setup command has finished", async () => {
+  const fixture = repository("mission-claim-after-setup-");
+  const order: string[] = [];
+  const claim = claimOf({
+    steps: [
+      { argv: node(`if(!require("fs").existsSync("deps/setup.done"))process.exit(9)`) },
+      { argv: recordStep("one") },
+    ],
+  });
+  const m = manager(
+    claim,
+    {
+      resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: ["setup"], claim }),
+      runSetup: async (_argv, cwd) => {
+        order.push("setup");
+        mkdirSync(join(cwd, "deps"), { recursive: true });
+        // Finishes later than it starts, so a claim that did not wait for it would miss the file.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        writeFileSync(join(cwd, "deps", "setup.done"), "ok\n");
+        return { ok: true, reason: null, outcomeUnknown: false };
+      },
+    },
+  );
+  const result = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-after-setup"));
+  assert.deepEqual(order, ["setup"]);
+  assert.equal(result.claimWarning, undefined, "the first step saw setup's completed effect");
+  assert.equal(runs(result.lease.path, "one").length, 1);
+  assert.equal(onlySlot(m).depsState, "current");
+  await m.release(result.lease);
+});
+
 test("check and manual leases do not run the claim", async () => {
   const fixture = repository("mission-claim-other-kinds-");
   const m = manager(claimOf({ steps: [{ argv: recordStep("one") }] }));
@@ -458,6 +524,33 @@ test("a failing step hands the slot over with a warning and clears the fingerpri
   assert.equal(runs(retry.lease.path, "one").length, 2, "a failed claim is never skipped");
   assert.ok(retry.claimWarning);
   await m.release(retry.lease);
+});
+
+test("a step that cannot start fails the claim and still hands the slot over", async () => {
+  const fixture = repository("mission-claim-cannot-start-");
+  const started: string[] = [];
+  const m = manager(
+    claimOf({ steps: [{ argv: ["yarn", "install"] }, { argv: ["yarn", "rebuild"] }], fingerprintPaths: ["lock.txt"] }),
+    {
+      runClaimStep: async (request): Promise<ClaimStepResult> => {
+        started.push(request.argv.join(" "));
+        return { outcome: "spawnFailed", reason: 'executable "yarn" was not found in the executable environment' };
+      },
+    },
+  );
+  const result = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-cannot-start"));
+  assert.deepEqual(started, ["yarn install"], "the remaining steps do not run");
+  assert.equal(result.claimWarning?.step, 1);
+  assert.equal(
+    result.claimWarning?.reason,
+    'could not start: executable "yarn" was not found in the executable environment',
+  );
+  const slot = onlySlot(m);
+  assert.equal(slot.state, "leased", "never quarantined for a step that cannot start");
+  assert.equal(slot.depsState, "failed");
+  assert.equal(slot.depsFingerprint, null);
+  assert.match(slot.depsLastError ?? "", /^step 1 of 2 \(yarn install\) could not start/);
+  await m.release(result.lease);
 });
 
 test("a claim that dirties a tracked file still fails the final proof", async () => {
