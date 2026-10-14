@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { WorktreesConfigPatch } from "@shared/protocol.ts";
+import type { WorktreeClaim, WorktreesConfigPatch } from "@shared/protocol.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
   NativeWorktreeSlotView,
   WorktreeActionPreview,
   WorktreeActionRequest,
+  WorktreeClaimVariableSource,
+  WorktreeClaimVariableView,
   WorktreeOperationView,
   WorktreeRepositoryView,
   WorktreeRiskKey,
+  WorktreeSlotDependenciesView,
+  WorktreeSlotDependencyState,
 } from "@shared/worktrees.ts";
 import { worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesState } from "../useWorktrees.ts";
@@ -16,6 +20,19 @@ import { openWorktreeTerminal } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
+import {
+  claimErrorsFrom,
+  claimFromDraft,
+  draftFromClaim,
+  draftLines,
+  draftNames,
+  emptyClaimErrors,
+  hasClaimErrors,
+  splitClaimFailure,
+  type ClaimDraft,
+  type ClaimDraftErrors,
+  type ClaimStepDraft,
+} from "../lib/worktree-claim-draft.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -198,6 +215,117 @@ function CapacityLegend({ geometry }: { geometry: CapacityGeometry }): React.JSX
   );
 }
 
+/** `m:ss`, or `h:mm:ss` past an hour. Never negative, whatever the two clocks say. */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const seconds = String(total % 60).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+/** The wall clock, ticking once a second while `active`, so an elapsed time counts up between inventory reads. */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+const DEPENDENCY_CHIPS: Record<WorktreeSlotDependencyState, { label: string; tone: string }> = {
+  never: { label: "never installed", tone: "neutral" },
+  current: { label: "current", tone: "ready" },
+  stale: { label: "stale", tone: "attention" },
+  installing: { label: "installing", tone: "working" },
+  failed: { label: "failed", tone: "danger" },
+  interrupted: { label: "interrupted", tone: "attention" },
+};
+
+/**
+ * The slot's dependency claim state. Every state is said in words beside its chip, so none of
+ * them is carried by colour. Stale is judged against the last fetched default ref; this view
+ * never asks the daemon to fetch.
+ */
+function SlotDependencies({
+  ordinal,
+  dependencies,
+}: {
+  ordinal: number;
+  dependencies: WorktreeSlotDependenciesView;
+}): React.JSX.Element {
+  const installing = dependencies.installing;
+  const now = useNow(installing !== null);
+  const chip = DEPENDENCY_CHIPS[dependencies.state];
+  const [summary, ...tail] = (dependencies.failure ?? "").split("\n");
+  const failure = summary ? splitClaimFailure(summary) : null;
+  return (
+    <section className="wt-deps" aria-label={`Slot ${ordinal} dependencies`}>
+      <div className="wt-deps-head">
+        <span className="wt-deps-title">Dependencies</span>
+        <StateChip label={chip.label} tone={chip.tone} />
+        {dependencies.fingerprintSha && (
+          <span className="wt-deps-commit">at <code>{shortSha(dependencies.fingerprintSha)}</code></span>
+        )}
+      </div>
+      {dependencies.state === "never" && (
+        <p className="wt-deps-detail">No claim has run in this slot. Its next task lease runs every step.</p>
+      )}
+      {dependencies.state === "current" && (
+        <p className="wt-deps-detail">
+          {dependencies.defaultSha
+            ? <>Matches the fetched default branch at <code>{shortSha(dependencies.defaultSha)}</code>.</>
+            : "The last claim succeeded."}
+        </p>
+      )}
+      {dependencies.state === "stale" && (
+        <p className="wt-deps-detail">
+          The fetched default branch at <code>{shortSha(dependencies.defaultSha)}</code> needs different
+          dependencies. The next lease runs the claim again.
+        </p>
+      )}
+      {installing && (
+        <>
+          <p className="wt-deps-detail">
+            {installing.step ? `Step ${installing.step.step} of ${installing.step.stepCount}` : "Reading the fingerprint"}
+            {" · "}
+            <span>{formatElapsed(now - installing.startedAt)} elapsed</span>
+          </p>
+          {installing.step && (
+            <Tooltip label={installing.step.command}>
+              <code className="wt-deps-clamp" aria-label={`Running command: ${installing.step.command}`}>{installing.step.command}</code>
+            </Tooltip>
+          )}
+        </>
+      )}
+      {dependencies.state === "failed" && (
+        <>
+          {failure && (
+            <p className="wt-deps-detail">
+              {failure.step ? `${failure.step[0]!.toUpperCase()}${failure.step.slice(1)} ${failure.reason}.` : failure.reason}
+            </p>
+          )}
+          {failure?.command && (
+            <Tooltip label={failure.command}>
+              <code className="wt-deps-clamp" aria-label={`Failed command: ${failure.command}`}>{failure.command}</code>
+            </Tooltip>
+          )}
+          <p className="wt-deps-detail">The next lease runs the claim again.</p>
+          {tail.length > 0 && (
+            <pre className="wt-deps-tail" aria-label={`Slot ${ordinal} dependency output tail`} tabIndex={0}>{tail.join("\n")}</pre>
+          )}
+        </>
+      )}
+      {dependencies.state === "interrupted" && (
+        <p className="wt-deps-detail">A restart cut off this slot&rsquo;s last claim. Its next claim starts cold.</p>
+      )}
+    </section>
+  );
+}
+
 function SlotCard({
   slot,
   pending,
@@ -277,6 +405,7 @@ function SlotCard({
         <div><dt>Processes</dt><dd>{slot.processes.count ?? "unknown"}</dd></div>
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
+      {slot.dependencies && <SlotDependencies ordinal={slot.ordinal} dependencies={slot.dependencies} />}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
@@ -321,6 +450,223 @@ function SlotCard({
   );
 }
 
+function FieldErrors({ id, messages }: { id: string; messages: readonly string[] | undefined }): React.JSX.Element | null {
+  if (!messages || messages.length === 0) return null;
+  return (
+    <ul className="wt-claim-errors" id={id}>
+      {messages.map((message, index) => <li key={index} className="settings-error">{message}</li>)}
+    </ul>
+  );
+}
+
+const VARIABLE_SOURCES: Record<WorktreeClaimVariableSource, string> = {
+  daemon: "in the daemon environment",
+  loginShell: "in the login shell",
+};
+
+/**
+ * Each name a step lists, with whether a step would receive a value for it. The daemon answers
+ * for saved names only, so a name typed since the last save says so instead of guessing.
+ */
+function VariablePresence({
+  step,
+  names,
+  saved,
+}: {
+  step: number;
+  names: readonly string[];
+  saved: ReadonlyMap<string, WorktreeClaimVariableView>;
+}): React.JSX.Element | null {
+  if (names.length === 0) return null;
+  return (
+    <ul className="wt-claim-vars" aria-label={`Step ${step} variable presence`}>
+      {names.map((name) => {
+        const known = saved.get(name);
+        return (
+          <li key={name}>
+            <code>{name}</code>
+            {!known
+              ? <StateChip label="save to check" />
+              : known.present
+                ? <StateChip label="present" tone="ready" />
+                : <StateChip label="missing" tone="danger" />}
+            <span className="wt-claim-var-where">
+              {!known
+                ? "not checked until saved"
+                : known.source
+                  ? VARIABLE_SOURCES[known.source]
+                  : "in neither the daemon environment nor the login shell"}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * The pool's dependency claim: ordered steps, each with the variable names it may receive,
+ * the timeout and the fingerprint paths. It saves through the worktrees settings route as one
+ * whole claim, and whatever the route's schema refuses is shown beside the field it names.
+ * Values never appear here: the daemon reports only whether each name has one, and where.
+ */
+function ClaimEditor({
+  repo,
+  updateConfig,
+}: {
+  repo: WorktreeRepositoryView;
+  updateConfig: WorktreesState["updateConfig"];
+}): React.JSX.Element {
+  const savedKey = JSON.stringify(repo.policy.claim);
+  const [draft, setDraft] = useState<ClaimDraft>(() => draftFromClaim(repo.policy.claim));
+  const [errors, setErrors] = useState<ClaimDraftErrors>(emptyClaimErrors);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+  // A save, someone else's save, or a restore replaces the draft with what is now stored.
+  useEffect(() => {
+    setDraft(draftFromClaim(repo.policy.claim));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedKey]);
+  const presence = useMemo(
+    () => new Map(repo.claimVariables.map((entry) => [entry.name, entry])),
+    [repo.claimVariables],
+  );
+  const base = `wt-claim-${repo.id}`;
+
+  function changeStep(index: number, change: Partial<ClaimStepDraft>): void {
+    setSaved(null);
+    setDraft((current) => ({
+      ...current,
+      steps: current.steps.map((step, at) => at === index ? { ...step, ...change } : step),
+    }));
+  }
+
+  async function save(claim: unknown | null): Promise<void> {
+    setSaving(true);
+    setSaved(null);
+    setErrors(emptyClaimErrors());
+    const result = await updateConfig(
+      { repositories: { [repo.commonDirectory]: { claim: claim as WorktreeClaim | null } } },
+      { inline: true },
+    );
+    setSaving(false);
+    if (result.ok) {
+      setSaved(claim === null ? "Claim removed." : "Claim saved.");
+      return;
+    }
+    setErrors(claimErrorsFrom(result.error, draft));
+  }
+
+  const invalid = hasClaimErrors(errors);
+  return (
+    <fieldset className="wt-argv wt-claim" aria-describedby={invalid ? `${base}-general` : undefined}>
+      <legend>Dependency claim, run on every task lease</legend>
+      <p className="wt-claim-note">
+        Each step is an argv, never a shell. A step receives only the variables it names, from the
+        daemon&rsquo;s environment or the login shell. Mission Control stores names, never values.
+      </p>
+      {draft.steps.length === 0 && (
+        <p className="wt-claim-note">{repo.policy.claim ? "Every step was removed from this draft." : "No claim is configured. Add a step to set one up."}</p>
+      )}
+      {draft.steps.map((step, index) => {
+        const number = index + 1;
+        return (
+          <fieldset className="wt-claim-step" key={index}>
+            <legend>Step {number}</legend>
+            <label htmlFor={`${base}-argv-${index}`}>Step {number} command, one argument per line</label>
+            <textarea
+              id={`${base}-argv-${index}`}
+              rows={Math.min(6, Math.max(2, draftLines(step.argv).length + 1))}
+              spellCheck={false}
+              value={step.argv}
+              aria-invalid={errors.argv[index] ? true : undefined}
+              aria-describedby={errors.argv[index] ? `${base}-argv-${index}-errors` : undefined}
+              onChange={(event) => changeStep(index, { argv: event.target.value })}
+            />
+            <FieldErrors id={`${base}-argv-${index}-errors`} messages={errors.argv[index]} />
+            <label htmlFor={`${base}-env-${index}`}>Step {number} variable names</label>
+            <input
+              id={`${base}-env-${index}`}
+              spellCheck={false}
+              placeholder="ARTIFACTORY_AUTH_TOKEN"
+              value={step.env}
+              aria-invalid={errors.env[index] ? true : undefined}
+              aria-describedby={errors.env[index] ? `${base}-env-${index}-errors` : undefined}
+              onChange={(event) => changeStep(index, { env: event.target.value })}
+            />
+            <FieldErrors id={`${base}-env-${index}-errors`} messages={errors.env[index]} />
+            <VariablePresence step={number} names={draftNames(step.env)} saved={presence} />
+            <Tooltip label={`Remove step ${number} from this draft`}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  setSaved(null);
+                  setDraft((current) => ({ ...current, steps: current.steps.filter((_, at) => at !== index) }));
+                }}
+              >
+                Remove step {number}
+              </button>
+            </Tooltip>
+          </fieldset>
+        );
+      })}
+      <FieldErrors id={`${base}-steps-errors`} messages={errors.steps} />
+      <div className="wt-claim-fields">
+        <label htmlFor={`${base}-timeout`}>Claim timeout in minutes, for every step together</label>
+        <input
+          id={`${base}-timeout`}
+          className="wt-number"
+          inputMode="numeric"
+          value={draft.timeoutMinutes}
+          aria-invalid={errors.timeoutMinutes.length > 0 ? true : undefined}
+          aria-describedby={errors.timeoutMinutes.length > 0 ? `${base}-timeout-errors` : undefined}
+          onChange={(event) => {
+            setSaved(null);
+            setDraft((current) => ({ ...current, timeoutMinutes: event.target.value }));
+          }}
+        />
+        <FieldErrors id={`${base}-timeout-errors`} messages={errors.timeoutMinutes} />
+        <label htmlFor={`${base}-fingerprint`}>Fingerprint paths, one repository-relative glob per line</label>
+        <textarea
+          id={`${base}-fingerprint`}
+          rows={Math.min(8, Math.max(2, draftLines(draft.fingerprintPaths).length + 1))}
+          spellCheck={false}
+          placeholder={"yarn.lock\npackage.json"}
+          value={draft.fingerprintPaths}
+          aria-invalid={errors.fingerprintPaths.length > 0 ? true : undefined}
+          aria-describedby={errors.fingerprintPaths.length > 0 ? `${base}-fingerprint-errors` : undefined}
+          onChange={(event) => {
+            setSaved(null);
+            setDraft((current) => ({ ...current, fingerprintPaths: event.target.value }));
+          }}
+        />
+        <FieldErrors id={`${base}-fingerprint-errors`} messages={errors.fingerprintPaths} />
+        <p className="wt-claim-note">With no fingerprint paths the claim runs on every lease.</p>
+      </div>
+      <FieldErrors id={`${base}-general`} messages={errors.general} />
+      {invalid && <p className="settings-error" role="alert">The claim was not saved. Fix the fields marked above.</p>}
+      {saved && <p className="wt-claim-saved" role="status">{saved}</p>}
+      <div className="wt-argv-actions">
+        <Tooltip label="Add one dependency step after the others">
+          <button type="button" className="btn btn-ghost" onClick={() => {
+            setSaved(null);
+            setDraft((current) => ({ ...current, steps: [...current.steps, { argv: "", env: "" }] }));
+          }}>Add step</button>
+        </Tooltip>
+        <Tooltip label="Save this whole claim for future task leases in this pool">
+          <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void save(claimFromDraft(draft))}>
+            {saving ? "Saving…" : "Save claim"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Remove this pool's claim; future leases run no dependency steps">
+          <button type="button" className="btn btn-ghost" disabled={saving || !repo.policy.claim} onClick={() => void save(null)}>Remove claim</button>
+        </Tooltip>
+      </div>
+    </fieldset>
+  );
+}
+
 /**
  * One pool, one full-width row: the bar needs the width a card grid cannot give it.
  *
@@ -340,7 +686,7 @@ function PoolRow({
 }: {
   repo: WorktreeRepositoryView;
   overridden: boolean;
-  updateConfig: (patch: WorktreesConfigPatch) => Promise<void>;
+  updateConfig: WorktreesState["updateConfig"];
   pendingBySlot: ReadonlyMap<string, WorktreeOperationView>;
   selected: ReadonlySet<string>;
   onSelect: (slotIds: string[], selected: boolean) => void;
@@ -442,6 +788,7 @@ function PoolRow({
               </Tooltip>
             </div>
           </fieldset>
+          <ClaimEditor repo={repo} updateConfig={updateConfig} />
           <div className="wt-maintenance-actions">
             <Tooltip label="Preview reconciling durable slot records with Git and filesystem state">
               <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "reconcile", poolId: repo.id }, event.currentTarget)}>Reconcile</button>

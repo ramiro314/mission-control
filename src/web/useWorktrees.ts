@@ -26,10 +26,14 @@ function mergeConfig(current: WorktreesConfig, patch: WorktreesConfigPatch): Wor
     }
     const next = Object.assign({}, repositories[key], value);
     if (value.setupArgv === null) delete next.setupArgv;
+    if (value.claim === null) delete next.claim;
     repositories[key] = next as WorktreesConfig["repositories"][string];
   }
   return { ...current, ...patch, repositories } as WorktreesConfig;
 }
+
+/** A refused save carries the daemon's error text, which for a schema refusal is Zod's issue list. */
+export type WorktreesConfigUpdate = { ok: true } | { ok: false; error: string };
 
 export interface WorktreesState {
   inventory: WorktreeInventory | null;
@@ -42,7 +46,11 @@ export interface WorktreesState {
   /** Background cleanups: queued, running, or failed and not yet dismissed. */
   operations: WorktreeOperationView[];
   refresh: () => Promise<void>;
-  updateConfig: (patch: WorktreesConfigPatch) => Promise<void>;
+  /**
+   * Save a policy patch. A refusal is reported in the panel's banner unless `inline` is set,
+   * for a caller that shows the error beside the fields it belongs to instead.
+   */
+  updateConfig: (patch: WorktreesConfigPatch, options?: { inline?: boolean }) => Promise<WorktreesConfigUpdate>;
   requestPreview: (request: WorktreeActionRequest) => Promise<void>;
   executePreview: (acks: WorktreeRiskKey[]) => Promise<boolean>;
   discardPreview: () => void;
@@ -115,26 +123,30 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   // operator had moved on to would make queueing the next one impossible. The preview is
   // not trusted anyway: Execute rebuilds it from fresh state and refuses if it moved.
 
-  const updateConfig = useCallback(async (patch: WorktreesConfigPatch): Promise<void> => {
+  const updateConfig = useCallback(async (
+    patch: WorktreesConfigPatch,
+    options: { inline?: boolean } = {},
+  ): Promise<WorktreesConfigUpdate> => {
     const before = inventoryRef.current;
-    if (!before) return;
+    if (!before) return { ok: false, error: "Worktree inventory is not loaded yet." };
     const optimistic = { ...before, config: mergeConfig(before.config, patch) };
     setInventory(optimistic);
     setPreview(null);
     setPreviewError(null);
     setPreviewChanged(false);
-    const operation = writeChain.current.then(async () => {
+    const operation = writeChain.current.then(async (): Promise<WorktreesConfigUpdate> => {
       const result = await updateWorktreesConfig(patch);
       if (!result.ok) {
         if (inventoryRef.current === optimistic) setInventory(before);
-        setError(`That policy change did not stick: ${result.error}`);
-        return;
+        if (!options.inline) setError(`That policy change did not stick: ${result.error}`);
+        return { ok: false, error: result.error };
       }
       setError(null);
       await refresh();
+      return { ok: true };
     });
-    writeChain.current = operation.catch(() => {});
-    await operation;
+    writeChain.current = operation.then(() => {}, () => {});
+    return await operation;
   }, [refresh, setInventory]);
 
   const requestPreview = useCallback(async (request: WorktreeActionRequest): Promise<void> => {

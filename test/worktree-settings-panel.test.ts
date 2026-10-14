@@ -21,7 +21,8 @@ const overCapacityPool: WorktreeRepositoryView = {
   root: "/repo/mission-control",
   commonDirectory: "/repo/mission-control/.git",
   poolPath: "/state/worktrees/pool-1",
-  policy: { enabled: true, maxSlots: 16, setupArgv: ["npm", "install"] },
+  policy: { enabled: true, maxSlots: 16, setupArgv: ["npm", "install"], claim: null },
+  claimVariables: [],
   counts: { total: 18, leased: 17, available: 0, quarantined: 1, overCapacity: 2 },
   diskBytes: 4096,
   lastReconciledAt: 1,
@@ -45,6 +46,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     quarantineReason: null,
     diagnostic: null,
     actions: ["return", "destroy"],
+    dependencies: null,
   }],
 };
 
@@ -55,7 +57,8 @@ const roomToGrowPool: WorktreeRepositoryView = {
   root: "/repo/line-drawers",
   commonDirectory: "/repo/line-drawers/.git",
   poolPath: "/state/worktrees/pool-2",
-  policy: { enabled: true, maxSlots: 16, setupArgv: null },
+  policy: { enabled: true, maxSlots: 16, setupArgv: null, claim: null },
+  claimVariables: [],
   counts: { total: 12, leased: 8, available: 4, quarantined: 0, overCapacity: 0 },
   diskBytes: 8192,
   lastReconciledAt: 1,
@@ -100,7 +103,7 @@ const state: WorktreesState = {
   busy: false,
   operations: [],
   refresh: noop,
-  updateConfig: noop,
+  updateConfig: async () => ({ ok: true }),
   requestPreview: noop,
   executePreview: async () => true,
   discardPreview: () => {},
@@ -423,4 +426,73 @@ test("Dismiss never claims a failure without confirmed removals changed nothing"
   });
   assert.match(html, /dismissing it does not undo or retry anything/);
   assert.doesNotMatch(html, /nothing was changed/);
+});
+
+test("a pool with a claim shows its editor, each name's presence, and every slot dependency state", () => {
+  const base = overCapacityPool.slots[0]!;
+  const deps = (over: Partial<NonNullable<typeof base.dependencies>>) => ({
+    state: "never" as const,
+    fingerprintSha: null,
+    claimedAt: null,
+    defaultSha: null,
+    installing: null,
+    failure: null,
+    ...over,
+  });
+  const claimPool: WorktreeRepositoryView = {
+    ...roomToGrowPool,
+    // An attention pool renders open, so its detail and slots reach the markup.
+    status: "attention",
+    policy: {
+      ...roomToGrowPool.policy,
+      claim: {
+        steps: [{ argv: ["pnpm", "install", "--frozen-lockfile"], env: ["ARTIFACTORY_AUTH_TOKEN", "NPM_TOKEN"] }],
+        timeoutMinutes: 15,
+        fingerprintPaths: ["pnpm-lock.yaml", "apps/*/package.json"],
+      },
+    },
+    claimVariables: [
+      { name: "ARTIFACTORY_AUTH_TOKEN", present: true, source: "loginShell" },
+      { name: "NPM_TOKEN", present: false, source: null },
+    ],
+    slots: [
+      { ...base, id: "d1", ordinal: 1, dependencies: deps({ state: "current", fingerprintSha: "c".repeat(40), defaultSha: "d".repeat(40) }) },
+      { ...base, id: "d2", ordinal: 2, dependencies: deps({ state: "stale", fingerprintSha: "c".repeat(40), defaultSha: "e".repeat(40) }) },
+      { ...base, id: "d3", ordinal: 3, dependencies: deps({}) },
+      {
+        ...base,
+        id: "d4",
+        ordinal: 4,
+        state: "provisioning",
+        dependencies: deps({
+          state: "installing",
+          installing: { startedAt: 0, step: { step: 1, stepCount: 2, command: "pnpm install --frozen-lockfile", startedAt: 0 } },
+        }),
+      },
+      { ...base, id: "d5", ordinal: 5, dependencies: deps({ state: "failed", failure: "step 1 of 1 (pnpm install) exited with code 3\nE401 Unauthorized" }) },
+      { ...base, id: "d6", ordinal: 6, dependencies: deps({ state: "interrupted" }) },
+    ],
+  };
+  const html = render({ inventory: { ...inventory, repositories: [claimPool] } });
+  assert.match(html, /Dependency claim, run on every task lease/);
+  assert.match(html, /Step 1 command, one argument per line/);
+  assert.match(html, />pnpm\ninstall\n--frozen-lockfile<\/textarea>/);
+  assert.match(html, /value="ARTIFACTORY_AUTH_TOKEN NPM_TOKEN"/);
+  assert.match(html, /value="15"/);
+  assert.match(html, />pnpm-lock.yaml\napps\/\*\/package.json<\/textarea>/);
+  assert.match(html, /<code>ARTIFACTORY_AUTH_TOKEN<\/code><span class="wt-chip wt-chip-ready">present<\/span><span class="wt-claim-var-where">in the login shell<\/span>/);
+  assert.match(html, /<code>NPM_TOKEN<\/code><span class="wt-chip wt-chip-danger">missing<\/span>/);
+
+  assert.match(html, /aria-label="Slot 1 dependencies"[\s\S]*?>current<[\s\S]*?Matches the fetched default branch at <code>ddddddddd<\/code>/);
+  assert.match(html, /aria-label="Slot 2 dependencies"[\s\S]*?>stale<[\s\S]*?default branch at <code>eeeeeeeee<\/code> needs different/);
+  assert.match(html, /aria-label="Slot 3 dependencies"[\s\S]*?>never installed</);
+  assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?>installing<[\s\S]*?Step 1 of 2 · <span>[\s\S]*?elapsed<\/span>[\s\S]*?>pnpm install --frozen-lockfile<\/code>/);
+  assert.match(html, /aria-label="Slot 5 dependencies"[\s\S]*?>failed<[\s\S]*?Step 1 of 1 exited with code 3\.<\/p>[\s\S]*?>pnpm install<\/code>[\s\S]*?<pre[^>]*>E401 Unauthorized<\/pre>/);
+  assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?starts cold/);
+});
+
+test("a pool without a claim shows no slot dependency state and offers to add a step", () => {
+  const html = render();
+  assert.doesNotMatch(html, /dependencies"/);
+  assert.match(html, /No claim is configured\. Add a step to set one up\./);
 });

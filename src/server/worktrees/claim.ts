@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { matchesGlob } from "node:path";
 import type { WorktreeClaim } from "@shared/protocol.ts";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
+import type { WorktreeClaimVariableSource, WorktreeClaimVariableView } from "@shared/worktrees.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { executableLocator, loginShellVariables } from "../executables/locator.ts";
@@ -65,26 +66,68 @@ export interface ClaimEnvironment {
  * `scrubCheckEnv` applies by value. Pure, apart from the disposable home the base mints, which
  * the caller releases with `cleanupAgentSubprocessEnv`.
  */
-export function buildClaimEnvironment(input: {
+export function buildClaimEnvironment(input: ClaimVariableSources & {
   names: readonly string[];
-  daemonEnv: NodeJS.ProcessEnv;
-  daemonToken: string;
-  loginShell: Readonly<Record<string, string>>;
 }): ClaimEnvironment {
   const env = scrubCheckEnv(input.daemonEnv, input.daemonToken);
-  const token = input.daemonToken.trim();
   const received: string[] = [];
   const missing: string[] = [];
   for (const name of input.names) {
-    const value = input.daemonEnv[name] || input.loginShell[name] || "";
-    if (!value || (token.length > 0 && value.includes(token))) {
+    const resolved = resolveClaimVariable(name, input);
+    if (!resolved) {
       missing.push(name);
       continue;
     }
-    env[name] = value;
+    env[name] = resolved.value;
     received.push(name);
   }
   return { env, received, missing };
+}
+
+/** Where a claim variable's value may come from, in the order they are consulted. */
+export interface ClaimVariableSources {
+  daemonEnv: NodeJS.ProcessEnv;
+  daemonToken: string;
+  loginShell: Readonly<Record<string, string>>;
+}
+
+/**
+ * The one rule for a claim variable's value, shared by the step environment and the settings
+ * presence check so the two can never disagree: the daemon's environment, else the login
+ * shell's, and nothing when the value is empty or carries the daemon's own token.
+ */
+function resolveClaimVariable(
+  name: string,
+  sources: ClaimVariableSources,
+): { value: string; source: WorktreeClaimVariableSource } | null {
+  const token = sources.daemonToken.trim();
+  const daemon = sources.daemonEnv[name] || "";
+  const resolved = daemon
+    ? { value: daemon, source: "daemon" as const }
+    : sources.loginShell[name]
+      ? { value: sources.loginShell[name]!, source: "loginShell" as const }
+      : null;
+  if (!resolved || (token.length > 0 && resolved.value.includes(token))) return null;
+  return resolved;
+}
+
+/**
+ * Whether each name would reach a claim step, and from where. Never the value: this is what
+ * Settings shows, and a value must not reach the browser.
+ */
+export function describeClaimVariables(
+  input: ClaimVariableSources & { names: readonly string[] },
+): WorktreeClaimVariableView[] {
+  return input.names.map((name) => {
+    const source = resolveClaimVariable(name, input)?.source ?? null;
+    return { name, present: source !== null, source };
+  });
+}
+
+/** The login shell's values for the names the daemon's own environment does not have. */
+async function loginShellFor(names: readonly string[]): Promise<Record<string, string>> {
+  const absent = names.filter((name) => !process.env[name]);
+  return absent.length > 0 ? await loginShellVariables(absent) : {};
 }
 
 /**
@@ -93,14 +136,27 @@ export function buildClaimEnvironment(input: {
  * a probe.
  */
 export async function claimEnvironment(names: readonly string[]): Promise<ClaimEnvironment> {
-  const absent = names.filter((name) => !process.env[name]);
-  const loginShell = absent.length > 0 ? await loginShellVariables(absent) : {};
   return buildClaimEnvironment({
     names,
     daemonEnv: process.env,
     daemonToken: readToken(),
-    loginShell,
+    loginShell: await loginShellFor(names),
   });
+}
+
+/**
+ * The production presence check, from the same sources a claim step would receive. A login
+ * shell that cannot be read reports every name it was asked for as missing, which is what a
+ * step would get.
+ */
+export async function claimVariablePresence(names: readonly string[]): Promise<WorktreeClaimVariableView[]> {
+  let loginShell: Record<string, string> = {};
+  try {
+    loginShell = await loginShellFor(names);
+  } catch {
+    loginShell = {};
+  }
+  return describeClaimVariables({ names, daemonEnv: process.env, daemonToken: readToken(), loginShell });
 }
 
 export interface TreeBlob {
@@ -365,6 +421,8 @@ export async function runClaimSteps(input: {
   environment: (names: readonly string[]) => Promise<ClaimEnvironment>;
   runStep: (request: ClaimStepRequest) => Promise<ClaimStepResult>;
   now: () => number;
+  /** Told as each step begins, before its environment is built, so a view can say which runs. */
+  onStep?: (step: RunningClaimStep) => void;
 }): Promise<ClaimStepsOutcome> {
   const limitMs = input.claim.timeoutMinutes * 60_000;
   const deadline = input.now() + limitMs;
@@ -384,6 +442,7 @@ export async function runClaimSteps(input: {
     if (input.signal.aborted) return fail("stopped before it started", "", 0, true);
     const beforeEnvironment = deadline - input.now();
     if (beforeEnvironment <= 0) return fail(timedOut);
+    input.onStep?.({ step: index + 1, stepCount, argv: [...step.argv], startedAt: input.now() });
     // Building the environment can probe the login shell, so it spends the same deadline.
     const prepared = await withinDeadline(
       input.environment(step.env),
@@ -509,10 +568,21 @@ export function claimWarningsBlock(
   return lines.join("\n");
 }
 
+/** The step a running claim is on. */
+export interface RunningClaimStep {
+  /** 1-based, of `stepCount`. */
+  step: number;
+  stepCount: number;
+  argv: string[];
+  startedAt: number;
+}
+
 export interface RunningClaim {
   slotId: string;
   owner: WorktreeOwner;
   startedAt: number;
+  /** Null until the first step begins: the fingerprint is still being read. */
+  step: RunningClaimStep | null;
 }
 
 /**
@@ -523,6 +593,10 @@ export interface RunningClaim {
  * Maintenance asks it which slots to skip rather than wait on, and shutdown stops every claim
  * through it.
  */
+function snapshot({ slotId, owner, startedAt, step }: RunningClaim): RunningClaim {
+  return { slotId, owner, startedAt, step: step ? { ...step, argv: [...step.argv] } : null };
+}
+
 export class ClaimRegistry {
   private readonly running = new Map<string, RunningClaim & { controller: AbortController }>();
   private stoppingValue = false;
@@ -531,8 +605,20 @@ export class ClaimRegistry {
   register(slotId: string, owner: WorktreeOwner, now: number): AbortController | null {
     if (this.stoppingValue) return null;
     const controller = new AbortController();
-    this.running.set(slotId, { slotId, owner, startedAt: now, controller });
+    this.running.set(slotId, { slotId, owner, startedAt: now, step: null, controller });
     return controller;
+  }
+
+  /** Record the step this claim is on. A claim that is no longer registered is left alone. */
+  progress(slotId: string, controller: AbortController, step: RunningClaimStep): void {
+    const running = this.running.get(slotId);
+    if (running?.controller === controller) running.step = { ...step, argv: [...step.argv] };
+  }
+
+  /** The running claim on this slot, or null. */
+  get(slotId: string): RunningClaim | null {
+    const running = this.running.get(slotId);
+    return running ? snapshot(running) : null;
   }
 
   unregister(slotId: string, controller: AbortController): void {
@@ -548,7 +634,7 @@ export class ClaimRegistry {
   }
 
   list(): RunningClaim[] {
-    return [...this.running.values()].map(({ slotId, owner, startedAt }) => ({ slotId, owner, startedAt }));
+    return [...this.running.values()].map(snapshot);
   }
 
   /** Shutdown: refuse new claims and stop every running one. */

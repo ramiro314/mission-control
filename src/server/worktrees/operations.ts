@@ -10,11 +10,13 @@ import {
   type WorktreeActionRequest,
   type WorktreeActionRisk,
   type WorktreeActionSubmitResult,
+  type WorktreeClaimVariableView,
   type WorktreeInventory,
   type WorktreeOperationView,
   type WorktreeOwnerView,
   type WorktreeRepositoryView,
   type WorktreeRiskKey,
+  type WorktreeSlotDependenciesView,
 } from "@shared/worktrees.ts";
 import { run } from "../util/exec.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
@@ -22,6 +24,12 @@ import type {
   CheckGroupRecovery,
   CheckLeaseManager,
 } from "../workflows/check-lease.ts";
+import {
+  claimVariableNames,
+  claimVariablePresence,
+  renderClaimArgv,
+  type RunningClaim,
+} from "./claim.ts";
 import { getWorktreesConfig, setWorktreesConfig } from "./config.ts";
 import {
   LegacyTreehouseService,
@@ -37,6 +45,7 @@ import {
   type NativePoolStatus,
   type NativeSlotStatus,
 } from "./manager.ts";
+import type { WorktreeSlotRow } from "./store.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
@@ -87,6 +96,11 @@ export interface WorktreeOperationsDeps {
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
   /** Wall-clock budget for measuring every path one preview shows, together. */
   diskMeasureBudgetMs: number;
+  /**
+   * Whether each claim variable name would reach a step, and from where: the daemon's
+   * environment, else the login-shell snapshot. Never a value.
+   */
+  claimVariablePresence: (names: readonly string[]) => Promise<WorktreeClaimVariableView[]>;
   /**
    * Operations listed at once - queued, running, and failed reports nobody has dismissed.
    * Further submissions are refused; nothing listed is ever dropped to make room.
@@ -211,6 +225,80 @@ function uniqRisks(risks: WorktreeActionRisk[]): WorktreeActionRisk[] {
   return [...unique.values()];
 }
 
+/** Bound on a failure tail carried to the browser; the slot row already holds at most 6,000. */
+const MAX_DEPENDENCY_FAILURE_BYTES = 6_144;
+
+function boundedTail(value: string | null): string | null {
+  if (value === null) return null;
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= MAX_DEPENDENCY_FAILURE_BYTES) return value;
+  return bytes.subarray(bytes.length - MAX_DEPENDENCY_FAILURE_BYTES).toString("utf8").replace(/^\uFFFD+/, "");
+}
+
+/**
+ * A slot's dependency state for Settings, from the durable row, the claim running in it right
+ * now (if any) and the pool claim's fingerprint at the last fetched default branch. Pure: the
+ * inventory never fetches and never runs a claim to answer this.
+ *
+ * Null when the pool has no claim configured, because then there is nothing to be current or
+ * stale against.
+ */
+export function slotDependencies(input: {
+  hasClaim: boolean;
+  slot: Pick<WorktreeSlotRow, "depsState" | "depsFingerprint" | "depsFingerprintSha" | "depsClaimedAt" | "depsLastError">;
+  running: RunningClaim | null;
+  defaultSha: string | null;
+  defaultFingerprint: string | null;
+}): WorktreeSlotDependenciesView | null {
+  if (!input.hasClaim) return null;
+  const { slot, running } = input;
+  const base = {
+    fingerprintSha: slot.depsFingerprintSha,
+    claimedAt: slot.depsClaimedAt,
+    defaultSha: null,
+    installing: null,
+    failure: null,
+  };
+  if (running) {
+    return {
+      ...base,
+      state: "installing",
+      installing: {
+        startedAt: running.startedAt,
+        step: running.step
+          ? {
+              step: running.step.step,
+              stepCount: running.step.stepCount,
+              command: renderClaimArgv(running.step.argv),
+              startedAt: running.step.startedAt,
+            }
+          : null,
+      },
+    };
+  }
+  switch (slot.depsState) {
+    case null:
+      return { ...base, state: "never" };
+    case "current": {
+      // Judged only when both sides have a fingerprint. A claim with no fingerprint paths
+      // runs on every lease, so it is never stale; an unknown default is not evidence of one.
+      const judged = slot.depsFingerprint !== null && input.defaultFingerprint !== null;
+      const stale = judged && slot.depsFingerprint !== input.defaultFingerprint;
+      return { ...base, state: stale ? "stale" : "current", defaultSha: judged ? input.defaultSha : null };
+    }
+    case "failed":
+      return { ...base, state: "failed", failure: boundedTail(slot.depsLastError) };
+    // `claiming` with no claim running is a write-ahead whose daemon is gone; startup
+    // reconcile is about to record it as interrupted, and the next claim starts cold either way.
+    case "claiming":
+    case "interrupted":
+      return { ...base, state: "interrupted" };
+    default:
+      // A state a later build wrote. Fail closed: nothing about it can be trusted as current.
+      return { ...base, state: "interrupted" };
+  }
+}
+
 export class WorktreeOperationsService {
   private readonly deps: WorktreeOperationsDeps;
   private readonly tokens = new Map<string, HeldPreview>();
@@ -234,6 +322,7 @@ export class WorktreeOperationsService {
       occupancy: inspectWorktreeOccupancy,
       diskMeasureBudgetMs: DISK_MEASURE_BUDGET_MS,
       maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
+      claimVariablePresence,
       ...deps,
     };
   }
@@ -298,8 +387,20 @@ export class WorktreeOperationsService {
     } catch (error) {
       throw new WorktreeOperationError(503, `legacy worktree inventory unavailable: ${compact(String(error))}`, "unavailable");
     }
+    const shown = native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories);
+    // One presence read for every pool together, so a login-shell probe is asked at most once.
+    const claimNames = [...new Set(shown.flatMap((pool) => claimVariableNames(pool.policy.claim)))].sort();
+    let presence = new Map<string, WorktreeClaimVariableView>();
+    if (claimNames.length > 0) {
+      try {
+        presence = new Map((await this.deps.claimVariablePresence(claimNames)).map((entry) => [entry.name, entry]));
+      } catch {
+        presence = new Map();
+      }
+    }
+    const running = new Map(this.manager.claims.list().map((claim) => [claim.slotId, claim]));
     const repositories: WorktreeRepositoryView[] = [];
-    for (const pool of native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories)) {
+    for (const pool of shown) {
       const slots = pool.slots
         .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
         .map((entry) => {
@@ -340,6 +441,13 @@ export class WorktreeOperationsService {
             quarantineReason: compact(entry.slot.quarantineReason),
             diagnostic: compact(entry.slot.lastError),
             actions,
+            dependencies: slotDependencies({
+              hasClaim: Boolean(pool.policy.claim),
+              slot: entry.slot,
+              running: running.get(entry.slot.id) ?? null,
+              defaultSha: pool.observedDefaultSha,
+              defaultFingerprint: pool.defaultFingerprint,
+            }),
           };
         });
       const counts = {
@@ -359,7 +467,10 @@ export class WorktreeOperationsService {
           enabled: pool.policy.enabled,
           maxSlots: pool.policy.maxSlots,
           setupArgv: pool.policy.setupArgv ? [...pool.policy.setupArgv] : null,
+          claim: pool.policy.claim ?? null,
         },
+        claimVariables: claimVariableNames(pool.policy.claim).map((name) =>
+          presence.get(name) ?? { name, present: false, source: null }),
         counts,
         diskBytes: null,
         lastReconciledAt: pool.pool.lastReconciledAt,
