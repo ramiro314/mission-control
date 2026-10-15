@@ -137,6 +137,38 @@ test("fields still clip at the per-field limit, and the finding stays whole", ()
   assert.match(section.text, /Fingerprint: small/);
 });
 
+// Each field is bounded on its own, so each is driven on its own: removing the clip from any
+// one of them fails its row. The exact limit must pass through untouched and unflagged; one
+// byte over must clip back to the limit and set `truncated`.
+test("each bounded field clips at exactly the per-field limit", () => {
+  const limit = WORKFLOW_LIMITS.feedbackFieldBytes;
+  const fields: Array<{
+    name: string;
+    over: (value: string) => Partial<InspectorComment>;
+    prefix: string;
+  }> = [
+    { name: "title", over: (value) => ({ title: value }), prefix: "## MAJOR - " },
+    // No line, so the location is the path alone and the whole field is the path.
+    { name: "location", over: (value) => ({ path: value, line: null }), prefix: "Location: " },
+    { name: "link", over: (value) => ({ githubUrl: value }), prefix: "Posted on GitHub: " },
+    { name: "body", over: (value) => ({ body: value }), prefix: "" },
+  ];
+  for (const { name, over, prefix } of fields) {
+    const atLimit = "a".repeat(limit);
+    const exact = renderInspectorFindings([finding("f", "major", over(atLimit))], { budgetBytes: 100_000 });
+    assert.equal(exact.truncated, false, `${name}: a value at exactly the limit was flagged`);
+    assert.ok(exact.text.split("\n").includes(`${prefix}${atLimit}`), `${name}: a value at the limit was altered`);
+
+    const oneOver = renderInspectorFindings([finding("f", "major", over(`${atLimit}b`))], { budgetBytes: 100_000 });
+    assert.equal(oneOver.truncated, true, `${name}: one byte over the limit was not flagged`);
+    const lines = oneOver.text.split("\n");
+    assert.ok(lines.includes(`${prefix}${atLimit}`), `${name}: one byte over was not clipped back to the limit`);
+    assert.equal(oneOver.text.includes(`${atLimit}b`), false, `${name}: the byte over the limit survived`);
+    assert.deepEqual([oneOver.shown, oneOver.omitted], [1, 0]);
+    assert.equal(lines.at(-1), "Fingerprint: f", `${name}: the clipped finding lost its fingerprint`);
+  }
+});
+
 test("past the budget whole findings drop from the tail, lowest severity first, and are counted", () => {
   const severities = ["nit", "blocker", "minor", "major"] as const;
   const rows = Array.from({ length: 12 }, (_, index) =>
@@ -258,7 +290,8 @@ test("the renderer's import graph reaches no database or network module", () => 
     "src/server/util/utf8.ts",
     "src/server/workflows/packet-text.ts",
   ]);
-  const forbidden = [...external].filter((specifier) =>
-    /^node:(sqlite|http|https|http2|net|tls|dgram|child_process|worker_threads)$/.test(specifier));
-  assert.deepEqual(forbidden, [], `forbidden imports: ${forbidden.join(", ")}`);
+  // An allowlist, not a denylist: a new package or built-in (`better-sqlite3`, `undici`,
+  // `node:http`, ...) fails here until someone decides it is safe for Foreman to load.
+  // `node:string_decoder` cuts UTF-8 on a character boundary; `zod` is the shared schemas'.
+  assert.deepEqual([...external].sort(), ["node:string_decoder", "zod"]);
 });

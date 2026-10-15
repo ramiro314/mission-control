@@ -68,10 +68,16 @@ function dedupeInspectorFindings(findings: readonly InspectorComment[]): Inspect
  * thread that does not exist. And a draft whose earlier version WAS posted must never be
  * called the only copy: the earlier thread is resolved, but it is still where that
  * conversation lives.
+ *
+ * The link is a packet field like any other, so it clips at the per-field limit. `bound`
+ * is the caller's clip, which lets a finding's block record that the link was clipped.
  */
-export function inspectorFindingPostedLine(finding: InspectorComment): string {
+export function inspectorFindingPostedLine(
+  finding: InspectorComment,
+  bound: (value: string) => string = (value) => clipPacketField(value).value,
+): string {
   const publication = findingPublication(finding);
-  const url = publication.url ? clipPacketField(publication.url).value : null;
+  const url = publication.url ? bound(publication.url) : null;
   switch (publication.state) {
     case "posted":
       if (!url) return "Posted on GitHub (link not captured yet)";
@@ -191,7 +197,7 @@ function renderBlock(finding: InspectorComment): FindingBlock {
   const head = sanitizeWorkflowFeedback([
     `## ${finding.severity.toUpperCase()} - ${bounded(finding.title)}`,
     `Location: ${bounded(location)}`,
-    inspectorFindingPostedLine(finding),
+    inspectorFindingPostedLine(finding, bounded),
   ].join("\n"));
   const body = bounded(finding.body ?? LEGACY_BODY);
   const tail = sanitizeWorkflowFeedback(`Fingerprint: ${finding.fingerprint}`);
