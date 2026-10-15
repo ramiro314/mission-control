@@ -12,7 +12,6 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 import type { InspectorComment } from "@shared/types.ts";
-import { compareInspectorFindings } from "@shared/inspector-findings.ts";
 import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 import { openPullRequestCommand } from "@shared/pr-command.mjs";
@@ -26,6 +25,11 @@ import {
   isTestEvidenceAuditorPersona,
   testEvidenceRequestCategories,
 } from "./test-evidence-audit.ts";
+import { clipPacketField, clipUtf8, sanitizeWorkflowFeedback } from "./packet-text.ts";
+import { utf8Bytes } from "../util/utf8.ts";
+import { renderInspectorFindings } from "../inspector/findings-text.ts";
+
+export { sanitizeWorkflowFeedback };
 
 const TRUNCATION_NOTICE = "\n\n[Workflow repair packet truncated deterministically.]";
 /**
@@ -203,32 +207,6 @@ export interface EvidenceReadinessPacketInput {
   workflowEvidence: boolean;
 }
 
-/** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
-export function sanitizeWorkflowFeedback(value: string): string {
-  return value
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "  ")
-    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
-}
-
-function clipUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
-  const clean = sanitizeWorkflowFeedback(value);
-  if (encoder.encode(clean).byteLength <= maxBytes) return { value: clean, truncated: false };
-  let bytes = 0;
-  let output = "";
-  for (const scalar of clean) {
-    const size = encoder.encode(scalar).byteLength;
-    if (bytes + size > maxBytes) break;
-    output += scalar;
-    bytes += size;
-  }
-  return { value: output, truncated: true };
-}
-
-function field(value: string): { value: string; truncated: boolean } {
-  return clipUtf8(value, WORKFLOW_LIMITS.feedbackFieldBytes);
-}
-
 function evidenceLine(reference: EvidenceRef): string {
   const location = reference.path
     ? ` (${reference.path}${reference.line ? `:${reference.line}` : ""})`
@@ -276,6 +254,29 @@ function testEvidenceRepairRecipe(verdict: PersonaVerdict): string[] {
   return lines;
 }
 
+/** The authorization contract and final instruction every finalized packet ends with. */
+function packetClosing(
+  finalInstruction: string,
+  workflowEvidence: boolean,
+  pullRequestGrant: boolean,
+): string {
+  const authorization = executionAuthorizationContract({
+    workflowEvidence,
+    workflowContinuation: true,
+    pullRequestGrant,
+  });
+  return `${authorization}\n\n${finalInstruction}`;
+}
+
+/**
+ * Bytes `finalizePacket` appends after a body in the worst case: the closing plus the
+ * truncation notice. A body that stays under the payload limit minus this is never clipped.
+ * For a packet that grants no pull request, which is every caller that reserves.
+ */
+function packetClosingReserve(finalInstruction: string, workflowEvidence: boolean): number {
+  return utf8Bytes(`\n\n${packetClosing(finalInstruction, workflowEvidence, false)}${TRUNCATION_NOTICE}`);
+}
+
 function finalizePacket(
   body: string,
   truncated: boolean,
@@ -289,12 +290,7 @@ function finalizePacket(
   truncated: boolean;
 } {
   const cleanBody = sanitizeWorkflowFeedback(body).replace(/\s+$/u, "");
-  const authorization = executionAuthorizationContract({
-    workflowEvidence,
-    workflowContinuation: true,
-    pullRequestGrant,
-  });
-  const finalBlock = `${authorization}\n\n${finalInstruction}`;
+  const finalBlock = packetClosing(finalInstruction, workflowEvidence, pullRequestGrant);
   let payload = `${cleanBody}\n\n${finalBlock}`;
   if (encoder.encode(payload).byteLength > WORKFLOW_LIMITS.feedbackPayloadBytes) truncated = true;
   if (truncated) {
@@ -346,7 +342,7 @@ export function renderEvidenceReadinessPacket(
 ): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -454,7 +450,7 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
   const byNode = latestAttempts(input.attempts);
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -510,38 +506,27 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
   };
 }
 
-/** Render one frozen Inspector finding snapshot without reusing model prose as framing. */
+/**
+ * Render one frozen Inspector finding snapshot without reusing model prose as framing.
+ *
+ * The packet owns its header (goal, workflow, run, PR, pinned head, round and posture) and
+ * its `finalizePacket` closing. The findings between them come from the shared renderer that
+ * Foreman's relay also uses, given exactly what is left of the payload limit. The closing's
+ * worst case is reserved up front, so `finalizePacket` never has to clip a finding part way:
+ * past the budget, whole findings are left out and the section says how many.
+ *
+ * Changing this text never reaches a packet already prepared. A delivery stores its payload
+ * and hash when it is prepared, delivery and restart recovery send those stored bytes, and
+ * the gate prepares at most one packet per submission, so only packets prepared after a
+ * change carry the new text.
+ */
 export function renderInspectorFeedback(input: InspectorFeedbackInput): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
-  const unique = new Map<string, InspectorComment>();
-  for (const finding of input.findings) {
-    const prior = unique.get(finding.fingerprint);
-    if (!prior) {
-      unique.set(finding.fingerprint, finding);
-      continue;
-    }
-    // A unique DB index normally makes this branch unreachable. Keeping the renderer
-    // deterministic for a duplicated snapshot prevents caller order from changing the
-    // frozen packet if a joined or legacy input ever contains the same issue twice.
-    const stableFinding = (row: InspectorComment): string => JSON.stringify([
-      row.path,
-      row.line,
-      row.title,
-      row.body,
-      row.severity,
-      row.id,
-    ]);
-    if (stableFinding(finding) < stableFinding(prior)) {
-      unique.set(finding.fingerprint, finding);
-    }
-  }
-  // The shared comparator, so the findings route lists them in the order this packet does.
-  const findings = [...unique.values()].sort(compareInspectorFindings);
   const policyInstruction = input.policy === "restart_workflow"
     // `restart_workflow` no longer asks for a signal, for `FINAL_INSTRUCTION`'s reason. The
     // `inspector_only` arm below still ends in "wait for Inspector to review that new head",
@@ -549,7 +534,7 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     // a pushed head, not by anything the session reports.
     ? "Fix the findings, verify the work, then commit and push it."
     : "This published policy permits bypassing Personas only for this GitHub Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for GitHub Inspector to review that new head.";
-  const body = [
+  const header = sanitizeWorkflowFeedback([
     "GitHub Inspector reviewed the pinned pull request head and found changes that are required.",
     "",
     "Original user goal:",
@@ -561,26 +546,21 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     `Pinned head: ${bounded(input.targetHeadSha)}`,
     `GitHub Inspector round: ${input.inspectorRound}`,
     `Review posture: ${input.reviewPosture ?? "unknown"}`,
-    "",
-    ...findings.flatMap((finding, index) => {
-      const location = finding.path
-        ? `${finding.path}${finding.line ? `:${finding.line}` : ""}`
-        : "general";
-      return [
-        ...(index === 0 ? [] : [""]),
-        `## ${finding.severity.toUpperCase()} - ${bounded(finding.title)}`,
-        `Location: ${bounded(location)}`,
-        bounded(
-          finding.body
-            ?? "Legacy finding detail is unavailable. Use the severity, title, and location above.",
-        ),
-        `Fingerprint: ${finding.fingerprint}`,
-      ];
-    }),
-  ].join("\n");
+  ].join("\n"));
+  const budgetBytes = WORKFLOW_LIMITS.feedbackPayloadBytes
+    - packetClosingReserve(policyInstruction, input.workflowEvidence)
+    - utf8Bytes(`${header}\n\n`);
+  const section = renderInspectorFindings(input.findings, { budgetBytes });
   return {
-    ...finalizePacket(body, truncated, policyInstruction, input.workflowEvidence),
-    failedPersonaCount: findings.length,
+    ...finalizePacket(
+      `${header}\n\n${section.text}`,
+      truncated || section.truncated,
+      policyInstruction,
+      input.workflowEvidence,
+    ),
+    // Every unresolved finding the gate saw, listed or not: the count is the gate's, and a
+    // finding left out of the text to save bytes is still one the session has to fix.
+    failedPersonaCount: section.shown + section.omitted,
   };
 }
 
@@ -604,7 +584,7 @@ export function renderUnchangedEvidenceNudge(
 ): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -680,7 +660,7 @@ export function renderParkedRepairReminder(
 ): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -790,7 +770,7 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
 export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };

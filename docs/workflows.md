@@ -2518,6 +2518,18 @@ head, records an immutable attempt-free bypass submission, and reviews that head
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
 
+The packet's findings section comes from the same renderer Foreman's review follow-through uses
+(`src/server/inspector/findings-text.ts`). Each finding carries one posted marker from
+`findingPublication`: posted on GitHub with its comment link, posted in the review summary,
+posted with the link not captured yet, being posted now, not posted and so only in this message,
+or not posted again with a link to the earlier version that was. A draft whose earlier version was
+posted is never called the only copy. Fields still clip at the per-field limit. Past the payload
+limit the packet drops whole findings from the tail, lowest severity first, and ends the section
+with how many it left out. It never cuts a finding part way, except the highest-severity one when
+even that cannot fit, whose body is shortened. The packet keeps its own header and closing, and its
+failed count is every unresolved finding, listed or not. A prepared packet keeps the bytes and hash
+it was frozen with: delivery and restart recovery send those stored bytes and never render it again.
+
 If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
 itself never pushes or opens a pull request. When the run reviews an attached repository the
