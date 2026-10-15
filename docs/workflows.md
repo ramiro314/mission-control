@@ -2518,8 +2518,10 @@ head, records an immutable attempt-free bypass submission, and reviews that head
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
 
-The packet's findings section comes from the same renderer Foreman's review follow-through uses
-(`src/server/inspector/findings-text.ts`). Each finding carries one posted marker from
+The packet's findings section comes from a pure, shared renderer
+(`src/server/inspector/findings-text.ts`). The packet is its first caller. The renderer imports
+nothing that reaches the database or the network, so Foreman's review follow-through can adopt it
+in a later change. Each finding carries one posted marker from
 `findingPublication`: posted on GitHub with its comment link, posted in the review summary,
 posted with the link not captured yet, being posted now, not posted and so only in this message,
 or not posted again with a link to the earlier version that was. A draft whose earlier version was

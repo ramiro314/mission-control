@@ -342,8 +342,9 @@ test("at every budget, each listed finding is whole and the rest are counted", (
   }
 });
 
-// Distinct from the packet-level control test in `workflow-security.test.ts`: Foreman's relay
-// types this section without `finalizePacket`, so the section must be safe on its own.
+// Distinct from the packet-level control test in `workflow-security.test.ts`: a caller such
+// as Foreman's relay, once it adopts the renderer, types this section without
+// `finalizePacket`, so the section must be safe on its own.
 test("the section is sanitized for a terminal before it is measured", () => {
   const section = renderInspectorFindings([
     finding("ctl", "major", {
@@ -362,8 +363,9 @@ test("the section is sanitized for a terminal before it is measured", () => {
   assert.match(section.text, /Bodywithcontrols\nand  tabs/);
 });
 
-// Foreman's worker talks to the daemon over HTTP and never touches SQLite. If this module
-// ever reaches the database or a network client, Foreman would load that too.
+// Foreman's worker talks to the daemon over HTTP and never touches SQLite, and its relay is
+// to adopt this renderer. If this module ever reaches the database or a network client,
+// that adoption would load it too.
 test("the renderer's import graph reaches no database or network module", () => {
   const entry = join(repoRoot, "src/server/inspector/findings-text.ts");
   const seen = new Set<string>();

@@ -1,11 +1,12 @@
 // Text that is about to be typed into somebody's terminal pane: the control-byte scrub and
 // the byte-bounded field clip every daemon-composed packet applies.
 //
-// Kept apart from `feedback.ts` on purpose. Foreman's worker renders Inspector findings
-// through `../inspector/findings-text.ts`, which needs exactly these rules and must not load
-// the workflow packet module (and with it the execution-authorization contract) to get them.
-// One definition, so a relay and a workflow packet can never scrub or clip the same finding
-// differently. Its imports stay pure: a browser-safe shared limit and a byte helper.
+// Kept apart from `feedback.ts` on purpose. `../inspector/findings-text.ts` needs exactly
+// these rules and is meant to be loadable by Foreman's worker, which must not pull in the
+// workflow packet module (and with it the execution-authorization contract) to get them.
+// One definition, so the workflow packet and Foreman's relay, once it adopts the renderer,
+// can never scrub or clip the same finding differently. Its imports stay pure: a
+// browser-safe shared limit and a byte helper.
 
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import { utf8Bytes } from "../util/utf8.ts";

@@ -1,12 +1,13 @@
-// The findings section of every message that hands GitHub Inspector findings to a session.
+// The findings section of a message that hands GitHub Inspector findings to a session.
 //
-// The workflow `inspector_feedback` packet and Foreman's review follow-through both type
-// findings into a pane, and they must say the same thing about the same finding: how severe
-// it is, where it is, whether it is on GitHub, and what it says. Each caller keeps its own
-// header and closing; this module owns only the findings in between.
+// Its first and, today, only caller is the workflow `inspector_feedback` packet. Foreman's
+// review follow-through is to adopt it in a later change, so the two say the same thing
+// about the same finding: how severe it is, where it is, whether it is on GitHub, and what
+// it says. Each caller keeps its own header and closing; this module owns only the findings
+// in between.
 //
 // Pure, and deliberately so. It imports nothing that opens the database or the network, so
-// Foreman's worker (which never touches SQLite) loads it as readily as the daemon does.
+// Foreman's worker (which never touches SQLite) can load it as readily as the daemon does.
 // `test/inspector-findings-text.test.ts` walks its import graph to keep it that way.
 
 import type { InspectorComment } from "@shared/types.ts";
