@@ -18,6 +18,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { WorktreeClaimSchema } = await import("../src/shared/protocol.ts");
 
@@ -106,7 +107,7 @@ test("a failed claim launches the task anyway and leads turn one with the failin
   assert.match(prompt, /Failing step 1 of 1: `.*node -e .*` exited with code 1\./);
   assert.match(prompt, /YN0035: the registry answered 401/);
   assert.ok(
-    prompt.endsWith(withTaskKindContract(task, "fix the build")),
+    prompt.endsWith(withTaskKindContract(task, "fix the build", { planDiscovery: await taskPlanDiscovery(task) })),
     "the operator's request and the kind contract follow the note unchanged",
   );
   assert.equal(supervisor.starts[0]!.acceptedGoalPrompt, "fix the build", "the card Goal stays the human request");
@@ -123,5 +124,9 @@ test("a successful claim leaves turn one exactly as it was", async () => {
   await dispatcherFor(registry, supervisor, sha, `process.exit(0)`).dispatch("task-claim-ok");
   const task = registry.getTask("task-claim-ok")!;
   assert.equal(task.status, "running", task.error ?? "");
-  assert.equal(supervisor.starts[0]!.prompt, withTaskKindContract(task, "ship it"));
+  // Turn one as every dispatch composes it, plan discovery included (upstream #1177).
+  assert.equal(
+    supervisor.starts[0]!.prompt,
+    withTaskKindContract(task, "ship it", { planDiscovery: await taskPlanDiscovery(task) }),
+  );
 });
