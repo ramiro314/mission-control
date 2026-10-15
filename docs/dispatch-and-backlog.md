@@ -530,9 +530,10 @@ verifier expects no ticket or phase tasks from the shaping turn, and its default
 be added to the backlog, [converted from a backlog card](#shape-a-shelved-task) with **shape
 this**, and filed by a task source whose default kind is shape, but Foreman's backlog autopilot never
 launches one, because the interview needs you there to answer it. Recurring Missions cannot create
-shape tasks. The MCP `create_task` tool can, when you ask a session to file one: it takes `ship`
-(the default), `bugfix`, `scout`, `plan` or `shape`, and the filed task obeys its kind's backlog
-rules, so a shape task waits on the board for you to launch it. The plan kind is unchanged.
+shape tasks. The MCP `create_task` tool can, when you ask a session to file one: it takes any kind
+the backlog accepts (`ship`, the default, or `scout`, `plan`, `pipeline`, `bugfix`, `document` or
+`shape`; never `chat`), and the filed task obeys its kind's backlog rules, so a shape task waits on
+the board for you to launch it. The plan kind is unchanged.
 
 **A shape task under local plan storage.** Shape follows **Plan storage** in Settings > Skills
 exactly as plan does, pinning the policy when the task is created. Under **Local**, the plan is
