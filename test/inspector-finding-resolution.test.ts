@@ -651,7 +651,7 @@ test("an accepted live review stamps posted_at on every row it carried", async (
     assert.equal(row.status, "open", `${row.title} was promoted`);
     assert.ok(row.postedAt != null && row.postedAt >= before && row.postedAt <= after,
       `${row.title}: posted_at ${row.postedAt} is the confirmation time`);
-    assert.equal(row.githubUrl, null, "the link is captured by a later ticket, not here");
+    assert.equal(row.githubUrl, null, "posted after this tick read its snapshot, so the link lands on the next tick");
     assert.equal(row.legacyPosted, null);
     assert.equal(findingPublication(row).state, "posted");
   }

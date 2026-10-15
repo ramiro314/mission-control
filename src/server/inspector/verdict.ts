@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { InspectorComment, InspectorMode, InspectorSeverity } from "@shared/types.ts";
 import { nullAsAbsent } from "../llm/json-schema.ts";
 import type { CommentableLines } from "./diff-lines.ts";
-import { BODY_ONLY_FINDINGS_MARKER, fingerprint } from "./marker.ts";
+import { BODY_ONLY_FINDINGS_MARKER, fingerprint, reviewHeader } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 
 // What the reviewer is allowed to say, and what we actually do with it.
@@ -311,7 +311,7 @@ function reviewBody(
   mode: InspectorMode,
   round: number,
 ): string {
-  const parts = [`**⌕ GitHub Inspector** · round ${round}`, "", summary.trim()];
+  const parts = [reviewHeader(round), "", summary.trim()];
   if (demoted.length) {
     parts.push("", "---", "");
     for (const d of demoted) {

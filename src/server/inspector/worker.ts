@@ -54,6 +54,9 @@ import {
   hasBodyOnlyFindings,
   fetchDiff,
   fetchPr,
+  fetchReviewPage,
+  fetchThreadPage,
+  findingUrls,
   ourThreads,
   ownedThreadsResolved,
   parsePrUrl,
@@ -62,11 +65,13 @@ import {
   renderComment,
   replyToComment,
   resolveThread,
+  snapshotLinkSources,
   wasRefused,
 } from "./github.ts";
 import type {
   GhResult,
   GitHubRepositoryIdentity,
+  LinkSources,
   PrSnapshot,
   ThreadSnapshot,
 } from "./github.ts";
@@ -630,6 +635,7 @@ async function processPr(
   }
 
   const rows = existingByFingerprint(pr.key);
+  recordFindingUrls(rows, snapshotLinkSources(s), login);
   const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
   const post = posture === "live";
   const readDiff = diffOncePerTick(dir, pr);
@@ -847,13 +853,14 @@ async function publishCleanReview(
   if (fresh.value.state !== "OPEN" || fresh.value.headSha !== snapshot.headSha) return false;
   const input = { cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: fresh.value, login,
     headSha: snapshot.headSha, resolvedThreadIds };
-  const threads = await ownedThreadsResolved(input);
+  const pages = linkCapturingLoaders(dir, pr, fresh.value, rows, login);
+  const threads = await ownedThreadsResolved(input, pages.threads);
   if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", now, tick);
   if (!threads.value) return false;
-  const bodyOnly = await hasBodyOnlyFindings(input);
+  const bodyOnly = await hasBodyOnlyFindings(input, pages.reviews);
   if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", now, tick);
   if (bodyOnly.value) return false;
-  const existing = await cleanReviewExists(input);
+  const existing = await cleanReviewExists(input, pages.reviews);
   if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", now, tick);
   if (!existing.value) {
     const body = renderCleanReview(formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round: pr.round }), pr.round);
@@ -1095,6 +1102,72 @@ async function reviewRound(
   await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
     post, login, now, tick, resolvedThreadIds);
   return true;
+}
+
+/**
+ * Write each finding's GitHub link, read from the snapshot this tick already fetched.
+ *
+ * Runs on every tick that knows its login, before reconciliation and before any write
+ * below, so that the map those writes copy from already holds the link. That matters for
+ * a round that raises a finding again: its row is built from `prior.githubUrl`, so the
+ * earlier comment's link survives as the "posted earlier" link.
+ *
+ * A review posted later in this same tick is not in this snapshot, so its links land on
+ * the next tick. Until then the finding reads as posted, without a link.
+ *
+ * `updatedAt` is left alone on purpose. Learning where a finding lives on GitHub does not
+ * change the finding, and the Completion pane's "Last change" and the prompt's ordering
+ * both read that field.
+ */
+function recordFindingUrls(rows: Map<string, InspectorComment>, sources: LinkSources, login: string): void {
+  for (const [fp, url] of findingUrls(sources, login, rows.values())) {
+    const next: InspectorComment = { ...rows.get(fp)!, githubUrl: url };
+    rows.set(fp, next);
+    upsertInspectorComment(next);
+  }
+}
+
+/**
+ * Page loaders for the clean-review traversals that also take the links on every page.
+ *
+ * The traversals already read past the snapshot's first page, and each loader calls the
+ * same fetcher with the same arguments as the default one, so no call is added. What each
+ * page adds is a link for a finding whose thread or review the first page did not hold.
+ * Every page read is pooled with the re-read snapshot, so `findingUrls` judges the whole of
+ * what this tick has seen, and a page that ends its traversal marks that kind complete.
+ */
+function linkCapturingLoaders(
+  dir: string,
+  pr: InspectorPr,
+  fresh: PrSnapshot,
+  rows: Map<string, InspectorComment>,
+  login: string,
+): {
+  threads: (after: string) => ReturnType<typeof fetchThreadPage>;
+  reviews: (before: string) => ReturnType<typeof fetchReviewPage>;
+} {
+  const seen = snapshotLinkSources(fresh);
+  recordFindingUrls(rows, seen, login);
+  return {
+    threads: async (after) => {
+      const page = await fetchThreadPage(dir, pr.owner, pr.repo, pr.number, after);
+      if (page.ok && page.value) {
+        seen.threads = [...seen.threads, ...page.value.threads];
+        if (!page.value.pageInfo.hasNextPage) seen.threadsComplete = true;
+        recordFindingUrls(rows, seen, login);
+      }
+      return page;
+    },
+    reviews: async (before) => {
+      const page = await fetchReviewPage(dir, pr.owner, pr.repo, pr.number, before);
+      if (page.ok && page.value) {
+        seen.reviews = [...seen.reviews, ...page.value.reviews];
+        if (!page.value.pageInfo.hasPreviousPage) seen.reviewsComplete = true;
+        recordFindingUrls(rows, seen, login);
+      }
+      return page;
+    },
+  };
 }
 
 /** Close one ledger row, in the map we are working from as well as in the DB. */
