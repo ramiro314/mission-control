@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ForemanConfig,
+  InspectorFindingsResponse,
   PromptedCompletionDisposition,
   PromptedRecoveryClaim,
 } from "@shared/protocol.ts";
@@ -19,7 +20,6 @@ import { taskCompletionContract } from "@shared/task-completion.ts";
 import { planPublicationStillCurrent, promptedWrapupPlanPublication, withPlanPublicationGuard } from "./plan-publication.ts";
 import type {
   AgentType,
-  InspectorComment,
   PromptedCompletionGap,
   PromptedDirectHandoffKind,
   ReviewItem,
@@ -100,12 +100,7 @@ import {
   decideReviewFollowup,
   followupPrs,
 } from "./review-followup.ts";
-import type {
-  FollowupMark,
-  FollowupPr,
-  ReviewFollowupDecision,
-  ReviewFollowupInput,
-} from "./review-followup.ts";
+import type { FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -970,6 +965,18 @@ function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string,
  * Immediately before each send it re-reads the session and config and repeats the same
  * decision against the fresh fleet.
  *
+ * A nudge that includes findings needs their text, which the snapshot does not carry. That
+ * read happens BEFORE the freshness recheck, never after it: every request between the
+ * recheck and the inject is a window in which the session can start working, need a human,
+ * gain a queue or a workflow, and a gate decided on the older state would not see it. So the
+ * order is read the findings, re-read the fleet, decide once on both, then type. The fresh
+ * decision also refuses findings read for a different Inspector round than the snapshot it
+ * stamps (see `ReviewFollowupInput.findingsRound`).
+ *
+ * A failed findings read is logged and holds: nothing is stamped or typed, and the next pass
+ * reads again. Findings resolved by the time of the read drop out of the decision; with
+ * nothing else new to say it skips, again without stamping.
+ *
  * Returns the ids of the sessions whose pane it claimed this pass - a send that landed,
  * or one that threw but MAY have reached the composer - so the caller can both judge
  * progress (a non-empty set means come straight back) and keep the per-target loop from
@@ -981,9 +988,10 @@ function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string,
  * cannot spin either, because its marker is kept, so the next pass sees "already nudged"
  * and does nothing.
  */
-async function runReviewFollowup(
+export async function runReviewFollowup(
   client: ForemanClient,
   cfg: ForemanConfig,
+  holdsLease: () => boolean = () => isLeader,
 ): Promise<Set<string>> {
   const nudged = new Set<string>();
 
@@ -1045,15 +1053,23 @@ async function runReviewFollowup(
       // freshness recheck: a PR that turned mergeable in between has no open episode, and
       // the daemon ignores the escalation. The next pull request is still considered.
       if (decision.kind === "escalate") {
-        await escalateConflict(client, session, marks, decision, () => isLeader);
+        await escalateConflict(client, session, marks, decision, holdsLease);
         continue;
+      }
+
+      // The findings' text, read before the freshness recheck below so that recheck is the
+      // last thing observed before typing. A failed read holds the whole session this pass.
+      let read: InspectorFindingsResponse | null = null;
+      if (decision.kind === "read-findings") {
+        read = await readReviewFindings(client, session, decision.prKey);
+        if (!read) break;
       }
 
       const [freshCfg, freshSessions] = await Promise.all([
         client.getConfig().catch(() => null),
         client.sessions().catch(() => null),
       ]);
-      if (!freshCfg || !freshSessions || !isLeader) break;
+      if (!freshCfg || !freshSessions || !holdsLease()) break;
 
       const fresh = resolveLiveSession(freshSessions, noteKeyOf(session));
       if (!fresh || paneKeyOf(fresh) !== paneKeyOf(session)) break;
@@ -1078,7 +1094,7 @@ async function runReviewFollowup(
       const freshMarks = observeFollowupMarks(fresh.id, freshPrs);
       const freshMark = freshMarks.get(freshPr.prKey) ?? null;
 
-      const freshInput: ReviewFollowupInput = {
+      const freshDecision = decideReviewFollowup({
         session: fresh,
         pr: freshPr,
         bucket: reportBucket(fresh, freshSessions),
@@ -1092,19 +1108,13 @@ async function runReviewFollowup(
           settleMs: SETTLE_MS,
         },
         now: Date.now(),
-      };
-      const freshDecision = decideReviewFollowup(freshInput);
-      // An escalation that appeared between the two reads is the next pass's to send.
-      if (freshDecision.kind !== "nudge" && freshDecision.kind !== "read-findings") break;
+        ...(read ? { findings: read.findings, findingsRound: read.pr.round } : {}),
+      });
+      // An escalation that appeared between the two reads is the next pass's to send, and so
+      // are findings that appeared in it: this pass read none, so it has no text to type.
+      if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 
-      const outcome = await relayReviewFollowup(
-        client,
-        fresh,
-        freshMarks,
-        freshDecision,
-        (findings) => decideReviewFollowup({ ...freshInput, findings }),
-        () => isLeader,
-      );
+      const outcome = await deliverReviewFollowup(client, fresh, freshMarks, freshDecision);
       if (outcome === "claimed") {
         nudged.add(session.id);
         nudged.add(fresh.id);
@@ -1116,58 +1126,41 @@ async function runReviewFollowup(
 }
 
 /**
- * What one relay did to the session's pane. `claimed`: the follow-up landed, or may have, so
- * the pane is this pass's. `free`: nothing reached the pane - the daemon refused the
- * delivery, or the relay held before typing - so the target loop may act on it now.
+ * One pull request's findings for the relay, or null when the read failed. Logged, so a
+ * held follow-through says why; the caller stamps and types nothing on null.
  */
-export type ReviewFollowupRelay = "claimed" | "free";
+async function readReviewFindings(
+  client: ForemanClient,
+  session: Session,
+  prKey: string,
+): Promise<InspectorFindingsResponse | null> {
+  try {
+    return await client.inspectorFindings(prKey);
+  } catch (err) {
+    log(
+      `${session.name}: could not read GitHub Inspector's findings on ${prKey} - ` +
+        `holding the PR follow-through for the next pass (${String(err)})`,
+    );
+    return null;
+  }
+}
 
 /**
- * Type one review follow-up into a session that has passed the freshness recheck.
+ * Type one review follow-up into a session that has passed the freshness recheck. `claimed`:
+ * the follow-up landed, or may have, so the pane is this pass's. `free`: the daemon refused
+ * the delivery, so the target loop may act on the pane now.
  *
- * A decision that includes findings has not got their text yet, so this reads them through
- * the daemon's findings route and decides again with them (`redecide`, the same input plus
- * the findings). Every gate runs again on that second call, and its answer is the one typed.
- *
- *  - The read fails: logged, the mark is not stamped and nothing is typed. The next pass
- *    reads again, so the round is not recorded as relayed until it actually is.
- *  - The read comes back with nothing unresolved: the findings resolved between the
- *    snapshot and the read. The findings part is dropped; with nothing else new to say, the
- *    decision is a skip and this holds without stamping.
- *
- * Then, as before the findings were typed: stamp BEFORE the inject, and retract ONLY on
- * positive evidence nothing landed - the `recentlyActed` discipline. A request whose outcome
- * we never learn keeps the stamp, because a lost response must not become a second nudge; a
- * delivery the daemon reports as refused restores the pre-nudge mark to retry on a later pass.
+ * Stamp BEFORE the inject, and retract ONLY on positive evidence nothing landed - the
+ * `recentlyActed` discipline. A request whose outcome we never learn keeps the stamp, because
+ * a lost response must not become a second nudge; a delivery the daemon reports as refused
+ * restores the pre-nudge mark to retry on a later pass.
  */
-export async function relayReviewFollowup(
+async function deliverReviewFollowup(
   client: ForemanClient,
   session: Session,
   marks: Map<string, FollowupMark>,
-  decision: Extract<ReviewFollowupDecision, { kind: "nudge" | "read-findings" }>,
-  redecide: (findings: readonly InspectorComment[]) => ReviewFollowupDecision,
-  holdsLease: () => boolean,
-): Promise<ReviewFollowupRelay> {
-  let nudge: Extract<ReviewFollowupDecision, { kind: "nudge" }>;
-  if (decision.kind === "read-findings") {
-    let findings: readonly InspectorComment[];
-    try {
-      findings = (await client.inspectorFindings(decision.prKey)).findings;
-    } catch (err) {
-      log(
-        `${session.name}: could not read GitHub Inspector's findings on ${decision.prKey} - ` +
-          `holding the PR follow-through for the next pass (${String(err)})`,
-      );
-      return "free";
-    }
-    const read = redecide(findings);
-    if (read.kind !== "nudge") return "free";
-    nudge = read;
-  } else {
-    nudge = decision;
-  }
-  if (!holdsLease()) return "free";
-
+  nudge: Extract<ReviewFollowupDecision, { kind: "nudge" }>,
+): Promise<"claimed" | "free"> {
   const prior = marks.get(nudge.prKey) ?? null;
   marks.set(nudge.prKey, nudge.mark);
   try {

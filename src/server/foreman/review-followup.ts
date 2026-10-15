@@ -35,9 +35,15 @@ import { utf8Bytes } from "../util/utf8.ts";
 // The snapshot counts findings but does not carry their text, and the relay types that text
 // into the session, because a finding the Inspector drafted in dry run is on no pull request
 // for the agent to read. So a nudge that includes findings comes back as `read-findings`. The
-// worker reads them through the daemon's findings route and calls this again with them as
-// `findings`, which re-runs every gate below on the same inputs plus that data. The decision
-// itself still does no I/O.
+// worker reads them through the daemon's findings route, THEN re-reads the session, config and
+// workflow ownership, and calls this again with that fresh snapshot plus the findings. Every
+// gate below therefore runs on state observed after the read, never on state the read may have
+// outlived. The decision itself still does no I/O.
+//
+// The read and the fresh snapshot are two requests, so the Inspector can finish a round between
+// them. `findingsRound` is the round the read answered for, and a nudge that carries findings
+// goes out only when it is the snapshot's round too: the round it stamps is the round whose
+// findings it typed, so no round is relayed twice and none is stamped with another's set.
 //
 // ONE SESSION, N PULL REQUESTS
 //
@@ -150,6 +156,12 @@ export interface ReviewFollowupInput {
    * count as the answer to "are there findings to relay".
    */
   findings?: readonly InspectorComment[];
+  /**
+   * The Inspector round the findings read answered for, from the route's `pr.round`. Required
+   * with `findings`: a nudge carrying findings is refused unless it equals the snapshot's
+   * round, so a read that raced a new round is never stamped as the old one.
+   */
+  findingsRound?: number;
 }
 
 export type ReviewFollowupDecision =
@@ -539,6 +551,13 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const conflictNew =
     open.conflicting && pr.headSha !== cur.conflictHead && cur.conflictNudges < CONFLICT_NUDGE_CAP;
   if (!findingsNew && !ciNew && !conflictNew) return skip("already nudged this round of feedback");
+
+  // The findings read and this snapshot must describe the same Inspector round, or the payload
+  // would carry one round's set under another round's stamp. Nothing is stamped, so the next
+  // pass, whose snapshot has caught up, relays the round exactly once.
+  if (open.findings && read && input.findingsRound !== round) {
+    return skip("the findings read and the snapshot are from different GitHub Inspector rounds");
+  }
 
   // Stamp every currently-open dimension as relayed. The payload covers everything open, so
   // once it lands the agent has heard about all of it - not only whichever one was new. A

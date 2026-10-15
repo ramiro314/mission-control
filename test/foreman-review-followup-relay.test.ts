@@ -3,36 +3,45 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { InspectorFindingsResponse } from "../src/shared/protocol.ts";
+import type { ForemanConfig, InspectorFindingsResponse } from "../src/shared/protocol.ts";
 import type { InspectorComment, InspectorSummary, Session } from "../src/shared/types.ts";
-import type {
-  FollowupMark,
-  ReviewFollowupDecision,
-  ReviewFollowupInput,
-} from "../src/server/foreman/review-followup.ts";
+import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
 
-// What is at stake: the worker half of the findings relay. The decision core says a nudge
-// includes findings; `relayReviewFollowup` is what reads their text through the daemon and
-// types it, and what holds - no stamp, nothing typed - when that read cannot be trusted. A
-// round stamped on a failed read would never be relayed, and the session would never hear
-// about a finding that exists only in Mission Control.
+// What is at stake: the worker half of the findings relay, driven through the real pass. The
+// decision core says a nudge includes findings; `runReviewFollowup` reads their text through
+// the daemon and types it. Two things can go wrong in that read, and both are pinned here:
+//
+//  - it fails, and a round stamped anyway would never be relayed, so the session would never
+//    hear about a finding that exists only in Mission Control;
+//  - it takes time, and anything the pass observed before it may be stale after it. The
+//    session can start working, need a human or gain a workflow, and the Inspector can finish
+//    a round. Gates decided on the pre-read snapshot would type across all of that.
 
 // Isolate state before the worker's imports can resolve a home.
 const home = mkdtempSync(join(tmpdir(), "mission-foreman-review-relay-"));
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { relayReviewFollowup } = await import("../src/server/foreman/worker.ts");
+const { runReviewFollowup } = await import("../src/server/foreman/worker.ts");
 const { ForemanClient } = await import("../src/server/foreman/client.ts");
 const { InjectError } = await import("../src/server/foreman/queue-apply.ts");
-const { decideReviewFollowup, followupPrs } = await import("../src/server/foreman/review-followup.ts");
 const { mkSession } = await import("./helpers/session-fixture.ts");
 
 type Client = InstanceType<typeof ForemanClient>;
 
-const NOW = 10_000_000;
-const KEY = "owner/repo#7";
+const REPO = "/work/alpha";
 const PR_URL = "https://github.com/owner/repo/pull/7";
+const KEY = "owner/repo#7";
+const LEADER = () => true;
+
+const CFG = {
+  enabled: true,
+  mode: "live",
+  repoAllowlist: [REPO],
+  trackReviewFeedback: true,
+  trackCiFailures: true,
+  trackMergeConflicts: true,
+} as ForemanConfig;
 
 function summary(over: Partial<InspectorSummary> = {}): InspectorSummary {
   return {
@@ -42,7 +51,7 @@ function summary(over: Partial<InspectorSummary> = {}): InspectorSummary {
     open: 1,
     postedOpen: 0,
     round: 3,
-    lastReviewedAt: NOW - 60_000,
+    lastReviewedAt: Date.now() - 60_000,
     failed: false,
     ...over,
   };
@@ -66,19 +75,22 @@ function draft(over: Partial<InspectorComment> = {}): InspectorComment {
     postedAt: null,
     githubUrl: null,
     legacyPosted: null,
-    createdAt: NOW - 60_000,
-    updatedAt: NOW - 60_000,
+    createdAt: 0,
+    updatedAt: 0,
     ...over,
   };
 }
 
 /** Parked on an open PR whose Inspector holds one dry-run draft: the case this ticket opens. */
-function parked(over: Partial<Session> = {}): Session {
+function parked(id: string, over: Partial<Session> = {}): Session {
   return mkSession({
-    id: "s1",
-    name: "atlas",
+    id,
+    name: id,
+    agentSessionId: `agent-${id}`,
     state: "idle",
-    lastActivity: NOW - 60_000,
+    cwd: REPO,
+    repoRoot: REPO,
+    lastActivity: Date.now() - 60_000,
     prUrl: PR_URL,
     prNumber: 7,
     prState: "open",
@@ -87,181 +99,200 @@ function parked(over: Partial<Session> = {}): Session {
   });
 }
 
-function input(session: Session): ReviewFollowupInput {
-  return {
-    session,
-    pr: followupPrs(session)[0] ?? null,
-    bucket: "idle",
-    mayActLive: true,
-    workflowOwnsSession: false,
-    mark: null,
-    cfg: { trackReviewComments: true, trackCiFailures: true, trackMergeConflicts: true, settleMs: 10_000 },
-    now: NOW,
-  };
+/** The route's answer, which names the Inspector round it read. */
+function response(findings: InspectorComment[], round = 3): InspectorFindingsResponse {
+  return { pr: { round } as InspectorFindingsResponse["pr"], findings };
 }
 
-/** A client that records what the worker asked of it. */
-function fakeClient(opts: {
+/**
+ * A daemon whose answers can change once the findings have been read, which is the window
+ * the pass has to survive. `calls` records the order the worker asked in.
+ */
+function fakeDaemon(opts: {
+  sessions: (afterRead: boolean) => Session[];
   findings: () => Promise<InspectorFindingsResponse>;
+  workflowRuns?: (afterRead: boolean) => Array<{ status: string }>;
   inject?: () => Promise<void>;
 }) {
-  const reads: string[] = [];
+  let afterRead = false;
+  const calls: string[] = [];
   const injected: Array<{ id: string; text: string }> = [];
   const client = {
+    sessions: async () => {
+      calls.push("sessions");
+      return opts.sessions(afterRead);
+    },
+    getConfig: async () => CFG,
+    workflowRuns: async () => {
+      calls.push("workflowRuns");
+      return opts.workflowRuns?.(afterRead) ?? [];
+    },
     inspectorFindings: async (prKey: string) => {
-      reads.push(prKey);
-      return opts.findings();
+      calls.push(`findings:${prKey}`);
+      try {
+        return await opts.findings();
+      } finally {
+        afterRead = true;
+      }
     },
     inject: async (id: string, text: string) => {
+      calls.push("inject");
       injected.push({ id, text });
       await (opts.inject ?? (async () => {}))();
     },
   } as unknown as Client;
-  return { client, reads, injected };
+  return { client, calls, injected };
 }
 
-function response(findings: InspectorComment[]): InspectorFindingsResponse {
-  // The relay reads only `findings`; the inspection row beside them is the modal's.
-  return { pr: {} as InspectorFindingsResponse["pr"], findings };
-}
+test("a dry-run draft is read through the daemon, then the fleet is re-read, then it is typed", async () => {
+  const fake = fakeDaemon({ sessions: () => [parked("draft")], findings: async () => response([draft()]) });
+  const claimed = await runReviewFollowup(fake.client, CFG, LEADER);
 
-/** Run the relay the way `runReviewFollowup` does after its freshness recheck. */
-async function relay(session: Session, client: Client, marks = new Map<string, FollowupMark>()) {
-  const base = input(session);
-  const decision = decideReviewFollowup(base);
-  assert.ok(decision.kind === "nudge" || decision.kind === "read-findings", decision.kind);
-  const outcome = await relayReviewFollowup(
-    client,
-    session,
-    marks,
-    decision as Extract<ReviewFollowupDecision, { kind: "nudge" | "read-findings" }>,
-    (findings) => decideReviewFollowup({ ...base, findings }),
-    () => true,
-  );
-  return { decision, outcome, marks };
-}
-
-test("a dry-run draft is read through the daemon and typed, marked not posted", async () => {
-  const fake = fakeClient({ findings: async () => response([draft()]) });
-  const { decision, outcome, marks } = await relay(parked(), fake.client);
-
-  assert.equal(decision.kind, "read-findings", "the decision asks for the text before typing");
-  assert.deepEqual(fake.reads, [KEY]);
-  assert.equal(outcome, "claimed");
-  assert.equal(fake.injected.length, 1);
+  assert.deepEqual([...claimed], ["draft"]);
+  // The read comes before the freshness recheck, so nothing but the inject follows the recheck.
+  assert.deepEqual(fake.calls, [
+    "sessions",
+    "workflowRuns",
+    `findings:${KEY}`,
+    "sessions",
+    "workflowRuns",
+    "inject",
+  ]);
   const { id, text } = fake.injected[0]!;
-  assert.equal(id, "s1");
+  assert.equal(id, "draft");
   assert.match(text, /^PR #7 needs follow-through: GitHub Inspector has 1 unresolved finding on it \(0 posted on GitHub, 1 not posted\)\./);
   assert.match(text, /## MAJOR - Null check missing/);
   assert.match(text, /Not posted on GitHub\. This message is the only copy\./);
   assert.match(text, /The handler dereferences `user` before checking it\./);
   assert.doesNotMatch(text, /gh pr view/);
-  assert.equal(marks.get(KEY)?.findingsRound, 3, "the round is stamped once the relay lands");
+
+  // The round was stamped: the same round is not relayed again.
+  const again = fakeDaemon({ sessions: () => [parked("draft")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(again.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(again.injected, []);
 });
 
-test("a failed read is held: no stamp and nothing typed, so the next pass reads again", async () => {
-  const fake = fakeClient({ findings: async () => Promise.reject(new Error("GET /api/inspector/findings -> 503")) });
-  const prior: FollowupMark = {
-    prKey: KEY,
-    findingsRound: 2,
-    ciNudged: false,
-    conflictHead: null,
-    conflictNudges: 0,
-    conflictNudgedAt: null,
-    conflictEscalated: false,
-    conflictEscalatedAt: null,
-  };
-  const marks = new Map([[KEY, prior]]);
-  const { outcome } = await relay(parked(), fake.client, marks);
+test("a session that starts working during the read is not typed into, and the round stays unrelayed", async () => {
+  let working = true;
+  const fake = fakeDaemon({
+    sessions: (afterRead) => [parked("busy", afterRead && working ? { state: "working", lastActivity: Date.now() } : {})],
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, [], "the post-read snapshot says working");
 
-  assert.equal(outcome, "free", "nothing reached the pane");
-  assert.deepEqual(fake.injected, []);
-  assert.deepEqual(marks.get(KEY), prior, "round 3 is not recorded as relayed");
-
-  // The next pass, with the daemon answering again, relays round 3.
-  const retry = fakeClient({ findings: async () => response([draft()]) });
-  const again = await relay(parked(), retry.client, marks);
-  assert.equal(again.outcome, "claimed");
-  assert.equal(retry.injected.length, 1);
-  assert.equal(marks.get(KEY)?.findingsRound, 3);
+  // It parks again: the round was never stamped, so it is relayed now.
+  working = false;
+  const later = fakeDaemon({ sessions: () => [parked("busy")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(later.client, CFG, LEADER)).size, 1);
+  assert.equal(later.injected.length, 1);
 });
 
-test("a response the client cannot parse is a failed read too", async () => {
-  // `inspectorFindings` parses with the shared schema and throws on a shape it cannot vouch
-  // for; the relay treats that exactly like a lost request.
-  const fake = fakeClient({ findings: async () => Promise.reject(new Error("Expected array, received null")) });
-  const { outcome, marks } = await relay(parked(), fake.client);
-  assert.equal(outcome, "free");
-  assert.deepEqual(fake.injected, []);
-  assert.equal(marks.size, 0);
+test("a session that comes to need a human, or gains a workflow, during the read is left alone", async () => {
+  const needsYou = fakeDaemon({
+    sessions: (afterRead) => [parked("asks", afterRead ? { state: "awaiting_input" } : {})],
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(needsYou.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(needsYou.injected, []);
+
+  const active = WORKFLOW_RUN_STATUSES.find((s) => !["completed", "cancelled", "failed"].includes(s));
+  assert.ok(active);
+  const owned = fakeDaemon({
+    sessions: () => [parked("owned")],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: active }] : []),
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(owned.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(owned.injected, []);
+});
+
+test("an Inspector round that finishes during the read is held, then relayed exactly once", async () => {
+  // The snapshot still says round 3; the route already answers for round 4. Typing would
+  // stamp round 3 with round 4's findings, and the next pass would relay round 4 again.
+  const raced = fakeDaemon({
+    sessions: () => [parked("race")],
+    findings: async () => response([draft({ round: 4 })], 4),
+  });
+  assert.equal((await runReviewFollowup(raced.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(raced.injected, []);
+
+  const caughtUp = () => [parked("race", { inspector: summary({ round: 4 }) })];
+  const next = fakeDaemon({ sessions: caughtUp, findings: async () => response([draft({ round: 4 })], 4) });
+  assert.equal((await runReviewFollowup(next.client, CFG, LEADER)).size, 1);
+  assert.equal(next.injected.length, 1);
+
+  const after = fakeDaemon({ sessions: caughtUp, findings: async () => response([draft({ round: 4 })], 4) });
+  assert.equal((await runReviewFollowup(after.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(after.injected, [], "round 4 is relayed once");
+});
+
+test("a failed read is held: nothing typed, no stamp, and the next pass relays", async () => {
+  const failed = fakeDaemon({
+    sessions: () => [parked("flaky")],
+    findings: async () => Promise.reject(new Error("GET /api/inspector/findings -> 503")),
+  });
+  assert.equal((await runReviewFollowup(failed.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(failed.injected, []);
+  assert.deepEqual(failed.calls, ["sessions", "workflowRuns", `findings:${KEY}`], "no recheck, no inject");
+
+  // A shape the client's schema refused throws the same way.
+  const unparsed = fakeDaemon({
+    sessions: () => [parked("flaky")],
+    findings: async () => Promise.reject(new Error("Expected array, received null")),
+  });
+  assert.equal((await runReviewFollowup(unparsed.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(unparsed.injected, []);
+
+  const retry = fakeDaemon({ sessions: () => [parked("flaky")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(retry.client, CFG, LEADER)).size, 1);
+  assert.equal(retry.injected.length, 1, "round 3 was never recorded as relayed");
 });
 
 test("findings resolved before the read: nothing else open, so the pass skips without stamping", async () => {
-  const fake = fakeClient({ findings: async () => response([draft({ status: "resolved" })]) });
-  const { outcome, marks } = await relay(parked(), fake.client);
-  assert.equal(outcome, "free");
+  const fake = fakeDaemon({
+    sessions: () => [parked("resolved")],
+    findings: async () => response([draft({ status: "resolved" })]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
   assert.deepEqual(fake.injected, []);
-  assert.equal(marks.size, 0);
 });
 
 test("findings resolved before the read, CI still red: the CI half goes out alone", async () => {
-  const fake = fakeClient({ findings: async () => response([]) });
-  const { outcome, marks } = await relay(parked({ prChecks: "failing" }), fake.client);
-  assert.equal(outcome, "claimed");
-  assert.equal(fake.injected.length, 1);
+  const fake = fakeDaemon({
+    sessions: () => [parked("red", { prChecks: "failing" })],
+    findings: async () => response([]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 1);
   const text = fake.injected[0]!.text;
   assert.match(text, /^PR #7 needs follow-through: its CI checks are failing\./);
   assert.doesNotMatch(text, /unresolved finding/);
-  assert.equal(marks.get(KEY)?.findingsRound, null, "the findings round was not relayed");
-  assert.equal(marks.get(KEY)?.ciNudged, true);
 });
 
-test("a nudge without findings types straight away, with no read", async () => {
-  const fake = fakeClient({ findings: async () => assert.fail("no findings to read") });
-  const { decision, outcome } = await relay(
-    parked({ inspector: summary({ open: 0 }), prChecks: "failing" }),
-    fake.client,
-  );
-  assert.equal(decision.kind, "nudge");
-  assert.equal(outcome, "claimed");
-  assert.deepEqual(fake.reads, []);
-  assert.equal(fake.injected.length, 1);
+test("a nudge without findings types with no read", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [parked("ci", { inspector: summary({ open: 0 }), prChecks: "failing" })],
+    findings: async () => assert.fail("no findings to read"),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 1);
+  assert.ok(!fake.calls.some((call) => call.startsWith("findings:")));
 });
 
-test("a delivery the daemon refused restores the mark; one that may have landed keeps it", async () => {
-  const refused = fakeClient({
+test("a delivery the daemon refused frees the pane and leaves the round to retry", async () => {
+  const refused = fakeDaemon({
+    sessions: () => [parked("gone")],
     findings: async () => response([draft()]),
     inject: async () => Promise.reject(new InjectError("pane gone", false)),
   });
-  const first = await relay(parked(), refused.client);
-  assert.equal(first.outcome, "free");
-  assert.equal(first.marks.size, 0, "no mark existed before, so none is left behind");
+  assert.equal((await runReviewFollowup(refused.client, CFG, LEADER)).size, 0);
 
-  const lost = fakeClient({
-    findings: async () => response([draft()]),
-    inject: async () => Promise.reject(new Error("socket hang up")),
-  });
-  const second = await relay(parked(), lost.client);
-  assert.equal(second.outcome, "claimed");
-  assert.equal(second.marks.get(KEY)?.findingsRound, 3, "a lost response must not become a second nudge");
+  const retry = fakeDaemon({ sessions: () => [parked("gone")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(retry.client, CFG, LEADER)).size, 1);
+  assert.equal(retry.injected.length, 1);
 });
 
-test("a worker that lost the lease reads but types nothing and stamps nothing", async () => {
-  const fake = fakeClient({ findings: async () => response([draft()]) });
-  const session = parked();
-  const base = input(session);
-  const decision = decideReviewFollowup(base);
-  assert.equal(decision.kind, "read-findings");
-  const marks = new Map<string, FollowupMark>();
-  const outcome = await relayReviewFollowup(
-    fake.client,
-    session,
-    marks,
-    decision as Extract<ReviewFollowupDecision, { kind: "read-findings" }>,
-    (findings) => decideReviewFollowup({ ...base, findings }),
-    () => false,
-  );
-  assert.equal(outcome, "free");
+test("a worker that lost the lease types nothing", async () => {
+  const fake = fakeDaemon({ sessions: () => [parked("follower")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(fake.client, CFG, () => false)).size, 0);
   assert.deepEqual(fake.injected, []);
-  assert.equal(marks.size, 0);
 });

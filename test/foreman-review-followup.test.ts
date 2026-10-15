@@ -174,7 +174,8 @@ function findingsFor(pr: FollowupPr | null): InspectorComment[] {
 /**
  * Decide as the worker does once it has read the findings. A case that names `findings`,
  * even as undefined, gets exactly that; every other case gets the snapshot's own findings,
- * so it reads as the whole decision rather than its first, pre-read half.
+ * so it reads as the whole decision rather than its first, pre-read half. The read answers
+ * for the snapshot's own round unless a case names `findingsRound`.
  */
 function decide(over: Partial<ReviewFollowupInput> = {}) {
   const session = over.session ?? mkSession();
@@ -185,6 +186,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     session,
     pr,
     findings: findingsFor(pr),
+    findingsRound: pr?.inspector?.round ?? 0,
     bucket: "idle",
     mayActLive: true,
     workflowOwnsSession: false,
@@ -242,6 +244,29 @@ test("findings resolved between the snapshot and the read drop out of the nudge"
   assert.doesNotMatch(ciOnly.payload, /unresolved finding/);
   assert.equal(ciOnly.mark.findingsRound, null);
   assert.equal(ciOnly.mark.ciNudged, true);
+});
+
+test("findings read for a different Inspector round than the snapshot are held, unstamped", () => {
+  // The read and the fresh snapshot are two requests, and a round can finish between them.
+  // Typing would stamp round 2 with round 3's set, and the next pass would relay round 3 again.
+  const session = mkSession({ inspector: inspector({ open: 1, round: 2 }) });
+  const raced = decide({ session, findingsRound: 3 });
+  assert.deepEqual(raced, {
+    kind: "skip",
+    why: "the findings read and the snapshot are from different GitHub Inspector rounds",
+  });
+  // A read that named no round is refused the same way, never assumed current.
+  assert.equal(decide({ session, findingsRound: undefined }).kind, "skip");
+  // The same round goes out.
+  assert.equal(decide({ session, findingsRound: 2 }).kind, "nudge");
+
+  // A round mismatch says nothing about CI: findings that dropped out leave no round to match.
+  const ciOnly = decide({
+    session: mkSession({ inspector: inspector({ open: 1, round: 2 }), prChecks: "failing" }),
+    findings: [],
+    findingsRound: 3,
+  });
+  assert.equal(ciOnly.kind, "nudge");
 });
 
 test("an already-relayed CI episode is not repeated because the findings dropped out", () => {
