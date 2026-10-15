@@ -195,9 +195,9 @@ test("past the budget whole findings drop from the tail, lowest severity first, 
   assert.ok(worstKept <= bestDropped, "a higher-severity finding was dropped before a lower one");
   assert.ok(dropped.some((row) => row.severity === "nit"));
   assert.ok(kept.some((row) => row.severity === "blocker"));
-  assert.ok(section.text.endsWith(`\n\n${omittedFindingsLine(section.omitted)}`));
+  assert.ok(section.text.endsWith(`\n\n${omittedFindingsLine(section.omitted, section.shown)}`));
   assert.match(
-    omittedFindingsLine(section.omitted),
+    omittedFindingsLine(section.omitted, section.shown),
     new RegExp(`^${section.omitted} more unresolved findings are not listed here, to keep this message short\\. They stay open and come back in the next relay\\.$`),
   );
 });
@@ -207,7 +207,7 @@ test("the omitted count reads in the singular for one finding", () => {
   const both = renderInspectorFindings(rows, { budgetBytes: 100_000 });
   const firstOnly = bytes(both.text.split("\n\n")[0]!);
   const section = renderInspectorFindings(rows, {
-    budgetBytes: firstOnly + 2 + bytes(omittedFindingsLine(1)),
+    budgetBytes: firstOnly + 2 + bytes(omittedFindingsLine(1, 1)),
   });
   assert.deepEqual([section.shown, section.omitted], [1, 1]);
   assert.ok(section.text.endsWith(
@@ -216,23 +216,59 @@ test("the omitted count reads in the singular for one finding", () => {
   assert.doesNotMatch(section.text, /Fingerprint: b/);
 });
 
-test("the highest-severity finding is kept, shortened, when not even it fits whole", () => {
+test("a first finding too large for the budget is dropped whole and counted, never cut", () => {
   const rows = [finding("top", "blocker", { body: "b".repeat(3_000) }), finding("next", "minor")];
-  const budgetBytes = 600;
-  const section = renderInspectorFindings(rows, { budgetBytes });
-  assert.ok(bytes(section.text) <= budgetBytes);
-  assert.deepEqual([section.shown, section.omitted, section.truncated], [1, 1, true]);
-  assert.match(section.text, /^## BLOCKER - blocker top\nLocation: src\/a\.ts:12\nPosted on GitHub: \S+\nb+\nFingerprint: top\n\n1 more/);
+  const section = renderInspectorFindings(rows, { budgetBytes: 600 });
+  // The small minor finding would fit, but listing it while the blocker is dropped would
+  // drop a higher severity before a lower one.
+  assert.deepEqual(section, {
+    text: "2 unresolved findings are not listed here, because not even the first fits in this message whole. They stay open.",
+    shown: 0,
+    omitted: 2,
+    truncated: false,
+  });
+  assert.equal(
+    renderInspectorFindings([rows[0]!], { budgetBytes: 600 }).text,
+    "1 unresolved finding is not listed here, because it does not fit in this message whole. It stays open.",
+  );
 
   const nothing = renderInspectorFindings(rows, { budgetBytes: 10 });
-  assert.ok(bytes(nothing.text) <= 10);
-  assert.deepEqual([nothing.shown, nothing.omitted], [0, 2]);
+  assert.deepEqual(nothing, { text: "", shown: 0, omitted: 2, truncated: true });
   assert.deepEqual(renderInspectorFindings([], { budgetBytes: 100 }), {
     text: "",
     shown: 0,
     omitted: 0,
     truncated: false,
   });
+});
+
+// The property behind every budget case above, swept over every budget from nothing to
+// everything: a listed finding is always whole (heading, location, posted marker, body and
+// fingerprint), and every finding is either listed or counted.
+test("at every budget, each listed finding is whole and the rest are counted", () => {
+  const rows = [
+    finding("a", "blocker", { body: "a".repeat(120) }),
+    finding("b", "major", { status: "drafted", postedAt: null, githubUrl: null }),
+    finding("c", "minor", { line: null, githubUrl: "https://github.com/owner/repo/pull/7#pullrequestreview-1" }),
+  ];
+  const full = bytes(renderInspectorFindings(rows, { budgetBytes: 100_000 }).text);
+  for (let budgetBytes = 0; budgetBytes <= full; budgetBytes += 1) {
+    const section = renderInspectorFindings(rows, { budgetBytes });
+    assert.ok(bytes(section.text) <= budgetBytes, `budget ${budgetBytes}: over budget`);
+    assert.equal(section.shown + section.omitted, 3, `budget ${budgetBytes}: a finding vanished`);
+    const blocks = section.text.split("\n\n").filter((block) => block.startsWith("## "));
+    assert.equal(blocks.length, section.shown, `budget ${budgetBytes}: a fragment was listed`);
+    for (const block of blocks) {
+      const lines = block.split("\n");
+      assert.equal(lines.length, 5, `budget ${budgetBytes}: an incomplete finding:\n${block}`);
+      assert.match(lines[1]!, /^Location: /);
+      assert.match(lines[2]!, /^(Posted on GitHub|Not posted|Being posted)/);
+      assert.match(lines[4]!, /^Fingerprint: [abc]$/);
+    }
+    if (section.omitted > 0 && section.text) {
+      assert.ok(section.text.endsWith(omittedFindingsLine(section.omitted, section.shown)));
+    }
+  }
 });
 
 // Distinct from the packet-level control test in `workflow-security.test.ts`: Foreman's relay

@@ -2525,8 +2525,9 @@ posted with the link not captured yet, being posted now, not posted and so only 
 or not posted again with a link to the earlier version that was. A draft whose earlier version was
 posted is never called the only copy. Fields still clip at the per-field limit. Past the payload
 limit the packet drops whole findings from the tail, lowest severity first, and ends the section
-with how many it left out. It never cuts a finding part way, except the highest-severity one when
-even that cannot fit, whose body is shortened. The packet keeps its own header and closing, and its
+with how many it left out. It never cuts a finding part way: when not even the highest-severity
+finding fits whole, none is listed and the section carries the count alone, without promising a
+resend. The finding stays unresolved either way. The packet keeps its own header and closing, and its
 failed count is every unresolved finding, listed or not. A prepared packet keeps the bytes and hash
 it was frozen with: delivery and restart recovery send those stored bytes and never render it again.
 

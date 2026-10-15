@@ -12,7 +12,7 @@
 import type { InspectorComment } from "@shared/types.ts";
 import { compareInspectorFindings, findingPublication } from "@shared/inspector-findings.ts";
 import { utf8Bytes } from "../util/utf8.ts";
-import { clipPacketField, clipUtf8, sanitizeWorkflowFeedback } from "../workflows/packet-text.ts";
+import { clipPacketField, sanitizeWorkflowFeedback } from "../workflows/packet-text.ts";
 
 export interface RenderedInspectorFindings {
   /** The findings section, already sanitized for a terminal. Empty only when nothing fits. */
@@ -104,10 +104,16 @@ export function inspectorFindingPostedLine(
 }
 
 /**
- * The closing line for findings left out. Kept to the relay's own promise: an omitted
- * finding is still unresolved, so the next message carries it again.
+ * The closing line for findings left out. An omitted finding is still unresolved, so it
+ * stays open. With some listed, the rest come back in the next relay; with none listed,
+ * not even the first fits whole, and the line says that rather than promising a resend.
  */
-export function omittedFindingsLine(omitted: number): string {
+export function omittedFindingsLine(omitted: number, shown: number): string {
+  if (shown === 0) {
+    return omitted === 1
+      ? "1 unresolved finding is not listed here, because it does not fit in this message whole. It stays open."
+      : `${omitted} unresolved findings are not listed here, because not even the first fits in this message whole. They stay open.`;
+  }
   return omitted === 1
     ? "1 more unresolved finding is not listed here, to keep this message short. It stays open and comes back in the next relay."
     : `${omitted} more unresolved findings are not listed here, to keep this message short. They stay open and come back in the next relay.`;
@@ -118,12 +124,10 @@ export function omittedFindingsLine(omitted: number): string {
  *
  * Fields clip at `feedbackFieldBytes`, as every packet field does. Past the budget, whole
  * findings drop from the tail - the tail is the lowest severity, by the comparator - and a
- * closing line says how many. A finding is never cut part way to make room for another.
- *
- * The one exception is the first finding when even it does not fit beside the closing line:
- * a message that lists no finding at all gives the session nothing to act on, so the
- * highest-severity finding is kept and its body shortened (or, failing that, the finding
- * itself), and `truncated` says so.
+ * closing line says how many. A finding is never cut part way, the first one included: when
+ * not even it fits whole, none is listed and the closing line carries the count alone.
+ * `truncated` reports only a field clipped at its per-field limit in a listed finding, or a
+ * budget too small to state even the count.
  */
 export function renderInspectorFindings(
   findings: readonly InspectorComment[],
@@ -134,30 +138,16 @@ export function renderInspectorFindings(
   const total = blocks.length;
   if (total === 0) return { text: "", shown: 0, omitted: 0, truncated: false };
 
-  const fit = wholeFindingsThatFit(blocks, budget);
-  if (fit > 0) {
-    const kept = blocks.slice(0, fit);
-    return {
-      text: joinSection(kept.map((block) => block.text), total - fit),
-      shown: fit,
-      omitted: total - fit,
-      truncated: kept.some((block) => block.truncated),
-    };
-  }
-
-  const omitted = total - 1;
-  const closing = omitted > 0 ? BLOCK_SEPARATOR + omittedFindingsLine(omitted) : "";
-  const first = shrinkBlock(blocks[0]!, budget - utf8Bytes(closing));
-  if (first) {
-    return { text: `${first}${closing}`, shown: 1, omitted, truncated: true };
-  }
-  const line = omittedFindingsLine(total);
-  return {
-    text: utf8Bytes(line) <= budget ? line : "",
-    shown: 0,
-    omitted: total,
-    truncated: true,
-  };
+  const shown = wholeFindingsThatFit(blocks, budget);
+  const omitted = total - shown;
+  const kept = blocks.slice(0, shown);
+  const text = [
+    ...kept.map((block) => block.text),
+    ...(omitted > 0 ? [omittedFindingsLine(omitted, shown)] : []),
+  ].join(BLOCK_SEPARATOR);
+  // Only reachable with nothing listed: a budget too small for the count line itself.
+  if (utf8Bytes(text) > budget) return { text: "", shown: 0, omitted: total, truncated: true };
+  return { text, shown, omitted, truncated: kept.some((block) => block.truncated) };
 }
 
 /** How many leading findings fit whole, beside the omitted-count line the rest would need. */
@@ -168,18 +158,15 @@ function wholeFindingsThatFit(blocks: readonly FindingBlock[], budget: number): 
     used += utf8Bytes(blocks[shown - 1]!.text) + (shown > 1 ? BLOCK_SEPARATOR.length : 0);
     if (used > budget) break;
     const omitted = blocks.length - shown;
-    const closing = omitted > 0 ? BLOCK_SEPARATOR.length + utf8Bytes(omittedFindingsLine(omitted)) : 0;
+    const closing = omitted > 0
+      ? BLOCK_SEPARATOR.length + utf8Bytes(omittedFindingsLine(omitted, shown))
+      : 0;
     if (used + closing <= budget) fit = shown;
   }
   return fit;
 }
 
 interface FindingBlock {
-  /** Severity, title, location and posted lines. */
-  head: string;
-  body: string;
-  /** The fingerprint line. */
-  tail: string;
   text: string;
   truncated: boolean;
 }
@@ -201,20 +188,5 @@ function renderBlock(finding: InspectorComment): FindingBlock {
   ].join("\n"));
   const body = bounded(finding.body ?? LEGACY_BODY);
   const tail = sanitizeWorkflowFeedback(`Fingerprint: ${finding.fingerprint}`);
-  return { head, body, tail, text: `${head}\n${body}\n${tail}`, truncated };
-}
-
-/** The first finding cut to `room` bytes: its body first, the whole finding only if it must. */
-function shrinkBlock(block: FindingBlock, room: number): string | null {
-  if (room <= 0) return null;
-  const bodyRoom = room - utf8Bytes(`${block.head}\n\n${block.tail}`);
-  if (bodyRoom > 0) {
-    return `${block.head}\n${clipUtf8(block.body, bodyRoom).value}\n${block.tail}`;
-  }
-  const clipped = clipUtf8(block.text, room).value.replace(/\s+$/u, "");
-  return clipped || null;
-}
-
-function joinSection(blocks: string[], omitted: number): string {
-  return [...blocks, ...(omitted > 0 ? [omittedFindingsLine(omitted)] : [])].join(BLOCK_SEPARATOR);
+  return { text: `${head}\n${body}\n${tail}`, truncated };
 }

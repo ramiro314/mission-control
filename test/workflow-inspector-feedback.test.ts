@@ -93,18 +93,34 @@ test("scrubbed detail and legacy fallback are frozen with published policy wordi
 
 test("field and packet caps retain a deterministic hash and truncation notice", () => {
   const huge = "ø".repeat(200_000);
-  const first = render([finding("huge", "blocker", { title: huge, body: huge })]);
-  const second = render([finding("huge", "blocker", { title: huge, body: huge })]);
+  const first = render([finding("huge", "blocker", { body: huge })]);
+  const second = render([finding("huge", "blocker", { body: huge })]);
   assert.equal(first.truncated, true);
   assert.equal(first.payloadSha256, second.payloadSha256);
   assert.equal(first.payload, second.payload);
   assert.match(first.payload, /Workflow repair packet truncated deterministically/);
   assert.match(first.payload, /do not ask the human to resubmit the workflow/);
   assert.ok(Buffer.byteLength(first.payload, "utf8") <= WORKFLOW_LIMITS.feedbackPayloadBytes);
-  // The one finding that cannot fit whole is shortened inside its body, never cut off
-  // before its fingerprint by the packet's final clip.
+  // The body clips at its field limit and the finding is still listed whole: the packet's
+  // final clip never reaches into it.
+  assert.equal(first.payload.match(/ø+/)![0].length * 2, WORKFLOW_LIMITS.feedbackFieldBytes);
   assert.match(first.payload, /\nFingerprint: huge\n\n## Mission Control execution authorization/);
   assert.equal(first.failedPersonaCount, 1);
+});
+
+test("a finding too large for the packet even after field clipping is dropped whole and counted", () => {
+  const huge = "ø".repeat(200_000);
+  const packet = render([finding("huge", "blocker", { title: huge, body: huge })]);
+  assert.ok(Buffer.byteLength(packet.payload, "utf8") <= WORKFLOW_LIMITS.feedbackPayloadBytes);
+  assert.doesNotMatch(packet.payload, /ø/, "part of the oversized finding was typed");
+  assert.doesNotMatch(packet.payload, /Fingerprint: huge|## BLOCKER/);
+  assert.match(
+    packet.payload,
+    /Review posture: live\n\n1 unresolved finding is not listed here, because it does not fit in this message whole\. It stays open\.\n\n## Mission Control execution authorization/,
+  );
+  assert.equal(packet.failedPersonaCount, 1, "the failed count stays the total");
+  assert.equal(packet.truncated, false);
+  assert.doesNotMatch(packet.payload, /Workflow repair packet truncated deterministically/);
 });
 
 // The marker table itself is pinned in `inspector-findings-text.test.ts`; this pins that the
