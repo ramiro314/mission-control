@@ -333,15 +333,21 @@ When the nudge includes findings, Foreman reads them from the daemon
 (`GET /api/inspector/findings?pr=<prKey>`) first, then re-reads the session, its settings and its
 workflow ownership, and only then decides whether to type. Every gate above is therefore checked
 against what the session looks like after the read, so a session that started working, came to
-need you or was taken over by a workflow while the findings were being read is left alone. The
-findings Foreman reads, not the session snapshot's count, decide what is sent:
+need you or was taken over by a workflow while the findings were being read is left alone. One
+more gate runs at that point, and only after a read: the round check below, which compares the
+round the findings route answered for with the round in the re-read session. The findings
+Foreman reads, not the session snapshot's count, decide what is sent:
 
 - if the read fails, Foreman logs it, types nothing and does not record the round as relayed,
   so the next pass tries again;
 - if every finding resolved between the snapshot and the read, the findings part is dropped,
   and with nothing else new to say the pass skips, again without recording the round;
-- if GitHub Inspector finished a round between the read and the re-read, so the two disagree on
-  the round, Foreman holds without recording anything. The next pass relays that round once.
+- if the findings route answered for a different GitHub Inspector round than the re-read session
+  shows (a round finished between the two reads), a nudge that carries findings is held: nothing
+  is typed and nothing is recorded, so the round it would have stamped is not the round whose
+  findings it carried. The next pass, whose two reads agree, relays that round once. A nudge
+  whose findings part dropped out, such as one for failing CI alone, has no round to compare and
+  is not held.
 
 The message opens with the counts, for example "PR #7 needs follow-through: GitHub Inspector
 has 3 unresolved findings on it (1 posted on GitHub, 2 not posted)." Its findings step asks the
