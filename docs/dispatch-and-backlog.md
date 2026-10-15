@@ -534,6 +534,18 @@ shape tasks. The MCP `create_task` tool can, when you ask a session to file one:
 (the default), `bugfix`, `scout`, `plan` or `shape`, and the filed task obeys its kind's backlog
 rules, so a shape task waits on the board for you to launch it. The plan kind is unchanged.
 
+**A shape task under local plan storage.** Shape follows **Plan storage** in Settings > Skills
+exactly as plan does, pinning the policy when the task is created. Under **Local**, the plan is
+saved with `save_plan` into the local plan store and nothing is committed; the plan review is
+bound to that exact revision (`managedPlan`) and carries the same follow-up, worded **Create
+tickets after the plan is published**. After work defaults to **Local Plan Validation**, and the
+revision is published locally: by that workflow when one is bound, or by `publish_plan` when
+none is. Publication, not a merge, is what completes the shape task and starts its tickets
+follow-up. The follow-up reads that exact revision with `read_plan`, and every ticket it files
+carries the revision as its `planInputs` and `planPrerequisites`, so its agent reads the same
+plan. The board marker reads **Tickets after publication**, and **Create tickets** is offered
+once the task is done with a published revision. See [managed plans](managed-plans.md).
+
 **pipeline** hands the whole run to the enabled external engine. It preselects **None** for
 After work because Mission Control has no task worktree or agent completion boundary to hand
 to a Workflow. In the guided pass, choosing it completes the pass immediately because the

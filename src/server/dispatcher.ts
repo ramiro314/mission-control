@@ -31,6 +31,7 @@ import {
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   dispatchHasNoProvisionedResources,
+  isLocalPlanningTask,
   isPlanningTaskKind,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
@@ -381,7 +382,7 @@ export class Dispatcher {
     });
 
     try {
-      const inputProblem = taskPlanInputProblem(task) ?? (task.kind === "plan" && task.planPolicy?.storage === "local" ? localWorkflowProblem(task.workflowId) : null);
+      const inputProblem = taskPlanInputProblem(task) ?? (isLocalPlanningTask(task) ? localWorkflowProblem(task.workflowId) : null);
       if (inputProblem) throw new Error(inputProblem);
       // Resolve and reserve before provisioning or binding any publication workflow.
       reserveTaskPlans(task);

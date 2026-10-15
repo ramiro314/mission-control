@@ -23,6 +23,7 @@ import {
   BACKLOG_LIST_TOOL,
   PLAN_CONTEXT_TOOL,
   PLAN_DECISIONS_TOOL,
+  PLAN_LOCAL_PUBLISH_TOOL,
   PLAN_PUBLICATION_TOOL,
   PLAN_READ_TOOL,
   PLAN_SAVE_TOOL,
@@ -141,8 +142,8 @@ export interface MissionMcpRequirement {
  */
 /**
  * Plan and shape name the same tools in their contracts, so they share one list: the decision
- * forms, scheduling, publication ownership, and the managed-plan tools the `html-plans` skill
- * saves and reads every plan revision through.
+ * forms, scheduling, publication ownership, the managed-plan tools the `html-plans` skill
+ * saves and reads every plan revision through, and `publish_plan`, a local plan's publication.
  */
 const PLANNING_MISSION_MCP_TOOLS: readonly MissionMcpTool[] = [
   PLAN_DECISIONS_TOOL,
@@ -151,6 +152,7 @@ const PLANNING_MISSION_MCP_TOOLS: readonly MissionMcpTool[] = [
   PLAN_CONTEXT_TOOL,
   PLAN_SAVE_TOOL,
   PLAN_READ_TOOL,
+  PLAN_LOCAL_PUBLISH_TOOL,
 ];
 
 const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
@@ -158,8 +160,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
-  // `publish_plan` is the local-storage publication path, which only the plan kind takes.
-  plan: [...PLANNING_MISSION_MCP_TOOLS, "publish_plan"],
+  plan: PLANNING_MISSION_MCP_TOOLS,
   pipeline: [],
   chat: [],
   // Grilling rounds, the plan review and the breakdown review are `request_plan_decisions`

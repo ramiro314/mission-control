@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ManagedPlanPolicySchema, PlanManifestSchema, SavePlanInputSchema, PLAN_CONTENT_LIMITS, managedPlanPreview, type ManagedPlanPolicy, type PlanManifest, type SavePlanInput, type ManagedPlanRevision, type ManagedPlanCatalog } from "@shared/managed-plans.ts";
 import type { Task } from "@shared/types.ts";
+import { isPlanningTaskKind } from "@shared/task.ts";
 import { openDb } from "../db.ts";
 import { STATE_DIR } from "../config.ts";
 import { resolveRepoRoot } from "../repos.ts";
@@ -131,11 +132,7 @@ export function newPlanPolicy(): ManagedPlanPolicy {
 /** Pre-policy plan tasks keep Git publication, with the saved HTML choice at first pin. */
 export function planPolicyForTask(task: Pick<Task, "kind" | "planPolicy" | "planPolicyError">): ManagedPlanPolicy | null {
   if (task.planPolicyError) throw new PlanStoreError(task.planPolicyError);
-  if (task.kind === "shape") {
-    // Fork: a shape plan is always a repository plan (`TaskManager.prepareCreationPolicy`).
-    return { storage: "repository", commitPlanHtml: task.planPolicy?.commitPlanHtml ?? newPlanPolicy().commitPlanHtml };
-  }
-  if (task.kind !== "plan") return null;
+  if (!isPlanningTaskKind(task.kind)) return null;
   return task.planPolicy ?? { storage: "repository", commitPlanHtml: newPlanPolicy().commitPlanHtml };
 }
 

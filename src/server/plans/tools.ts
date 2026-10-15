@@ -43,3 +43,5 @@ export const COMPLETE_SHAPE_TICKETS_TOOL = "complete_shape_tickets" as const;
 export const PLAN_CONTEXT_TOOL = "get_plan_context" as const;
 export const PLAN_SAVE_TOOL = "save_plan" as const;
 export const PLAN_READ_TOOL = "read_plan" as const;
+/** How a planning task pinned to local storage publishes its approved revision with no workflow bound. */
+export const PLAN_LOCAL_PUBLISH_TOOL = "publish_plan" as const;

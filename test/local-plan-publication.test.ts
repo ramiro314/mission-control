@@ -27,11 +27,15 @@ const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
 const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { shapeTicketFollowupsForSource, shapeTicketsStateFor, transitionShapeTicketsState } = await import("../src/server/db.ts");
+const {
+  localShapePlanOf, localShapePlanRef, shapeTicketsAcceptance, shapeTicketsFollowupFacts, stampShapeTicketsAwaitingReview,
+} = await import("../src/server/shape-tickets.ts");
 const managers: InstanceType<typeof WorkflowManager>[] = [];
 afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); });
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
-async function fixture(workflow = false, kind: "plan" | "ship" = "plan") {
+async function fixture(workflow = false, kind: "plan" | "ship" | "shape" = "plan") {
   const id = randomUUID(), repo = join(home, id);
   mkdirSync(repo); git(repo, "init", "-q", "-b", "main");
   git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial");
@@ -651,4 +655,56 @@ test("local defaults are pinned before dispatch; incompatible explicit workflows
   const newBinding = f.workflows.store.insertBinding({ id: randomUUID(), workflowVersionId: binding.workflowVersionId, noteKey: binding.noteKey, sessionId: f.id, sessionAgent: "claude", sessionName: f.id, sessionCwd: f.repo, sessionRepoRoot: f.repo, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
   assert.throws(() => freezeLocalPlanSubmission(f.registry, f.workflows, newBinding, submission), /explicit human approval/);
   assert.equal(publicationReceipt(f.input), null);
+});
+
+
+// Fork (shape tasks): a shape task pinned to local storage lands by publication, not a merge.
+async function settledTicks(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+function chooseCreateTickets(f: Awaited<ReturnType<typeof fixture>>): void {
+  assert.ok(stampShapeTicketsAwaitingReview({ id: f.task.id, kind: "shape" }, f.registry));
+  assert.ok(transitionShapeTicketsState(f.task.id, ["awaiting-review"], "pending"));
+}
+
+test("a local shape plan's publication starts its tickets follow-up on the exact published revision", async () => {
+  const f = await fixture(false, "shape");
+  await f.review();
+  chooseCreateTickets(f);
+  const launched: string[] = [];
+  f.tasks.backlogDispatchRefusal = () => null;
+  (f.tasks as unknown as { dispatcher: { dispatch: (id: string) => Promise<void> } }).dispatcher = {
+    dispatch: async (id) => { launched.push(id); },
+  };
+  assert.equal(shapeTicketsAcceptance(f.registry.getTask(f.task.id)!).ok, false, "nothing to slice before it is done");
+
+  await f.service.publish(f.authority, f.input);
+  await f.tasks.complete(f.task.id, "Published approved local plan bundle", undefined, false);
+  await settledTicks();
+
+  const followups = shapeTicketFollowupsForSource(f.task.id);
+  assert.equal(followups.length, 1, "the publication is the quorum, so exactly one follow-up starts");
+  assert.equal(followups[0]!.sourcePrUrl, localShapePlanRef(f.input));
+  assert.deepEqual(localShapePlanOf(followups[0]!.sourcePrUrl), f.input);
+  const facts = shapeTicketsFollowupFacts(followups[0]!.followupTaskId)!;
+  assert.deepEqual(facts.plan, f.input);
+  assert.equal(facts.prUrl, null, "a local plan has no pull request to name");
+  const followup = f.registry.getTask(followups[0]!.followupTaskId)!;
+  assert.match(followup.intent, /published local plan/);
+  assert.deepEqual(launched, [followup.id]);
+  assert.equal(shapeTicketsStateFor(f.task.id), "started");
+});
+
+test("a local shape task that ends without publishing lapses its tickets choice", async () => {
+  const f = await fixture(false, "shape");
+  await f.review();
+  chooseCreateTickets(f);
+  await f.tasks.complete(f.task.id, "Ended before publication", undefined, false);
+  await settledTicks();
+  assert.equal(shapeTicketsStateFor(f.task.id), "lapsed");
+  assert.equal(shapeTicketFollowupsForSource(f.task.id).length, 0);
+  const refused = shapeTicketsAcceptance(f.registry.getTask(f.task.id)!);
+  assert.equal(refused.ok, false);
+  assert.match(refused.ok ? "" : refused.reason, /no published local plan/);
 });

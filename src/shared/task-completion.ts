@@ -1,4 +1,5 @@
 import { type TaskKind } from "./types.ts";
+import { isPlanningTaskKind, type PlanningTaskKind } from "./task.ts";
 
 /**
  * WHAT "COMPLETE" MEANS for the initial delivered turn of a dispatched task, as trusted
@@ -158,6 +159,32 @@ const SHAPE_CONTRACT: TaskCompletionContract = {
 };
 
 /**
+ * A shape task pinned to local storage: the local plan's boundary without phases or tickets.
+ *
+ * Its plan never reaches Git, so a Create tickets choice starts the follow-up when the approved
+ * revision is published locally rather than when a pull request merges.
+ */
+const LOCAL_SHAPE_CONTRACT: TaskCompletionContract = {
+  ...LOCAL_PLAN_CONTRACT,
+  kind: "shape",
+  boundary: "the local shaping handoff",
+  complete: [
+    "the complete final Markdown and HTML bundle is saved as an immutable local revision",
+    "the human explicitly approved that exact final bundle through a managed plan review; dismissal is not approval",
+    "no ticket or phase tasks are required from this turn: Mission Control records a Create tickets choice and files the tickets in a follow-up task after the approved revision is published",
+    "applicable focused validation and final plan text evidence are registered for the selected workflow",
+    "the task contains only local plan artifacts",
+    "when no workflow is selected, publish_plan has verified and published the approved local revision",
+  ],
+};
+
+/** A planning kind's boundary when its plan is pinned to local storage. */
+const LOCAL_PLANNING_CONTRACT: Record<PlanningTaskKind, TaskCompletionContract> = {
+  plan: LOCAL_PLAN_CONTRACT,
+  shape: LOCAL_SHAPE_CONTRACT,
+};
+
+/**
  * The contract per kind, or null for a kind that draws no such boundary.
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
@@ -192,14 +219,15 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
  * The trusted initial completion contract for a durable task kind, or null.
  *
  * Kind-only by design: no agent opens its own pull request on the initial turn, so the
- * boundary does not depend on whether a workflow is bound. A plan's pinned storage is the one
- * other input: a locally stored plan has no pull request and hands off through its own record.
+ * boundary does not depend on whether a workflow is bound. A planning task's pinned storage is
+ * the one other input: a locally stored plan or shape plan has no pull request and hands off
+ * through its own record.
  */
 export function taskCompletionContract(
   kind: TaskKind | null | undefined,
   planStorage: "repository" | "local" = "repository",
 ): TaskCompletionContract | null {
-  if (kind === "plan" && planStorage === "local") return LOCAL_PLAN_CONTRACT;
+  if (isPlanningTaskKind(kind) && planStorage === "local") return LOCAL_PLANNING_CONTRACT[kind];
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 

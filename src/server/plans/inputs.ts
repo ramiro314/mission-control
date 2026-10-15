@@ -13,6 +13,25 @@ export function publicationReceipt(input: PlanIdentity): PlanPublicationReceipt 
   return receipt;
 }
 
+/**
+ * The newest local publication receipt a task recorded, verified like any other receipt, or
+ * null. A local shape task's tickets follow-up slices the revision this names.
+ */
+export function latestPublicationReceiptForTask(taskId: string): PlanPublicationReceipt | null {
+  const rows = openDb()
+    .prepare("SELECT receipt FROM managed_plan_publications WHERE json_extract(receipt, '$.taskId') = ?")
+    .all(taskId) as Array<{ receipt: string }>;
+  let latest: PlanPublicationReceipt | null = null;
+  for (const row of rows) {
+    try {
+      const parsed = PlanPublicationReceiptSchema.parse(JSON.parse(row.receipt));
+      const receipt = publicationReceipt(parsed);
+      if (receipt && (!latest || receipt.publishedAt > latest.publishedAt)) latest = receipt;
+    } catch { /* A corrupt or mismatched receipt names no publishable plan. */ }
+  }
+  return latest;
+}
+
 /** Prepared task roots are canonical. No filename, slug, or latest-revision fallback. */
 export function validatePlanInputs(inputs: TaskPlanInput[], roots: string[]): void {
   for (const input of TaskPlanInputsSchema.parse(inputs)) {

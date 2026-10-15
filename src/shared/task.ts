@@ -404,6 +404,15 @@ export function isPlanningTaskKind(kind: TaskKind | null | undefined): kind is P
 }
 
 /**
+ * Whether a planning task (plan or shape) pinned local plan storage: its bundle stays in the
+ * daemon's plan store, nothing lands in Git, and publication is a local receipt rather than a
+ * planning pull request. The one reading every local-plan branch takes, so shape mirrors plan.
+ */
+export function isLocalPlanningTask(task: Pick<Task, "kind" | "planPolicy"> | null | undefined): boolean {
+  return isPlanningTaskKind(task?.kind) && task?.planPolicy?.storage === "local";
+}
+
+/**
  * Whether a dispatch still has no durable milestone proving provisioning or launch began.
  *
  * Live failure handling and startup reconciliation share this resource proof; live handling
@@ -665,9 +674,10 @@ export function taskDefaultWorkflowId(
   storage: "repository" | "local" = "repository",
 ): string | null {
   if (!taskKindLaunchesHarness(kind)) return null;
-  // A locally stored plan has no checkout files and no planning PR, so the repository Plan
-  // Validation (and any row aimed at it) cannot review it. Upstream pins it to the local variant.
-  if (kind === "plan" && storage === "local") return LOCAL_PLAN_VALIDATION_WORKFLOW_ID;
+  // A locally stored plan (plan or shape) has no checkout files and no planning PR, so the
+  // repository Plan Validation (and any row aimed at it) cannot review it. Upstream pins a plan
+  // to the local variant; the fork's shape follows it.
+  if (isPlanningTaskKind(kind) && storage === "local") return LOCAL_PLAN_VALIDATION_WORKFLOW_ID;
   const chosen = configured[kind];
   return chosen === undefined ? BUILTIN_KIND_WORKFLOW_DEFAULTS[kind] : chosen;
 }

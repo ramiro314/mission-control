@@ -198,7 +198,9 @@ A later **Needs revision** answer or dismissal blocks publication until another 
 conflicting resolutions at the same timestamp also block. Renewed approval needs its own
 workflow validation when a workflow is bound.
 
-New local plan tasks default to the appended **Local Plan Validation** workflow. Explicit
+New local plan tasks default to the appended **Local Plan Validation** workflow. The fork's
+`shape` kind takes the same local path (see
+[dispatch and backlog](dispatch-and-backlog.md), "A shape task under local plan storage"). Explicit
 None is allowed; explicit incompatible choices are refused. Compatible workflows have no
 session actions and no Inspector/PR completion policy. Their ordinary Persona/check graph
 must complete. Before capture, the daemon freezes the exact approval/revision mapping on the

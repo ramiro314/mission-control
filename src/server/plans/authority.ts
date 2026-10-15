@@ -1,6 +1,7 @@
 import type { Registry } from "../registry.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import { isLocalPlanningTask } from "@shared/task.ts";
 import { scoutRepoSlots } from "../scouts/repos.ts";
 import { planPolicyForTask, PlanStoreError, type PlanAuthority } from "./store.ts";
 
@@ -18,7 +19,7 @@ export function taskPlanAuthority(registry: Registry, taskId: string, slot: stri
   const task = registry.getTask(taskId);
   const episode = registry.workEpisodeForTask(taskId);
   const current = episode ? registry.recordedWorkEpisodeForSession(episode.sessionId) : null;
-  if (!task || task.status !== "running" || task.kind !== "plan" || task.planPolicy?.storage !== "local"
+  if (!task || task.status !== "running" || !isLocalPlanningTask(task)
     || !episode || task.sessionId !== episode.sessionId || current?.episodeId !== episode.episodeId
     || current.agentSessionId !== episode.agentSessionId || current.awaitingAgentRebind
     || registry.sessionResetInProgress(episode.sessionId)) throw new PlanStoreError("Local plan recovery requires the task's current work episode");

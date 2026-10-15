@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
 import type { PlanDecision, Task } from "@shared/types.ts";
+import { isLocalPlanningTask } from "@shared/task.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
 import { openDb, loadHumanResolvedReviews } from "../db.ts";
@@ -124,7 +125,7 @@ export function freezeLocalPlanSubmission(registry: Registry, workflows: Workflo
   if (!binding.sessionId) return;
   const session = registry.getSession(binding.sessionId);
   const task = registry.taskForSession(binding.sessionId, session?.cwd ?? null);
-  if (!session || task?.kind !== "plan" || task.planPolicy?.storage !== "local") return;
+  if (!session || !isLocalPlanningTask(task)) return;
   const plans = authoredPlans(planAuthority(registry, session, "repo-01"));
   if (!plans.length) throw new PlanStoreError("Save and approve the complete local plan before submitting validation");
   for (const { repoSlot, ...input } of plans) {
@@ -153,7 +154,7 @@ export function verifyLocalPlanEvidence(store: WorkflowStore, submissionId: stri
 }
 
 async function assertPlanOnly(task: Task): Promise<void> {
-  if (task.kind !== "plan" || task.planPolicy?.storage !== "local") throw new PlanStoreError("A mixed code-and-plan or repository-policy task retains its ordinary merge prerequisite; local publication requires a task created for local plans");
+  if (!isLocalPlanningTask(task)) throw new PlanStoreError("A mixed code-and-plan or repository-policy task retains its ordinary merge prerequisite; local publication requires a task created for local plans");
   for (const repo of [{ checkout: task.worktreePath, base: task.baseSha }, ...task.extraRepos.map((r) => ({ checkout: r.worktreePath, base: r.baseSha }))]) {
     if (!repo.checkout || !repo.base) throw new PlanStoreError("Cannot verify the local plan-only task's checkout and base commit");
     const status = await run("git", ["-C", repo.checkout, "status", "--porcelain"]);
@@ -164,7 +165,7 @@ async function assertPlanOnly(task: Task): Promise<void> {
 
 /** A recorded outcome or frozen review, not session liveness, owns this task's remaining work. */
 export function localPlanRecoveryPending(registry: Registry, task: Task, store = new WorkflowStore(), bindingId?: string): boolean {
-  if (task.kind !== "plan" || task.planPolicy?.storage !== "local" || task.status !== "running") return false;
+  if (!isLocalPlanningTask(task) || task.status !== "running") return false;
   try {
     const authority = taskPlanAuthority(registry, task.id, "repo-01");
     const episode = registry.workEpisodeForTask(task.id)!;
@@ -284,7 +285,7 @@ export class LocalPlanPublication {
       } catch { /* Corrupt receipts remain blocked at dispatch and in the reader. */ }
     }
     for (const task of this.registry.listTasks()) {
-      if (task.kind !== "plan" || task.planPolicy?.storage !== "local" || task.status !== "running" || this.inFlight.has(task.id)) continue;
+      if (!isLocalPlanningTask(task) || task.status !== "running" || this.inFlight.has(task.id)) continue;
       const pending = (async () => {
         const authority = taskPlanAuthority(this.registry, task.id, "repo-01");
         const plans = authoredPlans(authority);

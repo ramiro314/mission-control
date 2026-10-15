@@ -14,6 +14,7 @@ import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
+  isPlanningTaskKind,
   kindsDefaultingToWorkflow,
   shapeThisPatch,
   TASK_KIND_INFO,
@@ -5453,7 +5454,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const authority = planAuthority(registry, session, input.repoSlot);
       const context = await planContext(authority);
       const task = registry.taskForSession(session.id, session.cwd);
-      if (context.policy.storage === "local" && task?.kind === "plan") {
+      if (context.policy.storage === "local" && isPlanningTaskKind(task?.kind)) {
         const manager = workflowManager();
         if (!manager) throw new PlanStoreError("Workflow authority unavailable");
         localPlanAuthorityContext(manager, session.id);

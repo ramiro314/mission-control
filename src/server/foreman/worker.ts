@@ -1,4 +1,5 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { isLocalPlanningTask } from "@shared/task.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -2444,7 +2445,7 @@ export async function processPromptedWrapup(
     current = await refreshPromptedCandidate(client, pcfg, candidate);
     if (!current || current.candidate.kind !== "check") return false;
   }
-  if (session.task?.kind === "plan" && session.task.planPolicy?.storage === "local") {
+  if (isLocalPlanningTask(session.task)) {
     log(`${session.name}: local plan publication is waiting for its daemon receipt; no direct PR handoff`);
     return false;
   }

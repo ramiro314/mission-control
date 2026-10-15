@@ -1,5 +1,5 @@
 import { newPlanPolicy, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
-import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
+import { latestPublicationReceiptForTask, publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
 import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
 import { transferForTask } from "./session-transfers/store.ts";
@@ -52,6 +52,7 @@ import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import {
   SHAPE_TICKETS_OUTCOME_TEXT,
   lapseShapeTickets,
+  localShapePlanOf,
   markShapeTicketsQueued,
   markShapeTicketsStarted,
   promoteQueuedShapeTickets,
@@ -67,6 +68,7 @@ import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
 import {
   dispatchHasNoProvisionedResources,
+  isLocalPlanningTask,
   isPlanningTaskKind,
   TASK_KIND_BACKLOG_REFUSAL,
   providerOwnsTaskCompletion,
@@ -2655,7 +2657,7 @@ export class TaskManager {
         const saved = planRevisionRecord(input.planId, input.revision);
         const source = saved.task_id ? this.getDurable(saved.task_id) : null;
         const manifest = readPlanRevision(input.planId, input.revision).manifest;
-        if (manifest.repoKey !== input.repoKey || manifest.policy.storage !== "local" || ((source?.kind !== "plan" || source.planPolicy?.storage !== "local") && !publicationReceipt(input))) throw new TaskDependencyError("Artifact prerequisites require an exact local plan-only source; code and repository plans retain merge dependencies");
+        if (manifest.repoKey !== input.repoKey || manifest.policy.storage !== "local" || (!isLocalPlanningTask(source) && !publicationReceipt(input))) throw new TaskDependencyError("Artifact prerequisites require an exact local plan-only source; code and repository plans retain merge dependencies");
         if (saved.task_id === taskId) throw new TaskDependencyError("a task cannot depend on its own plan publication");
         dependency = { ...input, title: `${manifest.slug} revision ${input.revision} publication`, sessionId: null, episodeId: null, agentSessionId: null, branch: null, prUrl: null,
           selectedAt, satisfiedAt: publicationReceipt(input)?.publishedAt ?? null };
@@ -2855,7 +2857,8 @@ export class TaskManager {
       episodeId: followup.sourceEpisodeId,
       agentSessionId: binding?.agentSessionId ?? null,
       branch: binding?.branch ?? null,
-      prUrl: followup.sourcePrUrl,
+      // A local plan's relation names its published revision, not a pull request to poll.
+      prUrl: localShapePlanOf(followup.sourcePrUrl) ? null : followup.sourcePrUrl,
       selectedAt: previous?.selectedAt ?? selectedAt,
       satisfiedAt: previous?.satisfiedAt ?? Date.now(),
     };
@@ -2923,13 +2926,7 @@ export class TaskManager {
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
   prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId">): TaskCreationPolicy {
-    // Shape plans always land in Git: its tickets follow-up slices the plan its pull request
-    // merged, so local storage would leave it nothing to read. Only the HTML choice is pinned.
-    const planPolicy = input.kind === "plan"
-      ? newPlanPolicy()
-      : input.kind === "shape"
-        ? { storage: "repository" as const, commitPlanHtml: newPlanPolicy().commitPlanHtml }
-        : null;
+    const planPolicy = isPlanningTaskKind(input.kind) ? newPlanPolicy() : null;
     return { planPolicy, workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage) };
   }
 
@@ -4048,14 +4045,15 @@ export class TaskManager {
       const tools = await missionToolsAvailability(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
-    const planPolicy = patch.kind === "plan" && t.kind !== "plan" ? newPlanPolicy() : t.planPolicy;
+    // A switch into a planning kind pins the policy then, as creation does; a planning task keeps its own.
+    const planPolicy = isPlanningTaskKind(patch.kind) && !isPlanningTaskKind(t.kind) ? newPlanPolicy() : t.planPolicy;
     try {
       const roots = [patch.repoRoot ?? t.repoRoot, ...(patch.extraRepoRoots ?? t.extraRepos.map((r) => r.repoRoot))];
       validatePlanInputs(patch.planInputs ?? t.planInputs ?? [], roots);
       for (const edge of patch.dependencies ?? t.dependencies) {
         if (edge.type === "plan") validatePlanInputs([{ repoKey: edge.repoKey, planId: edge.planId, revision: edge.revision, files: ["plan.md"] }], roots);
       }
-      if (planPolicy?.storage === "local" && (patch.kind ?? t.kind) === "plan") {
+      if (planPolicy?.storage === "local" && isPlanningTaskKind(patch.kind ?? t.kind)) {
         const problem = localWorkflowProblem(patch.workflowId === undefined ? t.workflowId : patch.workflowId);
         if (problem) return { ok: false, error: problem };
       }
@@ -4746,7 +4744,7 @@ export class TaskManager {
     // silent degradation the watermark rung exists to turn into a refusal.
     let planDiscovery: string;
     try {
-      const problem = taskPlanInputProblem(t) ?? (t.kind === "plan" && t.planPolicy?.storage === "local" ? localWorkflowProblem(t.workflowId) : null);
+      const problem = taskPlanInputProblem(t) ?? (isLocalPlanningTask(t) ? localWorkflowProblem(t.workflowId) : null);
       if (problem) return { ok: false, error: problem, scope: "task" };
       reserveTaskPlans(t);
       planDiscovery = await taskPlanDiscovery(t, s.cwd);
@@ -5594,7 +5592,11 @@ export class TaskManager {
    */
   private settleShapeTicketsOnCompletion(before: Task): void {
     try {
-      if (!this.mergeOutcomeFor(before)) {
+      // A local plan lands by publication, not by a merge: its receipt is the quorum.
+      const landed = isLocalPlanningTask(before)
+        ? latestPublicationReceiptForTask(before.id) !== null
+        : this.mergeOutcomeFor(before);
+      if (!landed) {
         this.lapseShapeTicketsOf(before.id);
         return;
       }

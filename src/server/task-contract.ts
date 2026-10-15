@@ -134,7 +134,7 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   chat: (task) => (task.workflowId === null ? UNBOUND_CHAT_PUBLICATION : null),
   // A tickets follow-up (a row in `shape_ticket_followups`) gets the tickets-only variant.
   shape: planningContract("shape", (skills, workflowBound, task) =>
-    shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id))),
+    shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id), task.planPolicy?.storage)),
 };
 
 /**
