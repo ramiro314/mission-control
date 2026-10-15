@@ -19,6 +19,7 @@ import { taskCompletionContract } from "@shared/task-completion.ts";
 import { planPublicationStillCurrent, promptedWrapupPlanPublication, withPlanPublicationGuard } from "./plan-publication.ts";
 import type {
   AgentType,
+  InspectorComment,
   PromptedCompletionGap,
   PromptedDirectHandoffKind,
   ReviewItem,
@@ -99,7 +100,12 @@ import {
   decideReviewFollowup,
   followupPrs,
 } from "./review-followup.ts";
-import type { FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
+import type {
+  FollowupMark,
+  FollowupPr,
+  ReviewFollowupDecision,
+  ReviewFollowupInput,
+} from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -1072,7 +1078,7 @@ async function runReviewFollowup(
       const freshMarks = observeFollowupMarks(fresh.id, freshPrs);
       const freshMark = freshMarks.get(freshPr.prKey) ?? null;
 
-      const freshDecision = decideReviewFollowup({
+      const freshInput: ReviewFollowupInput = {
         session: fresh,
         pr: freshPr,
         bucket: reportBucket(fresh, freshSessions),
@@ -1086,42 +1092,102 @@ async function runReviewFollowup(
           settleMs: SETTLE_MS,
         },
         now: Date.now(),
-      });
+      };
+      const freshDecision = decideReviewFollowup(freshInput);
       // An escalation that appeared between the two reads is the next pass's to send.
-      if (freshDecision.kind !== "nudge" || !isLeader) break;
+      if (freshDecision.kind !== "nudge" && freshDecision.kind !== "read-findings") break;
 
-      // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
-      // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
-      // stamp, because a lost response must not become a second nudge; a delivery the
-      // daemon reports as refused restores the pre-nudge mark to retry on a later pass.
-      freshMarks.set(freshDecision.prKey, freshDecision.mark);
-      try {
-        await client.inject(fresh.id, freshDecision.payload);
-      } catch (err) {
-        // Only a delivery the daemon POSITIVELY reported as undelivered frees this session:
-        // its previous mark is restored so it re-nudges, and it is NOT claimed, so the
-        // target loop may act on it now. Any other failure - a lost response, an unrecognised
-        // throw - is treated as "may have reached the composer" (the same conservative
-        // reading `queue-apply`'s `mayHaveLanded` makes): keep the mark and claim the pane,
-        // so nothing types a wrap-up on top of a follow-up that might already be sitting there.
-        const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
-        if (confirmedUndelivered) {
-          if (freshMark) freshMarks.set(freshDecision.prKey, freshMark);
-          else freshMarks.delete(freshDecision.prKey);
-        } else {
-          nudged.add(session.id);
-          nudged.add(fresh.id);
-        }
-        log(`${fresh.name}: could not nudge the PR follow-through (${String(err)})`);
-        break;
+      const outcome = await relayReviewFollowup(
+        client,
+        fresh,
+        freshMarks,
+        freshDecision,
+        (findings) => decideReviewFollowup({ ...freshInput, findings }),
+        () => isLeader,
+      );
+      if (outcome === "claimed") {
+        nudged.add(session.id);
+        nudged.add(fresh.id);
       }
-      nudged.add(session.id);
-      nudged.add(fresh.id);
-      log(`${fresh.name}: nudged to follow through on its PR - ${freshDecision.reason}`);
       break;
     }
   }
   return nudged;
+}
+
+/**
+ * What one relay did to the session's pane. `claimed`: the follow-up landed, or may have, so
+ * the pane is this pass's. `free`: nothing reached the pane - the daemon refused the
+ * delivery, or the relay held before typing - so the target loop may act on it now.
+ */
+export type ReviewFollowupRelay = "claimed" | "free";
+
+/**
+ * Type one review follow-up into a session that has passed the freshness recheck.
+ *
+ * A decision that includes findings has not got their text yet, so this reads them through
+ * the daemon's findings route and decides again with them (`redecide`, the same input plus
+ * the findings). Every gate runs again on that second call, and its answer is the one typed.
+ *
+ *  - The read fails: logged, the mark is not stamped and nothing is typed. The next pass
+ *    reads again, so the round is not recorded as relayed until it actually is.
+ *  - The read comes back with nothing unresolved: the findings resolved between the
+ *    snapshot and the read. The findings part is dropped; with nothing else new to say, the
+ *    decision is a skip and this holds without stamping.
+ *
+ * Then, as before the findings were typed: stamp BEFORE the inject, and retract ONLY on
+ * positive evidence nothing landed - the `recentlyActed` discipline. A request whose outcome
+ * we never learn keeps the stamp, because a lost response must not become a second nudge; a
+ * delivery the daemon reports as refused restores the pre-nudge mark to retry on a later pass.
+ */
+export async function relayReviewFollowup(
+  client: ForemanClient,
+  session: Session,
+  marks: Map<string, FollowupMark>,
+  decision: Extract<ReviewFollowupDecision, { kind: "nudge" | "read-findings" }>,
+  redecide: (findings: readonly InspectorComment[]) => ReviewFollowupDecision,
+  holdsLease: () => boolean,
+): Promise<ReviewFollowupRelay> {
+  let nudge: Extract<ReviewFollowupDecision, { kind: "nudge" }>;
+  if (decision.kind === "read-findings") {
+    let findings: readonly InspectorComment[];
+    try {
+      findings = (await client.inspectorFindings(decision.prKey)).findings;
+    } catch (err) {
+      log(
+        `${session.name}: could not read GitHub Inspector's findings on ${decision.prKey} - ` +
+          `holding the PR follow-through for the next pass (${String(err)})`,
+      );
+      return "free";
+    }
+    const read = redecide(findings);
+    if (read.kind !== "nudge") return "free";
+    nudge = read;
+  } else {
+    nudge = decision;
+  }
+  if (!holdsLease()) return "free";
+
+  const prior = marks.get(nudge.prKey) ?? null;
+  marks.set(nudge.prKey, nudge.mark);
+  try {
+    await client.inject(session.id, nudge.payload);
+  } catch (err) {
+    // Only a delivery the daemon POSITIVELY reported as undelivered frees this session: its
+    // previous mark is restored so it re-nudges, and it is NOT claimed, so the target loop
+    // may act on it now. Any other failure - a lost response, an unrecognised throw - is
+    // treated as "may have reached the composer" (the same conservative reading
+    // `queue-apply`'s `mayHaveLanded` makes): keep the mark and claim the pane, so nothing
+    // types a wrap-up on top of a follow-up that might already be sitting there.
+    const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
+    log(`${session.name}: could not nudge the PR follow-through (${String(err)})`);
+    if (!confirmedUndelivered) return "claimed";
+    if (prior) marks.set(nudge.prKey, prior);
+    else marks.delete(nudge.prKey);
+    return "free";
+  }
+  log(`${session.name}: nudged to follow through on its PR - ${nudge.reason}`);
+  return "claimed";
 }
 
 /**

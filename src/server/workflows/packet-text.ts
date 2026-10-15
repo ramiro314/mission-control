@@ -4,7 +4,7 @@
 // Kept apart from `feedback.ts` on purpose. `../inspector/findings-text.ts` needs exactly
 // these rules and is meant to be loadable by Foreman's worker, which must not pull in the
 // workflow packet module (and with it the execution-authorization contract) to get them.
-// One definition, so the workflow packet and Foreman's relay, once it adopts the renderer,
+// One definition, so the workflow packet and Foreman's relay, which share the renderer,
 // can never scrub or clip the same finding differently. Its imports stay pure: a
 // browser-safe shared limit and a byte helper.
 

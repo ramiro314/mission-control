@@ -15,6 +15,7 @@ import type {
   ReviewFollowupInput,
 } from "../src/server/foreman/review-followup.ts";
 import type {
+  InspectorComment,
   InspectorSummary,
   Session,
   SessionQueueSummary,
@@ -22,7 +23,7 @@ import type {
   TaskSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
-import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
+import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
 
 // What is at stake: Foreman must re-engage a session whose PR is carrying feedback nobody
 // is acting on - unresolved Inspector comments or a red CI - WITHOUT interrupting live
@@ -130,13 +131,60 @@ function mkSession(over: Partial<Session> = {}): Session {
   };
 }
 
+/** One finding as the findings route returns it. Posted on GitHub unless a case says not. */
+function finding(over: Partial<InspectorComment> = {}): InspectorComment {
+  const fingerprint = over.fingerprint ?? "fp-1";
+  return {
+    id: `id-${fingerprint}`,
+    prKey: "owner/repo#7",
+    fingerprint,
+    path: "src/a.ts",
+    line: 12,
+    title: "Null check missing",
+    body: "The handler dereferences `user` before checking it.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    postedAt: NOW - 30_000,
+    githubUrl: `https://github.com/owner/repo/pull/7#discussion_${fingerprint}`,
+    legacyPosted: null,
+    createdAt: NOW - 60_000,
+    updatedAt: NOW - 60_000,
+    ...over,
+  };
+}
+
+/**
+ * What the worker's read of the findings route would return for this pull request's
+ * snapshot: `postedOpen` posted rows, and the rest of `open` as drafts.
+ */
+function findingsFor(pr: FollowupPr | null): InspectorComment[] {
+  const summary = pr?.inspector;
+  if (!summary) return [];
+  return Array.from({ length: summary.open }, (_, i) =>
+    finding({
+      prKey: summary.prKey,
+      fingerprint: `fp-${i + 1}`,
+      ...(i < summary.postedOpen ? {} : { status: "drafted", postedAt: null, githubUrl: null }),
+    }));
+}
+
+/**
+ * Decide as the worker does once it has read the findings. A case that names `findings`,
+ * even as undefined, gets exactly that; every other case gets the snapshot's own findings,
+ * so it reads as the whole decision rather than its first, pre-read half.
+ */
 function decide(over: Partial<ReviewFollowupInput> = {}) {
   const session = over.session ?? mkSession();
+  // The session's own pull request unless a case names one, which is what the worker
+  // passes for a single-repo session and keeps every case below reading as it did.
+  const pr = "pr" in over ? (over.pr ?? null) : (followupPrs(session)[0] ?? null);
   return decideReviewFollowup({
     session,
-    // The session's own pull request unless a case names one, which is what the worker
-    // passes for a single-repo session and keeps every case below reading as it did.
-    pr: followupPrs(session)[0] ?? null,
+    pr,
+    findings: findingsFor(pr),
     bucket: "idle",
     mayActLive: true,
     workflowOwnsSession: false,
@@ -153,8 +201,56 @@ test("open findings on a live-posted review earn a nudge", () => {
   const d = decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) });
   assert.equal(d.kind, "nudge");
   if (d.kind !== "nudge") return;
-  assert.match(d.reason, /2 review comment/);
+  assert.match(d.reason, /2 unresolved finding/);
   assert.match(d.payload, /Do NOT open a new pull request/);
+});
+
+test("a nudge that includes findings asks for them first, and stamps nothing", () => {
+  // The decision stays zero-I/O: with no findings read yet it cannot build a payload that
+  // carries their text, so it says the read is needed and leaves the mark alone.
+  const session = mkSession({ inspector: inspector({ open: 2, postedOpen: 0, mode: "dry-run" }) });
+  const d = decide({ session, findings: undefined });
+  assert.deepEqual(d, { kind: "read-findings", prKey: "owner/repo#7", reason: "2 unresolved finding(s)" });
+});
+
+test("a CI-only nudge needs no findings read", () => {
+  const d = decide({ session: mkSession({ prChecks: "failing" }), findings: undefined });
+  assert.equal(d.kind, "nudge");
+});
+
+test("findings resolved between the snapshot and the read drop out of the nudge", () => {
+  const session = mkSession({ inspector: inspector({ open: 2 }), prChecks: "failing" });
+  // Nothing else open: the pass skips, and since nothing is stamped the round stays unrelayed.
+  assert.deepEqual(
+    decide({ session: mkSession({ inspector: inspector({ open: 2 }) }), findings: [] }),
+    { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" },
+  );
+  assert.deepEqual(
+    decide({
+      session: mkSession({ inspector: inspector({ open: 1 }) }),
+      findings: [finding({ status: "resolved" })],
+    }),
+    { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" },
+  );
+
+  // Something else open: the nudge goes out without its findings part, and the findings
+  // round is left unstamped so the next round with findings is still relayed.
+  const ciOnly = decide({ session, findings: [] });
+  assert.equal(ciOnly.kind, "nudge");
+  if (ciOnly.kind !== "nudge") return;
+  assert.equal(ciOnly.reason, "CI failing");
+  assert.doesNotMatch(ciOnly.payload, /unresolved finding/);
+  assert.equal(ciOnly.mark.findingsRound, null);
+  assert.equal(ciOnly.mark.ciNudged, true);
+});
+
+test("an already-relayed CI episode is not repeated because the findings dropped out", () => {
+  const session = mkSession({ inspector: inspector({ open: 2, round: 2 }), prChecks: "failing" });
+  const mark = { ...observe(session), ciNudged: true, findingsRound: 1 };
+  assert.deepEqual(
+    decide({ session, mark, findings: [] }),
+    { kind: "skip", why: "already nudged this round of feedback" },
+  );
 });
 
 test("a failing CI alone earns a nudge, even with no findings", () => {
@@ -168,7 +264,7 @@ test("findings and a red CI together are reported together", () => {
   const d = decide({ session: mkSession({ inspector: inspector({ open: 1 }), prChecks: "failing" }) });
   assert.equal(d.kind, "nudge");
   if (d.kind !== "nudge") return;
-  assert.match(d.reason, /1 review comment.*\+ CI failing/);
+  assert.match(d.reason, /1 unresolved finding.*\+ CI failing/);
 });
 
 // ---- what stays quiet ----
@@ -240,7 +336,7 @@ test("review comments and CI can be followed independently", () => {
   assert.equal(ciOnly.kind, "nudge");
   if (ciOnly.kind === "nudge") {
     assert.equal(ciOnly.reason, "CI failing");
-    assert.doesNotMatch(ciOnly.payload, /review comment/);
+    assert.doesNotMatch(ciOnly.payload, /unresolved finding/);
   }
 
   const commentsOnly = decide({
@@ -249,7 +345,7 @@ test("review comments and CI can be followed independently", () => {
   });
   assert.equal(commentsOnly.kind, "nudge");
   if (commentsOnly.kind === "nudge") {
-    assert.match(commentsOnly.reason, /2 review comment/);
+    assert.match(commentsOnly.reason, /2 unresolved finding/);
     assert.doesNotMatch(commentsOnly.payload, /failing CI/);
   }
 });
@@ -273,20 +369,25 @@ test("a clean open PR - no findings, CI not red - is left alone", () => {
   assert.deepEqual(d, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
 });
 
-test("dry-run Inspector findings are previews, not comments on the PR, so they do not fire", () => {
-  // open > 0 but postedOpen = 0: the findings are drafted, never posted - pointing the agent
-  // at "the review comments" would point it at comments that are not there.
+test("a dry-run draft triggers the relay, and its text travels in the message", () => {
+  // open > 0 but postedOpen = 0: the findings were drafted and never posted. They are on no
+  // pull request, so the relay types them rather than pointing at GitHub.
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "dry-run" }) }),
   });
-  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.match(d.reason, /4 unresolved finding/);
+  assert.match(d.payload, /4 unresolved findings on it \(0 posted on GitHub, 4 not posted\)/);
+  assert.match(d.payload, /Not posted on GitHub\. This message is the only copy\./);
+  assert.match(d.payload, /The handler dereferences `user` before checking it\./);
 });
 
-test("unposted findings do not fire even when the current Inspector mode is live", () => {
+test("unposted findings fire when the current Inspector mode is live too", () => {
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "live" }) }),
   });
-  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
+  assert.equal(d.kind, "nudge");
 });
 
 test("a session that needs a human is not free to be handed its PR", () => {
@@ -357,6 +458,47 @@ test("an operator-started Codex session without hooks is not automated", () => {
 test("typing is a live act - dry-run or off-allowlist holds", () => {
   const d = decide({ session: mkSession({ inspector: inspector({ open: 2 }) }), mayActLive: false });
   assert.match((d as { why: string }).why, /won't type/);
+});
+
+test("every gate still refuses a dry-run draft, before and after the findings are read", () => {
+  // The trigger widened to drafts; nothing else did. Each case is a gate that refused a
+  // posted finding before, and must refuse a never-posted one now, at both halves of the
+  // decision - the pre-read one the worker acts on first and the post-read one it types.
+  const draft = inspector({ open: 2, postedOpen: 0, mode: "dry-run" });
+  const base = mkSession({ inspector: draft });
+  const cases: Array<[string, Partial<ReviewFollowupInput>, string | RegExp]> = [
+    [
+      "off",
+      { cfg: { trackReviewComments: false, trackCiFailures: false, trackMergeConflicts: false, settleMs: SETTLE } },
+      "PR follow-through is off",
+    ],
+    ["uninvited", { session: mkSession({ inspector: draft, foremanInvite: null }) }, /not invited/],
+    ["exited", { session: mkSession({ inspector: draft, state: "exited" }) }, "the session exited"],
+    ["hookless", { session: mkSession({ inspector: draft, hooksSeen: false }) }, "the session is not hook-instrumented"],
+    ["no PR", { session: mkSession({ inspector: draft, prState: null, prUrl: null }) }, "no open pull request"],
+    ["needs you", { bucket: "needs-you" }, "the session needs a human"],
+    ["input wait", { session: mkSession({ inspector: draft, state: "awaiting_input" }) }, "the session is waiting on input"],
+    ["work queue", { session: mkSession({ inspector: draft, queue: queue(1) }) }, /work queue/],
+    ["workflow", { workflowOwnsSession: true }, "an active workflow owns this session"],
+    [
+      "review comments off",
+      { cfg: { trackReviewComments: false, trackCiFailures: true, trackMergeConflicts: true, settleMs: SETTLE } },
+      "no enabled review comments, failing CI or merge conflict",
+    ],
+    ["working", { session: mkSession({ inspector: draft, state: "working" }) }, "still working"],
+    ["no pane", { session: mkSession({ inspector: draft, terminals: [] }) }, "no pane to type into"],
+    ["dry-run Foreman", { mayActLive: false }, /won't type/],
+    ["already relayed", { mark: { ...observe(base), findingsRound: 1 } }, "already nudged this round of feedback"],
+  ];
+  for (const [name, over, why] of cases) {
+    for (const findings of [undefined, findingsFor(onlyPr(base))]) {
+      const d = decide({ session: base, ...over, findings });
+      assert.equal(d.kind, "skip", `${name} (${findings ? "after" : "before"} the read)`);
+      if (d.kind !== "skip") continue;
+      if (typeof why === "string") assert.equal(d.why, why, name);
+      else assert.match(d.why, why, name);
+    }
+  }
 });
 
 // ---- the once-per-feedback guard (the mark) ----
@@ -459,11 +601,14 @@ test("CI that recovers and fails again re-arms, even on the same Inspector round
 // ---- the payload ----
 
 test("the payload names the PR and forbids opening a second one", () => {
-  const p = buildPayload(onlyPr(mkSession()), { findings: true, ciFailing: true, conflicting: false });
+  const p = buildPayload(
+    onlyPr(mkSession()),
+    { findings: true, ciFailing: true, conflicting: false },
+    [finding()],
+  );
   assert.match(p, /PR #7/);
   assert.match(p, /Do NOT open a new pull request/);
   // By URL, so `gh` never picks the repository from the remotes - on a fork, the parent.
-  assert.match(p, /gh pr view https:\/\/github\.com\/owner\/repo\/pull\/7 --comments/);
   assert.match(p, /gh pr checks https:\/\/github\.com\/owner\/repo\/pull\/7/);
   // A session with one repository is told nothing about repositories.
   assert.doesNotMatch(p, /repositor/);
@@ -471,15 +616,97 @@ test("the payload names the PR and forbids opening a second one", () => {
 
 test("the payload only mentions the feedback that is actually open", () => {
   const ciOnly = buildPayload(onlyPr(mkSession()), { findings: false, ciFailing: true, conflicting: false });
-  assert.doesNotMatch(ciOnly, /review comment/);
+  assert.doesNotMatch(ciOnly, /unresolved finding/);
   assert.match(ciOnly, /CI/);
 
   const findingsOnly = buildPayload(
     onlyPr(mkSession({ inspector: inspector({ open: 1 }) })),
     { findings: true, ciFailing: false, conflicting: false },
+    [finding()],
   );
-  assert.match(findingsOnly, /review comment/);
+  assert.match(findingsOnly, /GitHub Inspector has 1 unresolved finding on it/);
   assert.doesNotMatch(findingsOnly, /failing CI/);
+});
+
+test("the payload opens with the posted counts and carries every finding's text, never a gh pointer", () => {
+  const findings = [
+    finding({ fingerprint: "posted", title: "Posted one", body: "Posted body." }),
+    finding({
+      fingerprint: "draft",
+      title: "Draft one",
+      body: "Draft body.",
+      severity: "minor",
+      status: "drafted",
+      postedAt: null,
+      githubUrl: null,
+    }),
+    finding({
+      fingerprint: "again",
+      title: "Raised again",
+      body: "Again body.",
+      severity: "minor",
+      path: "src/b.ts",
+      status: "drafted",
+      githubUrl: "https://github.com/owner/repo/pull/7#discussion_old",
+    }),
+  ];
+  const p = buildPayload(
+    onlyPr(mkSession({ inspector: inspector({ open: 3, postedOpen: 1 }) })),
+    { findings: true, ciFailing: false, conflicting: false },
+    findings,
+  );
+  assert.ok(
+    p.startsWith(
+      "PR #7 needs follow-through: GitHub Inspector has 3 unresolved findings on it " +
+        "(1 posted on GitHub, 2 not posted).",
+    ),
+    p,
+  );
+  assert.match(p, /1\. Do NOT open a new pull request - push your fixes to this same branch\./);
+  assert.match(
+    p,
+    /2\. Address every GitHub Inspector finding listed below\. A finding marked Not posted exists only in this message: do not look for it on GitHub or reply to it there\. If you think a posted finding is wrong, you may answer in its GitHub thread\. If you disagree with a finding that was not posted, say which one and why in your reply\./,
+  );
+  assert.match(p, /3\. Commit and push\./);
+  assert.match(p, /4\. Then keep watching the PR/);
+  // The pointer that sent the agent looking for drafts on GitHub is gone.
+  assert.doesNotMatch(p, /gh pr view/);
+  assert.doesNotMatch(p, /--comments/);
+
+  // The findings come from the shared renderer, after the steps, each with its marker.
+  const listing = p.slice(p.indexOf("4. Then keep watching"));
+  assert.match(listing, /## MAJOR - Posted one\nLocation: src\/a\.ts:12\nPosted on GitHub: https:\/\/github\.com\/owner\/repo\/pull\/7#discussion_posted\nPosted body\.\nFingerprint: posted/);
+  assert.match(listing, /## MINOR - Draft one\n.*\nNot posted on GitHub\. This message is the only copy\.\nDraft body\./);
+  assert.match(listing, /Not posted again\. An earlier version was posted on GitHub: https:\/\/github\.com\/owner\/repo\/pull\/7#discussion_old/);
+  assert.ok(listing.indexOf("Posted one") < listing.indexOf("Draft one"), "severity order");
+});
+
+test("the payload stays under the 8,000-byte ceiling by dropping whole findings", () => {
+  const findings = Array.from({ length: 12 }, (_, i) =>
+    finding({ fingerprint: `fp-${String(i).padStart(2, "0")}`, title: `Finding ${i}`, body: "x".repeat(900) }));
+  const p = buildPayload(
+    onlyPr(mkSession({ inspector: inspector({ open: 12 }) })),
+    { findings: true, ciFailing: true, conflicting: false },
+    findings,
+  );
+  assert.ok(Buffer.byteLength(p, "utf8") <= WORKFLOW_LIMITS.feedbackPayloadBytes, String(Buffer.byteLength(p)));
+  // The header counts all twelve; the listing says how many it left out.
+  assert.match(p, /GitHub Inspector has 12 unresolved findings on it \(12 posted on GitHub, 0 not posted\)/);
+  const shown = p.match(/^## MAJOR - /gm)?.length ?? 0;
+  assert.ok(shown > 0 && shown < 12, String(shown));
+  assert.match(p, new RegExp(`${12 - shown} more unresolved findings are not listed here`));
+  // A finding is listed whole or not at all.
+  assert.equal(p.match(/x{900}/g)?.length, shown);
+});
+
+test("a finding being posted is counted on its own", () => {
+  const p = buildPayload(
+    onlyPr(mkSession({ inspector: inspector({ open: 2 }) })),
+    { findings: true, ciFailing: false, conflicting: false },
+    [finding({ fingerprint: "a" }), finding({ fingerprint: "b", status: "posting" })],
+  );
+  assert.match(p, /\(1 posted on GitHub, 0 not posted, 1 being posted now\)/);
+  assert.match(p, /Being posted now/);
 });
 
 // ---- one session, several pull requests (a multi-repo task) ----
@@ -622,14 +849,18 @@ test("each pull request carries its OWN feedback, not the session's", () => {
   assert.equal(loud.kind, "nudge");
   if (loud.kind !== "nudge") return;
   assert.equal(loud.prKey, "owner/beta#9");
-  assert.match(loud.reason, /3 review comment.*\+ CI failing/);
+  assert.match(loud.reason, /3 unresolved finding.*\+ CI failing/);
   assert.match(loud.reason, /\/work\/beta/);
 });
 
 test("a nudge about one repository's pull request names it, and only forbids a second OF IT", () => {
   const pr = followupPrs(mkMultiRepoSession([ALPHA_PR, BETA_PR]))[1];
   assert.ok(pr);
-  const payload = buildPayload(pr, { findings: true, ciFailing: true, conflicting: false });
+  const payload = buildPayload(
+    pr,
+    { findings: true, ciFailing: true, conflicting: false },
+    [finding({ prKey: "owner/beta#9" })],
+  );
   assert.match(payload, /PR #9/);
   assert.match(payload, /\/work\/beta/);
   assert.match(payload, /one of several repositories/);
@@ -637,7 +868,6 @@ test("a nudge about one repository's pull request names it, and only forbids a s
   // `gh` runs in the session's own checkout, which is the PRIMARY repo's worktree, so a
   // sibling's pull request has to be named by its URL or the command answers about the
   // wrong one.
-  assert.match(payload, /gh pr view https:\/\/github\.com\/owner\/beta\/pull\/9 --comments/);
   assert.match(payload, /gh pr checks https:\/\/github\.com\/owner\/beta\/pull\/9/);
 });
 
@@ -769,7 +999,7 @@ function pass(
 ) {
   const observed = observe(session, prev);
   const d = decide({ session, mark: observed, now, ...over });
-  return { d, mark: d.kind === "skip" ? observed : d.mark };
+  return { d, mark: "mark" in d ? d.mark : observed };
 }
 
 const MIN = 60_000;
@@ -952,7 +1182,7 @@ test("a conflict shares one payload with CI and findings; an escalated one is le
   const all = pass(conflictingOn("A", { prChecks: "failing", inspector: inspector({ open: 2 }) }), null);
   assert.equal(all.d.kind, "nudge");
   if (all.d.kind !== "nudge") return;
-  assert.match(all.d.payload, /2 unresolved review comments on it, and its CI checks are failing, and it has merge conflicts with `main`/);
+  assert.match(all.d.payload, /2 unresolved findings on it \(2 posted on GitHub, 0 not posted\), and its CI checks are failing, and it has merge conflicts with `main`/);
 
   const owned = conflictingOn("A", { prChecks: "failing", prConflictEscalated: true });
   const ciOnly = pass(owned, null);

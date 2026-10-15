@@ -1,4 +1,5 @@
 import type {
+  InspectorComment,
   InspectorSummary,
   PrChecks,
   PrMergeableObservation,
@@ -11,6 +12,10 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
+import { findingPublication, type FindingPublicationState } from "@shared/inspector-findings.ts";
+import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { dedupeInspectorFindings, renderInspectorFindings } from "../inspector/findings-text.ts";
+import { utf8Bytes } from "../util/utf8.ts";
 
 // The review follow-through trigger's decision core: a session's work has become an
 // OPEN pull request, it has parked, and the PR now carries feedback nobody is acting on
@@ -24,6 +29,15 @@ import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-me
 // fact), and every input to that fact is already on the session snapshot - `inspector`,
 // `prChecks`, `prState`, and per repository `task.repoPrs[].feedback`. So there is no
 // verify step; decide, then type.
+//
+// THE ONE READ, AND WHY IT IS NOT HERE
+//
+// The snapshot counts findings but does not carry their text, and the relay types that text
+// into the session, because a finding the Inspector drafted in dry run is on no pull request
+// for the agent to read. So a nudge that includes findings comes back as `read-findings`. The
+// worker reads them through the daemon's findings route and calls this again with them as
+// `findings`, which re-runs every gate below on the same inputs plus that data. The decision
+// itself still does no I/O.
 //
 // ONE SESSION, N PULL REQUESTS
 //
@@ -59,7 +73,7 @@ export const CONFLICT_ESCALATE_RESEND_MS = 60_000;
 
 /** The knobs this trigger reads. A projection of ForemanConfig, like QueueConfig. */
 export interface ReviewFollowupConfig {
-  /** Relay posted Inspector comments from `ForemanConfig.trackReviewFeedback`. */
+  /** Relay unresolved Inspector findings from `ForemanConfig.trackReviewFeedback`. */
   trackReviewComments: boolean;
   /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
   trackCiFailures: boolean;
@@ -129,6 +143,13 @@ export interface ReviewFollowupInput {
   mark: FollowupMark | null;
   cfg: ReviewFollowupConfig;
   now: number;
+  /**
+   * This pull request's findings as the worker read them from `GET /api/inspector/findings`,
+   * resolved rows included or not. Absent until that read: a nudge that would carry findings
+   * then comes back as `read-findings`. Present, its unresolved rows replace the snapshot's
+   * count as the answer to "are there findings to relay".
+   */
+  findings?: readonly InspectorComment[];
 }
 
 export type ReviewFollowupDecision =
@@ -136,6 +157,11 @@ export type ReviewFollowupDecision =
   | { kind: "skip"; why: string }
   /** Type the follow-up. Carries the mark to stamp on delivery and the exact payload. */
   | { kind: "nudge"; prKey: string; mark: FollowupMark; reason: string; payload: string }
+  /**
+   * A nudge that includes findings, decided before their text was read. The worker reads
+   * them and decides again with `findings`; nothing is stamped or typed until then.
+   */
+  | { kind: "read-findings"; prKey: string; reason: string }
   /**
    * Hand the conflict to the operator through `POST /api/pr-conflicts/escalate`. `resend` is
    * an escalated mark repeating itself, so a restarted daemon re-learns it; it is neither
@@ -171,7 +197,7 @@ export type ReviewFollowupDecision =
 export interface FollowupMark {
   /** The PR this mark is about. A different PR key resets the other two fields. */
   prKey: string;
-  /** The Inspector round we last nudged POSTED findings for, or null if never. */
+  /** The Inspector round we last relayed unresolved findings for, or null if never. */
   findingsRound: number | null;
   /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
   ciNudged: boolean;
@@ -297,7 +323,7 @@ export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): 
 
 /** What is actionable on one pull request right now. */
 interface Feedback {
-  /** The Inspector has open findings that are actually posted on the PR. */
+  /** The Inspector has unresolved findings, posted on GitHub or not. */
   findings: boolean;
   /** The PR's CI rollup is failing (as opposed to pending or passing). */
   ciFailing: boolean;
@@ -335,8 +361,24 @@ export function foremanCannotDrive(
   return null;
 }
 
-function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig): Feedback {
-  const findings = cfg.trackReviewComments && !!pr.inspector && pr.inspector.postedOpen > 0;
+/** The rows a relay carries: everything the Inspector has not closed, in any posting state. */
+function unresolvedFindings(findings: readonly InspectorComment[]): InspectorComment[] {
+  return findings.filter((finding) => finding.status !== "resolved");
+}
+
+/**
+ * `open` already counts drafted, posting and open rows (`INSPECTION_TALLY_FROM`), so a
+ * dry-run draft triggers this exactly as a posted finding does. Once the worker has read the
+ * findings, their unresolved rows answer instead: a snapshot that still counts findings
+ * resolved since must not relay an empty list.
+ */
+function feedbackState(
+  pr: FollowupPr,
+  cfg: ReviewFollowupConfig,
+  read: readonly InspectorComment[] | null,
+): Feedback {
+  const unresolved = read ? read.length > 0 : (pr.inspector?.open ?? 0) > 0;
+  const findings = cfg.trackReviewComments && unresolved;
   return {
     findings,
     ciFailing: cfg.trackCiFailures && pr.checks === "failing",
@@ -407,6 +449,7 @@ function decideConflictEscalation(
  */
 export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowupDecision {
   const { session: s, pr, bucket, mayActLive, workflowOwnsSession, mark, cfg, now } = input;
+  const read = input.findings ? unresolvedFindings(input.findings) : null;
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
@@ -435,7 +478,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // The mark with this pass's observation already folded in by `advanceFollowupMark`.
   const cur: FollowupMark = mark && mark.prKey === pr.prKey ? mark : freshMark(pr.prKey);
-  const fb = feedbackState(pr, cfg);
+  const fb = feedbackState(pr, cfg, read);
 
   // Handing a conflict to the operator types nothing, so it is decided before the gates that
   // protect the pane. Only a workflow outranks it: a run that owns the session owns its
@@ -464,7 +507,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     return skip("an active workflow owns this session");
   }
 
-  // 7. Is there anything to act on? Open posted findings, a red CI, or a conflict nobody
+  // 7. Is there anything to act on? Unresolved findings, a red CI, or a conflict nobody
   //    escalated. Nothing here is the overwhelmingly common state of an open PR and it is not
   //    a fault - say nothing. An escalated conflict belongs to the operator, so it is not
   //    mentioned again, even alongside other feedback.
@@ -508,12 +551,17 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
       ? { conflictHead: pr.headSha, conflictNudges: cur.conflictNudges + 1, conflictNudgedAt: now }
       : {}),
   };
+  // The payload carries the findings' text, so it cannot be built from a count. Ask for the
+  // read and stamp nothing: this decision is made again once the text is in hand.
+  if (open.findings && !read) {
+    return { kind: "read-findings", prKey: pr.prKey, reason: describe(pr, open, null) };
+  }
   return {
     kind: "nudge",
     prKey: pr.prKey,
     mark: next,
-    reason: describe(pr, open),
-    payload: buildPayload(pr, open),
+    reason: describe(pr, open, read),
+    payload: buildPayload(pr, open, read ?? []),
   };
 }
 
@@ -521,12 +569,12 @@ function skip(why: string): ReviewFollowupDecision {
   return { kind: "skip", why };
 }
 
-/** One-line reason for the worker's log. */
-function describe(pr: FollowupPr, fb: Feedback): string {
-  const open = pr.inspector?.postedOpen ?? 0;
+/** One-line reason for the worker's log. Counts the read findings once there are some. */
+function describe(pr: FollowupPr, fb: Feedback, read: readonly InspectorComment[] | null): string {
+  const open = read ? dedupeInspectorFindings(read).length : (pr.inspector?.open ?? 0);
   const where = pr.repoRoot !== null ? ` in ${pr.repoRoot}` : "";
   const parts: string[] = [];
-  if (fb.findings) parts.push(`${open} review comment(s)`);
+  if (fb.findings) parts.push(`${open} unresolved finding(s)`);
   if (fb.ciFailing) parts.push("CI failing");
   if (fb.conflicting) parts.push(`merge conflicts with ${pr.baseRef ?? "its base"}`);
   return `${parts.join(" + ")}${where}`;
@@ -549,14 +597,27 @@ function describe(pr: FollowupPr, fb: Feedback): string {
  * instruction names it - which repository to stand in, which pull request to push to, and
  * which one to leave alone. A single-repo session's payload names no repository: `repoRoot`
  * is null there and every qualifier below collapses to nothing.
+ *
+ * FINDINGS ARE TYPED, NOT POINTED AT. A draft the Inspector wrote in dry run is on no pull
+ * request, so "go read the review comments" sent the agent looking for something that is not
+ * there. The findings travel in the message instead, each marked posted or not by the shared
+ * renderer, under the same byte ceiling the workflow packet uses. `findings` is the
+ * unresolved set the worker read; it is ignored unless `fb.findings`.
  */
-export function buildPayload(pr: FollowupPr, fb: Feedback): string {
+export function buildPayload(
+  pr: FollowupPr,
+  fb: Feedback,
+  findings: readonly InspectorComment[] = [],
+): string {
   const ref = pr.number !== null ? `PR #${pr.number}` : "your open pull request";
+  const relayed = fb.findings ? dedupeInspectorFindings(findings) : [];
 
   const problems: string[] = [];
   if (fb.findings) {
-    const n = pr.inspector?.postedOpen ?? 0;
-    problems.push(`GitHub Inspector left ${n} unresolved review comment${n === 1 ? "" : "s"} on it`);
+    const n = relayed.length;
+    problems.push(
+      `GitHub Inspector has ${n} unresolved finding${n === 1 ? "" : "s"} on it (${publicationCounts(relayed)})`,
+    );
   }
   if (fb.ciFailing) problems.push("its CI checks are failing");
   // `baseRefName` rides every poll, so a missing base is a rare race; say so rather than
@@ -577,14 +638,16 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   } else {
     steps.push("Do NOT open a new pull request - push your fixes to this same branch.");
   }
-  // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
-  // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
   if (fb.findings) {
     steps.push(
-      `Read GitHub Inspector's review comments (\`gh pr view ${pr.url} --comments\`, and the ` +
-        `line threads under Files changed) and address every one.`,
+      "Address every GitHub Inspector finding listed below. A finding marked Not posted exists " +
+        "only in this message: do not look for it on GitHub or reply to it there. If you think a " +
+        "posted finding is wrong, you may answer in its GitHub thread. If you disagree with a " +
+        "finding that was not posted, say which one and why in your reply.",
     );
   }
+  // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
+  // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
   if (fb.ciFailing) {
     steps.push(
       `Look at the failing CI (\`gh pr checks ${pr.url}\`), reproduce it locally, and fix it.`,
@@ -598,8 +661,32 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
       "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",
   );
 
-  return (
+  const head =
     `${ref} needs follow-through: ${problems.join(", and ")}.\n\n` +
-    steps.map((step, i) => `${i + 1}. ${step}`).join("\n")
-  );
+    steps.map((step, i) => `${i + 1}. ${step}`).join("\n");
+  if (relayed.length === 0) return head;
+
+  // Whatever the header leaves under the ceiling the workflow packet also types into panes.
+  const separator = "\n\n";
+  const budgetBytes = WORKFLOW_LIMITS.feedbackPayloadBytes - utf8Bytes(head) - utf8Bytes(separator);
+  const section = renderInspectorFindings(relayed, { budgetBytes });
+  return section.text ? `${head}${separator}${section.text}` : head;
+}
+
+/**
+ * "1 posted on GitHub, 2 not posted", from the one derivation. Keyed by every publication
+ * state, so a state added to `findingPublication` fails the build here until it is counted.
+ */
+function publicationCounts(findings: readonly InspectorComment[]): string {
+  const counts: Record<FindingPublicationState, number> = {
+    posted: 0,
+    "not-posted": 0,
+    posting: 0,
+    unknown: 0,
+  };
+  for (const finding of findings) counts[findingPublication(finding).state] += 1;
+  const parts = [`${counts.posted} posted on GitHub`, `${counts["not-posted"]} not posted`];
+  if (counts.posting > 0) parts.push(`${counts.posting} being posted now`);
+  if (counts.unknown > 0) parts.push(`${counts.unknown} not known to be posted`);
+  return parts.join(", ");
 }
