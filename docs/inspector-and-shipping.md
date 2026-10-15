@@ -290,13 +290,16 @@ touches the database, can read finding text.
 
 `dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
 them, then records them instead of publishing. **Settings → GitHub Inspector → Inspections** is
-where you read what it would have said. Run it there on a few of your own PRs before you
-let it speak.
+where you read what it would have said: each row with findings has a **Findings** control
+that opens every draft for that pull request
+([Reading a pull request's findings](#reading-a-pull-requests-findings)). Run it there on a
+few of your own PRs before you let it speak.
 
 Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
 last round errored - hover the link for why), a finding count, or `clean`, beside a count
-of the findings that are no longer open and - on an open PR still carrying findings -
-a **Resolve** control that closes them ([why that exists](#how-a-finding-gets-closed)).
+of the findings that are no longer open, a **Findings** control on any row with at least one
+finding, and - on an open PR still carrying findings - a **Resolve** control that closes them
+([why that exists](#how-a-finding-gets-closed)).
 
 That second number says `closed`, not `fixed`, because it cannot tell you which: a finding
 closes in [three ways](#how-a-finding-gets-closed) and only one of them is a push that fixed
@@ -319,6 +322,37 @@ control for shortening the list, so it has to stay in view while you read the li
 filters. Picking a tile starts that filtered list at its first page, and the pager is absent
 when everything already fits. The GitHub Inspector's list is the 50 most recently reviewed pull
 requests, so the total counts what this panel was served, not everything the database holds.
+
+### Reading a pull request's findings
+
+**Findings** on an Inspections row opens every finding the GitHub Inspector generated for that
+pull request, open and closed, in a read-only modal. It is offered on any row with at least
+one finding, including a pull request that has since merged or closed. A row with no findings
+has no control.
+
+The modal names the pull request with a link to it, says whether it is open, merged or closed,
+and counts its review rounds. When the last review was not live and no finding on the pull
+request ever reached GitHub, it says so: "Dry run: nothing on this pull request was posted". It
+says nothing about posture for a row from a build that did not record it.
+
+The table is the one the [Completion tab](workflows.md) uses. Each finding shows its severity,
+title, location, round and status, and a **Posted** column that reads
+[whether it reached GitHub](#whether-a-finding-reached-github):
+
+| Posted | Meaning |
+| --- | --- |
+| Posted, linked | On GitHub. The link opens its comment, or the review that carried it. |
+| Posted, no link | On GitHub. The link is recorded on a later tick. |
+| Not posted | A draft. It exists only in Mission Control. |
+| Not posted (posted earlier) | Raised again and not posted again. The link opens the earlier comment. |
+| Posting | Sent to GitHub, outcome not known yet. |
+| Unknown | Recorded before Mission Control tracked posting. |
+
+An unresolved finding's text is always shown. A resolved one's opens with **Show finding**,
+which also shows its fingerprint and timestamps. The modal reads
+`GET /api/inspector/findings` when it opens and again on the panel's 4-second poll while it
+stays open. It has no Resolve: that stays on the row, and closes every finding on the pull
+request at once.
 
 ## Shipping (YOLO mode)
 
