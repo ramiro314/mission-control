@@ -2521,10 +2521,13 @@ an Inspector gate or a Foreman completion claim - most runs have neither and are
 tab. A stat strip carries the gate state, the open and resolved finding counts, the adopted pull
 request with its observed state, and the Inspector's review round; the counts are the ledger rows
 the table under them draws, not the Inspector's own tallies, which keep their own fields in the
-ledger disclosure. Findings are a table - severity, title, `path:line`, round and status - with
-one row each. A finding that is not resolved is why the gate has not passed, so its body is on
-screen rather than behind its row's control; a resolved one opens its body and the fingerprint the
-gate tracks it by on request. The label carries the open-finding count in amber. Findings never
+ledger disclosure. Findings are a table - severity, title, `path:line`, round, status and
+posted - with one row each. The Posted column says whether the finding reached GitHub: **Posted**
+(a link to its comment once GitHub Inspector has recorded one), **Not posted**, **Not posted
+(posted earlier)** linking to the earlier version's comment, **Posting**, or **Unknown** for a row
+recorded before Mission Control tracked posting. A finding that is not resolved is why the gate
+has not passed, so its body is on screen rather than behind its row's control; a resolved one
+opens its body and the fingerprint the gate tracks it by on request. The label carries the open-finding count in amber. Findings never
 appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
 so this is the one place they are listed. The findings policy, the missing-PR policy and
 **Open GitHub Inspector settings** sit at the foot of the same tab.
