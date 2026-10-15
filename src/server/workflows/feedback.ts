@@ -27,7 +27,7 @@ import {
 } from "./test-evidence-audit.ts";
 import { clipPacketField, clipUtf8, sanitizeWorkflowFeedback } from "./packet-text.ts";
 import { utf8Bytes } from "../util/utf8.ts";
-import { renderInspectorFindings } from "../inspector/findings-text.ts";
+import { inspectorFindingsMinimumBytes, renderInspectorFindings } from "../inspector/findings-text.ts";
 
 export { sanitizeWorkflowFeedback };
 
@@ -534,7 +534,7 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     // a pushed head, not by anything the session reports.
     ? "Fix the findings, verify the work, then commit and push it."
     : "This published policy permits bypassing Personas only for this GitHub Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for GitHub Inspector to review that new head.";
-  const header = sanitizeWorkflowFeedback([
+  let header = sanitizeWorkflowFeedback([
     "GitHub Inspector reviewed the pinned pull request head and found changes that are required.",
     "",
     "Original user goal:",
@@ -547,8 +547,20 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     `GitHub Inspector round: ${input.inspectorRound}`,
     `Review posture: ${input.reviewPosture ?? "unknown"}`,
   ].join("\n"));
+  const closingReserve = packetClosingReserve(policyInstruction, input.workflowEvidence);
+  // Several header fields are each capped at the field limit, so together they can outgrow
+  // the whole payload. The findings count is reserved first and the header takes what is
+  // left: a long goal may be clipped, but the session is always told how many findings exist.
+  const headerRoom = WORKFLOW_LIMITS.feedbackPayloadBytes
+    - closingReserve
+    - inspectorFindingsMinimumBytes(input.findings)
+    - utf8Bytes("\n\n");
+  if (utf8Bytes(header) > headerRoom) {
+    header = clipUtf8(header, Math.max(0, headerRoom)).value.replace(/\s+$/u, "");
+    truncated = true;
+  }
   const budgetBytes = WORKFLOW_LIMITS.feedbackPayloadBytes
-    - packetClosingReserve(policyInstruction, input.workflowEvidence)
+    - closingReserve
     - utf8Bytes(`${header}\n\n`);
   const section = renderInspectorFindings(input.findings, { budgetBytes });
   return {

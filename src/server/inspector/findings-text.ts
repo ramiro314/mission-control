@@ -120,6 +120,16 @@ export function omittedFindingsLine(omitted: number, shown: number): string {
 }
 
 /**
+ * The smallest budget at which the section always states its count: the line that lists
+ * none. A caller that composes a header around the section reserves this before sizing the
+ * header, so a long header can never leave the findings with neither text nor a count.
+ */
+export function inspectorFindingsMinimumBytes(findings: readonly InspectorComment[]): number {
+  const total = dedupeInspectorFindings(findings).length;
+  return total === 0 ? 0 : utf8Bytes(omittedFindingsLine(total, 0));
+}
+
+/**
  * Render the findings section under a byte budget.
  *
  * Fields clip at `feedbackFieldBytes`, as every packet field does. Past the budget, whole

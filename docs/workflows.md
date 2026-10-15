@@ -2527,7 +2527,9 @@ posted is never called the only copy. Fields still clip at the per-field limit. 
 limit the packet drops whole findings from the tail, lowest severity first, and ends the section
 with how many it left out. It never cuts a finding part way: when not even the highest-severity
 finding fits whole, none is listed and the section carries the count alone, without promising a
-resend. The finding stays unresolved either way. The packet keeps its own header and closing, and its
+resend. The finding stays unresolved either way. Room for that count is reserved before the header
+is sized, so a header whose fields together outgrow the payload is clipped instead and the count
+always survives. The packet keeps its own header and closing, and its
 failed count is every unresolved finding, listed or not. A prepared packet keeps the bytes and hash
 it was frozen with: delivery and restart recovery send those stored bytes and never render it again.
 

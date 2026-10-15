@@ -108,6 +108,39 @@ test("field and packet caps retain a deterministic hash and truncation notice", 
   assert.equal(first.failedPersonaCount, 1);
 });
 
+// Each header field is capped on its own, and four of them at the cap outgrow the whole
+// payload. The findings count is reserved before the header is sized, so the header is
+// what gets clipped and the session is still told how many findings it has to fix.
+test("header fields that exhaust the payload still leave the findings count", () => {
+  const huge = "g".repeat(200_000);
+  const rows = [finding("a", "blocker"), finding("b", "major"), finding("c", "minor")];
+  const packet = renderInspectorFeedback({
+    workflowName: huge,
+    workflowVersion: 4,
+    runId: "run-1",
+    submissionRound: 2,
+    originalGoal: huge,
+    prUrl: huge,
+    targetHeadSha: huge,
+    inspectorRound: 3,
+    reviewPosture: "live",
+    policy: "restart_workflow",
+    findings: rows,
+    workflowEvidence: true,
+  });
+  assert.ok(Buffer.byteLength(packet.payload, "utf8") <= WORKFLOW_LIMITS.feedbackPayloadBytes);
+  assert.match(packet.payload, /^GitHub Inspector reviewed the pinned pull request head/);
+  assert.match(
+    packet.payload,
+    /\n\n3 unresolved findings are not listed here, because not even the first fits in this message whole\. They stay open\.\n\n## Mission Control execution authorization/,
+  );
+  assert.doesNotMatch(packet.payload, /^## (BLOCKER|MAJOR|MINOR)/m);
+  assert.equal(packet.failedPersonaCount, 3);
+  assert.equal(packet.truncated, true);
+  assert.match(packet.payload, /Workflow repair packet truncated deterministically/);
+  assert.match(packet.payload, /Fix the findings, verify the work, then commit and push it\./);
+});
+
 test("a finding too large for the packet even after field clipping is dropped whole and counted", () => {
   const huge = "ø".repeat(200_000);
   const packet = render([finding("huge", "blocker", { title: huge, body: huge })]);

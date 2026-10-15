@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   inspectorFindingPostedLine,
+  inspectorFindingsMinimumBytes,
   omittedFindingsLine,
   renderInspectorFindings,
 } from "../src/server/inspector/findings-text.ts";
@@ -240,6 +241,27 @@ test("a first finding too large for the budget is dropped whole and counted, nev
     omitted: 0,
     truncated: false,
   });
+});
+
+// The reservation a caller makes before sizing its header: at exactly this budget the count
+// is stated, and one byte less is the only way to lose it. It counts deduplicated findings.
+test("the minimum budget always states the count of every finding", () => {
+  const rows = [
+    finding("a", "blocker", { body: "a".repeat(3_000) }),
+    finding("b", "major", { body: "b".repeat(3_000) }),
+    finding("b", "major", { title: "a duplicate fingerprint" }),
+  ];
+  const minimum = inspectorFindingsMinimumBytes(rows);
+  const line = "2 unresolved findings are not listed here, because not even the first fits in this message whole. They stay open.";
+  assert.equal(minimum, bytes(line));
+  assert.deepEqual(renderInspectorFindings(rows, { budgetBytes: minimum }), {
+    text: line,
+    shown: 0,
+    omitted: 2,
+    truncated: false,
+  });
+  assert.equal(renderInspectorFindings(rows, { budgetBytes: minimum - 1 }).text, "");
+  assert.equal(inspectorFindingsMinimumBytes([]), 0);
 });
 
 // The property behind every budget case above, swept over every budget from nothing to
