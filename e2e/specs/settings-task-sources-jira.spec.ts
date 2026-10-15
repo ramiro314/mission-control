@@ -236,10 +236,16 @@ test("a Jira source survives a repository rename and remains repairable", async 
 
   await expect(page.getByText(/That change didn't stick: not a git repository:/)).toHaveCount(0);
   await expect(page.locator(".ts-metric").first().locator("strong")).toHaveText("4");
+  // Adding a source selects it once its save resolves, in the same update that closes the
+  // add form. The count above can read 4 before that, and a click on another source in the
+  // gap is then pulled back to the new one, which already files against `daemon.repo`, so
+  // "Set repo" stays disabled. Wait for the form to close: the selection has landed by then.
+  await expect(addForm).toBeHidden();
 
   const directory = page.getByRole("list", { name: "Configured task sources" });
   await directory.getByRole("button").filter({ hasText: "Renamed Jira 1" }).click();
   const editor = page.locator(".ts-editor");
+  await expect(editor.getByLabel("What to call this source")).toHaveValue("Renamed Jira 1");
   await editor.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await editor.getByRole("button", { name: "Set repo" }).click();
   await expect

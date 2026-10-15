@@ -201,6 +201,21 @@ on a claim step to give it back.
 
 - Each step's stdout and stderr stream into one 4,000-byte tail, the same bound checks use.
   Output size never fails a claim.
+- A step may print the variables it was given. Before a failure is stored, shown in Settings
+  or written into the agent's note, every value the step received is replaced in its tail and
+  reason with `[NAME redacted]`. The tail keeps only the end of the output, so a tail that
+  starts partway through a value has that leading piece redacted too, when it is at least four
+  characters long. Every match is found in the original output before anything is replaced, so
+  values that overlap or contain one another are all removed, and overlapping matches become one
+  marker naming each variable, such as `[A_TOKEN, B_TOKEN redacted]`. A value the step transformed before printing, for example by encoding it,
+  is not recognized.
+- The slot row records a failure as a versioned JSON record: the step, the step count, the
+  command (cut to 512 bytes), the reason, the tail and how many bytes the tail dropped.
+  Settings reads those fields directly. A failure an earlier build stored as plain text shows
+  only its first line, the command and the reason. Its output is never sent to the browser,
+  because it was stored before redaction existed and may hold a value that cannot be
+  recognized now, for example one since rotated. The card says the output is withheld, and the
+  slot's next claim replaces the record.
 - A timeout sends SIGTERM to the step's process group, then SIGKILL after five seconds, and
   counts as a failed claim.
 - A failure is a non-zero exit, a timeout, or a step that cannot start. The remaining steps do
@@ -233,6 +248,40 @@ the next pass retries it. Shutdown kills every running claim's process group bef
 else stops, and grants no claimed lease from then on. The slot is left `provisioning` with
 `deps_state = claiming`, and the next startup recovers it as above.
 
+**Editing a claim and watching it.** Open a pool's disclosure in **Settings > Worktrees** to
+edit its claim under **Dependency claim, run on every task lease**:
+
+- Each step's command is entered one argument per line, so an argument keeps its spaces. Blank
+  lines are dropped, because the schema refuses an empty argument anyway. Variable names are
+  separated by spaces, commas or newlines, which no name can contain.
+- **Save claim** sends the whole claim through `PUT /api/worktrees/config`. The daemon's schema
+  is the only validator. A refusal is placed beside the field it names: a variable name under
+  its step, a glob under the fingerprint paths, a timeout under the timeout. Nothing is saved
+  while any field is refused. **Remove claim** sends `"claim": null`.
+- Each saved variable name shows **present** or **missing**, and where a present one was found:
+  in the daemon's environment, or in the login shell. This is the same rule a step's
+  environment uses, so the two cannot disagree. The value itself never leaves the daemon. A
+  name typed since the last save says "save to check", because only saved names are looked up.
+
+Each slot card of a pool with a claim shows the slot's dependency state:
+
+| State | Meaning |
+|---|---|
+| never installed | No claim has run in this slot. Its next task lease runs every step. |
+| current | The last claim succeeded, and its fingerprint matches the claim's fingerprint at the fetched default branch. Also shown when no default can be read, or when the claim lists no fingerprint paths, since neither is evidence of staleness. |
+| stale | The last claim succeeded, but the fetched default branch's fingerprint differs from the slot's. The next lease runs the claim again. |
+| installing | A claim is running in the slot right now, with its step, its command and the elapsed time. |
+| failed | The last claim failed, timed out or was stopped. The card shows the failing step, its reason, its command and the output tail, with claim variable values redacted. |
+| interrupted | A restart cut off the slot's last claim. Its next claim starts cold. |
+
+The card also names the commit the slot's fingerprint was taken at. **Stale is judged against
+the last fetched `origin/<default>` ref**, the same cached ref the card's "Default" relation uses.
+Building the inventory never fetches. The default branch's fingerprint is read once per default
+commit and claim with `git ls-tree` in the main checkout, and reused until either changes. A claim
+publishes the ordinary `worktrees_changed` revision bump as it starts, as each step starts, and as
+it settles. That bump is how the card moves between states, and the elapsed time counts up in the
+browser between bumps.
+
 ### Settings > Worktrees
 
 Open **Settings > Worktrees** to configure and inspect the allocator. The page answers one
@@ -257,12 +306,14 @@ this order:
   spelled **over the maximum** in words. An over-capacity pool offers its right-size preview on
   that row.
 
-  Opening a pool's disclosure shows its effective override, an optional setup argv, the maintenance
-  actions, and the bounded slot detail. The argv is operator-authored, stored as separate arguments,
+  Opening a pool's disclosure shows its effective override, an optional setup argv, the pool's
+  dependency claim editor (see "Editing a claim and watching it" under
+  [Dependency claims](#dependency-claims)), the maintenance actions, and the bounded slot detail. The argv is operator-authored, stored as separate arguments,
   and runs only when Mission Control creates a new slot. It never runs when a warm slot is leased
   again. It runs on the scrubbed environment described under
   [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD, relationship to the remote
-  default, cleanliness, process count, disk estimate, and owner. **Copy path** stays in the browser.
+  default, cleanliness, process count, disk estimate, and owner, and in a pool with a claim, its
+  dependency state. **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.
 

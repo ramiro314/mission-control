@@ -21,6 +21,7 @@ import {
   claimFingerprint,
   claimVariableNames,
   describeClaimFailure,
+  encodeClaimFailure,
   readTreeBlobs,
   runClaimStep,
   runClaimSteps,
@@ -124,6 +125,13 @@ export interface NativePoolStatus {
   identityValid: boolean;
   markerValid: boolean;
   observedDefaultSha: string | null;
+  /**
+   * The pool claim's fingerprint at `observedDefaultSha`, which is the last FETCHED default
+   * ref: reading it never fetches. Null when the pool has no claim, its claim lists no
+   * fingerprint paths, no default ref is known, or the tree could not be read. A slot whose
+   * recorded fingerprint differs from this one is stale against the default branch.
+   */
+  defaultFingerprint: string | null;
   slots: NativeSlotStatus[];
 }
 
@@ -323,6 +331,12 @@ export class WorktreeManager {
   private readonly pendingDomainLeases = new Set<string>();
   /** Dependency claims running right now. Maintenance skips their slots; shutdown stops them. */
   readonly claims = new ClaimRegistry();
+  /**
+   * The last default-branch fingerprint per pool, keyed by the sha and claim it was taken
+   * for. A default ref moves only on a fetch, so every observation in between reuses one
+   * `ls-tree` instead of reading the whole tree again.
+   */
+  private readonly defaultFingerprints = new Map<string, { key: string; fingerprint: string | null }>();
   private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
 
   constructor(db: DatabaseSync = openDb(), deps: Partial<WorktreeManagerDeps> = {}) {
@@ -803,7 +817,7 @@ export class WorktreeManager {
 
         let claimWarning: WorktreeClaimWarning | undefined;
         if (claim && claimControl) {
-          const claimed = await this.claimDependencies(reservation, claim, input.baseSha, claimControl.signal);
+          const claimed = await this.claimDependencies(reservation, claim, input.baseSha, claimControl);
           if (claimed.kind === "shutdown") {
             // Left exactly as the write-ahead left it. Startup finds the slot provisioning with
             // `deps_state = claiming`, quarantines it and marks it interrupted: the same cost a
@@ -889,7 +903,7 @@ export class WorktreeManager {
     reservation: WorktreeSlotRow,
     claim: WorktreeClaim,
     sha: string,
-    signal: AbortSignal,
+    control: AbortController,
   ): Promise<ClaimRun> {
     let fingerprint: string | null = null;
     if (claim.fingerprintPaths.length > 0) {
@@ -919,23 +933,31 @@ export class WorktreeManager {
     const outcome = await runClaimSteps({
       claim,
       cwd: reservation.path,
-      signal,
+      signal: control.signal,
       environment: this.deps.claimEnvironment,
       runStep: this.deps.runClaimStep,
       now: this.deps.now,
+      // Settings shows the running step and how long it has run. The registry holds it, and a
+      // bump per step is what tells the dashboard to read it again.
+      onStep: (step) => {
+        this.claims.progress(reservation.id, control, step);
+        this.publish();
+      },
     });
     if (!outcome.ok && this.claims.stopping) return { kind: "shutdown" };
-    const failure = outcome.ok ? null : describeClaimFailure(outcome.warning);
     const settled = this.store.finishClaim(
       reservation.id,
       reservation.version,
-      failure === null ? { state: "current", fingerprint, sha } : { state: "failed", error: failure },
+      outcome.ok
+        ? { state: "current", fingerprint, sha }
+        : { state: "failed", error: encodeClaimFailure(outcome.warning) },
       this.deps.now(),
     );
     if (!settled) return { kind: "unrecorded", reason: "the dependency claim outcome could not be recorded" };
     this.publish();
     if (outcome.ok) return { kind: "succeeded" };
-    console.warn(`[worktrees] dependency claim failed in ${reservation.path}: ${failure!.split("\n", 1)[0]}`);
+    const summary = describeClaimFailure(outcome.warning).split("\n", 1)[0];
+    console.warn(`[worktrees] dependency claim failed in ${reservation.path}: ${summary}`);
     return { kind: "failed", warning: outcome.warning };
   }
 
@@ -1502,16 +1524,49 @@ export class WorktreeManager {
           mergedIntoDefault,
         };
       });
+      const policy = this.deps.resolvePolicy(pool.gitCommonDirectory);
       output.push({
         pool,
-        policy: this.deps.resolvePolicy(pool.gitCommonDirectory),
+        policy,
         identityValid,
         markerValid,
         observedDefaultSha,
+        defaultFingerprint: identityValid && identity
+          ? await this.defaultFingerprint(pool.id, identity.mainCheckoutRoot, policy.claim ?? null, observedDefaultSha)
+          : null,
         slots,
       });
     }
     return output;
+  }
+
+  /**
+   * The claim's fingerprint at the cached default-branch commit, read from objects in the
+   * main checkout. An unreadable tree is not cached, so the next observation tries again.
+   */
+  private async defaultFingerprint(
+    poolId: string,
+    mainCheckoutRoot: string,
+    claim: WorktreeClaim | null,
+    defaultSha: string | null,
+  ): Promise<string | null> {
+    if (!claim || claim.fingerprintPaths.length === 0 || !defaultSha) {
+      this.defaultFingerprints.delete(poolId);
+      return null;
+    }
+    const key = JSON.stringify([defaultSha, claim]);
+    const cached = this.defaultFingerprints.get(poolId);
+    if (cached?.key === key) return cached.fingerprint;
+    let blobs: GitResult<TreeBlob[]>;
+    try {
+      blobs = await this.deps.treeBlobs(mainCheckoutRoot, defaultSha);
+    } catch {
+      return null;
+    }
+    if (!blobs.ok) return null;
+    const fingerprint = claimFingerprint(claim, blobs.value);
+    this.defaultFingerprints.set(poolId, { key, fingerprint });
+    return fingerprint;
   }
 
   /**
