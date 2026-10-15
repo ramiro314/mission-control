@@ -108,6 +108,52 @@ test("field and packet caps retain a deterministic hash and truncation notice", 
   assert.equal(first.failedPersonaCount, 1);
 });
 
+// The renderer gets what the payload really has left. A packet that clips nothing carries no
+// truncation notice, so a finding that fills the payload to its last byte stays listed; one
+// byte more and it is dropped whole. A clipped field brings the notice, and then the finding
+// must leave room for it, still to the exact byte.
+test("a finding that fits the payload as sent is listed, to the last byte", () => {
+  const limit = WORKFLOW_LIMITS.feedbackPayloadBytes;
+  const bytes = (value: string): number => Buffer.byteLength(value, "utf8");
+  const notice = "\n\n[Workflow repair packet truncated deterministically.]";
+
+  // A one-byte padding measures everything else; each padding byte after that is one payload
+  // byte. Every field stays under its own limit except where a case clips one on purpose.
+  const cases = [
+    {
+      name: "nothing clipped",
+      over: (size: number) => ({ title: "x".repeat(size), body: "b".repeat(3_000) }),
+      endsWithNotice: false,
+    },
+    {
+      // A title over its field limit is clipped, so the notice is sent and its bytes reserved.
+      name: "a clipped title",
+      over: (size: number) => ({
+        title: "t".repeat(WORKFLOW_LIMITS.feedbackFieldBytes + 1),
+        body: "x".repeat(size),
+      }),
+      endsWithNotice: true,
+    },
+  ];
+  for (const { name, over: pad, endsWithNotice } of cases) {
+    const packet = (size: number) => render([finding("edge", "major", pad(size))]);
+    const fill = limit - bytes(packet(1).payload) + 1;
+    assert.ok(fill < WORKFLOW_LIMITS.feedbackFieldBytes, `${name}: the padding would be clipped`);
+
+    const full = packet(fill);
+    assert.equal(bytes(full.payload), limit, `${name}: the listed finding does not fill the payload exactly`);
+    assert.match(full.payload, /\nFingerprint: edge\n/, `${name}: a finding that fits was dropped`);
+    assert.equal(full.payload.endsWith(notice), endsWithNotice, `${name}: notice mismatch`);
+    assert.equal(full.truncated, endsWithNotice);
+
+    const over = packet(fill + 1);
+    assert.ok(bytes(over.payload) <= limit, `${name}: one byte more overflowed the payload`);
+    assert.doesNotMatch(over.payload, /Fingerprint: edge/, `${name}: one byte more was still listed`);
+    assert.match(over.payload, /\n\n1 unresolved finding is not listed here, because it does not fit in this message whole\. It stays open\.\n\n/);
+    assert.equal(over.failedPersonaCount, 1);
+  }
+});
+
 // Each header field is capped on its own, and four of them at the cap outgrow the whole
 // payload. The findings count is reserved before the header is sized, so the header is
 // what gets clipped and the session is still told how many findings it has to fix.

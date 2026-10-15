@@ -21,13 +21,23 @@ export interface RenderedInspectorFindings {
   shown: number;
   /** Findings left out to stay under the budget. `shown + omitted` is the deduplicated total. */
   omitted: number;
-  /** Some field was clipped mid-text: a field over its cap, or the one finding that had to be. */
+  /**
+   * A listed finding had a field clipped at the per-field limit, or the budget could not
+   * hold even the count line.
+   */
   truncated: boolean;
 }
 
 export interface RenderInspectorFindingsOptions {
   /** The most UTF-8 bytes `text` may take, closing line included. */
   budgetBytes: number;
+  /**
+   * Bytes the caller adds after the section only when `truncated` comes back true, such as a
+   * packet's truncation notice. A listing with a clipped field must fit in `budgetBytes`
+   * minus this; one without uses the whole budget, so no finding is dropped to make room for
+   * a notice that is never sent.
+   */
+  truncationReserveBytes?: number;
 }
 
 const BLOCK_SEPARATOR = "\n\n";
@@ -40,6 +50,11 @@ const LEGACY_BODY =
  * A unique DB index normally makes a duplicate unreachable. Keeping the choice deterministic
  * for a duplicated snapshot stops caller order from changing a frozen packet if a joined or
  * legacy input ever contains the same issue twice.
+ *
+ * Today's order of preference leads (location, title, body, severity, id), and every other
+ * field follows in key order, so two rows that differ only in what `findingPublication` reads
+ * (status, `postedAt`, `githubUrl`, `legacyPosted`) still resolve the same way in any input
+ * order. An absent field and a null one stay distinct, as `findingPublication` reads them.
  */
 function dedupeInspectorFindings(findings: readonly InspectorComment[]): InspectorComment[] {
   const stableFinding = (row: InspectorComment): string => JSON.stringify([
@@ -49,6 +64,10 @@ function dedupeInspectorFindings(findings: readonly InspectorComment[]): Inspect
     row.body,
     row.severity,
     row.id,
+    ...Object.keys(row)
+      .filter((key) => row[key as keyof InspectorComment] !== undefined)
+      .sort()
+      .map((key) => [key, row[key as keyof InspectorComment]]),
   ]);
   const unique = new Map<string, InspectorComment>();
   for (const finding of findings) {
@@ -137,18 +156,20 @@ export function inspectorFindingsMinimumBytes(findings: readonly InspectorCommen
  * closing line says how many. A finding is never cut part way, the first one included: when
  * not even it fits whole, none is listed and the closing line carries the count alone.
  * `truncated` reports only a field clipped at its per-field limit in a listed finding, or a
- * budget too small to state even the count.
+ * budget too small to state even the count. A listing that sets it must also leave room for
+ * `truncationReserveBytes`.
  */
 export function renderInspectorFindings(
   findings: readonly InspectorComment[],
   opts: RenderInspectorFindingsOptions,
 ): RenderedInspectorFindings {
   const budget = Math.max(0, Math.floor(opts.budgetBytes));
+  const reserve = Math.max(0, Math.floor(opts.truncationReserveBytes ?? 0));
   const blocks = dedupeInspectorFindings(findings).map(renderBlock);
   const total = blocks.length;
   if (total === 0) return { text: "", shown: 0, omitted: 0, truncated: false };
 
-  const shown = wholeFindingsThatFit(blocks, budget);
+  const shown = wholeFindingsThatFit(blocks, budget, reserve);
   const omitted = total - shown;
   const kept = blocks.slice(0, shown);
   const text = [
@@ -160,18 +181,30 @@ export function renderInspectorFindings(
   return { text, shown, omitted, truncated: kept.some((block) => block.truncated) };
 }
 
-/** How many leading findings fit whole, beside the omitted-count line the rest would need. */
-function wholeFindingsThatFit(blocks: readonly FindingBlock[], budget: number): number {
+/**
+ * How many leading findings fit whole, beside the omitted-count line the rest would need.
+ * Once a listed finding has a clipped field, the caller's truncation reserve comes off the
+ * budget; it only grows from there, so the first prefix that does not fit ends the search.
+ */
+function wholeFindingsThatFit(
+  blocks: readonly FindingBlock[],
+  budget: number,
+  truncationReserve: number,
+): number {
   let used = 0;
   let fit = 0;
+  let clipped = false;
   for (let shown = 1; shown <= blocks.length; shown += 1) {
-    used += utf8Bytes(blocks[shown - 1]!.text) + (shown > 1 ? BLOCK_SEPARATOR.length : 0);
-    if (used > budget) break;
+    const block = blocks[shown - 1]!;
+    used += utf8Bytes(block.text) + (shown > 1 ? BLOCK_SEPARATOR.length : 0);
+    clipped ||= block.truncated;
+    const room = budget - (clipped ? truncationReserve : 0);
+    if (used > room) break;
     const omitted = blocks.length - shown;
     const closing = omitted > 0
       ? BLOCK_SEPARATOR.length + utf8Bytes(omittedFindingsLine(omitted, shown))
       : 0;
-    if (used + closing <= budget) fit = shown;
+    if (used + closing <= room) fit = shown;
   }
   return fit;
 }

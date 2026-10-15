@@ -243,6 +243,55 @@ test("a first finding too large for the budget is dropped whole and counted, nev
   });
 });
 
+// A reserve the caller spends only when the section comes back truncated, such as a packet's
+// truncation notice: an unclipped listing may use the whole budget, a clipped one must leave
+// the reserve free.
+test("the truncation reserve applies only to a listing with a clipped field", () => {
+  const reserve = 50;
+  const plain = [finding("p", "major")];
+  const plainBytes = bytes(renderInspectorFindings(plain, { budgetBytes: 100_000 }).text);
+  const atBudget = renderInspectorFindings(plain, { budgetBytes: plainBytes, truncationReserveBytes: reserve });
+  assert.deepEqual([atBudget.shown, atBudget.truncated], [1, false], "an unclipped finding paid the reserve");
+
+  const clipped = [finding("c", "major", { title: "t".repeat(WORKFLOW_LIMITS.feedbackFieldBytes + 1) })];
+  const clippedBytes = bytes(renderInspectorFindings(clipped, { budgetBytes: 100_000 }).text);
+  const withRoom = renderInspectorFindings(clipped, {
+    budgetBytes: clippedBytes + reserve,
+    truncationReserveBytes: reserve,
+  });
+  assert.deepEqual([withRoom.shown, withRoom.truncated], [1, true]);
+  const short = renderInspectorFindings(clipped, {
+    budgetBytes: clippedBytes + reserve - 1,
+    truncationReserveBytes: reserve,
+  });
+  assert.equal(short.shown, 0, "a clipped finding was listed without room for the reserve");
+  assert.equal(short.truncated, false, "the count line alone needs no reserve");
+});
+
+// Two rows for one fingerprint that differ only in what `findingPublication` reads would
+// otherwise tie, and input order would decide whether the packet says "Posted" or "only copy".
+test("duplicate selection does not depend on input order when only posting state differs", () => {
+  const posted = finding("dup", "major", {
+    status: "open",
+    postedAt: 1_000,
+    githubUrl: "https://github.com/owner/repo/pull/7#discussion_r1",
+  });
+  const variants: Array<Partial<InspectorComment>> = [
+    { status: "drafted", postedAt: null, githubUrl: null },
+    { postedAt: null },
+    { githubUrl: null },
+    { status: "resolved", postedAt: null, githubUrl: null, legacyPosted: "unknown" },
+    { postedAt: undefined, legacyPosted: undefined },
+  ];
+  for (const over of variants) {
+    const other = { ...posted, ...over };
+    const forward = renderInspectorFindings([posted, other], { budgetBytes: 8_000 });
+    const reverse = renderInspectorFindings([other, posted], { budgetBytes: 8_000 });
+    assert.equal(forward.text, reverse.text, `order decided the marker for ${JSON.stringify(over)}`);
+    assert.equal(forward.shown, 1);
+  }
+});
+
 // The reservation a caller makes before sizing its header: at exactly this budget the count
 // is stated, and one byte less is the only way to lose it. It counts deduplicated findings.
 test("the minimum budget always states the count of every finding", () => {

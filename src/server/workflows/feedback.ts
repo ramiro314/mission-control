@@ -268,15 +268,6 @@ function packetClosing(
   return `${authorization}\n\n${finalInstruction}`;
 }
 
-/**
- * Bytes `finalizePacket` appends after a body in the worst case: the closing plus the
- * truncation notice. A body that stays under the payload limit minus this is never clipped.
- * For a packet that grants no pull request, which is every caller that reserves.
- */
-function packetClosingReserve(finalInstruction: string, workflowEvidence: boolean): number {
-  return utf8Bytes(`\n\n${packetClosing(finalInstruction, workflowEvidence, false)}${TRUNCATION_NOTICE}`);
-}
-
 function finalizePacket(
   body: string,
   truncated: boolean,
@@ -511,9 +502,11 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
  *
  * The packet owns its header (goal, workflow, run, PR, pinned head, round and posture) and
  * its `finalizePacket` closing. The findings between them come from the shared renderer that
- * Foreman's relay also uses, given exactly what is left of the payload limit. The closing's
- * worst case is reserved up front, so `finalizePacket` never has to clip a finding part way:
- * past the budget, whole findings are left out and the section says how many.
+ * Foreman's relay also uses, given exactly what is left of the payload limit once the closing
+ * that will actually be sent is set aside. The truncation notice is reserved only when the
+ * packet will carry it, so `finalizePacket` never has to clip a finding part way and no
+ * finding that fits is dropped for a notice that never appears. Past the budget, whole
+ * findings are left out and the section says how many.
  *
  * Changing this text never reaches a packet already prepared. A delivery stores its payload
  * and hash when it is prepared, delivery and restart recovery send those stored bytes, and
@@ -547,22 +540,34 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     `GitHub Inspector round: ${input.inspectorRound}`,
     `Review posture: ${input.reviewPosture ?? "unknown"}`,
   ].join("\n"));
-  const closingReserve = packetClosingReserve(policyInstruction, input.workflowEvidence);
+  // The closing `finalizePacket` will append, sized as it will actually be sent: the
+  // truncation notice is added only to a packet that ends up truncated.
+  const closingBytes = utf8Bytes(`\n\n${packetClosing(policyInstruction, input.workflowEvidence, false)}`);
+  const noticeBytes = utf8Bytes(TRUNCATION_NOTICE);
   // Several header fields are each capped at the field limit, so together they can outgrow
   // the whole payload. The findings count is reserved first and the header takes what is
   // left: a long goal may be clipped, but the session is always told how many findings exist.
-  const headerRoom = WORKFLOW_LIMITS.feedbackPayloadBytes
-    - closingReserve
+  const headerRoomBeforeNotice = WORKFLOW_LIMITS.feedbackPayloadBytes
+    - closingBytes
     - inspectorFindingsMinimumBytes(input.findings)
     - utf8Bytes("\n\n");
+  if (utf8Bytes(header) > headerRoomBeforeNotice) truncated = true;
+  // From here a truncated header makes the notice certain, so it is reserved outright.
+  const headerRoom = headerRoomBeforeNotice - (truncated ? noticeBytes : 0);
   if (utf8Bytes(header) > headerRoom) {
     header = clipUtf8(header, Math.max(0, headerRoom)).value.replace(/\s+$/u, "");
     truncated = true;
   }
   const budgetBytes = WORKFLOW_LIMITS.feedbackPayloadBytes
-    - closingReserve
+    - closingBytes
+    - (truncated ? noticeBytes : 0)
     - utf8Bytes(`${header}\n\n`);
-  const section = renderInspectorFindings(input.findings, { budgetBytes });
+  // Otherwise the notice is the renderer's to reserve, and only for a listing that clips a
+  // field: a finding that fits the packet as it will be sent is never dropped for it.
+  const section = renderInspectorFindings(input.findings, {
+    budgetBytes,
+    truncationReserveBytes: truncated ? 0 : noticeBytes,
+  });
   return {
     ...finalizePacket(
       `${header}\n\n${section.text}`,
