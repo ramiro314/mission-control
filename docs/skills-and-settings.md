@@ -68,12 +68,13 @@ The **Pull Request** row applies whenever a session prepares, opens, or reports 
 PR. GitHub Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
 than left to model selection. Its reviewer-ready description contract has two sections: a
-concise, bullet-forward **For Humans** for the why, feature description, tradeoffs, known gaps,
-evidence, and recommended follow-ups; and **For Agents** for direct links to the plan and
-technical documentation, technical context those documents do not cover, and deliberately
+concise **For Humans** with change bullets and verification, including tradeoffs, known gaps,
+and follow-ups only when significant and specific to the task, with empty subsections omitted;
+and **For Agents** for direct links to the plan and technical documentation, technical context those documents do not cover, and deliberately
 handled failure modes. Links and technical context are descriptive references, without
 instructions to the reviewer. It does not inventory changed tests or repeat design detail
-already covered by the linked documents. The full contract lives in
+already covered by the linked documents. Already-published workflow versions retain their frozen action prompts; newly published
+workflows capture the revised action. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
 **Always create draft PRs**, beside that row, defaults off. Turning it on makes new PRs
