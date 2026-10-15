@@ -349,9 +349,6 @@ test("the Completion tab folds the gate and the Foreman claims into one pane", a
   await expect(rows.filter({ hasText: RESOLVED_FINDING })).toContainText("resolved");
   await expect(rows.filter({ hasText: RESOLVED_FINDING })).toContainText("major");
 
-  // THE POSTED COLUMN says whether each finding reached GitHub. The drafted finding never did,
-  // so its text exists only here; the resolved one did, and links to its comment; the legacy
-  // row predates posting tracking and says so rather than guessing.
   const postedCell = (title: string): Locator =>
     rows.filter({ hasText: title }).locator("td").nth(5);
   await expect(pane.getByRole("columnheader", { name: "Posted" })).toBeVisible();
