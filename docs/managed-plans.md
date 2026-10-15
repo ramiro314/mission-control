@@ -58,7 +58,7 @@ automatic remote backup of excluded previews.
 
 The daemon-only `managed_plans` and `managed_plan_revisions` tables retain attribution,
 pinned policy, current revision, request identity, manifest hash and write intent.
-Schema version 5 adds both tables without changing existing plan files. Version 6 adds task plan inputs, pinned task policy, reservations, approval mappings, validation mappings and publication receipts. Manifests use
+Upstream's schema version 5 adds both tables without changing existing plan files, and its version 6 adds task plan inputs, pinned task policy, reservations, approval mappings, validation mappings and publication receipts. This fork had already shipped its stored testing settings as version 5, so it stamps the combined upgrade as version 7. The version only decides whether a recovery point is captured before upgrading: every table and column here is created by the idempotent upgrade whatever version a database records, so a fork database stamped 5 still gains them. Manifests use
 version 1 and contain a bounded inventory, SHA-256 digests, source-rendering digest pairs,
 and policy-eligible checkout paths. Unknown manifest or policy versions refuse reads.
 

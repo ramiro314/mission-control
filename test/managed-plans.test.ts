@@ -17,7 +17,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-managed-plans-")));
 process.env.MISSION_HOME = join(home, "state");
 const { savePlan, readPlanRevision, readPlanFile, planContext, pendingPlanWriteWarnings, listPlans, authorizePlan, managedPlanCaptureScopes } = await import("../src/server/plans/store.ts");
-const { openDb, closeDb, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+const { openDb, closeDb, upgradeDatabaseToCurrentSchema, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
 const { applySkillsConfig, getSkillsConfig } = await import("../src/server/skills/config.ts");
 const { planPlanCapture } = await import("../src/server/plans/capture-plan.ts");
 const { ArchiveCaptureStore } = await import("../src/server/archives/capture-store.ts");
@@ -663,4 +663,37 @@ test("a failed retained stage retries from its journal; partially applied checko
     assert.equal(readFileSync(join(a.checkout, file.checkoutPath!), "utf8"), readPlanFile(first.manifest.planId, 2, file.name).toString());
   }
   assert.equal(recovered.manifest.revision, 2);
+});
+
+test("a fork database stamped 5 for testing settings still gains upstream's managed-plan schema", () => {
+  // The fork shipped its testing settings catalog as schema version 5 before upstream's 5 and 6
+  // (managed plans) arrived, so an operator's database can record 5 with none of upstream's
+  // tables. Built here as the current schema minus everything upstream's 5 and 6 add.
+  const path = join(home, `${randomUUID()}.db`);
+  const forkV5 = new DatabaseSync(path);
+  try {
+    upgradeDatabaseToCurrentSchema(forkV5);
+    for (const table of [
+      "managed_plan_publications", "managed_plan_validations", "managed_plan_reviews",
+      "managed_plan_reservations", "managed_plan_revisions", "managed_plans",
+    ]) forkV5.exec(`DROP TABLE ${table}`);
+    forkV5.exec("ALTER TABLE tasks DROP COLUMN plan_inputs; ALTER TABLE tasks DROP COLUMN plan_policy;");
+    forkV5.exec(`INSERT INTO testing_settings (repo_root, settings_json, revision, created_at, updated_at)
+      VALUES ('/repo', '{"tests":{"patterns":["test/**"]}}', 3, 1, 2); PRAGMA user_version = 5;`);
+  } finally { forkV5.close(); }
+
+  const upgraded = new DatabaseSync(path);
+  try {
+    upgradeDatabaseToCurrentSchema(upgraded);
+    const tables = new Set((upgraded.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
+      .map((row) => row.name));
+    for (const table of ["managed_plans", "managed_plan_revisions", "managed_plan_reservations", "managed_plan_reviews",
+      "managed_plan_validations", "managed_plan_publications"]) assert.ok(tables.has(table), `${table} is created`);
+    const columns = (upgraded.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map((row) => row.name);
+    assert.ok(columns.includes("plan_inputs") && columns.includes("plan_policy"), "the version 6 task columns are added");
+    assert.deepEqual({ ...upgraded.prepare("SELECT settings_json, revision FROM testing_settings").get() },
+      { settings_json: '{"tests":{"patterns":["test/**"]}}', revision: 3 }, "the fork's testing settings survive");
+    assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 7);
+  } finally { upgraded.close(); }
 });

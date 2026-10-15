@@ -181,7 +181,9 @@ let db: DatabaseSync | undefined;
 // 6: pinned task plan inputs, local policy, final approval and artifact receipts.
 // 7: fork - the stored testing settings catalog (`testing_settings`), empty on an upgraded
 //    database. The fork shipped it as 5 before upstream's 5 and 6 arrived; 7 makes a fork
-//    database stamped 5 or 6 take its recovery point before the combined upgrade.
+//    database stamped 5 or 6 take its recovery point before the combined upgrade. The
+//    migrations themselves are not gated by this number, so a fork database stamped 5 still
+//    gains upstream's managed-plan schema (`test/managed-plans.test.ts` pins that path).
 export const CURRENT_DATABASE_SCHEMA_VERSION = 7;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
