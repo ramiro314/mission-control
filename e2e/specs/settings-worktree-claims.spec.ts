@@ -303,6 +303,42 @@ test("the claim editor saves through the settings route and every slot shows its
   }
 });
 
+test("a refused field's error follows its step when an earlier step is removed", async ({ dashboard, daemon }) => {
+  const created = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "claim editor step removal" },
+  });
+  expect(created.status()).toBe(201);
+  const pool = await openPool(dashboard, daemon);
+  const editor = pool.getByRole("group", { name: "Dependency claim, run on every task lease" });
+
+  // Two steps, the second naming a variable the schema refuses.
+  await editor.getByRole("button", { name: "Add step" }).click();
+  await editor.getByRole("button", { name: "Add step" }).click();
+  await editor.getByLabel("Step 1 command, one argument per line").fill("true");
+  await editor.getByLabel("Step 2 command, one argument per line").fill("true");
+  await editor.getByLabel("Step 2 variable names").fill("bad-name");
+  await editor.getByRole("button", { name: "Save claim" }).click();
+  await expect(editor.getByLabel("Step 2 variable names")).toHaveAttribute("aria-invalid", "true");
+  await expect(editor.getByLabel("Step 1 variable names")).not.toHaveAttribute("aria-invalid", "true");
+
+  // Removing step 1 makes the refused step the first one, and its error moves with it.
+  await editor.getByRole("button", { name: "Remove step 1" }).click();
+  await expect(editor.getByLabel("Step 2 variable names")).toHaveCount(0);
+  const moved = editor.getByLabel("Step 1 variable names");
+  await expect(moved).toHaveValue("bad-name");
+  await expect(moved).toHaveAttribute("aria-invalid", "true");
+  await expect(moved).toHaveAccessibleDescription("bad-name: a variable name is letters, digits and underscores");
+  await expect(editor.getByRole("alert")).toHaveText("The claim was not saved. Fix the fields marked above.");
+
+  // Removing the refused step itself leaves no error behind on a field that is fine.
+  await editor.getByRole("button", { name: "Add step" }).click();
+  await editor.getByLabel("Step 2 command, one argument per line").fill("true");
+  await editor.getByRole("button", { name: "Remove step 1" }).click();
+  await expect(editor.getByLabel("Step 1 variable names")).toHaveValue("");
+  await expect(editor.getByLabel("Step 1 variable names")).not.toHaveAttribute("aria-invalid", "true");
+  await expect(editor.getByRole("alert")).toHaveCount(0);
+});
+
 test.afterAll(() => {
   rmSync(shellDir, { recursive: true, force: true });
 });

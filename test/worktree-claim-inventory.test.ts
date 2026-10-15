@@ -33,6 +33,7 @@ import {
   emptyClaimErrors,
   hasClaimErrors,
   hasClaimFieldErrors,
+  withoutStepErrors,
   type ClaimDraft,
 } from "../src/web/lib/worktree-claim-draft.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -279,6 +280,26 @@ test("the route's schema refusal lands beside the claim field that caused it", (
   assert.equal(hasClaimFieldErrors(unreachable), false);
   assert.equal(hasClaimFieldErrors(errors), true);
   assert.equal(hasClaimErrors(emptyClaimErrors()), false);
+});
+
+test("removing a step moves its successors' errors down with them and drops its own", () => {
+  const errors = {
+    ...emptyClaimErrors(),
+    timeoutMinutes: ["Number must be greater than or equal to 1"],
+    argv: { 0: ["Argument 1: bad first"], 2: ["Argument 1: bad third"] },
+    env: { 1: ["bad-name: a variable name is letters, digits and underscores"], 2: ["OTHER: reserved"] },
+  };
+  assert.deepEqual(withoutStepErrors(errors, 0), {
+    ...errors,
+    argv: { 1: ["Argument 1: bad third"] },
+    env: { 0: ["bad-name: a variable name is letters, digits and underscores"], 1: ["OTHER: reserved"] },
+  }, "step 2's name error now sits on step 1, where that step now is");
+  assert.deepEqual(withoutStepErrors(errors, 1).env, { 1: ["OTHER: reserved"] }, "the removed step's own errors go with it");
+  assert.deepEqual(withoutStepErrors(errors, 1).argv, { 0: ["Argument 1: bad first"], 1: ["Argument 1: bad third"] });
+  assert.deepEqual(withoutStepErrors(errors, 5), errors, "removing a step after every error changes nothing");
+  // Removing the only step with field errors leaves nothing to point the operator at.
+  const onlyStep = { ...emptyClaimErrors(), env: { 0: ["bad-name: no"] } };
+  assert.equal(hasClaimErrors(withoutStepErrors(onlyStep, 0)), false);
 });
 
 test("a failure record round-trips field for field, whatever the command and reason contain", () => {

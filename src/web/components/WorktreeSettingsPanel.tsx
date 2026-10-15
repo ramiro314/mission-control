@@ -29,6 +29,7 @@ import {
   emptyClaimErrors,
   hasClaimErrors,
   hasClaimFieldErrors,
+  withoutStepErrors,
   type ClaimDraft,
   type ClaimDraftErrors,
   type ClaimStepDraft,
@@ -635,6 +636,8 @@ function ClaimEditor({
                 onClick={() => {
                   setSaved(null);
                   setDraft((current) => ({ ...current, steps: current.steps.filter((_, at) => at !== index) }));
+                  // The errors move with their steps, so a refusal stays on the field that caused it.
+                  setErrors((current) => withoutStepErrors(current, index));
                 }}
               >
                 Remove step {number}

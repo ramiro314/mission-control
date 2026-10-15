@@ -73,6 +73,24 @@ export function emptyClaimErrors(): ClaimDraftErrors {
   return { general: [], steps: [], timeoutMinutes: [], fingerprintPaths: [], argv: {}, env: {} };
 }
 
+/**
+ * The errors once step `removed` is gone from the draft, re-indexed the way the step list is:
+ * the removed step's own errors go with it, and every later step's move down one place, so a
+ * refusal stays beside the field that caused it. Errors not tied to a step are unchanged.
+ */
+export function withoutStepErrors(errors: ClaimDraftErrors, removed: number): ClaimDraftErrors {
+  const shift = (byStep: Record<number, string[]>): Record<number, string[]> => {
+    const next: Record<number, string[]> = {};
+    for (const [key, messages] of Object.entries(byStep)) {
+      const index = Number(key);
+      if (index < removed) next[index] = messages;
+      else if (index > removed) next[index - 1] = messages;
+    }
+    return next;
+  };
+  return { ...errors, argv: shift(errors.argv), env: shift(errors.env) };
+}
+
 export function hasClaimErrors(errors: ClaimDraftErrors): boolean {
   return errors.general.length > 0 || hasClaimFieldErrors(errors);
 }
