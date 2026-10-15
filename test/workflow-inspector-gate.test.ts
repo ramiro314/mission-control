@@ -1727,6 +1727,19 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
       recordInjection: () => {},
       resumptionSettleMs: 0,
     });
+    // Count gate evaluations of an observation as they FINISH. Under `restart_workflow` the
+    // gate records nothing when it re-enters (the run is parked in `waiting_for_session`), so
+    // there is no state to wait on; waiting for the evaluation itself is what makes the
+    // delivery count below an assertion about this observation rather than about a timer.
+    const gate = recovered as unknown as {
+      evaluateInspectorGate(runId: string, event: unknown): Promise<void>;
+    };
+    const evaluate = gate.evaluateInspectorGate.bind(recovered);
+    let observationsEvaluated = 0;
+    gate.evaluateInspectorGate = async (runId, event) => {
+      await evaluate(runId, event);
+      if (event && runId === seeded.ids.run) observationsEvaluated += 1;
+    };
     try {
       recovered.start();
       await waitFor(
@@ -1735,15 +1748,16 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
       );
       // The same head observed again, findings still open: the gate re-enters and must
       // leave the prepared packet alone.
+      const before = observationsEvaluated;
       const observedAt = Date.now();
       signal(seeded, seeded.head, observedAt);
+      await waitFor(
+        () => observationsEvaluated > before,
+        "the gate never evaluated the fresh observation",
+      );
       if (policy === "inspector_only") {
-        await waitFor(() => {
-          const gate = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
-          return (gate.lastObservedAt ?? 0) >= observedAt;
-        }, "the Inspector-only gate did not take the fresh observation");
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        const state = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+        assert.ok((state.lastObservedAt ?? 0) >= observedAt, "the Inspector-only gate did not take the observation");
       }
       const packets = seeded.store.listDeliveries(seeded.ids.run)
         .filter((delivery) => delivery.kind === "inspector_feedback");
