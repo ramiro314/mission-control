@@ -25,12 +25,15 @@ import {
   SETTINGS_BACKUP_CATALOGS,
   SettingsBackupPersonaSchema,
   SettingsBackupSessionActionSchema,
+  SettingsBackupTestingSettingsSchema,
   SettingsBackupWorkflowCommandSchema,
   SettingsBackupWorkflowDefinitionSchema,
   SettingsBackupWorkflowVersionSchema,
   parseSettingsCatalogPayload,
+  settingsCatalogPayloadWhenMissing,
   type SettingsBackupPersona,
   type SettingsBackupSessionAction,
+  type SettingsBackupTestingSettings,
   type SettingsBackupWorkflowCommand,
   type SettingsBackupWorkflowDefinition,
   type SettingsBackupWorkflowVersion,
@@ -49,6 +52,7 @@ export interface MigratedSettingsBackup {
   personas: SettingsBackupPersona[];
   sessionActions: SettingsBackupSessionAction[];
   workflowCommands: SettingsBackupWorkflowCommand[];
+  testingSettings: SettingsBackupTestingSettings[];
   workflows: SettingsBackupWorkflowDefinition[];
   workflowVersions: SettingsBackupWorkflowVersion[];
 }
@@ -81,6 +85,7 @@ export function migrateSettingsBackupSnapshot(
   }
   for (const descriptor of SETTINGS_BACKUP_CATALOGS) {
     const entry = byDomain.get(descriptor.domain);
+    if (!entry && settingsCatalogPayloadWhenMissing(descriptor.domain) !== undefined) continue;
     if (!entry) throw new TypeError(`Snapshot is missing domain ${descriptor.domain}`);
     if (entry.version !== descriptor.version) {
       throw new TypeError(
@@ -89,7 +94,9 @@ export function migrateSettingsBackupSnapshot(
     }
     parseSettingsCatalogPayload(entry.domain, entry.payload);
   }
-  const payload = (domain: SettingsBackupDomainId): unknown => byDomain.get(domain)?.payload;
+  // A catalog added since the snapshot was taken stands for its empty value. See `whenMissing`.
+  const payload = (domain: SettingsBackupDomainId): unknown =>
+    byDomain.get(domain)?.payload ?? settingsCatalogPayloadWhenMissing(domain);
   return {
     snapshot,
     settings,
@@ -98,6 +105,7 @@ export function migrateSettingsBackupSnapshot(
     workflowCommands: withSlotsAddedSinceSnapshot(
       SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
     ),
+    testingSettings: SettingsBackupTestingSettingsSchema.array().parse(payload("testing-settings")),
     workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
     workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
   };
@@ -327,6 +335,7 @@ export function preflightSettingsRestore(
     ));
   }
   if (expectedSlots.size > 0) blockers.push(`Snapshot is missing Command slots: ${[...expectedSlots].join(", ")}`);
+  blockers.push(...keyedDuplicates(staged.testingSettings, (row) => row.repoRoot, "testing settings path"));
 
   blockers.push(
     ...keyedDuplicates(staged.workflowVersions, (row) => row.id, "workflow version id"),

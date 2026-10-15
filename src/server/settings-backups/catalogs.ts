@@ -21,7 +21,8 @@ import {
 } from "@shared/settings-backups.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
 import { THINKING_LEVELS } from "@shared/types.ts";
-import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
+import { StoredTestingSettingsSchema } from "@shared/testing-config.ts";
+import { WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 
 const id = z.string().min(1).max(200);
@@ -78,6 +79,14 @@ export const SettingsBackupWorkflowCommandSchema = z.object({
   updatedAt: timestamp,
 }).strict();
 
+export const SettingsBackupTestingSettingsSchema = z.object({
+  repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
+  settings: StoredTestingSettingsSchema,
+  revision: z.number().int().positive(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+}).strict();
+
 export const SettingsBackupWorkflowDefinitionSchema = z.object({
   id,
   name,
@@ -112,12 +121,14 @@ export const SettingsBackupWorkflowVersionSchema = z.object({
 export type SettingsBackupPersona = z.infer<typeof SettingsBackupPersonaSchema>;
 export type SettingsBackupSessionAction = z.infer<typeof SettingsBackupSessionActionSchema>;
 export type SettingsBackupWorkflowCommand = z.infer<typeof SettingsBackupWorkflowCommandSchema>;
+export type SettingsBackupTestingSettings = z.infer<typeof SettingsBackupTestingSettingsSchema>;
 export type SettingsBackupWorkflowDefinition = z.infer<typeof SettingsBackupWorkflowDefinitionSchema>;
 export type SettingsBackupWorkflowVersion = z.infer<typeof SettingsBackupWorkflowVersionSchema>;
 
 const SettingsBackupPersonasSchema = catalog(SettingsBackupPersonaSchema);
 const SettingsBackupSessionActionsSchema = catalog(SettingsBackupSessionActionSchema);
 const SettingsBackupWorkflowCommandsSchema = catalog(SettingsBackupWorkflowCommandSchema);
+const SettingsBackupTestingSettingsListSchema = catalog(SettingsBackupTestingSettingsSchema);
 const SettingsBackupWorkflowDefinitionsSchema = catalog(SettingsBackupWorkflowDefinitionSchema);
 const SettingsBackupWorkflowVersionsSchema = catalog(SettingsBackupWorkflowVersionSchema);
 
@@ -132,6 +143,13 @@ interface CatalogDescriptor {
   version: 1;
   schema: z.ZodTypeAny;
   capture(store: WorkflowStore): unknown;
+  /**
+   * The payload a snapshot taken before this domain existed stands for. Present only on domains
+   * added after format v1 shipped: such a snapshot says nothing about the catalog, which is what
+   * an empty catalog says too, so it restores as one rather than being refused as incomplete.
+   * A domain without it was in the first published snapshot and is still refused when missing.
+   */
+  whenMissing?: unknown;
 }
 
 export const SETTINGS_BACKUP_CATALOGS = [
@@ -157,6 +175,13 @@ export const SETTINGS_BACKUP_CATALOGS = [
     schema: SettingsBackupWorkflowCommandsSchema,
     capture: (store: WorkflowStore) => [...store.workflowCommandCatalog()]
       .sort((left, right) => left.slot.localeCompare(right.slot)),
+  },
+  {
+    domain: "testing-settings",
+    version: 1,
+    schema: SettingsBackupTestingSettingsListSchema,
+    capture: (store: WorkflowStore) => store.listTestingSettings(),
+    whenMissing: [],
   },
   {
     domain: "workflow-definitions",
@@ -186,6 +211,12 @@ export function parseSettingsCatalogPayload(
   const descriptor = SETTINGS_BACKUP_CATALOGS.find((candidate) => candidate.domain === domain);
   if (!descriptor) throw new TypeError(`No settings backup catalog for ${domain}`);
   return descriptor.schema.parse(value);
+}
+
+/** The payload a snapshot without `domain` stands for, or undefined when it must carry it. */
+export function settingsCatalogPayloadWhenMissing(domain: SettingsBackupDomainId): unknown {
+  const descriptor: CatalogDescriptor | undefined = SETTINGS_BACKUP_CATALOGS.find((candidate) => candidate.domain === domain);
+  return descriptor?.whenMissing;
 }
 
 export function captureSettingsCatalogs(store: WorkflowStore): SettingsCatalogBackupEntry[] {

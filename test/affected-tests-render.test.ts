@@ -57,6 +57,32 @@ test("flakes, twice-failed tests and local-override keys are each said", () => {
   assert.doesNotMatch(html, /<details/);
 });
 
+test("run detail names the source of every effective key, and keeps a local flakes key", () => {
+  const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {
+    report: report({
+      settings: {
+        patterns: ["test/**/*.test.ts"],
+        includeImporters: false,
+        smokeSet: [],
+        localKeys: ["flakes.windowDays", "tests.includeImporters"],
+        sources: [
+          { key: "tests.patterns", layer: "stored", scope: "" },
+          { key: "tests.includeImporters", layer: "local", scope: null },
+          { key: "tests.smokeSet", layer: "committed", scope: null },
+        ],
+      },
+    }),
+  }));
+  assert.match(html, /Settings: <code>tests\.patterns<\/code> stored \(root\), <code>tests\.includeImporters<\/code> local, <code>tests\.smokeSet<\/code> committed/);
+  assert.match(html, /Also from <code>\.mission\/testing\.local\.json<\/code>: flakes\.windowDays/);
+  // An outcome recorded before sources existed keeps the line it always had.
+  const legacy = renderToStaticMarkup(createElement(AffectedTestsDetails, {
+    report: report({ settings: { patterns: [], includeImporters: true, smokeSet: [], localKeys: ["tests.smokeSet"] } }),
+  }));
+  assert.doesNotMatch(legacy, /Settings:/);
+  assert.match(legacy, /testing\.local\.json<\/code>: tests\.smokeSet/);
+});
+
 test("a capped failure or flake list says how many it leaves out", () => {
   const failures = Array.from({ length: 20 }, (_, i) => ({ file: "test/a.test.ts", name: `f${i}`, message: "x" }));
   const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {

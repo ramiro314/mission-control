@@ -6,7 +6,11 @@ import {
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "@shared/settings-backups.ts";
-import { SETTINGS_BACKUP_CATALOGS, parseSettingsCatalogPayload } from "./catalogs.ts";
+import {
+  SETTINGS_BACKUP_CATALOGS,
+  parseSettingsCatalogPayload,
+  settingsCatalogPayloadWhenMissing,
+} from "./catalogs.ts";
 import {
   SETTINGS_CONFIG_BACKUP_ENTRIES,
   parseSettingPayload,
@@ -46,6 +50,10 @@ export function validateSettingsBackupDomains(snapshot: SettingsBackupEnvelopeV1
     const config = configByDomain.get(entry.domain);
     if (config) parseSettingPayload(config, entry.payload);
     else parseSettingsCatalogPayload(entry.domain, entry.payload);
+  }
+  // A catalog added after format v1 shipped may be absent: the snapshot predates it.
+  for (const domain of catalogDomains) {
+    if (settingsCatalogPayloadWhenMissing(domain) !== undefined) expectedDomains.delete(domain);
   }
   if (expectedDomains.size > 0) {
     throw new TypeError(`Snapshot is missing domains: ${[...expectedDomains].join(", ")}`);

@@ -34,6 +34,11 @@ import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import {
+  StoredTestingSettingsSchema,
+  TESTING_SETTINGS_KEYS,
+  TESTING_SETTINGS_LAYERS,
+} from "./testing-config.ts";
+import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
@@ -6646,6 +6651,21 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
+ * One compare-and-swap replacement of a repository's stored testing settings.
+ *
+ * `repoRoot` is the path the row is keyed by, the same canonical path a Command override uses.
+ * `expectedRevision` is the revision the editor loaded, or 0 for a path with no row yet, so a
+ * first save from two windows cannot both succeed. `settings` is the whole row: a key it leaves
+ * out is cleared, and a row that sets no key stays (keeping its revision) but is not a layer.
+ */
+export const UpdateTestingSettingsSchema = z.object({
+  repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
+  expectedRevision: z.number().int().min(0),
+  settings: StoredTestingSettingsSchema,
+}).strict();
+export type UpdateTestingSettings = z.infer<typeof UpdateTestingSettingsSchema>;
+
+/**
  * `set_affected_tests_command`: the one Command write an agent may make through MCP.
  *
  * That bounds the Mission MCP tool surface, not every route to a Command: the `/api/*`
@@ -6844,6 +6864,12 @@ export const WorkflowAffectedTestsReportSchema = z.object({
     includeImporters: z.boolean(),
     smokeSet: z.array(z.string()),
     localKeys: z.array(z.string()),
+    // Optional: an outcome recorded before stored testing settings existed has no sources.
+    sources: z.array(z.object({
+      key: z.enum(TESTING_SETTINGS_KEYS),
+      layer: z.enum(TESTING_SETTINGS_LAYERS),
+      scope: z.string().max(WORKFLOW_LIMITS.checkRepoRoot).nullable(),
+    })).max(TESTING_SETTINGS_KEYS.length).optional(),
   }),
 });
 

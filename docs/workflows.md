@@ -917,8 +917,9 @@ node --test --import ./test/setup-state.mjs --import tsx --test-reporter=spec --
 
 The outcome and the run's events record this template, never the expanded argv.
 
-**Selection** reads the repository's `.mission/testing.json` from the check's worktree, so the
-settings under review are the ones used. "Changed" means changed since the merge base with the
+**Selection** reads the repository's [testing settings](#testing-settings): the committed
+`.mission/testing.json` from the check's worktree, so the settings under review are the ones used,
+with any stored settings and your local file laid over it. "Changed" means changed since the merge base with the
 default branch (`changedPathsSince` in `src/server/diff.ts`), and a file the change deleted counts
 as changed (`deletedPathsSince`), so a test still importing it is selected. A test file is
 selected when:
@@ -932,8 +933,10 @@ selected when:
    TS only; other languages get (1) and (3);
 3. it matches `tests.smokeSet`, which always runs.
 
-A repository with no `.mission/testing.json` skips the gate with a note naming the file. An
-invalid committed file fails the gate with the error, because the file is part of the change. An
+A repository with no `.mission/testing.json`, no stored testing settings and no local
+`.mission/testing.local.json` skips the gate with a note naming all three. An invalid committed
+file fails the gate with the error, because the file is
+part of the change. An
 empty selection skips with "No tests were selected for this change." A gate that stops before
 running anything (no settings, an empty selection, a bad template) hands its run back, so it does
 not spend the Command's per-run budget.
@@ -954,7 +957,22 @@ for the rest, and if not even the first fits, the packet quotes the end of the o
 The outcome keeps the full counts of failures and flakes, and both the card and the packet say
 how many were left out.
 
-**`.mission/testing.json`** is committed and reviewed like code:
+##### Testing settings
+
+Selection has three layers. Each replaces the one below it **key by key**, and a list replaces a
+list rather than extending it:
+
+| Order | Layer | Where it lives | Keys |
+|---|---|---|---|
+| Lowest | committed | `.mission/testing.json`, read from the check's worktree | `tests.*` and `flakes.*` |
+| Then | stored | Library › Commands › `affected-tests` › **Testing settings** | `tests.*` only |
+| Highest | local | `.mission/testing.local.json` in your own checkout | `tests.*` and `flakes.*` |
+
+The gate runs when any layer exists: the repository commits `.mission/testing.json`, its stored
+settings set at least one key, or your checkout has `.mission/testing.local.json`. A local file
+alone opts that checkout in, laid over the defaults. With none of the three the gate is skipped.
+
+**`.mission/testing.json`** is committed to the repository:
 
 ```json
 {
@@ -977,11 +995,47 @@ values above), and an unknown key is refused with its name so a typo cannot sile
 The `flakes` block is read by [CI flake reporting](flaky-tests.md), not by this check. The schema and merge live in
 `src/shared/testing-config.ts`.
 
+**Stored settings** are for a repository that will not commit the file. The affected-tests page
+in Library › Commands has a **Testing settings** section with one row per repository root: every
+root that has stored settings or an `affected-tests` override at its root, and any root you add.
+Each row edits `tests.patterns` and `tests.smokeSet` (one glob per line) and
+`tests.includeImporters` (Inherit, On or Off). Each list also says where it comes from:
+**Inherit** leaves the key unset, so the committed file or the default decides, and **This row**
+stores the list as typed. This row with no globs stores an empty list, which replaces the committed
+one: an empty smoke set runs no smoke test. Typing a glob switches a list to This row. Each row
+saves on its own through
+`PUT /api/testing-settings`, keyed by the repository's canonical main-checkout path, the same key a
+root Command override uses:
+
+- The settings are validated on save, so an invalid row cannot be stored. Only the three `tests.*`
+  keys are accepted. `flakes` is refused, because only the [CI flake report](flaky-tests.md) reads
+  it and CI cannot read this machine's database; it still comes from the committed file or its
+  defaults.
+- Every save carries the revision the row loaded. A save another window made first is refused with
+  409, and the row reloads what is stored.
+- This release stores settings for a repository root only. A path inside a repository is refused.
+
+Stored settings supersede one rule of the [flake-aware testing plan](plans/flake-aware-testing/plan.md):
+`tests.*` selection settings no longer have to be committed and reviewed like code, and a stored
+key overrides the committed file's. The committed file is still read, is still reviewed with the
+change, and is still the only source of `flakes`.
+
 A gitignored **`.mission/testing.local.json`** in your own checkout (the session's repository,
-not the check's worktree) overrides the committed file **key by key**: a key set locally
-replaces the committed value, and a list replaces a list, so a local file can drop a slow smoke
-test. Run detail lists the keys that came from the local file. An invalid local file does not
-blame the change: the gate reports Not run with the error.
+not the check's worktree) has the last word: a key set locally replaces the stored and committed
+values, and a list replaces a list, so a local file can drop a slow smoke test. An invalid local
+file does not blame the change: the gate reports Not run with the error.
+
+**Run detail says where every effective key came from**, for example
+`Settings: tests.patterns stored (root), tests.includeImporters local, tests.smokeSet committed`.
+A key is `committed`, `stored (<scope>)`, `local`, or `default` when no layer set it and the
+repository has no committed file. A `flakes.*` key the local file set is listed after them.
+Outcomes recorded before stored settings existed keep their old line, which lists only the keys
+that came from the local file.
+
+Stored settings are part of [settings snapshots](configuration.md#automatic-settings-snapshots),
+as the `testing-settings` domain. A restore makes the catalog exactly the snapshot's: a row the
+snapshot does not carry is removed, so a snapshot taken before the domain existed restores the
+catalog empty.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or

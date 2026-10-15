@@ -199,6 +199,7 @@ import {
   SetWorkflowPersonaDirectiveSchema,
   WorkflowCompletionClaimSchema,
   UpdateWorkflowCommandSchema,
+  UpdateTestingSettingsSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
   WorktreeActionExecuteSchema,
@@ -594,6 +595,8 @@ import type {
 } from "@shared/workflow.ts";
 import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
+import type { TestingSettingsCatalog } from "./testing-settings.ts";
+import { TESTING_CONFIG_LIMITS } from "@shared/testing-config.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import {
   getWorkflowPolicy,
@@ -698,6 +701,14 @@ const WORKFLOW_COMMAND_BODY_MAX_BYTES =
     * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
         * JSON_UTF8_MAX_BYTES_PER_CHAR
       + 512);
+/**
+ * A stored testing settings write: one path and two pattern lists at their limits, in bytes for
+ * the reason the Command bound above gives. Generous on purpose; the schema is the real bound.
+ */
+const TESTING_SETTINGS_BODY_MAX_BYTES =
+  (WORKFLOW_LIMITS.checkRepoRoot + 2 * TESTING_CONFIG_LIMITS.patterns * (TESTING_CONFIG_LIMITS.pattern + 3))
+    * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + 1024;
 /**
  * The ceiling for a body that carries one integer, wherever it appears.
  *
@@ -1186,6 +1197,11 @@ export interface RouteDeps {
    * writer of one catalog and a second emitter on one live stream.
    */
   workflowCommands?: WorkflowCommandManager;
+  /**
+   * The stored testing settings catalog. Absent means its routes answer 503. The daemon passes
+   * the same instance the check runtime reads, so a save is what the next gate sees.
+   */
+  testingSettings?: TestingSettingsCatalog;
   /** The daemon's singleton native allocator. Manual-session routes return 503 without it. */
   worktrees?: WorktreeManager;
   /** Singleton projection/action owner for Settings > Worktrees. */
@@ -1255,6 +1271,7 @@ export const ROUTE_DEP_NAMES = [
   "keepAwake",
   "archives",
   "workflowCommands",
+  "testingSettings",
   "worktrees",
   "worktreeOperations",
   "modelCatalogs",
@@ -1546,6 +1563,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     keepAwake,
     archives,
     workflowCommands,
+    testingSettings,
     worktrees,
     worktreeOperations,
     modelCatalogs,
@@ -2487,6 +2505,44 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const result = manager.replace(slot, parsed.data);
     return result.ok ? c.json(result.view) : workflowCommandFailure(c, result);
+  });
+  // --- Stored testing settings: the affected-tests selection keys, without a committed file ---
+  //
+  // One row per repository root, keyed by the same canonical path as Command overrides, and
+  // replaced whole under a compare-and-swap revision. The schema refuses `flakes` and every
+  // unknown key, so an invalid row can never be stored for the gate to trip over later.
+  app.get("/api/testing-settings", (c) => {
+    if (!testingSettings) return c.json({ error: "Testing settings catalog unavailable" }, 503);
+    return c.json(testingSettings.list());
+  });
+  app.put("/api/testing-settings", bodyLimit({
+    maxSize: TESTING_SETTINGS_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Testing settings request is too large" }, 413),
+  }), async (c) => {
+    if (!testingSettings) return c.json({ error: "Testing settings catalog unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateTestingSettingsSchema);
+    if (!parsed.ok) return parsed.res;
+    // Root scopes only, for now: the gate applies a repository root's row, and a row stored for
+    // a folder inside one would be a setting that silently does nothing until subdirectory
+    // scopes ship. Resolved through git so the key is the canonical main checkout.
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error, code: "testing_settings_not_a_repository" }, 400);
+    if (resolved.repoRoot !== parsed.data.repoRoot) {
+      return c.json({
+        error: `Testing settings are stored for a repository root. Use ${resolved.repoRoot}, not a path inside it.`,
+        code: "testing_settings_not_a_root",
+      }, 400);
+    }
+    const result = testingSettings.replace(parsed.data);
+    if (result.ok) return c.json(result.view);
+    if (result.reason === "invalid") {
+      return c.json({ error: "testing settings are not valid", code: "testing_settings_invalid" }, 400);
+    }
+    return c.json({
+      error: "revision conflict",
+      code: "testing_settings_revision_conflict",
+      current: result.current,
+    }, 409);
   });
   app.post("/api/workflows", bodyLimit({
     maxSize: WORKFLOW_BODY_MAX_BYTES,

@@ -31,6 +31,9 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "workflow-commands", surface: "library" },
   { id: "workflow-definitions", surface: "library" },
   { id: "workflow-versions", surface: "library" },
+  // Stored testing settings, edited on the affected-tests page of Library › Commands. Added
+  // after format v1 shipped, so a snapshot without it restores the catalog empty.
+  { id: "testing-settings", surface: "library" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

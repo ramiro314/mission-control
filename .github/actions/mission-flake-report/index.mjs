@@ -4306,6 +4306,9 @@ function parseWith(schema, text, file) {
 function parseTestingConfig(text) {
   return parseWith(TestingConfigSchema, text, TESTING_CONFIG_PATH);
 }
+var StoredTestingSettingsSchema = external_exports.object({
+  tests: external_exports.object(TestsFields).partial().strict().optional()
+}).strict();
 
 // src/flake-report-action/context.ts
 function runContextFrom(env, event) {

@@ -235,8 +235,9 @@ the rest of `MISSION_HOME`.
 
 Format v1 includes normalized values for every registered setting, including schema defaults,
 plus every active or archived operator-owned Persona, session action, Workflow definition, its
-immutable published versions, and every Command slot. A snapshot taken before a slot existed
-restores that slot as unconfigured. Built-in catalog items are supplied by
+immutable published versions, every Command slot, and every repository's stored testing settings.
+A snapshot taken before a slot existed restores that slot as unconfigured, and one taken before
+stored testing settings existed restores them empty. Built-in catalog items are supplied by
 the application and are not copied. Snapshots also exclude tasks, queues, schedules, sessions,
 workflow bindings and runs, reviews, telemetry and spend history, operational away or lease state,
 derived reload generations, credentials, tokens, and environment secrets.

@@ -92,6 +92,7 @@ import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
 import { SessionActionManager } from "./workflows/session-actions.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
+import { TestingSettingsCatalog } from "./testing-settings.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
@@ -273,6 +274,10 @@ const sessionActions = new SessionActionManager(registry, personas.store);
 // manager: its constructor runs the one-time legacy command import, and the engine below
 // resolves every Check through the catalog that import populates.
 const workflowCommands = new WorkflowCommandManager(registry, personas.store);
+// The stored testing settings beside the Commands they configure, on the same store handle so a
+// settings backup captures and restores both in one transaction. The routes write through it and
+// the check runtime reads a repository root's row from it.
+const testingSettings = new TestingSettingsCatalog(personas.store);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
 // never reached for as a module global. Workflow Persona attempts and context compaction
 // share it today. The Foreman is a separate process and unrelated background jobs keep
@@ -308,7 +313,10 @@ const checkLeases = new CheckLeaseManager(undefined, {
 });
 // The operator's test lease and concurrency settings reach the executor here and nowhere
 // else, so every test-running check in this daemon reads them per check.
-const checkRuntime = new CheckRuntime(checkLeases, { testPolicy: getWorkflowPolicy });
+const checkRuntime = new CheckRuntime(checkLeases, {
+  testPolicy: getWorkflowPolicy,
+  storedTestingSettings: (repoRoot) => testingSettings.forRepoRoot(repoRoot),
+});
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
@@ -707,6 +715,7 @@ const app = buildApp({
   keepAwake,
   archives,
   workflowCommands,
+  testingSettings,
   worktrees,
   worktreeOperations,
   modelCatalogs,

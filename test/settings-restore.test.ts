@@ -925,3 +925,76 @@ test("a snapshot taken before the affected-tests slot restores it as unconfigure
   new SettingsBackupStore(brokenRoot).write(broken);
   assert.equal(service(brokenRoot).previewRestore(broken.id).status, "preflight_blocked");
 });
+
+test("stored testing settings round-trip, and a snapshot taken before them restores the catalog empty", async () => {
+  seedBaseline();
+  const settings = { tests: { patterns: ["test/**/*.test.ts"], smokeSet: ["test/smoke.test.ts"] } };
+  assert.equal(workflowStore.replaceTestingSettingsCas("/repo/stored", 0, settings).ok, true);
+  const taken = snapshot();
+  const domain = taken.domains.find((entry) => entry.domain === "testing-settings");
+  assert.deepEqual(
+    (domain?.payload as Array<{ repoRoot: string; settings: unknown }>).map((row) => [row.repoRoot, row.settings]),
+    [["/repo/stored", settings]],
+  );
+
+  // Changed after the snapshot: restoring it puts the snapshot's settings back, under a rising
+  // revision, and a row the snapshot never had is removed, so the catalog is exactly the
+  // snapshot's.
+  const current = workflowStore.getTestingSettings("/repo/stored")!;
+  assert.equal(workflowStore.replaceTestingSettingsCas("/repo/stored", current.revision, { tests: { smokeSet: [] } }).ok, true);
+  assert.equal(workflowStore.replaceTestingSettingsCas("/repo/later", 0, { tests: { includeImporters: false } }).ok, true);
+  const roundTrip = join(home, "testing-round-trip");
+  new SettingsBackupStore(roundTrip).write(taken);
+  assert.equal((await service(roundTrip).restore(taken.id, taken.digest)).status, "restored");
+  const restored = workflowStore.getTestingSettings("/repo/stored")!;
+  assert.deepEqual(restored.settings, settings);
+  assert.equal(restored.revision, 3, "a restored row's revision still rises past any open editor's");
+  assert.equal(workflowStore.getTestingSettings("/repo/later"), null);
+  // An editor still holding the removed row's revision is refused, not allowed to recreate it.
+  const stale = workflowStore.replaceTestingSettingsCas("/repo/later", 1, { tests: { smokeSet: ["x"] } });
+  assert.equal(stale.ok, false);
+  assert.equal(workflowStore.getTestingSettings("/repo/later"), null);
+
+  // Two rows for one path name two settings and only one can be stored: refused in preflight,
+  // before a safety snapshot or any write, naming the path.
+  const settingsBefore = workflowStore.listTestingSettings();
+  const duplicated = resign(snapshot(), (body) => {
+    const rows = body.domains.find((entry) => entry.domain === "testing-settings")!.payload as
+      Array<Record<string, unknown>>;
+    rows.push({ ...rows[0], settings: { tests: { smokeSet: ["other.ts"] } } });
+  });
+  const duplicateRoot = join(home, "duplicate-testing-settings");
+  new SettingsBackupStore(duplicateRoot).write(duplicated);
+  const duplicateRestore = service(duplicateRoot);
+  const blocked = duplicateRestore.previewRestore(duplicated.id);
+  assert.equal(blocked.status, "preflight_blocked");
+  assert.ok(
+    blocked.status === "preflight_blocked"
+      && blocked.preview.blockers.includes("Duplicate testing settings path: /repo/stored"),
+    JSON.stringify(blocked),
+  );
+  assert.equal((await duplicateRestore.restore(duplicated.id, duplicated.digest)).status, "preflight_blocked");
+  assert.deepEqual(workflowStore.listTestingSettings(), settingsBefore, "a refused restore writes nothing");
+  assert.equal(readdirSync(duplicateRoot).some((name) => name.startsWith("pre-restore-")), false);
+
+  // A snapshot from before the domain existed: no testing-settings entry at all. It restores the
+  // catalog EMPTY - no row is left behind for the API or the Library to list.
+  const older = resign(snapshot(), (body) => {
+    body.domains = body.domains.filter((entry) => entry.domain !== "testing-settings");
+  });
+  assert.equal(older.domains.some((entry) => entry.domain === "testing-settings"), false);
+  assert.deepEqual(migrateSettingsBackupSnapshot(older).testingSettings, []);
+  assert.equal(workflowStore.listTestingSettings().length, 1, "a row exists to be removed");
+  const olderRoot = join(home, "pre-testing-settings");
+  new SettingsBackupStore(olderRoot).write(older);
+  const restore = service(olderRoot);
+  assert.equal(restore.previewRestore(older.id).status, "ready");
+  assert.equal((await restore.restore(older.id, older.digest)).status, "restored");
+  assert.deepEqual(workflowStore.listTestingSettings(), []);
+
+  // A catalog that was in the first published snapshot is still refused when missing.
+  const noPersonas = resign(snapshot(), (body) => {
+    body.domains = body.domains.filter((entry) => entry.domain !== "personas");
+  });
+  assert.throws(() => migrateSettingsBackupSnapshot(noPersonas), /missing domain/);
+});

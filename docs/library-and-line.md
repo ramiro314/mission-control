@@ -85,6 +85,12 @@ rather than silently overwriting your unsaved typing. Commands are stored as arg
 shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
 toggle, and the editor shows the exact split under every rule before you save.
 
+The `affected-tests` page adds a **Testing settings** section below the rules: one row per
+repository root, editing the root's stored `tests.patterns`, `tests.includeImporters` and
+`tests.smokeSet` for a repository that does not commit `.mission/testing.json`. Each row saves on
+its own, under its own revision, never with the Command. See
+[testing settings](workflows.md#testing-settings) for how the layers merge.
+
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
 machine-wide switch, and the repository has to be granted the Workflows cell in Trust. The

@@ -31,6 +31,7 @@ import { LibraryWorkspaceHeader } from "../library/LibraryWorkspaceHeader.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
+import { TestingSettingsSection } from "./TestingSettingsSection.tsx";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -428,6 +429,12 @@ export function CommandLibrary({
   const overrideRepoRef = useRef<HTMLInputElement>(null);
 
   const dirty = commandDraftDirty(draft, baseline);
+  /**
+   * Unsaved typing in the affected-tests page's testing settings rows. Saved separately from the
+   * Command, but lost the same way when the page or slot changes, so the same guards hold it.
+   */
+  const [testingDirty, setTestingDirty] = useState(false);
+  const anyDirty = dirty || testingDirty;
 
   // This screen has no document editor, so its ladder is the two rungs the other three
   // share minus the CodeMirror case: a press inside the default/override fields or the
@@ -441,7 +448,7 @@ export function CommandLibrary({
     setError(null);
   }, []);
 
-  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  useEffect(() => onDirtyChange(anyDirty), [anyDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   /**
    * A slot the ROUTE moved to while this surface stayed mounted.
@@ -544,7 +551,7 @@ export function CommandLibrary({
   }, []);
 
   function guardDiscard(what: string, action: () => void): void {
-    if (!dirty) {
+    if (!anyDirty) {
       action();
       return;
     }
@@ -795,8 +802,9 @@ export function CommandLibrary({
             {selectedSlot === "affected-tests" && (
               <>
                 {" "}Mission Control picks the tests from the repository&apos;s{" "}
-                <code>.mission/testing.json</code>, passes them as <code>{"{files}"}</code>, reads
-                results from <code>{"{junit}"}</code>, and reruns failures once.
+                <code>.mission/testing.json</code> and the testing settings below, passes them as{" "}
+                <code>{"{files}"}</code>, reads results from <code>{"{junit}"}</code>, and reruns
+                failures once.
               </>
             )}
           </p>
@@ -1032,6 +1040,16 @@ export function CommandLibrary({
             Save replaces this slot's default, its whole override list and its run budget
             together, so the parts can never be stored apart.
           </p>
+
+          {/* Only on affected-tests: the one slot whose Command is handed a selection. Its rows
+              save on their own, under their own revision, never with the Command above. */}
+          {selectedSlot === "affected-tests" && (
+            <TestingSettingsSection
+              overrideRoots={selected?.overrides.map((entry) => entry.repoRoot) ?? []}
+              repos={commandRepoOptions(repos, allowlist)}
+              onDirtyChange={setTestingDirty}
+            />
+          )}
         </article>
       </div>
 
