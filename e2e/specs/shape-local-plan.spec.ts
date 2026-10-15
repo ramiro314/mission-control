@@ -1,4 +1,9 @@
+import { mkdirSync } from "node:fs";
+
+import type { Locator, Page } from "@playwright/test";
+
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
   api,
@@ -20,6 +25,17 @@ import {
  * review route (which records the choice on the task), and the derived marker on the board card
  * and in its drawer. Every agent binary is the fake (`e2e/fixtures/fake-agents.ts`).
  */
+
+const EVIDENCE = artifactsDir("shape-local-plan");
+
+async function shoot(page: Page, name: string, target?: Locator): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/shape-local-plan/${name}.png`);
+}
 
 async function useLocalPlanStorage(daemon: DaemonHandle): Promise<void> {
   await setShapeSkills(daemon, true);
@@ -76,6 +92,7 @@ test("under local plan storage a shape task defaults to Local Plan Validation an
   await kind.selectOption("shape");
   const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
   await expect(afterWork.locator("option:checked")).toHaveText(/Local Plan Validation/);
+  await shoot(dashboard, "01-dispatch-after-work-local-plan-validation", dialog);
 
   // None is a valid choice for a local plan, and keeps the fake session's turn its own.
   await afterWork.selectOption("__none");
@@ -92,8 +109,10 @@ test("under local plan storage a shape task defaults to Local Plan Validation an
   const card = dashboard.locator(".tile").filter({ has: dashboard.getByRole("button", { name: /^Open / }) });
   await expect(card.getByRole("note", { name: "Tickets after publication" })).toBeVisible();
   await expect(card.getByRole("note", { name: "Tickets after merge" })).toHaveCount(0);
+  await shoot(dashboard, "02-card-tickets-after-publication", card);
 
   await card.getByRole("button", { name: /^Open / }).press("Enter");
   const drawer = dashboard.getByRole("complementary", { name: "Session detail workspace" });
   await expect(drawer.getByRole("note", { name: "Tickets after publication" })).toBeVisible();
+  await shoot(dashboard, "03-drawer-tickets-after-publication", drawer);
 });
