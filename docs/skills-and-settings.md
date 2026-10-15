@@ -71,9 +71,25 @@ than left to model selection. Its reviewer-ready description contract has two se
 concise, bullet-forward **For Humans** for the why, feature description, tradeoffs, known gaps,
 evidence, and recommended follow-ups; and **For Agents** for direct links to the plan and
 technical documentation, technical context those documents do not cover, and deliberately
-handled failure modes. It does not inventory changed tests or repeat design detail already
-covered by the linked documents. The full contract lives in
+handled failure modes. Links and technical context are descriptive references, without
+instructions to the reviewer. It does not inventory changed tests or repeat design detail
+already covered by the linked documents. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
+
+**Always create draft PRs**, beside that row, defaults off. Turning it on makes new PRs
+created through the Pull Request skill or a workflow PR phase drafts in every repository.
+Only the human promotes them to ready for review, including when CI does not run on drafts.
+Existing PRs keep their status, so updating a PR the human promoted does not turn it back into
+a draft. Turning the option off does not promote existing drafts.
+
+The preference lives once in the machine's Skills settings, survives restarts, and is included
+in settings snapshots. It does not change installed skill links or trigger a skill reload.
+It stays editable and applies to workflow PR phases even when the Skills master switch is off.
+The skill and workflow packets use `get_pull_request_policy` immediately before each creation,
+so already-running sessions and older published workflow actions read the current choice.
+An unavailable tool or invalid stored configuration blocks creation instead of assuming off.
+The option is an agent instruction, not an interception of arbitrary GitHub commands outside
+the skill and workflow paths.
 
 The **Retro** row carries the retrospective procedure: read a finished session back
 from its transcript, propose at most three durable memories, have each one approved, edited,
