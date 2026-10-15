@@ -486,7 +486,8 @@ test("the vendor SDK binds inline deny settings, strict MCP, and empty setting s
   writeFileSync(fakeBin, `#!/usr/bin/env node
 const value = (name) => {
   const at = process.argv.indexOf(name);
-  return at >= 0 ? process.argv[at + 1] : undefined;
+  if (at >= 0) return process.argv[at + 1];
+  return process.argv.find((arg) => arg.startsWith(name + "="))?.slice(name.length + 1);
 };
 let sent = false;
 process.stdin.on("data", () => {
@@ -494,7 +495,7 @@ process.stdin.on("data", () => {
   sent = true;
   const bound = value("--tools") === "Read,Grep,Glob"
     && value("--settings") === process.env.MC_EXPECTED_DENY_SETTINGS
-    && process.argv.includes("--setting-sources=")
+    && value("--setting-sources") === ""
     && process.argv.includes("--strict-mcp-config")
     && !process.argv.includes("--mcp-config")
     && process.cwd() === process.env.MC_EXPECTED_GRANT_CWD;
@@ -598,7 +599,12 @@ test("stderr and result failure details remain visible to the caller", async () 
   });
   await assert.rejects(
     runClaudeSdkOneShot("fail", {}, fake.deps),
-    /api_error.*request failed.*authentication unavailable/,
+    (error: Error & { kind?: string }) => {
+      assert.equal(error.name, "ProviderFailure");
+      assert.equal(error.kind, "retryable");
+      assert.match(error.message, /api_error.*request failed.*authentication unavailable/);
+      return true;
+    },
   );
 });
 

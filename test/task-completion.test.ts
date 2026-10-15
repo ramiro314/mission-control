@@ -87,9 +87,9 @@ function mkVerifyInput(overrides: Partial<VerifyInput> = {}): VerifyInput {
 }
 
 /** The kinds whose initial turn defers publication to Mission Control. */
-const DEFERRING_KINDS: ReadonlySet<TaskKind> = new Set(["ship", "bugfix", "plan", "shape"]);
+const DEFERRING_KINDS: ReadonlySet<TaskKind> = new Set(["ship", "bugfix", "document", "plan", "shape"]);
 
-test("every task kind declares a completion boundary, and ship, bugfix, plan and shape defer work", () => {
+test("every task kind declares a completion boundary, and shipping and planning kinds defer work", () => {
   // The registry is exhaustive at the type level; this asserts the VALUES, so a kind added
   // with a copy-pasted contract it does not want is visible here rather than in a verdict.
   for (const kind of TASK_KINDS) {

@@ -1,3 +1,6 @@
+import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
+import { validatePlanInputs } from "./plans/inputs.ts";
+import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
@@ -83,6 +86,9 @@ import {
   McpListBacklogSchema,
   McpListBacklogV2Schema,
   McpPushTaskSchema,
+  McpUpdateTaskSchema,
+  McpDeleteTaskSchema,
+  type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
@@ -431,18 +437,29 @@ import {
 } from "@shared/telemetry-ingress.ts";
 import {
   admitBrowserTelemetry,
+  acknowledgeOrganizationNotice,
   telemetryCycle,
   observeEffortSelected,
   observeKillRequested,
   observeSessionOperation,
   recordTelemetryControl,
+  organizationSettled,
+  recheckOrganization,
   runTelemetryOperation,
+  whileOrganizationSettled,
   runTelemetryProbe,
+  setPilotEnrollment,
   setTelemetryConfig,
   telemetryHealthResponse,
   telemetryStatus,
   telemetryStatusResponse,
 } from "./telemetry/index.ts";
+import { currentOrganization } from "./environment/organization.ts";
+import {
+  TelemetryOrganizationNoticeRequestSchema,
+  TelemetryOrganizationPilotRequestSchema,
+  managedTelemetryRefusal,
+} from "@shared/organizations.ts";
 import {
   getInspectorConfig,
   inspectorModel,
@@ -462,6 +479,9 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { skillEnabled } from "@shared/skills.ts";
 import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema, PlanCatalogCursorSchema, PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
+import { planAuthority, sessionPlanAuthorities } from "./plans/authority.ts";
+import { planContext, savePlan, readPlanRevision, readPlanFile, listPlans, authorizePlan, PlanStoreError } from "./plans/store.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -539,7 +559,7 @@ import {
   resolveTaskExtraRepoRoots,
   resolveTaskRepoRoot,
 } from "./repos.ts";
-import { prepareTaskRepositories, resolveRepositorySelector } from "./task-repository-preparation.ts";
+import { prepareTaskRepositories, resolveRepositorySelector, resolveTaskRepositorySelector } from "./task-repository-preparation.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   readSubmissionImageBody,
@@ -600,7 +620,6 @@ import { TESTING_CONFIG_LIMITS } from "@shared/testing-config.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import {
   getWorkflowPolicy,
-  resolveTaskWorkflowId,
   setWorkflowPolicy,
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
@@ -643,6 +662,9 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/** JSON escapes can expand each content byte to six bytes. Keep the decoded content
+ * limit in the writer, with 1 MiB of transport headroom for filenames and attribution. */
+const MANAGED_PLAN_BODY_MAX_BYTES = PLAN_CONTENT_LIMITS.totalBytes * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024 * 1024;
 /**
  * The semantic schema counts JavaScript code units, while this stream guard counts raw request
  * bytes. A caller may legally spell each code unit as a six-byte `\uXXXX` escape, so the guard
@@ -1964,6 +1986,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
   const prepareResume = (session: Session) => {
@@ -4757,16 +4780,36 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   );
 
   // --- MCP review channel (token-guarded) ---
-  app.post("/mcp/reviews", async (c) => {
+  async function createMcpReview(c: Context, managedPlans: boolean) {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
     const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
-    const review = reviews.create(session.id, kind, title, body, decisions ?? null);
-    return c.json({ id: review.id, sessionId: session.id });
-  });
+    try {
+      const target = parsed.data.managedPlan;
+      if (target) {
+        if (!managedPlans || kind !== "plan-decisions") return c.json({ error: "Managed final approval requires the versioned plan-decisions route" }, 400);
+        const manager = workflowManager();
+        if (!manager) return c.json({ error: "Workflow authority unavailable" }, 503);
+        const authority = planAuthority(registry, session, target.repoSlot);
+        await authorizePlan(authority, target.planId);
+        const saved = readPlanRevision(target.planId, target.revision);
+        const input = { planId: target.planId, revision: target.revision, repoKey: saved.manifest.repoKey };
+        validatePlanReview(authority, input, manager);
+        const review = reviews.create(session.id, kind, title,
+          `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`,
+          [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision]);
+        bindPlanReview(authority, input, review.id, manager);
+        return c.json({ id: review.id, sessionId: session.id });
+      }
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null);
+      return c.json({ id: review.id, sessionId: session.id });
+    } catch (error) { return planFailure(c, error); }
+  }
+  app.post("/mcp/reviews", (c) => createMcpReview(c, false));
+  app.post("/mcp/v2/reviews", (c) => createMcpReview(c, true));
 
   /** A failed push as the Push route's status contract, shared by `push_task`. */
   function pushOutcomeResponse(c: Context, r: Extract<PushTaskOutcome, { ok: false }>): Response {
@@ -4808,10 +4851,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     c: Context,
     data: McpCreateTicket,
     allowShortNames: boolean,
+    validateWorkflow = false,
   ) {
-    const dependencies = mcpTaskDependencies(c, data);
-    if (dependencies instanceof Response) return dependencies;
-
+    const {
+      env,
+      sessionId,
+      cwd,
+      dependsOnTaskIds,
+      dependsOnCurrentSession,
+    } = data;
+    const kind = data.kind ?? "ship";
     const shortNameSelectors = !allowShortNames
       ? "none"
       : data.targetRepository === undefined
@@ -4820,7 +4869,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const prepared = await prepareTaskRepositories({
       primary: data.targetRepository ?? data.repoRoot,
       extras: data.additionalRepositories,
-      kind: data.kind,
+      kind,
+      agent: data.agent,
       shortNameSelectors,
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
@@ -4831,6 +4881,55 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       baseBranch = resolved.baseBranch;
     }
 
+    const { planInputs } = data;
+    // Both MCP dependency spellings share the same scoped approval checks.
+    const planPrerequisites = [...data.planPrerequisites, ...(data.dependencies ?? []).filter((edge) => edge.type === "plan")];
+    if (planInputs.length || planPrerequisites.length) {
+      const caller = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!caller) return c.json({ error: "Pinned plan inputs require a registered calling session" }, 403);
+      try {
+        const authorities = sessionPlanAuthorities(registry, caller);
+        for (const input of [...planInputs, ...planPrerequisites]) {
+          const grants = await Promise.allSettled(authorities.map((authority) => authorizePlan(authority, input.planId)));
+          if (!grants.some((result) => result.status === "fulfilled")) throw new PlanStoreError("Pinned plan is outside the caller's issued repositories", 403);
+        }
+        validatePlanInputs(planInputs, [prepared.repoRoot, ...prepared.extraRepoRoots]);
+        for (const input of planPrerequisites) {
+          const readiness = localPlans?.readiness(input);
+          if (!readiness || !["approved", "waiting-workflow", "published"].includes(readiness.state)) throw new PlanStoreError(readiness?.reason ?? "Local plan publication authority unavailable");
+          if (!planInputs.some((ref) => ref.planId === input.planId && ref.revision === input.revision && ref.repoKey === input.repoKey)) throw new PlanStoreError("A plan prerequisite must also be an exact Markdown input");
+        }
+        for (const input of planInputs) {
+          const saved = readPlanRevision(input.planId, input.revision);
+          const localEdge = planPrerequisites.some((p) => p.planId === input.planId && p.revision === input.revision && p.repoKey === input.repoKey);
+          if (saved.manifest.policy.storage === "repository" && localEdge) throw new PlanStoreError("Repository plans cannot use a local artifact prerequisite");
+        }
+      } catch (error) { return planFailure(c, error); }
+    }
+    const dependencies: TaskDependencyInput[] = (data.dependencies ?? []).filter((edge) => edge.type !== "plan");
+    for (const taskId of dependsOnTaskIds) dependencies.push({ type: "task", taskId });
+    dependencies.push(...planPrerequisites.map((input) => ({ ...input, type: "plan" as const })));
+    if (dependsOnCurrentSession) {
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
+      dependencies.push({ type: "session", sessionId: session.id });
+    }
+
+    let creationPolicy;
+    try {
+      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId });
+    } catch (error) {
+      if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+    const { workflowId } = creationPolicy;
+    if (validateWorkflow && workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.workflowSelectionBlock(workflowId);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+    }
+
     try {
       const task = tasks.create({
         repoRoot: prepared.repoRoot,
@@ -4838,17 +4937,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         baseBranch,
         title: data.title,
         intent: data.intent,
-        kind: data.kind,
+        kind,
         // Resolved during repository preparation so the capability check and stored pin
-        // cannot observe different kind defaults.
+        // cannot observe different task-kind defaults.
         agent: prepared.agent,
+        model: data.model ?? undefined,
+        effort: data.effort ?? undefined,
+        workflowId,
+        enabled: data.enabled,
+        priority: data.priority,
         labels: data.labels,
         backlog: true,
-        dependencies,
-      });
+        dependencies, planInputs,
+      }, undefined, undefined, creationPolicy);
       return c.json(task);
     } catch (error) {
-      if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
       throw error;
     }
   }
@@ -4902,7 +5007,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // walks a pooled worktree back to its main checkout through the shared preparation door.
     return createMcpTask(
       c,
-      { ...parsed.data, targetRepository: undefined, additionalRepositories: [], kind: "ship", labels: [] },
+      { ...parsed.data, targetRepository: undefined, additionalRepositories: [], planInputs: [], planPrerequisites: [] },
       false,
     );
   });
@@ -4911,7 +5016,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpCreateTaskV2Schema);
     if (!parsed.ok) return parsed.res;
-    return createMcpTask(c, { ...parsed.data, kind: "ship", labels: [] }, true);
+    return createMcpTask(c, { ...parsed.data, planInputs: [], planPrerequisites: [] }, true);
   });
 
   app.post("/mcp/v3/tasks", async (c) => {
@@ -4920,7 +5025,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     return "adoptTaskId" in parsed.data
       ? adoptMcpTask(c, parsed.data)
-      : createMcpTask(c, parsed.data, true);
+      : createMcpTask(c, parsed.data, true, true);
   });
 
   /**
@@ -5084,6 +5189,44 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       replayed: result.replayed,
       sessionClosureRequested: taskHasWorktrees(result.task) && result.task.sessionId !== null,
     });
+  });
+
+  app.post("/mcp/tasks/:id/update", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpUpdateTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const { repository, additionalRepositories, ...patch } = parsed.data;
+    const id = c.req.param("id");
+    const existing = tasks.get(id);
+    if (!existing) return c.json({ error: "no such task" }, 404);
+    if (existing.status !== "backlog") {
+      return c.json({ error: `task is ${existing.status}, not in the backlog` }, 409);
+    }
+    const update: UpdateTask = { ...patch };
+    if (repository !== undefined) {
+      const resolved = await resolveTaskRepositorySelector(repository);
+      if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+      update.repoRoot = resolved.path;
+    }
+    if (additionalRepositories !== undefined) {
+      update.extraRepoRoots = [];
+      for (const selector of additionalRepositories) {
+        const resolved = await resolveTaskRepositorySelector(selector);
+        if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+        update.extraRepoRoots.push(resolved.path);
+      }
+    }
+    const validated = UpdateTaskSchema.safeParse(update);
+    if (!validated.success) return c.json({ error: validated.error.message }, 400);
+    return updateTask(c, id, validated.data, true);
+  });
+
+  app.post("/mcp/tasks/delete", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpDeleteTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.remove(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -5287,6 +5430,93 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
     if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
     return c.json(manager.planPublicationContext(session.id));
+  });
+
+  const planFailure = (c: Context, error: unknown) => c.json({ error: error instanceof Error ? error.message : "Plan operation failed" }, error instanceof PlanStoreError ? error.status : 409);
+  app.post("/mcp/plans/context", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(PlanContextInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session; launch or register this session first" }, 403);
+    try { return c.json(await planContext(planAuthority(registry, session, parsed.data.repoSlot))); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/save", bodyLimit({ maxSize: MANAGED_PLAN_BODY_MAX_BYTES, onError: (c) => c.json({ error: "Plan request is too large" }, 413) }), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(SavePlanInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
+    const { env: _env, sessionId: _sessionId, cwd: _cwd, ...input } = parsed.data;
+    try {
+      const authority = planAuthority(registry, session, input.repoSlot);
+      const context = await planContext(authority);
+      const task = registry.taskForSession(session.id, session.cwd);
+      if (context.policy.storage === "local" && task?.kind === "plan") {
+        const manager = workflowManager();
+        if (!manager) throw new PlanStoreError("Workflow authority unavailable");
+        localPlanAuthorityContext(manager, session.id);
+      }
+      return c.json(await savePlan(authority, input));
+    }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/publish", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(PlanReviewInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session || !localPlans) return c.json({ error: "Registered plan publication authority unavailable" }, 403);
+    try {
+      const authority = planAuthority(registry, session, parsed.data.repoSlot);
+      await authorizePlan(authority, parsed.data.planId);
+      const { manifest } = readPlanRevision(parsed.data.planId, parsed.data.revision);
+      const receipt = await localPlans.publish(authority, { repoKey: manifest.repoKey, planId: manifest.planId, revision: manifest.revision });
+      localPlans.reconcile();
+      return c.json(receipt);
+    } catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/read", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.extend({ input: ReadPlanInputSchema }));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
+    try {
+      const input = parsed.data.input;
+      const authority = planAuthority(registry, session, input.repoSlot);
+      if (!input.planId) return c.json(await listPlans(authority, input.cursor));
+      await authorizePlan(authority, input.planId);
+      if (input.file) return c.json({ content: readPlanFile(input.planId, input.revision!, input.file).toString("utf8") });
+      const saved = readPlanRevision(input.planId, input.revision!);
+      return c.json({ ...saved, ...(saved.manifest.policy.storage === "local" && localPlans ? { readiness: localPlans.readiness(saved.manifest) } : {}) });
+    } catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/sessions/:id/plans", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "No such session" }, 404);
+    try {
+      const slot = c.req.query("repoSlot");
+      const cursor = PlanCatalogCursorSchema.optional().safeParse(c.req.query("cursor"));
+      if (!cursor.success) return c.json({ error: "Invalid plan catalog cursor" }, 400);
+      const authorities = slot === undefined ? sessionPlanAuthorities(registry, session) : [planAuthority(registry, session, slot)];
+      return c.json(await listPlans(authorities, cursor.data));
+    }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/plans/:id/:revision", (c) => {
+    try {
+      const saved = readPlanRevision(c.req.param("id"), Number(c.req.param("revision")));
+      return c.json({ ...saved, ...(saved.manifest.policy.storage === "local" && localPlans ? { readiness: localPlans.readiness(saved.manifest) } : {}) });
+    }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/plans/:id/:revision/files/:file", (c) => {
+    try {
+      const bytes = readPlanFile(c.req.param("id"), Number(c.req.param("revision")), c.req.param("file"));
+      return c.body(new Uint8Array(bytes), 200, { "Content-Type": "text/plain; charset=utf-8", "Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'", "Cache-Control": "no-store" });
+    } catch (error) { return planFailure(c, error); }
   });
 
   app.post("/mcp/workflow-evidence", bodyLimit({
@@ -7003,6 +7233,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const catalog = readCatalog();
     return {
       enabled: cfg.enabled,
+      commitPlanHtml: cfg.commitPlanHtml,
+      planStorage: cfg.planStorage,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -7857,15 +8089,40 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // NOT here: any route that returns a stored credential, a queued payload or an endpoint an
   // operator did not just send us. `telemetryStatus()` reports whether a secret exists; there
   // is no read path for its value, here or anywhere.
-  app.get("/api/telemetry/config", (c) => c.json(telemetryStatusResponse()));
+  //
+  // The managed lock. While an organization manages this Mac, a person's settings writes and
+  // the two destructive operations are refused here, at the route: the daemon's own apply
+  // path calls `setTelemetryConfig` directly and is not a request. Test connection, Try again
+  // and Re-check change no setting and stay available. Nothing outside these routes locks.
+  //
+  // Each of these routes first waits out any organization recheck in flight - the startup one
+  // above all. Until it settles nobody knows whether this Mac is managed, and answering in
+  // that window would render the panel editable and accept a write the lock exists to refuse.
+  // The lock check and the write it guards run together inside `whileOrganizationSettled`,
+  // in one synchronous step, so no recheck can begin between them.
+  const managedRefusal = (): { error: string; managedBy: string } | null => {
+    const organization = currentOrganization();
+    return organization === null
+      ? null
+      : managedTelemetryRefusal(organization.entry.id, organization.entry.label);
+  };
+  app.get("/api/telemetry/config", async (c) => {
+    await organizationSettled();
+    return c.json(telemetryStatusResponse());
+  });
   app.put("/api/telemetry/config", async (c) => {
     const parsed = await parseBody(c, TelemetryConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = managedRefusal();
+      return managed ? { managed } : { applied: setTelemetryConfig(parsed.data) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     // Attribution, never authorization. Nothing below branches on it, and nothing anywhere in
     // the daemon reads it to decide whether this request is allowed: the headers say who the
     // app THINKS asked, and `basis` says how much that is worth.
     const context = resolveOperationContext(c.req.raw.headers);
-    const applied = setTelemetryConfig(parsed.data);
+    const applied = outcome.applied;
     // 409 rather than 500: every refusal here is a configuration the operator can see and
     // fix - an unencrypted remote endpoint carrying a credential, our own address, the
     // product audience that has no service behind it, or a revision that moved underneath.
@@ -7888,8 +8145,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/telemetry/operation", async (c) => {
     const parsed = await parseBody(c, TelemetryOperationRequestSchema);
     if (!parsed.ok) return parsed.res;
+    // `retry` changes no setting - it clears a pause the daemon applied - so it stays open.
+    const { action, profile } = parsed.data;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = action === "retry" ? null : managedRefusal();
+      return managed ? { managed } : { result: runTelemetryOperation(action, profile) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     const context = resolveOperationContext(c.req.raw.headers);
-    const result = runTelemetryOperation(parsed.data.action, parsed.data.profile);
+    const result = outcome.result;
     recordTelemetryControl({
       action: parsed.data.action,
       profile: result.profile ?? "all",
@@ -7900,6 +8164,55 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // republished rather than left for the next thirty-second cycle to notice.
     publishSettingsStatus(registry);
     return c.json(result);
+  });
+
+  // Join or leave the managing organization's pilot on this Mac. The one telemetry write a
+  // person on a managed Mac can make, because Settings there has no switches: 409 unless an
+  // organization is active and its rollout is still `pilot`.
+  app.post("/api/telemetry/organization/pilot", async (c) => {
+    const parsed = await parseBody(c, TelemetryOrganizationPilotRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => setPilotEnrollment(parsed.data.enrolled));
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json(telemetryStatus());
+  });
+
+  app.post("/api/telemetry/organization/notice", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, TelemetryOrganizationNoticeRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => acknowledgeOrganizationNotice());
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json({ acknowledged: true });
+  });
+
+  // Detect the managing organization again and apply what it finds - managed, unchanged, or
+  // withdrawn - then answer the status the panel renders.
+  app.post("/api/telemetry/organization/recheck", async (c) => {
+    let outcome;
+    try {
+      outcome = await recheckOrganization();
+    } catch (error) {
+      // The store refused the write. The lock still holds - see `settledLock` - so this is
+      // reported, and Re-check can simply be pressed again.
+      publishSettingsStatus(registry);
+      const detail = error instanceof Error ? error.message : String(error);
+      return c.json({ error: `Could not update telemetry settings: ${detail}` }, 500);
+    }
+    if (outcome.kind === "refused") return c.json({ error: outcome.error }, 409);
+    if (outcome.kind === "indeterminate") {
+      return c.json(
+        {
+          error:
+            "Could not read this Mac's device management enrollment just now, so nothing changed. Re-check again in a moment.",
+        },
+        503,
+      );
+    }
+    publishSettingsStatus(registry);
+    return c.json(telemetryStatus());
   });
 
   app.get("/api/telemetry/health", (c) => c.json(telemetryHealthResponse()));
@@ -8036,17 +8349,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (parsed.data.id === "pi-integration") {
       // JSON requires a CORS preflight. No cross-origin CORS permission is granted;
       // validate Origin too, while allowing the dashboard's loopback Vite proxy.
-      const origin = c.req.header("origin");
-      let trustedOrigin = !origin;
-      if (origin) {
-        try {
-          const url = new URL(origin);
-          trustedOrigin = url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.host);
-        } catch { trustedOrigin = false; }
-      }
-      if (!trustedOrigin || c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-        return c.json({ error: "forbidden" }, 403);
-      }
+      if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
@@ -8083,7 +8386,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
-    const workflowId = resolveTaskWorkflowId(parsed.data.workflowId, parsed.data.kind);
     const prepared = await prepareTaskRepositories({
       primary: parsed.data.repoRoot,
       extras: parsed.data.extraRepoRoots,
@@ -8099,6 +8401,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!resolved.ok) return c.json({ error: resolved.error }, 400);
       baseBranch = resolved.baseBranch;
     }
+    let creationPolicy;
+    try {
+      creationPolicy = tasks.prepareCreationPolicy(parsed.data);
+    } catch (error) {
+      if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+    const { workflowId } = creationPolicy;
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -8128,9 +8438,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId, baseBranch },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
+        creationPolicy,
       );
     } catch (error) {
-      if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
       if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
@@ -8300,8 +8611,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/tasks/:id/update", async (c) => {
     const parsed = await parseBody(c, UpdateTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const patch = parsed.data;
-    const id = c.req.param("id");
+    return updateTask(c, c.req.param("id"), parsed.data);
+  });
+
+  async function updateTask(c: Context, id: string, patch: UpdateTask, backlogOnly = false) {
     const existing = tasks.get(id);
     // Resolved only when the repo actually MOVES. A caller restating the root it was
     // handed is not asking for anything, and re-checking it makes a task uneditable the
@@ -8347,9 +8660,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
     }
-    const r = await tasks.update(id, patch);
+    const r = await tasks.update(id, patch, { backlogOnly });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
-  });
+  }
 
   /**
    * File this backlog task as an item in the external tracker a configured source points
@@ -8831,6 +9144,21 @@ export function hostIsLoopback(host: string | undefined): boolean {
   // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
   const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+/** Guard browser-write routes that accept an otherwise empty JSON object. */
+function trustedLoopbackJsonRequest(c: Context): boolean {
+  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return false;
+  }
+  const origin = c.req.header("origin");
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 

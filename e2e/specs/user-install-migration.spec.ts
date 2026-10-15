@@ -166,6 +166,7 @@ test('a failed repair followed by a successful retry shows completion from the m
   let attempts = 0;
   const unexpected = (): never => {throw new Error('This repair fixture must not check, build, or install an update');};
   const controller = new UpdateController({
+    launchPreflight: async () => {},
     packaged: false, platform: 'darwin', arch: 'arm64',
     readAlpha: () => false, writeAlpha: unexpected,
     currentVersion: () => '1.17.1',

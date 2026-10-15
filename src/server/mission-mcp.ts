@@ -1,3 +1,4 @@
+import { resolveOwnedRuntime } from "../shared/owned-runtime.mjs";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -20,10 +21,13 @@ import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "./agent-subproces
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import {
   BACKLOG_LIST_TOOL,
+  PLAN_CONTEXT_TOOL,
   PLAN_DECISIONS_TOOL,
-  PUSH_TASK_TOOL,
-  PLAN_SCHEDULING_TOOL,
   PLAN_PUBLICATION_TOOL,
+  PLAN_READ_TOOL,
+  PLAN_SAVE_TOOL,
+  PLAN_SCHEDULING_TOOL,
+  PUSH_TASK_TOOL,
 } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
@@ -69,7 +73,13 @@ export const MISSION_MCP_TOOLS = [
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
+  "update_task",
+  "delete_task",
   PLAN_PUBLICATION_TOOL,
+  PLAN_CONTEXT_TOOL,
+  PLAN_SAVE_TOOL,
+  PLAN_READ_TOOL,
+  "publish_plan",
   "request_input",
   "report_product_feedback",
   "report_product_issue",
@@ -129,18 +139,27 @@ export interface MissionMcpRequirement {
  * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
  * it is the reason every existing dispatch's argv is unchanged.
  */
-/** Plan and shape name the same tools in their contracts, so they share one list. */
+/**
+ * Plan and shape name the same tools in their contracts, so they share one list: the decision
+ * forms, scheduling, publication ownership, and the managed-plan tools the `html-plans` skill
+ * saves and reads every plan revision through.
+ */
 const PLANNING_MISSION_MCP_TOOLS: readonly MissionMcpTool[] = [
   PLAN_DECISIONS_TOOL,
   PLAN_SCHEDULING_TOOL,
   PLAN_PUBLICATION_TOOL,
+  PLAN_CONTEXT_TOOL,
+  PLAN_SAVE_TOOL,
+  PLAN_READ_TOOL,
 ];
 
 const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
+  document: [],
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
-  plan: PLANNING_MISSION_MCP_TOOLS,
+  // `publish_plan` is the local-storage publication path, which only the plan kind takes.
+  plan: [...PLANNING_MISSION_MCP_TOOLS, "publish_plan"],
   pipeline: [],
   chat: [],
   // Grilling rounds, the plan review and the breakdown review are `request_plan_decisions`
@@ -161,15 +180,16 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
  * same object, `null` included - so every existing ship dispatch's argv stays byte-identical.
  */
 export function kindMissionMcpRequirement(
-  task: Pick<Task, "kind" | "workflowId">,
+  task: Pick<Task, "kind" | "workflowId" | "planInputs">,
   requested: MissionMcpRequirement | null,
   workflowEvidence = false,
 ): MissionMcpRequirement | null {
   const required = KIND_MISSION_MCP_TOOLS[task.kind];
-  if (required.length === 0 && !workflowEvidence) return requested;
+  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
   for (const tool of required) tools.add(tool);
   if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
+  if (task.planInputs?.length) tools.add(PLAN_READ_TOOL);
   return { tools: [...tools] };
 }
 
@@ -210,8 +230,7 @@ interface MissionMcpRuntime {
  * that session failed with "ReferenceError: crypto is not defined".
  */
 export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
-  if (/^node(\.exe)?$/.test(basename(execPath))) return { command: execPath, env: {} };
-  return { command: execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+  return resolveOwnedRuntime({executable: execPath, kind: /^node(\.exe)?$/.test(basename(execPath)) ? "node" : "electron"});
 }
 
 /**

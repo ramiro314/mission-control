@@ -40,3 +40,6 @@ export const PUSH_TASK_TOOL = "push_task" as const;
  * follow-up's launch, and refused for any session whose task is not one.
  */
 export const COMPLETE_SHAPE_TICKETS_TOOL = "complete_shape_tickets" as const;
+export const PLAN_CONTEXT_TOOL = "get_plan_context" as const;
+export const PLAN_SAVE_TOOL = "save_plan" as const;
+export const PLAN_READ_TOOL = "read_plan" as const;

@@ -451,6 +451,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
 
   // 7-8. One Command slot, its overrides, and the Save that runs nothing.
   dialog = step(dashboard, "A Command slot");
+  await expect(dialog).toContainText("test, lint, typecheck, build, documentation, and affected-tests");
   await expect.poll(() => hash(dashboard)).toBe("#/library/commands/test");
   await expect(dashboard.locator("tr.wf-command-rule.is-default")).toHaveCSS("outline-width", "2px");
   await dialog.getByRole("button", { name: "Next" }).click();

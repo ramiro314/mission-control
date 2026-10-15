@@ -1,3 +1,4 @@
+import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
@@ -9,7 +10,6 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
-  MCP_TASK_KINDS,
   TASK_KIND_BACKLOG_REFUSAL,
   TASK_KIND_SCHEDULE_REFUSAL,
   TASK_PRIORITIES,
@@ -555,12 +555,13 @@ export const CreateReviewSchema = z
     sessionId: z.string().nullable().optional().default(null),
     cwd: z.string().nullable().optional().default(null),
     kind: z.enum(["plan", "diff", "input", "plan-decisions"]),
+    managedPlan: PlanReviewInputSchema.optional(),
     title: z.string().min(1),
     body: z.string(),
     /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
     decisions: z.array(PlanDecisionSchema).optional(),
   })
-  .refine((r) => r.kind !== "plan-decisions" || (r.decisions?.length ?? 0) > 0, {
+  .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
     path: ["decisions"],
   })
@@ -845,7 +846,7 @@ export const McpPlanPublicationSchema = z.object({
 }).strict();
 
 /**
- * MCP `create_task`: create a backlogged implementation task and optionally bind it
+ * MCP `create_task`: create a backlog task and optionally bind it
  * to the session making the call. The daemon resolves that session from the same
  * pane/session/cwd evidence as the review channel; the MCP child never guesses a
  * Mission Control session id.
@@ -871,27 +872,6 @@ export const McpCreateTaskV2Schema = McpCreateTaskBaseSchema.extend({
 export type McpCreateTaskV2 = z.infer<typeof McpCreateTaskV2Schema>;
 
 /**
- * Ticket-bearing MCP task creation: the v2 selectors plus `kind` and `labels`.
- *
- * Its own route for the reason v2 has one. An older daemon would strip these fields and answer
- * 200, filing a plain ship task instead. A daemon that does not know this route answers 404
- * and creates nothing.
- */
-export const McpCreateTicketSchema = McpCreateTaskBaseSchema.extend({
-  targetRepository: z.string().trim().min(1).optional(),
-  additionalRepositories: z
-    .array(z.string().trim().min(1))
-    .max(MAX_TASK_EXTRA_REPOS)
-    .optional()
-    .default([]),
-  kind: z.enum(MCP_TASK_KINDS).optional().default("ship"),
-  labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
-  /** The origin branch the task starts from and opens its pull request against. */
-  baseBranch: BaseBranchSchema.optional(),
-}).strict();
-export type McpCreateTicket = z.infer<typeof McpCreateTicketSchema>;
-
-/**
  * A ticket adopting an existing backlog task instead of creating one. Only the dependency
  * edges are added to that task, so the shape carries nothing else: a title, intent, kind,
  * labels or additional repositories would describe a task this call does not create, and are
@@ -907,15 +887,6 @@ export const McpAdoptTicketSchema = McpCreateTaskBaseSchema.omit({ title: true, 
   targetRepository: z.string().trim().min(1).optional(),
 }).strict();
 export type McpAdoptTicket = z.infer<typeof McpAdoptTicketSchema>;
-
-/**
- * The v3 route's body: a new ticket or an adoption, never a mix. Both halves are strict, so a
- * body naming `adoptTaskId` beside a field only a new task uses matches neither and is refused.
- */
-export const McpCreateTaskV3Schema = z
-  .union([McpAdoptTicketSchema, McpCreateTicketSchema])
-  .refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
-export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 
 /** MCP `list_backlog_tasks`: the calling repository's open backlog, for a ticket to adopt. */
 export const McpListBacklogSchema = z.object({
@@ -1082,6 +1053,7 @@ export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
   }),
   // An edge a newer build wrote. It can only be kept, never created.
   z.object({ type: z.literal("unknown"), key: z.string().min(1).max(20_000) }),
+  PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
@@ -1248,7 +1220,8 @@ export const DispatchSchema = z
     effort: EffortLevelSchema.optional(),
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
-     * plan and shape tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
+     * plan and shape tasks, Bug Fix Review for bugfix tasks, Documentation Review for document
+     * tasks, and the machine default for other kinds.
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
@@ -1259,6 +1232,7 @@ export const DispatchSchema = z
      */
     enabled: z.boolean().optional().default(true),
     dependencies: TaskDependenciesSchema.optional().default([]),
+    planInputs: TaskPlanInputsSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
   })
   // Only when the harness is NAMED. An effort sent with no agent is a level chosen against
@@ -1482,7 +1456,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * patch "disable" a task whose agent is already running, and answer 200 to a caller
  * who would reasonably read that as having paused something.
  */
-export const UpdateTaskSchema = z
+const UpdateTaskFieldsSchema = z
   .object({
     repoRoot: z.string().min(1).optional(),
     /**
@@ -1510,13 +1484,68 @@ export const UpdateTaskSchema = z
     effort: EffortLevelSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
-  })
+    planInputs: TaskPlanInputsSchema.optional(),
+  });
+
+export const UpdateTaskSchema = UpdateTaskFieldsSchema
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+
+/** MCP and dashboard task configuration use the same field validators. */
+export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
+  repoRoot: true,
+  extraRepoRoots: true,
+  title: true,
+  intent: true,
+  planInputs: true,
+}).strict();
+
+/**
+ * A separate route prevents older daemons from silently dropping task overrides: an older
+ * daemon would strip these fields and answer 200, filing a plain ship task instead. A daemon
+ * that does not know the route answers 404 and creates nothing. The configuration fields
+ * carry the fork's ticket fields too (`kind`, `labels`, `baseBranch`).
+ */
+export const McpCreateTicketSchema = McpCreateTaskBaseSchema.extend({
+  ...McpTaskConfigurationSchema.shape,
+  targetRepository: z.string().trim().min(1).optional(),
+  additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).default([]),
+  planInputs: TaskPlanInputsSchema.default([]),
+  planPrerequisites: z.array(PlanIdentitySchema).max(16).default([]),
+}).strict();
+export type McpCreateTicket = z.infer<typeof McpCreateTicketSchema>;
+
+/**
+ * The v3 route's body: a new ticket or an adoption, never a mix. Both halves are strict, so a
+ * body naming `adoptTaskId` beside a field only a new task uses matches neither and is refused.
+ */
+export const McpCreateTaskV3Schema = z
+  .union([McpAdoptTicketSchema, McpCreateTicketSchema])
+  .refine(
+    (o) => o.dependsOnTaskIds.length + (o.dependsOnCurrentSession ? 1 : 0)
+      + ("adoptTaskId" in o ? 0 : (o.dependencies?.length ?? 0) + o.planPrerequisites.length)
+      <= MAX_TASK_DEPENDENCIES,
+    mcpTaskDependencyRefinement,
+  );
+export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
+
+export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
+  repoRoot: true,
+  extraRepoRoots: true,
+  planInputs: true,
+}).extend({
+  repository: z.string().trim().min(1).optional(),
+  additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
+}).strict();
+
+/** MCP deletes one task through the existing lifecycle and cleanup owner. */
+export const McpDeleteTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of the task to delete"),
+}).strict();
 
 /**
  * How many backlog tasks one bulk request may name. Generous for a hand-made selection and
@@ -2423,6 +2452,9 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
  * Schema defaults retain the meaning of sparse records saved by older builds.
  */
 export const SkillsConfigSchema = z.object({
+  /** Pinned by new managed plans; rendered previews are retained regardless. */
+  commitPlanHtml: z.boolean().default(false),
+  planStorage: z.enum(["repository", "local"]).default("repository"),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2458,7 +2490,7 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true })
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true })
   .partial()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
@@ -3522,6 +3554,31 @@ export const LineDensitySchema = z.enum(LINE_DENSITIES);
 export type LineDensity = (typeof LINE_DENSITIES)[number];
 
 /**
+ * How the console's conversation header marks a task session's kind (`TaskKindMark`).
+ *
+ * Every kind is marked, `ship` included, because a kind printed only when it is not the
+ * default left the most common kind printed nowhere. `badge` leads the session's name, which
+ * is read in the same glance as the name and costs the header no height; the other three are
+ * the alternatives the operator weighed (`docs/plans/task-kind-visibility/mockups.html`), and
+ * `off` draws nothing.
+ *
+ * Persisted on operators' machines, so append-only: a member may be added, never renamed.
+ * The order is the picker's order, and the default is not necessarily first.
+ */
+export const TASK_KIND_HEADER_STYLES = ["badge", "eyebrow", "tile", "tabs", "off"] as const;
+export const TaskKindHeaderStyleSchema = z.enum(TASK_KIND_HEADER_STYLES);
+export type TaskKindHeaderStyle = (typeof TASK_KIND_HEADER_STYLES)[number];
+
+/**
+ * How a Board card marks its task's kind (`TaskKindMark`). `tab` sits on the card's top
+ * border like a folder tab, so it takes no row inside the card and no width from the name.
+ * Append-only for the reason `TASK_KIND_HEADER_STYLES` is.
+ */
+export const TASK_KIND_CARD_STYLES = ["tab", "chip", "band", "medallion", "off"] as const;
+export const TaskKindCardStyleSchema = z.enum(TASK_KIND_CARD_STYLES);
+export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -3688,6 +3745,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  taskKindHeader: "badge",
+  taskKindCard: "tab",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -3782,6 +3841,8 @@ export const UiConfigSchema = z.object({
    * state costs nothing.
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
+  taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
+  taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -4117,6 +4178,33 @@ export type LlmConfigPatch = z.infer<typeof LlmConfigPatchSchema>;
  * install from a different checkout, a `CLAUDE_CODE_ENABLE_TELEMETRY` the user set
  * themselves - and a panel that showed only the intent would be confidently wrong.
  */
+/**
+ * Which managed Claude Code settings location supplied the policy, highest precedence first:
+ * the per-user MDM profile, the machine MDM profile, then `managed-settings.json`.
+ */
+export type ManagedClaudeSettingsSource = "mdm-user" | "mdm" | "managed-settings";
+
+/**
+ * What a managed Claude Code policy does with Claude Code's metrics.
+ *
+ * Discriminated on `kind`, so each outcome carries only the host shape valid for it: a redirect
+ * always names its host, and a policy that turns metrics off never does.
+ */
+export type CostManagedRedirect =
+  | {
+      kind: "redirect";
+      /** The hostname alone - never a scheme, port, path, query or credential. */
+      host: string;
+      source: ManagedClaudeSettingsSource;
+      organizationLabel: string | null;
+    }
+  | {
+      kind: "disabled";
+      host: null;
+      source: ManagedClaudeSettingsSource;
+      organizationLabel: string | null;
+    };
+
 export interface CostTelemetryStatus {
   config: CostConfig;
   /** True when our `env` keys are present in `~/.claude/settings.json`. */
@@ -4153,6 +4241,24 @@ export interface CostTelemetryStatus {
    * `exporterSilentWhileActive`.
    */
   exporterSilent: boolean;
+  /**
+   * Set when an organization's managed Claude Code policy sends Claude Code's metrics
+   * somewhere other than this daemon, or turns them off.
+   *
+   * A managed policy outranks `~/.claude/settings.json`, and the OTel SDK prefers a
+   * signal-specific endpoint to the generic one the Cost switch writes, so a policy that
+   * names its own metrics endpoint wins even while the `env` block is in place. Every session
+   * the daemon merely discovered then reports to that host, never here. The cause is known
+   * the moment the policy is read, so the panel names it at once instead of waiting for a
+   * week of `exporterSilent`.
+   *
+   * `host` is the hostname alone - never a scheme, port, path, query or credential - and is
+   * null for `disabled`. `organizationLabel` is the organization that manages this machine,
+   * when Mission Control recognizes one. Computed from a cache the poll never waits on, so
+   * the first poll after start may read null until the first read completes. See
+   * `src/server/environment/claude-managed.ts`.
+   */
+  managedRedirect: CostManagedRedirect | null;
   /**
    * Set when `OTEL_METRICS_INCLUDE_SESSION_ID` reads false anywhere we can see it. That
    * value silently destroys per-session attribution - every datapoint arrives
@@ -5477,6 +5583,7 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     // "inherit the Persona's own routing", and a default would write the field onto every
     // legacy graph the moment one was read back.
     executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
+    recheckAfterRepair: z.boolean().optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
@@ -5515,6 +5622,7 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     position: WorkflowPointSchema,
     // Beside the snapshot, never inside it. See `PublishedWorkflowNode`.
     executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
+    recheckAfterRepair: z.boolean().optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   // Identical to the draft arm: a Check snapshots nothing, because its command is
@@ -6426,6 +6534,7 @@ export const DeleteWorkflowSchema = ValidateWorkflowSchema;
 export const CreateWorkflowBindingSchema = z.object({
   workflowVersionId: WorkflowIdSchema,
   sessionId: z.string().min(1).max(500),
+  replaceBindingId: WorkflowIdSchema.optional(),
   triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).optional(),
   deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).optional(),
   maxRepairRounds: z

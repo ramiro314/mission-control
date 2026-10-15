@@ -2066,6 +2066,7 @@ export const WORKFLOW_CHECK_SLOTS = [
   "lint",
   "typecheck",
   "build",
+  "documentation",
   "affected-tests",
 ] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
@@ -2122,6 +2123,8 @@ export type WorkflowDraftNode =
       personaId: PersonaId;
       position: Point;
       executionOverride?: WorkflowNodeExecutionOverride;
+      /** Re-run this judge after every repair, even when machine policy reuses passes. */
+      recheckAfterRepair?: boolean;
     }
   | { id: string; kind: "all_pass"; position: Point }
   | { id: string; kind: "check"; slot: WorkflowCheckSlot; position: Point }
@@ -2215,6 +2218,8 @@ export type PublishedWorkflowNode =
        * the Persona?" again, and the published detail has to.
        */
       executionOverride?: WorkflowNodeExecutionOverride;
+      /** Re-run this judge after every repair, even when machine policy reuses passes. */
+      recheckAfterRepair?: boolean;
     }
   | { id: string; kind: "session_action"; action: SessionActionSnapshot; position: Point };
 
@@ -2253,6 +2258,11 @@ export function nodeExecutionOverride(
   node: { executionOverride?: WorkflowNodeExecutionOverride },
 ): WorkflowNodeExecutionOverride | null {
   return node.executionOverride ?? null;
+}
+
+/** Preserve legacy omission when projecting a Persona node. */
+export function withRecheckAfterRepair(value: boolean | undefined): { recheckAfterRepair?: boolean } {
+  return value === undefined ? {} : { recheckAfterRepair: value };
 }
 
 /**
@@ -3067,7 +3077,7 @@ export interface WorkflowCommandOverride {
  * unit of the atomic write: one CAS replaces the nullable default AND the complete override
  * set together, so a surface can never commit half of a slot's configuration.
  *
- * All four built-in slots are always projected, in `WORKFLOW_CHECK_SLOTS` order, including
+ * All built-in slots are always projected, in `WORKFLOW_CHECK_SLOTS` order, including
  * the ones nobody has configured. A slot that vanished until it was written would make
  * "unconfigured" indistinguishable from "not loaded" for every reader.
  */
@@ -3184,6 +3194,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",
   typecheck: "The type checker, when this repository has one separate from its build.",

@@ -46,6 +46,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
+  const row = page.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row").filter({ hasText: TASK });
+  await expect(row.locator(".rail-state")).toHaveText("idle");
 }
 
 async function session(daemon: DaemonHandle): Promise<{ id: string; cwd: string }> {
@@ -64,12 +67,26 @@ async function session(daemon: DaemonHandle): Promise<{ id: string; cwd: string 
 }
 
 async function inject(daemon: DaemonHandle, sessionId: string, text: string): Promise<void> {
+  const replyCount = async () => {
+    const transcript = await (await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/transcript`)).json() as {
+      messages?: { role: string; text: string }[];
+    };
+    return transcript.messages?.filter((message) => message.role === "assistant" && message.text === `Mock reply to: ${text}`).length ?? 0;
+  };
+  const repliesBefore = await replyCount();
   const response = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/inject`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text, buffer: false }),
   });
   expect(response.ok, `POST /inject answered ${response.status}: ${await response.text()}`).toBe(true);
+  // Acceptance is not a completed reply. Seed one finished turn at a time so reloads
+  // and layout assertions cannot race the fake's stream or a later injected turn.
+  await expect.poll(replyCount).toBeGreaterThan(repliesBefore);
+  await expect.poll(async () => {
+    const rows = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as { id: string; state: string }[];
+    return rows.find((row) => row.id === sessionId)?.state;
+  }).toBe("idle");
 }
 
 async function commentThreadCount(daemon: DaemonHandle, sessionId: string): Promise<number> {
@@ -126,6 +143,8 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   write(live.cwd, CSS, "#finding { font-weight: 700; text-decoration: underline; }\n");
   write(live.cwd, OTHER, "<!doctype html><h1>Other artifact</h1>\n");
   await inject(daemon, live.id, REPORT_TURN);
+  // Identical text must wait for a new completed reply, not reuse the first one.
+  await inject(daemon, live.id, REPORT_TURN);
   const incidentalTurn = `I edited ${OTHER} while preparing the report.`;
   const absentTurn = "Report: docs/reports/conversation-card/missing.html";
   await inject(daemon, live.id, incidentalTurn);
@@ -163,6 +182,15 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
     });
   });
   const threadCountBefore = await commentThreadCount(daemon, live.id);
+  // Later turns can leave this preloaded iframe outside the conversation viewport.
+  // Scroll its host first so Chromium can run the frame's click stability checks.
+  const preview = card.locator(`iframe[title="Preview of ${REPORT}"]`);
+  await preview.evaluate((element) => {
+    element.scrollIntoView({ block: "center" });
+    // Complete the fixture scroll before a session update can follow the tail.
+    element.closest(".transcript-log")!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(preview).toBeInViewport();
   await frame.locator("#finding").click();
   await expect.poll(() => page.evaluate(() => (
     (window as typeof window & { artifactBlockMessages?: number }).artifactBlockMessages
@@ -229,8 +257,8 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
 
   // Settle every card for this path BEFORE the file goes, or the click below can be lost.
   //
-  // The fake agent echoes each injected turn, so the report is presented twice: once in the
-  // "you" turn and once in the reply this test drives, directly beneath it. Reopening the
+  // The fake agent echoes each injected turn, so the report is presented twice per turn: once
+  // in the "you" turn and once in the reply directly beneath it. Reopening the
   // conversation lands on the log's tail, where only the lower card is inside the preload
   // margin. The click then scrolls Refresh to the middle of the log, which brings the upper
   // card into range, and its FIRST read is of a file that is already deleted. A refusal is
@@ -240,11 +268,16 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   // click has nothing left to scroll and the neighbour has nothing left to read.
   const refresh = restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` });
   await refresh.scrollIntoViewIfNeeded();
+  // The report turn is injected twice, so four cards present this path, and the ones beyond
+  // the transcript's 600px preload margin stay released. Settle the ones inside it.
   const reportCards = page.getByRole("region", { name: `Preview of ${REPORT}` });
-  await expect(reportCards).toHaveCount(2);
-  for (const reportCard of await reportCards.all()) {
-    await expect(reportCard).toHaveAttribute("data-preview-source", "loaded");
-  }
+  await expect(reportCards).toHaveCount(4);
+  await expect.poll(() => reportCards.evaluateAll((cards) => cards.every((card) => {
+    const root = card.closest(".transcript-log")!.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
+    const inRange = box.bottom >= root.top - 600 && box.top <= root.bottom + 600;
+    return !inRange || card.getAttribute("data-preview-source") === "loaded";
+  }))).toBe(true);
 
   unlinkSync(join(live.cwd, REPORT));
   await refresh.click();
@@ -371,8 +404,19 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   const tile = page.getByRole("button", { name: /Prepare an HTML Artifact Preview/i });
   await tile.focus();
   await tile.press("Enter");
+  // Opening the board briefly shrinks the transcript to a few pixels. Wait for
+  // its transition before scrolling; otherwise the later reflow undoes that position.
+  await page.locator(".board-detail").evaluate(async (element) => {
+    await Promise.allSettled(element.getAnimations().map((animation) => animation.finished));
+  });
   let card = artifactCard(page, LONG_REPORT, reportTurn);
   await expect(card).toBeVisible();
+  // Bring the lazy preview into the transcript's viewport before reading its frame.
+  await card.evaluate((element) => {
+    element.scrollIntoView({ block: "center" });
+    element.closest(".transcript-log")!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(card).toHaveAttribute("data-preview-source", "loaded");
   await expect(card.frameLocator("iframe.artifact-preview").getByRole("heading", {
     name: "Conversation artifact",
   })).toBeVisible();
@@ -485,6 +529,8 @@ test("the transcript root margin preloads nearby cards and releases distant sour
       - log.getBoundingClientRect().top
       + log.scrollTop;
     log.scrollTop = contentBottom + 400;
+    // scrollTop alone defers onScroll, leaving the transcript pinned to its tail.
+    log.dispatchEvent(new Event("scroll"));
   });
   const preloadGap = await card.evaluate((element) => {
     const log = element.closest<HTMLElement>(".transcript-log")!;
@@ -506,6 +552,7 @@ test("the transcript root margin preloads nearby cards and releases distant sour
       - log.getBoundingClientRect().top
       + log.scrollTop;
     log.scrollTop = contentBottom + 800;
+    log.dispatchEvent(new Event("scroll"));
   });
   await expect.poll(() => card.evaluate((element) => {
     const log = element.closest<HTMLElement>(".transcript-log")!;

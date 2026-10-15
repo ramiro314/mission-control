@@ -58,9 +58,13 @@ function keepPreFieldCommandConsent(blob: unknown): unknown {
 }
 
 /** A creator's explicit choice (a workflow or `null`) wins; an omitted one takes the kind's row. */
-export function resolveTaskWorkflowId(workflowId: string | null | undefined, kind: TaskKind = "ship"): string | null {
+export function resolveTaskWorkflowId(
+  workflowId: string | null | undefined,
+  kind: TaskKind = "ship",
+  storage: "repository" | "local" = "repository",
+): string | null {
   return workflowId === undefined
-    ? taskDefaultWorkflowId(kind, getWorkflowPolicy().kindWorkflowDefaults)
+    ? taskDefaultWorkflowId(kind, getWorkflowPolicy().kindWorkflowDefaults, storage)
     : workflowId;
 }
 

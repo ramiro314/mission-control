@@ -111,7 +111,7 @@ const PLAN_CONTRACT: TaskCompletionContract = {
   complete: [
     ...PLANNING_APPROVED_PLAN,
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
-    "artifacts referenced by phase tasks are committed and pushed, with exact paths verified before scheduling, and every phase task depends on the planning session",
+    "Markdown artifacts referenced by phase tasks and policy-included HTML are committed and pushed, with exact paths verified before scheduling; policy-excluded HTML is verified in its retained revision, and every phase task depends on the planning session",
     ...PLANNING_VERIFIED_HANDOFF,
   ],
   // Plans need durable artifacts before scheduling. Push is deliberately retained.
@@ -119,6 +119,20 @@ const PLAN_CONTRACT: TaskCompletionContract = {
     ...SHIP_CONTRACT.deferred.filter((action) => action.id !== "push"),
     { id: "merge", imperative: "merge the pull request", noun: "merging the pull request" },
   ],
+};
+
+const LOCAL_PLAN_CONTRACT: TaskCompletionContract = {
+  ...PLAN_CONTRACT,
+  boundary: "the local plan publication handoff",
+  complete: [
+    "the complete final Markdown and HTML bundle is saved as an immutable local revision",
+    "the human explicitly approved that exact final bundle through a managed plan review; dismissal is not approval",
+    "requested phases carry exact structured Markdown inputs, local artifact prerequisites, and direct implementation merge dependencies",
+    "applicable focused validation and final plan text evidence are registered for the selected workflow",
+    "the task contains only local plan artifacts; code and mixed tasks keep their normal shipping workflow",
+    "when no workflow is selected, publish_plan has verified and published the approved local revision",
+  ],
+  deferred: SHIP_CONTRACT.deferred,
 };
 
 /**
@@ -148,12 +162,23 @@ const SHAPE_CONTRACT: TaskCompletionContract = {
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
  * uses one: a new task kind does not compile until it has said what its completion
- * boundary is, including saying it has none. Ship and Bugfix defer post-completion work;
- * plan and shape defer publication follow-through whether or not a workflow is bound: the
+ * boundary is, including saying it has none. Ship, Bugfix and Document defer post-completion
+ * work; plan and shape defer publication follow-through whether or not a workflow is bound: the
  * bound workflow's Pull Request action or Foreman's wrap-up opens the planning pull request.
  * Other kinds are judged against their objective unchanged.
  */
 const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> = {
+  document: {
+    ...SHIP_CONTRACT,
+    kind: "document",
+    boundary: "the initial documentation handoff of a dispatched document task",
+    complete: [
+      "the requested repository documentation is complete in its authoritative owner documents",
+      "changed documentation is accurate, consistent with relevant current references, and concise without duplicating maintained contracts",
+      "the focused documentation checks and verification the change requires have been run",
+      "current documentation and comparison context are registered as workflow evidence when an active Persona workflow accepts it",
+    ],
+  },
   ship: SHIP_CONTRACT,
   bugfix: { ...SHIP_CONTRACT, kind: "bugfix", boundary: "the initial implementation handoff of a dispatched bugfix task" },
   scout: null,
@@ -167,9 +192,14 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
  * The trusted initial completion contract for a durable task kind, or null.
  *
  * Kind-only by design: no agent opens its own pull request on the initial turn, so the
- * boundary does not depend on whether a workflow is bound.
+ * boundary does not depend on whether a workflow is bound. A plan's pinned storage is the one
+ * other input: a locally stored plan has no pull request and hands off through its own record.
  */
-export function taskCompletionContract(kind: TaskKind | null | undefined): TaskCompletionContract | null {
+export function taskCompletionContract(
+  kind: TaskKind | null | undefined,
+  planStorage: "repository" | "local" = "repository",
+): TaskCompletionContract | null {
+  if (kind === "plan" && planStorage === "local") return LOCAL_PLAN_CONTRACT;
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 

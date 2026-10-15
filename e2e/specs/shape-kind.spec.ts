@@ -97,8 +97,8 @@ test("a dispatched shape task is told to grill first, then plan, and to offer Cr
   await expect(card).not.toContainText("/tickets");
   await expect(card).not.toContainText("/phased-plan");
   await expect(card).not.toContainText("Mission Control plan ---");
-  // And the session's task pill names the kind.
-  await expect(card.locator(".task-kind")).toHaveText("shape");
+  // And the session's kind is badged beside its name.
+  await expect(card.locator(".detail-title-line").getByText("shape", { exact: true })).toBeVisible();
 
   await shoot(dashboard, "02-shape-contract-delivered", card);
 

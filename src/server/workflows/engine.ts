@@ -104,6 +104,12 @@ const MAX_INFRA_ATTEMPTS = 3;
  */
 const PERSONA_TIMEOUT_MS = Number(envVar("WORKFLOW_PERSONA_TIMEOUT_MS") ?? 600_000);
 const RETRY_BASE_MS = 1_000;
+const PROVIDER_RETRY_WINDOW_MS = 10 * 60_000;
+const PROVIDER_RETRY_DELAY_CAP_MS = 60_000;
+
+function providerRetryDelayMs(failures: number): number {
+  return Math.min(PROVIDER_RETRY_DELAY_CAP_MS, 1_000 * 2 ** Math.min(failures - 1, 6));
+}
 
 /**
  * The phase a run blocks in when a check node cannot be retried because its lease is still
@@ -1211,7 +1217,7 @@ export class WorkflowEngine {
       return;
     }
     if (!isPersona(node)) return;
-    if (this.workflowPolicy().skipPassedJudges) {
+    if (this.workflowPolicy().skipPassedJudges && !node.recheckAfterRepair) {
       const prior = this.store.priorPassedJudge(run.id, node.id, submission.round);
       const parsed = PersonaVerdictSchema.safeParse(prior?.verdict);
       const directive = initial.operatorDirective
@@ -1334,7 +1340,11 @@ export class WorkflowEngine {
           callResult.parsed ? "succeeded" : "failed",
           callResult.raw ? Buffer.byteLength(callResult.raw) : 0,
           callResult.error
-            ? callResult.providerFailure?.kind ?? "persona_infrastructure"
+            ? callResult.providerFailure === "retryable"
+              ? "persona_provider_retryable"
+              : callResult.providerFailure === "token_exhausted"
+                ? "persona_token_exhausted"
+                : "persona_infrastructure"
             : callResult.parsed
               ? null
               : "persona_parse",
@@ -1342,26 +1352,35 @@ export class WorkflowEngine {
         );
       },
     };
-    // One durable budget covers parsing, transport and contract correction. Restart copies
-    // the operation identity; only an explicit operator retry starts another operation.
-    const consumed = claimed.reviewInput ? this.store.personaOperationCalls(claimed.reviewInput.operationId) : 0;
+    // One durable budget covers parsing, local transport and contract correction. Confirmed
+    // provider refusals spend elapsed time instead. Restart keeps the same operation identity;
+    // only an explicit operator retry starts another operation.
+    const consumed = claimed.reviewInput ? this.store.personaOperationCorrectionCalls(claimed.reviewInput.operationId) : 0;
     let verdict: PersonaVerdict | null = null;
     let failure = "Persona review execution budget exhausted";
+    let providerFailure: "retryable" | "token_exhausted" | null = null;
     const priorRejection = claimed.reviewInput
       ? this.store.personaOperationRejectionBasis(claimed.reviewInput.operationId) : null;
     let violation = priorRejection === "parse" ? null : priorRejection;
     // What was wrong with the previous execution's reply, when it was a parse miss this
     // process observed. A restart only knows the persisted basis, so it keeps the generic text.
     let replyMiss: ModelReplyMiss | null = null;
-    let permanent = false;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
+      const providerState = claimed.reviewInput
+        ? this.store.personaProviderRetryState(claimed.reviewInput.operationId) : null;
+      const remainingMs = providerState
+        ? providerState.firstFailureAt + PROVIDER_RETRY_WINDOW_MS - this.now() : PERSONA_TIMEOUT_MS;
+      if (remainingMs <= 0) {
+        this.blockProviderRetryExhausted(claimed, run.id, failure);
+        return;
+      }
       const correction = violation
         ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
       const result = await runStructured(
         (request) => runner.run(request, {
           model: execution.model.id,
           ...(effort ? { effort } : {}),
-          timeoutMs: PERSONA_TIMEOUT_MS,
+          timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
           images,
         }),
         index === 0 ? prompt : `${prompt}\n\nCorrection required: ${correction}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
@@ -1386,23 +1405,28 @@ export class WorkflowEngine {
         claimed.reviewInput ? { shapeGuaranteed: true } : undefined,
       );
       if (result.kind === "ok") { verdict = result.value; break; }
-      failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
-      if (result.cause === "cancelled") break;
-      // A provider refusal that no repeat can fix - an unavailable model, an exhausted quota -
-      // ends the budget here. The operator reads the runner's own sentence, with the provider's
-      // original text kept after it.
       if (result.providerFailure) {
-        failure = `${node.persona.name} Persona could not run: ${result.providerFailure.summary}. ${result.providerFailure.message}`;
-        permanent = true;
+        failure = result.reason;
+        providerFailure = result.providerFailure;
         break;
       }
+      failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
+      if (result.cause === "cancelled") break;
     }
-    if (claimed.reviewInput) this.store.appendEvent(run.id, "persona_contract_outcome", {
+    if (claimed.reviewInput && providerFailure !== "retryable") this.store.appendEvent(run.id, "persona_contract_outcome", {
       attemptId: claimed.id, contractVersion: 1, outcome: verdict ? "accepted" : "exhausted",
       basis: violation, executions: this.store.personaOperationCalls(claimed.reviewInput.operationId),
     }, this.now(), `persona-contract-outcome:${claimed.id}`);
     if (!verdict) {
-      this.handleInfrastructureFailure(claimed, run.id, failure, !!claimed.reviewInput || permanent);
+      if (providerFailure === "retryable") {
+        this.scheduleProviderRetry(claimed, run.id, failure);
+        return;
+      }
+      if (providerFailure === "token_exhausted") {
+        this.blockTokenExhaustion(claimed, run.id, failure);
+        return;
+      }
+      this.handleInfrastructureFailure(claimed, run.id, failure, !!claimed.reviewInput);
       return;
     }
     const latestRun = this.store.getRun(run.id);
@@ -1687,6 +1711,89 @@ export class WorkflowEngine {
     }, this.now());
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
+  }
+
+  private blockTokenExhaustion(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    this.store.finishAttempt(attempt.id, { state: "error", error: reason }, this.now());
+    this.store.setSubmissionState(submission.id, "failed", this.now());
+    this.store.setRunState(runId, "blocked", "provider_token_exhausted", {
+      nodeId: attempt.nodeId, error: reason,
+    }, this.now());
+    this.store.appendEvent(runId, "persona_token_exhausted", {
+      nodeId: attempt.nodeId, attemptId: attempt.id, error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+  }
+
+  private blockProviderRetryExhausted(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") return;
+    const state = attempt.reviewInput
+      ? this.store.personaProviderRetryState(attempt.reviewInput.operationId) : null;
+    this.store.finishAttempt(attempt.id, { state: "error", error: reason }, this.now());
+    this.store.setSubmissionState(submission.id, "failed", this.now());
+    this.store.setRunState(runId, "blocked", "infrastructure_error", {
+      nodeId: attempt.nodeId,
+      attempts: state?.failures ?? attempt.attempt,
+      error: `Provider retry window exhausted: ${reason}`,
+    }, this.now());
+    this.store.appendEvent(runId, "persona_infrastructure_exhausted", {
+      nodeId: attempt.nodeId, attempts: state?.failures ?? attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+  }
+
+  private scheduleProviderRetry(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+    alreadyFinished = false,
+  ): void {
+    if (!attempt.reviewInput) {
+      this.handleInfrastructureFailure(attempt, runId, reason);
+      return;
+    }
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      if (!alreadyFinished) this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    if (!alreadyFinished) this.store.finishAttempt(attempt.id, { state: "error", error: reason }, this.now());
+    const state = this.store.personaProviderRetryState(attempt.reviewInput.operationId);
+    if (!state) {
+      this.blockProviderRetryExhausted(attempt, runId, reason);
+      return;
+    }
+    const deadlineAt = state.firstFailureAt + PROVIDER_RETRY_WINDOW_MS;
+    const retryAt = this.now() + providerRetryDelayMs(state.failures);
+    if (retryAt >= deadlineAt) {
+      this.blockProviderRetryExhausted(attempt, runId, reason);
+      return;
+    }
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, reviewInput: attempt.reviewInput,
+      inputFingerprint: attempt.inputFingerprint, retryAt,
+      error: `Provider retry scheduled: ${reason}`, now: this.now(),
+    });
+    this.store.appendEvent(runId, "persona_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt,
+      deadlineAt, providerFailures: state.failures, error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+    this.wake();
   }
 
   private handleInfrastructureFailure(
@@ -2031,7 +2138,22 @@ export class WorkflowEngine {
           if (this.blockedByUnresolvedLease(attempt, run.id, "Interrupted by daemon restart")) {
             continue;
           }
-          if (attempt.reviewInput ? this.store.personaOperationCalls(attempt.reviewInput.operationId) < 2 : attempt.attempt < MAX_INFRA_ATTEMPTS) {
+          const callError = this.store.lastPersonaCallErrorCode(attempt.id);
+          if (callError === "persona_token_exhausted") {
+            this.blockTokenExhaustion(attempt, run.id, attempt.error ?? "Provider token limit reached");
+            continue;
+          }
+          if (callError === "persona_provider_retryable") {
+            this.scheduleProviderRetry(attempt, run.id, attempt.error ?? "Provider call failed", true);
+            continue;
+          }
+          const providerState = attempt.reviewInput
+            ? this.store.personaProviderRetryState(attempt.reviewInput.operationId) : null;
+          if (providerState && this.now() >= providerState.firstFailureAt + PROVIDER_RETRY_WINDOW_MS) {
+            this.blockProviderRetryExhausted(attempt, run.id, "Provider retry window ended during daemon restart");
+            continue;
+          }
+          if (attempt.reviewInput ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) < 2 : attempt.attempt < MAX_INFRA_ATTEMPTS) {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: attempt.submissionId,
@@ -2063,8 +2185,13 @@ export class WorkflowEngine {
           const attempt = this.store.latestAttemptForNode(submission.id, node.id);
           return attempt?.state === "error" ? [attempt] : [];
         });
-        const exhausted = errored.find((attempt) => attempt.reviewInput
-          ? this.store.personaOperationCalls(attempt.reviewInput.operationId) >= 2 : attempt.attempt >= MAX_INFRA_ATTEMPTS);
+        const exhausted = errored.find((attempt) => {
+          const code = this.store.lastPersonaCallErrorCode(attempt.id);
+          if (code === "persona_provider_retryable" || code === "persona_token_exhausted") return false;
+          return attempt.reviewInput
+            ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) >= 2
+            : attempt.attempt >= MAX_INFRA_ATTEMPTS;
+        });
         if (exhausted) {
           const error = exhausted.error ?? "Infrastructure failure exhausted its retry budget";
           const now = this.now();
@@ -2083,6 +2210,21 @@ export class WorkflowEngine {
         }
         for (const attempt of errored) {
           if (this.blockedByUnresolvedLease(attempt, run.id, attempt.error ?? "Recovered infrastructure failure")) {
+            break;
+          }
+          const callError = this.store.lastPersonaCallErrorCode(attempt.id);
+          if (callError === "persona_token_exhausted") {
+            this.blockTokenExhaustion(attempt, run.id, attempt.error ?? "Provider token limit reached");
+            break;
+          }
+          if (callError === "persona_provider_retryable") {
+            this.scheduleProviderRetry(attempt, run.id, attempt.error ?? "Provider call failed", true);
+            continue;
+          }
+          const providerState = attempt.reviewInput
+            ? this.store.personaProviderRetryState(attempt.reviewInput.operationId) : null;
+          if (providerState && this.now() >= providerState.firstFailureAt + PROVIDER_RETRY_WINDOW_MS) {
+            this.blockProviderRetryExhausted(attempt, run.id, "Provider retry window ended during daemon restart");
             break;
           }
           const now = this.now();

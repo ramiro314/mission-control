@@ -141,8 +141,14 @@ export interface DaemonHandle {
    * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
    */
   crash(): Promise<void>;
-  /** Boot a fresh daemon on the same port and home after `crash()`. */
-  restart(): Promise<void>;
+  /**
+   * Boot a fresh daemon on the same port and home after `crash()`.
+   *
+   * `envChanges` alters the successor's environment - an `undefined` value removes a variable -
+   * for the states a different launch produces on the same installation, such as a Mac its
+   * organization no longer manages.
+   */
+  restart(envChanges?: Record<string, string | undefined>): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -424,7 +430,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,
-    MISSION_WEB_DIR: join(REPO_ROOT, "dist/web"),
+    // A later Vite build clears dist/web. Existing pages must keep the assets named
+    // by the index they already received, even if another command rebuilds the checkout.
+    MISSION_WEB_DIR: process.env.MC_E2E_WEB_SNAPSHOT ?? join(REPO_ROOT, "dist/web"),
     // Installer specs opt into a controllable bare `node --version`, matching upstream
     // bin/install without placing a process wrapper in front of every unrelated fixture.
     PATH:
@@ -576,6 +584,15 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
     // instead of quietly spending.
     ANTHROPIC_API_KEY: "",
+    // No organization manages a fixture daemon, whatever Mac runs the suite. The temp-dir
+    // state home already refuses detection; this says so outright. A spec that drives the
+    // managed panel opts in through `daemonEnv` with `MISSION_ORGANIZATION=upstart` and a
+    // loopback `MISSION_ORGANIZATION_ENDPOINT`.
+    MISSION_ORGANIZATION: "none",
+    // No spec reads the real managed Claude Code policy on the Mac that runs the suite. This
+    // root holds no policy, so Settings > Cost reads as it does on an unmanaged machine. A
+    // spec that drives the managed-policy warning points it at a fixture through `daemonEnv`.
+    MISSION_MANAGED_SETTINGS_ROOT: join(home, "managed-settings-root"),
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through
@@ -778,8 +795,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     await gone;
   };
 
-  const restart = async (): Promise<void> => {
+  const restart = async (envChanges: Record<string, string | undefined> = {}): Promise<void> => {
     if (!exited) throw new Error("restart() is for a dead daemon - call crash() first");
+    for (const [key, value] of Object.entries(envChanges)) {
+      if (value === undefined) delete isolatedEnv[key];
+      else isolatedEnv[key] = value;
+    }
     // Same port, same home, same env: the successor is the same installation coming back,
     // which is exactly the case transient state (keep awake) must reset across. The boot
     // check re-verifies identity by pid, so a squatter that stole the freed port between

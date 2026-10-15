@@ -133,6 +133,13 @@ except the suite's own `MISSION_PLAYWRIGHT_*` settings. The run prints the names
 A Mission Control setting a spec needs reaches the daemon through `fixtures/daemon.ts` or the spec's
 `daemonEnv`, never through the shell that launched the run.
 
+Finish the build before starting a browser run. After acquiring the host lease, global setup
+copies `dist/web` once into a private temporary directory and all ordinary fixture daemons serve
+that snapshot. Vite clears its output during a rebuild; serving that mutable output allowed a
+page to receive an index whose JavaScript disappeared before it loaded, surfacing as a missing
+Dispatch button. The snapshot protects in-flight tests from later builds and is removed at
+teardown. This is build isolation, not a retry or a longer readiness timeout.
+
 Useful flags:
 
 ```sh

@@ -1,10 +1,14 @@
+import { spawnBundledUpdateHelper } from "../../scripts/update-helper-runtime.mjs";
+import { prepareSourceUpdate } from "../../scripts/install-staged-app.mjs";
+import { readReceipt } from "../shared/install-receipt.mjs";
+import { assertSafeAppLaunch } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
-import { prepareMigration, keepSystemInstallation, readMigrationJournal, atomicMigrationJson, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
+import { prepareInPlaceInstall, prepareMigration, keepSystemInstallation, readMigrationJournal, atomicMigrationJson, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
 import { processIdentity } from "../../scripts/update-lock.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
 import { execFile, spawn } from "node:child_process";
-import { closeSync, copyFileSync, openSync, rmSync, statSync, mkdirSync } from "node:fs";
+import { closeSync, copyFileSync, openSync, rmSync, statSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -32,7 +36,7 @@ import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "../shared/github-ss
 import { macOSOnlyRefusal } from "../shared/macos-only.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
-import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
+import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { checkUpdateRuntime, type UpdateRuntime } from "./update-runtime.ts";
 import {
   stageUpdateBuild,
@@ -70,6 +74,11 @@ export interface MainCommitInfo {
   committedAt: string;
 }
 
+export interface OutcomeDelivery {
+  delivered(): void;
+  acknowledged(): void;
+}
+
 export interface UpdateDialogs {
   available(release: {
     currentVersion: string;
@@ -84,7 +93,7 @@ export interface UpdateDialogs {
   ready(version: string, migration?: UpdateMigration): Promise<"install" | "defer" | "system">;
   applying(version: string): Promise<void>;
   error(message: string): Promise<void>;
-  outcome(outcome: UpdateApplyOutcome): Promise<void>;
+  outcome(outcome: UpdateApplyOutcome, delivery: OutcomeDelivery): Promise<void>;
 }
 
 /** One coherent reading of what is installed and whether this process may update it. */
@@ -174,6 +183,7 @@ export interface UpdaterPort {
   runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
   helperSource(): string;
   stateDirectory(): string;
+  launchPreflight(appPath: string): Promise<void>;
   handoff(args: HelperHandoff): Promise<void>;
   stage(request: UpdateStageRequest): Promise<StageOutcome>;
   /** What is at a staged bundle's path now, so a caller can tell it is still the same build. */
@@ -184,8 +194,8 @@ export interface UpdaterPort {
   migrationStatus?(): UpdateMigration | undefined;
   repairMigration?(): Promise<void>;
   requestQuit(): void;
-  readOutcome(): UpdateApplyOutcome | null;
-  clearOutcome(): void;
+  readOutcome(): UpdateApplyOutcome | null | Promise<UpdateApplyOutcome | null>;
+  clearOutcome(expected: UpdateApplyOutcome): void;
   now(): number;
   random(): number;
   log(line: string): void;
@@ -434,6 +444,22 @@ export function detachedUpdateHelperSources(helperSource: string): string[] {
 }
 
 export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<void> {
+  if (args.stagedBundle && args.stagedRevision) {
+    const receipt = readReceipt(join(args.stateDirectory, "install-receipt.json"));
+    if (!receipt || receipt.appPath !== args.appPath || receipt.sourceClone !== args.sourceClone) throw new Error("The installation receipt changed before handoff");
+    const descriptor = prepareSourceUpdate({receipt, bundle: args.stagedBundle, revision: args.stagedRevision, targetTag: args.targetTag});
+    const supportsTransaction = JSON.parse(readFileSync(join(args.stagedBundle, "Contents/Resources/app/package.json"), "utf8")).missionInstallTransaction?.protocol === 1;
+    const plan = args.migration ?? (supportsTransaction ? prepareInPlaceInstall({descriptor, stateDirectory: args.stateDirectory}) : null);
+    await spawnBundledUpdateHelper({runtimeBundle: args.appPath, candidateBundle: args.stagedBundle, helperSource: args.helperSource, stateDirectory: args.stateDirectory,
+      parentPid: args.parentPid, logPath: args.logPath, env: args.env,
+      handoff: plan ? {plan, port: PORT, inventory: args.migrationInventory} : undefined, argv: [
+        "--source-clone", args.sourceClone, "--target-tag", args.targetTag, "--app-path", args.appPath,
+        "--parent-pid", String(args.parentPid), "--state-dir", args.stateDirectory, "--log-path", args.logPath,
+        "--staged-bundle", args.stagedBundle, "--staged-revision", args.stagedRevision,
+        ...(plan ? [] : ["--staged-digest", descriptor.digest]),
+      ]});
+    return;
+  }
   const directory = await mkdtemp(join(tmpdir(), "mission-control-update-"));
   try {
     const root = dirname(dirname(args.helperSource));
@@ -534,6 +560,7 @@ function safeUpdateError(error: unknown): {
  */
 export function updateIneligibility(snapshot: InstallSnapshot): string | null {
   if (!snapshot.receipt) return "This app was not installed with the managed install command.";
+  if (snapshot.receipt.kind === "binary") return "Binary updates are not available in this build. Install a newer Mission Control build to update this installation.";
   if (!isTrustedInstallRepo(snapshot.receipt.repo)) {
     return `Updates are disabled because this app was installed from ${snapshot.receipt.repo}.`;
   }
@@ -640,13 +667,14 @@ export class UpdateController {
       return;
     }
 
-    let lastOutcome = this.port.readOutcome();
+    const storedOutcome = await this.port.readOutcome();
+    let lastOutcome = storedOutcome;
     if (lastOutcome?.result === "in-progress") {
       lastOutcome = {
         result: "failure",
         targetVersion: lastOutcome.targetVersion,
         recordedAt: lastOutcome.recordedAt,
-        message: "The previous update did not finish. The existing app was left in place.",
+        message: "The previous update did not finish. Check the update log before retrying.",
       };
     }
     const disable = (reason: string) => this.publish({ phase: "disabled", reason, lastOutcome });
@@ -664,8 +692,19 @@ export class UpdateController {
 
     if (lastOutcome) {
       try {
-        await this.port.dialogs.outcome(lastOutcome);
-        this.port.clearOutcome();
+        const notice = lastOutcome;
+        const clear = () => {
+          try { this.port.clearOutcome(storedOutcome!); }
+          catch (error) { this.port.log(`could not retire update outcome: ${String(error)}`); }
+        };
+        await this.port.dialogs.outcome(notice, {
+          delivered: () => {
+            // Delivery proves only that the renderer ran once. It may hang before
+            // an answer, so preserve the notice across relaunch until acknowledged.
+            this.port.log("update outcome delivered; awaiting operator acknowledgment");
+          },
+          acknowledged: clear,
+        });
       } catch (error) {
         this.port.log(`could not show the previous update outcome: ${String(error)}`);
       }
@@ -764,7 +803,8 @@ export class UpdateController {
           : release!.body;
         const reusableStaged = this.staged?.releaseTag === targetRef &&
           this.stagedBundleIsIntact(this.staged);
-        const runtime = await this.port.runtime(this.receipt!.sourceClone, !reusableStaged);
+        const runtime = reusableStaged ? {ok: true as const, node: process.execPath, env: process.env}
+          : await this.port.runtime(this.receipt!.sourceClone!);
         return this.publish({
           phase: "available",
           currentVersion,
@@ -945,7 +985,7 @@ export class UpdateController {
     this.publish(preparing("starting"));
     this.applyPromise = (async () => {
       try {
-        const runtime = await this.port.runtime(this.receipt!.sourceClone);
+        const runtime = await this.port.runtime(this.receipt!.sourceClone!);
         if (abort.signal.aborted) {
           this.publish(offer);
           return false;
@@ -956,7 +996,7 @@ export class UpdateController {
         }
         const outcome = await this.port.stage({
           runtime,
-          sourceClone: this.receipt!.sourceClone,
+          sourceClone: this.receipt!.sourceClone!,
           targetTag: offer.releaseTag,
           signal: abort.signal,
           // Guarded on the phase rather than published blindly: a cancellation or a failure
@@ -1182,13 +1222,21 @@ export class UpdateController {
       lastOutcome: target.lastOutcome,
     });
     try {
-      const runtime = await this.port.runtime(this.receipt!.sourceClone, !stagedBundle);
+      const runtime = stagedBundle
+        ? {ok: true as const, node: process.execPath, env: process.env}
+        : await this.port.runtime(this.receipt!.sourceClone!);
       if (!runtime.ok) throw new UpdateError(runtime.message);
+      try {
+        await this.port.launchPreflight(this.receipt!.appPath);
+        if (this.migration) await this.port.launchPreflight(this.migration.target);
+      } catch (error) {
+        throw new UpdateError(error instanceof Error ? error.message : "Could not verify macOS launch state.");
+      }
       await this.port.handoff({
         node: runtime.node,
         env: runtime.env,
         helperSource: this.port.helperSource(),
-        sourceClone: this.receipt!.sourceClone,
+        sourceClone: this.receipt!.sourceClone!,
         targetTag: target.releaseTag,
         appPath: this.receipt!.appPath,
         parentPid: process.pid,
@@ -1350,7 +1398,7 @@ export function createDefaultUpdaterPort(options: {
     repairMigration: options.repairMigration,
     migrationStatus: () => {
       const journal = readMigrationJournal(options.stateDirectory);
-      if (!journal || !["receipt-committed", "repair-required", "complete"].includes(journal.stage)) return undefined;
+      if (!journal || journal.plan.kind === "in-place" || !["receipt-committed", "repair-required", "complete"].includes(journal.stage)) return undefined;
       return {source: journal.plan.source, target: journal.plan.target, status: journal.stage === "complete" ? "complete" : "repair-required", repairs: journal.repairs.filter((item) => item.status === "pending")};
     },
     packaged: options.packaged,
@@ -1366,6 +1414,7 @@ export function createDefaultUpdaterPort(options: {
     runtime: checkUpdateRuntime,
     helperSource: () => options.helperSource,
     stateDirectory: () => options.stateDirectory,
+    launchPreflight: (bundle) => assertSafeAppLaunch(bundle),
     handoff: (args) =>
       spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
     stage: async (request) => {
@@ -1396,8 +1445,8 @@ export function createDefaultUpdaterPort(options: {
       };
     },
     requestQuit: options.requestQuit,
-    readOutcome: () => readUpdateOutcome(updateOutcomePath(options.stateDirectory)),
-    clearOutcome: () => clearUpdateOutcome(updateOutcomePath(options.stateDirectory)),
+    readOutcome: () => readSettledUpdateOutcome(options.stateDirectory),
+    clearOutcome: (expected) => clearUpdateOutcome(updateOutcomePath(options.stateDirectory), expected),
     now: Date.now,
     random: Math.random,
     log,

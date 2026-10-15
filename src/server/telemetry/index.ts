@@ -19,6 +19,17 @@ export {
   userCredentialConfigured,
 } from "./config.ts";
 export {
+  acknowledgeOrganizationNotice,
+  applyOrganization,
+  describeOrganizationOutcome,
+  organizationSettled,
+  recheckOrganization,
+  whileOrganizationSettled,
+  setPilotEnrollment,
+  telemetryOrganizationRecord,
+} from "./organization.ts";
+export type { OrganizationApplyOutcome, PilotEnrollmentResult } from "./organization.ts";
+export {
   recordTelemetryControl,
   runTelemetryOperation,
   telemetryCollectionEnabled,

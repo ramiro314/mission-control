@@ -28,7 +28,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
-const { WORKFLOW_CHECK_SLOTS, normalizePersonaName, normalizeSessionActionName, normalizeWorkflowName } =
+const { normalizePersonaName, normalizeSessionActionName, normalizeWorkflowName, WORKFLOW_CHECK_SLOTS } =
   await import("../src/shared/workflow.ts");
 const { captureSettingsCatalogs, settingsCatalogCounts } =
   await import("../src/server/settings-backups/catalogs.ts");

@@ -99,7 +99,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 test("the kinds preserve the append-only order and derive the type from it", () => {
-  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "shape"]);
+  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "shape"]);
   // Order is a contract, not an accident of how they were typed: it is the order the
   // dispatch form lists the options in, and the order the guided pass offers them.
   assert.equal(TASK_KINDS[0], "ship", "ship leads - it is the default and the common case");
@@ -111,7 +111,7 @@ test("the kinds preserve the append-only order and derive the type from it", () 
   // `(typeof TASK_KINDS)[number]`, so a value the tuple does not hold is not assignable
   // and this file would not compile - which is the assertion.
   const every: readonly TaskKind[] = TASK_KINDS;
-  assert.equal(every.length, 7);
+  assert.equal(every.length, 8);
 });
 
 test("every kind says how it is offered", () => {
@@ -157,17 +157,17 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
 });
 
 test("only chat is excluded from backlog-producing surfaces", () => {
-  assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "shape"]);
+  assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document", "shape"]);
   assert.deepEqual(
     Object.fromEntries(TASK_KINDS.map((kind) => [kind, taskKindAllowsBacklog(kind)])),
-    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, shape: true },
+    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, document: true, shape: true },
   );
 });
 
 test("recurring missions offer every backlog kind except shape", () => {
   // A shape task opens with an interview, so a mission filing it on a schedule would ask the
   // same questions of nobody in particular.
-  assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix"]);
+  assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
   assert.equal(taskKindAllowsSchedule("shape"), false);
   assert.equal(taskKindAllowsSchedule("chat"), false);
 });
@@ -181,11 +181,19 @@ test("shape is planning work that Foreman never starts on its own", () => {
   assert.equal(taskDefaultWorkflowId("shape", {}), PLAN_VALIDATION_WORKFLOW_ID);
 });
 
+test("every kind has its own colour, so no two marks can be mistaken for each other", () => {
+  const accents = TASK_KINDS.map((kind) => TASK_KIND_INFO[kind].accent);
+  for (const accent of accents) assert.match(accent, /^#[0-9a-f]{6}$/);
+  assert.equal(new Set(accents).size, TASK_KINDS.length);
+});
+
 test("chat has the approved conversational copy", () => {
   assert.deepEqual(TASK_KIND_INFO.chat, {
     label: "chat",
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
+    accent: "#b4c0cf",
+    icon: [{ shape: "path", d: "M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" }],
   });
   assert.deepEqual(TASK_KIND_BEHAVIOR.chat, {
     repoAvailability: "workspace",

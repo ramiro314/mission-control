@@ -538,7 +538,7 @@ export function BacklogBulkEditModal({
                 // Only tasks and sessions are offered to add here; the other edge types
                 // arrive on a task (a source's sweep) and are only ever removed.
                 const title =
-                  input.type === "task"
+                  input.type === "plan" ? `Plan ${input.planId} revision ${input.revision}` : input.type === "task"
                     ? (allTasks.find((t) => t.id === input.taskId)?.title ?? input.taskId)
                     : input.type === "session"
                       ? (sessions.find((s) => s.id === input.sessionId)?.name ?? input.sessionId)

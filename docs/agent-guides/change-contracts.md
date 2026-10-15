@@ -118,6 +118,21 @@ forwards `"$@"` fails the same way. A
 program it never sees as `gh` - a shell named by a variable, or a value produced by code it does
 not read - is outside a syntax scan's reach.
 
+## Managed plan changes
+
+Keep `managed-plans.ts`, daemon plan storage, attributed MCP schemas, required launch tools,
+settings projections and backup classification in agreement. Manifests are versioned and
+immutable; settings apply only at creation. Source/rendering digests and bounded inventory
+travel together. Repository publication checks Markdown and policy-included HTML; excluded
+HTML must remain readable and capturable locally. Saving never satisfies task dependencies.
+Do not migrate legacy tracked plans through new-plan defaults. The completion handoff and
+planning PR merge remain repository publication authority. Local-only plan tasks instead require
+an exact final human approval and successful applicable validation, frozen to the same manifest,
+episode, binding/version and submission. Receipts satisfy only exact plan artifact prerequisites.
+Never reinterpret ordinary task/session merge edges or infer approval from a saved bundle.
+Keep typed inputs through DB, snapshots, edits and both task delivery seams; unknown or corrupt
+prerequisites must block. Local policy disables HTML output eligibility without clearing its setting. See [managed plans](../managed-plans.md).
+
 ## Database changes
 
 For a new column on an existing table:
@@ -147,10 +162,6 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   makes every historical row unreadable, and the degradation on an unknown value is
   `prompt-prefix`, so a reordered vocabulary would silently re-prefix text that was in fact
   delivered out of band
-- LLM provider failure kinds (`LLM_PROVIDER_FAILURE_KINDS` in `src/shared/llm.ts`) - written
-  verbatim into `workflow_llm_calls.error_code` beside the older `persona_infrastructure` and
-  `persona_parse` codes, which stay readable unchanged. A runner reports one by throwing
-  `LlmProviderFailure`; the engine never branches on which runner threw it
 - LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
   queried back by exact value, so a rename orphans every historical row it wrote
 - Usage ledger writer names (`usage_ledger.writer`: `otel`, `driver`, `rollout`, `report`,
@@ -192,6 +203,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   approved Datadog cost optimizations, so changing them needs an audit entry in
   `docs/plans/upstart-datadog-telemetry/phase-2-lean-export-shape.md`. Telemetry gap kinds
   (`TELEMETRY_GAP_KINDS`) are `telemetry_gaps.kind` and are append-only for the same reason
+- Organization ids (`ORGANIZATION_IDS` in `src/shared/organizations.ts`) - persisted as
+  `organization` in the `telemetry.organization` record and read back by exact value. Append an
+  organization; never rename one. The detection rule and the managed lock are the approved
+  contract in `docs/plans/upstart-datadog-telemetry/phase-3-recognize-upstart.md`, and changing
+  either needs an audit entry there. Organization rollouts (`ORGANIZATION_ROLLOUTS`) are
+  append-only for the same reason
 - Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
   `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
   values are read back by exact value and checked by the table's `CHECK` constraint, so

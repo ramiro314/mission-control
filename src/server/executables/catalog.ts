@@ -130,6 +130,11 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     candidates: ({ platform }) => platform === "darwin" ? ["/usr/bin/du"] : ["/usr/bin/du"],
   }),
   treehouse: spec("treehouse", "Treehouse compatibility CLI", "treehouse", "TREEHOUSE_BIN"),
+  // macOS's configuration-profile tool. Read-only here: `profiles status -type enrollment`
+  // answers which device management server this Mac is enrolled in, without admin rights.
+  profiles: spec("profiles", "macOS configuration profiles", "profiles", "PROFILES_BIN", {
+    candidates: () => ["/usr/bin/profiles"],
+  }),
   "systemd-inhibit": spec("systemd-inhibit", "systemd inhibitor", "systemd-inhibit", "SYSTEMD_INHIBIT_BIN"),
   "xdg-terminal-exec": spec(
     "xdg-terminal-exec",

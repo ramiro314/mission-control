@@ -853,6 +853,18 @@ available:
   is two cells sharing one line. The choice is per browser and stored through the daemon, so
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
+- **Every task says what kind it is.** A session working on a task is marked with its kind -
+  ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
+  has its own icon and colour. Every style prints the kind's word beside the icon except the
+  card's **Medallion**, which shows the icon alone and gives the word on hover. The console
+  badge does the same only on a pane too narrow for anything else, where every other header
+  control has already been reduced to its mark. By default the console badges the kind before the session's
+  name, on the name's own line, and a Board card carries it on a tab sitting on the card's
+  top edge, which takes no room inside the card. Hover either one for what the kind is for.
+  The style for each surface, or Off, is a
+  [Display setting](skills-and-settings.md#settings). The kind is no longer printed in
+  the PATH and BRANCH band above the conversation; the task chip there still carries a
+  task's title, outcome and schedule origin when it has them.
 - **A card under review states its progress, not its reasons.** That is what **Workflow
   details** governs. Unchecked, a card with a
   bound run draws the run's name and state, its whole stage track, which stage it is on and
@@ -1063,6 +1075,42 @@ graphical session is reachable" instead (see
   over that list, so an editor or a JetBrains IDE needs no component, stylesheet or route
   change. Both records are `Record<OpenTargetId, …>`, so a declared target that nothing can
   launch does not compile.
+
+## Publish a file as a shareable page
+
+The file toolbar's **Publish** button, beside **Open in ▾**, shares the open file as a
+hosted page - most often a scout report at `docs/reports/<slug>/report.html`. Mission
+Control uploads nothing itself. The click sends the session one ordinary turn, through the
+same one-turn path as the reply box, asking its agent to publish that exact file with the
+agent's own tool. The toolbar confirms only that the request was sent: the conversation is
+where the agent replies with the link, or says why it could not publish. Each confirmation
+or refusal belongs to the file and session it was sent from: it is shown only while that
+file is open and stays with it until dismissed or published again, so a request still in
+flight when you move on, or publish a second file, never replaces another file's result.
+
+- **Claude Code publishes a Claude artifact.** The prompt tells Claude to call its
+  `Artifact` tool with `file_path` set to the open file, and not to edit, rewrite,
+  reformat or copy it first. That tool reads its content only from `file_path`, so the page
+  on claude.ai is the file on disk. A new artifact is private to you until you share it
+  from its page header. Artifacts need a Pro, Max, Team or Enterprise plan, a claude.ai
+  sign-in rather than an API key, and the Anthropic API rather than Bedrock or Vertex. The
+  Agent SDK runtime has them off by default. When the tool is not available, the prompt
+  asks Claude to say so and stop rather than publish something else.
+- **Codex and Pi cannot publish.** The button is drawn disabled with the reason. OpenAI's
+  nearest equivalent, Sites, is managed only from ChatGPT on the web or the desktop app, and
+  a Sites deploy may change a project to make it deployable.
+- **Only the tool's source types.** Claude publishes `.html`, `.htm` and `.md`; any other
+  file shows the button disabled with that list.
+- **Unsaved edits are not published.** The button waits for the file to be saved, so what
+  Claude reads is what you are looking at. A session that cannot take a turn - no pane, or
+  driven by a workflow engine - shows the button disabled with that reason.
+- **A published artifact is one page.** Relative links to files beside the report do not
+  resolve on claude.ai, so a report that links to a CSV or screenshot publishes with those
+  links dead.
+- **Adding a harness is one capability entry.** `artifactPublishing` in
+  `@shared/harness-capabilities.ts` carries either the label, the source types and the
+  prompt, or the sentence that explains why the harness cannot publish. The toolbar reads
+  only that entry.
 
 ## Conversation rendering
 
@@ -1275,6 +1323,33 @@ thread. **Review (N)** remains the session-wide outbox across files and opens th
 The exception is a comment you started and never submitted. A **draft** is not an existing
 comment - it is your composer with half a sentence in it, and the review queue does not list one
 - so pointing at its block reopens it with what you wrote still in it.
+
+#### Comment from the Diff tab
+
+The bar naming the file you are reading in the **Diff** tab carries the same **Comment**
+control (<kbd>m</kbd> while the diff reader owns focus). With it on, the new-side line number of
+every line that is in the working-tree file becomes a button; click one and the same box opens
+in a row directly under that line. Everything after that is the Files tab's: the draft is saved
+from the first keystroke, **Send** delivers it or queues it, <kbd>Esc</kbd> discards it, and the
+thread is the same row the Files tab draws. It anchors to the same Files-relative path, the same
+working-tree line and the same quoted text, so a comment written on a diff line shows as a
+marker on that line in the Files editor, and one written in Files shows in the diff whenever
+its line is part of a hunk. A marker in the diff expands the thread for a reply, **Resolve** or
+**Reopen**, and **Resolved** draws closed threads while comment mode is on. Comment mode stays
+on as you move between changed files, and is off again after a reload, as it is in Files.
+
+Only lines that exist in the working tree take a comment. A deleted line is text that is gone,
+and a hunk header belongs to git, so neither gets a button. The diff is a snapshot from when the
+tab loaded, so clicking a line re-reads the file first and the comment anchors to the file as it
+is on disk now. If the agent has rewritten that line since, the click says so instead of opening
+the box, and the line stops being clickable until you reload the diff. There is no Preview here;
+a diff is source, so every comment made from it is a line comment.
+
+The control says why when a file takes no comment, and stays focusable so the reason is
+reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the
+working tree a comment anchors to), a **deleted** file, a **binary** file, and a file the Files
+tab cannot open because it is **outside the session's working directory**. The **Comments** rail
+and **Review (N)** queue stay in the Files tab.
 
 ### Comments go to the agent as you send them
 
@@ -1591,7 +1666,7 @@ either platform.
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
 | <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
-| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click | Integrated Files tab on a file with source |
+| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click; in the Diff tab, make the working-tree line numbers clickable | Integrated Files tab on a file with source, or the Diff reader on a file that takes comments |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the rendered file preview up or down. Preview claims <kbd>d</kbd> before the global Delete action | Integrated Files tab in Preview mode |
 | <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> | Return from the rendered file preview to the selected file; <kbd>Tab</kbd> enters Preview again | Focused integrated Files preview |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
@@ -1703,8 +1778,8 @@ the override and leaves the shortcut unset until its default is free. The arrow 
 and can't be reassigned; neither can Fleet's twelve
 [session jump chords](#jumping-straight-to-a-session); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
-editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
-are in-surface keys rather than fleet chords - they only exist while their surface is active - so
+editor's four rows above, the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
+and the Diff reader's <kbd>m</kbd> are in-surface keys rather than fleet chords - they only exist while their surface is active - so
 they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
 wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you
 are looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
@@ -1725,7 +1800,7 @@ Editor and Comment controls; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board tile's workflow disclosure and its
 [jump key](#jumping-straight-to-a-session), which the Console rail row prints beside its state
 word; the Diff reader's
-Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
+Comment and Open in Files actions; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact
 icon-only Delete controls name it in their tooltip. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.

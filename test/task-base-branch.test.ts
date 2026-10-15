@@ -37,6 +37,12 @@ const { openDb, getTask } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+// MCP task creation checks the resolved workflow is selectable, and a ship task resolves to
+// the kind's built-in default. These routes need nothing else from the manager.
+const SELECTABLE_WORKFLOWS = {
+  workflowSelectionBlock: () => null,
+  localPlanPublication: () => null,
+} as unknown as import("../src/server/workflows/manager.ts").WorkflowManager;
 const { Dispatcher, resolveTaskBases } = await import("../src/server/dispatcher.ts");
 const { resolveBaseBranch, freshRemoteBranchSha, parseLsRemoteBranchSha } =
   await import("../src/server/git/remote-default.ts");
@@ -276,7 +282,7 @@ test("a reset for a task with a base branch lands on origin/<base>; without one,
 
 function appFor(registry = new Registry()) {
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const api = (path: string, body: Record<string, unknown>) => app.request(path, {
     method: "POST",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
@@ -400,9 +406,11 @@ test("the MCP client sends a base branch only to the routes that refuse what the
     source.indexOf('server.registerTool(\n  "create_task"'),
     source.indexOf('server.registerTool(\n  "list_backlog_tasks"'),
   );
-  // v2 would strip it and file the task on the default branch; v3 is strict.
-  assert.match(create, /adoptTaskId !== undefined \|\| baseBranch !== undefined;/);
-  assert.match(create, /labels,\n\s+baseBranch,\n\s+adoptTaskId,\n\s+\}\);/);
+  // v2 would strip it and file the task on the default branch; v3 is strict. The base branch
+  // is one of the configuration fields, and any of them routes the call to v3.
+  assert.match(create, /\.\.\.McpTaskConfigurationSchema\.shape/);
+  assert.match(create, /Object\.keys\(configuration\)\.length > 0\s*\? "\/mcp\/v3\/tasks"/);
+  assert.match(create, /\.\.\.configuration,\n\s+adoptTaskId,\n\s+\}\);/);
   const push = source.slice(source.indexOf('server.registerTool(\n  "push_task"'));
   assert.match(push, /sourceId,\n\s+baseBranch,\n\s+\}\);/);
 });

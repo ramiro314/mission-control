@@ -775,6 +775,7 @@ function sameTelemetrySummary(
   if (a === undefined || b === undefined) return a === b;
   if (
     a.enabled !== b.enabled ||
+    a.organizationNotice?.label !== b.organizationNotice?.label ||
     a.configRevision !== b.configRevision ||
     a.productEnrollment !== b.productEnrollment ||
     a.usedBytes !== b.usedBytes ||
@@ -4054,6 +4055,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.satisfiedAt !== null ||
@@ -4089,6 +4091,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.taskId !== taskId ||
@@ -4128,6 +4131,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.satisfiedAt !== null ||
           !isWorkDependency(dependency) ||
@@ -4240,6 +4244,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.satisfiedAt !== null ||
@@ -4262,6 +4267,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.taskId !== taskId ||
@@ -4349,6 +4355,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (dependency.satisfiedAt !== null) return dependency;
         const matchesSession =
           dependency.type === "session" &&
@@ -4678,6 +4685,10 @@ export class Registry extends EventEmitter {
   workEpisodeForSession(sessionId: string): SessionWorkEpisode | null {
     const session = this.sessions.get(sessionId);
     return session ? this.ensureWorkEpisode(session) : sessionWorkEpisodeFor(sessionId);
+  }
+
+  recordedWorkEpisodeForSession(sessionId: string): SessionWorkEpisode | null {
+    return sessionWorkEpisodeFor(sessionId);
   }
 
   workEpisodeForTask(taskId: string): TaskWorkEpisodeBinding | null {
@@ -6861,6 +6872,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "session" ||
           dependency.sessionId !== session.id ||
@@ -7317,6 +7329,8 @@ export class Registry extends EventEmitter {
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
           workflowId: t.workflowId,
+          planPolicy: t.planPolicy,
+          planInputs: t.planInputs,
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,

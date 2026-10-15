@@ -25,8 +25,11 @@ import {
 import {
   BACKLOG_LIST_TOOL,
   COMPLETE_SHAPE_TICKETS_TOOL,
+  PLAN_CONTEXT_TOOL,
   PLAN_DECISIONS_TOOL,
   PLAN_PUBLICATION_TOOL,
+  PLAN_READ_TOOL,
+  PLAN_SAVE_TOOL,
   PLAN_SCHEDULING_TOOL,
   PUSH_TASK_TOOL,
 } from "../src/server/plans/tools.ts";
@@ -86,6 +89,8 @@ const config: SkillsConfig = {
   skills: Object.fromEntries(SHAPE_SKILL_IDS.map((id) => [id, true])),
   generation: 3,
   generationAt: 100,
+  commitPlanHtml: false,
+  planStorage: "repository",
 };
 
 function deps(over: Partial<RequiredSkillCommandDeps> = {}): RequiredSkillCommandDeps {
@@ -320,11 +325,14 @@ test("the bundled grill skill asks rounds the way the contract promises", () => 
 
 test("every shape launch pre-approves the tools its prompt names", () => {
   const appendix = shapeContractAppendix(CLAUDE_SKILLS);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL]) {
+  const managed = [PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL];
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL, ...managed]) {
     assert.ok(appendix.includes(tool), `the prompt names ${tool}`);
   }
   const required = kindMissionMcpRequirement(mkTask(), null);
-  const expected = [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL];
+  const expected = [
+    PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, ...managed, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL,
+  ];
   for (const tool of expected) assert.ok(([...MISSION_MCP_TOOLS] as string[]).includes(tool));
   assert.deepEqual([...(required?.tools ?? [])].sort(), [...expected].sort());
 });

@@ -4,8 +4,11 @@ import { deferredImperativeList, taskCompletionContract } from "@shared/task-com
 import { PLAN_HTML_SKILL_ID } from "./prompt.ts";
 import {
   COMPLETE_SHAPE_TICKETS_TOOL,
+  PLAN_CONTEXT_TOOL,
   PLAN_DECISIONS_TOOL,
   PLAN_PUBLICATION_TOOL,
+  PLAN_READ_TOOL,
+  PLAN_SAVE_TOOL,
   PLAN_SCHEDULING_TOOL,
   PUSH_TASK_TOOL,
 } from "./tools.ts";
@@ -127,8 +130,12 @@ export function shapeContractAppendix(
     `   ${skills.grill}`,
     "2. A dismissed round ends the work. Do not draft a plan, and never read a dismissal back as a selection.",
     `3. When nothing is left to ask, invoke the ${PLAN_HTML_SKILL_ID} skill and write the plan from the settled`,
-    `   decisions, at \`${PLAN_SOURCE_PATH_SHAPE}\` with its rendered \`${PLAN_PAGE_FILENAME}\` beside it. On this harness:`,
+    `   decisions. On this harness:`,
     `   ${skills.htmlPlans}`,
+    `   Call ${PLAN_CONTEXT_TOOL}, then ${PLAN_SAVE_TOOL} with complete Markdown and static HTML content. A shape`,
+    `   plan is always a repository plan: the daemon writes \`${PLAN_SOURCE_PATH_SHAPE}\` and retains`,
+    `   \`${PLAN_PAGE_FILENAME}\` locally unless this plan's pinned policy includes HTML in Git. Use ${PLAN_READ_TOOL} for`,
+    "   exact revisions, review the returned preview URL, and commit only returned requiredPaths.",
     `4. Request the plan review with \`${PLAN_DECISIONS_TOOL}\`. On a shape task its last decision is`,
     `   \`${SHAPE_FOLLOW_UP_DECISION_ID}\`, "What should happen after this plan is approved?", with the options`,
     `   \`create-tickets\` (${SHAPE_CREATE_TICKETS_LABEL}, recommended) and \`stop\` (Stop). It replaces the`,

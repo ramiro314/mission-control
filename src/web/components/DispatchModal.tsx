@@ -50,6 +50,7 @@ import {
   fetchHarnessesConfig,
   fetchPipelineRepos,
   fetchRepos,
+  fetchSkills,
   fetchTaskSources,
   type DispatchResult,
 } from "../lib/api.ts";
@@ -1057,6 +1058,7 @@ function DispatchModal({
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
+  const [planStorage, setPlanStorage] = useState<"repository" | "local" | null>(null);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   /**
    * What this MACHINE has to say about tooling a launched session will inherit - already
@@ -1275,7 +1277,9 @@ function DispatchModal({
       const label =
         dependency.type === "source"
           ? `${dependency.title} (${dependency.externalId})`
-          : `${dependency.title} (unavailable)`;
+          : dependency.type === "plan"
+            ? `${dependency.title} (${dependency.satisfiedAt === null ? "waiting for publication" : "published"})`
+            : `${dependency.title} (unavailable)`;
       if (!out.has(key)) out.set(key, { input, label, group: "session" });
     }
     return out;
@@ -1285,9 +1289,9 @@ function DispatchModal({
       (candidate) => dependencyKey(candidate) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
-    // Only the source's sweep can satisfy an external item, and nothing satisfies an edge
-    // this build does not know.
-    if (dependency.type === "source" || dependency.type === "unknown") return true;
+    // Only the source's sweep can satisfy an external item, only its publication a plan edge,
+    // and nothing satisfies an edge this build does not know.
+    if (dependency.type === "source" || dependency.type === "unknown" || dependency.type === "plan") return true;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
@@ -1304,7 +1308,11 @@ function DispatchModal({
   // Null while the config is out, as it always was: the rows are not known yet, and arming a
   // built-in the operator may have replaced would gate the launch on Foreman for nothing.
   const defaultWorkflowId = workflowConfig
-    ? taskDefaultWorkflowId(draft.kind, workflowConfig.kindWorkflowDefaults)
+    ? taskDefaultWorkflowId(
+      draft.kind,
+      workflowConfig.kindWorkflowDefaults,
+      editing?.planPolicy?.storage ?? planStorage ?? "repository",
+    )
     : null;
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
@@ -1397,11 +1405,12 @@ function DispatchModal({
       return stashed === NO_STASH ? {} : { workflowId: stashed };
     }
     const rows = workflowConfig?.kindWorkflowDefaults ?? {};
-    const target = taskDefaultWorkflowId(kind, rows);
+    const storage = planStorage ?? "repository";
+    const target = taskDefaultWorkflowId(kind, rows, storage);
     if (
       !hasReviewableDiff(kind)
       && !hasReviewableDiff(draft.kind)
-      && target === taskDefaultWorkflowId(draft.kind, rows)
+      && target === taskDefaultWorkflowId(draft.kind, rows, storage)
     ) {
       return {};
     }
@@ -1417,7 +1426,7 @@ function DispatchModal({
     if (!workflowConfig || !guess) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
-    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults);
+    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, planStorage ?? "repository");
     if (resolved !== guess.workflowId) update({ workflowId: resolved });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
   }, [workflowConfig]);
@@ -2034,6 +2043,7 @@ function DispatchModal({
       setRepos(list);
       setReposLoading(false);
     });
+    void fetchSkills().then((skills) => { if (alive) setPlanStorage(skills?.planStorage ?? "repository"); });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
         if (alive) setWorkflowConfig(config);
@@ -2849,6 +2859,7 @@ function DispatchModal({
                   <select
                     className="field-input"
                     value={draft.kind}
+                    disabled={planStorage === null}
                     onChange={(e) => {
                       const kind = e.target.value as TaskKind;
                       if (guidedTakeValue("kind", kind)) return;
@@ -3173,7 +3184,7 @@ function DispatchModal({
                 {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
-                    <span className="field-hint">each waits for its merged PR</span>
+                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR"}</span>
                   </span>
                   {/* Chips plus one grouped add control, instead of an always-tall native
                       multi-select: each chip names its target and removes with one click,
@@ -3241,8 +3252,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog and dispatches when their
-                      PRs merge.
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}
