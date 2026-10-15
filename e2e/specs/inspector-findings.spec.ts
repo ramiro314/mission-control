@@ -267,3 +267,40 @@ test("an open Findings modal refreshes on the panel's poll", async ({ dashboard,
   await expect(modal.locator("tr.wf-run-finding-row")).toHaveCount(2, { timeout: 15_000 });
   await expect(modal.getByText("BODY only in Mission Control.")).toBeVisible();
 });
+
+test("a failed refresh keeps the findings on screen, says so, and recovers on the next tick", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedLedger(daemon, [{ number: 606, posture: "live", findings: [SIX[0]!] }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+  await findingsButton(dashboard, 606).click();
+  const modal = findingsDialog(dashboard, 606);
+  const rows = modal.locator("tr.wf-run-finding-row");
+  await expect(rows).toHaveCount(1);
+
+  const retry = "Couldn't read this pull request's findings. Trying again on the next refresh.";
+  await expect(modal.getByText(retry)).toHaveCount(0);
+
+  // Every read of this pull request's findings now fails, as a daemon restart would.
+  const findingsRoute = "**/api/inspector/findings?*";
+  await dashboard.route(findingsRoute, (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }));
+
+  // The next tick fails: the last answer stays, and the modal says it could not refresh.
+  await expect(modal.getByText(retry)).toBeVisible({ timeout: 15_000 });
+  await expect(rows).toHaveCount(1);
+  await expect(modal.getByText("BODY posted with a link.")).toBeVisible();
+  await shoot(dashboard, "findings-modal-refresh-failed", modal);
+
+  // The daemon answers again, with a finding recorded meanwhile. The following tick reads
+  // it, so the modal shows fresh findings rather than the kept ones, and the error clears.
+  withDaemonDb(daemon, (db) => {
+    insertFinding(db, "owner/repo#606", { ...SIX[2]!, id: "after-outage" }, Date.now());
+  });
+  await dashboard.unroute(findingsRoute);
+  await expect(rows).toHaveCount(2, { timeout: 15_000 });
+  await expect(modal.getByText(retry)).toHaveCount(0);
+  await expect(modal.getByText("BODY only in Mission Control.")).toBeVisible();
+  await shoot(dashboard, "findings-modal-recovered", modal);
+});
