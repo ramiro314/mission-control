@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { matchesGlob } from "node:path";
 import type { WorktreeClaim } from "@shared/protocol.ts";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
@@ -728,6 +728,11 @@ export interface RunningClaimStep {
 }
 
 export interface RunningClaim {
+  /**
+   * This claim's own identity. A slot runs one claim at a time, but a Stop aimed at the claim
+   * an operator saw must never land on the next lease's claim in the same slot.
+   */
+  id: string;
   slotId: string;
   owner: WorktreeOwner;
   startedAt: number;
@@ -740,29 +745,39 @@ export interface RunningClaim {
  * daemon that runs it, and what a crash leaves behind is the durable `deps_state` write-ahead,
  * which startup reconciliation reads instead.
  *
- * Maintenance asks it which slots to skip rather than wait on, and shutdown stops every claim
- * through it.
+ * Maintenance asks it which slots to skip rather than wait on; Stop, task cancel and shutdown
+ * all find the claims they stop through it.
  */
-function snapshot({ slotId, owner, startedAt, step }: RunningClaim): RunningClaim {
-  return { slotId, owner, startedAt, step: step ? { ...step, argv: [...step.argv] } : null };
+function snapshot({ id, slotId, owner, startedAt, step }: RunningClaim): RunningClaim {
+  return { id, slotId, owner: { ...owner }, startedAt, step: step ? { ...step, argv: [...step.argv] } : null };
 }
+
+/** Told whenever a claim starts, moves to its next step, or ends. */
+export type ClaimChangeListener = (claim: RunningClaim) => void;
 
 export class ClaimRegistry {
   private readonly running = new Map<string, RunningClaim & { controller: AbortController }>();
+  private readonly listeners = new Set<ClaimChangeListener>();
   private stoppingValue = false;
+
+  constructor(private readonly newId: () => string = randomUUID) {}
 
   /** Null once shutdown has begun: no new claim starts while the daemon stops. */
   register(slotId: string, owner: WorktreeOwner, now: number): AbortController | null {
     if (this.stoppingValue) return null;
     const controller = new AbortController();
-    this.running.set(slotId, { slotId, owner, startedAt: now, step: null, controller });
+    const claim = { id: this.newId(), slotId, owner: { ...owner }, startedAt: now, step: null, controller };
+    this.running.set(slotId, claim);
+    this.notify(claim);
     return controller;
   }
 
   /** Record the step this claim is on. A claim that is no longer registered is left alone. */
   progress(slotId: string, controller: AbortController, step: RunningClaimStep): void {
     const running = this.running.get(slotId);
-    if (running?.controller === controller) running.step = { ...step, argv: [...step.argv] };
+    if (running?.controller !== controller) return;
+    running.step = { ...step, argv: [...step.argv] };
+    this.notify(running);
   }
 
   /** The running claim on this slot, or null. */
@@ -772,7 +787,10 @@ export class ClaimRegistry {
   }
 
   unregister(slotId: string, controller: AbortController): void {
-    if (this.running.get(slotId)?.controller === controller) this.running.delete(slotId);
+    const running = this.running.get(slotId);
+    if (running?.controller !== controller) return;
+    this.running.delete(slotId);
+    this.notify(running);
   }
 
   has(slotId: string): boolean {
@@ -785,6 +803,54 @@ export class ClaimRegistry {
 
   list(): RunningClaim[] {
     return [...this.running.values()].map(snapshot);
+  }
+
+  /**
+   * Stop the one claim with this id on this slot, and report what was stopped. Null when that
+   * claim is no longer running, which includes a slot that has since started another claim.
+   *
+   * Stopping kills the running step's process group and fails the claim, so the lease is
+   * granted with a warning exactly as for any failed claim. The registry entry stays until the
+   * claim's own acquire unregisters it.
+   */
+  stop(slotId: string, claimId: string): RunningClaim | null {
+    const running = this.running.get(slotId);
+    if (!running || running.id !== claimId) return null;
+    running.controller.abort("stopped");
+    return snapshot(running);
+  }
+
+  /** Stop every running claim whose owner matches, and report each one stopped. */
+  stopOwned(matches: (owner: WorktreeOwner) => boolean): RunningClaim[] {
+    const stopped: RunningClaim[] = [];
+    for (const running of this.running.values()) {
+      if (!matches(running.owner)) continue;
+      running.controller.abort("stopped");
+      stopped.push(snapshot(running));
+    }
+    return stopped;
+  }
+
+  /** Listen for claim changes. Returns the unsubscribe. */
+  subscribe(listener: ClaimChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(claim: RunningClaim): void {
+    if (this.listeners.size === 0) return;
+    const view = snapshot(claim);
+    for (const listener of this.listeners) {
+      try {
+        listener(view);
+      } catch (error) {
+        // A listener is a view of the claim, never a part of it: a failing projection must not
+        // fail the acquire that runs the claim.
+        console.error("[worktrees] claim change listener failed:", error);
+      }
+    }
   }
 
   /** Shutdown: refuse new claims and stop every running one. */

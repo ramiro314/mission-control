@@ -459,6 +459,7 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
         dependencies: {
           ...at,
           state: "installing",
+          claimId: "claim-d4",
           startedAt: 0,
           step: { step: 1, stepCount: 2, command: "pnpm install --frozen-lockfile", startedAt: 0 },
         },
@@ -508,6 +509,9 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
   assert.match(html, /aria-label="Slot 3 dependencies"[\s\S]*?>never installed</);
   assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?>installing<[\s\S]*?Step 1 of 2 · <span>[\s\S]*?elapsed<\/span>[\s\S]*?>pnpm install --frozen-lockfile<\/code>/);
   assert.match(html, /aria-label="Slot 5 dependencies"[\s\S]*?>failed<[\s\S]*?Step 1 of 1 exited with code 3\.<\/p>[\s\S]*?>pnpm install<\/code>[\s\S]*?<pre[^>]*>E401 Unauthorized<\/pre>/);
+  // Only the installing slot offers Stop, named for its slot.
+  assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?aria-label="Stop slot 4 dependency claim"[^>]*>Stop<\/button>/);
+  assert.equal(html.match(/dependency claim"/g)?.length, 1);
   assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?starts cold/);
   const legacy = html.slice(html.indexOf('aria-label="Slot 7 dependencies"'));
   assert.match(legacy, /^[\s\S]*?>failed<[\s\S]*?<p class="wt-deps-detail">legacy summary line<\/p>/);

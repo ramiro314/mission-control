@@ -3250,6 +3250,15 @@ export const OpenWorktreeSchema = z
   .strict();
 
 /**
+ * Stop the dependency claim running in a slot. `claimId` is the running claim's own id, as the
+ * slot card and the task card were shown it, so a Stop can never land on a later claim in the
+ * same slot.
+ */
+export const StopWorktreeClaimSchema = z
+  .object({ claimId: z.string().min(1).max(128) })
+  .strict();
+
+/**
  * Partial update of the harnesses config from the dashboard.
  *
  * Spelled out rather than `HarnessesConfigSchema.partial()`, because `.partial()`

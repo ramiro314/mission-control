@@ -444,6 +444,9 @@ function createSchemaObjects(d: DatabaseSync): void {
       outcome       TEXT,
       outcome_url   TEXT,
       error         TEXT,
+      -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
+      -- when they were leased. NULL when none failed, which is nearly every task.
+      claim_warnings TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -3543,6 +3546,9 @@ function migrate(d: DatabaseSync): void {
   // every historical row used Automatic, and preserving that answer keeps its existing
   // multi-backend liveness and cleanup policy intact.
   addColumn(d, "tasks", "home_backend", "TEXT");
+  // The dependency claims that failed in a task's worktrees, as the task card shows them.
+  // Nullable with no backfill: no task leased a claimed slot before this column existed.
+  addColumn(d, "tasks", "claim_warnings", "TEXT");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -5287,6 +5293,7 @@ interface TaskRow {
   terminal_resource_id: string | null;
   terminal_launch: string | null;
   session_id: string | null;
+  claim_warnings?: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
   scheduled_for: number | null;
@@ -5441,6 +5448,36 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
 }
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
+
+/**
+ * The stored form of `Task.claimWarnings`. A tail is at most the claim's 4,000-byte ring and a
+ * command is rendered to 512 bytes plus its suffix; these caps sit above both, so they refuse
+ * only a row no build of this feature wrote.
+ */
+const TaskClaimWarningsSchema = z.array(z.object({
+  repoRoot: z.string().max(4_096),
+  step: z.number().int().min(1),
+  stepCount: z.number().int().min(1),
+  command: z.string().max(1_024),
+  reason: z.string().max(8_192),
+  tail: z.string().max(16_384),
+  truncatedBytes: z.number().int().min(0),
+}).strict()).max(64);
+
+/**
+ * `tasks.claim_warnings` read back, as the key `rowToTask` spreads: absent when there is
+ * nothing to say, so a task no claim failed for reads exactly as it did before the column.
+ * An unreadable blob is no warnings, because one bad row must not take out `listTasks`.
+ */
+function readTaskClaimWarnings(raw: string | null): Pick<Task, "claimWarnings"> {
+  if (!raw) return {};
+  try {
+    const parsed = TaskClaimWarningsSchema.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.length > 0 ? { claimWarnings: parsed.data } : {};
+  } catch {
+    return {};
+  }
+}
 
 function parseTerminalLaunch(raw: string | null): Task["terminalLaunch"] {
   if (!raw) return null;
@@ -5686,6 +5723,7 @@ function rowToTask(
     outcomeUrl: r.outcome_url,
     error: r.error,
     automaticCleanup,
+    ...readTaskClaimWarnings(r.claim_warnings ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -5744,9 +5782,9 @@ export function upsertTask(t: Task): string[] {
          base_sha,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error,
+         status, outcome, outcome_url, error, claim_warnings,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5773,7 +5811,8 @@ export function upsertTask(t: Task): string[] {
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
-         error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
+         error=excluded.error, claim_warnings=excluded.claim_warnings,
+         updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
       t.id, t.title, t.intent, t.kind, t.agent, t.priority,
@@ -5798,7 +5837,9 @@ export function upsertTask(t: Task): string[] {
       t.homeName, t.homeBackend ?? null, t.terminalResourceId,
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
-      t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.status, t.outcome, t.outcomeUrl, t.error,
+      t.claimWarnings && t.claimWarnings.length > 0 ? JSON.stringify(t.claimWarnings) : null,
+      t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
     );

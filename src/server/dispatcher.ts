@@ -111,6 +111,8 @@ import type {
 } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { claimWarningsBlock, type WorktreeClaimWarning } from "./worktrees/claim.ts";
+import { taskOwner } from "./worktrees/owners.ts";
+import { taskClaimWarning, taskProvisioningView } from "./task-claims.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
@@ -348,6 +350,16 @@ export class Dispatcher {
     } = {},
   ) {
     this.worktrees = deps.worktrees ?? new WorktreeManager();
+    // A dispatch waiting on a dependency claim says so on its task: "Installing dependencies",
+    // with the step and how long it has run. Derived from the claim registry on every publish,
+    // and re-sent as the claim starts a step or ends, so it rides the ordinary `task_upsert`.
+    const worktrees = this.worktrees;
+    registry.setTaskProvisioningSource((task) => taskProvisioningView(task, worktrees.runningTaskClaim(task.id)));
+    worktrees.onClaimChange((claim) => {
+      if (claim.owner.kind !== "task") return;
+      const owner = taskOwner(claim.owner.key);
+      if (owner) registry.refreshTaskProvisioning(owner.taskId);
+    });
     this.legacy = deps.legacy ?? new LegacyTreehouseService();
     this.teardown = teardown ?? ((task, legacy, priority) =>
       teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees));
@@ -373,6 +385,8 @@ export class Dispatcher {
     this.patch(taskId, {
       status: "dispatching",
       error: null,
+      // A prior attempt's failed claims describe trees this attempt does not have.
+      ...(task.claimWarnings?.length ? { claimWarnings: [] } : {}),
       dispatchedAt: task.dispatchedAt ?? Date.now(),
       // A retry must prove its new provider run instead of inheriting the prior attempt's
       // slug and completing against a projection it did not launch.
@@ -539,6 +553,11 @@ export class Dispatcher {
           worktreeLeaseId: wt.leaseId,
           baseSha: wt.baseSha,
           extraRepos: extras,
+          // The trees were handed over even though a claim failed in them; the task card says
+          // which, beside the note the agent's launch prompt carries.
+          ...(claimWarnings.length > 0
+            ? { claimWarnings: claimWarnings.map(({ repoRoot, warning }) => taskClaimWarning(repoRoot, warning)) }
+            : {}),
         });
       } catch (recordError) {
         const paths = [wt.path, ...extras.flatMap((entry) => entry.worktreePath ?? [])];
@@ -2080,7 +2099,7 @@ export class Dispatcher {
     primary: ProvisionedWorktree;
     extras: TaskRepoEntry[];
     /** Every tree whose dependency claim failed, primary first, for the launch prompt. */
-    claimWarnings: Array<{ path: string; warning: WorktreeClaimWarning }>;
+    claimWarnings: Array<{ repoRoot: string; path: string; warning: WorktreeClaimWarning }>;
   }> {
     const primary = await provisionWorktree(
       task.repoRoot,
@@ -2097,6 +2116,13 @@ export class Dispatcher {
     const extras: TaskRepoEntry[] = [];
     try {
       for (const [index, entry] of task.extraRepos.entries()) {
+        // A cancel that landed while an earlier tree was claiming stopped that claim; the
+        // next repository's claim must not start in its place. The rest stay unprovisioned,
+        // and `abortIfSettled` tears down what was taken, exactly as for any cancel it sees.
+        if (!this.stillDispatching(taskId)) {
+          extras.push(...task.extraRepos.slice(index));
+          break;
+        }
         // Slot is the entry's position in `task_repos`, offset by one for the primary at
         // slot 0. Its base was frozen alongside every other repository's before this loop
         // started - a pin means nothing in another repository, so a secondary took its own
@@ -2142,8 +2168,8 @@ export class Dispatcher {
       }
       throw err;
     }
-    const claimWarnings = taken.flatMap(({ wt }) =>
-      wt.claimWarning ? [{ path: wt.path, warning: wt.claimWarning }] : [],
+    const claimWarnings = taken.flatMap(({ repoRoot, wt }) =>
+      wt.claimWarning ? [{ repoRoot, path: wt.path, warning: wt.claimWarning }] : [],
     );
     return { primary, extras, claimWarnings };
   }

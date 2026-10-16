@@ -28,6 +28,7 @@ import {
   type ClaimEnvironment,
   type ClaimStepRequest,
   type ClaimStepResult,
+  type RunningClaim,
   type TreeBlob,
   type WorktreeClaimWarning,
 } from "./claim.ts";
@@ -39,6 +40,7 @@ import {
   type WorktreeRegistration,
 } from "./git.ts";
 import { ensureWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
+import { taskOwner } from "./owners.ts";
 import {
   inspectWorktreeOccupancy,
   pathContains,
@@ -975,6 +977,56 @@ export class WorktreeManager {
   /** Shutdown: stop every running claim and start none. Called before anything else stops. */
   stopClaims(): void {
     this.claims.stopAll();
+  }
+
+  /**
+   * Stop one running claim, found through the claim registry by its slot and its own id. The
+   * step's process group is killed and the claim fails, so its acquire hands the slot over
+   * with a warning, as for any failed claim: `deps_state` becomes `failed` and the next claim
+   * reruns the steps in place. Null when that claim is no longer running.
+   */
+  stopClaim(slotId: string, claimId: string): RunningClaim | null {
+    const stopped = this.claims.stop(slotId, claimId);
+    if (stopped) {
+      console.warn(
+        `[worktrees] dependency claim stopped in slot ${slotId} (${stopped.owner.kind} ${stopped.owner.key})`,
+      );
+    }
+    return stopped;
+  }
+
+  /**
+   * Stop every claim a task's dispatch is waiting on, across all of its repositories. Task
+   * cancel calls this once the task is cancelled, so the dispatch stops waiting the claim out
+   * and tears down as it does for any cancel it notices.
+   */
+  stopTaskClaims(taskId: string): RunningClaim[] {
+    const stopped = this.claims.stopOwned(
+      (owner) => owner.kind === "task" && taskOwner(owner.key)?.taskId === taskId,
+    );
+    for (const claim of stopped) {
+      console.warn(`[worktrees] dependency claim stopped in slot ${claim.slotId}: task ${taskId} was cancelled`);
+    }
+    return stopped;
+  }
+
+  /**
+   * The claim a task's dispatch is waiting on right now, with the repository position it
+   * belongs to, or null. A dispatch provisions its repositories one at a time, so at most one
+   * of a task's claims runs at once.
+   */
+  runningTaskClaim(taskId: string): { claim: RunningClaim; position: number } | null {
+    for (const claim of this.claims.list()) {
+      if (claim.owner.kind !== "task") continue;
+      const owner = taskOwner(claim.owner.key);
+      if (owner?.taskId === taskId) return { claim, position: owner.position };
+    }
+    return null;
+  }
+
+  /** Told whenever any claim starts, moves to its next step, or ends. Returns the unsubscribe. */
+  onClaimChange(listener: (claim: RunningClaim) => void): () => void {
+    return this.claims.subscribe(listener);
   }
 
   /**

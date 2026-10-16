@@ -120,22 +120,23 @@ test("a running claim is installing, with its step, command and start time", () 
   const reading = slotDependencies({
     hasClaim: true,
     slot: row({ depsState: "current", depsFingerprint: "x" }),
-    running: { slotId: "s", owner, startedAt: 100, step: null },
+    running: { id: "claim-1", slotId: "s", owner, startedAt: 100, step: null },
     defaultSha: SHA_A,
     defaultFingerprint: "x",
   });
-  assert.deepEqual(reading, { state: "installing", fingerprintSha: null, claimedAt: null, startedAt: 100, step: null },
+  assert.deepEqual(reading, { state: "installing", claimId: "claim-1", fingerprintSha: null, claimedAt: null, startedAt: 100, step: null },
     "before step 1 it is still reading the fingerprint");
 
   const stepping = slotDependencies({
     hasClaim: true,
     slot: row({ depsState: "claiming" }),
-    running: { slotId: "s", owner, startedAt: 100, step: { step: 2, stepCount: 3, argv: ["yarn", "rebuild"], startedAt: 150 } },
+    running: { id: "claim-2", slotId: "s", owner, startedAt: 100, step: { step: 2, stepCount: 3, argv: ["yarn", "rebuild"], startedAt: 150 } },
     defaultSha: SHA_A,
     defaultFingerprint: "x",
   });
   assert.deepEqual(stepping, {
     state: "installing",
+    claimId: "claim-2",
     fingerprintSha: null,
     claimedAt: null,
     startedAt: 100,

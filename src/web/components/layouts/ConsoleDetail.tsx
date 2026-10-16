@@ -47,6 +47,7 @@ import {
   ScheduleOriginChip,
   SessionTitle,
   StateBadge,
+  TaskClaimWarnings,
   TaskRepoPrs,
   WorkflowChips,
   EnsembleChip,
@@ -710,6 +711,7 @@ export function ConsoleDetail({
           {/* The shared leaf is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
           <TaskRepoPrs repoPrs={session.task.repoPrs} />
+          <TaskClaimWarnings warnings={session.task.claimWarnings} />
           {/* What happens to a shape task's tickets at its merge, or what happened. A <div>
               because a <dl> holds only groups, and only when there is a marker to draw. */}
           {showShapeTickets && (
