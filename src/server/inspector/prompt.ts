@@ -206,13 +206,6 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
       )
       .slice(0, REVIEW_PROMPT_CAPS.openRows);
     const omittedOpen = input.open.length - shownOpen.length;
-    lines.push(
-      "## Issues you raised earlier that are still open",
-      "If this push fixes one, put its fingerprint in `resolved`. If it is still a",
-      "problem, say nothing about it - it is already on the pull request, and repeating",
-      "it posts a duplicate.",
-      "",
-    );
     if (omittedOpen > 0) {
       lines.push(
         `(TRUNCATED for length: the ${shownOpen.length} most severe of ${input.open.length}`,
@@ -220,10 +213,36 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
         "",
       );
     }
-    for (const c of shownOpen) {
-      lines.push(`- ${c.fingerprint} - ${c.path}: ${c.title}`);
+    // Two lists, because the two kinds of row ask for opposite things of the model and one
+    // heading could only tell it one of them. A posted row is on the pull request, so raising
+    // it again is a duplicate. A drafted row was never posted - dry run, a repository not on
+    // the allowlist, or a review GitHub refused - and calling it "already on the pull request"
+    // is what kept drafts unposted for good after a switch to live: the model, told not to
+    // repeat it, never did, and nothing else posted it. The planner now carries a draft the
+    // model leaves alone, so all the model has to say about one is whether this push fixed it.
+    const posted = shownOpen.filter((c) => c.status !== "drafted");
+    const drafted = shownOpen.filter((c) => c.status === "drafted");
+    if (posted.length) {
+      lines.push(
+        "## Issues you raised earlier that are still open",
+        "If this push fixes one, put its fingerprint in `resolved`. If it is still a",
+        "problem, say nothing about it - it is already on the pull request, and repeating",
+        "it posts a duplicate.",
+        "",
+        ...posted.map((c) => `- ${c.fingerprint} - ${c.path}: ${c.title}`),
+        "",
+      );
     }
-    lines.push("");
+    if (drafted.length) {
+      lines.push(
+        "## Found earlier but never posted",
+        "If this push fixes one, put its fingerprint in `resolved`. Otherwise say nothing:",
+        "Mission Control posts it.",
+        "",
+        ...drafted.map((c) => `- ${c.fingerprint} - ${c.path}: ${c.title}`),
+        "",
+      );
+    }
   }
 
   const flakes = input.flakeSummary;

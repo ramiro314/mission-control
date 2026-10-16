@@ -3984,6 +3984,13 @@ function migrate(d: DatabaseSync): void {
   // column, so `ON CONFLICT DO UPDATE` leaves it alone, and every row this build creates
   // keeps it NULL.
   if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+  // Validation refusals GitHub pinned on a drafted finding the planner offered after a switch
+  // to live, and GitHub's reason for the newest one. Zero and NULL are the truthful values for
+  // every existing row: no build before this one offered a draft again, so none was refused.
+  // Written only by `upsertInspectorComment`, as a pair, and carried forward like `replies`.
+  // No index: nothing selects on either column.
+  addColumn(d, "inspector_comments", "post_refusals", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_comments", "last_post_error", "TEXT");
 
   // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a
   // NULL is the truthful record of a draft authored, or a version PUBLISHED, by a build
@@ -13849,6 +13856,8 @@ interface InspectorCommentRow {
   posted_at: number | null;
   github_url: string | null;
   legacy_posted: string | null;
+  post_refusals: number;
+  last_post_error: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -13871,6 +13880,8 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     postedAt: r.posted_at,
     githubUrl: r.github_url,
     legacyPosted: isInspectorLegacyPosted(r.legacy_posted) ? r.legacy_posted : null,
+    postRefusals: r.post_refusals,
+    lastPostError: r.last_post_error,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -13889,6 +13900,10 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
  * omits them: a finding confirmed on GitHub stays confirmed through resolution and
  * re-raising, and a writer that forgot to carry the field cannot erase the record.
  * `legacy_posted` is never named here, so only its one-time backfill ever writes it.
+ *
+ * `post_refusals` and `last_post_error` are written as a pair. A caller that passes
+ * `postRefusals` writes both as given; one that omits it keeps both stored values, so a
+ * writer that forgot to carry the refusal record cannot reset a draft's count toward the cap.
  */
 export function upsertInspectorComment(c: InspectorComment): void {
   openDb()
@@ -13896,8 +13911,8 @@ export function upsertInspectorComment(c: InspectorComment): void {
       `INSERT INTO inspector_comments
          (id, pr_key, fingerprint, path, line, title, body, severity,
           round, status, replies, answered_comment_id, resolution_pending, posted_at, github_url,
-          created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          created_at, updated_at, post_refusals, last_post_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?18, 0), ?19)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
@@ -13911,6 +13926,8 @@ export function upsertInspectorComment(c: InspectorComment): void {
          resolution_pending = excluded.resolution_pending,
          posted_at = COALESCE(excluded.posted_at, inspector_comments.posted_at),
          github_url = COALESCE(excluded.github_url, inspector_comments.github_url),
+         post_refusals = COALESCE(?18, inspector_comments.post_refusals),
+         last_post_error = CASE WHEN ?18 IS NULL THEN inspector_comments.last_post_error ELSE ?19 END,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -13931,6 +13948,8 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.githubUrl ?? null,
       c.createdAt,
       c.updatedAt,
+      c.postRefusals ?? null,
+      c.postRefusals === undefined ? null : (c.lastPostError ?? null),
     );
 }
 

@@ -63,7 +63,8 @@ const restoreTransport = configureClaudeRunnerTransport(() => "print");
 //
 // A review POST is answered, in order, by:
 //   1. the next entry of `forcedStatuses`, when there is one: a status other than 200 refuses
-//      the whole review with that HTTP status, whatever it carries;
+//      the whole review with that HTTP status, whatever it carries, and -1 makes gh die by a
+//      signal before answering, which is a response lost rather than a refusal;
 //   2. `rejectFingerprints`: a review carrying a comment whose marker names one of these is
 //      refused with GitHub's 422 for a line it cannot resolve;
 //   3. otherwise it is accepted.
@@ -126,6 +127,11 @@ if (args[0] === "api" && args[1] === "user") {
       process.exit(1);
     };
     const forced = state.forcedStatuses.length ? state.forcedStatuses.shift() : 200;
+    if (forced === -1) {
+      save(state);
+      process.kill(process.pid, "SIGKILL");
+      return;
+    }
     if (forced !== 200) return refuse(forced, forced === 429 ? "API rate limit exceeded" : "Refused");
     if (fps.some((fp) => state.rejectFingerprints.includes(fp))) {
       return refuse(422, "Unprocessable Entity: Line could not be resolved");
@@ -178,6 +184,7 @@ const { setInspectorConfig } = await import("../src/server/inspector/config.ts")
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
+const { fingerprint } = await import("../src/server/inspector/marker.ts");
 
 interface FakeGithubState {
   headSha: string;
@@ -316,4 +323,245 @@ test("reproduction: findings drafted in dry run are posted by the forced re-revi
     assert.equal(row.status, "open", `${row.title} reached GitHub`);
     assert.ok(row.postedAt != null, `${row.title} is stamped posted`);
   }
+
+  // And the model was told what they were: never posted, not already on the pull request.
+  const prompt = readFileSync(`${reviewCountPath}.2.prompt`, "utf8");
+  assert.match(prompt, /## Found earlier but never posted/);
+  assert.doesNotMatch(prompt, /## Issues you raised earlier that are still open/);
+});
+
+// ---- Refusals ----
+//
+// The rest seed the dry-run drafts directly, as the reproduction's first round leaves them:
+// drafted rows on a head the GitHub Inspector reviewed in dry run. The switch to live then
+// forces the re-review that carries them.
+
+interface Draft {
+  title: string;
+  path?: string;
+  severity?: InspectorComment["severity"];
+  postRefusals?: number;
+}
+
+/** Drafted rows on a head reviewed in dry run, returning each draft's fingerprint by title. */
+function seedDrafts(key: string, drafts: Draft[]): Map<string, string> {
+  updateInspectorPr(key, { headSha: "head-1", reviewPosture: "dry-run", round: 1, lastReviewedAt: 1 }, Date.now());
+  const fps = new Map<string, string>();
+  drafts.forEach((d, i) => {
+    const path = d.path ?? "src/example.ts";
+    const fp = fingerprint(path, d.title);
+    fps.set(d.title, fp);
+    upsertInspectorComment({
+      id: `draft-${i + 1}`, prKey: key, fingerprint: fp, path, line: 1, title: d.title,
+      body: `Detail for ${d.title}.`, severity: d.severity ?? "major", round: 1, status: "drafted",
+      replies: 0, answeredCommentId: null, postedAt: null, postRefusals: d.postRefusals ?? 0,
+      lastPostError: d.postRefusals ? "an earlier refusal" : null, createdAt: i + 1, updatedAt: i + 1,
+    });
+  });
+  return fps;
+}
+
+const NEW_FINDING = { path: "src/example.ts", line: 1, title: "New live finding", body: "Raised this round.", severity: "major" };
+
+/** The round failed the ordinary way: not finished, nothing pinned, and backed off. */
+function assertRoundFailed(key: string): void {
+  const pr = getInspectorPr(key)!;
+  assert.equal(pr.reviewPosture, "dry-run", "the head was not recorded as reviewed live");
+  assert.equal(pr.round, 1);
+  assert.ok(pr.lastError, "the failure is reported");
+  // The test polls every 25ms, so the first rung of the ladder has passed by now. What
+  // proves backoff applies is the failure counted and a retry time scheduled.
+  assert.ok(pr.failCount >= 1, "the failure is counted toward backoff");
+  assert.notEqual(pr.nextAttemptAt, null, "and a retry time is scheduled");
+}
+
+/** The round finished: the head is recorded as reviewed live, with no failure left on it. */
+function assertRoundFinished(key: string): void {
+  const pr = getInspectorPr(key)!;
+  assert.equal(pr.reviewPosture, "live");
+  assert.equal(pr.headSha, "head-1");
+  assert.equal(pr.round, 2);
+  assert.equal(pr.lastError, null);
+  assert.equal(pr.failCount, 0);
+}
+
+const WHOLE_REVIEW_REFUSALS: { name: string; state: Partial<FakeGithubState>; rejectAll?: true }[] = [
+  { name: "a rate limit", state: { forcedStatuses: [429] } },
+  { name: "a server error", state: { forcedStatuses: [502] } },
+  { name: "a 422 on a head that moved", state: { headAfterRefusal: "head-2" }, rejectAll: true },
+];
+for (const scenario of WHOLE_REVIEW_REFUSALS) {
+  test(`whole-review refusal (${scenario.name}): no retry, no refusal counted, today's failure path`, async () => {
+    process.env.FAKE_FIRST_FINDINGS = JSON.stringify([NEW_FINDING]);
+    const key = adopt(710);
+    const fps = seedDrafts(key, [{ title: "Draft one" }, { title: "Draft two" }]);
+    writeGithubState({
+      ...scenario.state,
+      rejectFingerprints: scenario.rejectAll ? [...fps.values()] : [],
+    });
+    goLive();
+    await runOneSweep();
+
+    const state = readGithubState();
+    assert.equal(state.attempts.length, 1, "no retry is sent");
+    assert.equal(state.posts.length, 0);
+    assert.equal(state.headReads, scenario.rejectAll ? 1 : 0, "the head is read only for a 422");
+    for (const row of loadInspectorComments(key)) {
+      assert.equal(row.status, "drafted", `${row.title} is a draft again`);
+      assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
+      assert.equal(row.lastPostError, null);
+    }
+    assertRoundFailed(key);
+  });
+}
+
+test("a mixed review refused with 422, retry accepted: the one carried draft records the refusal, the new finding is open", async () => {
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([NEW_FINDING]);
+  const key = adopt(711);
+  const fps = seedDrafts(key, [{ title: "Unanchorable draft" }]);
+  writeGithubState({ rejectFingerprints: [fps.get("Unanchorable draft")!] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  const newFp = fingerprint("src/example.ts", NEW_FINDING.title);
+  assert.deepEqual(state.attempts.map((a) => a.fingerprints.sort()), [
+    [fps.get("Unanchorable draft")!, newFp].sort(),
+    [newFp],
+  ], "the retry carried the new finding alone");
+  assert.equal(state.posts.length, 1);
+  assert.equal(state.headReads, 1, "one head read, after the refusal");
+  const rows = byTitle(key);
+  assert.equal(rows.get(NEW_FINDING.title)!.status, "open");
+  assert.ok(rows.get(NEW_FINDING.title)!.postedAt != null);
+  const draft = rows.get("Unanchorable draft")!;
+  assert.equal(draft.status, "drafted");
+  assert.equal(draft.postRefusals, 1);
+  assert.match(draft.lastPostError ?? "", /Line could not be resolved \(HTTP 422\)/);
+  assert.doesNotMatch(draft.lastPostError ?? "", /^gh:/);
+  assert.equal(reviewCount(), 1, "the retry reused the round's verdict");
+  assertRoundFinished(key);
+});
+
+test("a mixed review refused with 422, retry also refused: no row counts a refusal", async () => {
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([NEW_FINDING]);
+  const key = adopt(712);
+  const fps = seedDrafts(key, [{ title: "Unanchorable draft" }]);
+  writeGithubState({
+    rejectFingerprints: [fps.get("Unanchorable draft")!, fingerprint("src/example.ts", NEW_FINDING.title)],
+  });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 2, "the first review and one retry, nothing more");
+  assert.equal(state.posts.length, 0);
+  for (const row of loadInspectorComments(key)) {
+    assert.equal(row.status, "drafted");
+    assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
+  }
+  assertRoundFailed(key);
+});
+
+test("a drafts-only review refused with 422: the draft records it, the round finishes, and the model runs once", async () => {
+  const key = adopt(713);
+  const fps = seedDrafts(key, [{ title: "Unanchorable draft" }]);
+  writeGithubState({ rejectFingerprints: [fps.get("Unanchorable draft")!] });
+  goLive();
+  await runOneSweep();
+
+  const draft = loadInspectorComments(key)[0]!;
+  assert.equal(draft.status, "drafted", "a refused draft stays drafted");
+  assert.equal(draft.postRefusals, 1);
+  assert.match(draft.lastPostError ?? "", /Line could not be resolved/);
+  assertRoundFinished(key);
+
+  // Later sweeps reuse this reviewed head: no model run, no further POST, no refusal.
+  await runOneSweep();
+  await runOneSweep();
+  assert.equal(reviewCount(), 1, "the fake model runner was called once, not once per backoff");
+  assert.equal(readGithubState().attempts.length, 1);
+  assert.equal(loadInspectorComments(key)[0]!.postRefusals, 1);
+});
+
+test("a drafts-only review refused with 422, three drafts: each is posted alone and only the bad one counts", async () => {
+  const key = adopt(714);
+  const fps = seedDrafts(key, [{ title: "Good draft one" }, { title: "Bad anchor draft" }, { title: "Good draft two" }]);
+  writeGithubState({ rejectFingerprints: [fps.get("Bad anchor draft")!] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 4, "the refused review, then one review per draft");
+  assert.deepEqual(state.attempts.slice(1).map((a) => a.fingerprints.length), [1, 1, 1]);
+  for (const isolated of state.attempts.slice(1)) {
+    assert.match(isolated.body, /round 2/);
+    assert.match(isolated.body, /posted on its own/);
+  }
+  assert.equal(state.posts.length, 2);
+  const rows = byTitle(key);
+  for (const title of ["Good draft one", "Good draft two"]) {
+    assert.equal(rows.get(title)!.status, "open", `${title} was posted`);
+    assert.ok(rows.get(title)!.postedAt != null, `${title} is stamped`);
+    assert.equal(rows.get(title)!.postRefusals, 0, `${title} counts nothing for its bad sibling`);
+  }
+  const bad = rows.get("Bad anchor draft")!;
+  assert.equal(bad.status, "drafted");
+  assert.equal(bad.postRefusals, 1);
+  assert.equal(reviewCount(), 1);
+  assertRoundFinished(key);
+});
+
+test("a whole-review refusal partway through isolation stops it, with nothing counted", async () => {
+  const key = adopt(715);
+  const fps = seedDrafts(key, [{ title: "First draft" }, { title: "Bad anchor draft" }, { title: "Third draft" }]);
+  // The first review is refused for the bad anchor; isolation posts the first draft, then
+  // GitHub rate-limits the second isolated review.
+  writeGithubState({ rejectFingerprints: [fps.get("Bad anchor draft")!], forcedStatuses: [200, 200, 429] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 3, "isolation stopped at the rate limit");
+  const rows = byTitle(key);
+  assert.equal(rows.get("First draft")!.status, "open");
+  for (const title of ["Bad anchor draft", "Third draft"]) {
+    assert.equal(rows.get(title)!.status, "drafted");
+    assert.equal(rows.get(title)!.postRefusals, 0, `${title} counts no refusal`);
+  }
+  assertRoundFailed(key);
+});
+
+test("a response lost during isolation never counts as a refusal", async () => {
+  const key = adopt(717);
+  const fps = seedDrafts(key, [{ title: "First draft" }, { title: "Bad anchor draft" }, { title: "Third draft" }]);
+  // The second isolated review's gh dies before it answers: GitHub may or may not have it.
+  writeGithubState({ rejectFingerprints: [fps.get("Bad anchor draft")!], forcedStatuses: [200, 200, -1] });
+  goLive();
+  await runOneSweep();
+
+  const rows = byTitle(key);
+  assert.equal(rows.get("First draft")!.status, "open");
+  assert.equal(rows.get("Bad anchor draft")!.status, "posting", "left for the next round's reconciliation");
+  assert.equal(rows.get("Third draft")!.status, "drafted", "not yet tried, so a draft again");
+  for (const row of rows.values()) assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
+  assertRoundFailed(key);
+});
+
+test("a draft at the refusal cap, and a draft whose file left the diff, are not offered", async () => {
+  const key = adopt(716);
+  seedDrafts(key, [
+    { title: "Refused three times", postRefusals: 3 },
+    { title: "About a file the push removed", path: "src/gone.ts" },
+  ]);
+  writeGithubState();
+  goLive();
+  await runOneSweep();
+
+  assert.equal(readGithubState().attempts.length, 0, "nothing was offered, so nothing was posted");
+  const rows = byTitle(key);
+  assert.equal(rows.get("Refused three times")!.status, "drafted");
+  assert.equal(rows.get("Refused three times")!.postRefusals, 3);
+  assert.equal(rows.get("About a file the push removed")!.status, "drafted");
+  assertRoundFinished(key);
 });

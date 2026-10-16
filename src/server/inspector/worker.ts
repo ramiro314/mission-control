@@ -42,6 +42,7 @@ import {
   formatMarker,
   isOurs,
   parseMarker,
+  reviewHeader,
 } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { configuredGitHubRepositories } from "../github/repository.ts";
@@ -50,9 +51,11 @@ import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verd
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
+  classifyReviewRefusal,
   cleanReviewExists,
   hasBodyOnlyFindings,
   fetchDiff,
+  fetchHeadSha,
   fetchPr,
   fetchReviewPage,
   fetchThreadPage,
@@ -61,6 +64,7 @@ import {
   ownedThreadsResolved,
   parsePrUrl,
   postReview,
+  refusalReason,
   renderCleanReview,
   renderComment,
   replyToComment,
@@ -966,6 +970,7 @@ async function reviewRound(
   const round = pr.round + 1;
   const plan = planReview({
     mode: cfg.mode,
+    live: post,
     maxComments: cfg.maxCommentsPerRound,
     round,
     verdict: result.value as InspectorVerdict,
@@ -999,14 +1004,14 @@ async function reviewRound(
   // demoted into the review body. Nothing to ask GitHub for, so nothing can refuse.
   for (const fp of plan.resolveLocal) closeRow(rows, fp, now);
 
-  const inline = plan.inline.map((c) => ({
+  const comments = new Map(plan.inline.map((c) => [c.fingerprint, {
     path: c.path,
     line: c.line!,
     body: renderComment(
       formatMarker({ id: c.id, fingerprint: c.fingerprint, round }),
       c,
     ),
-  }));
+  }]));
 
   // Write the ledger BEFORE the POST, not after.
   //
@@ -1042,43 +1047,31 @@ async function reviewRound(
       // until this post is confirmed and re-stamps it.
       postedAt: prior?.postedAt ?? null,
       githubUrl: prior?.githubUrl ?? null,
+      // Carried like `replies`: a draft offered again keeps the refusals already pinned on
+      // it, which is what lets the cap stop offering it.
+      postRefusals: prior?.postRefusals ?? 0,
+      lastPostError: prior?.lastPostError ?? null,
       createdAt: prior?.createdAt ?? now,
       updatedAt: now,
     };
   });
   for (const row of planned) upsertInspectorComment(row);
 
-  if (post && (inline.length > 0 || plan.demoted.length > 0)) {
-    const res = await postReview(
+  if (post && (comments.size > 0 || plan.demoted.length > 0)) {
+    const published = await publishRound({
+      pr,
       dir,
-      pr.owner,
-      pr.repo,
-      pr.number,
-      plan.body,
-      inline,
-      s.headSha,
-    );
-    if (!res.ok) {
-      // The head sha stays where it is, so this push is reviewed again.
-      //
-      // What happens to the rows turns on WHY the post failed, and `wasRefused` is the
-      // one place that decides it. Only a refusal frees the round to be re-planned,
-      // which matters most for the demoted findings: they live in the review body and
-      // leave no thread for the next round's reconciliation to find, so left in
-      // `posting` they would be promoted to `open` and never actually said. Everything
-      // else stays in `posting` for the live thread read to adjudicate.
-      if (wasRefused(res)) {
-        for (const row of planned) {
-          const reverted: InspectorComment = { ...row, status: "drafted" };
-          rows.set(row.fingerprint, reverted);
-          upsertInspectorComment(reverted);
-        }
-      }
-      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
-    }
-    // Published. Promote every row this review carried out of `posting`, and stamp when
-    // GitHub confirmed it.
-    for (const row of planned) upsertInspectorComment({ ...row, status: "open", postedAt: now });
+      headSha: s.headSha,
+      round,
+      body: plan.body,
+      planned,
+      comments,
+      carried: new Set(plan.inline.filter((c) => c.carried).map((c) => c.fingerprint)),
+      rows,
+      now,
+      tick,
+    });
+    if (!published) return false;
   }
 
   updateInspectorPr(
@@ -1102,6 +1095,168 @@ async function reviewRound(
   await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
     post, login, now, tick, resolvedThreadIds);
   return true;
+}
+
+/** One live round's publication: the review, and what each refusal of it leads to. */
+interface RoundPublication {
+  pr: InspectorPr;
+  dir: string;
+  headSha: string;
+  round: number;
+  /** The review's top-level body, from the plan. */
+  body: string;
+  /** Every row this review carries, already written in `posting`. */
+  planned: InspectorComment[];
+  /** The rendered inline comment for each planned row that has one, by fingerprint. */
+  comments: Map<string, { path: string; line: number; body: string }>;
+  /** Fingerprints of the drafts the planner carried, as against new findings. */
+  carried: Set<string>;
+  /** This tick's ledger, kept in step with every row written here. */
+  rows: Map<string, InspectorComment>;
+  now: number;
+  tick: TickState;
+}
+
+/**
+ * Post a live round, and decide what a refusal of it means for each row it carried.
+ *
+ * Returns true when the round may finish: the head advances and `reviewPosture` is
+ * recorded. Returns false after `noteFailure`, when the head must be reviewed again.
+ *
+ * The cases, in the order they are checked:
+ *
+ *  - **Accepted.** Every row goes to `open`, stamped posted.
+ *  - **Response lost** (`wasRefused` is false). Today's path: the rows stay in `posting` for
+ *    the next round's reconciliation, and nothing counts as a refusal.
+ *  - **Whole-review refusal**, or any refusal of a review that carried no draft. Today's
+ *    path: every row back to `drafted`, the head not advanced, backoff. No retry is sent, so
+ *    a rate limit never triggers one, and no row records a refusal.
+ *  - **Validation refusal of a review that also carried new findings** (D-21). One retry
+ *    straight away, without the carried drafts. Refused again, nothing is counted and the
+ *    round fails as above. Accepted, the new findings are `open` and the drafts are pinned.
+ *  - **Validation refusal of a drafts-only review.** The drafts are pinned; there is no
+ *    review without them to send.
+ *
+ * Pinning (D-28) is in `pinRefusal`, and once it is done the round finishes, so a draft
+ * GitHub refused does not make the model review the same head again on every backoff. It
+ * stays `drafted`, and is next offered on the next push's round.
+ *
+ * Every retry and isolated review reuses this round's verdict and plan. None calls the model.
+ */
+async function publishRound(p: RoundPublication): Promise<boolean> {
+  const { pr, dir, headSha, now, tick } = p;
+  const first = await postReview(dir, pr.owner, pr.repo, pr.number, p.body, [...p.comments.values()], headSha);
+  if (first.ok) {
+    writeRows(p, p.planned, { status: "open", postedAt: now });
+    return true;
+  }
+  // The head sha stays where it is, so this push is reviewed again.
+  //
+  // What happens to the rows turns on WHY the post failed, and `wasRefused` is the one place
+  // that decides it. Only a refusal frees the round to be re-planned, which matters most for
+  // the demoted findings: they live in the review body and leave no thread for the next
+  // round's reconciliation to find, so left in `posting` they would be promoted to `open` and
+  // never actually said. Everything else stays in `posting` for the live thread read to
+  // adjudicate.
+  if (!wasRefused(first)) return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+
+  const carried = p.planned.filter((row) => p.carried.has(row.fingerprint));
+  const fresh = p.planned.filter((row) => !p.carried.has(row.fingerprint));
+  if (carried.length === 0 || (await classifyReviewRefusal(first, headUnmoved(p))) === "whole-review") {
+    writeRows(p, p.planned, { status: "drafted" });
+    return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+  }
+
+  if (fresh.length > 0) {
+    const freshComments = fresh.flatMap((row) => p.comments.get(row.fingerprint) ?? []);
+    const retry = await postReview(dir, pr.owner, pr.repo, pr.number, p.body, freshComments, headSha);
+    if (!retry.ok) {
+      // The first review was refused, so nothing it carried landed: the drafts are drafts
+      // again either way. The new findings follow `wasRefused`, exactly as above.
+      writeRows(p, carried, { status: "drafted" });
+      if (wasRefused(retry)) writeRows(p, fresh, { status: "drafted" });
+      return noteFailure(pr, retry.error ?? "could not post the review", now, tick);
+    }
+    writeRows(p, fresh, { status: "open", postedAt: now });
+  }
+  return pinRefusal(p, carried, first);
+}
+
+/**
+ * Attribute a validation refusal to the exact draft that caused it.
+ *
+ * Exactly one carried draft: it is the cause, since the review without it was accepted or
+ * did not exist, and it records one refusal with GitHub's reason.
+ *
+ * Several: each is posted in its own review, so a valid draft never counts toward the cap
+ * because of a bad sibling. Accepted, it is `open`. A validation refusal counts against that
+ * draft alone. A whole-review refusal or a lost response stops isolation and fails the round
+ * the usual way, with nothing counted for the drafts not yet tried. The cost is one review,
+ * and so one notification, per carried draft, at most `maxCommentsPerRound`; it happens only
+ * after a validation refusal, which a snapped line makes rare.
+ */
+async function pinRefusal(
+  p: RoundPublication,
+  carried: InspectorComment[],
+  refused: GhResult<void>,
+): Promise<boolean> {
+  const { pr, dir, headSha, now, tick } = p;
+  if (carried.length === 1) {
+    recordRefusal(p, carried[0]!, refused);
+    return true;
+  }
+  const body = [
+    reviewHeader(p.round),
+    "",
+    "GitHub refused this finding in a review with others, so it is posted on its own.",
+  ].join("\n");
+  for (const [i, row] of carried.entries()) {
+    const comment = p.comments.get(row.fingerprint)!;
+    const res = await postReview(dir, pr.owner, pr.repo, pr.number, body, [comment], headSha);
+    if (res.ok) {
+      writeRows(p, [row], { status: "open", postedAt: now });
+      continue;
+    }
+    const untried = carried.slice(i + 1);
+    if (!wasRefused(res)) {
+      // This draft may have landed and stays `posting`, for its thread to answer.
+      writeRows(p, untried, { status: "drafted" });
+      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+    }
+    if ((await classifyReviewRefusal(res, headUnmoved(p))) === "validation") {
+      recordRefusal(p, row, res);
+      continue;
+    }
+    writeRows(p, [row, ...untried], { status: "drafted" });
+    return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+  }
+  return true;
+}
+
+/** The moved-head check: one head read, made only after GitHub refused a review with a 422. */
+function headUnmoved(p: RoundPublication): () => Promise<boolean> {
+  return async () => {
+    const head = await fetchHeadSha(p.dir, p.pr.owner, p.pr.repo, p.pr.number);
+    return head.ok && head.value === p.headSha;
+  };
+}
+
+/** One counted refusal on one draft: back to `drafted`, with the count and GitHub's reason. */
+function recordRefusal(p: RoundPublication, row: InspectorComment, refused: GhResult<void>): void {
+  writeRows(p, [row], {
+    status: "drafted",
+    postRefusals: (row.postRefusals ?? 0) + 1,
+    lastPostError: refusalReason(refused),
+  });
+}
+
+/** Write rows through the one upsert, keeping this tick's ledger map in step. */
+function writeRows(p: RoundPublication, rows: InspectorComment[], patch: Partial<InspectorComment>): void {
+  for (const row of rows) {
+    const next: InspectorComment = { ...row, ...patch };
+    p.rows.set(row.fingerprint, next);
+    upsertInspectorComment(next);
+  }
 }
 
 /**

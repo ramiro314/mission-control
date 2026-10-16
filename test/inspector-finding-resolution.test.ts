@@ -683,9 +683,16 @@ test("posting reconciliation stamps a row it finds published, and only that row"
   // A round whose response was lost: both rows were written in `posting` ahead of a POST,
   // on a head the next push has moved past.
   updateInspectorPr(key, { headSha: "head-old", reviewPosture: "live", round: 1, lastReviewedAt: 1 }, Date.now());
-  for (const [id, fp, line] of [["finding-1", publishedFp, 1], ["finding-2", lostFp, 3]] as const) {
+  //
+  // The lost row is about a file the new head no longer changes. Reconciliation turns it back
+  // into a draft, and a live round would otherwise carry that draft and post it at once (see
+  // `test/inspector-drafts-after-live.test.ts`), which would hide what reconciliation alone did.
+  for (const [id, fp, path, line] of [
+    ["finding-1", publishedFp, "src/example.ts", 1],
+    ["finding-2", lostFp, "src/no-longer-in-the-diff.ts", 3],
+  ] as const) {
     upsertInspectorComment({
-      id, prKey: key, fingerprint: fp, path: "src/example.ts", line, title: `Issue ${fp}`,
+      id, prKey: key, fingerprint: fp, path, line, title: `Issue ${fp}`,
       body: "detail", severity: "major", round: 1, status: "posting", replies: 0,
       answeredCommentId: null, postedAt: null, createdAt: 1, updatedAt: 1,
     });

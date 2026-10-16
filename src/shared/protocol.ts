@@ -2602,6 +2602,8 @@ export const InspectorCommentSchema = z.object({
   postedAt: z.number().int().nullable().optional(),
   githubUrl: z.string().nullable().optional(),
   legacyPosted: z.enum(INSPECTOR_LEGACY_POSTED).nullable().optional(),
+  postRefusals: z.number().int().nonnegative().optional(),
+  lastPostError: z.string().nullable().optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });

@@ -323,6 +323,47 @@ filters. Picking a tile starts that filtered list at its first page, and the pag
 when everything already fits. The GitHub Inspector's list is the 50 most recently reviewed pull
 requests, so the total counts what this panel was served, not everything the database holds.
 
+### Drafts after a switch to live
+
+Switching a repository from dry run to live posts the findings dry run drafted. The switch
+makes the GitHub Inspector review the same head again (see
+[It needs the GitHub Inspector, fully on](#it-needs-the-github-inspector-fully-on)). The
+review prompt lists each draft under "Found earlier but never posted", and asks the model only
+whether the push fixed it. Whatever the model leaves alone, Mission Control posts itself, in
+the same review as anything new. A draft is posted only when all of these hold:
+
+- the model neither resolved it nor raised it again. A draft it raises again is posted as a
+  new finding;
+- its file is still in the diff, and its line snaps to one GitHub can anchor. A draft about a
+  file the push removed stays a draft;
+- GitHub has refused it fewer than 3 times.
+
+Drafts share the round's comment cap with new findings. At the same severity a new finding
+comes first.
+
+A refusal counts against a draft only when GitHub's answer is about that draft. Mission
+Control reads the HTTP status `gh` reports:
+
+| GitHub's answer | What happens |
+| --- | --- |
+| A rate limit (429, or a 403 secondary limit), an auth or SSO refusal, a server error, any other status that is not 422 | The round fails as any failed review does: the findings stay drafts, the head is reviewed again after backoff, and nothing is counted. |
+| A 422 on a head that moved during the review | The same, after one read of the pull request's head. |
+| A 422 on an unmoved head | A validation refusal, attributed below. |
+
+For a validation refusal, a review that also carried new findings is sent again at once
+without the drafts. If GitHub refuses that one too, nothing is counted and the round fails as
+above. Then the drafts are attributed. A single draft records the refusal. Several drafts are
+each posted in a review of their own, so a valid draft is never charged for a bad sibling. Each
+of those reviews is its own notification on the pull request. A response that never arrived is
+not a refusal and is never counted.
+
+Every retry reuses the round's review, so no second model run is made. Once the refusals are
+pinned, the round finishes and the head counts as reviewed live. A refused draft stays a draft,
+still counts as an open finding for [Shipping](#shipping-yolo-mode), and is offered again on the
+next push. At 3 refusals it stops being offered. Its row keeps the count and GitHub's latest
+reason. It stays open until a push fixes it and the model resolves it, or you use
+[Resolve](#how-a-finding-gets-closed).
+
 ### Reading a pull request's findings
 
 **Findings** on an Inspections row opens every finding the GitHub Inspector generated for that

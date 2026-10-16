@@ -268,3 +268,31 @@ test("the flake list is capped and the cut is announced", () => {
   assert.match(prompt, /TRUNCATED: 12 more flaky tests are not listed/);
   assert.ok(prompt.length < 20_000, `flake section grew the prompt to ${prompt.length} chars`);
 });
+
+// A drafted row never reached GitHub, so it must not be listed as "already on the pull
+// request": told that, the model never raised it again and nothing posted it after a switch
+// to live. Drafts get their own section, which asks only whether this push fixed them.
+test("drafted findings are listed in their own section, apart from posted ones", () => {
+  const posted = openRow(1, "major");
+  const posting = { ...openRow(2, "minor"), status: "posting" as const };
+  const drafted = { ...openRow(3, "blocker"), status: "drafted" as const };
+  const prompt = buildReviewPrompt(input({ open: [posted, posting, drafted] }));
+
+  const postedAt = prompt.indexOf("## Issues you raised earlier that are still open");
+  const draftedAt = prompt.indexOf("## Found earlier but never posted");
+  assert.ok(postedAt >= 0 && draftedAt > postedAt);
+  assert.ok(prompt.includes(
+    "If this push fixes one, put its fingerprint in `resolved`. Otherwise say nothing:\nMission Control posts it.",
+  ));
+  const postedSection = prompt.slice(postedAt, draftedAt);
+  const draftedSection = prompt.slice(draftedAt, prompt.indexOf("## The diff"));
+  assert.ok(postedSection.includes(posted.fingerprint) && postedSection.includes(posting.fingerprint));
+  assert.ok(!postedSection.includes(drafted.fingerprint));
+  assert.ok(draftedSection.includes(drafted.fingerprint));
+  assert.ok(!draftedSection.includes("already on the pull request"));
+
+  const onlyDrafts = buildReviewPrompt(input({ open: [drafted] }));
+  assert.ok(!onlyDrafts.includes("## Issues you raised earlier that are still open"));
+  const onlyPosted = buildReviewPrompt(input({ open: [posted] }));
+  assert.ok(!onlyPosted.includes("## Found earlier but never posted"));
+});

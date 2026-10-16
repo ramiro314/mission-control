@@ -3028,6 +3028,14 @@ export interface InspectorComment {
   githubUrl?: string | null;
   /** What a row recorded before `postedAt` existed proves about posting. Null on newer rows. */
   legacyPosted?: InspectorLegacyPosted | null;
+  /**
+   * Validation refusals GitHub pinned on this finding while it was a draft being offered
+   * after a switch to live. At `INSPECTOR_LIMITS.maxPostRefusals` the planner stops offering
+   * it. Absent on an older snapshot taken before the field existed, which reads as zero.
+   */
+  postRefusals?: number;
+  /** GitHub's reason for the newest counted refusal, scrubbed and clipped. Null when none. */
+  lastPostError?: string | null;
   createdAt: number;
   updatedAt: number;
 }
