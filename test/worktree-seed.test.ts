@@ -542,7 +542,7 @@ test("a stop during a seed records interrupted, and the next claim wipes the see
   await next.release(again.lease);
 });
 
-test("an interrupted slot whose seed paths match a tracked file fails its claim with a warning", async () => {
+test("an interrupted slot whose seed paths match a tracked file fails its claim with a warning and stays interrupted", async () => {
   const fixture = repository("mission-seed-refuse-");
   const claim = claimWith({ paths: ["deps", "tracked"], exclude: [] });
   const m = manager(claim, { cloneTree: recordingClone([]) }, 1);
@@ -552,10 +552,57 @@ test("an interrupted slot whose seed paths match a tracked file fails its claim 
   const result = leased(await acquire(m, fixture.clone, fixture.sha, "refuse:target"));
   assert.match(result.claimWarning?.reason ?? "", /interrupted seed paths could not be removed: tracked holds tracked files/);
   assert.equal(result.claimWarning?.step, 1);
-  assert.equal(slotAt(m, 1).depsState, "failed");
+  // Not `failed`: that would let the next claim run its steps over the cut-off seed's paths.
+  assert.equal(slotAt(m, 1).depsState, "interrupted");
+  assert.equal(slotAt(m, 1).depsFingerprint, null);
   assert.equal(existsSync(join(result.lease.path, "deps", "marker")), true, "nothing was removed");
   assert.equal(runCount(result.lease.path), before, "no step ran");
   await m.release(result.lease);
+
+  // The obligation stays: the next claim tries the wipe again before anything else.
+  const again = leased(await acquire(m, fixture.clone, fixture.sha, "refuse:again"));
+  assert.match(again.claimWarning?.reason ?? "", /interrupted seed paths could not be removed/);
+  assert.equal(slotAt(m, 1).depsState, "interrupted");
+  assert.equal(runCount(again.lease.path), before, "still no step ran");
+  await m.release(again.lease);
+});
+
+test("a wipe that fails after removing some seed paths keeps the slot interrupted, and the next claim finishes it", async () => {
+  const fixture = repository("mission-seed-wipe-partial-");
+  const claim = claimWith(SEED);
+  // No sibling can be cloned from, so every claim here runs its own steps after the wipe.
+  const m = manager(claim, { cloneTree: async () => ({ outcome: "failed", reason: "no reflink here" }) }, 1);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "wipe-partial");
+  const slot = slotAt(m, 1);
+  db.prepare("UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL WHERE id = ?").run(slot.id);
+  // `deps` is removed first; `more` cannot be, because a directory inside it refuses writes.
+  writeFileSync(join(slot.path, "deps", "half"), "half-renamed");
+  const locked = join(slot.path, "more", "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "file"), "cannot be removed");
+  chmodSync(locked, 0o500);
+  const before = runCount(slot.path);
+  let result: Extract<WorktreeAcquireResult, { outcome: "acquired" }>;
+  try {
+    result = leased(await acquire(m, fixture.clone, fixture.sha, "wipe-partial:target"));
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+  assert.match(result.claimWarning?.reason ?? "", /interrupted seed paths could not be removed: seed paths could not be removed/);
+  assert.equal(existsSync(join(slot.path, "deps")), false, "the wipe had removed `deps` before it failed");
+  assert.equal(existsSync(join(locked, "file")), true);
+  assert.equal(slotAt(m, 1).depsState, "interrupted", "the half-finished cleanup is still owed");
+  assert.equal(runCount(slot.path), before, "no step ran over the half-wiped tree");
+  await m.release(result.lease);
+
+  // With the obstacle gone, the next claim removes what is left and then starts cold.
+  const again = leased(await acquire(m, fixture.clone, fixture.sha, "wipe-partial:again"));
+  assert.equal(again.claimWarning, undefined);
+  assert.equal(existsSync(join(slot.path, "more", "locked")), false, "the rest of the seed paths were removed");
+  assert.equal(runCount(slot.path), before + 1);
+  assert.equal(readFileSync(join(slot.path, "deps", "marker"), "utf8"), slot.path, "installed by its own step");
+  assert.equal(slotAt(m, 1).depsState, "current");
+  await m.release(again.lease);
 });
 
 test("an interrupted slot with no seed paths configured reruns every step and removes nothing", async () => {
@@ -640,6 +687,29 @@ test("a seed whose exclusions remove every path is no seed: the cold target inst
   assert.equal(slotAt(m, 1).depsState, "current");
   assert.equal(slotAt(m, 2).state, "available");
   await m.release(result.lease);
+});
+
+test("a slot claimed before fingerprint paths were configured is stale, and seeds from an exact match", async () => {
+  const fixture = repository("mission-seed-fingerprint-added-");
+  const unfingerprinted = WorktreeClaimSchema.parse({ steps: [{ argv: INSTALL }], seed: SEED });
+  const before = manager(unfingerprinted, { cloneTree: recordingClone([]) }, 2);
+  await warmPool(before, fixture.clone, fixture.sha, 2, "fingerprint-added");
+  assert.equal(slotAt(before, 1).depsFingerprint, null);
+
+  // The operator adds fingerprint paths. Slot 2 has since been claimed under them; slot 1 still
+  // holds its earlier, fingerprint-less claim, which is current but not this commit's.
+  const claim = claimWith(SEED);
+  const exact = await fingerprintAt(fixture.clone, claim, fixture.sha);
+  setDeps(slotAt(before, 2).id, exact, Date.now());
+  const sources: string[] = [];
+  const m = manager(claim, { cloneTree: recordingClone(sources) }, 2);
+  const runs = runCount(slotAt(m, 1).path);
+  const seeded = leased(await acquire(m, fixture.clone, fixture.sha, "fingerprint-added:target"));
+  assert.equal(seeded.lease.path, slotAt(m, 1).path);
+  assert.deepEqual(sources, [join(slotAt(m, 2).path, "deps"), join(slotAt(m, 2).path, "more")]);
+  assert.equal(slotAt(m, 1).depsFingerprint, exact, "the target inherited the exact match's fingerprint");
+  assert.equal(runCount(seeded.lease.path), runs, "so no step ran");
+  await m.release(seeded.lease);
 });
 
 test("with no fingerprint paths a settled slot never re-seeds, and a cold one seeds from the most recent sibling", async () => {

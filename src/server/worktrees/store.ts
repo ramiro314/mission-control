@@ -518,13 +518,17 @@ export class WorktreeStore {
     return Number(changed.changes) === 1;
   }
 
-  /** Settle a claim that held the write-ahead. A failure records no fingerprint. */
+  /**
+   * Settle a claim that held the write-ahead. A failure records no fingerprint. `interrupted`
+   * is a claim whose cleanup of an interrupted seed did not finish: the obligation to remove
+   * the seed paths stays with the slot, so its next claim tries again.
+   */
   finishClaim(
     slotId: string,
     version: number,
     outcome:
       | { state: "current"; fingerprint: string | null; sha: string }
-      | { state: "failed"; error: string },
+      | { state: "failed" | "interrupted"; error: string },
     now: number,
   ): boolean {
     const current = outcome.state === "current";

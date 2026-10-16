@@ -240,7 +240,8 @@ seeds before its steps run when either of these holds:
   no fingerprint paths and so recorded no fingerprint, or every lease would copy a sibling's tree
   over its own fresh install;
 - its fingerprint is stale, **and** an idle sibling's fingerprint matches the leased commit's
-  exactly.
+  exactly. A slot whose last claim succeeded with no fingerprint, before fingerprint paths were
+  configured, is stale as soon as the claim can compute one.
 
 Otherwise the claim runs in place, so a small lockfile change stays an incremental install.
 
@@ -352,8 +353,11 @@ it seeds if a sibling qualifies, and otherwise runs every step.
 
 - **The interrupted wipe** removes a seed path only once Git confirms it is ignored and holds
   nothing tracked. A matched path that is tracked, or not ignored, is never removed, and then
-  nothing else is either: the claim fails with a warning naming the path, under the ordinary
-  failure rules. A pool with no `seed.paths` has nothing to remove, and the claim runs every step.
+  nothing else is either: the claim fails with a warning naming the path, and the lease is
+  granted with it. A wipe that fails partway, after removing some paths, fails the same way.
+  Either way the slot stays `interrupted` rather than `failed`, so the obligation to remove its
+  seed paths stays with it and its next claim tries the wipe again before anything else. A pool
+  with no `seed.paths` has nothing to remove, and the claim runs every step.
 - **A seed source** that a crash left leased to its `warm` owner is returned at startup through
   the ordinary return path: the occupancy check, the reset to origin's default, and the clean,
   detached proof. It becomes available with its fingerprint intact. A source the return cannot

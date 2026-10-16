@@ -1166,11 +1166,11 @@ export class WorktreeManager {
       return { kind: "unrecorded", reason: "the dependency claim intent could not be recorded" };
     }
     this.publish();
-    const settleFailed = (warning: WorktreeClaimWarning): ClaimRun => {
+    const settleFailed = (warning: WorktreeClaimWarning, state: "failed" | "interrupted" = "failed"): ClaimRun => {
       const settled = this.store.finishClaim(
         reservation.id,
         reservation.version,
-        { state: "failed", error: encodeClaimFailure(warning) },
+        { state, error: encodeClaimFailure(warning) },
         this.deps.now(),
       );
       if (!settled) return { kind: "unrecorded", reason: "the dependency claim outcome could not be recorded" };
@@ -1186,20 +1186,23 @@ export class WorktreeManager {
     if (interrupted && claim.seed) {
       const wiped = await wipeSeedPaths(reservation.path, claim.seed);
       if (!wiped.ok) {
-        return settleFailed(notRunWarning(
-          claim,
-          `did not run, because the interrupted seed paths could not be removed: ${wiped.reason}`,
-        ));
+        // Still interrupted, not failed: the seed paths may be half renamed, or half removed by
+        // this very wipe, and only `interrupted` makes the next claim remove them again before
+        // anything else. The lease is granted with the warning, as for any failed claim.
+        return settleFailed(
+          notRunWarning(claim, `did not run, because the interrupted seed paths could not be removed: ${wiped.reason}`),
+          "interrupted",
+        );
       }
     }
 
     // Cold: new, never claimed, failed or cut off. A slot whose last claim succeeded is not
     // cold even with no fingerprint (its claim lists no fingerprint paths), or it would be
-    // re-seeded over its own fresh install on every lease. Stale: it succeeded, at a
-    // fingerprint this commit no longer has.
+    // re-seeded over its own fresh install on every lease. Stale: it succeeded, but at a
+    // fingerprint this commit does not have, including none at all because fingerprint paths
+    // were configured since. A stale slot seeds only from an exact match.
     const cold = interrupted || recorded?.depsState !== "current";
-    const stale = !cold && fingerprint !== null && recorded?.depsFingerprint != null &&
-      recorded.depsFingerprint !== fingerprint;
+    const stale = !cold && fingerprint !== null && recorded?.depsFingerprint !== fingerprint;
     if (claim.seed && where.enabled && (cold || stale)) {
       const seeded = await this.seedSlotBeforeSteps({
         reservation,
