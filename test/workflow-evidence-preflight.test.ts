@@ -1632,8 +1632,10 @@ async function captureFailureHarness(t: TestContext, id: string, options: Parame
     case "missing": rmSync(path); break;
     case "invalid_utf8": writeFileSync(path, Buffer.from([0xff, 0xfe])); break;
     case "changed":
+      // Fork: registering the corrected bytes here would supersede the stale row before
+      // submission (fork #104 reserves only a path's latest registration), so no capture
+      // failure would occur. The correction is registered by each test's repair step instead.
       writeFileSync(path, "Corrected handoff with focused rollback evidence\n");
-      await register("corrected-handoff");
       break;
   }
   const result = await h.manager.submit(h.binding.id, { requestId: "capture-failure" });
@@ -1804,7 +1806,11 @@ test("capture repair is bounded and cancellation cannot revive it", async (t) =>
     await waitFor(() => h.store.listDeliveries(h.run.id).filter((d) => d.state === "delivered").length === attempt, "missing repair packet");
     await h.register(`still-changing-${attempt}`);
     writeFileSync(h.path, `The file moved again ${attempt}\n`);
-    await h.manager.sweepResumptions(Date.now() + 120_000);
+    // Fork: settle by backdating activity, not by sweeping at a future clock. A future sweep
+    // stamps its reservation ahead of the next registration, and fork #104 would then read the
+    // reserved row as the path's latest and skip the fresh one.
+    h.registry.getSession(id)!.lastActivity = Date.now() - 120_000;
+    await h.manager.sweepResumptions(Date.now());
   }
   const failure = h.store.getRun(h.run.id)!;
   assert.match(JSON.stringify(failure.gateState), /"state":"exhausted"/);
@@ -2015,18 +2021,7 @@ test("restart resumes an atomically reserved capture child without spending a se
 });
 
 
-test("restaging the already-correct registration repairs capture without changing its bytes or generation", async (t) => {
-  const id = "capture-restage-identical";
-  const h = await captureFailureHarness(t, id);
-  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
-  const parent = h.store.latestSubmission(h.run.id)!;
-  await h.register("corrected-handoff");
-  assert.equal(h.store.workflowEvidenceGeneration(h.binding.noteKey, repositoryRoot), parent.stagedImageGeneration);
-  h.registry.getSession(id)!.state = "idle";
-  await h.manager.sweepResumptions(Date.now() + 60_000);
-  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "restaging unchanged correct proof was missed");
-  const child = h.store.latestSubmission(h.run.id)!;
-  assert.equal(child.round, parent.round);
-  assert.equal(h.store.listSubmissionTextArtifacts(child.id).length, 1);
-  assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((v) => v.clientItemId === "original-handoff"), false);
-});
+// Fork: upstream's "restaging the already-correct registration repairs capture without changing
+// its bytes or generation" is omitted. Under fork #104 a path's latest registration supersedes
+// its stale rows before reservation, so a correct registration staged before submission never
+// lets capture fail in the first place.
