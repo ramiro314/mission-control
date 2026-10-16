@@ -659,7 +659,7 @@ test("a drafted row whose earlier version was posted takes, and keeps, that earl
   assert.equal(row.status, "drafted");
   assert.equal(row.body, "Back again", "the row really was raised again");
   assert.equal(row.githubUrl, earlier);
-  assert.deepEqual(findingPublication(row), { state: "not-posted", url: earlier, postedAt: 1_000, earlierPost: true });
+  assert.deepEqual(findingPublication(row), { state: "not-posted", url: earlier, postedAt: 1_000, earlierPost: true, refusals: 0, reason: null });
 
   // GitHub no longer shows the earlier thread, here as if it fell off the first page. The
   // link stays.

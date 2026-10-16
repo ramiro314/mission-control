@@ -110,6 +110,8 @@ test("the one-time backfill records what each legacy row proves, for every legac
     url: null,
     postedAt: null,
     earlierPost: true,
+    refusals: 0,
+    reason: null,
   });
 });
 

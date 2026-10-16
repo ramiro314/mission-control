@@ -58,7 +58,7 @@ test("the Posted cell reads every publication state", () => {
   // Posted, linked to GitHub when the link is known.
   assert.deepEqual(
     inspectorFindingPostedCell(finding("a", { postedAt: 5, githubUrl: COMMENT_URL })),
-    { label: "Posted", href: COMMENT_URL, tooltip: "Open this finding on GitHub" },
+    { label: "Posted", href: COMMENT_URL, tooltip: "Open this finding on GitHub", note: null },
   );
   // Posted, plain while it is not: the claim is true, the link is not captured yet.
   const unlinked = inspectorFindingPostedCell(finding("b", { postedAt: 5 }));
@@ -72,7 +72,7 @@ test("the Posted cell reads every publication state", () => {
   // A draft that never reached GitHub.
   assert.deepEqual(
     inspectorFindingPostedCell(finding("d", { status: "drafted" })),
-    { label: "Not posted", href: null, tooltip: null },
+    { label: "Not posted", href: null, tooltip: null, note: null },
   );
   // A draft whose earlier version was posted links to that earlier comment, and is never
   // read as "Not posted" alone.
@@ -89,15 +89,63 @@ test("the Posted cell reads every publication state", () => {
   assert.equal(legacyEarlier.href, null);
   assert.deepEqual(
     inspectorFindingPostedCell(finding("g", { status: "posting" })),
-    { label: "Posting", href: null, tooltip: null },
+    { label: "Posting", href: null, tooltip: null, note: null },
   );
   assert.deepEqual(
     inspectorFindingPostedCell(finding("h", { status: "resolved", legacyPosted: "unknown" })),
-    { label: "Unknown", href: null, tooltip: "Recorded before Mission Control tracked posting" },
+    { label: "Unknown", href: null, tooltip: "Recorded before Mission Control tracked posting", note: null },
   );
   // A snapshot taken before the posted fields existed cannot prove either way.
   const { postedAt: _p, githubUrl: _g, legacyPosted: _l, ...frozen } = finding("i", { status: "resolved" });
   assert.equal(inspectorFindingPostedCell(frozen as InspectorComment).label, "Unknown");
+});
+
+// A draft GitHub refused still reads Not posted below the cap, with how many times on a line of
+// its own and GitHub's reason on hover; at the cap it reads Refused.
+const REASON = "Line could not be resolved (HTTP 422)";
+
+test("the Posted cell reads a draft GitHub refused, from the first refusal", () => {
+  assert.deepEqual(
+    inspectorFindingPostedCell(finding("r1", { status: "drafted", postRefusals: 1, lastPostError: REASON })),
+    { label: "Not posted", href: null, tooltip: `GitHub's reason: ${REASON}`, note: "GitHub refused it 1 time" },
+  );
+  assert.deepEqual(
+    inspectorFindingPostedCell(finding("r2", { status: "drafted", postRefusals: 2, lastPostError: REASON })),
+    { label: "Not posted", href: null, tooltip: `GitHub's reason: ${REASON}`, note: "GitHub refused it 2 times" },
+  );
+  assert.deepEqual(
+    inspectorFindingPostedCell(finding("r3", { status: "drafted", postRefusals: 3, lastPostError: REASON })),
+    { label: "Refused", href: null, tooltip: `GitHub's reason: ${REASON}`, note: "GitHub refused it 3 times" },
+  );
+  // Refused after an earlier version was posted: still links to that version.
+  const earlier = inspectorFindingPostedCell(
+    finding("r4", { status: "drafted", postedAt: 5, githubUrl: COMMENT_URL, postRefusals: 3, lastPostError: REASON }),
+  );
+  assert.equal(earlier.label, "Refused (posted earlier)");
+  assert.equal(earlier.href, COMMENT_URL);
+  assert.equal(earlier.note, "GitHub refused it 3 times");
+  assert.match(earlier.tooltip ?? "", /^GitHub's reason: Line could not be resolved \(HTTP 422\)\. Not posted again/);
+  // No reason recorded: the cell still says it was refused, and says GitHub gave none.
+  assert.equal(
+    inspectorFindingPostedCell(finding("r5", { status: "drafted", postRefusals: 1, lastPostError: null })).tooltip,
+    "GitHub's reason: GitHub gave no reason",
+  );
+});
+
+test("the table shows a refusal's count in the cell and its reason as the cell's description", () => {
+  const html = renderToStaticMarkup(createElement(InspectorFindingsTable, {
+    caption: "Refused findings",
+    findings: [
+      finding("once", { status: "drafted", postRefusals: 1, lastPostError: REASON }),
+      finding("capped", { status: "drafted", postRefusals: 3, lastPostError: REASON }),
+    ],
+  }));
+  assert.match(html, /<span aria-describedby="[^"]+">Not posted<\/span>(?:<span id="[^"]+" class="tt-desc">[^<]*<\/span>)?<span class="inspector-finding-refusals">GitHub refused it 1 time<\/span>/);
+  assert.match(html, /<span aria-describedby="[^"]+">Refused<\/span>(?:<span id="[^"]+" class="tt-desc">[^<]*<\/span>)?<span class="inspector-finding-refusals">GitHub refused it 3 times<\/span>/);
+  assert.ok(html.includes(`class="tt-desc">GitHub&#x27;s reason: ${REASON}</span>`));
+  // Both stay unresolved, so both bodies stay on screen.
+  assert.match(html, /Body of once\./);
+  assert.match(html, /Body of capped\./);
 });
 
 test("the shared table draws the Posted column and keeps the body rule", () => {

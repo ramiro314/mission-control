@@ -93,6 +93,61 @@ test("a draft posted earlier is never called the only copy", () => {
   assert.match(unknown, /^Not known whether this was posted on GitHub/);
 });
 
+// Phase 4's two refusal markers. A refused draft is still not on GitHub, so the session must
+// read that, and why: from the first refusal, not only once the cap stops it being offered.
+const REASON = "Line could not be resolved (HTTP 422)";
+const neverPosted: Partial<InspectorComment> = { status: "drafted", postedAt: null, githubUrl: null };
+
+test("a draft GitHub refused once or twice says how many times and why, and that it comes back", () => {
+  const cases: Array<[number, string]> = [
+    [1, `Not posted yet. GitHub refused it 1 time: ${REASON}. Mission Control offers it again on the next push.`],
+    [2, `Not posted yet. GitHub refused it 2 times: ${REASON}. Mission Control offers it again on the next push.`],
+  ];
+  for (const [refusals, line] of cases) {
+    const over = { ...neverPosted, postRefusals: refusals, lastPostError: REASON };
+    assert.equal(inspectorFindingPostedLine(finding("f", "major", over)), line);
+    const section = renderInspectorFindings([finding("f", "major", over)], { budgetBytes: 8_000 });
+    assert.ok(section.text.split("\n").includes(line), `refused ${refusals}: the section carries its marker`);
+  }
+});
+
+test("a draft refused 3 times reads refused, with no promise of another try", () => {
+  const over = { ...neverPosted, postRefusals: 3, lastPostError: REASON };
+  const line = `Not posted. GitHub refused it 3 times: ${REASON}`;
+  assert.equal(inspectorFindingPostedLine(finding("f", "major", over)), line);
+  const section = renderInspectorFindings([finding("f", "major", over)], { budgetBytes: 8_000 });
+  assert.ok(section.text.split("\n").includes(line));
+  assert.doesNotMatch(section.text, /offers it again/);
+});
+
+test("a refusal line keeps a posted earlier version's link and tolerates a missing reason", () => {
+  const earlier = "https://github.com/owner/repo/pull/7#discussion_r1";
+  assert.equal(
+    inspectorFindingPostedLine(finding("f", "major", {
+      status: "drafted", postedAt: 500, githubUrl: earlier, postRefusals: 3, lastPostError: REASON,
+    })),
+    `Not posted. GitHub refused it 3 times: ${REASON}. An earlier version was posted on GitHub: ${earlier}`,
+  );
+  assert.equal(
+    inspectorFindingPostedLine(finding("f", "major", { ...neverPosted, postRefusals: 1, lastPostError: null })),
+    "Not posted yet. GitHub refused it 1 time. Mission Control offers it again on the next push.",
+  );
+  // A reason ending in a full stop does not double it.
+  assert.equal(
+    inspectorFindingPostedLine(finding("f", "major", { ...neverPosted, postRefusals: 3, lastPostError: "Bad anchor." })),
+    "Not posted. GitHub refused it 3 times: Bad anchor",
+  );
+});
+
+test("the refusal reason is a bounded packet field", () => {
+  const limit = WORKFLOW_LIMITS.feedbackFieldBytes;
+  const over = { ...neverPosted, postRefusals: 3, lastPostError: `${"r".repeat(limit)}s` };
+  const section = renderInspectorFindings([finding("f", "major", over)], { budgetBytes: 100_000 });
+  assert.equal(section.truncated, true);
+  assert.ok(section.text.split("\n").includes(`Not posted. GitHub refused it 3 times: ${"r".repeat(limit)}`));
+  assert.equal(section.text.includes(`${"r".repeat(limit)}s`), false);
+});
+
 test("each finding keeps today's shape, dedupe and severity order", () => {
   const rows = [
     finding("minor", "minor"),

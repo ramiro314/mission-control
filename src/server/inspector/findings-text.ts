@@ -10,7 +10,12 @@
 // `test/inspector-findings-text.test.ts` walks its import graph to keep it that way.
 
 import type { InspectorComment } from "@shared/types.ts";
-import { compareInspectorFindings, findingPublication } from "@shared/inspector-findings.ts";
+import {
+  compareInspectorFindings,
+  findingPublication,
+  refusalTimes,
+  type FindingPublication,
+} from "@shared/inspector-findings.ts";
 import { utf8Bytes } from "../util/utf8.ts";
 import { clipPacketField, sanitizeWorkflowFeedback } from "../workflows/packet-text.ts";
 
@@ -88,6 +93,10 @@ export function dedupeInspectorFindings(findings: readonly InspectorComment[]): 
  * called the only copy: the earlier thread is resolved, but it is still where that
  * conversation lives.
  *
+ * A draft GitHub refused says how many times and why from the first refusal, so the session
+ * knows the draft is not on GitHub and is not about to be. Below the cap it is offered again
+ * on the next push; at the cap (`refused`) it is not, and the line makes no such promise.
+ *
  * The link is a packet field like any other, so it clips at the per-field limit. `bound`
  * is the caller's clip, which lets a finding's block record that the link was clipped.
  */
@@ -105,12 +114,27 @@ export function inspectorFindingPostedLine(
         ? `Posted on GitHub in the review summary: ${url}`
         : `Posted on GitHub: ${url}`;
     case "not-posted":
+      if (publication.refusals > 0) {
+        return withEarlierPost(
+          `Not posted yet. GitHub refused it ${refusalTimes(publication.refusals)}${refusalReason(publication, bound)}. ` +
+            "Mission Control offers it again on the next push.",
+          publication,
+          url,
+        );
+      }
       if (publication.earlierPost) {
         return url
           ? `Not posted again. An earlier version was posted on GitHub: ${url}`
           : "Not posted again. An earlier version was posted on GitHub (link not captured).";
       }
       return "Not posted on GitHub. This message is the only copy.";
+    case "refused":
+      // No longer offered, so no promise of another try. It stays unresolved.
+      return withEarlierPost(
+        `Not posted. GitHub refused it ${refusalTimes(publication.refusals)}${refusalReason(publication, bound)}`,
+        publication,
+        url,
+      );
     case "posting":
       return "Being posted now";
     case "unknown":
@@ -120,6 +144,27 @@ export function inspectorFindingPostedLine(
       return unreachable;
     }
   }
+}
+
+/**
+ * ": <reason>", clipped like any packet field, or nothing when GitHub gave none. A closing
+ * full stop is dropped so the sentence that follows does not read "..".
+ */
+function refusalReason(publication: FindingPublication, bound: (value: string) => string): string {
+  const reason = publication.reason?.replace(/[\s.]+$/, "") ?? "";
+  return reason ? `: ${bound(reason)}` : "";
+}
+
+/**
+ * A refused draft whose earlier version was posted still says where that version is, so it is
+ * never read as the only copy.
+ */
+function withEarlierPost(line: string, publication: FindingPublication, url: string | null): string {
+  if (!publication.earlierPost) return line;
+  const sentence = /[.!?]$/.test(line) ? line : `${line}.`;
+  return url
+    ? `${sentence} An earlier version was posted on GitHub: ${url}`
+    : `${sentence} An earlier version was posted on GitHub (link not captured).`;
 }
 
 /**

@@ -350,7 +350,9 @@ Foreman reads, not the session snapshot's count, decide what is sent:
   is not held.
 
 The message opens with the counts, for example "PR #7 needs follow-through: GitHub Inspector
-has 3 unresolved findings on it (1 posted on GitHub, 2 not posted)." Its findings step asks the
+has 3 unresolved findings on it (1 posted on GitHub, 2 not posted)." A draft GitHub refused 3
+times is counted among the not posted, and named: "2 not posted (1 refused by GitHub)". It is
+still unresolved, so it is still relayed. Its findings step asks the
 agent to address every finding listed below. It says a finding marked **Not posted** exists only
 in that message, so the agent should not look for it on GitHub or reply to it there. The agent
 may answer a posted finding it thinks is wrong in its GitHub thread, and should say which

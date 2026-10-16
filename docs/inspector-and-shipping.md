@@ -364,6 +364,14 @@ next push. At 3 refusals it stops being offered. Its row keeps the count and Git
 reason. It stays open until a push fixes it and the model resolves it, or you use
 [Resolve](#how-a-finding-gets-closed).
 
+The count and the reason show from the first refusal, not only at the cap. Below 3, the
+finding still reads **Not posted** in the [Findings modal](#reading-a-pull-requests-findings)
+and the workflow Completion tab, with "GitHub refused it 1 time" under it. At 3 it reads
+**Refused**. Either way it stays unresolved, so it still blocks [Shipping](#shipping-yolo-mode)
+and Foreman still relays it. The relay and the workflow `inspector_feedback` packet mark it
+"Not posted yet. GitHub refused it N time(s): <reason>. Mission Control offers it again on the
+next push." below the cap, and "Not posted. GitHub refused it 3 times: <reason>" at it.
+
 ### Reading a pull request's findings
 
 **Findings** on an Inspections row opens every finding the GitHub Inspector generated for that
@@ -385,6 +393,8 @@ title, location, round and status, and a **Posted** column that reads
 | Posted, linked | On GitHub. The link opens its comment, or the review that carried it. |
 | Posted, no link | On GitHub. The link is recorded on a later tick. |
 | Not posted | A draft. It exists only in Mission Control. |
+| Not posted, "GitHub refused it N time(s)" | A draft GitHub refused once or twice after a switch to live. It is offered again on the next push. Hover for GitHub's reason, which **Show finding** also lists. |
+| Refused, "GitHub refused it 3 times" | A draft GitHub refused 3 times. It is no longer offered. The reason shows the same way. |
 | Not posted (posted earlier) | Raised again and not posted again. The link opens the earlier comment. |
 | Posting | Sent to GitHub, outcome not known yet. |
 | Unknown | Recorded before Mission Control tracked posting. |

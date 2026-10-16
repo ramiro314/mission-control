@@ -2572,7 +2572,10 @@ ledger disclosure. Findings are a table - severity, title, `path:line`, round, s
 posted - with one row each. The Posted column says whether the finding reached GitHub: **Posted**
 (a link to its comment once GitHub Inspector has recorded one), **Not posted**, **Not posted
 (posted earlier)** linking to the earlier version's comment, **Posting**, or **Unknown** for a row
-recorded before Mission Control tracked posting. A finding that is not resolved is why the gate
+recorded before Mission Control tracked posting. A draft GitHub refused reads **Not posted** with
+"GitHub refused it N time(s)" under it, or **Refused** at 3, with GitHub's reason on hover and in
+the finding's detail
+([drafts after a switch to live](inspector-and-shipping.md#drafts-after-a-switch-to-live)). A finding that is not resolved is why the gate
 has not passed, so its body is on screen rather than behind its row's control; a resolved one
 opens its body and the fingerprint the gate tracks it by on request. The label carries the open-finding count in amber. Findings never
 appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
@@ -2628,7 +2631,9 @@ nothing that reaches the database or the network, so Foreman's review follow-thr
 in a later change. Each finding carries one posted marker from
 `findingPublication`: posted on GitHub with its comment link, posted in the review summary,
 posted with the link not captured yet, being posted now, not posted and so only in this message,
-or not posted again with a link to the earlier version that was. A draft whose earlier version was
+or not posted again with a link to the earlier version that was. A draft GitHub refused says how
+many times and GitHub's reason from the first refusal: below the cap of 3 it adds that it is
+offered again on the next push, and at the cap it does not. A draft whose earlier version was
 posted is never called the only copy. Fields still clip at the per-field limit. Past the payload
 limit the packet drops whole findings from the tail, lowest severity first, and ends the section
 with how many it left out. It never cuts a finding part way: when not even the highest-severity
