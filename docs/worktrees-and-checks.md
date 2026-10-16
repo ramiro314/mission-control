@@ -107,10 +107,47 @@ make session ARGS="--return-lease <lease-id>" # explicit spelling of the same ac
 
 Under the hood (`scripts/new-session.mjs`):
 
-1. **Acquire** a manual lease from the running daemon's loopback API.
+1. **Acquire** a manual lease from the running daemon's loopback API. When the pool has a
+   [dependency claim](#dependency-claims), this waits for the claim, as described below.
 2. **Warm** it (`scripts/worktree-setup.mjs`): install dependencies so the session starts fast.
 3. **Hand it over** with `MISSION_WORKTREE` and `MISSION_WORKTREE_LEASE_ID` set, opening your
    `$SHELL` or the command after `--` in the tree.
+
+**Waiting on a claim: 202, then poll.** A claim can run far longer than one HTTP request: up to
+its `timeoutMinutes`, which may be 240. Node's `fetch` gives up after 300 seconds without
+response headers, and a lease granted after its caller gave up would belong to nobody. So
+`POST /api/worktrees/manual/acquire` has two answers. `make claude` goes through the same script
+and gets the same handling.
+
+- **The pool has no claim.** The route answers `201` with `{path, leaseId, baseSha}` straight
+  away, as it always has, so a `make session` from an older checkout keeps working against a
+  newer daemon.
+- **The pool has a claim.** The route pins `HEAD` as before, answers `202` with
+  `{requestId, baseSha}`, and runs the acquire in the background, claim included, under the same
+  `manual:<key>` owner. `make session` polls `GET /api/worktrees/manual/requests/<requestId>`
+  every 2 seconds. Each poll gets one of three states:
+  - `claiming`, with `elapsedMs` and the running `step` (its number, the step count, the
+    command and its own `elapsedMs`). `step` is null while the slot is still being chosen,
+    reset or set up. The script prints the step and the elapsed time as it goes.
+  - `granted`, with the `lease` and, when the claim failed, a `claimWarning` with the failing
+    step and its output tail. A failed claim still hands the slot over, so the script prints
+    the warning and opens the session anyway.
+  - `failed`, with the `reason` the acquire was refused or could not be proven. The script
+    prints it and exits without launching anything.
+
+Pending requests live in daemon memory, never in the database:
+
+- **A restart.** A poll after a restart answers `404`, and the script reports that the daemon
+  restarted during the claim. Startup reconcile recovers the slot the claim was preparing (see
+  "Crash and restart recovery" under [Dependency claims](#dependency-claims)). A grant made before the restart and never picked
+  up is an ordinary manual lease, which **Settings > Worktrees** shows and can Return.
+- **The pickup window.** A poll that reads `granted` picks the lease up. A grant nobody picks up
+  within 10 minutes is returned by the daemon through the ordinary owner-authorized return, with
+  its clean and occupancy checks, so a lease nobody received does not leak. A slot that is dirty
+  or has a process in it stays leased, and Settings can return it. A poll that arrives after the
+  window answers `failed`, never the returned slot.
+- **Brief outages.** The script rides out a daemon that stops answering for up to a minute, so a
+  restart reaches the `404` above instead of a connection error.
 
 The lease stays durable after the shell exits. Return it explicitly with either command above,
 using the lease ID printed by `make session` or exported as `MISSION_WORKTREE_LEASE_ID`. A slot path
@@ -127,10 +164,11 @@ active lease.
 
 A warm slot keeps whatever its last occupant installed, which is not necessarily what the next
 commit needs. A pool's **claim** closes that gap. It is an ordered list of dependency steps that
-runs inside every task lease, after the reset or add and after the setup command on a new slot,
-and before the final proof. A dispatched task's slot therefore has dependencies for the commit
-it was leased at. Check and manual leases do not run the claim yet: they lease exactly as they
-did before.
+runs inside every task lease and every manual lease, after the reset or add and after the setup
+command on a new slot, and before the final proof. A dispatched task's slot, and a `make session`
+slot, therefore has dependencies for the commit it was leased at. A manual lease waits on its
+claim through the 202-and-poll described under [Native pools](#native-pools). Check leases do
+not run the claim yet: they lease exactly as they did before.
 
 The claim is per pool, with no global default. It is stored beside `setupArgv` in that
 repository's `worktrees` entry, so settings backups capture it, and it is set through
@@ -174,7 +212,7 @@ repository's `worktrees` entry, so settings backups capture it, and it is set th
 - every step's argv;
 - every step's variable names.
 
-The hash is recorded on the slot only after every step succeeds. When the next task's lease
+The hash is recorded on the slot only after every step succeeds. When the next claimed lease
 computes the same hash, the steps are skipped, so a slot that already matches costs nothing. Any
 change to a matching file, an argv or a name runs the steps again. An empty `fingerprintPaths`
 means the claim runs on every lease.
@@ -256,7 +294,8 @@ manager finds the claim through its claim registry, sends SIGTERM to the step's 
 handed over as for any failed claim: the lease is granted with the warning, `deps_state`
 becomes `failed`, and the next claim reruns the steps in place. The dispatch then continues and
 launches its agent with the warning note. A route answer of 404 means that claim had already
-finished.
+finished. A manual lease's claim has only the slot card's Stop, and `make session` then receives
+the grant with the warning.
 
 Cancelling a task whose dispatch is waiting on a claim stops that claim too, once the task is
 recorded as cancelled. The stopped claim hands its slot over at once, the dispatch finds the
@@ -606,7 +645,7 @@ What a Command gets:
   commit and cleaned with `clean -fd`, never `-fdx`, which preserves the pool's ignored
   dependencies. That keeps whatever the slot last installed, which is not necessarily what this
   commit needs. Making it current is the pool's [dependency claim](#dependency-claims), which
-  runs today in task leases only, so a check still runs against whatever it finds. A
+  runs today in task and manual leases only, so a check still runs against whatever it finds. A
   subdirectory command runs in that subdirectory *of the leased tree*.
 - **A trimmed environment.** The daemon's auth token is removed, along with any variable that
   overrides where its state directory lives and anything whose name reads like a credential

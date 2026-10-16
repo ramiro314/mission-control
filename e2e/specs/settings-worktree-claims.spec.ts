@@ -116,8 +116,8 @@ test("the claim editor saves through the settings route and every slot shows its
   test.setTimeout(240_000);
   const gate = join(mkdtempSync(join(tmpdir(), "mc-e2e-claim-gate-")), "gate");
   try {
-    // Two manual leases create the pool. Manual leases do not run the claim, so neither slot
-    // has ever been installed; the second is later recorded as interrupted.
+    // Manual leases create the pool before any claim is configured, so each is answered at once
+    // with 201 and no slot has ever been installed; the second is later recorded as interrupted.
     const acquire = async (label: string) => {
       const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
         data: { repositoryPath: daemon.repo, label },

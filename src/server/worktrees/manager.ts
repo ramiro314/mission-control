@@ -32,6 +32,7 @@ import {
   type TreeBlob,
   type WorktreeClaimWarning,
 } from "./claim.ts";
+import { MANUAL_PICKUP_WINDOW_MS, ManualAcquireRequests } from "./manual-requests.ts";
 import { resolveWorktreePolicy, type WorktreePolicy } from "./config.ts";
 import {
   NativeWorktreeGit,
@@ -179,6 +180,8 @@ export interface WorktreeManagerDeps {
   now: () => number;
   randomId: () => string;
   poolsDirectory: string;
+  /** How long a manual grant acquired in the background waits for its poller. */
+  manualPickupWindowMs: number;
 }
 
 const DEFAULT_DEPS: WorktreeManagerDeps = {
@@ -211,6 +214,7 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   now: Date.now,
   randomId: randomUUID,
   poolsDirectory: WORKTREE_POOLS_DIR,
+  manualPickupWindowMs: MANUAL_PICKUP_WINDOW_MS,
 };
 
 type ClaimRun =
@@ -341,9 +345,35 @@ export class WorktreeManager {
   private readonly defaultFingerprints = new Map<string, { key: string; fingerprint: string | null }>();
   private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
 
+  /**
+   * Manual acquires running in the background because their pool has a claim. `make session`
+   * polls them through the manual request route.
+   */
+  readonly manualRequests: ManualAcquireRequests;
+
   constructor(db: DatabaseSync = openDb(), deps: Partial<WorktreeManagerDeps> = {}) {
     this.store = new WorktreeStore(db);
     this.deps = { ...DEFAULT_DEPS, ...deps };
+    this.manualRequests = new ManualAcquireRequests(this, {
+      now: () => this.deps.now(),
+      pickupWindowMs: this.deps.manualPickupWindowMs,
+    });
+  }
+
+  /**
+   * The dependency claim a lease of this repository would run, or null when its pool has none,
+   * is disabled, or its policy cannot be read. The manual route asks before it acquires: a pool
+   * with a claim is acquired in the background, and one without is answered synchronously.
+   */
+  poolClaim(repositoryPath: string): WorktreeClaim | null {
+    const identity = this.identity(repositoryPath);
+    if (!identity) return null;
+    try {
+      const policy = this.deps.resolvePolicy(identity.gitCommonDirectory);
+      return policy.enabled ? policy.claim ?? null : null;
+    } catch {
+      return null;
+    }
   }
 
   private async acquireLock(key: string): Promise<() => void> {
@@ -574,8 +604,8 @@ export class WorktreeManager {
     /** Protect the grant until its task/check row is durably written. */
     awaitingDomainRecord?: boolean;
     /**
-     * Run the pool's dependency claim inside this lease. Task dispatch asks for it; check and
-     * manual leases keep their behavior until their own change.
+     * Run the pool's dependency claim inside this lease. Task dispatch and the background
+     * manual acquire ask for it; check leases keep their behavior until their own change.
      */
     runClaim?: boolean;
   }): Promise<WorktreeAcquireResult> {
@@ -1022,6 +1052,12 @@ export class WorktreeManager {
       if (owner?.taskId === taskId) return { claim, position: owner.position };
     }
     return null;
+  }
+
+  /** The claim running for exactly this owner right now, or null. */
+  runningClaimFor(owner: WorktreeOwner): RunningClaim | null {
+    return this.claims.list().find((claim) =>
+      claim.owner.kind === owner.kind && claim.owner.key === owner.key) ?? null;
   }
 
   /** Told whenever any claim starts, moves to its next step, or ends. Returns the unsubscribe. */
@@ -1801,6 +1837,7 @@ export class WorktreeManager {
     this.reclaimDomainLeases = reclaimDomainLeases;
     this.stopped = false;
     this.claims.resume();
+    this.manualRequests.resume();
     const interval = worktreeSweepIntervalMs();
     if (interval === null || this.timer) return;
     const schedule = () => {
@@ -1839,6 +1876,7 @@ export class WorktreeManager {
 
   async stop(): Promise<void> {
     this.stopClaims();
+    this.manualRequests.stop();
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
