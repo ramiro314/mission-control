@@ -267,3 +267,56 @@ test("make session reports a 404 after a 202 as a daemon restart during the clai
     await close(server);
   }
 });
+
+// Bounded, because the regression this guards against is a poll that never returns.
+test("make session abandons a status poll the daemon accepts but never answers, and polls again", { timeout: 45_000 }, async () => {
+  const worktree = gitRepo("stalled-poll-worktree");
+  const polls: Array<{ at: number; abandoned: boolean }> = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      if (request.method === "POST") {
+        response.writeHead(202, { "content-type": "application/json" });
+        response.end(JSON.stringify({ requestId: "request-1", baseSha: "a".repeat(40) }));
+        return;
+      }
+      const poll = { at: Date.now(), abandoned: false };
+      polls.push(poll);
+      response.on("close", () => { poll.abandoned = !response.writableEnded; });
+      if (polls.length === 1) return; // Accepted, never answered: no headers at all.
+      if (polls.length === 2) {
+        // Headers, then a body that never finishes.
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"requestId":"request-1","state":');
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        requestId: "request-1",
+        state: "granted",
+        elapsedMs: 20_000,
+        lease: { path: worktree, leaseId: "manual-lease-after-stall", baseSha: "a".repeat(40) },
+      }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const result = await runScript(PRINT_LEASE, port);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(polls.length, 3, "each stalled poll was given up on and the next one sent");
+    assert.deepEqual(polls.map((poll) => poll.abandoned), [true, true, false]);
+    for (const i of [1, 2]) {
+      const gap = polls[i]!.at - polls[i - 1]!.at;
+      // The five-second poll deadline, then the two-second interval: bounded, never left open.
+      assert.ok(gap >= 6_500 && gap < 12_000, `poll ${i + 1} followed a stalled poll after ${gap} ms`);
+    }
+    const environment = JSON.parse(result.stdout.trim().split("\n").at(-1)!) as Record<string, unknown>;
+    assert.equal(environment.lease, "manual-lease-after-stall");
+    // A body cut off by the deadline is no answer at all, never an empty "still preparing" one.
+    assert.doesNotMatch(result.stderr, /preparing the worktree/);
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
+});

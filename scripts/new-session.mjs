@@ -71,17 +71,31 @@ const NOT_RUNNING =
   "Mission Control is not running. Start it with `make up`, `make dev`, or the application, then retry.";
 /** How often a claiming acquire is polled. */
 const POLL_MS = 2_000;
-/** How long polling rides out a daemon that stopped answering before giving up. */
+/**
+ * How long polling rides out a daemon that stopped answering before giving up, measured from
+ * the start of the first poll that went unanswered.
+ */
 const UNREACHABLE_LIMIT_MS = 60_000;
+/**
+ * The most one status poll may take, headers and body together. A daemon that accepts the
+ * connection and never answers would otherwise hold a poll open forever, and the outage limit
+ * above could never be reached.
+ */
+const POLL_REQUEST_TIMEOUT_MS = 5_000;
 /** Without a terminal to redraw, progress is printed when the step changes and this often. */
 const PLAIN_PROGRESS_MS = 30_000;
 
-/** One loopback request. Null when the daemon could not be reached at all. */
-async function call(method, path, body) {
+/**
+ * One loopback request. Null when the daemon could not be reached, or, with `timeoutMs`, did
+ * not finish answering in time.
+ */
+async function call(method, path, body, timeoutMs) {
+  const signal = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
   let response;
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       method,
+      ...(signal ? { signal } : {}),
       ...(body === undefined
         ? {}
         : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
@@ -89,7 +103,14 @@ async function call(method, path, body) {
   } catch {
     return null;
   }
-  const payload = await response.json().catch(() => ({}));
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    // A body cut off by the deadline is an unanswered request, not an empty answer.
+    if (signal?.aborted) return null;
+    payload = {};
+  }
   return { status: response.status, payload };
 }
 
@@ -135,9 +156,11 @@ async function awaitGrant(requestId) {
     drawn = false;
   };
   for (;;) {
-    const answered = await call("GET", statusPath);
+    const askedAt = Date.now();
+    const answered = await call("GET", statusPath, undefined, POLL_REQUEST_TIMEOUT_MS);
     if (!answered) {
-      unreachableSince ??= Date.now();
+      // From when this poll was sent, so time spent waiting on a stalled one counts too.
+      unreachableSince ??= askedAt;
       if (Date.now() - unreachableSince >= UNREACHABLE_LIMIT_MS) {
         endLine();
         console.error(

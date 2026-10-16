@@ -146,8 +146,10 @@ Pending requests live in daemon memory, never in the database:
   its clean and occupancy checks, so a lease nobody received does not leak. A slot that is dirty
   or has a process in it stays leased, and Settings can return it. A poll that arrives after the
   window answers `failed`, never the returned slot.
-- **Brief outages.** The script rides out a daemon that stops answering for up to a minute, so a
-  restart reaches the `404` above instead of a connection error.
+- **Brief outages.** Each poll gets 5 seconds to answer, headers and body together, so a daemon
+  that accepts a poll and never answers cannot hold the script. The script rides out a daemon
+  that stops answering for up to a minute, counted from the first unanswered poll, so a restart
+  reaches the `404` above instead of a connection error.
 
 The lease stays durable after the shell exits. Return it explicitly with either command above,
 using the lease ID printed by `make session` or exported as `MISSION_WORKTREE_LEASE_ID`. A slot path
