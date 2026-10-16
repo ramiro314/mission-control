@@ -672,6 +672,41 @@ test("an exclusion that removes a whole seed path makes the seed incomplete, so 
   await m.release(result.lease);
 });
 
+test("a cold target holding a seed path the exact source lacks is not trusted: the steps run", async () => {
+  const fixture = repository("mission-seed-target-extra-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  const m = manager(claim, { cloneTree: recordingClone(sources) }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "target-extra");
+  // The source matches this commit exactly but has no `more`; the cold target keeps a stale one.
+  rmrf(join(slotAt(m, 2).path, "more"));
+  makeCold(slotAt(m, 1).id);
+  writeFileSync(join(slotAt(m, 1).path, "more", "marker"), "stale");
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "target-extra:target"));
+  assert.deepEqual(sources, [join(slotAt(m, 2).path, "deps")], "only what the source has was cloned");
+  assert.equal(readFileSync(join(result.lease.path, "deps", "marker"), "utf8"), slotAt(m, 2).path);
+  assert.equal(runCount(result.lease.path), before + 1, "the stale `more` was not replaced, so the steps ran");
+  assert.equal(slotAt(m, 1).depsState, "current");
+  await m.release(result.lease);
+});
+
+test("a source path left out because the target lacks its parent makes the seed incomplete", async () => {
+  const fixture = repository("mission-seed-parent-missing-");
+  const claim = claimWith({ paths: ["deps", "more/pkg"], exclude: [] });
+  const sources: string[] = [];
+  const m = manager(claim, { cloneTree: recordingClone(sources) }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "parent-missing");
+  mkdirSync(join(slotAt(m, 2).path, "more", "pkg"), { recursive: true });
+  makeCold(slotAt(m, 1).id);
+  rmrf(join(slotAt(m, 1).path, "more"));
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "parent-missing:target"));
+  assert.deepEqual(sources, [join(slotAt(m, 2).path, "deps")], "`more/pkg` had nowhere to go in the target");
+  assert.equal(runCount(result.lease.path), before + 1, "so the target did not inherit the source's fingerprint");
+  await m.release(result.lease);
+});
+
 test("a seed whose exclusions remove every path is no seed: the cold target installs itself", async () => {
   const fixture = repository("mission-seed-exclude-all-");
   const claim = claimWith({ paths: ["deps"], exclude: ["deps"] });

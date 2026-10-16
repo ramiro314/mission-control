@@ -280,9 +280,12 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
 - **After a seed** the target inherits the source's fingerprint, and the ordinary skip rule
   decides. A source that matched the leased commit records `current`, and the steps are skipped.
   Any other seed is followed by every step.
-- **An incomplete seed inherits nothing.** An exclusion that removes a whole matched path leaves
-  that path out, and the target keeps its own copy of it. What was placed is then not the
-  source's tree, so the target does not inherit the source's fingerprint and every step runs.
+- **An incomplete seed inherits nothing.** A seed inherits the source's fingerprint only when
+  it replaced every seed path the target has with the source's own. It is incomplete when an
+  exclusion removes a whole matched path (the target keeps its own copy), when a source path is
+  left out because the target's commit lacks its parent directory, or when the target holds a
+  seed path the source does not have (the target's own, possibly stale, copy stays). Then what
+  was placed is not the source's tree, the target inherits no fingerprint, and every step runs.
   Exclusions that remove every path are no seed at all: the target is untouched and the steps
   run.
 - **A failed clone** abandons the seed, removes its staging, and the steps run. It is not a

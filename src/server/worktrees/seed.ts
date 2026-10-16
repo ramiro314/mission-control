@@ -252,8 +252,10 @@ export interface StagedSeedPath {
 
 export type SeedStageResult =
   /**
-   * `complete` is false when an exclusion removed a whole matched path: what is placed is then
-   * not the source's tree, and the target must not inherit the source's fingerprint.
+   * `complete` is false when what is placed is not exactly the source's tree over every seed
+   * path the target has: an exclusion removed a whole matched path, a source path was left out
+   * because the target lacks its parent, or the target holds a seed path the source does not
+   * supply. The target must then not inherit the source's fingerprint.
    */
   | { kind: "staged"; staged: StagedSeedPath[]; complete: boolean }
   /** Nothing to seed, or the seed could not be prepared. The target was never touched. */
@@ -289,8 +291,16 @@ export async function stageSeed(input: {
   if (placeable.length === 0) return { kind: "abandoned", reason: "the source has none of the seed paths" };
   const proof = await proveIgnored(input.targetRoot, placeable);
   if (!proof.ok) return { kind: "abandoned", reason: proof.reason };
+  // The seed replaces the target's tree only if it replaces every seed path the target has. A
+  // path the target holds that the source does not supply would keep the target's own, possibly
+  // stale, tree beside the seed, and a source path left out for want of its parent is a part of
+  // the source's tree the target never gets. Either way the seed is incomplete.
+  const supplied = placeable.map((entry) => entry.path);
+  const coveredBySeed = (path: string): boolean =>
+    supplied.some((source) => path === source || path.startsWith(`${source}/`));
+  const unreplaced = (await expandSeedPaths(input.targetRoot, input.seed.paths)).filter((entry) => !coveredBySeed(entry.path));
   const staged: StagedSeedPath[] = [];
-  let complete = true;
+  let complete = placeable.length === matched.length && unreplaced.length === 0;
   try {
     for (const [index, entry] of placeable.entries()) {
       if (input.signal.aborted) return { kind: "stopped" };
