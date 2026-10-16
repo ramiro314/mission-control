@@ -12,6 +12,13 @@ export const INSPECTOR_LIMITS = {
   maxRounds: INSPECTOR_MAX_ROUNDS,
   maxCommentsPerRound: INSPECTOR_MAX_COMMENTS_PER_ROUND,
   maxFindingFingerprints: INSPECTOR_MAX_ROUNDS * INSPECTOR_MAX_COMMENTS_PER_ROUND,
+  /**
+   * Validation refusals GitHub may pin on one drafted finding before the planner stops
+   * offering it. Counted only when a refusal is attributed to that draft alone (see
+   * `classifyReviewRefusal` and the worker's isolation path), never for a rate limit,
+   * an auth failure, a server error or a moved head.
+   */
+  maxPostRefusals: 3,
 } as const;
 
 // "Would the Inspector actually act on this pull request?" - asked once, here.

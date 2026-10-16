@@ -83,6 +83,7 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "fetchReviewPage", argv: '["api", "graphql", "-f", `query=${REVIEW_PAGE_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `before=${before}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "fetchThreadPage", argv: '["api", "graphql", "-f", `query=${THREAD_PAGE_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "fetchDiff", argv: '["api", `repos/${owner}/${repo}/pulls/${number}`, "-H", "Accept: application/vnd.github.v3.diff"]', how: "explicit", why: "owner and name parsed from the PR URL" },
+    { fn: "fetchHeadSha", argv: '["api", `repos/${owner}/${repo}/pulls/${number}`, "--jq", ".head.sha"]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "postReview", argv: '["api", "--method", "POST", `repos/${owner}/${repo}/pulls/${number}/reviews`, "--input", "-"]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "replyToComment", argv: '["api", "--method", "POST", `repos/${owner}/${repo}/pulls/${number}/comments/${commentId}/replies`, "--input", "-"]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "resolveThread", argv: '["api", "graphql", "-f", `query=${RESOLVE_MUTATION}`, "-F", `threadId=${threadId}`]', how: "node-id", why: "the review thread's global node id, read from that PR's own snapshot" },

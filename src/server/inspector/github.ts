@@ -17,6 +17,7 @@ import type { InspectorComment } from "@shared/types.ts";
 import { parseFlakeSummary, type FlakeReport } from "@shared/flake-report.ts";
 import { ciCheckRunsFromRollup, type CiCheckRun } from "@shared/wait-for-ci.ts";
 import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "@shared/github-sso.mjs";
+import { scrubSecrets } from "./scrub.ts";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -44,6 +45,12 @@ export interface GhResult<T> {
   outcomeUnknown?: boolean;
   /** The response did not fit in the pipe. Retrying the same request cannot produce less. */
   tooLarge?: boolean;
+  /**
+   * Everything `gh` printed to stderr, unclipped. `error` keeps only its first 300 bytes for
+   * the operator, and gh prints the HTTP status at the END of its message, so a long 422
+   * would lose it there. `classifyReviewRefusal` reads this instead.
+   */
+  stderr?: string;
 }
 
 /**
@@ -84,7 +91,64 @@ function fail<T>(what: string, res: RunResult, target?: string): GhResult<T> {
     error: `${what} failed (exit ${res.code}): ${detail}`,
     outcomeUnknown: res.outcomeUnknown,
     tooLarge: res.overflowed,
+    stderr: res.stderr,
   };
+}
+
+/**
+ * Why GitHub refused a review, as far as attributing the refusal goes.
+ *
+ * - `whole-review`: the refusal says nothing about any one comment in the review - a rate
+ *   limit (429, or a 403 naming a secondary rate limit), an auth or SSO refusal (401, or what
+ *   `classifyGitHubSsoRefusal` recognizes), a server error (5xx), a head that moved under the
+ *   review, and any other status that is not 422. No finding is ever charged for one.
+ * - `validation`: a 422 on a head that has not moved. GitHub validated the review against
+ *   the commit it names and rejected something in it, most often a line it cannot anchor.
+ */
+export type ReviewRefusalClass = "whole-review" | "validation";
+
+/** gh ends an API error with `(HTTP nnn)`. The last one wins, in case a body quoted another. */
+function httpStatus(stderr: string): number | null {
+  const all = [...stderr.matchAll(/\(HTTP (\d{3})\)/g)];
+  const last = all.at(-1);
+  return last ? Number(last[1]) : null;
+}
+
+/**
+ * Classify a review POST GitHub refused. The one place that decides it: the worker's
+ * drafts-only path and its retry of a mixed review both ask here, and nothing else does.
+ *
+ * Reads the status from gh's stderr, the same text the SSO classifier reads. A status it
+ * cannot find is `whole-review`, so a change in gh's wording can make the refusal cap
+ * engage less often but can never pin a refusal on the wrong finding.
+ *
+ * `headUnmoved` is called only for a 422, and it is the only extra request a refusal costs:
+ * GitHub also answers 422 for a review whose `commit_id` is no longer the pull request's
+ * head, and that says nothing about any finding. A failed read is not proof the head stayed
+ * put, so it reads as moved.
+ *
+ * A result that was not a refusal at all - a lost response, or a success - is
+ * `whole-review` too. It should never be asked, and if it is, nothing gets counted.
+ */
+export async function classifyReviewRefusal(
+  res: GhResult<unknown>,
+  headUnmoved: () => Promise<boolean>,
+): Promise<ReviewRefusalClass> {
+  if (!wasRefused(res)) return "whole-review";
+  const stderr = res.stderr ?? "";
+  if (classifyGitHubSsoRefusal(stderr)) return "whole-review";
+  if (httpStatus(stderr) !== 422) return "whole-review";
+  return (await headUnmoved()) ? "validation" : "whole-review";
+}
+
+/**
+ * GitHub's reason for a refusal, as recorded on the finding it was pinned on: what gh
+ * printed, with the `gh:` prefix dropped, whitespace collapsed, secrets scrubbed, and
+ * clipped to 300 bytes like every other GitHub error this subsystem stores.
+ */
+export function refusalReason(res: GhResult<unknown>): string {
+  const raw = (res.stderr || res.error || "GitHub refused the review").replace(/^gh:\s*/, "");
+  return clipUtf8Bytes(scrubSecrets(raw.replace(/\s+/g, " ").trim()), 300);
 }
 
 /**
@@ -937,6 +1001,29 @@ export async function postReview(
   );
   if (res.code !== 0) return fail("gh api (create review)", res, `${owner}/${repo}`);
   return { ok: true };
+}
+
+/**
+ * The pull request's current head sha, and nothing else.
+ *
+ * Exists for one caller: `classifyReviewRefusal`'s moved-head check, made only after GitHub
+ * refused a review with a 422. The tick's own `fetchPr` is far larger, and its answer is
+ * from before the POST, which is exactly the instant this question is not about.
+ */
+export async function fetchHeadSha(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GhResult<string>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/pulls/${number}`, "--jq", ".head.sha"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (head)", res, `${owner}/${repo}`);
+  const sha = res.stdout.trim();
+  return sha ? { ok: true, value: sha } : { ok: false, error: "gh api (head) returned no sha" };
 }
 
 // There is deliberately NO "read back the ids GitHub minted" call here. Everything that
