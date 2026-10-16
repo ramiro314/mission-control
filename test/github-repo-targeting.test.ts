@@ -114,6 +114,9 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "resolve", argv: "ghIssueCloseArgs(ready.cfg, notice)", how: ["explicit", "url", "resolver"], why: "`issueTargetFor`, as the comment" },
     { fn: "read", argv: "args", how: "url", why: "`ghLinkedIssueArgs` builds `issue view <url>` and throws for anything but the item's own issue URL" },
   ],
+  "scripts/distribution-input.mjs": [
+    { fn: "read", argv: "['api', '--hostname', 'github.com', `repos/${BINARY_REPO}/${endpoint}`]", how: "explicit", why: "`BINARY_REPO`, the canonical repository distribution publishes from" },
+  ],
   "scripts/fork-delta.mjs": [
     { fn: "gh", argv: '[...args, "--repo", repo]', how: "resolver", why: "every caller passes `scriptRepository(values.repo)`" },
   ],
@@ -160,6 +163,9 @@ const GH_MENTIONS: Readonly<Record<string, readonly GhMention[]>> = {
   "src/shared/setup-catalog.ts": [
     { fn: "<module>", line: 'argv: ["brew", "install", "gh"],', why: "the install remedy's package name" },
     { fn: "<module>", line: 'package: "gh",', why: "the Linux instruction remedy's package name; it runs nothing" },
+  ],
+  "scripts/distribution-github.mjs": [
+    { fn: "githubDistributionTransport", line: "export function githubDistributionTransport({command = 'gh', env = process.env} = {}) {", why: "every call it makes names `BINARY_REPO`: `api` on `repos/${BINARY_REPO}/...` and `release upload --repo BINARY_REPO`" },
   ],
   "scripts/check-pi-desktop-install.mjs": [
     { fn: "<module>", line: 'for (const name of ["git", "gh", "npm"]) writeFileSync(join(bin, name), shim, { mode: 0o755 });', why: "writes a fake gh for the install check" },
