@@ -256,6 +256,76 @@ test("a claim that rewrites a tracked file in the cold fallback is never handed 
   assert.equal(leaseRows.get(ref.attemptId), null);
 });
 
+test("a failed claim that also dirties the cold fallback's tree is still a dependency failure", async () => {
+  const { clone, sha } = repository("mission-check-claim-cold-dirty-fails-");
+  const fake = steps((request) => {
+    writeFileSync(join(request.cwd, "lock.txt"), "half rewritten\n");
+    return registryRefused;
+  });
+  const leases = checkLeases(worktrees(LOCK_CLAIM, fake.runClaimStep, false));
+  const ref = attempt();
+  await assert.rejects(
+    () => leases.acquireForAttempt({ ...ref, repoRoot: clone, headSha: sha }),
+    (err: unknown) => err instanceof CheckDependencyClaimError && err.failure.warning.tail === registryRefused.tail,
+  );
+  assert.equal(existsSync(fake.ran[0]!.cwd), false, "the dirty disposable tree outlived its failed claim");
+  assert.equal(leaseRows.get(ref.attemptId), null);
+});
+
+test("the cold fallback fails closed when the repository's claim policy cannot be read", async () => {
+  const { clone, sha } = repository("mission-check-claim-cold-policy-");
+  const fake = steps(() => ok);
+  const wm = new WorktreeManager(db, {
+    occupancy: emptyOccupancy,
+    // Native acquisition reads it first and refuses; the fallback's own lookup then fails too.
+    resolvePolicy: () => {
+      throw new Error("worktrees config is unreadable");
+    },
+    runClaimStep: fake.runClaimStep,
+  });
+  const leases = checkLeases(wm);
+  const ref = attempt();
+  await assert.rejects(
+    () => leases.acquireForAttempt({ ...ref, repoRoot: clone, headSha: sha }),
+    (err: unknown) => !(err instanceof CheckDependencyClaimError)
+      && /dependency claim could not be looked up: Error: worktrees config is unreadable/.test(String(err)),
+  );
+  assert.deepEqual(fake.ran, [], "a claim ran without a policy");
+  assert.equal(existsSync(join(realpathSync(CHECK_WORKTREES_DIR), ref.attemptId)), false, "the unproven tree was kept");
+  assert.equal(leaseRows.get(ref.attemptId), null);
+});
+
+test("a repository the pool cannot identify still runs its claim in the cold fallback", async () => {
+  // Relocated metadata: the clone's `.git` is a file naming a separate directory. The pool
+  // refuses it, and the fallback finds the repository's claim through Git's common directory.
+  const { origin } = repository("mission-check-claim-cold-relocated-");
+  const root = realpathSync(join(origin, ".."));
+  const metadata = join(root, "relocated-metadata");
+  const relocated = join(root, "relocated-clone");
+  gitIn(root, "clone", "-q", "--separate-git-dir", metadata, origin, relocated);
+  const sha = gitIn(relocated, "rev-parse", "HEAD");
+  const fake = steps(() => ok);
+  const asked: string[] = [];
+  const wm = new WorktreeManager(db, {
+    occupancy: emptyOccupancy,
+    resolvePolicy: (commonDirectory) => {
+      asked.push(commonDirectory);
+      return { enabled: true, maxSlots: 1, setupArgv: null, claim: LOCK_CLAIM };
+    },
+    claimEnvironment: async (names) =>
+      buildClaimEnvironment({ names, daemonEnv: process.env, daemonToken: "daemon-token", loginShell: {} }),
+    runClaimStep: fake.runClaimStep,
+  });
+  const leases = checkLeases(wm);
+  const ref = attempt();
+  const path = await leases.acquireForAttempt({ ...ref, repoRoot: relocated, headSha: sha });
+  assert.equal(leaseRows.get(ref.attemptId)?.provider, "git");
+  assert.deepEqual(asked, [realpathSync(metadata)]);
+  assert.equal(fake.ran.length, 1, "the relocated repository's claim did not run");
+  assert.equal(fake.ran[0]!.cwd, path);
+  assert.deepEqual(await leases.releaseForAttempt(ref.attemptId), { outcome: "returned" });
+});
+
 // ---- run cancel stops the claim ------------------------------------------------------------
 
 for (const pooled of [true, false]) {

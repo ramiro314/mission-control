@@ -561,9 +561,15 @@ A check lease runs the pool's [dependency claim](#dependency-claims) under the s
 task lease: the same steps, environment, deadline, fingerprint skip and final proof. The cold
 fallback runs the same claim against its throwaway tree once that tree is recorded and pinned. It
 runs whenever the repository's settings carry a claim, even with native pooling off, because the
-claim describes the repository's dependencies, not the pool. That tree has no slot row, so it
-never skips on a fingerprint, and the final proof still applies: a step that rewrites a tracked
-file leaves a tree the command is never run in.
+claim describes the repository's dependencies, not the pool. The claim is looked up by the
+repository's Git common directory, read from Git when the pool cannot identify the repository,
+for example one whose metadata is relocated. A lookup that fails is infrastructure and the tree
+is removed. Only settings that were read and carry no claim let the command run without one.
+That tree has no slot row, so it never skips on a fingerprint. The final proof still applies to
+a claim that succeeded: a step that rewrites a tracked file, leaves an untracked file Git does
+not ignore, moves HEAD or attaches a branch leaves a tree the command is never run in. A claim
+that failed is reported as a dependency failure with its tail even if it also dirtied the tree,
+because the tree is removed either way.
 
 **A failed claim does not run the check's Command.** The tree goes straight back to the pool, or
 is removed, before the attempt reports anything, and the attempt records a dependency failure

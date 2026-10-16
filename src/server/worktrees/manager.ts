@@ -238,6 +238,48 @@ export type DisposableClaimResult =
   /** The tree cannot be used: the daemon is stopping, or the final proof failed. */
   | { kind: "unproven"; reason: string };
 
+/** The physical Git common directory of a repository, from Git itself, or why it could not be read. */
+async function gitCommonDirectory(
+  repositoryPath: string,
+): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
+  const result = await run(
+    "git",
+    ["-C", repositoryPath, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { timeoutMs: 15_000 },
+  );
+  const reported = result.stdout.trim();
+  if (result.code !== 0 || result.outcomeUnknown || !reported) {
+    return {
+      ok: false,
+      reason: `git rev-parse --git-common-dir failed: ${bounded(result.stderr.trim() || `exit ${result.code}`)}`,
+    };
+  }
+  try {
+    return { ok: true, value: await realpath(reported) };
+  } catch (error) {
+    return { ok: false, reason: `the common directory ${reported} could not be resolved: ${bounded(String(error))}` };
+  }
+}
+
+/**
+ * Null when a disposable check tree is at exactly `sha`, detached, and clean with untracked
+ * files counted, as a slot must be before its grant. Otherwise why not.
+ */
+async function proveDisposableTree(path: string, sha: string): Promise<string | null> {
+  const [head, status, branch] = await Promise.all([
+    run("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
+    run("git", ["-C", path, "status", "--porcelain=v1", "--untracked-files=all"], { timeoutMs: 15_000 }),
+    run("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"], { timeoutMs: 15_000 }),
+  ]);
+  if (head.code !== 0 || head.outcomeUnknown || status.code !== 0 || status.outcomeUnknown || branch.outcomeUnknown) {
+    return "the check worktree's state could not be read";
+  }
+  if (head.stdout.trim() !== sha) return "the check worktree is no longer at its exact commit";
+  if (status.stdout.trim() !== "") return "the check worktree failed its cleanliness verification";
+  if (branch.code === 0) return "the check worktree has a branch attached";
+  return null;
+}
+
 /**
  * Tell a caller its claim is about to run. A hook that throws must not fail a claim, or leave a
  * slot reserved behind it, so its error is logged and dropped.
@@ -1085,13 +1127,17 @@ export class WorktreeManager {
   /**
    * The pool's claim, run against a tree the pool does not own: the cold, disposable worktree
    * a check falls back to when the pool refuses it. The same steps, environment, deadline, Stop
-   * and shutdown rules as a slot's claim, and the same final proof afterwards. What it lacks is
-   * a slot row, so there is no fingerprint to skip on and nothing durable to write ahead: the
-   * tree was created for this one attempt and is removed with it.
+   * and shutdown rules as a slot's claim. What it lacks is a slot row, so there is no
+   * fingerprint to skip on and nothing durable to write ahead: the tree was created for this
+   * one attempt and is removed with it.
    *
    * Runs whenever the repository's policy carries a claim, whether or not native pooling is
    * enabled for it, since the claim describes the repository's dependencies rather than the
-   * pool. A repository whose identity or policy cannot be read here has no claim to run.
+   * pool. It fails closed: a repository whose common directory or policy cannot be read is
+   * `unproven`, never `none`, because only a policy that was read and has no claim says the
+   * Command may run without one. The common directory comes from the pool's own identity when
+   * that resolves, and from Git otherwise, so a repository the pool refuses because its
+   * metadata is relocated still finds the claim configured for it.
    */
   async claimDisposableTree(input: {
     repositoryPath: string;
@@ -1100,13 +1146,24 @@ export class WorktreeManager {
     owner: WorktreeOwner;
     onClaimStart?: () => void;
   }): Promise<DisposableClaimResult> {
-    const identity = this.identity(input.repositoryPath);
-    if (!identity) return { kind: "none" };
+    const pooled = this.identity(input.repositoryPath)?.gitCommonDirectory;
+    const commonDirectory = pooled
+      ? { ok: true as const, value: pooled }
+      : await gitCommonDirectory(input.repositoryPath);
+    if (!commonDirectory.ok) {
+      return {
+        kind: "unproven",
+        reason: `the repository's dependency claim could not be looked up: ${commonDirectory.reason}`,
+      };
+    }
     let claim: WorktreeClaim | null;
     try {
-      claim = this.deps.resolvePolicy(identity.gitCommonDirectory).claim ?? null;
-    } catch {
-      return { kind: "none" };
+      claim = this.deps.resolvePolicy(commonDirectory.value).claim ?? null;
+    } catch (error) {
+      return {
+        kind: "unproven",
+        reason: `the repository's dependency claim could not be looked up: ${bounded(String(error))}`,
+      };
     }
     if (!claim) return { kind: "none" };
     // Keyed by the tree's path, which no slot id can equal. Maintenance and the slot view look
@@ -1126,28 +1183,20 @@ export class WorktreeManager {
         onStep: (step) => this.claims.progress(key, control, step),
       });
       if (!outcome.ok && this.claims.stopping) return { kind: "unproven", reason: STOPPED_REASON };
-      // The same proof a slot takes before its grant: a step that rewrote a tracked file or
-      // attached a branch has left a tree the command must not be run in.
-      const inspection = await this.deps.git.inspect(input.path);
-      if (
-        !inspection.ok ||
-        inspection.value.path !== input.path ||
-        inspection.value.commonDirectory !== identity.gitCommonDirectory ||
-        inspection.value.head !== input.baseSha ||
-        inspection.value.dirty ||
-        !inspection.value.detached
-      ) {
-        return {
-          kind: "unproven",
-          reason: inspection.ok
-            ? "the check worktree failed path, repository, exact HEAD, cleanliness, or detached-HEAD verification after its dependency claim"
-            : inspection.reason,
-        };
+      if (!outcome.ok) {
+        // A failed claim is reported as one, with its tail, even when the step also left the
+        // tree dirty: the Command does not run either way, and the tree is removed with the
+        // attempt, so the proof below has nothing left to protect.
+        const summary = describeClaimFailure(outcome.warning).split("\n", 1)[0];
+        console.warn(`[worktrees] dependency claim failed in ${input.path}: ${summary}`);
+        return { kind: "failed", warning: outcome.warning, fingerprintPaths: [...claim.fingerprintPaths] };
       }
-      if (outcome.ok) return { kind: "succeeded" };
-      const summary = describeClaimFailure(outcome.warning).split("\n", 1)[0];
-      console.warn(`[worktrees] dependency claim failed in ${input.path}: ${summary}`);
-      return { kind: "failed", warning: outcome.warning, fingerprintPaths: [...claim.fingerprintPaths] };
+      // The same proof a slot takes before its grant, asked of Git directly because this tree
+      // is not the pool's: a step that rewrote a tracked file, left an untracked file Git does
+      // not ignore, moved HEAD or attached a branch has left a tree the Command must not run in.
+      const proof = await proveDisposableTree(input.path, input.baseSha);
+      if (proof) return { kind: "unproven", reason: `${proof} after its dependency claim` };
+      return { kind: "succeeded" };
     } finally {
       this.claims.unregister(key, control);
     }
