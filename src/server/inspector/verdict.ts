@@ -157,6 +157,12 @@ export interface PlanInput {
    * the repository on the allowlist, and not just `mode`. Only a live round carries drafts.
    */
   live: boolean;
+  /**
+   * Fingerprints of the open rows the review prompt listed (`promptedOpenRows`). A draft is
+   * carried only when it is here: the model is asked to resolve a draft the push fixed, and
+   * it cannot do that for one the prompt cut for length.
+   */
+  prompted: ReadonlySet<string>;
   maxComments: number;
   /** The round being planned - stamped into each new row and each marker. */
   round: number;
@@ -328,6 +334,7 @@ export function planReview(input: PlanInput): ReviewPlan {
  * fixed it, so posting it falls to this function, deterministically, through the same checks
  * a new finding gets:
  *
+ *  - the prompt listed it (`input.prompted`), so the model had the chance to resolve it;
  *  - the model neither resolved it nor raised it again (a raise is a new finding, posted by
  *    the loop above, and the refusal cap does not apply to it);
  *  - its path is still in this diff (layer 4), and its line snaps to a commentable one. A
@@ -344,6 +351,7 @@ function carriedDrafts(input: PlanInput, raised: Set<string>): PlannedComment[] 
   const out: PlannedComment[] = [];
   for (const row of input.existing.values()) {
     if (row.status !== "drafted") continue;
+    if (!input.prompted.has(row.fingerprint)) continue;
     if (raised.has(row.fingerprint) || resolved.has(row.fingerprint)) continue;
     if ((row.postRefusals ?? 0) >= INSPECTOR_LIMITS.maxPostRefusals) continue;
     if (row.path === null || row.body === null) continue;

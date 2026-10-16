@@ -185,6 +185,7 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 const { fingerprint } = await import("../src/server/inspector/marker.ts");
+const { REVIEW_PROMPT_CAPS } = await import("../src/server/inspector/prompt.ts");
 
 interface FakeGithubState {
   headSha: string;
@@ -546,6 +547,32 @@ test("a response lost during isolation never counts as a refusal", async () => {
   assert.equal(rows.get("Third draft")!.status, "drafted", "not yet tried, so a draft again");
   for (const row of rows.values()) assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
   assertRoundFailed(key);
+});
+
+test("a draft the prompt cut for length is not posted, because the model never saw it", async () => {
+  const key = adopt(718);
+  const fps = seedDrafts(key, [{ title: "Draft below the prompt cut", severity: "minor" }]);
+  // Posted findings of higher severity fill every row the review prompt lists, so the draft,
+  // otherwise eligible to be carried, is cut from the prompt.
+  for (let i = 0; i < REVIEW_PROMPT_CAPS.openRows; i++) {
+    upsertInspectorComment({
+      id: `posted-${i}`, prKey: key, fingerprint: `posted-fp-${i}`, path: "src/example.ts", line: 1,
+      title: `Posted finding ${i}`, body: "Already on GitHub.", severity: "major", round: 1,
+      status: "open", replies: 0, answeredCommentId: null, postedAt: 1, createdAt: 100 + i, updatedAt: 100 + i,
+    });
+  }
+  writeGithubState();
+  goLive();
+  await runOneSweep();
+
+  assert.equal(reviewCount(), 1, "the switch to live still forced the re-review");
+  const prompt = readFileSync(`${reviewCountPath}.1.prompt`, "utf8");
+  assert.ok(!prompt.includes(fps.get("Draft below the prompt cut")!), "the draft was cut from the prompt");
+  assert.equal(readGithubState().attempts.length, 0, "so it was not carried, and nothing was posted");
+  const draft = byTitle(key).get("Draft below the prompt cut")!;
+  assert.equal(draft.status, "drafted");
+  assert.equal(draft.postRefusals, 0);
+  assertRoundFinished(key);
 });
 
 test("a draft at the refusal cap, and a draft whose file left the diff, are not offered", async () => {

@@ -140,6 +140,24 @@ export interface ReviewPromptInput {
   flakeSummary?: FlakeReport | null;
 }
 
+/**
+ * The open rows the review prompt actually lists: most severe first, newest first within a
+ * severity, cut to `REVIEW_PROMPT_CAPS.openRows`.
+ *
+ * One definition, because the planner depends on it as much as the prompt does. A drafted
+ * row is carried into a live round only when the model was shown it and still said nothing,
+ * so "shown" has to mean exactly the rows this returns. A draft cut for length was never
+ * put in front of the model, which therefore never had the chance to say the push fixed it.
+ */
+export function promptedOpenRows(open: readonly InspectorComment[]): InspectorComment[] {
+  return [...open]
+    .sort(
+      (a, b) =>
+        SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.updatedAt - a.updatedAt,
+    )
+    .slice(0, REVIEW_PROMPT_CAPS.openRows);
+}
+
 export function buildReviewPrompt(input: ReviewPromptInput): string {
   const lines: string[] = [POLICY, ""];
 
@@ -199,12 +217,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
   lines.push("", ...shownPaths.map((p) => `- ${p}`), "");
 
   if (input.open.length) {
-    const shownOpen = [...input.open]
-      .sort(
-        (a, b) =>
-          SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.updatedAt - a.updatedAt,
-      )
-      .slice(0, REVIEW_PROMPT_CAPS.openRows);
+    const shownOpen = promptedOpenRows(input.open);
     const omittedOpen = input.open.length - shownOpen.length;
     if (omittedOpen > 0) {
       lines.push(

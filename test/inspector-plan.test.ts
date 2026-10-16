@@ -38,6 +38,8 @@ function base(over: Partial<PlanInput> = {}): PlanInput {
     threads: new Map(),
     newId: () => `id-${++ids}`,
     ...over,
+    // By default the prompt listed every seeded row, as it does below its length cap.
+    prompted: over.prompted ?? new Set(over.existing?.keys() ?? []),
   };
 }
 
@@ -498,6 +500,16 @@ test("carried drafts share the cap, new findings first at equal severity", () =>
   assert.deepEqual(plan.inline.map((c) => c.title), ["Carried blocker", "New major"]);
   assert.equal(plan.droppedOverCap, 1, "the carried major is held back, and the body says so");
   assert.match(plan.body, /held back/);
+});
+
+test("a draft the prompt cut for length is not carried, since the model never saw it", () => {
+  const shown = draft({ title: "Listed in the prompt" });
+  const cut = draft({ title: "Cut from the prompt" });
+  const plan = planReview(base({
+    existing: existingOf(shown, cut),
+    prompted: new Set([shown.fingerprint]),
+  }));
+  assert.deepEqual(plan.inline.map((c) => c.title), ["Listed in the prompt"]);
 });
 
 test("a carried draft is scrubbed on the way out like any other comment", () => {

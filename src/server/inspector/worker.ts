@@ -36,7 +36,7 @@ import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts
 import { readBrief } from "./brief.ts";
 import { inspectorDenyPaths } from "./deny-paths.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
-import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
+import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
 import {
   CLEAN_REVIEW_FINGERPRINT,
   formatMarker,
@@ -971,6 +971,7 @@ async function reviewRound(
   const plan = planReview({
     mode: cfg.mode,
     live: post,
+    prompted: new Set(promptedOpenRows(open).map((c) => c.fingerprint)),
     maxComments: cfg.maxCommentsPerRound,
     round,
     verdict: result.value as InspectorVerdict,
