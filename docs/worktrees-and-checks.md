@@ -390,9 +390,9 @@ whatever an older configuration's seed left behind.
   identity or marker cannot be proven still loses its leftover staging, because removing it
   touches no checkout. It is removed only when the pool's directory lies inside the daemon's
   pools directory and the staging root is a real directory there, never a symlink.
- A step's process group that
-outlived the daemon still has its working directory inside the slot. The occupancy check
-therefore sees it, and the slot is never handed out while it runs.
+
+A claim step's process group that outlived the daemon still has its working directory inside
+the slot. The occupancy check therefore sees it, and the slot is never handed out while it runs.
 
 **Maintenance and shutdown.** The manager keeps an in-memory registry of the claims running
 right now. Periodic maintenance skips a slot whose claim is running instead of waiting for it,
