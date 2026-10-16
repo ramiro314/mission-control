@@ -578,6 +578,15 @@ export class WorktreeManager {
      * manual leases keep their behavior until their own change.
      */
     runClaim?: boolean;
+    /**
+     * Whether the owner still wants the claim, read once, right after the claim is registered.
+     * False stops it before any step runs, as a Stop would. A task dispatch passes "the task is
+     * still dispatching": a cancel that lands before registration finds no claim to stop, so
+     * this is what keeps such a claim from running its whole timeout. Registering first and
+     * asking second leaves no gap, because a cancel that lands after the question finds the
+     * claim already in the registry.
+     */
+    claimWanted?: () => boolean;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -761,6 +770,10 @@ export class WorktreeManager {
       // Shutdown began between the check above and the reservation. Startup quarantines the
       // provisioning reservation; nothing was granted and nothing ran.
       return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
+    }
+    if (claimControl && input.claimWanted && !input.claimWanted()) {
+      console.warn(`[worktrees] dependency claim stopped in slot ${reservation.id}: its owner no longer wants it`);
+      claimControl.abort("stopped");
     }
     return this.withSlot(reservation.id, async () => {
       try {

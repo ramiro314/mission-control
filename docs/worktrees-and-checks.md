@@ -260,7 +260,12 @@ finished.
 
 Cancelling a task whose dispatch is waiting on a claim stops that claim too, once the task is
 recorded as cancelled. The stopped claim hands its slot over at once, the dispatch finds the
-task settled, and it tears the tree down exactly as it does for any cancel it notices. A task
+task settled, and it tears the tree down exactly as it does for any cancel it notices. A cancel
+can also land before a tree's claim is registered, while the dispatch is still preparing or the
+pool is still choosing a slot, and then finds nothing to stop. So each task lease asks once its
+claim is registered whether the task is still dispatching, and stops the claim before any step
+runs when it is not. Because the claim registers before it asks, a cancel landing either side
+of that question stops it. A task
 with attached repositories provisions them one at a time, and stops provisioning further
 repositories once the task is no longer dispatching, so no later repository's claim starts in
 place of the stopped one. Seeding does not exist yet, so a Stop or a cancel always lands during

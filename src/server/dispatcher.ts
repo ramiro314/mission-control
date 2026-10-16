@@ -2101,6 +2101,9 @@ export class Dispatcher {
     /** Every tree whose dependency claim failed, primary first, for the launch prompt. */
     claimWarnings: Array<{ repoRoot: string; path: string; warning: WorktreeClaimWarning }>;
   }> {
+    // A cancel that lands before a tree's claim registers cannot stop that claim, so each
+    // acquire asks once the claim is registered whether this dispatch is still wanted.
+    const claimStillWanted = (): boolean => this.stillDispatching(taskId);
     const primary = await provisionWorktree(
       task.repoRoot,
       taskId,
@@ -2109,6 +2112,7 @@ export class Dispatcher {
       bases.primary,
       0,
       this.worktrees,
+      claimStillWanted,
     );
     const taken: Array<{ repoRoot: string; position: number; wt: ProvisionedWorktree }> = [
       { repoRoot: task.repoRoot, position: 0, wt: primary },
@@ -2135,6 +2139,7 @@ export class Dispatcher {
           bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
+          claimStillWanted,
         );
         taken.push({ repoRoot: entry.repoRoot, position: index + 1, wt });
         extras.push({
@@ -2484,6 +2489,11 @@ export async function provisionWorktree(
    */
   slot = 0,
   manager?: WorktreeManager,
+  /**
+   * Whether the dispatch still wants this tree's dependency claim, asked once the claim is
+   * registered. A cancel that lands before then finds no claim to stop; this stops it instead.
+   */
+  claimWanted?: () => boolean,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -2507,6 +2517,7 @@ export async function provisionWorktree(
       owner: { kind: "task", key: `${taskId}:${slot}` },
       awaitingDomainRecord: true,
       runClaim: true,
+      ...(claimWanted ? { claimWanted } : {}),
     });
     if (acquired.outcome === "acquired") {
       return {

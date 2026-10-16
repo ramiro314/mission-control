@@ -72,15 +72,22 @@ const SLEEPER = [
     `fs.writeFileSync("deps/leader.pid",String(process.pid));setInterval(()=>{},1000);`,
 ];
 
-function claimManager(maxSlots = 2): WorktreeManagerT {
+/**
+ * `onResolvePolicy` runs inside `acquire` before the claim is registered, synchronously, which is
+ * the one deterministic place a test can land something in that window.
+ */
+function claimManager(maxSlots = 2, onResolvePolicy: () => void = () => {}): WorktreeManagerT {
   return new WorktreeManager(undefined, {
     occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
-    resolvePolicy: () => ({
-      enabled: true,
-      maxSlots,
-      setupArgv: null,
-      claim: WorktreeClaimSchema.parse({ steps: [{ argv: SLEEPER }] }),
-    }),
+    resolvePolicy: () => {
+      onResolvePolicy();
+      return {
+        enabled: true,
+        maxSlots,
+        setupArgv: null,
+        claim: WorktreeClaimSchema.parse({ steps: [{ argv: SLEEPER }] }),
+      };
+    },
   });
 }
 
@@ -244,6 +251,33 @@ test("Stop kills the claim's process group and hands the slot over as a failed c
   assert.equal(slot.depsFingerprint, null);
   assert.equal(m.claims.has(slot.id), false);
   assert.equal(m.stopClaim(slot.id, running.claim.id), null, "a finished claim cannot be stopped");
+});
+
+test("an owner that no longer wants its claim stops it before any step runs", async () => {
+  const { repo, sha } = seedRepo();
+  const m = claimManager();
+  let asked = 0;
+  const result = await m.acquire({
+    repositoryPath: repo,
+    baseSha: sha,
+    owner: { kind: "task", key: "task-unwanted:0" },
+    runClaim: true,
+    claimWanted: () => {
+      asked += 1;
+      // Asked after registration: the claim is already there for a cancel to find.
+      assert.equal(m.runningTaskClaim("task-unwanted")?.claim.slotId !== undefined, true);
+      return false;
+    },
+  });
+  assert.equal(asked, 1);
+  assert.equal(result.outcome, "acquired", JSON.stringify(result));
+  assert.ok(result.outcome === "acquired");
+  assert.equal(result.claimWarning?.reason, "stopped before it started");
+  assert.equal(existsSync(join(result.lease.path, "deps", "leader.pid")), false, "no step ever ran");
+  const slot = m.store.slots()[0]!;
+  assert.equal(slot.state, "leased", "the slot is handed over as a failed claim, not quarantined");
+  assert.equal(slot.depsState, "failed");
+  assert.equal(slot.depsFingerprint, null);
 });
 
 // ---- the task card and task cancel ----
@@ -417,6 +451,46 @@ test("a cancel during the primary repository's claim starts no attached reposito
     () => worktrees.store.slots().every((slot) => slot.state === "available"),
     "the primary's slot to return to the pool",
   );
+});
+
+test("a cancel that lands before the claim registers still stops it before any step runs", async (t) => {
+  const { repo, sha } = seedRepo();
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  const id = "task-claim-cancel-early";
+  // The cancel lands inside `acquire`, before the claim is registered: the task is settled, and
+  // the cancel's own stop finds nothing to stop. Without the dispatch's `claimWanted` check, the
+  // claim would then register and run its never-ending step to the claim's timeout.
+  let cancelledEarly: unknown[] | null = null;
+  const worktrees = claimManager(2, () => {
+    const task = registry.getTask(id);
+    if (cancelledEarly !== null || task?.status !== "dispatching") return;
+    registry.upsertTask({ ...task, status: "cancelled", completedAt: Date.now() });
+    cancelledEarly = worktrees.stopTaskClaims(id);
+  });
+  const { manager, supervisor, dispatcher } = taskManagerFor(registry, worktrees);
+  t.after(() => manager.stop());
+  t.after(() => worktrees.stopClaims());
+  registry.upsertTask(mkTask({ id, status: "dispatching", repoRoot: repo, agent: "claude", intent: "never runs" }));
+
+  await settlesWithin(
+    dispatcher.dispatch(id, { baseSha: sha }),
+    60_000,
+    "the claim registered after the cancel ran its step instead of stopping",
+  );
+  assert.deepEqual(cancelledEarly, [], "the cancel's own stop found no claim to stop");
+
+  const slot = worktrees.store.slots()[0]!;
+  assert.equal(existsSync(join(slot.path, "deps", "leader.pid")), false, "no claim step ever started");
+  const task = registry.getTask(id)!;
+  assert.equal(task.status, "cancelled");
+  assert.equal(task.worktreePath, null, `the dispatch tore down the tree it was handed: ${task.error}`);
+  assert.equal(supervisor.starts.length, 0, "nothing launched into a cancelled task");
+  await waitFor(
+    () => worktrees.store.slots().every((entry) => entry.state === "available"),
+    "the slot to return to the pool",
+  );
+  assert.equal(worktrees.store.slots()[0]!.depsState, "failed");
 });
 
 test("a dispatching task without a running claim step carries no provisioning key at all", () => {
