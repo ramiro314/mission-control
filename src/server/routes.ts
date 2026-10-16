@@ -105,6 +105,7 @@ import {
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
+  StopWorktreeClaimSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -1913,6 +1914,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return worktreeOperations.dismiss(c.req.param("id"))
       ? c.json({ ok: true })
       : c.json({ error: "no failed worktree operation has that id" }, 404);
+  });
+
+  // Stop a running dependency claim, from its slot card or from the task card of the dispatch
+  // waiting on it. Found through the claim registry by slot and claim id; the step's process
+  // group is killed and the claim fails, so its lease is granted with the warning and the
+  // dispatch continues. 404 when that claim is no longer running.
+  app.post("/api/worktrees/:slotId/claim/stop", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, StopWorktreeClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const stopped = worktreeOperations.manager.stopClaim(c.req.param("slotId"), parsed.data.claimId);
+    return stopped
+      ? c.json({ ok: true })
+      : c.json({ error: "that dependency claim is no longer running" }, 404);
   });
 
   app.post("/api/worktrees/:slotId/open", async (c) => {

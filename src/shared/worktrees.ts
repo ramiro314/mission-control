@@ -121,6 +121,8 @@ export type WorktreeSlotDependenciesView =
     })
   | (WorktreeSlotDependenciesBase & {
       state: "installing";
+      /** The running claim's own id, which Stop names so it can only ever stop this claim. */
+      claimId: string;
       /** When this claim began, for its elapsed time. */
       startedAt: number;
       /** Null until the first step starts: the fingerprint is still being read. */

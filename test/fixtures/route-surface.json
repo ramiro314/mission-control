@@ -290,6 +290,7 @@
   "POST /api/workflows/:id/publish": "503 {\"error\":\"Workflow manager unavailable\"}",
   "POST /api/workflows/:id/unarchive": "503 {\"error\":\"Workflow manager unavailable\"}",
   "POST /api/workflows/:id/validate": "503 {\"error\":\"Workflow manager unavailable\"}",
+  "POST /api/worktrees/:slotId/claim/stop": "503 {\"error\":\"worktree operations unavailable\"}",
   "POST /api/worktrees/:slotId/open": "503 {\"error\":\"worktree operations unavailable\"}",
   "POST /api/worktrees/actions/execute": "503 {\"error\":\"worktree operations unavailable\"}",
   "POST /api/worktrees/actions/preview": "503 {\"error\":\"worktree operations unavailable\"}",

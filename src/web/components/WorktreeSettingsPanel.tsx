@@ -34,6 +34,7 @@ import {
   type ClaimDraftErrors,
   type ClaimStepDraft,
 } from "../lib/worktree-claim-draft.ts";
+import { ClaimStopButton, formatElapsed, useNow } from "./ClaimProgress.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -216,27 +217,6 @@ function CapacityLegend({ geometry }: { geometry: CapacityGeometry }): React.JSX
   );
 }
 
-/** `m:ss`, or `h:mm:ss` past an hour. Never negative, whatever the two clocks say. */
-export function formatElapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const seconds = String(total % 60).padStart(2, "0");
-  const minutes = Math.floor(total / 60) % 60;
-  const hours = Math.floor(total / 3600);
-  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
-}
-
-/** The wall clock, ticking once a second while `active`, so an elapsed time counts up between inventory reads. */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return now;
-}
-
 const DEPENDENCY_CHIPS: Record<WorktreeSlotDependencyState, { label: string; tone: string }> = {
   never: { label: "never installed", tone: "neutral" },
   current: { label: "current", tone: "ready" },
@@ -248,10 +228,12 @@ const DEPENDENCY_CHIPS: Record<WorktreeSlotDependencyState, { label: string; ton
 
 /** What one dependency state says beneath its chip. Exhaustive over the view's states. */
 function DependencyDetail({
+  slotId,
   ordinal,
   dependencies,
   now,
 }: {
+  slotId: string;
   ordinal: number;
   dependencies: WorktreeSlotDependenciesView;
   now: number;
@@ -287,6 +269,13 @@ function DependencyDetail({
               <code className="wt-deps-clamp" aria-label={`Running command: ${dependencies.step.command}`}>{dependencies.step.command}</code>
             </Tooltip>
           )}
+          <div className="wt-deps-actions">
+            <ClaimStopButton
+              slotId={slotId}
+              claimId={dependencies.claimId}
+              label={`Stop slot ${ordinal} dependency claim`}
+            />
+          </div>
         </>
       );
     case "failed": {
@@ -329,9 +318,11 @@ function DependencyDetail({
  * never asks the daemon to fetch.
  */
 function SlotDependencies({
+  slotId,
   ordinal,
   dependencies,
 }: {
+  slotId: string;
   ordinal: number;
   dependencies: WorktreeSlotDependenciesView;
 }): React.JSX.Element {
@@ -346,7 +337,7 @@ function SlotDependencies({
           <span className="wt-deps-commit">at <code>{shortSha(dependencies.fingerprintSha)}</code></span>
         )}
       </div>
-      <DependencyDetail ordinal={ordinal} dependencies={dependencies} now={now} />
+      <DependencyDetail slotId={slotId} ordinal={ordinal} dependencies={dependencies} now={now} />
     </section>
   );
 }
@@ -430,7 +421,7 @@ function SlotCard({
         <div><dt>Processes</dt><dd>{slot.processes.count ?? "unknown"}</dd></div>
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
-      {slot.dependencies && <SlotDependencies ordinal={slot.ordinal} dependencies={slot.dependencies} />}
+      {slot.dependencies && <SlotDependencies slotId={slot.id} ordinal={slot.ordinal} dependencies={slot.dependencies} />}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>

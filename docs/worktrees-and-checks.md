@@ -248,6 +248,35 @@ the next pass retries it. Shutdown kills every running claim's process group bef
 else stops, and grants no claimed lease from then on. The slot is left `provisioning` with
 `deps_state = claiming`, and the next startup recovers it as above.
 
+**Stop and task cancel.** A running claim can be stopped from its slot card in Settings and from
+the task card of the dispatch waiting on it. Both send `POST /api/worktrees/:slotId/claim/stop`
+with the running claim's own id, so a Stop can never land on a later claim in the same slot. The
+manager finds the claim through its claim registry, sends SIGTERM to the step's process group
+(SIGKILL after five seconds), and fails the claim with the reason "was stopped". The slot is
+handed over as for any failed claim: the lease is granted with the warning, `deps_state`
+becomes `failed`, and the next claim reruns the steps in place. The dispatch then continues and
+launches its agent with the warning note. A route answer of 404 means that claim had already
+finished.
+
+Cancelling a task whose dispatch is waiting on a claim stops that claim too, once the task is
+recorded as cancelled. The stopped claim hands its slot over at once, the dispatch finds the
+task settled, and it tears the tree down exactly as it does for any cancel it notices. A task
+with attached repositories provisions them one at a time, and stops provisioning further
+repositories once the task is no longer dispatching, so no later repository's claim starts in
+place of the stopped one. Seeding does not exist yet, so a Stop or a cancel always lands during
+a step and always records `failed`.
+
+**What the task shows.** While a dispatch waits on a claim step, its placeholder in the Board's
+and the Console rail's Working group says **Installing dependencies**, with the step, the
+elapsed time and **Stop**, in place of "Provisioning its worktree". It is the task's
+`provisioning` field, a projection of the claim registry that the daemon derives on every
+`task_upsert` and re-sends as the claim starts a step or ends. It is never stored, so a restart
+drops it with the claim. A dispatching task stays `dispatching` while it claims, so Foreman keeps
+counting it against its session limit. After the lease, each failed claim is recorded on the task
+as `claimWarnings` (the `tasks.claim_warnings` column, cleared by the next dispatch), and the
+session's task band shows it as **Dependency install failed in `<repository>`**, with the step,
+its reason, the command and the output tail.
+
 **Editing a claim and watching it.** Open a pool's disclosure in **Settings > Worktrees** to
 edit its claim under **Dependency claim, run on every task lease**:
 
@@ -270,7 +299,7 @@ Each slot card of a pool with a claim shows the slot's dependency state:
 | never installed | No claim has run in this slot. Its next task lease runs every step. |
 | current | The last claim succeeded, and its fingerprint matches the claim's fingerprint at the fetched default branch. Also shown when no default can be read, or when the claim lists no fingerprint paths, since neither is evidence of staleness. |
 | stale | The last claim succeeded, but the fetched default branch's fingerprint differs from the slot's. The next lease runs the claim again. |
-| installing | A claim is running in the slot right now, with its step, its command and the elapsed time. |
+| installing | A claim is running in the slot right now, with its step, its command, the elapsed time and **Stop**. |
 | failed | The last claim failed, timed out or was stopped. The card shows the failing step, its reason, its command and the output tail, with claim variable values redacted. |
 | interrupted | A restart cut off the slot's last claim. Its next claim starts cold. |
 

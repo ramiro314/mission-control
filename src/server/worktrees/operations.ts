@@ -248,6 +248,7 @@ export function slotDependencies(input: {
     return {
       ...base,
       state: "installing",
+      claimId: running.id,
       startedAt: running.startedAt,
       step: running.step
         ? {

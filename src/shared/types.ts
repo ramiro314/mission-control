@@ -2223,6 +2223,48 @@ export interface TaskAutomaticCleanup {
   detail: string | null;
 }
 
+/**
+ * A dispatch waiting on a pool's dependency claim: which repository's tree, which step, and
+ * since when. `slotId` and `claimId` are what Stop names, so a Stop can only ever stop the
+ * claim this view describes.
+ */
+export interface TaskProvisioning {
+  phase: "installingDependencies";
+  /** The repository whose worktree is claiming: the task's primary, or an attached one. */
+  repoRoot: string;
+  slotId: string;
+  claimId: string;
+  /** When the claim began, for its elapsed time. */
+  startedAt: number;
+  step: {
+    /** 1-based, of `stepCount`. */
+    step: number;
+    stepCount: number;
+    /** The step's command as text, cut to a fixed bound. */
+    command: string;
+    startedAt: number;
+  };
+}
+
+/**
+ * A dependency claim that failed in one of a task's worktrees, field by field. Claim variable
+ * values were removed from `reason` and `tail` before the claim reported them.
+ */
+export interface TaskClaimWarning {
+  repoRoot: string;
+  /** 1-based, of `stepCount`. */
+  step: number;
+  stepCount: number;
+  /** The failing step's command as text, cut to a fixed bound. */
+  command: string;
+  /** What happened to it, as a phrase: "exited with code 1", "was stopped". */
+  reason: string;
+  /** The step's last output. Empty when it printed nothing. */
+  tail: string;
+  /** Output bytes dropped from the front of the tail. */
+  truncatedBytes: number;
+}
+
 export interface Task {
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
@@ -2474,6 +2516,23 @@ export interface Task {
    * `task_upsert` it publishes, and re-sends the source whenever one of its follow-ups moves.
    */
   shapeTickets?: TaskShapeTickets | null;
+  /**
+   * What this task's dispatch is waiting on while it provisions, or null when it waits on
+   * nothing worth naming. Present only while a pool's dependency claim runs a step in one of
+   * its worktrees.
+   *
+   * A projection of the worktree manager's claim registry, never a column: the server derives
+   * it on every `task_upsert` it publishes and re-sends the task as the claim moves, so it
+   * needs no event of its own. A restart drops it with the claim, and the dispatch's existing
+   * recovery reports the outcome.
+   */
+  provisioning?: TaskProvisioning | null;
+  /**
+   * Every worktree of this task whose dependency claim failed when it was leased, primary
+   * first. The trees were handed over anyway, and the agent's launch prompt names the same
+   * failures. Missing or empty when every claim succeeded or none ran; a new dispatch clears it.
+   */
+  claimWarnings?: TaskClaimWarning[];
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2609,6 +2668,11 @@ export interface TaskSummary {
    * see. This list includes it.
    */
   repoPrs: TaskRepoPrSummary[];
+  /**
+   * `Task.claimWarnings`, carried to the session card. Absent, never empty, when no claim
+   * failed, so every other card's payload is what it was before claims existed.
+   */
+  claimWarnings?: TaskClaimWarning[];
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
