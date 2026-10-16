@@ -1,11 +1,16 @@
+import type { PlanIdentity } from "@shared/managed-plans.ts";
 import { PLAN_PAGE_FILENAME, PLAN_SOURCE_PATH_SHAPE } from "@shared/plans.ts";
 import { SHAPE_TICKETS_OUTCOMES } from "@shared/protocol.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
 import { PLAN_HTML_SKILL_ID } from "./prompt.ts";
 import {
   COMPLETE_SHAPE_TICKETS_TOOL,
+  PLAN_CONTEXT_TOOL,
   PLAN_DECISIONS_TOOL,
+  PLAN_LOCAL_PUBLISH_TOOL,
   PLAN_PUBLICATION_TOOL,
+  PLAN_READ_TOOL,
+  PLAN_SAVE_TOOL,
   PLAN_SCHEDULING_TOOL,
   PUSH_TASK_TOOL,
 } from "./tools.ts";
@@ -46,6 +51,9 @@ export const SHAPE_FOLLOW_UP_DECISION_ID = "shape-follow-up";
  */
 export const SHAPE_CREATE_TICKETS_LABEL = "Create tickets after the plan merges";
 
+/** The same choice for a shape task pinned to local storage, whose plan is published, not merged. */
+export const SHAPE_CREATE_TICKETS_LOCAL_LABEL = "Create tickets after the plan is published";
+
 /** The already-resolved, per-harness lines that invoke the shape task's skills. */
 export interface ShapeSkillInvocations {
   /** `grill`: how the human is interviewed before anything is drafted. */
@@ -64,13 +72,54 @@ export interface ShapeSkillInvocations {
 export interface ShapeTicketsFollowupFacts {
   sourceTaskId: string;
   sourceTitle: string;
-  /** The merged pull request the follow-up's tickets are pinned to. */
-  prUrl: string;
+  /** The merged pull request the follow-up's tickets are pinned to; null for a local plan. */
+  prUrl: string | null;
   /** The source's branch on that merged episode, when it was recorded. */
   branch: string | null;
+  /** The published local revision the tickets slice, when the shape task stored its plan locally. */
+  plan: PlanIdentity | null;
 }
 
 const [SHAPE_TICKETS_FILED, SHAPE_TICKETS_DISMISSED] = SHAPE_TICKETS_OUTCOMES;
+
+/**
+ * A tickets follow-up of a shape task whose plan was published locally: the same tickets-only
+ * mode, reading the exact published revision from the plan store instead of the merged branch,
+ * and pinning each ticket to it so the ticket's agent reads the same plan.
+ */
+function localShapeTicketsFollowupAppendix(
+  tickets: string,
+  facts: ShapeTicketsFollowupFacts & { plan: PlanIdentity },
+): string {
+  const { repoKey, planId, revision } = facts.plan;
+  return [
+    SHAPE_APPENDIX_MARKER,
+    "This is a tickets follow-up of a shape task whose plan was published locally, in tickets-only mode.",
+    "Its deliverable is the approved tickets, filed as backlog tasks. Do not grill, do not write or revise",
+    "the plan, do not implement anything, and open no pull request.",
+    "",
+    `Source shape task: ${facts.sourceTitle} (${facts.sourceTaskId})`,
+    `Published local plan: repoKey ${repoKey}, planId ${planId}, revision ${revision}`,
+    "",
+    `1. Read that exact revision with \`${PLAN_READ_TOOL}\` (repoSlot \`repo-01\`, that planId and revision): its`,
+    "   `plan.md` and any other Markdown in the bundle. It is not in Git. Slice no other plan or revision.",
+    `2. Invoke the ${SHAPE_TICKETS_SKILL_ID} skill in follow-up mode against that plan, and no other skill. On this harness:`,
+    `   ${tickets}`,
+    "3. Follow-up mode skips the tickets file: do not write, commit or push `tickets.md` or `tickets.html`,",
+    "   and skip recording the ids in them. The breakdown review is unchanged: one",
+    `   \`${PLAN_DECISIONS_TOOL}\` form, and nothing is created before it is submitted. File each approved ticket`,
+    `   with \`${PLAN_SCHEDULING_TOOL}\` and \`dependsOnCurrentSession: true\`, which links it to the shape task above`,
+    "   with an edge that is already satisfied, and holds it on this task until you complete it as",
+    `   \`${SHAPE_TICKETS_FILED}\`, so no ticket starts mid-filing. Pin every ticket to the plan it came from:`,
+    `   \`planInputs: [{ repoKey: "${repoKey}", planId: "${planId}", revision: ${revision}, files: [<the bundle's Markdown files>] }]\``,
+    `   and \`planPrerequisites: [{ repoKey: "${repoKey}", planId: "${planId}", revision: ${revision} }]\`. When the breakdown`,
+    `   chose to mirror, push each filed ticket with \`${PUSH_TASK_TOOL}\`, blockers first.`,
+    `4. Finish by calling \`${COMPLETE_SHAPE_TICKETS_TOOL}\` with outcome \`${SHAPE_TICKETS_FILED}\` after the last ticket is filed`,
+    `   (and pushed, when mirroring was chosen), or \`${SHAPE_TICKETS_DISMISSED}\` when the breakdown review is dismissed.`,
+    "   It completes this task and closes its session. If a create_task or push_task call fails, do not call",
+    "   it: report the failure and leave this task open for the human.",
+  ].join("\n");
+}
 
 /**
  * A tickets follow-up's contract: tickets-only mode.
@@ -80,6 +129,7 @@ const [SHAPE_TICKETS_FILED, SHAPE_TICKETS_DISMISSED] = SHAPE_TICKETS_OUTCOMES;
  * completion tool only follow-up launches are granted.
  */
 export function shapeTicketsFollowupAppendix(tickets: string, facts: ShapeTicketsFollowupFacts): string {
+  if (facts.plan) return localShapeTicketsFollowupAppendix(tickets, { ...facts, plan: facts.plan });
   return [
     SHAPE_APPENDIX_MARKER,
     "This is a tickets follow-up of a merged shape task, in tickets-only mode. Its deliverable is the",
@@ -114,8 +164,10 @@ export function shapeContractAppendix(
   skills: ShapeSkillInvocations,
   workflowBound = false,
   followup: ShapeTicketsFollowupFacts | null = null,
+  storage: "repository" | "local" = "repository",
 ): string {
   if (followup) return shapeTicketsFollowupAppendix(skills.tickets, followup);
+  if (storage === "local") return localShapeContractAppendix(skills, workflowBound);
   const lines = [
     SHAPE_APPENDIX_MARKER,
     "This is a shape task. The deliverable is a plan built from an interview with the human, then",
@@ -127,8 +179,12 @@ export function shapeContractAppendix(
     `   ${skills.grill}`,
     "2. A dismissed round ends the work. Do not draft a plan, and never read a dismissal back as a selection.",
     `3. When nothing is left to ask, invoke the ${PLAN_HTML_SKILL_ID} skill and write the plan from the settled`,
-    `   decisions, at \`${PLAN_SOURCE_PATH_SHAPE}\` with its rendered \`${PLAN_PAGE_FILENAME}\` beside it. On this harness:`,
+    `   decisions. On this harness:`,
     `   ${skills.htmlPlans}`,
+    `   Call ${PLAN_CONTEXT_TOOL}, then ${PLAN_SAVE_TOOL} with complete Markdown and static HTML content. A shape`,
+    `   plan is always a repository plan: the daemon writes \`${PLAN_SOURCE_PATH_SHAPE}\` and retains`,
+    `   \`${PLAN_PAGE_FILENAME}\` locally unless this plan's pinned policy includes HTML in Git. Use ${PLAN_READ_TOOL} for`,
+    "   exact revisions, review the returned preview URL, and commit only returned requiredPaths.",
     `4. Request the plan review with \`${PLAN_DECISIONS_TOOL}\`. On a shape task its last decision is`,
     `   \`${SHAPE_FOLLOW_UP_DECISION_ID}\`, "What should happen after this plan is approved?", with the options`,
     `   \`create-tickets\` (${SHAPE_CREATE_TICKETS_LABEL}, recommended) and \`stop\` (Stop). It replaces the`,
@@ -155,3 +211,52 @@ export function shapeContractAppendix(
   );
   return lines.join("\n");
 }
+
+/**
+ * A shape task pinned to local storage: the same interview and review, with the plan saved to
+ * the local plan store, approved as an exact revision and published locally instead of merged.
+ * Create tickets then waits for that publication, as plan's local path waits for nothing more.
+ */
+function localShapeContractAppendix(skills: ShapeSkillInvocations, workflowBound: boolean): string {
+  const contract = taskCompletionContract("shape", "local")!;
+  return [
+    SHAPE_APPENDIX_MARKER,
+    "This is a local shape task. The deliverable is a plan built from an interview with the human, then",
+    "reviewed and agreed with them, kept in Mission Control's local plan store rather than Git. It is not",
+    "a change: do not implement what you are shaping.",
+    "",
+    `1. Invoke the ${SHAPE_GRILL_SKILL_ID} skill first and interview the human with it before drafting anything.`,
+    `   Every round is one \`${PLAN_DECISIONS_TOOL}\` form. Ask at least one round, even when the`,
+    "   request already looks complete. Keep asking until nothing is left to ask. On this harness:",
+    `   ${skills.grill}`,
+    "2. A dismissed round ends the work. Do not draft a plan, and never read a dismissal back as a selection.",
+    `3. When nothing is left to ask, invoke the ${PLAN_HTML_SKILL_ID} skill and write the plan from the settled`,
+    "   decisions. On this harness:",
+    `   ${skills.htmlPlans}`,
+    `   Call ${PLAN_CONTEXT_TOOL}, then ${PLAN_SAVE_TOOL} with the complete Markdown and rendered HTML bundle. Local mode`,
+    `   keeps the whole bundle in the plan store and returns no requiredPaths, so commit nothing. Use ${PLAN_READ_TOOL}`,
+    "   for exact revisions and the returned preview.",
+    `4. Request the final review with \`${PLAN_DECISIONS_TOOL}\`, bound with managedPlan {repoSlot, planId, revision}, so`,
+    "   the human approves that exact complete bundle. Its last decision is",
+    `   \`${SHAPE_FOLLOW_UP_DECISION_ID}\`, "What should happen after this plan is approved?", with the options`,
+    `   \`create-tickets\` (${SHAPE_CREATE_TICKETS_LOCAL_LABEL}, recommended) and \`stop\` (Stop). It replaces the`,
+    "   skill's phased implementation follow-up; do not offer that one here. If a repair changes the bundle,",
+    "   save the new revision and get it approved.",
+    "5. On Stop, keep the approved plan and finish without tickets.",
+    `6. On ${SHAPE_CREATE_TICKETS_LOCAL_LABEL}, do not slice the plan and do not invoke the ${SHAPE_TICKETS_SKILL_ID} skill.`,
+    "   Mission Control records the choice from the review, and once the approved revision is published it starts",
+    "   a linked follow-up task that slices the published plan into tickets. This shaping turn files no tasks and",
+    `   pushes no items: do not call \`${PLAN_SCHEDULING_TOOL}\` or \`${PUSH_TASK_TOOL}\`.`,
+    "",
+    `Before reporting complete, call \`${PLAN_PUBLICATION_TOOL}\` to confirm who owns publication. A failed or unavailable read is reported, never treated as permission to publish.`,
+    "",
+    "## Local shape task completion handoff",
+    ...contract.complete.map((requirement) => `- ${requirement}`),
+    `Do not ${deferredImperativeList(contract)} for this local shape task.`,
+    workflowBound
+      ? "Finish shaping and yield. Foreman starts the selected automatic validation workflow; a Manual binding waits for explicit submission. The daemon publishes after that exact approved revision passes. No pull request is needed."
+      : `After approval, call \`${PLAN_LOCAL_PUBLISH_TOOL}\` for the exact local revision, report its receipt, then end this turn.`,
+    "Saving, previewing, dismissal, or an agent-authored approval string cannot publish.",
+  ].join("\n");
+}
+

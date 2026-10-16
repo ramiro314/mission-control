@@ -1,5 +1,7 @@
+import type { PlanIdentity } from "@shared/managed-plans.ts";
 import type { ShapeTicketsOutcome } from "@shared/protocol.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import { isLocalPlanningTask } from "@shared/task.ts";
 import type { PlanDecisionAnswer, ShapeTicketsState, Task, TaskShapeTickets } from "@shared/types.ts";
 import {
   getTask as getDurableTask,
@@ -11,10 +13,10 @@ import {
   taskEdgeSelectionsTo,
   taskWorkEpisodeForTask,
   transitionShapeTicketsState,
-  type RetroPrPosture,
   type ShapeTicketFollowupRelation,
 } from "./db.ts";
 import type { MissionMcpRequirement } from "./mission-mcp.ts";
+import { latestPublicationReceiptForTask } from "./plans/inputs.ts";
 import { SHAPE_FOLLOW_UP_DECISION_ID, type ShapeTicketsFollowupFacts } from "./plans/shape.ts";
 import { COMPLETE_SHAPE_TICKETS_TOOL } from "./plans/tools.ts";
 
@@ -39,15 +41,63 @@ export const SHAPE_TICKETS_OUTCOME_TEXT: Record<ShapeTicketsOutcome, string> = {
   dismissed: "Breakdown dismissed: no tickets filed",
 };
 
+/**
+ * Where an accepted follow-up's plan landed: the merged pull request of a repository plan, or
+ * the published revision of a local one. `ref` is what `shape_ticket_followups.source_pr_url`
+ * stores: the PR URL, or `localShapePlanRef` of the revision (the column predates local plans).
+ */
+export interface ShapeTicketsSource {
+  episodeId: string;
+  sessionId: string;
+  ref: string;
+}
+
 export type ShapeTicketsAcceptance =
-  | { ok: true; posture: Extract<RetroPrPosture, { kind: "merged" }> }
+  | { ok: true; source: ShapeTicketsSource }
   | { ok: false; reason: string };
+
+const LOCAL_PLAN_REF_PREFIX = "plan:";
+
+/** A published local revision as a follow-up relation stores it. */
+export function localShapePlanRef(plan: PlanIdentity): string {
+  return `${LOCAL_PLAN_REF_PREFIX}${plan.repoKey}:${plan.planId}:${plan.revision}`;
+}
+
+/** The local revision a relation's `ref` names, or null for a merged pull request's URL. */
+export function localShapePlanOf(ref: string): PlanIdentity | null {
+  if (!ref.startsWith(LOCAL_PLAN_REF_PREFIX)) return null;
+  const [repoKey, planId, revision] = ref.slice(LOCAL_PLAN_REF_PREFIX.length).split(":");
+  const parsed = Number(revision);
+  if (!repoKey || !planId || !Number.isSafeInteger(parsed) || parsed < 1) return null;
+  return { repoKey, planId, revision: parsed };
+}
+
+/**
+ * Where a done shape task's plan landed, or the reason there is none: the merged pull request
+ * for a repository plan (`retroPrPostureForTask`, the post-merge Retro's check), the newest
+ * published revision for a plan pinned to local storage.
+ */
+function shapeTicketsSourceFor(task: Task): ShapeTicketsSource | string {
+  if (isLocalPlanningTask(task)) {
+    const receipt = latestPublicationReceiptForTask(task.id);
+    if (!receipt) return "This shape task has no published local plan, so there is no approved plan to slice.";
+    const episodeId = receipt.episodeId ?? taskWorkEpisodeForTask(task.id)?.episodeId ?? null;
+    if (!episodeId) return "This shape task's published plan names no work episode to link its tickets to.";
+    return { episodeId, sessionId: receipt.sessionId, ref: localShapePlanRef(receipt) };
+  }
+  const posture = retroPrPostureForTask(task.id);
+  if (posture?.kind !== "merged") {
+    return "This shape task has no merged pull request, so there is no merged plan to slice.";
+  }
+  return { episodeId: posture.binding.episodeId, sessionId: posture.binding.sessionId, ref: posture.prUrl };
+}
 
 /**
  * Whether **Create tickets** may start a follow-up for this task now.
  *
- * The task must be a `shape` task that is done with a merged pull-request posture, the same
- * check the post-merge Retro makes (`retroPrPostureForTask`). None of its follow-ups may be
+ * The task must be a `shape` task that is done with its plan landed: a merged pull-request
+ * posture, the check the post-merge Retro makes (`retroPrPostureForTask`), or for a plan pinned
+ * to local storage a published revision. None of its follow-ups may be
  * live (backlog, dispatching, running) or done with its tickets filed, and none that ENDED
  * otherwise - cancelled, failed, dismissed, or deleted - may have filed any ticket.
  *
@@ -69,16 +119,13 @@ export function shapeTicketsAcceptance(
   if (task.status !== "done") {
     return {
       ok: false,
-      reason: `This shape task is ${task.status}. Create tickets needs it done through its plan's merged pull request.`,
+      reason: isLocalPlanningTask(task)
+        ? `This shape task is ${task.status}. Create tickets needs it done through its plan's local publication.`
+        : `This shape task is ${task.status}. Create tickets needs it done through its plan's merged pull request.`,
     };
   }
-  const posture = retroPrPostureForTask(task.id);
-  if (posture?.kind !== "merged") {
-    return {
-      ok: false,
-      reason: "This shape task has no merged pull request, so there is no merged plan to slice.",
-    };
-  }
+  const source = shapeTicketsSourceFor(task);
+  if (typeof source === "string") return { ok: false, reason: source };
   let selections: number[] | null = null;
   for (const followup of followups) {
     const existing = lookup(followup.followupTaskId);
@@ -100,7 +147,7 @@ export function shapeTicketsAcceptance(
       };
     }
   }
-  return { ok: true, posture };
+  return { ok: true, source };
 }
 
 /** The wire projection: `null` for every kind but shape. */
@@ -127,11 +174,13 @@ export function shapeTicketsFollowupFacts(
     taskWorkEpisodeForTask(relation.sourceTaskId),
     ...historicalTaskWorkEpisodeBindingsForTask(relation.sourceTaskId),
   ].find((candidate) => candidate?.episodeId === relation.sourceEpisodeId);
+  const plan = localShapePlanOf(relation.sourcePrUrl);
   return {
     sourceTaskId: relation.sourceTaskId,
     sourceTitle: lookup(relation.sourceTaskId)?.title ?? relation.sourceTaskId,
-    prUrl: relation.sourcePrUrl,
-    branch: binding?.branch ?? null,
+    prUrl: plan ? null : relation.sourcePrUrl,
+    branch: plan ? null : binding?.branch ?? null,
+    plan,
   };
 }
 
@@ -154,10 +203,15 @@ export function withShapeTicketsCompletion(
  * What a tickets follow-up is asked, in the human's words. The procedure is its contract's
  * (`shapeTicketsFollowupAppendix`), which names the source, the merged PR and the branch.
  */
-export function shapeTicketsFollowupIntent(source: Pick<Task, "id" | "title">, prUrl: string): string {
+export function shapeTicketsFollowupIntent(source: Pick<Task, "id" | "title">, ref: string): string {
+  const plan = localShapePlanOf(ref);
   return [
-    `Create tickets for the merged plan of the shape task "${source.title}" (${source.id}).`,
-    `Its plan merged in ${prUrl}. Slice that plan into tickets, get the breakdown approved, and`,
+    plan
+      ? `Create tickets for the published local plan of the shape task "${source.title}" (${source.id}).`
+      : `Create tickets for the merged plan of the shape task "${source.title}" (${source.id}).`,
+    plan
+      ? `Its plan was published locally as revision ${plan.revision} of plan ${plan.planId}. Slice that plan into tickets, get the breakdown approved, and`
+      : `Its plan merged in ${ref}. Slice that plan into tickets, get the breakdown approved, and`,
     "file the approved tickets as backlog tasks linked to that shape task.",
   ].join("\n");
 }

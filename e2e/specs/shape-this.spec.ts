@@ -123,7 +123,7 @@ test("shape this converts a swept backlog task to shape and dispatches it, keepi
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = page.locator(".console-detail");
   await expect(detail).toContainText("Mission Control shape", { timeout: 30_000 });
-  await expect(detail.locator(".task-kind")).toHaveText("shape");
+  await expect(detail.locator(".detail-title-line").getByText("shape", { exact: true })).toBeVisible();
 });
 
 test("a shape card offers no shape this", async ({ page, daemon }) => {

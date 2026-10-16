@@ -248,11 +248,13 @@ test("create_task publishes bounded repository selectors and ticket fields, and 
   );
   assert.match(
     registration,
-    /ticketFields \? "\/mcp\/v3\/tasks" : explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/,
-    "a kind, labels or adoption reaches only the route that knows them",
+    /\? "\/mcp\/v3\/tasks"\s*: explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/,
+    "configuration, pinned plans or adoption reach only the route that knows them",
   );
-  assert.match(registration, /kind !== undefined \|\| Boolean\(labels\?\.length\) \|\| adoptTaskId !== undefined/);
   assert.match(registration, /targetRepository: repository/);
+  assert.match(registration, /adoptTaskId !== undefined \|\| pinnedPlans \|\| Object\.keys\(configuration\)\.length > 0\s*\? "\/mcp\/v3\/tasks"/);
+  assert.match(registration, /planInputs: planInputs \?\? \[\]/);
+  assert.match(registration, /planPrerequisites: planPrerequisites \?\? \[\]/);
   assert.match(registration, /isUnknownRoute\(res\)/);
   assert.match(registration, /no task was created/);
   assert.doesNotMatch(
@@ -260,8 +262,9 @@ test("create_task publishes bounded repository selectors and ticket fields, and 
     /isUnknownRoute\(res\)[\s\S]*http\("\/mcp\/(v2\/)?tasks"/,
     "a selector- or ticket-bearing call must not be retried after an old daemon's 404",
   );
-  assert.match(registration, /repository: task\.repoRoot/);
-  assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);
+  assert.match(registration, /taskConfiguration\(task\)/);
+  assert.match(source, /repository: task\.repoRoot/);
+  assert.match(source, /additionalRepositories: task\.extraRepos\.map/);
 });
 
 test("list_backlog_tasks may name a repository, and only through the route that knows it", () => {

@@ -1,3 +1,4 @@
+import { isLocalPlanningTask } from "@shared/task.ts";
 import type { Task } from "@shared/types.ts";
 
 /**
@@ -18,23 +19,34 @@ export interface ShapeTicketsMarkerView {
 }
 
 export function shapeTicketsMarker(
-  task: Pick<Task, "kind" | "shapeTickets"> | null | undefined,
+  task: Pick<Task, "kind" | "shapeTickets" | "planPolicy"> | null | undefined,
 ): ShapeTicketsMarkerView | null {
   if (task?.kind !== "shape" || !task.shapeTickets) return null;
   const { state, followupTaskId } = task.shapeTickets;
+  // A plan pinned to local storage lands by publication, never by a merge.
+  const local = isLocalPlanningTask(task);
   switch (state) {
     case "pending":
-      return {
-        state,
-        label: "Tickets after merge",
-        tooltip: "When this plan's pull request merges, a linked task slices the merged plan into tickets",
-        followupTaskId: null,
-      };
+      return local
+        ? {
+            state,
+            label: "Tickets after publication",
+            tooltip: "When this plan's approved revision is published, a linked task slices it into tickets",
+            followupTaskId: null,
+          }
+        : {
+            state,
+            label: "Tickets after merge",
+            tooltip: "When this plan's pull request merges, a linked task slices the merged plan into tickets",
+            followupTaskId: null,
+          };
     case "lapsed":
       return {
         state,
         label: "Tickets lapsed",
-        tooltip: "Create tickets lapsed: this task ended without its plan merging, so no tickets task was created",
+        tooltip: local
+          ? "Create tickets lapsed: this task ended without publishing its plan, so no tickets task was created"
+          : "Create tickets lapsed: this task ended without its plan merging, so no tickets task was created",
         followupTaskId: null,
       };
     // Both point at the follow-up. Without one (it was deleted) there is nothing to open, and
@@ -53,7 +65,9 @@ export function shapeTicketsMarker(
         ? {
             state,
             label: "Tickets",
-            tooltip: "Open the linked task that slices this merged plan into tickets",
+            tooltip: local
+              ? "Open the linked task that slices this published plan into tickets"
+              : "Open the linked task that slices this merged plan into tickets",
             followupTaskId,
           }
         : null;

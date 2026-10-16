@@ -84,6 +84,8 @@ export const STATE_DENY_DIRS = [
   ".pi-extension-*",
   "database-recovery",
   "headless",
+  "plans",
+  "update-helper.lock.d",
 ] as const;
 
 /** Dispatched worktrees live in the state dir, and the Inspector reviews one of them. */

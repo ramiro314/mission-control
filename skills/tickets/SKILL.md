@@ -23,8 +23,11 @@ backlog tasks with dependency edges rather than files or tracker issues.
 
 - **Follow-up mode**, when the delivered contract says this session is a **tickets follow-up**
   of a merged shape task (tickets-only mode). The plan has already merged, so the plan pointer
-  resolves on the default branch, and the tasks and any mirrored items are the record. Section 4
-  says what this mode skips, and the session ends by calling `complete_shape_tickets`.
+  resolves on the default branch, and the tasks and any mirrored items are the record. A shape
+  task that stored its plan locally has no merge: its contract names the published revision
+  instead, read with `read_plan`, and every ticket carries that revision as its `planInputs` and
+  `planPrerequisites`. Section 4 says what this mode skips, and the session ends by calling
+  `complete_shape_tickets`.
 - **In-session mode**, every other caller, including a shaping session that reaches this skill
   from its own plan review. Everything below applies as written.
 
@@ -137,7 +140,9 @@ The tool blocks until the human submits or dismisses:
 ## 4. On submit
 
 **In follow-up mode, skip steps 1, 2 and 5**: write no tickets file, commit and push nothing, and
-record no ids in a file. The plan the tickets point at has already merged. File and mirror the
+record no ids in a file. The plan the tickets point at has already merged, or was published
+locally, in which case pass the contract's `planInputs` and `planPrerequisites` on every new
+ticket so its agent reads that exact revision. File and mirror the
 tickets (steps 3 and 4) exactly as below, with one difference: `dependsOnCurrentSession: true`
 links each ticket to the **merged shape task** with an edge that is already satisfied, and holds
 it on this follow-up until `complete_shape_tickets` reports `filed`, so no ticket starts while

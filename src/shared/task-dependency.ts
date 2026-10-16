@@ -10,8 +10,8 @@ export type WorkDependency = Extract<TaskDependency, { type: "task" | "session" 
 
 /**
  * Whether this edge tracks OUR work (a task or a session) and so is reconciled against
- * pull requests. A `source` edge follows an external item instead, and an `unknown` one
- * is only ever kept.
+ * pull requests. A `plan` edge follows a managed plan revision, a `source` edge an external
+ * item, and an `unknown` one is only ever kept.
  */
 export function isWorkDependency(dependency: TaskDependency): dependency is WorkDependency {
   return dependency.type === "task" || dependency.type === "session";
@@ -20,6 +20,8 @@ export function isWorkDependency(dependency: TaskDependency): dependency is Work
 /** The identity key of a stored edge or of the input that names it. */
 export function dependencyKey(dependency: TaskDependency | TaskDependencyInput): string {
   switch (dependency.type) {
+    case "plan":
+      return `plan:${dependency.repoKey}:${dependency.planId}:${dependency.revision}`;
     case "task":
       return `task:${dependency.taskId}`;
     case "session":
@@ -34,6 +36,8 @@ export function dependencyKey(dependency: TaskDependency | TaskDependencyInput):
 /** A stored edge as the input that names it, which is what an update body carries. */
 export function dependencyInputOf(dependency: TaskDependency): TaskDependencyInput {
   switch (dependency.type) {
+    case "plan":
+      return { type: "plan", repoKey: dependency.repoKey, planId: dependency.planId, revision: dependency.revision };
     case "task":
       return { type: "task", taskId: dependency.taskId };
     case "session":

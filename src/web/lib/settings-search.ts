@@ -234,6 +234,11 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "ctrl 1",
       "control 1",
       "number keys",
+      // The Task type picker. Not the kinds' own names: a list of them here would be a
+      // second copy of `TASK_KINDS` (`test/task-kinds.test.ts`).
+      "task type",
+      "task kind",
+      "kind",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -247,7 +252,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "conversation-header",
     label: "Conversation header",
     description:
-      "Choose whether the console states a session's working directory and branch above its conversation.",
+      "Choose how the console marks a task's kind, and whether it states a session's working directory and branch above its conversation.",
     category: "display",
     anchor: "display/board-card",
     keywords: [
@@ -262,6 +267,10 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "band",
       "hide",
       "show",
+      "task type",
+      "task kind",
+      "kind",
+      "badge",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -431,6 +440,22 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     category: "skills",
     anchor: "skills/enabled",
     keywords: ["skill", "slash command", "symlink", "master"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
+    id: "skills-plan-storage", label: "Plan storage",
+    description: "Keep complete new plans in the repository or the machine-local repository plan store.",
+    category: "skills", anchor: "skills/plan-storage", keywords: ["plan", "local", "repository", "storage", "Markdown", "Git"],
+    kind: "jump", backup: backupDomains("skills"),
+  },
+  {
+    id: "skills-plan-html",
+    label: "Commit generated HTML plan files",
+    description: "Keep rendered plans locally or include HTML in Git for new managed plans.",
+    category: "skills",
+    anchor: "skills/commit-plan-html",
+    keywords: ["plan", "HTML", "Markdown", "Git", "storage", "preview"],
     kind: "toggle",
     backup: backupDomains("skills"),
   },
@@ -694,8 +719,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // is the same machine-wide switch it always was. Only the words on it moved.
     anchor: "workflows/checks",
     keywords: [
-      "check", "command", "test", "lint", "typecheck", "build", "affected-tests", "gate",
-      "exit code", "allow",
+      "check", "command", "test", "lint", "typecheck", "build", "documentation", "affected-tests",
+      "gate", "exit code", "allow",
       "pause",
     ],
     kind: "toggle",
@@ -710,12 +735,12 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // exactly who this row exists for, and dropping it would answer them with nothing.
     id: "workflow-check-commands",
     label: "What each Command runs",
-    description: "The test, lint, typecheck, build and affected-tests argvs - authored in Library › Commands.",
+    description: "The configured workflow command argvs - authored in Library › Commands.",
     category: "workflows",
     anchor: "workflows/command-catalog",
     keywords: [
-      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "affected-tests",
-      "repo",
+      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "documentation",
+      "affected-tests", "repo",
       "override", "default", "library",
     ],
     kind: "jump",

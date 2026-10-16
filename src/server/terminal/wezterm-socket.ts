@@ -49,8 +49,13 @@ async function followSocketLinks(reported: string): Promise<string | null> {
   return null;
 }
 
-/** Production budget for the endpoint locator: a native `wezterm cli list` answers well inside it. */
-export const WEZTERM_LOCATOR_TIMEOUT_MS = 1000;
+/**
+ * Production budget for the endpoint locator. Four concurrent browser workers can take over a
+ * second to start even the fake CLI. --no-auto-start still makes an absent GUI fail promptly,
+ * while this leaves time for a real but contended CLI to identify its socket before we report
+ * a stale pane.
+ */
+export const WEZTERM_LOCATOR_TIMEOUT_MS = 2500;
 
 /**
  * A pathname check followed by a CLI call can race a mux restart. Pin the socket inode

@@ -167,12 +167,18 @@ function sources(dir: string): string[] {
 /** `{ file, entry }` for every `join`/`resolve` rooted at the state dir, or `entry: null`. */
 function definedStateEntries(): Array<{ file: string; expr: string; entry: string | null }> {
   const found: Array<{ file: string; expr: string; entry: string | null }> = [];
-  for (const path of [...sources(join(ROOT, "src")), ...sources(join(ROOT, "scripts"))]) {
+  const files = [...sources(join(ROOT, "src")), ...sources(join(ROOT, "scripts"))];
+  // A name imported from another module (`HELPER_LOCK_DIR_NAME`) resolves through its export.
+  const exported = new Map(files.flatMap((path) =>
+    [...readFileSync(path, "utf8").matchAll(/\bexport\s+const\s+(\w+)\s*=\s*"([^"]*)"/g)]
+      .map((m) => [m[1]!, m[2]!] as const)));
+  for (const path of files) {
     const text = readFileSync(path, "utf8");
     if (!/\bSTATE_DIR\b|\bstateDir\(\)/.test(text)) continue;
-    const consts = new Map(
-      [...text.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"]*)"/g)].map((m) => [m[1]!, m[2]!] as const),
-    );
+    const consts = new Map([
+      ...exported,
+      ...[...text.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"]*)"/g)].map((m) => [m[1]!, m[2]!] as const),
+    ]);
     // Locals that hold the state dir: `const state = stateDir()`, `directory = stateDir()`.
     const aliases = new Set(["STATE_DIR", "stateDir\\(\\)"]);
     for (const m of text.matchAll(/\b(\w+)\s*=\s*(?:[\w.]+\s*\?\?\s*)?(?:STATE_DIR\b|stateDir\(\))/g)) {

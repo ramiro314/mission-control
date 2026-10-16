@@ -7,6 +7,7 @@
 // alerts keep firing); only a real quit destroys it. On Linux it hides only while a
 // tray host exists to bring it back, and quits otherwise (see tray-host.ts).
 
+import { logMain } from "./main-log.ts";
 import { app, BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -101,7 +102,7 @@ async function dashboardReady(url: string, signal: AbortSignal): Promise<boolean
   }
 }
 
-export function createWindow(preloadPath: string): BrowserWindow {
+export function createWindow(preloadPath: string, launchWarning: string | null = null): BrowserWindow {
   if (win) return win;
   win = new BrowserWindow({
     ...initialSize(),
@@ -126,6 +127,8 @@ export function createWindow(preloadPath: string): BrowserWindow {
   });
 
   const window = win;
+  window.on("unresponsive", () => logMain("renderer unresponsive"));
+  window.webContents.on("render-process-gone", (_event, details) => logMain(`renderer render-process-gone reason=${details.reason} exitCode=${details.exitCode}`));
   const url = targetUrl();
   // Both local status pages and the dashboard must release navigation on Retry or quit.
   const navigate = async (target: string, signal: AbortSignal): Promise<void> => {
@@ -148,12 +151,12 @@ export function createWindow(preloadPath: string): BrowserWindow {
   };
   const loading = new WindowStartup({
     now: () => Date.now(),
-    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state, process.platform))}`, signal),
+    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state, process.platform, launchWarning))}`, signal),
     ready: (signal) => dashboardReady(url, signal),
     load: (signal) => navigate(url, signal),
     pause: (signal) => delay(1000, undefined, { signal }),
     loaded: () => { for (const listener of loadedListeners) listener(); },
-    log: (error) => console.error("[mission-control] dashboard startup navigation failed:", error),
+    log: (error) => logMain(`dashboard startup navigation failed: ${String(error)}`),
     notice: () => startupNotice,
     clearNotice: () => { startupNotice = null; },
   });

@@ -9,11 +9,7 @@ bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mi
 Requires Node.js 24+ with npm, Git, an authenticated GitHub CLI (`gh auth login`), and
 Xcode command line tools (`xcode-select --install`). Run as your own account, without `sudo`.
 The Bash installer builds the newest stable release and installs it in `~/Applications` on a
-new installation. Reruns preserve the destination recorded in an existing managed receipt.
-Pass `--scope user`, `--scope system`, or `--apps-dir <dir>` to choose a destination explicitly.
-Temporary checkouts and build files are removed; only a small updater installer is retained
-alongside the install receipt.
-See [installation details and options](docs/overview.md#desktop-app-macos).
+new installation. See [installation details and options](docs/overview.md#desktop-app-macos).
 
 On Linux there is no packaged app: run Mission Control from a checkout (the second path under
 [Get started](#get-started)). The [platform-support matrix](docs/setup.md#platform-support) lists
@@ -24,25 +20,21 @@ the updater.
 
 Most software factories ask you to adopt their agent, terminal, workflow, and worldview.
 Mission Control sits one layer above them. It is a meta-harness: one control plane for Claude
-Code, Codex, Pi, terminal and Agent SDK sessions, isolated worktrees, verification, review, and
+Code, Codex, Pi, terminal and Agent SDK sessions, isolated worktrees, verification workflows, review gates, and
 delivery.
 
 ## Why Mission Control instead of another software factory?
 
-1. **It just feels good.** Every interaction has been meticulously tuned for an ergonomic, delightful,
-   keyboard-friendly developer experience. Running a fleet should feel as natural as running one
-   agent.
-2. **It works.** High-quality code is not left to chance. Mission Control ships with fast checks, specialized reviewers,
-   evidence-backed repair loops, pull request review, and CI gates enforce the quality
-   bar from first diff to merge.
-3. **It adapts to you.** Mission Control is designed to fit the harness, terminal, and multiplexer
+1. **It adapts to you.** Mission Control is designed to fit the harness, terminal, and multiplexer
    you prefer. It coordinates the system around your tools instead of replacing them. Remote
    sessions are next.
+2. **It feels good.** The application is keyboard friendly. Build and customize you key bindings to match your workflow.
+2. **It comes with great defaults, but gives you the power to customize.** High-quality code is not left to chance. Mission Control ships with fast checks, specialized reviewers,
+   evidence-backed repair loops, pull request review, and CI gates enforce the quality
+   bar from first diff to merge. Build your own custom workflows to meet your preferences.
 4. **It is built for what comes next.** Mission Control is built and supported by Upstart. The
-   local factory is the beginning. Get ready for it to expand beyond your laptop. Prepare for
+   **local factory is the beginning. Get ready for it to expand beyond your laptop. Prepare for**
    superpowers.
-
-**Mission Control: Building with agents never felt this natural.**
 
 Mission Control's source code is licensed under the [Apache License 2.0](LICENSE).
 
@@ -174,6 +166,13 @@ instructions reach each harness and runtime. Running sessions keep the instructi
 received at launch, so the UI shows the immutable snapshot rather than pretending a live system
 prompt changed.
 
+Settings > Skills > Plan storage chooses repository Markdown (the default) or complete,
+repository-scoped local plan bundles. The HTML-in-Git preference is disabled in local mode
+without losing its value. Existing plans keep their policy. Approved local plan-only tasks
+publish after applicable validation without a PR; repository and code dependencies still
+wait for their normal merge condition. See
+[managed plans](docs/managed-plans.md).
+
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 
@@ -202,6 +201,13 @@ Open a session’s **Scouts** tab, immediately left of **Diff**, to browse its r
 source session. Retrying a report path returns its existing archive; publish revisions under a
 new slug. Select a report card to preview its source in **Files**, or **Open archive** to read
 the immutable published copy. Read more in [Archives](docs/archives.md).
+
+To share a report outside Mission Control, open it in a Claude session's **Files** tab and
+click **Publish**, beside **Open in ▾**. Claude publishes that exact file, unchanged, as a
+private claude.ai artifact, and its link - or the reason it could not publish - appears in
+that session's conversation. Codex and Pi sessions show the button disabled with the reason.
+See [Publish a file as a shareable page](docs/ui.md#publish-a-file-as-a-shareable-page) for
+requirements and limits.
 
 SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
 internal launch secret, not a setting to configure. Public session IDs cannot select report

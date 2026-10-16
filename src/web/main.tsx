@@ -2,6 +2,7 @@ import { installExperienceReporting } from "./lib/experience.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
+import { ManagedPlanReader } from "./components/ManagedPlanReader.tsx";
 import { hydrateUiConfig } from "./lib/uiConfig.ts";
 import { desktopPlatformClass } from "./lib/platform.ts";
 import { ModelCatalogProvider } from "./model-catalog.tsx";
@@ -29,11 +30,12 @@ void hydrateUiConfig();
 installExperienceReporting();
 
 const root = document.getElementById("root");
+const planQuery = new URLSearchParams(window.location.search);
 if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
     <ModelCatalogProvider>
-      <App />
+      {planQuery.has("plan") ? <ManagedPlanReader id={planQuery.get("plan")!} revision={Number(planQuery.get("revision"))} /> : <App />}
     </ModelCatalogProvider>
   </StrictMode>,
 );

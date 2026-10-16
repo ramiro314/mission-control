@@ -17,6 +17,12 @@ process.env.HARNESS_REPOS_CACHE_MS = "0";
 const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+// MCP task creation checks the resolved workflow is selectable, and a ship task resolves to
+// the kind's built-in default. These routes need nothing else from the manager.
+const SELECTABLE_WORKFLOWS = {
+  workflowSelectionBlock: () => null,
+  localPlanPublication: () => null,
+} as unknown as import("../src/server/workflows/manager.ts").WorkflowManager;
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -99,7 +105,7 @@ test("MCP task creation combines phase prerequisites with the calling session", 
     (session) => session.name === "phase the plan",
   );
   assert.ok(planningSession);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const response = await app.request("/mcp/tasks", {
     method: "POST",
     headers: {
@@ -132,8 +138,7 @@ test("MCP task creation combines phase prerequisites with the calling session", 
 });
 
 test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", async () => {
-  // An agent filing work through MCP has no opinion about which harness runs it - the tool
-  // has no `agent` field at all - so it must take whatever `ship` is configured to run on.
+  // A caller omitting `agent` must take whatever `ship` is configured to run on.
   // The route used to say `agent: "claude"` here, which was an opinion expressed by accident
   // and one no setting could reach.
   openDb().exec("DELETE FROM app_config");
@@ -141,7 +146,7 @@ test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", 
   const repo = gitRepo();
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const response = await app.request("/mcp/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
@@ -162,7 +167,7 @@ test("the versioned route resolves an absolute alternate primary and echoes its 
   const repoB = gitRepo("absolute-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const before = registry.snapshot().tasks.length;
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
@@ -182,7 +187,7 @@ test("a unique repository basename resolves through the workspace index", async 
   const repoB = gitRepo("short-name-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     targetRepository: "short-name-b",
@@ -198,7 +203,7 @@ test("missing and ambiguous short names are actionable and create no task", asyn
   const second = gitRepo("beta/shared-lib");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const before = registry.snapshot().tasks.length;
 
   const missing = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
@@ -223,7 +228,7 @@ test("one versioned call stores an ordered canonical attachment set", async () =
   const repoC = gitRepo("attached-c");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     targetRepository: "attached-b",
@@ -244,7 +249,7 @@ test("the full repository set is refused before storage on collisions, duplicate
   const repoB = gitRepo("policy-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const before = registry.snapshot().tasks.length;
 
   const primaryCollision = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
@@ -273,7 +278,7 @@ test("the default ship harness is capability-checked before a multi-repo task is
   const repoB = gitRepo("pi-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const before = registry.snapshot().tasks.length;
 
   const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
@@ -325,7 +330,7 @@ test("a planning session in repo A can gate a task whose primary is repo B", asy
   });
   const planningSession = registry.snapshot().sessions.find((session) => session.name === "plan across repos");
   assert.ok(planningSession);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     sessionId: "cross-repo-agent",
@@ -346,7 +351,7 @@ test("the v1 and v2 create_task routes file any kind as ship", async () => {
   const repo = gitRepo("shape-refused");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   for (const path of ["/mcp/tasks", "/mcp/v2/tasks"] as const) {
     const response = await createTaskRequest(app, path, repo, { kind: "shape" });
     assert.equal(response.status, 200);
@@ -399,7 +404,7 @@ function ticketHarness(name: string) {
   const repo = gitRepo(name);
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const sessionId = planningSession(registry, repo, `shape ${name}`, `${name}-agent`);
   const file = async (body: Record<string, unknown>) => {
     const response = await createTaskRequest(app, "/mcp/v3/tasks", repo, {
@@ -466,7 +471,7 @@ test("a ticket set files in dependency order with kind, labels, edges and the pl
 
 test("a new ticket needs its title and intent, and nothing unknown rides along", async () => {
   const { app, repo, count } = ticketHarness("ticket-required");
-  for (const body of [{ title: undefined }, { intent: undefined }, { priority: "high" }]) {
+  for (const body of [{ title: undefined }, { intent: undefined }, { notAField: "high" }]) {
     const response = await createTaskRequest(app, "/mcp/v3/tasks", repo, body);
     assert.equal(response.status, 400, `${JSON.stringify(body)} is refused`);
   }
@@ -475,14 +480,14 @@ test("a new ticket needs its title and intent, and nothing unknown rides along",
 
 test("create_task files the backlog kinds an operator can ask for, and refuses the rest", async () => {
   const { file, count } = ticketHarness("ticket-kind");
-  for (const kind of ["chat", "pipeline"]) {
-    const refused = await file({ title: `A ${kind} ticket`, intent: "No.", kind });
-    assert.equal(refused.status, 400, `${kind} is refused`);
-  }
+  // Chat cannot enter the backlog. Pipeline can since upstream #1176 opened MCP creation to
+  // every backlog kind, so it is not refused here.
+  const refused = await file({ title: "A chat ticket", intent: "No.", kind: "chat" });
+  assert.equal(refused.status, 400, "chat is refused");
   assert.equal(count(), 0);
   const defaulted = await file({ title: "Default kind", intent: "Yes.", labels: ["x"] });
   assert.equal(defaulted.body.kind, "ship");
-  for (const kind of ["scout", "plan", "shape"]) {
+  for (const kind of ["scout", "plan", "shape", "document"]) {
     const filed = await file({ title: `A ${kind} task`, intent: "Yes.", kind });
     assert.equal(filed.status, 200, `${kind} is filed`);
     assert.equal(filed.body.kind, kind);

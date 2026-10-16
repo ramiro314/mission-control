@@ -1,5 +1,5 @@
 import type { ZodIssue, ZodTypeAny, TypeOf } from "zod";
-import { LlmProviderFailure } from "@shared/llm.ts";
+import { providerFailureKind, type ProviderFailureKind } from "./provider-failure.ts";
 
 // Asking a model for a VALUE rather than for text, and the two helpers every caller that
 // does needs. Provider-neutral by construction: nothing here spawns anything, and nothing
@@ -38,16 +38,7 @@ import { LlmProviderFailure } from "@shared/llm.ts";
  */
 export type StructuredResult<T> =
   | { kind: "ok"; value: T }
-  | {
-    kind: "failed";
-    reason: string;
-    cause: "transport" | "parse" | "cancelled";
-    /**
-     * Set only on a "transport" failure the runner classified as permanent - see
-     * `LlmProviderFailure`. A caller holding its own retry budget should not spend it here.
-     */
-    providerFailure?: LlmProviderFailure;
-  };
+  | { kind: "failed"; reason: string; cause: "transport" | "parse" | "cancelled"; providerFailure?: ProviderFailureKind };
 
 export interface StructuredAttemptObserver {
   /**
@@ -58,12 +49,7 @@ export interface StructuredAttemptObserver {
   start(attempt: number, prompt: string): boolean | void;
   finish(
     attempt: number,
-    result: {
-      parsed: boolean;
-      raw: string | null;
-      error: string | null;
-      providerFailure?: LlmProviderFailure | null;
-    },
+    result: { parsed: boolean; raw: string | null; error: string | null; providerFailure?: ProviderFailureKind },
   ): void;
 }
 
@@ -140,11 +126,9 @@ export async function runStructured<S extends ZodTypeAny>(
       raw = await run(p);
     } catch (err) {
       const error = String(err);
-      const providerFailure = err instanceof LlmProviderFailure ? err : null;
-      observer?.finish(attempt, { parsed: false, raw: null, error, providerFailure });
-      return providerFailure
-        ? { kind: "failed", reason: `${label} failed: ${String(err)}`, cause: "transport", providerFailure }
-        : { kind: "failed", reason: `${label} failed: ${String(err)}`, cause: "transport" };
+      const providerFailure = providerFailureKind(err);
+      observer?.finish(attempt, { parsed: false, raw: null, error, providerFailure: providerFailure ?? undefined });
+      return { kind: "failed", reason: `${label} failed: ${error}`, cause: "transport", providerFailure: providerFailure ?? undefined };
     }
     const value = extract(raw);
     const parsed = value !== null && !(value instanceof ModelReplyMiss);

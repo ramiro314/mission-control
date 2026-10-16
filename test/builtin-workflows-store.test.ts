@@ -517,3 +517,70 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
   );
   assert.equal(v15.graph.nodes.filter((node) => node.kind === "persona").length, 8);
 });
+
+test("a binding the pre-sync fork pinned to No-Mistakes Review v21 resolves to upstream's v21 after the 2026-10-15 sync", async () => {
+  // Fork: before the sync, No-Mistakes Review v21 was the fork's issue closing line version.
+  // The sync put upstream's documentation guidance version at 21 and moved the closing line
+  // version to 22. A built-in version is never written to `workflow_versions` - a binding
+  // stores only its id - so nothing stored can disagree with the catalog. A binding pinned to
+  // v21 resolves to upstream's v21: the documentation guidance graph with the Pull Request
+  // action text as it was before the closing line. The pull-request skill the action invokes
+  // is read live and still carries the closing-line rule. New bindings take v22.
+  const { createHash } = await import("node:crypto");
+  const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+  const BEFORE_CLOSING_LINE = "031b3fef42055cd8bba573a547cd9b27b9615b7bbe15c78240720496d51dbb4c";
+  const WITH_CLOSING_LINE = "38a31167eead7cd3ffaf0b501ee95113c10adff06f3dc86db1e08426799621fb";
+  const v21 = builtinWorkflowVersionId("no-mistakes-review", 21);
+  const v22 = builtinWorkflowVersionId("no-mistakes-review", 22);
+
+  // As the pre-sync build left it: a binding and a run naming v21, and no version row.
+  const beforeSync = new WorkflowStore(db);
+  const binding = beforeSync.insertBinding({
+    id: "b-v21",
+    workflowVersionId: v21,
+    noteKey: "note-v21",
+    sessionId: "s-v21",
+    sessionAgent: "claude",
+    sessionName: "session",
+    sessionCwd: null,
+    sessionRepoRoot: null,
+    triggerMode: "foreman_complete",
+    deliveryMode: "live",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  beforeSync.createInitialSubmission(
+    { id: "r-v21", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "k-v21", now: 2 },
+    { id: "sub-v21", triggerSource: "manual", triggerKey: "k-v21", context: {}, evidence: {}, now: 2 },
+  );
+
+  // This build opening that state.
+  const afterSync = new WorkflowStore(db);
+  const stored = db.prepare("SELECT COUNT(*) AS n FROM workflow_versions WHERE id LIKE 'builtin-workflow:%'").get() as { n: number };
+  assert.equal(stored.n, 0, "built-in versions are catalog-only, so no stored digest can conflict");
+
+  const prompts = (version: NonNullable<ReturnType<typeof afterSync.getWorkflowVersionById>>) =>
+    version.graph.nodes.flatMap((node) => node.kind === "session_action" ? [node.action.promptMarkdown] : []);
+  const pinned = afterSync.getWorkflowVersionById(v21);
+  assert.ok(pinned, "the pinned v21 binding still resolves");
+  assert.equal(pinned.version, 21);
+  assert.deepEqual(prompts(pinned).map(sha256), [BEFORE_CLOSING_LINE], "v21 carries the pre-closing-line action text");
+  const steward = pinned.graph.nodes.find((node) =>
+    node.kind === "persona" && node.persona.sourcePersonaId === "builtin:documentation-steward");
+  const current = BUILTIN_PERSONAS.find((persona) => persona.id === "builtin:documentation-steward")!;
+  assert.ok(steward && steward.kind === "persona");
+  assert.equal(steward.persona.guidanceMarkdown, current.guidanceMarkdown, "v21 is upstream's documentation guidance version");
+
+  const latest = afterSync.getWorkflowVersionById(v22);
+  assert.ok(latest, "the closing line version exists as v22");
+  assert.deepEqual(prompts(latest).map(sha256), [WITH_CLOSING_LINE]);
+  assert.equal(afterSync.getWorkflow(builtinWorkflowId("no-mistakes-review"))?.currentVersionId, v22, "new bindings take v22");
+
+  assert.equal(afterSync.getBinding("b-v21")?.workflowVersionId, v21);
+  assert.equal(afterSync.runSummary("r-v21")?.workflowVersion, 21);
+
+  // The action invokes the pull-request skill, which is read live: a v21 run still gets the rule.
+  const { readFileSync } = await import("node:fs");
+  const skill = readFileSync(new URL("../skills/pull-request/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /Closing the issue the work came from/);
+});

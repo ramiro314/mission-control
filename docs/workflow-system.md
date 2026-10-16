@@ -14,6 +14,9 @@ atomically emits the usual pass receipts without a model call. The original atte
 the authority, including after daemon recovery; no second pass ledger is stored. Runs resolves
 that reference to display the original round. Checks and Session actions continue through
 their existing execution paths.
+A Persona node with `recheckAfterRepair: true` bypasses pass reuse. The optional flag survives
+stage edits and publication beside the Persona snapshot; omission preserves legacy behavior.
+Documentation Review enables it for every judge.
 Reuse also requires the current directive to match the earned attempt's snapshot, including
 revision, timestamps, and text. This applies changed feedback once without making an unchanged
 directive force perpetual rechecks; removing and recreating a directive cannot revive a pass
@@ -41,26 +44,25 @@ Markdown sources are compiled into generated modules by
 [`scripts/builtin-session-actions.ts`](../scripts/builtin-session-actions.ts), so installed
 defaults and operator-managed copies remain distinct.
 
-The built-in catalog contains General Review, Bug Fix Review, Plan Validation, and No-Mistakes
-Review (High Rigor). The latter's current version is 19. General Review and Bug Fix Review version 2
-and No-Mistakes version 19 run typecheck, test, and lint together in their first All-pass gate.
-No-Mistakes retains its verified Pull Request action and uses the existing `inspector` completion policy
-with `inspector_only` repairs and `wait` for a missing PR. Earlier versions remain immutable.
-General and Bug Fix use the same check, Persona, and Session action primitives with fewer roles.
-Plan Validation uses only Personas and completes locally. Its task contract requests complete
-registered plan text because Persona calls cannot read checkout files. No new engine node,
-submission format, or database table is introduced.
+The [built-in workflow catalog](workflows.md#built-in-workflows) uses the same Check,
+Persona, All-pass Join, and Session action primitives as operator-authored workflows.
+Published versions remain immutable. Repository Plan Validation includes PR publication;
+Local Plan Validation ends without a PR. Documentation Review adds the dedicated documentation
+Command and the documentation review roles without a new graph node kind or database table.
+Persona calls cannot read checkout files, so document and plan contracts request current
+registered text and the relevant unchanged comparison material.
 
 Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
 the dispatch form, the Recurring Mission editor, **Shape this**, and server task creation. It
 reads the operator's per-kind rows (`WorkflowPolicy.kindWorkflowDefaults`, edited under Settings
 → Workflows → Dispatch defaults) and falls back to `BUILTIN_KIND_WORKFLOW_DEFAULTS`: Ship
-defaults to No-Mistakes Review, Bugfix to Bug Fix Review, Plan and Shape to Plan Validation,
-and Scout and Chat to None. Pipeline always resolves to None. Explicit IDs and null opt-outs
-win. The map replaced the single `defaultWorkflowId`, which `StoredWorkflowPolicySchema`
+defaults to No-Mistakes Review, Bugfix to Bug Fix Review, Document to Documentation Review, Plan
+and Shape to Plan Validation, and Scout and Chat to None. A plan pinned to local storage always
+resolves to Local Plan Validation. Pipeline always resolves to None. Explicit IDs and null
+opt-outs win. The map replaced the single `defaultWorkflowId`, which `StoredWorkflowPolicySchema`
 migrates into the Ship row on read (a stored No-Mistakes reads as the built-in), including for
 settings backups written before it; `PUT /api/workflows/config` refuses the old field.
-Bugfix shares Ship's completion contract, automatic wrap-up, backlog eligibility, and recovery
+Bugfix and Document share Ship's deferred publication, automatic wrap-up, backlog eligibility, and recovery
 through the existing registries and `isShippingTaskKind` predicate.
 
 Ensembles coordinate multiple agent attempts and hand a selected result back through
@@ -73,6 +75,17 @@ changing persisted IDs, workflow evidence, action adapters, or registries, follo
 [change contracts](agent-guides/change-contracts.md#persisted-identifiers) and
 [session-action contract](agent-guides/change-contracts.md#session-actions) rather than
 copying their rules here.
+
+## Switching a session workflow
+
+The binding dialog submits a new published version with the id of the active binding it
+observed. `WorkflowManager.createBinding` validates the selected version, live session, and
+binding modes before `WorkflowStore.replaceBindingAndCancel` takes the database write lock.
+The store verifies that the expected binding still owns the conversation, archives it and
+any active repository siblings, cancels their active runs, and inserts the new binding in
+one transaction. A failed insert rolls the archives back. The manager publishes the old
+binding and run changes and the new binding only after the transaction commits. A stale
+binding id returns a conflict so another session's workflow is never silently replaced.
 
 ## Runtime continuity
 

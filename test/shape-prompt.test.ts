@@ -11,11 +11,16 @@ import { MISSION_MCP_TOOLS, kindMissionMcpRequirement } from "../src/server/miss
 import { PLAN_APPENDIX_MARKER, PLAN_HTML_SKILL_ID } from "../src/server/plans/prompt.ts";
 import {
   SHAPE_APPENDIX_MARKER,
+  SHAPE_CREATE_TICKETS_LOCAL_LABEL,
   SHAPE_FOLLOW_UP_DECISION_ID,
   SHAPE_GRILL_SKILL_ID,
   SHAPE_TICKETS_SKILL_ID,
   shapeContractAppendix,
+  shapeTicketsFollowupAppendix,
 } from "../src/server/plans/shape.ts";
+import { taskCompletionContract } from "../src/shared/task-completion.ts";
+import { taskDefaultWorkflowId } from "../src/shared/task.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import {
   PLANNING_SKILLS,
   planDispatchBlock,
@@ -25,8 +30,12 @@ import {
 import {
   BACKLOG_LIST_TOOL,
   COMPLETE_SHAPE_TICKETS_TOOL,
+  PLAN_CONTEXT_TOOL,
   PLAN_DECISIONS_TOOL,
+  PLAN_LOCAL_PUBLISH_TOOL,
   PLAN_PUBLICATION_TOOL,
+  PLAN_READ_TOOL,
+  PLAN_SAVE_TOOL,
   PLAN_SCHEDULING_TOOL,
   PUSH_TASK_TOOL,
 } from "../src/server/plans/tools.ts";
@@ -86,6 +95,8 @@ const config: SkillsConfig = {
   skills: Object.fromEntries(SHAPE_SKILL_IDS.map((id) => [id, true])),
   generation: 3,
   generationAt: 100,
+  commitPlanHtml: false,
+  planStorage: "repository",
 };
 
 function deps(over: Partial<RequiredSkillCommandDeps> = {}): RequiredSkillCommandDeps {
@@ -320,11 +331,17 @@ test("the bundled grill skill asks rounds the way the contract promises", () => 
 
 test("every shape launch pre-approves the tools its prompt names", () => {
   const appendix = shapeContractAppendix(CLAUDE_SKILLS);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL]) {
+  const managed = [PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL];
+  // Named only by the local variant, which publishes with no workflow bound.
+  const publish = PLAN_LOCAL_PUBLISH_TOOL;
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_PUBLICATION_TOOL, PLAN_SCHEDULING_TOOL, PUSH_TASK_TOOL, ...managed]) {
     assert.ok(appendix.includes(tool), `the prompt names ${tool}`);
   }
   const required = kindMissionMcpRequirement(mkTask(), null);
-  const expected = [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL];
+  assert.ok(shapeContractAppendix(CLAUDE_SKILLS, false, null, "local").includes(publish));
+  const expected = [
+    PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, ...managed, publish, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL,
+  ];
   for (const tool of expected) assert.ok(([...MISSION_MCP_TOOLS] as string[]).includes(tool));
   assert.deepEqual([...(required?.tools ?? [])].sort(), [...expected].sort());
 });
@@ -396,4 +413,43 @@ test("one table names every planning kind's skills, and a kind's invocations nev
     }),
     /shape task t1 reached delivery without resolved planning-skill invocations/,
   );
+});
+
+
+// Fork: a shape task pinned to local storage (Settings > Skills > Plan storage).
+test("a local shape task saves, approves and publishes its plan locally, and its tickets wait for publication", () => {
+  const unbound = shapeContractAppendix(CLAUDE_SKILLS, false, null, "local");
+  assert.ok(unbound.startsWith(SHAPE_APPENDIX_MARKER));
+  assert.match(unbound, /This is a local shape task/);
+  assert.match(unbound, /save_plan with the complete Markdown and rendered HTML bundle/);
+  assert.match(unbound, /commit nothing/);
+  assert.match(unbound, /managedPlan \{repoSlot, planId, revision\}/);
+  assert.ok(unbound.includes(SHAPE_CREATE_TICKETS_LOCAL_LABEL));
+  assert.match(unbound, /once the approved revision is published/);
+  assert.match(unbound, /call `publish_plan` for the exact local revision/);
+  assert.doesNotMatch(unbound, /merges/);
+  const bound = shapeContractAppendix(CLAUDE_SKILLS, true, null, "local");
+  assert.match(bound, /The daemon publishes after that exact approved revision passes/);
+  assert.doesNotMatch(bound, /call `publish_plan`/);
+
+  const contract = taskCompletionContract("shape", "local")!;
+  assert.equal(contract.kind, "shape");
+  assert.ok(contract.complete.some((line) => /follow-up task after the approved revision is published/.test(line)));
+  assert.equal(taskCompletionContract("shape")!.boundary, "the shaping handoff before publication", "repository shape is unchanged");
+  assert.equal(taskDefaultWorkflowId("shape", {}, "local"), LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  assert.equal(taskDefaultWorkflowId("shape", {}), PLAN_VALIDATION_WORKFLOW_ID);
+});
+
+test("a local shape task's tickets follow-up reads the exact published revision and pins every ticket to it", () => {
+  const plan = { repoKey: "a".repeat(64), planId: "11111111-1111-4111-8111-111111111111", revision: 3 };
+  const appendix = shapeTicketsFollowupAppendix("/tickets", {
+    sourceTaskId: "shape-1", sourceTitle: "Shape it", prUrl: null, branch: null, plan,
+  });
+  assert.match(appendix, /whose plan was published locally, in tickets-only mode/);
+  assert.match(appendix, new RegExp(`planId ${plan.planId}, revision 3`));
+  assert.match(appendix, /Read that exact revision with `read_plan`/);
+  assert.match(appendix, new RegExp(`planInputs: \\[\\{ repoKey: "${plan.repoKey}", planId: "${plan.planId}", revision: 3`));
+  assert.match(appendix, new RegExp(`planPrerequisites: \\[\\{ repoKey: "${plan.repoKey}"`));
+  assert.doesNotMatch(appendix, /Merged pull request/);
+  assert.doesNotMatch(appendix, /docs\/plans\/<name>\/plan\.md/);
 });

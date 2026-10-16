@@ -39,6 +39,7 @@ import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
 import { ArchiveTitleStore } from "./titles.ts";
 import { discoverPlanCaptureScopes } from "../plans/capture-scopes.ts";
+import { managedPlanCaptureScopes } from "../plans/store.ts";
 import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
@@ -401,7 +402,11 @@ export class ArchiveManager {
     for (const job of this.captureStore.forTask(taskId)) {
       if (job.kind === "plan" && job.episodeId === subject.episodeId) jobs.set(job.operationKey, job);
     }
-    for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
+    try {
+      for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
+    } catch (error) {
+      return { ok: false, error: `Plan capture could not be reserved: ${String(error)}` };
+    }
 
     for (const job of jobs.values()) {
       const outcome = await this.captureUnlessDeleted(job.operationKey);
@@ -431,9 +436,7 @@ export class ArchiveManager {
     const subject = this.tasks!.subjectForTask(taskId, "scout");
     if (!subject) return { ok: true };
     await this.submissionClaims.get(this.submissionKey(subject))?.settled;
-    const current = this.captureStore
-      .forTask(taskId)
-      .filter((job) => job.episodeId === subject.episodeId);
+    const current = this.jobsForSubject(subject);
 
     // A prior episode's immutable archive answers that attempt only. If the current episode
     // has no job, reserve it now while its sources still exist. Published current jobs stay
@@ -484,9 +487,7 @@ export class ArchiveManager {
       // Already archived for THIS attempt: this is an ordinary scout finishing and its
       // session going away. A superseded episode's archive must not suppress reservation of
       // the checkout that is about to disappear.
-      const jobs = this.captureStore
-        .forTask(subject.taskId!)
-        .filter((job) => job.episodeId === subject.episodeId);
+      const jobs = this.jobsForSubject(subject);
       if (jobs.some((job) => job.submission !== null || job.status === "published" || job.status === "deleted")) return;
       const job = this.reserve(subject);
       const activeSubmission = this.submissionClaims.get(this.submissionKey(subject))?.settled;
@@ -555,6 +556,8 @@ export class ArchiveManager {
   private async reservePlanJobs(subject: ArchiveSubject): Promise<ArchiveCaptureJob[]> {
     const roots = await resolveRoots(subject.repos);
     const discovery = await discoverPlanCaptureScopes(roots);
+    const managed = managedPlanCaptureScopes(subject.taskId, subject.episodeId);
+    discovery.scopes = [...managed, ...discovery.scopes.filter((scope) => !managed.some((m) => m.slot === scope.slot && m.directory === scope.directory))];
     for (const entry of discovery.unreadable) {
       this.log("a plan task's checkout could not report what it changed, so nothing was captured from it", {
         taskId: subject.taskId,
@@ -576,14 +579,20 @@ export class ArchiveManager {
         prompts: null,
         origin: subject.origin,
         repos: subject.repos,
-        scope: { slot: scope.slot, directory: scope.directory },
+        scope: { slot: scope.slot, directory: scope.directory, ...(scope.managed ? { managed: scope.managed } : {}) },
       }),
     );
   }
 
   private jobsForSubject(subject: ArchiveSubject): ArchiveCaptureJob[] {
     return (subject.taskId ? this.captureStore.forTask(subject.taskId!) : this.captureStore.forSession(subject.sessionId!))
-      .filter((job) => job.episodeId === subject.episodeId && job.taskId === subject.taskId);
+      .filter((job) => job.taskId === subject.taskId && (
+        job.episodeId === subject.episodeId || (
+          job.episodeId === null && subject.episodeId !== null &&
+          subject.episodeStartedAt != null && job.createdAt >= subject.episodeStartedAt &&
+          job.sessionId === subject.sessionId
+        )
+      ));
   }
 
   private async reserveReport(subject: ArchiveSubject, submission: ScoutSubmissionInput): Promise<ArchiveCaptureJob> {
@@ -595,6 +604,9 @@ export class ArchiveManager {
     const existing = this.captureStore.get(operationKey);
     if (existing) return existing;
     const jobs = this.jobsForSubject(subject);
+    const early = jobs.find((job) => job.kind === "scout" && job.episodeId === null &&
+      job.scope?.slot === scope.slot && job.scope.directory === scope.directory);
+    if (early) return early;
     const deleted = jobs.find((job) => job.kind === "scout" && job.status === "deleted"
       && job.scope?.slot === scope.slot && job.scope.directory === scope.directory);
     if (deleted) return deleted;

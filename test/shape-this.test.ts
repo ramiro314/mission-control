@@ -123,6 +123,7 @@ function shapeRoute(opts: {
           gateCalls.push([workflowId, agent, repoRoot]);
           return gate;
         },
+        localPlanPublication: () => null,
       } as unknown as WorkflowManager);
   const app = buildApp({
     registry,

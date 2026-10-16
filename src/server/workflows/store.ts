@@ -85,6 +85,7 @@ import {
   personaOriginRank,
   personaSnapshotOf,
   withExecutionOverride,
+  withRecheckAfterRepair,
   personasForDisplay,
   sessionActionSnapshotOf,
   sessionActionsForDisplay,
@@ -3624,7 +3625,7 @@ export class WorkflowStore {
 
   // ---- Global Command catalog ----
   //
-  // The four portable slots are BUILT IN, so this catalog behaves unlike the two beside it:
+  // The portable slots are BUILT IN, so this catalog behaves unlike the two beside it:
   // nothing creates or archives a row, every slot is always projected whether or not it has
   // been stored, and the unit of both identity and update is the slot rather than a surrogate
   // id. What it keeps from Personas and SessionActions is the part that matters - one
@@ -3860,7 +3861,7 @@ export class WorkflowStore {
   }
 
   /**
-   * Apply a COMPLETE legacy `checkCommands` list across all four slots, in one transaction.
+   * Apply a COMPLETE legacy `checkCommands` list across all slots, in one transaction.
    *
    * The adapter behind `PUT /api/workflows/config`. Whole-list replacement, because that is
    * exactly what the old field was: the form sends the entire array and a row it omits is a
@@ -4334,7 +4335,7 @@ export class WorkflowStore {
       .filter((entry): entry is WorkflowCommandOverride => entry !== null);
   }
 
-  /** One pass over the override table, so projecting four slots is not four queries. */
+  /** One pass over the override table, so projecting the slots does not require a query per slot. */
   private workflowCommandOverridesBySlot(): Map<string, WorkflowCommandOverride[]> {
     const out = new Map<string, WorkflowCommandOverride[]>();
     const rows = this.db
@@ -4765,6 +4766,7 @@ export class WorkflowStore {
             // a version that merged them could never tell an operator which of the two they
             // are looking at.
             ...withExecutionOverride(node.executionOverride),
+            ...withRecheckAfterRepair(node.recheckAfterRepair),
           };
         }),
         edges: workflow.draft.edges,
@@ -5026,6 +5028,23 @@ export class WorkflowStore {
       if (!binding) throw new Error(`Workflow binding ${input.id} disappeared after insert`);
       return binding;
     }, (result) => ({ kind: "binding", id: result.id, now: input.now }));
+  }
+
+  /** Replace the conversation's anchor and any repository siblings as one durable change. */
+  replaceBindingAndCancel(expectedId: string, input: WorkflowBindingInsert): {
+    created: WorkflowBinding;
+    archived: Array<{ binding: WorkflowBinding; cancelledRunId: string | null }>;
+  } | null {
+    return transaction(this.db, () => {
+      const current = this.activeBindingForNote(input.noteKey);
+      if (current?.id !== expectedId || current.sessionId !== input.sessionId) return null;
+      const archived = this.activeBindingsForNote(input.noteKey).map((binding) => {
+        const result = this.archiveBindingAndCancel(binding.id, input.now);
+        if (!result) throw new Error(`Workflow binding ${binding.id} disappeared during replacement`);
+        return result;
+      });
+      return { archived, created: this.insertBinding(input) };
+    });
   }
 
   updateBinding(
@@ -9442,6 +9461,34 @@ export class WorkflowStore {
       JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
       WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?`)
       .get(operationId) as { n: number }).n;
+  }
+
+  /** Provider refusals have their own elapsed retry window, not a correction execution. */
+  personaOperationCorrectionCalls(operationId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_llm_calls c
+      JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
+      WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?
+        AND c.error_code IS NOT 'persona_provider_retryable'`)
+      .get(operationId) as { n: number }).n;
+  }
+
+  /** The first completed provider refusal is the durable origin of the retry deadline. */
+  personaProviderRetryState(operationId: string): { firstFailureAt: number; failures: number } | null {
+    const row = this.db.prepare(`SELECT MIN(c.finished_at) AS first_failure_at, count(*) AS failures
+      FROM workflow_llm_calls c JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
+      WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?
+        AND c.error_code = 'persona_provider_retryable' AND c.finished_at IS NOT NULL`)
+      .get(operationId) as { first_failure_at: number | null; failures: number };
+    return row.first_failure_at === null
+      ? null : { firstFailureAt: row.first_failure_at, failures: row.failures };
+  }
+
+  lastPersonaCallErrorCode(attemptId: string): string | null {
+    const row = this.db.prepare(`SELECT error_code FROM workflow_llm_calls
+      WHERE node_attempt_id = ? AND purpose = 'persona_review'
+      ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+      .get(attemptId) as { error_code: string | null } | undefined;
+    return row?.error_code ?? null;
   }
 
   personaOperationRejectionBasis(operationId: string): string | null {

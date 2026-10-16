@@ -201,6 +201,20 @@ so the session’s Scouts tab reuses the archive API and `archive_changed` rathe
 the session snapshot. Only scout task completion requires report readiness; every owned checkout
 cleanup settles its explicit capture jobs. See [Archives](../archives.md).
 
+## Managed plans
+
+`src/server/plans/store.ts` owns repository identity, pinned artifact policy, the operational
+ledger, immutable manifests and recoverable checkout writes. MCP is an attributed HTTP
+bridge and never writes SQLite. `save_plan` exposes a ready revision only after all retained
+and policy-eligible checkout bytes verify; readiness is not approval or publication.
+The existing archive manager consumes exact registered revisions alongside legacy diff
+capture. Preview reads use scoped plan/revision/file identifiers and the shared HTML sandbox,
+without widening session-file access. See [managed plans](../managed-plans.md) for the
+flow and tool contracts. `plans/inputs.ts` verifies pinned inputs at dispatch and assignment;
+`plans/publication.ts` owns exact human approval, frozen validation and durable local receipts.
+WorkflowManager owns its notification/recovery lifetime. Receipts update only plan artifact edges;
+TaskManager retains completion and eviction ownership. Foreman and MCP never write SQLite.
+
 ## Harnesses and terminals
 
 Harness capabilities split by purity:
@@ -253,7 +267,8 @@ legacy intent/evidence columns as a fallback trigger.
 `src/shared/task-completion.ts` owns the browser-safe completion policy, with an exhaustive
 `Record<TaskKind, TaskCompletionContract | null>` describing what "complete" means for a task kind's initial
 delivered turn: what must be done, and what post-completion work is explicitly deferred to a
-later owner. `ship` and `bugfix` share this implementation handoff. The delivered handoff appendix
+later owner. `ship` and `bugfix` share the implementation handoff; `document` uses the same
+publication deferrals with documentation-specific completion requirements. The delivered handoff appendix
 (`src/server/task-contract.ts`) and Foreman's verify prompt render from that one record, so the
 boundary an agent is told and the boundary it is judged against cannot drift apart.
 

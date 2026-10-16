@@ -290,7 +290,10 @@ test("a spent repair-round Command skips while both execution slots are occupied
     await expect(dashboard.locator("header.wf-run-head .wf-run-posture"))
       .toContainText("the next round is yours to start", { timeout: 40_000 });
     const status = testTile.locator(".wf-pipeline-status");
-    await status.hover();
+    // The live posture banner can grow while the Persona settles, moving the
+    // chip away from a stationary pointer. Keyboard focus follows the chip.
+    await status.focus();
+    await expect(status).toBeFocused();
     await expect(dashboard.locator(".tooltip", {
       hasText: "Already ran the most times this run allows.",
     })).toContainText("Change the limit in Library › Commands.");

@@ -31,6 +31,12 @@ const { openDb, countTaskSourceSeen, getTask, reserveShapeTicketFollowup } = awa
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+// MCP task creation checks the resolved workflow is selectable, and a ship task resolves to
+// the kind's built-in default. These routes need nothing else from the manager.
+const SELECTABLE_WORKFLOWS = {
+  workflowSelectionBlock: () => null,
+  localPlanPublication: () => null,
+} as unknown as import("../src/server/workflows/manager.ts").WorkflowManager;
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 
 const repo = join(repos, "demo");
@@ -141,7 +147,7 @@ function setup() {
     ticket(3, ["ticket-2"]),
     mkTask({ id: "someone-else", title: "Not this session's", status: "backlog", repoRoot: root }),
   ]) registry.upsertTask(t);
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
   const post = (path: string, body: Record<string, unknown>) => app.request(path, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },

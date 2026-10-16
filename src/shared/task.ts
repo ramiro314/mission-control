@@ -1,5 +1,7 @@
 import {
   BUG_FIX_REVIEW_WORKFLOW_ID,
+  DOCUMENTATION_REVIEW_WORKFLOW_ID,
+  LOCAL_PLAN_VALIDATION_WORKFLOW_ID,
   NO_MISTAKES_REVIEW_WORKFLOW_ID,
   PLAN_VALIDATION_WORKFLOW_ID,
 } from "./builtin-workflow.ts";
@@ -14,7 +16,7 @@ import {
 // Kind is not optional; every task names one registered launch contract, and `ship` is the
 // default.
 
-import { DEFAULT_TASK_KIND, TASK_KINDS } from "./types.ts";
+import { TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
@@ -38,6 +40,16 @@ import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
  * `label` is lowercase because it is the option's own text and these are jargon, not
  * proper nouns; it reads as the word the task carries, not as a heading.
  */
+/**
+ * One stroke of a kind's icon, on a 16-unit grid and drawn in `currentColor`. Plain data rather
+ * than markup because this module is browser-safe shared logic with no React in it; the web's
+ * `TaskKindIcon` turns each shape into its SVG element.
+ */
+export type TaskKindIconShape =
+  | { shape: "path"; d: string }
+  | { shape: "circle"; cx: number; cy: number; r: number }
+  | { shape: "rect"; x: number; y: number; width: number; height: number; rx: number };
+
 export interface TaskKindInfo {
   /** The option's text. */
   label: string;
@@ -61,46 +73,105 @@ export interface TaskKindInfo {
    * Kept parallel across the kinds - verb, then object - because these are read as a list.
    */
   purpose: string;
+  /**
+   * The kind's own colour, as a CSS colour value. Applied inline as `--kind` wherever a
+   * surface marks the kind (`TaskKindMark`), the way a harness's brand colour arrives as
+   * `--agent-accent`, so a new kind does not compile until it has one and `styles.css` needs
+   * no per-kind rule. Chosen to stay clear of the state tones that already colour a card's
+   * left edge and the header's status pill. Colour is never the only cue: the kind's icon is
+   * always drawn with it, and the word is printed too except in two places. The card's
+   * `medallion` style is icon-only and names the kind on hover and as its accessible name, and
+   * the header badge sheds its word at the narrowest width, where the word stays the badge's
+   * accessible text and hover still names the kind.
+   */
+  accent: string;
+  /**
+   * The kind's icon, declared here beside its colour so a new kind does not compile until it
+   * has both. Every kind's icon is different (`test/task-kind-mark.test.ts` renders them).
+   */
+  icon: readonly TaskKindIconShape[];
   afterWorkHint?: string;
 }
 
 export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
+  document: {
+    label: "document",
+    blurb: "Update repository documentation, with Documentation Review before the pull request.",
+    purpose: "write and maintain documentation",
+    accent: "#e9b96e",
+    icon: [
+      { shape: "path", d: "M4 1.5h5l3 3V14H4zM9 1.5v3h3M6 7h4M6 9.5h4M6 12h2" },
+    ],
+    afterWorkHint: "Documentation Review checks accuracy, consistency, concise prose, and references.",
+  },
   ship: {
     label: "ship",
     blurb: "Deliver a change, as a pull request.",
     purpose: "deliver a change",
+    accent: "#3dd6c6",
+    icon: [{ shape: "path", d: "M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5" }],
   },
   bugfix: {
     label: "bugfix",
     blurb: "Fix a bug, with Bug Fix Review before the pull request.",
     purpose: "fix a bug",
+    accent: "#ff7b72",
+    icon: [
+      { shape: "rect", x: 5, y: 5, width: 6, height: 8.5, rx: 3 },
+      { shape: "path", d: "M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8" },
+    ],
     afterWorkHint: "Bug Fix Review checks the cause, regression proof, and code risk.",
   },
   scout: {
     label: "scout",
     blurb: "Investigate and report. No diff, so no after-work.",
     purpose: "investigate and report",
+    accent: "#79c0ff",
+    icon: [
+      { shape: "circle", cx: 7, cy: 7, r: 4.2 },
+      { shape: "path", d: "m10.1 10.1 3.4 3.4" },
+    ],
   },
   plan: {
     label: "plan",
     blurb: "Produce a reviewed plan with Plan Validation, and optionally schedule the work.",
     purpose: "produce a reviewed plan",
+    accent: "#a371f7",
+    icon: [
+      { shape: "path", d: "M6.5 4h7M6.5 8h7M6.5 12h7" },
+      { shape: "path", d: "m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7" },
+      { shape: "circle", cx: 3.4, cy: 12, r: 0.9 },
+    ],
     afterWorkHint: "Plan Validation checks agreement across plan files and phases.",
   },
   pipeline: {
     label: "pipeline",
     blurb: "Start conductor's SDLC pipeline. Conductor owns its worktree and PR; no after-work.",
     purpose: "run a conductor pipeline",
+    accent: "#db61a2",
+    icon: [
+      { shape: "circle", cx: 3.4, cy: 8, r: 1.7 },
+      { shape: "circle", cx: 12.6, cy: 3.8, r: 1.7 },
+      { shape: "circle", cx: 12.6, cy: 12.2, r: 1.7 },
+      { shape: "path", d: "M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6" },
+    ],
   },
   chat: {
     label: "chat",
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
+    accent: "#b4c0cf",
+    icon: [{ shape: "path", d: "M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" }],
   },
   shape: {
     label: "shape",
     blurb: "Get grilled on the work first, then produce a reviewed plan.",
     purpose: "shape work into a reviewed plan",
+    accent: "#d2a8ff",
+    icon: [
+      { shape: "path", d: "M8 1.8 14.2 8 8 14.2 1.8 8z" },
+      { shape: "path", d: "M5.6 8h4.8" },
+    ],
     afterWorkHint: "Plan Validation checks agreement across plan files and phases.",
   },
 };
@@ -123,6 +194,12 @@ export interface TaskKindBehavior {
  * whether Foreman may schedule it.
  */
 export const TASK_KIND_BEHAVIOR = {
+  document: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: true,
+    constraint: null,
+  },
   ship: {
     repoAvailability: "workspace",
     launch: "harness",
@@ -216,10 +293,11 @@ export function allowsBacklogAutopilot(kind: TaskKind): boolean {
  * value. Mixing them would put "what is this choice?" and "what follows from it?" in one
  * record and lose the reason either is written down.
  *
- * Ship and Bugfix produce implementation diffs; Plan produces reviewable documents.
+ * Ship and Bugfix produce implementation diffs; Plan and Document produce reviewable documents.
  * This record keeps that property independent from which kind is the dispatch default.
  */
 const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
+  document: true,
   ship: true,
   bugfix: true,
   scout: false,
@@ -242,6 +320,7 @@ export function hasReviewableDiff(kind: TaskKind): boolean {
 
 /** Whether this kind can be stored in the backlog or produced by backlog automation. */
 const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
+  document: true,
   ship: true,
   bugfix: true,
   scout: true,
@@ -297,6 +376,7 @@ export function taskRequeueRefusal(task: RequeueCandidate): string | null {
  * the same interview every week asks the same questions of nobody in particular.
  */
 const KIND_ALLOWS_SCHEDULE: Record<TaskKind, boolean> = {
+  document: true,
   ship: true,
   bugfix: true,
   scout: true,
@@ -321,6 +401,15 @@ export type PlanningTaskKind = Extract<TaskKind, "plan" | "shape">;
 
 export function isPlanningTaskKind(kind: TaskKind | null | undefined): kind is PlanningTaskKind {
   return kind === "plan" || kind === "shape";
+}
+
+/**
+ * Whether a planning task (plan or shape) pinned local plan storage: its bundle stays in the
+ * daemon's plan store, nothing lands in Git, and publication is a local receipt rather than a
+ * planning pull request. The one reading every local-plan branch takes, so shape mirrors plan.
+ */
+export function isLocalPlanningTask(task: Pick<Task, "kind" | "planPolicy"> | null | undefined): boolean {
+  return isPlanningTaskKind(task?.kind) && task?.planPolicy?.storage === "local";
 }
 
 /**
@@ -349,17 +438,6 @@ export function taskHasNoProvisionedResources(task: Task): boolean {
     task.extraRepos.every((entry) => entry.worktreePath === null && entry.provider === null)
   );
 }
-
-/**
- * The kinds an agent may file through MCP `create_task`: every backlog kind a human can hand
- * work to. Scout, plan and shape are there for the operator who asks a session to file one.
- * A shape breakdown's ticket is the same v3 call, so this enum does not restrict tickets to
- * ship and bugfix; the bundled `tickets` skill does.
- * The kind's own backlog rules still apply, so a shape task waits for its human because
- * Foreman's autopilot never launches one. Chat and pipeline stay out: chat cannot enter the
- * backlog, and a pipeline commission is the provider's to start.
- */
-export const MCP_TASK_KINDS = ["ship", "bugfix", "scout", "plan", "shape"] as const satisfies readonly TaskKind[];
 
 /** Task kinds offered by surfaces that can only create or edit backlog work. */
 export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
@@ -498,85 +576,63 @@ export function byBacklogRank(a: BacklogRanked, b: BacklogRanked): number {
 /** What a session's task pill has left to say once the constants and duplicates are dropped. */
 export interface TaskPillParts {
   /**
-   * The kind badge, or null when the kind is the one every writer defaults to. Absence
-   * means `ship` unambiguously: `kind` is `NOT NULL`, so the pill only exists when there
-   * is a task, and a task always has a kind.
+   * The task's title, or null when the session is already named after it. Kept rather than
+   * dropped because a session re-assigned to a later task keeps the first task's title as its
+   * name, and the pill is then the only place the task now executing appears.
    */
-  kind: TaskKind | null;
-  /** The task's title, or null when the session's own name already carries it. */
   title: string | null;
   /**
-   * True when nothing the pill hosts on EVERY surface has anything to say - no kind
-   * badge, no title, no outcome and no schedule origin.
+   * True when nothing the pill hosts on EVERY surface has anything to say - no title, no
+   * outcome and no schedule origin.
    *
    * The pill is not an empty frame: it has a background, a border and a tone-coloured
    * left edge, so drawing one with nothing in it is a bar of chrome that says less than
-   * nothing. That is the common case now that the two text parts above went conditional -
-   * an ordinary running `ship` task on a session named after it - so the reduction is not
-   * finished until the container goes with them.
+   * nothing. That is the common case - an ordinary running task on a session named after
+   * it - so the reduction is not finished until the container goes with the text.
    *
-   * A surface that draws something of its OWN inside the pill has to say so: the card
-   * adds a `dispatching…` / `failed` word that the console detail does not, and it ORs
-   * that in at the point it draws it rather than being asserted here.
+   * The task's KIND is deliberately not an operand any more. It used to be drawn here for
+   * every kind but `ship`, which left the most common kind printed nowhere at all. It is now
+   * drawn for every kind, `ship` included, by `TaskKindMark` beside the session's own name,
+   * where the operator chooses its style (`taskKindHeader` in Settings > Display). Drawing
+   * it here as well would say it twice.
    *
    * `repoPrs` is deliberately NOT one of the operands, and it is the one a reader will
    * reach for. A multi-repo task's per-repo pull-request list is a SIBLING row, not
    * pill content - it is a separate row precisely because it is as wide as the repo
    * count while the pill's outcome link is pinned right - and it gates itself on being
-   * non-empty. Folding it in here would draw a pill with nothing in it above that row,
-   * which was measured in a browser: the pill hugs its content on a card, so an empty
-   * one is a 14px stub rather than a bar, and the row reads better with nothing above it
-   * than with that. The row is self-describing (each chip names its repo and its PR
-   * state) and it still sits under the session's own title.
+   * non-empty. Folding it in here would draw a pill with nothing in it above that row.
    */
   silent: boolean;
 }
 
 /** A session with no task at all: nothing to draw, and no pill either. */
-const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
+const NO_PILL: TaskPillParts = { title: null, silent: true };
 
 /**
  * What the task pill should draw for a session.
- *
- * Both parts are usually silent, and for different reasons. Every automated writer
- * defaults to `ship` - the MCP `create_task` tool produces only `ship` or `bugfix` - so a
- * badge rendered unconditionally reads `SHIP` in almost every session, is not
- * colour-differentiated in the console header, is frozen once the task leaves `backlog`,
- * and repeats the chip on the Board tile you clicked through. Only a kind somebody deliberately
- * chose says anything, so `ship` is the silent one and every other kind is drawn.
- *
- * Written as "not the default" rather than as a list of the kinds that are drawn, so a
- * new kind is offered on the same reasoning without an edit here. The reasoning is
- * about `ship` being what you get by not choosing, which is a property of `ship`.
  *
  * The title is a duplicate because `dispatcher.ts` names a dispatched session after its
  * task, so the pill usually repeats the `h2` two rows above it. It is NOT always a
  * duplicate, which is why this is a comparison rather than a deletion: a session
  * re-assigned to a later task keeps the first task's title as its name, and the pill is
  * then the only place the task now executing appears (`test/task-multi-session.test.ts`).
- *
- * Shared rather than inlined at each call site because a session is drawn by four
- * components: the Console detail and the Board tile both render this pill, and a rule applied
- * to one of them would look right in one layout and wrong in the other.
  */
 export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPillParts {
   const task = session.task;
   if (!task) return NO_PILL;
-  const kind = task.kind === DEFAULT_TASK_KIND ? null : task.kind;
   const title = task.title === session.name ? null : task.title;
   return {
-    kind,
     title,
     // `scheduleId` rather than a call into `ScheduleOriginChip`: this module is browser-safe
     // shared logic and cannot import a component, and the chip's own gate is that one field
     // (`scheduleProvenance`). `task-pill.test.ts` pins the two answering together.
-    silent: !kind && !title && !task.outcome && !task.scheduleId,
+    silent: !title && !task.outcome && !task.scheduleId,
   };
 }
 
-/** Kinds that share implementation handoff, PR follow-through, and ship recovery. */
+/** Kinds that defer publication and share PR follow-through and ship recovery. */
 export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
-  return kind === "ship" || kind === "bugfix";
+  return kind === "ship" || kind === "bugfix" || kind === "document";
 }
 
 /**
@@ -589,6 +645,7 @@ export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
  * everyone who never chose.
  */
 export const BUILTIN_KIND_WORKFLOW_DEFAULTS: Readonly<Record<HarnessLaunchedTaskKind, string | null>> = {
+  document: DOCUMENTATION_REVIEW_WORKFLOW_ID,
   ship: NO_MISTAKES_REVIEW_WORKFLOW_ID,
   scout: null,
   plan: PLAN_VALIDATION_WORKFLOW_ID,
@@ -611,8 +668,16 @@ export type KindWorkflowDefaults = Partial<Record<HarnessLaunchedTaskKind, strin
  * resolves through here - the dispatch form, `POST /api/tasks`, task-source sweeps, "Shape
  * this" and the Recurring Mission editor - so a row set in Settings reaches all of them.
  */
-export function taskDefaultWorkflowId(kind: TaskKind, configured: KindWorkflowDefaults): string | null {
+export function taskDefaultWorkflowId(
+  kind: TaskKind,
+  configured: KindWorkflowDefaults,
+  storage: "repository" | "local" = "repository",
+): string | null {
   if (!taskKindLaunchesHarness(kind)) return null;
+  // A locally stored plan (plan or shape) has no checkout files and no planning PR, so the
+  // repository Plan Validation (and any row aimed at it) cannot review it. Upstream pins a plan
+  // to the local variant; the fork's shape follows it.
+  if (isPlanningTaskKind(kind) && storage === "local") return LOCAL_PLAN_VALIDATION_WORKFLOW_ID;
   const chosen = configured[kind];
   return chosen === undefined ? BUILTIN_KIND_WORKFLOW_DEFAULTS[kind] : chosen;
 }

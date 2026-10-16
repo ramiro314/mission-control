@@ -29,6 +29,7 @@ export const EXECUTABLE_IDS = [
   "lsof",
   "du",
   "treehouse",
+  "profiles",
   "systemd-inhibit",
   "xdg-terminal-exec",
   "busctl",

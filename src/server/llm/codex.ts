@@ -9,10 +9,11 @@ import { killLiveCodexSdkRuns, runCodexSdkOneShot, type CodexSdkDeps } from "./c
 import { DEFAULT_CODEX_TRANSPORT, type CodexTransport } from "@shared/llm.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
 import { estimateStandardApiUsage } from "../harness/codex/pricing.ts";
-import { grantRefusal, LlmProviderFailure } from "@shared/llm.ts";
+import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { validateLlmImages } from "./images.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { ProviderFailure } from "./provider-failure.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 import {
@@ -203,31 +204,20 @@ function codexFailureDetail(stdout: string, stderr: string): string {
   return event || safeFailureText(stderr) || "no provider failure detail";
 }
 
-/**
- * Recognise the provider refusals a repeat of the same call cannot fix.
- *
- * Matched against the provider's own wording, which is all Codex gives us: both observed
- * failures exit 1 within seconds and emit nothing else. Anything unrecognised returns null
- * and stays an ordinary transient failure, so an unfamiliar message is retried as before
- * rather than guessed at.
- */
-export function classifyCodexFailure(message: string): LlmProviderFailure | null {
-  const model = /The '([^']+)' model is not supported/i.exec(message);
-  if (model) {
-    return new LlmProviderFailure("model_unavailable", `Codex account cannot use model ${model[1]}`, message);
-  }
-  if (/you've hit your usage limit|usage_limit_reached/i.test(message)) {
-    const resetsAt = /try again at (.+?)\.?\s*$/i.exec(message)?.[1]?.trim() || null;
-    const summary = resetsAt ? `Codex usage limit reached; resets ${resetsAt}` : "Codex usage limit reached";
-    return new LlmProviderFailure("quota_exhausted", summary, message, resetsAt);
+function codexProviderFailure(stdout: string): ProviderFailure | null {
+  for (const line of stdout.split("\n").reverse()) {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.type !== "turn.failed") continue;
+      const error = event.error;
+      const message = typeof error === "string" ? error
+        : error && typeof error === "object" ? (error as Record<string, unknown>).message : null;
+      if (typeof message === "string" && message.trim()) return new ProviderFailure(message);
+    } catch {
+      // Incomplete JSON is a local transport failure, not a provider response.
+    }
   }
   return null;
-}
-
-/** The error to reject a failed run with: typed when the cause is permanent. */
-function codexExitError(how: string | number | null, stdout: string, stderr: string): Error {
-  const message = `codex exited ${how}: ${codexFailureDetail(stdout, stderr)}`;
-  return classifyCodexFailure(message) ?? new Error(message);
 }
 
 interface MaterializedSchema {
@@ -315,9 +305,7 @@ export const codexRunner: LlmRunner = {
     // rather than the next daemon restart. It spawns the SAME binary (see `codex-sdk.ts`),
     // so this is a choice about how the reply is parsed, never about what is executed.
     if (resolveCodexTransport() === "sdk") {
-      const sdk = await runCodexSdkOneShot(prompt, executable.path, opts, codexSdkDeps).catch((error: unknown) => {
-        throw (error instanceof Error && classifyCodexFailure(error.message)) || error;
-      });
+      const sdk = await runCodexSdkOneShot(prompt, executable.path, opts, codexSdkDeps);
       // Accounted exactly like the exec transport, through the same reporter. The SDK's
       // `Turn.usage` carries the same field names `codexTokenSplit` already reads off
       // `turn.completed`, so this is one shape reaching one ledger rather than a second
@@ -418,12 +406,12 @@ export const codexRunner: LlmRunner = {
           if (signal === null && !killed) return;
           done();
           const how = signal ?? (killed ? "on shutdown" : code);
-          reject(codexExitError(how, out, err));
+          reject(codexProviderFailure(out) ?? new Error(`codex exited ${how}: ${codexFailureDetail(out, err)}`));
         });
         child.on("close", (code) => {
           done();
           if (code !== 0) {
-            reject(codexExitError(code, out, err));
+            reject(codexProviderFailure(out) ?? new Error(`codex exited ${code}: ${codexFailureDetail(out, err)}`));
             return;
           }
           const events = readCodexEvents(out);

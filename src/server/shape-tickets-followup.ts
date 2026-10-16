@@ -44,9 +44,9 @@ export async function startShapeTicketsFollowup(
   try {
     task = deps.tasks.createShapeTicketsFollowup({
       sourceTask: source,
-      sourceEpisodeId: accepted.posture.binding.episodeId,
-      sourceSessionId: accepted.posture.binding.sessionId,
-      sourcePrUrl: accepted.posture.prUrl,
+      sourceEpisodeId: accepted.source.episodeId,
+      sourceSessionId: accepted.source.sessionId,
+      sourcePrUrl: accepted.source.ref,
       agent: shapeTicketsAgent(source.agent, deps),
     });
   } catch (error) {

@@ -34,8 +34,9 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Version 20 moves all eight to `gpt-6-sol`, and current
-version 21 keeps that routing.
+the other seven on `gpt-5.6-terra`. Version 20 moves all eight to `gpt-6-sol`, version 21 keeps
+that routing with the [expanded documentation guidance](#documentation-review), and current
+version 22 keeps both.
 App-wide and environment defaults cannot change these published snapshots.
 
 A Persona can also recommend a reasoning **effort** (`low`, `medium`, `high`, `xhigh` or
@@ -121,7 +122,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Twelve ready-made review roles ship with the application. Nothing has to be
+Fourteen ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -136,6 +137,8 @@ one immediately.
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Documentation Consistency Judge | Agreement across changed documents and their relevant current references |
+| Conciseness & Reference Judge | Useful prose, necessary context, and precise references instead of repeated explanations |
 | Slop Filter | Low-signal code, tests, comments, and prose that add no trustworthy behavior or useful explanation |
 | Code Quality Judge | Final local judgment of correctness, security, resource lifetime, error handling, compatibility, and regression evidence before pull request creation |
 | Code Design Reviewer | The design of the change: appropriate abstractions, SOLID without Liskov, DRY, composition over inheritance, encapsulation, unrepresentable illegal states, and explicit dependencies. Scoped to the submitted change, and never style or types |
@@ -183,7 +186,7 @@ copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-Five ready-made workflows ship already published in the Library:
+These ready-made workflows ship already published in the Library:
 
 | Workflow | Judges, in stage order | Finishes with |
 | --- | --- | --- |
@@ -192,6 +195,8 @@ Five ready-made workflows ship already published in the Library:
 | **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
 | **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Verified Pull Request action |
 | **No-Mistakes Review (Affected tests)** | The same judges as High Rigor | Verified Pull Request action, then [Wait for CI](#wait-for-ci), then GitHub Inspector |
+| **Local Plan Validation** | The same plan review roles over an exact local revision | Local plan publication |
+| **Documentation Review** | Intent Conformance; then Documentation Steward, Documentation Consistency, and Conciseness & Reference | Verified Pull Request action |
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
@@ -213,11 +218,47 @@ material is reported as a gap. Plan tasks with Persona review receive instructio
 frozen text artifact containing the root plan, phase files, relevant unchanged references, and
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
+#### Documentation Review
+
+The default for [document tasks](dispatch-and-backlog.md) starts with the
+`documentation` Command. Configure that slot for the repository's link, anchor, formatting,
+generated-reference, or docs-build checks. It uses the normal Command trust and execution
+rules; an unconfigured slot reports **Skipped** and passes. There is no hard-coded test suite
+or automatic execution of commands found in documentation.
+
+Intent Conformance runs next. Documentation Steward owns accuracy, authoritative placement,
+consolidation traceability, and dated verification claims. Documentation Consistency checks
+names, deliverables, and dependency contracts across current documents. Conciseness & Reference
+checks useful definitions, caller outcomes, decision rationale, and concise references while
+preserving local context. The three specialists run together and
+must all pass before the Pull Request action. Their guidance lives in the
+[Persona sources](../personas/README.md), rather than being repeated here.
+
+Document tasks with Persona review ask the author to register current changed document text,
+complete relevant sections of unchanged references, an inventory, source hashes or revisions,
+and focused check results. Consolidation evidence includes relevant searches, history, and the
+destination text for removed details. Paths or changed hunks alone cannot establish consistency. Review
+scope excludes unrelated historical debt, and missing context is disclosed as an evidence gap.
+This preset sets **Evidence preflight** to **Off**.
+
+Every judge in this preset has **Recheck after repairs** enabled. In a workflow copy, a Persona's
+Routing panel in Pipeline view, or its properties in Graph view, can change that setting. It
+forces a fresh review after repairs even when the machine skips previously passing judges.
+The choice is frozen on each published node; old graphs without it retain the machine policy.
+
+Documentation Review v2 and No-Mistakes Review v21 use the expanded documentation guidelines.
+Earlier published versions retain their original Persona instructions; existing bindings need
+the newer version to adopt the updated policy.
+
+#### Implementation workflow versions
+
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
-Their next versions update only the pinned model to `gpt-6-sol`. The version after that, in every
-built-in workflow with a Pull Request action, changes only that action's text: issue-backed work
+Their next versions update only the pinned model to `gpt-6-sol`. The last version of every
+built-in workflow with a Pull Request action changes only that action's text: issue-backed work
 names its issue in the pull request body (`Closes #<n>`, or `Part of #<n>` when a human step
-remains). Every earlier version keeps the action text it was published with.
+remains). It follows any upstream version, so No-Mistakes Review takes it as version 22, after
+version 21's documentation guidance, and Documentation Review as version 3. Every earlier version
+keeps the action text it was published with.
 
 **No-Mistakes Review (Affected tests)** (`builtin-workflow:no-mistakes-review-affected-tests`) is
 No-Mistakes Review's current pipeline with two changes: the first stage runs the
@@ -233,7 +274,7 @@ Their earlier versions remain available with their original review graphs and co
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks this workflow - its five stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its five stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -372,7 +413,8 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 21 because it is current. Adopting the newer version on an
+take version 22 because it is current, with the [expanded documentation guidance](#documentation-review).
+Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -755,8 +797,8 @@ reason.
 which is the same already-shipped path an unconfigured slot takes - see [Running a check
 command](worktrees-and-checks.md#running-a-check-command) for why the platform floor exists.
 
-**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck`,
-`build` and `affected-tests` (see [Affected tests](#affected-tests)). What each one runs is configured in
+**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck`, `build`,
+`documentation` and `affected-tests` (see [Affected tests](#affected-tests)). What each one runs is configured in
 [Library › Commands](library-and-line.md#commands) (`#/library/commands/<slot>`), keeping the
 exportable published version machine-neutral and free of argv. The execution contract accepts
 an **argv**, not a shell string, so `&&`, `|` and `$HOME` are ordinary arguments. The editor
@@ -1125,7 +1167,11 @@ repository root, and pins the immutable version id. Publishing or editing a newe
 cannot change an existing binding or run. Reaching for the chip on a session that is still bound
 to an active binding opens the dialog **on that binding** rather than on whichever workflow
 happens to sort first: choosing the bound version offers **Submit bound version**, and choosing
-a different one explains the conflict, naming both workflows in words rather than by id.
+a different one offers **Switch workflow** or **Switch and submit**. Either action makes the
+selected workflow active and archives the previous binding automatically. **Switch and submit**
+also starts a review of the selected workflow. Switching cancels any active run on the previous
+binding; its run history remains readable. The replacement and conflict rules are documented in
+[Switching a session workflow](workflow-system.md#switching-a-session-workflow).
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never
@@ -1550,9 +1596,15 @@ historical registration requests without removing human requirements or substant
 New Persona failures declare a finding basis: `substantive`, `coverage_registration`, or
 `evidence_access`. The latter two are review execution problems and cannot emit author repair
 receipts. Mixed responses are rejected whole, never trimmed into approval. One correction shares
-a durable maximum of two provider executions with parsing, transport and restart recovery.
-Exhaustion pauses in `infrastructure_error`; an explicit infrastructure retry starts a new bounded
-operation with the same frozen review input. Rejected responses remain inspectable on the attempt.
+a durable maximum of two correction executions with parsing, local transport and restart recovery.
+A confirmed provider refusal has a separate, durable ten-minute window measured from the first
+refusal. The daemon retries the same frozen input after progressive delays of 1, 2, 4, 8, 16, 32,
+then at most 60 seconds, without consuming the correction budget. A restart preserves the window
+and pending retry. When the window ends, the run pauses in `infrastructure_error`; an explicit
+infrastructure retry starts a new bounded operation. Provider token or quota exhaustion instead
+pauses immediately in `provider_token_exhausted` and shows the error to the operator. Local CLI
+timeouts, process failures, parse errors, and contract violations keep their existing bounded
+policy. Rejected responses remain inspectable on the attempt.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the
@@ -1617,12 +1669,7 @@ measurement does not need an agent, a script, or a SQLite session. See
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the
-binding's repair-round limit. A provider refusal that no retry can fix is not retried: when the
-runner reports the model as unavailable to the account or the usage quota as exhausted, the
-Persona spends one call, records `model_unavailable` or `quota_exhausted` as that call's
-`workflow_llm_calls.error_code` instead of `persona_infrastructure`, and the failed node shows
-the reason, with the reset time when the provider gives one. Other call failures keep
-`persona_infrastructure`, and a reply that does not parse records `persona_parse`. A failing path back to Session either resumes itself or waits for
+binding's repair-round limit. A failing path back to Session either resumes itself or waits for
 a manual resubmit, depending on the published [repair-resumption policy](#repair-resumption).
 Resubmission captures fresh evidence and refuses an unchanged snapshot unless the operator
 explicitly confirms it, so an approval from an older round is never reused. Preview performs

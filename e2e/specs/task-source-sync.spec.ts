@@ -35,7 +35,17 @@ async function enable(page: Page, daemon: DaemonHandle) {
 // Waits for the daemon to hold the value, not just the checkbox: a config write still in
 // flight when a sweep starts invalidates that sweep's refresh, which then counts nothing.
 async function keepUpdated(page: Page, daemon: DaemonHandle, on: boolean) {
+  // A previous toggle may still be saving. A GET can briefly see the earlier value before
+  // that write lands, so wait for the PUT caused by this toggle before reading.
+  const saved = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/api/task-sources/config")
+      || response.request().method() !== "PUT") return false;
+    try {
+      return JSON.parse(response.request().postData() ?? "{}").sources?.[0]?.keepUpdated === on;
+    } catch { return false; }
+  });
   await page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"}).setChecked(on);
+  expect((await saved).ok()).toBe(true);
   await expect.poll(async()=> (await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json()).sources[0].keepUpdated).toBe(on);
 }
 

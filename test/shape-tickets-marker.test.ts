@@ -187,3 +187,21 @@ test("a waiting open lands only on the view it left, and only briefly", () => {
   const fromFleet = { ...pending, fromPage: "fleet" };
   assert.equal(pendingTaskOpenState(fromFleet, { ...left, selectedId: null }, 1_500), "drop");
 });
+
+test("a shape task pinned to local storage says its tickets wait for publication, not a merge", () => {
+  const local = { version: 2 as const, storage: "local" as const, commitPlanHtml: false };
+  const marker = (state: ShapeTicketsState) => shapeTicketsMarker({
+    kind: "shape",
+    planPolicy: local,
+    shapeTickets: { state, followupTaskId: "follow-up", canCreate: false },
+  });
+  assert.equal(marker("pending")?.label, "Tickets after publication");
+  assert.match(marker("pending")!.tooltip, /approved revision is published/);
+  assert.match(marker("lapsed")!.tooltip, /without publishing its plan/);
+  assert.match(marker("started")!.tooltip, /published plan/);
+  // A repository shape plan keeps its merge wording.
+  assert.equal(
+    shapeTicketsMarker({ kind: "shape", planPolicy: null, shapeTickets: { state: "pending", followupTaskId: null, canCreate: false } })?.label,
+    "Tickets after merge",
+  );
+});

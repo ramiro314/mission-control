@@ -17,6 +17,7 @@ import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { shapeTicketsFollowupFacts } from "./shape-tickets.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
 import { executionAuthorizationContract } from "./execution-authorization.ts";
+import { documentTaskAppendix } from "./documentation/prompt.ts";
 import {
   workflowEvidenceContractAppendix,
 } from "./workflows/agent-contract.ts";
@@ -70,6 +71,7 @@ export interface TaskContractInputs {
   planSkills?: PlanningSkillInvocations | null;
   /** The server resolved a Persona node in the selected immutable workflow graph. */
   workflowEvidence?: boolean;
+  planDiscovery?: string;
 }
 
 /**
@@ -122,15 +124,17 @@ function requireCompletionContract(kind: TaskKind): TaskCompletionContract {
 }
 
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
+  document: (_task, inputs) => documentTaskAppendix(inputs.workflowEvidence === true),
   ship: () => SHIP_COMPLETION_HANDOFF,
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
-  plan: planningContract("plan", planContractAppendix),
+  plan: planningContract("plan", (skills, workflowBound, task) =>
+    planContractAppendix(skills, workflowBound, task.planPolicy?.storage)),
   pipeline: () => null,
   chat: (task) => (task.workflowId === null ? UNBOUND_CHAT_PUBLICATION : null),
   // A tickets follow-up (a row in `shape_ticket_followups`) gets the tickets-only variant.
   shape: planningContract("shape", (skills, workflowBound, task) =>
-    shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id))),
+    shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id), task.planPolicy?.storage)),
 };
 
 /**
@@ -216,6 +220,7 @@ export function withTaskKindContract(
       pullRequestGrant: false,
     }),
     baseBranchContract(task),
+    inputs.planDiscovery ?? null,
     KIND_CONTRACT[task.kind](task, inputs),
     // Whether a Persona will read evidence is the workflow's property, resolved once by the
     // eligibility reader this flag arrives from - so it is not re-decided per kind here. A
