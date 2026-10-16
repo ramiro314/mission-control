@@ -388,10 +388,6 @@ const workflows = new WorkflowManager(registry, personas.store, {
   // attempt's lease is still unresolved.
   unresolvedCheckLease: (submissionId, nodeId) =>
     checkRuntime.unresolvedLeaseForNode(submissionId, nodeId),
-  // A cancelled run stops the dependency claims its check attempts are waiting on.
-  stopCheckClaims: (attemptIds) => {
-    checkLeases.stopClaims(attemptIds);
-  },
   inject: runtimePromptInjector(sdkSessions),
   // How often the resumption observer and the session action sweep look, in ms.
   //

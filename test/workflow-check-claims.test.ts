@@ -329,24 +329,67 @@ test("a repository the pool cannot identify still runs its claim in the cold fal
 // ---- run cancel stops the claim ------------------------------------------------------------
 
 for (const pooled of [true, false]) {
-  test(`stopping an attempt's claims stops a running claim (${pooled ? "pool slot" : "cold fallback"})`, async () => {
+  const where = pooled ? "pool slot" : "cold fallback";
+
+  test(`aborting an attempt's signal stops its running claim (${where})`, async () => {
     const { clone, sha } = repository(`mission-check-claim-stop-${pooled}-`);
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const fake = steps(untilStopped(() => markStarted()));
     const leases = checkLeases(worktrees(LOCK_CLAIM, fake.runClaimStep, pooled));
     const ref = attempt();
-    const pending = leases.acquireForAttempt({ ...ref, repoRoot: clone, headSha: sha });
+    const cancel = new AbortController();
+    const pending = leases.acquireForAttempt({ ...ref, repoRoot: clone, headSha: sha, signal: cancel.signal });
     await started;
-    assert.equal(leases.stopClaims(["someone-else"]), 0, "a claim was stopped for another attempt");
-    assert.equal(leases.stopClaims([ref.attemptId]), 1);
+    cancel.abort("cancelled");
     await assert.rejects(
       () => pending,
       (err: unknown) => err instanceof CheckDependencyClaimError && /stopped/.test(err.failure.warning.reason),
     );
     assert.equal(leaseRows.get(ref.attemptId), null);
   });
+
+  test(`a cancel that lands before the claim registers still stops it (${where})`, async () => {
+    // The window the cancel used to miss: the attempt is running, but its claim is not in the
+    // registry yet because the lease is still resolving its commit. The abort lands there.
+    const { clone, sha } = repository(`mission-check-claim-early-stop-${pooled}-`);
+    const fake = steps(() => ok);
+    const cancel = new AbortController();
+    const leases = new CheckLeaseManager(db, {
+      manager: worktrees(LOCK_CLAIM, fake.runClaimStep, pooled),
+      verifyBase: async (repoRoot, headSha) => {
+        const resolved = await verifyPinnedBase(repoRoot, headSha);
+        cancel.abort("cancelled");
+        return resolved;
+      },
+    });
+    const ref = attempt();
+    await assert.rejects(
+      () => leases.acquireForAttempt({ ...ref, repoRoot: clone, headSha: sha, signal: cancel.signal }),
+      (err: unknown) => err instanceof CheckDependencyClaimError
+        && /stopped before it started/.test(err.failure.warning.reason),
+    );
+    assert.deepEqual(fake.ran, [], "a claim step ran for an attempt already cancelled");
+    assert.equal(leaseRows.get(ref.attemptId), null);
+  });
 }
+
+test("an attempt cancelled before it reaches its lease takes no worktree", async () => {
+  const { clone, sha } = repository("mission-check-claim-cancelled-first-");
+  const fake = steps(() => ok);
+  const wm = worktrees(LOCK_CLAIM, fake.runClaimStep);
+  const leases = checkLeases(wm);
+  const ref = attempt();
+  const cancel = new AbortController();
+  cancel.abort("cancelled");
+  await assert.rejects(
+    () => leases.acquireForAttempt({ ...ref, repoRoot: clone, headSha: sha, signal: cancel.signal }),
+    /was cancelled before it took a worktree/,
+  );
+  assert.deepEqual(fake.ran, []);
+  assert.deepEqual(wm.store.slots(), [], "a slot was reserved for a cancelled attempt");
+  assert.equal(leaseRows.get(ref.attemptId), null);
+});
 
 // ---- who owns a failed claim ---------------------------------------------------------------
 
@@ -821,45 +864,64 @@ test("the engine hands each check attempt its slot, so a third check runs while 
   }
 });
 
-test("cancelling a run stops the claims its running check attempts wait on", async () => {
+test("cancelling a run aborts its check attempts, including one whose claim has not started", async () => {
+  // Two gates are mid-claim and wait on their signal. The third has not reached its claim yet:
+  // it looks at its signal only after the cancel, as a claim that registers late would.
   const store = seedRun("cancel-claims");
-  const stopped: string[][] = [];
-  let releaseClaims!: () => void;
-  const claimsStopped = new Promise<void>((resolve) => { releaseClaims = resolve; });
-  const engine = new WorkflowEngine(store, () => {}, {
-    retryBaseMs: 1,
-    runnerFor: noRunner,
-    resolveExecution: passingExecution,
-    workflowPolicy: policy,
-    workflowCommand: catalog,
-    checkSchedule: createCheckScheduler(3),
-    checkDeps: () => ({
+  const outcomes = new Map<string, string>();
+  const midClaim = new Set<string>();
+  let reachClaim!: () => void;
+  const lateClaimReached = new Promise<void>((resolve) => { reachClaim = resolve; });
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      retryBaseMs: 1,
+      runnerFor: noRunner,
+      resolveExecution: passingExecution,
+      workflowPolicy: policy,
+      workflowCommand: catalog,
+    },
+    checkScheduler: createCheckScheduler(3),
+    checkDeps: (ref) => ({
       checkoutSubpath: async () => null,
-      execute: async () => {
-        await claimsStopped;
+      execute: async (request) => {
+        assert.ok(ref.signal, "the engine did not hand the attempt its cancel signal");
+        const signal = ref.signal;
+        if (request.slot === "test") {
+          await lateClaimReached;
+          outcomes.set(request.slot, signal.aborted ? "stopped before it started" : "ran");
+        } else {
+          midClaim.add(request.slot);
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          outcomes.set(request.slot, "stopped while running");
+        }
         return { kind: "infrastructure", reason: "the dependency claim was stopped", ranNothing: true };
       },
     }),
   });
-  const manager = new WorkflowManager(new Registry(), store, {
-    stopCheckClaims: (ids) => {
-      stopped.push([...ids].sort());
-      releaseClaims();
-    },
-  });
+  const engine = manager.engine;
   engine.start();
   try {
     engine.activateSubmission("submission-cancel-claims");
     await waitFor(
-      () => store.listAttempts("submission-cancel-claims").filter((item) => item.state === "running").length === 3,
-      "all three gates to be running",
+      () => midClaim.size === 2
+        && store.listAttempts("submission-cancel-claims").filter((item) => item.state === "running").length === 3,
+      "two gates to be claiming and all three to be running",
     );
     const running = store.listAttempts("submission-cancel-claims")
       .filter((item) => item.state === "running")
-      .map((item) => item.id)
-      .sort();
+      .map((item) => item.id);
+    assert.equal(engine.stopCheckAttempts(["not-an-attempt"]), 0);
     assert.equal(manager.cancel("run-cancel-claims", "cancel-request").ok, true);
-    assert.deepEqual(stopped, [running]);
+    reachClaim();
+    await waitFor(() => outcomes.size === 3, "every gate to see the cancel");
+    assert.deepEqual(Object.fromEntries([...outcomes].sort()), {
+      lint: "stopped while running",
+      test: "stopped before it started",
+      typecheck: "stopped while running",
+    });
     await waitFor(
       () => store.listAttempts("submission-cancel-claims")
         .filter((item) => running.includes(item.id))
@@ -867,11 +929,10 @@ test("cancelling a run stops the claims its running check attempts wait on", asy
       "every gate to settle as cancelled",
     );
     assert.equal(store.getRun("run-cancel-claims")?.status, "cancelled");
-    // A second cancel finds nothing running and stops nothing.
-    manager.cancel("run-cancel-claims", "cancel-request-again");
-    assert.equal(stopped.length, 1);
+    // Settled attempts leave nothing behind to abort.
+    assert.equal(engine.stopCheckAttempts(running), 0);
   } finally {
-    releaseClaims();
+    reachClaim();
     await engine.stop();
     await manager.stop();
   }

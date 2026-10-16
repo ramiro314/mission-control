@@ -281,6 +281,22 @@ async function proveDisposableTree(path: string, sha: string): Promise<string | 
 }
 
 /**
+ * Make a claim's controller follow its caller's signal, and return the unsubscribe. A signal
+ * that is already aborted aborts the claim at once, so a stop requested before the claim
+ * registered still lands: its first step sees it and never starts.
+ */
+function followSignal(signal: AbortSignal | undefined, control: AbortController): () => void {
+  if (!signal) return () => {};
+  const abort = (): void => control.abort("stopped");
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  signal.addEventListener("abort", abort, { once: true });
+  return () => signal.removeEventListener("abort", abort);
+}
+
+/**
  * Tell a caller its claim is about to run. A hook that throws must not fail a claim, or leave a
  * slot reserved behind it, so its error is logged and dropped.
  */
@@ -654,6 +670,13 @@ export class WorktreeManager {
      * A check attempt gives up its check-concurrency slot here, since an install is not a build.
      */
     onClaimStart?: () => void;
+    /**
+     * The caller's own stop for this lease's claim. The claim follows it from the moment it
+     * registers: aborted already, the claim stops before its first step; aborted later, the
+     * running step is stopped. Either way it settles as a failed claim and the lease is granted
+     * with the warning, as for a Stop. A check attempt passes its run's cancel here.
+     */
+    signal?: AbortSignal;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -838,6 +861,7 @@ export class WorktreeManager {
       // provisioning reservation; nothing was granted and nothing ran.
       return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
     }
+    const unfollow = claimControl ? followSignal(input.signal, claimControl) : () => {};
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
@@ -973,6 +997,7 @@ export class WorktreeManager {
         this.quarantineReservation(reservation, "native worktree materialization outcome is unknown", reason);
         return { outcome: "outcomeUnknown", reason };
       } finally {
+        unfollow();
         if (claimControl) this.claims.unregister(reservation.id, claimControl);
       }
     });
@@ -1116,15 +1141,6 @@ export class WorktreeManager {
   }
 
   /**
-   * Stop the running claims this owner holds: a cancelled task's, or a cancelled run's check
-   * attempt's. Each settles as a failed claim and hands its slot over, so the caller that waits
-   * on it continues as it would after any failed claim. Returns how many were running.
-   */
-  stopClaimsFor(owner: WorktreeOwner): number {
-    return this.claims.stopOwned((held) => held.kind === owner.kind && held.key === owner.key).length;
-  }
-
-  /**
    * The pool's claim, run against a tree the pool does not own: the cold, disposable worktree
    * a check falls back to when the pool refuses it. The same steps, environment, deadline, Stop
    * and shutdown rules as a slot's claim. What it lacks is a slot row, so there is no
@@ -1145,6 +1161,8 @@ export class WorktreeManager {
     baseSha: string;
     owner: WorktreeOwner;
     onClaimStart?: () => void;
+    /** As for `acquire`: the claim follows it from the moment it registers. */
+    signal?: AbortSignal;
   }): Promise<DisposableClaimResult> {
     const pooled = this.identity(input.repositoryPath)?.gitCommonDirectory;
     const commonDirectory = pooled
@@ -1171,6 +1189,7 @@ export class WorktreeManager {
     const key = `disposable:${input.path}`;
     const control = this.claims.register(key, input.owner, this.deps.now());
     if (!control) return { kind: "unproven", reason: STOPPING_REASON };
+    const unfollow = followSignal(input.signal, control);
     try {
       notifyClaimStart(input.onClaimStart);
       const outcome = await runClaimSteps({
@@ -1198,6 +1217,7 @@ export class WorktreeManager {
       if (proof) return { kind: "unproven", reason: `${proof} after its dependency claim` };
       return { kind: "succeeded" };
     } finally {
+      unfollow();
       this.claims.unregister(key, control);
     }
   }

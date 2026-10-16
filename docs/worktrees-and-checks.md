@@ -601,9 +601,13 @@ after it are unchanged.
 never counts against it. A slow install ends under the claim's own `timeoutMinutes`, as a
 dependency failure, never as a timed-out check.
 
-**Cancel.** Cancelling a run stops the running claims of its attempts, in a pool slot or a
-fallback tree alike. A stopped claim settles as a failed one: the slot records `failed` and goes
-back to the pool, and the attempt is recorded as cancelled with the run.
+**Cancel.** Cancelling a run stops the claims of its running attempts, in a pool slot or a
+fallback tree alike. That includes an attempt that has not reached its claim yet, for example
+one still resolving its commit or resetting its slot: its claim stops before its first step the
+moment it registers, and an attempt cancelled before it reaches its lease takes no worktree at
+all. A stopped claim settles as a failed one: the slot records `failed` and goes back to the
+pool, and the attempt is recorded as cancelled with the run. A check command that already
+spawned is not signalled by a run cancel; its result is recorded as audit-only.
 
 #### Historical Treehouse check rows
 

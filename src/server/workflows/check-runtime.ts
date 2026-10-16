@@ -101,6 +101,11 @@ export interface CheckAttemptRef {
    * Absent means the attempt keeps whatever its caller holds throughout.
    */
   checkSlot?: CheckSlot;
+  /**
+   * Aborted when this attempt's run is cancelled. The dependency claim follows it, so a cancel
+   * stops a claim that is running and one that has not started yet alike.
+   */
+  signal?: AbortSignal;
 }
 
 /** Which of a claim's fingerprint inputs a change touched, or why that could not be read. */
@@ -341,6 +346,7 @@ export class CheckRuntime {
         nodeId: attempt.nodeId,
         repoRoot: request.repoRoot,
         headSha,
+        ...(attempt.signal ? { signal: attempt.signal } : {}),
         ...(slot
           ? {
               onClaimStart: () => {

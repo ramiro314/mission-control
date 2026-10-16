@@ -337,6 +337,8 @@ export interface CheckTreeAcquireInput {
   baseSha: string;
   /** Told when a dependency claim is about to run inside the acquisition. See `acquireForAttempt`. */
   onClaimStart?: () => void;
+  /** Stops the acquisition's dependency claim, whether it is running or has yet to start. */
+  signal?: AbortSignal;
 }
 
 /** A tree a provider took, and what its dependency claim said, when one ran inside the take. */
@@ -588,6 +590,7 @@ export class MissionCheckTreeProvider implements CheckTreeProvider {
       // matching fingerprint, handed over with a warning when it fails.
       runClaim: true,
       ...(input.onClaimStart ? { onClaimStart: input.onClaimStart } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     if (acquired.outcome === "notAcquired") {
       throw new NativeCheckNotAcquiredError(acquired.reason);
@@ -821,17 +824,6 @@ export class CheckLeaseManager {
   }
 
   /**
-   * Stop the dependency claims running for these attempts, in a pool slot or in a cold
-   * fallback tree alike. A cancelled run calls it for its running attempts. Each stopped claim
-   * settles as a failed one, so its attempt ends without running its Command.
-   */
-  stopClaims(attemptIds: readonly string[]): number {
-    let stopped = 0;
-    for (const key of attemptIds) stopped += this.missionManager.stopClaimsFor({ kind: "check", key });
-    return stopped;
-  }
-
-  /**
    * Take an isolated worktree for one check attempt and pin it to the captured commit.
    *
    * Native allocation is the default. A positive refusal before native reservation uses a
@@ -855,6 +847,13 @@ export class CheckLeaseManager {
      * never for a claim the fingerprint skips. The check runtime gives up its check slot here.
      */
     onClaimStart?: () => void;
+    /**
+     * Aborted when the attempt's run is cancelled. An attempt already aborted takes no tree at
+     * all. Otherwise the dependency claim follows the signal in a pool slot and in the cold
+     * fallback alike: a running claim stops, and one that registers after the abort stops before
+     * its first step. Either way the attempt ends with the dependency failure a stop produces.
+     */
+    signal?: AbortSignal;
   }): Promise<string> {
     const { attemptId, repoRoot } = input;
     // Claimed SYNCHRONOUSLY, before the first await, and this ordering is the guard rather
@@ -871,6 +870,9 @@ export class CheckLeaseManager {
     }
     this.busy.add(attemptId);
     try {
+      if (input.signal?.aborted) {
+        throw new Error(`check attempt ${attemptId} was cancelled before it took a worktree`);
+      }
       // Resolved BEFORE anything is leased, so a caller naming a commit this repository does
       // not have costs an error rather than a pool slot that then has to be unwound.
       const baseSha = await this.verifyBase(repoRoot, input.headSha);
@@ -892,8 +894,15 @@ export class CheckLeaseManager {
       let provider = this.mission;
       let taken: CheckTreeTaken;
       const onClaimStart = input.onClaimStart;
+      const signal = input.signal;
       try {
-        taken = await provider.acquire({ repoRoot, attemptId, baseSha, ...(onClaimStart ? { onClaimStart } : {}) });
+        taken = await provider.acquire({
+          repoRoot,
+          attemptId,
+          baseSha,
+          ...(onClaimStart ? { onClaimStart } : {}),
+          ...(signal ? { signal } : {}),
+        });
       } catch (error) {
         if (!(error instanceof NativeCheckNotAcquiredError)) throw error;
         provider = this.git;
@@ -949,6 +958,7 @@ export class CheckLeaseManager {
               baseSha,
               owner: { kind: "check", key: attemptId },
               ...(onClaimStart ? { onClaimStart } : {}),
+              ...(signal ? { signal } : {}),
             });
             if (claimed.kind === "unproven") throw new Error(claimed.reason);
             if (claimed.kind === "failed") {
