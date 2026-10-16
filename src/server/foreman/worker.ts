@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ForemanConfig,
+  InspectorFindingsResponse,
   PromptedCompletionDisposition,
   PromptedRecoveryClaim,
 } from "@shared/protocol.ts";
@@ -965,6 +966,18 @@ function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string,
  * Immediately before each send it re-reads the session and config and repeats the same
  * decision against the fresh fleet.
  *
+ * A nudge that includes findings needs their text, which the snapshot does not carry. That
+ * read happens BEFORE the freshness recheck, never after it: every request between the
+ * recheck and the inject is a window in which the session can start working, need a human,
+ * gain a queue or a workflow, and a gate decided on the older state would not see it. So the
+ * order is read the findings, re-read the fleet, decide once on both, then type. The fresh
+ * decision also refuses findings read for a different Inspector round than the snapshot it
+ * stamps (see `ReviewFollowupInput.findingsRound`).
+ *
+ * A failed findings read is logged and holds: nothing is stamped or typed, and the next pass
+ * reads again. Findings resolved by the time of the read drop out of the decision; with
+ * nothing else new to say it skips, again without stamping.
+ *
  * Returns the ids of the sessions whose pane it claimed this pass - a send that landed,
  * or one that threw but MAY have reached the composer - so the caller can both judge
  * progress (a non-empty set means come straight back) and keep the per-target loop from
@@ -976,9 +989,10 @@ function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string,
  * cannot spin either, because its marker is kept, so the next pass sees "already nudged"
  * and does nothing.
  */
-async function runReviewFollowup(
+export async function runReviewFollowup(
   client: ForemanClient,
   cfg: ForemanConfig,
+  holdsLease: () => boolean = () => isLeader,
 ): Promise<Set<string>> {
   const nudged = new Set<string>();
 
@@ -1040,15 +1054,23 @@ async function runReviewFollowup(
       // freshness recheck: a PR that turned mergeable in between has no open episode, and
       // the daemon ignores the escalation. The next pull request is still considered.
       if (decision.kind === "escalate") {
-        await escalateConflict(client, session, marks, decision, () => isLeader);
+        await escalateConflict(client, session, marks, decision, holdsLease);
         continue;
+      }
+
+      // The findings' text, read before the freshness recheck below so that recheck is the
+      // last thing observed before typing. A failed read holds the whole session this pass.
+      let read: InspectorFindingsResponse | null = null;
+      if (decision.kind === "read-findings") {
+        read = await readReviewFindings(client, session, decision.prKey);
+        if (!read) break;
       }
 
       const [freshCfg, freshSessions] = await Promise.all([
         client.getConfig().catch(() => null),
         client.sessions().catch(() => null),
       ]);
-      if (!freshCfg || !freshSessions || !isLeader) break;
+      if (!freshCfg || !freshSessions || !holdsLease()) break;
 
       const fresh = resolveLiveSession(freshSessions, noteKeyOf(session));
       if (!fresh || paneKeyOf(fresh) !== paneKeyOf(session)) break;
@@ -1087,42 +1109,79 @@ async function runReviewFollowup(
           settleMs: SETTLE_MS,
         },
         now: Date.now(),
+        ...(read ? { findings: read.findings, findingsRound: read.pr.round } : {}),
       });
-      // An escalation that appeared between the two reads is the next pass's to send.
-      if (freshDecision.kind !== "nudge" || !isLeader) break;
+      // An escalation that appeared between the two reads is the next pass's to send, and so
+      // are findings that appeared in it: this pass read none, so it has no text to type.
+      if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 
-      // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
-      // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
-      // stamp, because a lost response must not become a second nudge; a delivery the
-      // daemon reports as refused restores the pre-nudge mark to retry on a later pass.
-      freshMarks.set(freshDecision.prKey, freshDecision.mark);
-      try {
-        await client.inject(fresh.id, freshDecision.payload);
-      } catch (err) {
-        // Only a delivery the daemon POSITIVELY reported as undelivered frees this session:
-        // its previous mark is restored so it re-nudges, and it is NOT claimed, so the
-        // target loop may act on it now. Any other failure - a lost response, an unrecognised
-        // throw - is treated as "may have reached the composer" (the same conservative
-        // reading `queue-apply`'s `mayHaveLanded` makes): keep the mark and claim the pane,
-        // so nothing types a wrap-up on top of a follow-up that might already be sitting there.
-        const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
-        if (confirmedUndelivered) {
-          if (freshMark) freshMarks.set(freshDecision.prKey, freshMark);
-          else freshMarks.delete(freshDecision.prKey);
-        } else {
-          nudged.add(session.id);
-          nudged.add(fresh.id);
-        }
-        log(`${fresh.name}: could not nudge the PR follow-through (${String(err)})`);
-        break;
+      const outcome = await deliverReviewFollowup(client, fresh, freshMarks, freshDecision);
+      if (outcome === "claimed") {
+        nudged.add(session.id);
+        nudged.add(fresh.id);
       }
-      nudged.add(session.id);
-      nudged.add(fresh.id);
-      log(`${fresh.name}: nudged to follow through on its PR - ${freshDecision.reason}`);
       break;
     }
   }
   return nudged;
+}
+
+/**
+ * One pull request's findings for the relay, or null when the read failed. Logged, so a
+ * held follow-through says why; the caller stamps and types nothing on null.
+ */
+async function readReviewFindings(
+  client: ForemanClient,
+  session: Session,
+  prKey: string,
+): Promise<InspectorFindingsResponse | null> {
+  try {
+    return await client.inspectorFindings(prKey);
+  } catch (err) {
+    log(
+      `${session.name}: could not read GitHub Inspector's findings on ${prKey} - ` +
+        `holding the PR follow-through for the next pass (${String(err)})`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Type one review follow-up into a session that has passed the freshness recheck. `claimed`:
+ * the follow-up landed, or may have, so the pane is this pass's. `free`: the daemon refused
+ * the delivery, so the target loop may act on the pane now.
+ *
+ * Stamp BEFORE the inject, and retract ONLY on positive evidence nothing landed - the
+ * `recentlyActed` discipline. A request whose outcome we never learn keeps the stamp, because
+ * a lost response must not become a second nudge; a delivery the daemon reports as refused
+ * restores the pre-nudge mark to retry on a later pass.
+ */
+async function deliverReviewFollowup(
+  client: ForemanClient,
+  session: Session,
+  marks: Map<string, FollowupMark>,
+  nudge: Extract<ReviewFollowupDecision, { kind: "nudge" }>,
+): Promise<"claimed" | "free"> {
+  const prior = marks.get(nudge.prKey) ?? null;
+  marks.set(nudge.prKey, nudge.mark);
+  try {
+    await client.inject(session.id, nudge.payload);
+  } catch (err) {
+    // Only a delivery the daemon POSITIVELY reported as undelivered frees this session: its
+    // previous mark is restored so it re-nudges, and it is NOT claimed, so the target loop
+    // may act on it now. Any other failure - a lost response, an unrecognised throw - is
+    // treated as "may have reached the composer" (the same conservative reading
+    // `queue-apply`'s `mayHaveLanded` makes): keep the mark and claim the pane, so nothing
+    // types a wrap-up on top of a follow-up that might already be sitting there.
+    const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
+    log(`${session.name}: could not nudge the PR follow-through (${String(err)})`);
+    if (!confirmedUndelivered) return "claimed";
+    if (prior) marks.set(nudge.prKey, prior);
+    else marks.delete(nudge.prKey);
+    return "free";
+  }
+  log(`${session.name}: nudged to follow through on its PR - ${nudge.reason}`);
+  return "claimed";
 }
 
 /**

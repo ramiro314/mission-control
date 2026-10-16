@@ -1,9 +1,8 @@
 // The findings section of a message that hands GitHub Inspector findings to a session.
 //
-// Its first and, today, only caller is the workflow `inspector_feedback` packet. Foreman's
-// review follow-through is to adopt it in a later change, so the two say the same thing
-// about the same finding: how severe it is, where it is, whether it is on GitHub, and what
-// it says. Each caller keeps its own header and closing; this module owns only the findings
+// Its two callers are the workflow `inspector_feedback` packet and Foreman's review
+// follow-through, so the two say the same thing about the same finding: how severe it is,
+// where it is, whether it is on GitHub, and what it says. Each caller keeps its own header and closing; this module owns only the findings
 // in between.
 //
 // Pure, and deliberately so. It imports nothing that opens the database or the network, so
@@ -57,7 +56,7 @@ const LEGACY_BODY =
  * (status, `postedAt`, `githubUrl`, `legacyPosted`) still resolve the same way in any input
  * order. An absent field and a null one stay distinct, as `findingPublication` reads them.
  */
-function dedupeInspectorFindings(findings: readonly InspectorComment[]): InspectorComment[] {
+export function dedupeInspectorFindings(findings: readonly InspectorComment[]): InspectorComment[] {
   const stableFinding = (row: InspectorComment): string => JSON.stringify([
     row.path,
     row.line,

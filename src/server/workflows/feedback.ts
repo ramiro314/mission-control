@@ -501,8 +501,8 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
  * Render one frozen Inspector finding snapshot without reusing model prose as framing.
  *
  * The packet owns its header (goal, workflow, run, PR, pinned head, round and posture) and
- * its `finalizePacket` closing. The findings between them come from the shared renderer, of
- * which this packet is the first caller (Foreman's relay is to adopt it later), given
+ * its `finalizePacket` closing. The findings between them come from the shared renderer,
+ * which Foreman's review follow-through also types findings through, given
  * exactly what is left of the payload limit once the closing
  * that will actually be sent is set aside. The truncation notice is reserved only when the
  * packet will carry it, so `finalizePacket` never has to clip a finding part way and no

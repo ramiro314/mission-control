@@ -191,8 +191,8 @@ no task-owned pull request exists.
 Ownership order is strict. PR follow-through runs first. Human attention, queue items, pending
 turns, active Workflow runs, and any open pull request across every task repository all suppress
 pre-PR recovery. When a bound Workflow has parked but is still active, Workflow owns the session.
-Once any task-owned pull request appears, the shepherd stops and the existing review-comment and
-CI follow-through path owns later idle periods. It never adds a second PR poller.
+Once any task-owned pull request appears, the shepherd stops and the existing GitHub Inspector
+findings and CI follow-through path owns later idle periods. It never adds a second PR poller.
 
 The **Keep pre-PR ship tasks moving** setting governs both immediate held-gap delivery and the
 quiet-window shepherd. The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
@@ -267,11 +267,13 @@ queue that has never moved is exactly where you go looking for the reason.
 ### Keeping a PR on track
 
 Once work has an **open pull request**, its session can park while the
-[GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) posts comments or CI goes red. The Foreman
+[GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews it or CI goes red. The Foreman
 popover's **Pull requests** section has three independent, default-on controls:
 
-- **Keep sessions on track with review comments** nudges the parked session to resolve
-  GitHub Inspector comments already posted on its PR.
+- **Keep sessions on track with GitHub Inspector findings** (`trackReviewFeedback`) nudges the
+  parked session to address every unresolved GitHub Inspector finding on its PR, including
+  dry-run drafts that were never posted. The nudge carries each finding's text, so the session
+  can act on one that is not on GitHub (see [the findings it carries](#the-findings-a-nudge-carries)).
 - **Keep sessions on track with CI** nudges the parked session to fix failing checks. It
   never creates a PR; an existing open PR is a required input, and every fix stays on that
   PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
@@ -287,7 +289,7 @@ popover's **Pull requests** section has three independent, default-on controls:
   this session".
 
 Workflow PR instructions read the CI preference at packet preparation, independently of the
-review-comment preference and the Foreman worker's mode or enabled state. The workflow's own
+findings preference and the Foreman worker's mode or enabled state. The workflow's own
 delivery authorization still controls whether the packet may be sent. Prepared and delivered
 packets keep their exact instructions across setting changes and retries; the next newly
 prepared action uses the new setting. Other action completion kinds receive no CI policy.
@@ -313,16 +315,53 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
 - it only **types** in **live** mode on an **allowlisted** repo, exactly like direct
   wrap-up - dry-run leaves the parked PR for you;
 - it fires only at a **settled-idle** session, so it never interrupts one already working the
-  fixes, and it does not nag a PR that's being handled: review comments re-arm **once per
-  GitHub Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
+  fixes, and it does not nag a PR that's being handled: findings re-arm **once per
+  GitHub Inspector round**, each time with the full unresolved set, and a failing CI re-arms **once per failure episode** - after the checks
   recover, a later failure counts as new (so a red CI is never permanently silenced, and a
-  CI that merely goes green does not re-nudge the comments already relayed);
+  CI that merely goes green does not re-nudge the findings already relayed);
 - it stands down while the session **needs you**, while it has a live **work queue**
   (the drain trigger owns that checkout), and while a non-terminal **workflow run owns the
   session and branch**;
-- the review-comment half counts only GitHub Inspector findings **already posted on the PR**
-  (dry-run drafts and findings still being posted do not count) - the failing-CI half works
-  regardless.
+- the findings half counts every **unresolved** GitHub Inspector finding, whether it was
+  posted on GitHub, is being posted, or was drafted and never posted (in dry run, for example).
+  The Inspector's mode decides only whether a finding reaches GitHub, never whether the session
+  hears about it. Foreman's own gates above still decide whether it types at all.
+
+#### The findings a nudge carries
+
+When the nudge includes findings, Foreman reads them from the daemon
+(`GET /api/inspector/findings?pr=<prKey>`) first, then re-reads the session, its settings and its
+workflow ownership, and only then decides whether to type. Every gate above is therefore checked
+against what the session looks like after the read, so a session that started working, came to
+need you or was taken over by a workflow while the findings were being read is left alone. One
+more gate runs at that point, and only after a read: the round check below, which compares the
+round the findings route answered for with the round in the re-read session. The findings
+Foreman reads, not the session snapshot's count, decide what is sent:
+
+- if the read fails, Foreman logs it, types nothing and does not record the round as relayed,
+  so the next pass tries again;
+- if every finding resolved between the snapshot and the read, the findings part is dropped,
+  and with nothing else new to say the pass skips, again without recording the round;
+- if the findings route answered for a different GitHub Inspector round than the re-read session
+  shows (a round finished between the two reads), a nudge that carries findings is held: nothing
+  is typed and nothing is recorded, so the round it would have stamped is not the round whose
+  findings it carried. The next pass, whose two reads agree, relays that round once. A nudge
+  whose findings part dropped out, such as one for failing CI alone, has no round to compare and
+  is not held.
+
+The message opens with the counts, for example "PR #7 needs follow-through: GitHub Inspector
+has 3 unresolved findings on it (1 posted on GitHub, 2 not posted)." Its findings step asks the
+agent to address every finding listed below. It says a finding marked **Not posted** exists only
+in that message, so the agent should not look for it on GitHub or reply to it there. The agent
+may answer a posted finding it thinks is wrong in its GitHub thread, and should say which
+not-posted finding it disagrees with, and why, in its reply. The operator's per-PR **Resolve**
+closes findings; there is no other dispute channel.
+
+The findings follow the steps, rendered by the same renderer as the workflow
+`inspector_feedback` packet: severity and title, location, a line saying whether and where it
+was posted on GitHub, the body, and the fingerprint. The whole message stays under the same
+8,000-byte ceiling. Past it, whole findings are dropped from the lowest severity up, and a closing
+line says how many were left out. They stay open and come back in the next relay.
 
 **Merge conflicts are capped, then handed to you.** A conflict is nudged **once per
 conflicting head** and at most **3 times per conflict episode**. The episode re-arms only when
@@ -338,7 +377,7 @@ An escalation types nothing. It is logged, recorded as a Foreman episode, and se
 daemon (`POST /api/pr-conflicts/escalate`), which marks the PR's open conflict episode. The PR
 then shows in [Blocked pull requests](attention-and-alerts.md) as "Foreman's 3 nudges didn't
 resolve it", and Foreman stays silent about that conflict until it re-arms. It still relays
-the PR's review comments and failing CI.
+the PR's GitHub Inspector findings and failing CI.
 
 Both halves are in memory, so each survives the other's restart:
 
@@ -348,7 +387,7 @@ Both halves are in memory, so each survives the other's restart:
   escalation at most once a minute. A restarted daemon therefore re-learns it within a minute.
   If both restart, Foreman may nudge up to 3 more times before escalating again.
 
-A conflict shares one nudge with open review comments and failing CI, as those two share one
+A conflict shares one nudge with unresolved findings and failing CI, as those two share one
 with each other. A workflow that owns the session owns its conflict too, so Foreman neither
 nudges nor escalates it.
 
