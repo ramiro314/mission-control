@@ -26,6 +26,22 @@ export type WorktreeSlotState = (typeof WORKTREE_SLOT_STATES)[number];
 export const WORKTREE_DEPS_STATES = ["current", "claiming", "failed", "interrupted", "seeding"] as const;
 export type WorktreeDepsState = (typeof WORKTREE_DEPS_STATES)[number];
 
+/** The write-aheads. Only a live claim holds one, so one found with no claim running was cut off. */
+export const WORKTREE_DEPS_WRITE_AHEAD_STATES = ["claiming", "seeding"] as const satisfies readonly WorktreeDepsState[];
+
+export function isDepsWriteAhead(state: string | null): boolean {
+  return (WORKTREE_DEPS_WRITE_AHEAD_STATES as readonly string[]).includes(state ?? "");
+}
+
+/**
+ * Whether a slot's last claim or seed was cut off, so its seed paths may be half renamed and
+ * its next claim must start cold: `interrupted`, a write-ahead, or a state a later build wrote.
+ * Only no state at all, `current` and `failed` are settled.
+ */
+export function depsCutOff(state: string | null): boolean {
+  return state !== null && state !== "current" && state !== "failed";
+}
+
 export interface WorktreePoolRow {
   id: string;
   gitCommonDirectory: string;
@@ -541,9 +557,9 @@ export class WorktreeStore {
       .prepare(
         `UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL,
            deps_fingerprint_sha = NULL, updated_at = ?
-         WHERE id = ? AND deps_state IN ('claiming', 'seeding')`,
+         WHERE id = ? AND deps_state IN (${WORKTREE_DEPS_WRITE_AHEAD_STATES.map(() => "?").join(", ")})`,
       )
-      .run(now, slotId);
+      .run(now, slotId, ...WORKTREE_DEPS_WRITE_AHEAD_STATES);
     return Number(changed.changes) === 1;
   }
 

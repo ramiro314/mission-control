@@ -251,7 +251,11 @@ export interface StagedSeedPath {
 }
 
 export type SeedStageResult =
-  | { kind: "staged"; staged: StagedSeedPath[] }
+  /**
+   * `complete` is false when an exclusion removed a whole matched path: what is placed is then
+   * not the source's tree, and the target must not inherit the source's fingerprint.
+   */
+  | { kind: "staged"; staged: StagedSeedPath[]; complete: boolean }
   /** Nothing to seed, or the seed could not be prepared. The target was never touched. */
   | { kind: "abandoned"; reason: string }
   | { kind: "stopped" | "timedOut" };
@@ -286,6 +290,7 @@ export async function stageSeed(input: {
   const proof = await proveIgnored(input.targetRoot, placeable);
   if (!proof.ok) return { kind: "abandoned", reason: proof.reason };
   const staged: StagedSeedPath[] = [];
+  let complete = true;
   try {
     for (const [index, entry] of placeable.entries()) {
       if (input.signal.aborted) return { kind: "stopped" };
@@ -302,30 +307,52 @@ export async function stageSeed(input: {
       if (cloned.outcome === "failed") return { kind: "abandoned", reason: `${entry.path} could not be cloned: ${cloned.reason}` };
       await removeExclusions(destination, entry.path, input.seed.exclude);
       // An exclusion that matched the whole path leaves nothing to place, and the target's own
-      // copy of that path is left as it is.
+      // copy of that path is left as it is. The seed is then incomplete.
       if (await lstat(destination).catch(() => null)) staged.push({ path: entry.path, staged: destination });
+      else complete = false;
     }
   } catch (error) {
     return { kind: "abandoned", reason: boundedReason(`staging failed: ${error instanceof Error ? error.message : String(error)}`) };
   }
-  return { kind: "staged", staged };
+  // Every path excluded is no seed at all: the target was never touched, and the steps run.
+  if (staged.length === 0) return { kind: "abandoned", reason: "the exclusions removed every seed path" };
+  return { kind: "staged", staged, complete };
 }
 
-export type SeedPlaceResult = { ok: true } | { ok: false; reason: string };
+export type SeedPlaceResult =
+  | { ok: true }
+  | { ok: false; reason: string }
+  /** A Stop or the claim's deadline landed while placing: some paths may already be renamed. */
+  | { ok: false; ended: "stopped" | "timedOut" };
 
 /**
  * Rename each staged path into the target. An existing path is first renamed aside into
  * staging, so the path holds the old tree, nothing, or the whole new one, and never a mix.
  * What was renamed aside is removed with the staging directory afterwards.
+ *
+ * A Stop and the claim's deadline are observed before every rename and once more after the
+ * last, so neither can land unseen while the target is being changed: a seed that ends that
+ * way is never trusted, whatever it managed to place.
  */
 export async function placeSeed(input: {
   targetRoot: string;
   staged: readonly StagedSeedPath[];
   stagingDirectory: string;
-  /** Called between renames. A test injects a crash here. */
+  signal: AbortSignal;
+  deadline: number;
+  now: () => number;
+  /** Called after each rename. A test injects a crash, a Stop or a late clock here. */
   afterRename?: (path: string) => Promise<void> | void;
 }): Promise<SeedPlaceResult> {
+  const ended = (): SeedPlaceResult | null =>
+    input.signal.aborted
+      ? { ok: false, ended: "stopped" }
+      : input.now() >= input.deadline
+        ? { ok: false, ended: "timedOut" }
+        : null;
   for (const [index, entry] of input.staged.entries()) {
+    const before = ended();
+    if (before) return before;
     const target = join(input.targetRoot, entry.path);
     try {
       if (await lstat(target).catch(() => null)) {
@@ -337,7 +364,7 @@ export async function placeSeed(input: {
     }
     await input.afterRename?.(entry.path);
   }
-  return { ok: true };
+  return ended() ?? { ok: true };
 }
 
 export type SeedWipeResult = { ok: true; removed: string[] } | { ok: false; reason: string };

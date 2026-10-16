@@ -235,17 +235,22 @@ means the claim runs on every lease.
 usually holds the very trees it needs. A claim whose pool configures `seed.paths` therefore
 seeds before its steps run when either of these holds:
 
-- the slot has no trusted fingerprint, because it is new, was never claimed, its last claim
-  failed, or its last claim or seed was interrupted;
+- the slot is cold: it is new, was never claimed, its last claim failed, or its last claim or
+  seed was interrupted. A slot whose last claim succeeded is not cold, even when its claim lists
+  no fingerprint paths and so recorded no fingerprint, or every lease would copy a sibling's tree
+  over its own fresh install;
 - its fingerprint is stale, **and** an idle sibling's fingerprint matches the leased commit's
   exactly.
 
 Otherwise the claim runs in place, so a small lockfile change stays an incremental install.
 
 - **The source** is an idle sibling: an available slot of the same pool, with no active lease,
-  whose last owner is provably gone, with no process inside, and with a `current` fingerprint.
-  The first choice is one whose fingerprint matches the leased commit's, and the next is the one
-  most recently claimed successfully. The main checkout is never a source. With no idle sibling
+  whose last owner is provably gone, with no process inside, and whose last claim succeeded. It
+  is screened by the same code acquisition screens an available slot with, so a sibling
+  acquisition would quarantine is quarantined here too, and is never a source. The first choice
+  is one whose fingerprint matches the leased commit's, and the next is the one most recently
+  claimed successfully, including one whose claim recorded no fingerprint. A stale slot takes
+  only the first choice. The main checkout is never a source. With no idle sibling
   there is no seed, and the steps run alone.
 - **The `warm` lease.** The source is leased to a `warm` owner for the length of the copy,
   through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
@@ -267,10 +272,18 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   `<pool directory>/.seed-staging/<id>/`, on the same volume and outside every checkout, and the
   exclusions are removed there. Only then is each path renamed into the target, with any existing
   tree renamed aside first. A path in the checkout is therefore the old tree, absent for one
-  rename, or the whole new one. The staging directory is removed when the seed ends.
+  rename, or the whole new one. The staging directory is removed when the seed ends. A Stop
+  and the claim's deadline are checked before every rename and once more after the last, so a
+  seed either one ends while it is being placed is recorded `interrupted`, never `current`, even
+  when its source matched the leased commit.
 - **After a seed** the target inherits the source's fingerprint, and the ordinary skip rule
   decides. A source that matched the leased commit records `current`, and the steps are skipped.
   Any other seed is followed by every step.
+- **An incomplete seed inherits nothing.** An exclusion that removes a whole matched path leaves
+  that path out, and the target keeps its own copy of it. What was placed is then not the
+  source's tree, so the target does not inherit the source's fingerprint and every step runs.
+  Exclusions that remove every path are no seed at all: the target is untouched and the steps
+  run.
 - **A failed clone** abandons the seed, removes its staging, and the steps run. It is not a
   failed claim, and the target was never touched.
 - **One deadline.** The seed spends the claim's `timeoutMinutes` together with the steps.
@@ -346,7 +359,10 @@ it seeds if a sibling qualifies, and otherwise runs every step.
   detached proof. It becomes available with its fingerprint intact. A source the return cannot
   prove, for example one a process is still inside, is quarantined.
 - **Seed staging** under `<pool directory>/.seed-staging/` that no live seed owns is removed by
-  every reconciliation.
+  every reconciliation, first, before any check that can fail the whole pool. A pool whose
+  identity or marker cannot be proven still loses its leftover staging, because removing it
+  touches no checkout. It is removed only when the pool's directory lies inside the daemon's
+  pools directory and the staging root is a real directory there, never a symlink.
  A step's process group that
 outlived the daemon still has its working directory inside the slot. The occupancy check
 therefore sees it, and the slot is never handed out while it runs.
@@ -376,7 +392,8 @@ with attached repositories provisions them one at a time, and stops provisioning
 repositories once the task is no longer dispatching, so no later repository's claim starts in
 place of the stopped one. A Stop, a cancel or the claim's timeout decides `deps_state` by when it
 lands. During a step it records `failed`, like any failed claim, and the next claim reruns the
-steps in place. During a seed it records `interrupted`, because the renames may be half done,
+steps in place. During a seed, including while its paths are renamed into place, it records
+`interrupted`, because the renames may be half done,
 and the next claim removes the seed paths and starts cold. Either way the lease is granted with
 the warning.
 

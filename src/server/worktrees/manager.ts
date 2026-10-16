@@ -2,10 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, realpath, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
+import { isWorktreeOwnerKind, type WorktreeOwnerKind } from "@shared/worktrees.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
@@ -59,6 +60,8 @@ import {
 import {
   WORKTREE_SLOT_STATES,
   WorktreeStore,
+  depsCutOff,
+  isDepsWriteAhead,
   type WorktreePoolRow,
   type WorktreeSlotRow,
 } from "./store.ts";
@@ -72,12 +75,10 @@ const MAX_SWEEP_MS = 604_800_000;
 const STOPPING_REASON = "the daemon is stopping, so no dependency claim can start";
 const STOPPED_REASON = "the daemon stopped during this slot's dependency claim, so nothing was granted";
 
-/**
- * `warm` is maintenance, never a task: a seed source held while it is copied (and, with Warm,
- * a slot being prepared ahead of time). Its key is the operation's own id, and the owner is
- * referenced exactly while that operation runs in this daemon.
- */
-export type WorktreeOwnerKind = "task" | "check" | "manual" | "warm";
+// `warm` is maintenance, never a task: a seed source held while it is copied (and, with Warm,
+// a slot being prepared ahead of time). Its key is the operation's own id, and the owner is
+// referenced exactly while that operation runs in this daemon.
+export type { WorktreeOwnerKind };
 export interface WorktreeOwner {
   kind: WorktreeOwnerKind;
   key: string;
@@ -248,11 +249,20 @@ type SeedRun =
   | { kind: "none" }
   /** A source was held, but the seed could not be prepared. The target is untouched. */
   | { kind: "abandoned"; reason: string }
-  /** Every path is in place. `fingerprint` is the source's, which the target inherits. */
+  /**
+   * Every staged path is in place. `fingerprint` is the source's, which the target inherits,
+   * or null when the seed was incomplete or the source recorded none: then the steps run.
+   */
   | { kind: "placed"; fingerprint: string | null }
   /** Stopped, timed out, or not placed whole: the target's seed paths cannot be trusted. */
-  | { kind: "interrupted"; why: "stopped" | "timedOut" | "unplaced"; reason: string }
+  | { kind: "interrupted"; reason: string }
   | { kind: "unrecorded" };
+
+/** The warning reason for a seed a Stop or the claim's deadline ended. */
+const SEED_ENDED = {
+  stopped: "did not run, because the dependency seed was stopped",
+  timedOut: "did not run, because the dependency seed reached the claim's time limit",
+} as const;
 
 /**
  * A claim that failed before its first step ran, worded as that step not running, so the slot
@@ -381,7 +391,7 @@ function bounded(value: string): string {
 
 function validOwner(owner: WorktreeOwner): boolean {
   return (
-    ["task", "check", "manual", "warm"].includes(owner.kind) &&
+    isWorktreeOwnerKind(owner.kind) &&
     owner.key.length > 0 &&
     Buffer.byteLength(owner.key, "utf8") <= MAX_OWNER_BYTES
   );
@@ -744,6 +754,130 @@ export class WorktreeManager {
     return { ok: true, value: undefined };
   }
 
+  /**
+   * Which of these available slots are idle: the one definition acquisition and seed-source
+   * selection share. Anything a slot cannot prove (its path, its identities, its last owner's
+   * absence, its occupancy, its registration, its Git state, its cleanliness) is quarantined
+   * here, as acquisition always has. A slot whose last owner still references it stays
+   * available but is not idle. `head` is the commit each idle slot was observed at.
+   */
+  private async screenIdleSlots(
+    pool: WorktreePoolRow,
+    identity: WorktreeRepositoryIdentity,
+    available: readonly WorktreeSlotRow[],
+  ): Promise<{ ok: true; idle: Array<{ slot: WorktreeSlotRow; head: string }> } | { ok: false; reason: string }> {
+    if (available.length === 0) return { ok: true, idle: [] };
+    let registrations: Awaited<ReturnType<WorktreeGit["list"]>>;
+    try {
+      registrations = await this.deps.git.list(identity);
+    } catch (error) {
+      const reason = `Git registrations could not be read: ${bounded(String(error))}`;
+      for (const slot of available) this.quarantine(slot, "Git registrations could not be read", reason);
+      return { ok: false, reason };
+    }
+    if (!registrations.ok) {
+      for (const slot of available) this.quarantine(slot, "Git registrations could not be read", registrations.reason);
+      return { ok: false, reason: `Git registrations could not be read: ${registrations.reason}` };
+    }
+    const occupancy = await this.occupancy(available.map((slot) => slot.path));
+    const idle: Array<{ slot: WorktreeSlotRow; head: string }> = [];
+    for (const slot of available) {
+      if (!exactSlotPath(pool, identity, slot)) {
+        this.quarantine(slot, "slot path is not the exact path owned by its native pool");
+        continue;
+      }
+      const active = activeReference(slot);
+      if (active !== null) {
+        this.quarantine(
+          slot,
+          active === "invalid"
+            ? "available slot has incomplete active lease identity"
+            : "available slot still carries active lease identity",
+        );
+        continue;
+      }
+      const priorReference = lastReference(slot);
+      if (priorReference === "invalid") {
+        this.quarantine(slot, "last-released lease identity is incomplete");
+        continue;
+      }
+      if (priorReference) {
+        try {
+          if (await this.ownerReferenced(priorReference)) {
+            // This is the recoverable release/domain-row crash window. Keep the slot
+            // available but ineligible until the exact owner clears its durable row.
+            continue;
+          }
+        } catch (error) {
+          this.quarantine(slot, "last-released domain ownership could not be read", String(error));
+          continue;
+        }
+      }
+      const observedOccupancy = occupancy.get(slot.path);
+      if (!observedOccupancy || observedOccupancy.status === "unknown") {
+        this.quarantine(
+          slot,
+          "slot occupancy is unknown",
+          observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
+        );
+        continue;
+      }
+      if (observedOccupancy.occupants.length > 0) {
+        this.quarantine(slot, "an available slot has process occupancy");
+        continue;
+      }
+      const registration = registrationFor(registrations.value, slot.path);
+      if (!registration || registration.bare || registration.locked || registration.prunable) {
+        this.quarantine(slot, "slot has no safe Git worktree registration");
+        continue;
+      }
+      let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+      try {
+        inspection = await this.deps.git.inspect(slot.path);
+      } catch (error) {
+        this.quarantine(slot, "slot Git state could not be inspected", String(error));
+        continue;
+      }
+      if (!inspection.ok) {
+        this.quarantine(slot, "slot Git state could not be inspected", inspection.reason);
+        continue;
+      }
+      if (
+        inspection.value.path !== slot.path ||
+        inspection.value.commonDirectory !== identity.gitCommonDirectory
+      ) {
+        this.quarantine(slot, "slot belongs to a different Git common directory");
+        continue;
+      }
+      if (inspection.value.dirty) {
+        this.quarantine(slot, "available slot has dirty or untracked work");
+        continue;
+      }
+      idle.push({ slot, head: inspection.value.head });
+    }
+    return { ok: true, idle };
+  }
+
+  /**
+   * Null when no process entered a reserved, formerly available slot. Otherwise the slot is
+   * quarantined, its never-granted identity withdrawn, and the reason returned. `before` names
+   * what the reservation was about to do.
+   */
+  private async enteredSinceReservation(reservation: WorktreeSlotRow, before: string): Promise<string | null> {
+    const fresh = (await this.occupancy([reservation.path])).get(reservation.path);
+    if (!fresh || fresh.status === "unknown") {
+      const reason = fresh?.status === "unknown" ? fresh.reason : "slot occupancy was not observed";
+      this.quarantineReservation(reservation, `slot occupancy became unknown before ${before}`, reason);
+      return reason;
+    }
+    if (fresh.occupants.length > 0) {
+      const reason = `a process entered the available slot before ${before}`;
+      this.quarantineReservation(reservation, reason);
+      return reason;
+    }
+    return null;
+  }
+
   async acquire(input: {
     repositoryPath: string;
     baseSha: string;
@@ -809,102 +943,13 @@ export class WorktreeManager {
       return { outcome: "notAcquired", reason: bounded(String(error)) };
     }
 
-    const available = this.store.slots(pool.id).filter((slot) => slot.state === "available");
-    let registrations: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
-    try {
-      registrations = available.length > 0 ? await this.deps.git.list(identity) : null;
-    } catch (error) {
-      const reason = `Git registrations could not be read: ${bounded(String(error))}`;
-      for (const slot of available) this.quarantine(slot, "Git registrations could not be read", reason);
-      return { outcome: "notAcquired", reason };
-    }
-    const occupancy = available.length > 0
-      ? await this.occupancy(available.map((slot) => slot.path))
-      : new Map<string, WorktreeOccupancy>();
-    const eligible: WorktreeSlotRow[] = [];
-
-    if (registrations?.ok === true) {
-      for (const slot of available) {
-        if (!exactSlotPath(pool, identity, slot)) {
-          this.quarantine(slot, "slot path is not the exact path owned by its native pool");
-          continue;
-        }
-        const active = activeReference(slot);
-        if (active !== null) {
-          this.quarantine(
-            slot,
-            active === "invalid"
-              ? "available slot has incomplete active lease identity"
-              : "available slot still carries active lease identity",
-          );
-          continue;
-        }
-        const priorReference = lastReference(slot);
-        if (priorReference === "invalid") {
-          this.quarantine(slot, "last-released lease identity is incomplete");
-          continue;
-        }
-        if (priorReference) {
-          try {
-            if (await this.ownerReferenced(priorReference)) {
-              // This is the recoverable release/domain-row crash window. Keep the slot
-              // available but ineligible until the exact owner clears its durable row.
-              continue;
-            }
-          } catch (error) {
-            this.quarantine(slot, "last-released domain ownership could not be read", String(error));
-            continue;
-          }
-        }
-        const observedOccupancy = occupancy.get(slot.path);
-        if (!observedOccupancy || observedOccupancy.status === "unknown") {
-          this.quarantine(
-            slot,
-            "slot occupancy is unknown",
-            observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
-          );
-          continue;
-        }
-        if (observedOccupancy.occupants.length > 0) {
-          this.quarantine(slot, "an available slot has process occupancy");
-          continue;
-        }
-        const registration = registrationFor(registrations.value, slot.path);
-        if (!registration || registration.bare || registration.locked || registration.prunable) {
-          this.quarantine(slot, "slot has no safe Git worktree registration");
-          continue;
-        }
-        let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
-        try {
-          inspection = await this.deps.git.inspect(slot.path);
-        } catch (error) {
-          this.quarantine(slot, "slot Git state could not be inspected", String(error));
-          continue;
-        }
-        if (!inspection.ok) {
-          this.quarantine(slot, "slot Git state could not be inspected", inspection.reason);
-          continue;
-        }
-        if (
-          inspection.value.path !== slot.path ||
-          inspection.value.commonDirectory !== identity.gitCommonDirectory
-        ) {
-          this.quarantine(slot, "slot belongs to a different Git common directory");
-          continue;
-        }
-        if (inspection.value.dirty) {
-          this.quarantine(slot, "available slot has dirty or untracked work");
-          continue;
-        }
-        eligible.push(slot);
-      }
-    } else if (registrations && !registrations.ok) {
-      for (const slot of available) this.quarantine(slot, "Git registrations could not be read", registrations.reason);
-      return {
-        outcome: "notAcquired",
-        reason: `Git registrations could not be read: ${registrations.reason}`,
-      };
-    }
+    const screened = await this.screenIdleSlots(
+      pool,
+      identity,
+      this.store.slots(pool.id).filter((slot) => slot.state === "available"),
+    );
+    if (!screened.ok) return { outcome: "notAcquired", reason: screened.reason };
+    const eligible = screened.idle.map((entry) => entry.slot);
 
     const leaseId = this.deps.randomId();
     let allocation: { reservation: WorktreeSlotRow | null; created: boolean };
@@ -957,19 +1002,8 @@ export class WorktreeManager {
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
-          const freshOccupancy = (await this.occupancy([reservation.path])).get(reservation.path);
-          if (!freshOccupancy || freshOccupancy.status === "unknown") {
-            const reason = freshOccupancy?.status === "unknown"
-              ? freshOccupancy.reason
-              : "slot occupancy was not observed";
-            this.quarantineReservation(reservation, "slot occupancy became unknown before reset", reason);
-            return { outcome: "outcomeUnknown", reason };
-          }
-          if (freshOccupancy.occupants.length > 0) {
-            const reason = "a process entered the available slot before reset";
-            this.quarantineReservation(reservation, reason);
-            return { outcome: "outcomeUnknown", reason };
-          }
+          const entered = await this.enteredSinceReservation(reservation, "reset");
+          if (entered) return { outcome: "outcomeUnknown", reason: entered };
         }
 
         const mutation = created
@@ -1148,9 +1182,7 @@ export class WorktreeManager {
 
     // Anything but a settled state means a claim or a seed was cut off, so its seed paths may
     // be half renamed. A state a later build wrote is treated the same way.
-    const interrupted = recorded?.depsState != null &&
-      recorded.depsState !== "current" &&
-      recorded.depsState !== "failed";
+    const interrupted = depsCutOff(recorded?.depsState ?? null);
     if (interrupted && claim.seed) {
       const wiped = await wipeSeedPaths(reservation.path, claim.seed);
       if (!wiped.ok) {
@@ -1161,18 +1193,25 @@ export class WorktreeManager {
       }
     }
 
-    const trusted = !interrupted && recorded?.depsState === "current" ? recorded.depsFingerprint : null;
-    if (claim.seed && where.enabled && (trusted === null || (fingerprint !== null && trusted !== fingerprint))) {
+    // Cold: new, never claimed, failed or cut off. A slot whose last claim succeeded is not
+    // cold even with no fingerprint (its claim lists no fingerprint paths), or it would be
+    // re-seeded over its own fresh install on every lease. Stale: it succeeded, at a
+    // fingerprint this commit no longer has.
+    const cold = interrupted || recorded?.depsState !== "current";
+    const stale = !cold && fingerprint !== null && recorded?.depsFingerprint != null &&
+      recorded.depsFingerprint !== fingerprint;
+    if (claim.seed && where.enabled && (cold || stale)) {
       const seeded = await this.seedSlotBeforeSteps({
         reservation,
         claim,
         seed: claim.seed,
         sha,
         fingerprint,
-        trusted,
+        exactOnly: !cold,
         control,
         deadline,
         pool: where.pool,
+        identity: where.identity,
       });
       if (seeded) return seeded;
     }
@@ -1217,21 +1256,24 @@ export class WorktreeManager {
     seed: WorktreeClaimSeed;
     sha: string;
     fingerprint: string | null;
-    trusted: string | null;
+    /** A stale slot seeds only from a sibling that matches its commit exactly. */
+    exactOnly: boolean;
     control: AbortController;
     deadline: number;
     pool: WorktreePoolRow;
+    identity: WorktreeRepositoryIdentity;
   }): Promise<ClaimRun | null> {
-    const { reservation, claim, seed, sha, fingerprint, trusted, control, deadline } = input;
+    const { reservation, claim, seed, sha, fingerprint, exactOnly, control, deadline } = input;
     const seeded = await this.seedTree({
       pool: input.pool,
+      identity: input.identity,
       targetPath: reservation.path,
       targetSlotId: reservation.id,
       seed,
       fingerprint,
-      // A stale slot seeds only from a sibling that already matches its commit. Anything less
-      // would swap a whole tree in where a small incremental install would do.
-      exactOnly: trusted !== null,
+      // Anything less than an exact match would swap a whole tree into a stale slot where a
+      // small incremental install would do.
+      exactOnly,
       ownerKey: this.claims.get(reservation.id)?.id ?? this.deps.randomId(),
       signal: control.signal,
       deadline,
@@ -1302,52 +1344,43 @@ export class WorktreeManager {
 
   /**
    * The idle siblings a seed may copy from, best first: a fingerprint that matches the target
-   * commit's exactly, then the most recently claimed successfully. Idle means what acquisition
-   * means by it, short of quarantining anything: available, no active identity, its last owner
-   * provably gone, and no process inside. The main checkout is never a slot, so it is never a
-   * source.
+   * commit's exactly, then the most recently claimed successfully. Idle is exactly what
+   * acquisition means by it, screened by the same code, so a sibling acquisition would refuse
+   * is never a source. The main checkout is never a slot, so it is never a source.
    */
-  private async seedSources(
-    poolId: string,
-    targetSlotId: string | null,
-    fingerprint: string | null,
-    exactOnly: boolean,
-  ): Promise<WorktreeSlotRow[]> {
-    const idle: WorktreeSlotRow[] = [];
-    for (const slot of this.store.slots(poolId)) {
-      if (slot.id === targetSlotId || slot.state !== "available") continue;
-      if (slot.depsState !== "current" || !slot.depsFingerprint) continue;
-      if (!slot.currentHeadSha || !SHA.test(slot.currentHeadSha) || activeReference(slot) !== null) continue;
-      if (exactOnly && (fingerprint === null || slot.depsFingerprint !== fingerprint)) continue;
-      const prior = lastReference(slot);
-      if (prior === "invalid") continue;
-      try {
-        if (prior && (await this.ownerReferenced(prior))) continue;
-      } catch {
-        continue;
-      }
-      idle.push(slot);
-    }
-    if (idle.length === 0) return [];
-    const occupancy = await this.occupancy(idle.map((slot) => slot.path));
+  private async seedSources(input: {
+    pool: WorktreePoolRow;
+    identity: WorktreeRepositoryIdentity;
+    targetSlotId: string | null;
+    fingerprint: string | null;
+    exactOnly: boolean;
+  }): Promise<Array<{ slot: WorktreeSlotRow; head: string }>> {
+    const { fingerprint } = input;
+    // Any sibling whose last claim succeeded is a fallback source, including one whose claim
+    // lists no fingerprint paths and so recorded none. Only an exact match needs a fingerprint.
+    const claimed = this.store.slots(input.pool.id).filter((slot) =>
+      slot.id !== input.targetSlotId &&
+      slot.state === "available" &&
+      slot.depsState === "current" &&
+      (!input.exactOnly || (fingerprint !== null && slot.depsFingerprint === fingerprint)));
+    const screened = await this.screenIdleSlots(input.pool, input.identity, claimed);
+    if (!screened.ok) return [];
     const rank = (slot: WorktreeSlotRow): number => (fingerprint !== null && slot.depsFingerprint === fingerprint ? 0 : 1);
-    return idle
-      .filter((slot) => {
-        const observed = occupancy.get(slot.path);
-        return observed?.status === "known" && observed.occupants.length === 0;
-      })
-      .sort((a, b) => rank(a) - rank(b) || (b.depsClaimedAt ?? 0) - (a.depsClaimedAt ?? 0) || a.ordinal - b.ordinal);
+    return screened.idle.sort((a, b) =>
+      rank(a.slot) - rank(b.slot) ||
+      (b.slot.depsClaimedAt ?? 0) - (a.slot.depsClaimedAt ?? 0) ||
+      a.slot.ordinal - b.slot.ordinal);
   }
 
   /**
    * Lease one idle sibling to a `warm` owner, through the ordinary reservation and
    * `finalizeLease`, so nothing can lease, reset or quarantine it while it is copied. Null when
-   * it is no longer idle. A sibling found occupied or unproven after its reservation is
-   * quarantined exactly as acquisition would quarantine it.
+   * it is no longer idle. After its reservation it gets the same occupancy recheck an acquired
+   * slot gets before its reset, with the same quarantine.
    */
   private async leaseSeedSource(
     pool: WorktreePoolRow,
-    candidate: WorktreeSlotRow,
+    candidate: { slot: WorktreeSlotRow; head: string },
     ownerKey: string,
   ): Promise<NativeWorktreeLease | null> {
     const owner: WorktreeOwner = { kind: "warm", key: ownerKey };
@@ -1356,52 +1389,24 @@ export class WorktreeManager {
     try {
       reservation = await this.withPoolReservation(pool.gitCommonDirectory, async () =>
         this.store.reserveAvailable({
-          slotId: candidate.id,
-          version: candidate.version,
+          slotId: candidate.slot.id,
+          version: candidate.slot.version,
           leaseId,
           ownerKind: owner.kind,
           ownerKey: owner.key,
-          requestedHeadSha: candidate.currentHeadSha!,
+          requestedHeadSha: candidate.head,
           now: this.deps.now(),
         }));
     } catch (error) {
-      console.warn(`[worktrees] seed source ${candidate.path} could not be reserved: ${bounded(String(error))}`);
+      console.warn(`[worktrees] seed source ${candidate.slot.path} could not be reserved: ${bounded(String(error))}`);
       return null;
     }
     if (!reservation) return null;
     const reserved = reservation;
     return this.withSlot(reserved.id, async () => {
       try {
-        const occupied = (await this.occupancy([reserved.path])).get(reserved.path);
-        if (!occupied || occupied.status === "unknown" || occupied.occupants.length > 0) {
-          this.quarantineReservation(
-            reserved,
-            occupied?.status === "known"
-              ? "a process entered the available slot before it was seeded from"
-              : "slot occupancy became unknown before it was seeded from",
-            occupied?.status === "unknown" ? occupied.reason : null,
-          );
-          return null;
-        }
-        const inspection = await this.deps.git.inspect(reserved.path);
-        if (
-          !inspection.ok ||
-          inspection.value.path !== reserved.path ||
-          inspection.value.commonDirectory !== pool.gitCommonDirectory ||
-          inspection.value.head !== candidate.currentHeadSha ||
-          inspection.value.dirty ||
-          !inspection.value.detached
-        ) {
-          this.quarantineReservation(
-            reserved,
-            "seed source verification failed",
-            inspection.ok
-              ? "the available slot failed path, repository, HEAD, cleanliness or detached-HEAD verification"
-              : inspection.reason,
-          );
-          return null;
-        }
-        const leased = this.store.finalizeLease(reserved.id, reserved.version, inspection.value.head, this.deps.now());
+        if (await this.enteredSinceReservation(reserved, "it was seeded from")) return null;
+        const leased = this.store.finalizeLease(reserved.id, reserved.version, candidate.head, this.deps.now());
         if (!leased) {
           this.quarantineReservation(reserved, "seed source lease lost its slot compare-and-swap");
           return null;
@@ -1414,7 +1419,7 @@ export class WorktreeManager {
           provider: "mission",
           leaseId,
           owner,
-          baseSha: inspection.value.head,
+          baseSha: candidate.head,
           slotVersion: leased.version,
         };
       } catch (error) {
@@ -1432,6 +1437,7 @@ export class WorktreeManager {
    */
   private async seedTree(input: {
     pool: WorktreePoolRow;
+    identity: WorktreeRepositoryIdentity;
     targetPath: string;
     targetSlotId: string | null;
     seed: WorktreeClaimSeed;
@@ -1449,11 +1455,11 @@ export class WorktreeManager {
     try {
       let source: NativeWorktreeLease | null = null;
       let sourceFingerprint: string | null = null;
-      for (const candidate of await this.seedSources(input.pool.id, input.targetSlotId, input.fingerprint, input.exactOnly)) {
+      for (const candidate of await this.seedSources(input)) {
         if (input.signal.aborted) break;
         source = await this.leaseSeedSource(input.pool, candidate, input.ownerKey);
         if (source) {
-          sourceFingerprint = candidate.depsFingerprint;
+          sourceFingerprint = candidate.slot.depsFingerprint;
           break;
         }
       }
@@ -1474,24 +1480,28 @@ export class WorktreeManager {
       } finally {
         await this.returnSeedSource(source);
       }
-      const stopped = "did not run, because the dependency seed was stopped";
       if (staged.kind === "abandoned") return { kind: "abandoned", reason: staged.reason };
-      if (staged.kind !== "staged") {
-        return staged.kind === "stopped"
-          ? { kind: "interrupted", why: "stopped", reason: stopped }
-          : { kind: "interrupted", why: "timedOut", reason: "did not run, because the dependency seed reached the claim's time limit" };
-      }
-      if (input.signal.aborted) return { kind: "interrupted", why: "stopped", reason: stopped };
+      if (staged.kind !== "staged") return { kind: "interrupted", reason: SEED_ENDED[staged.kind] };
+      // Placement watches the Stop and the deadline itself, before each rename and after the
+      // last, so neither lands unseen once anything in the target may have changed.
       const placed = await placeSeed({
         targetRoot: input.targetPath,
         staged: staged.staged,
         stagingDirectory,
+        signal: input.signal,
+        deadline: input.deadline,
+        now: this.deps.now,
         ...(this.deps.afterSeedRename ? { afterRename: this.deps.afterSeedRename } : {}),
       });
-      if (!placed.ok) {
-        return { kind: "interrupted", why: "unplaced", reason: `did not run, because the dependency seed failed: ${placed.reason}` };
-      }
-      return { kind: "placed", fingerprint: sourceFingerprint };
+      // A seed an exclusion left a whole path out of did not place the source's tree, so it
+      // inherits nothing and the steps run on top of what it did place.
+      if (placed.ok) return { kind: "placed", fingerprint: staged.complete ? sourceFingerprint : null };
+      return {
+        kind: "interrupted",
+        reason: "ended" in placed
+          ? SEED_ENDED[placed.ended]
+          : `did not run, because the dependency seed failed: ${placed.reason}`,
+      };
     } finally {
       await rm(stagingDirectory, { recursive: true, force: true }).catch(() => {});
       this.liveSeedStaging.delete(stagingId);
@@ -1524,7 +1534,7 @@ export class WorktreeManager {
    * every reconciliation path, the pool-wide failure included, before any quarantine decision.
    */
   private markInterruptedClaim(slot: WorktreeSlotRow, now: number): void {
-    if ((slot.depsState !== "claiming" && slot.depsState !== "seeding") || this.claims.has(slot.id)) return;
+    if (!isDepsWriteAhead(slot.depsState) || this.claims.has(slot.id)) return;
     if (this.store.markClaimInterrupted(slot.id, now)) this.publish();
   }
 
@@ -1716,6 +1726,7 @@ export class WorktreeManager {
     const fingerprint = await this.commitFingerprint(input.path, claim, input.baseSha);
     const seeded = await this.seedTree({
       pool,
+      identity,
       targetPath: input.path,
       targetSlotId: null,
       seed: claim.seed,
@@ -1961,6 +1972,27 @@ export class WorktreeManager {
     }, false);
   }
 
+  /**
+   * Remove seed staging no live seed owns. It needs none of the pool's Git or marker proofs,
+   * because it touches no checkout: only `<pool>/.seed-staging`, and only when the pool's
+   * durable directory lies inside this daemon's pools directory and the staging root is a real
+   * directory there, never a symlink out of it.
+   */
+  private async removeLeftoverSeedStaging(pool: WorktreePoolRow): Promise<void> {
+    const root = seedStagingRoot(pool.poolPath);
+    try {
+      // The pool's durable path is physical (its identity resolves the pools directory's parent),
+      // so it is compared with the pools directory spelled the same way.
+      const poolsDirectory = join(await realpath(dirname(this.deps.poolsDirectory)), basename(this.deps.poolsDirectory));
+      if (!pathContains(poolsDirectory, pool.poolPath) || resolve(pool.poolPath) === poolsDirectory) return;
+      const stat = await lstat(root).catch(() => null);
+      if (!stat?.isDirectory() || (await realpath(root)) !== resolve(root)) return;
+      await removeLeftoverStaging(pool.poolPath, this.liveSeedStaging);
+    } catch (error) {
+      console.warn(`[worktrees] leftover seed staging in ${pool.poolPath} could not be removed: ${bounded(String(error))}`);
+    }
+  }
+
   async reconcilePoolById(poolId: string): Promise<boolean> {
     const pool = this.store.pool(poolId);
     if (!pool) return false;
@@ -1969,6 +2001,9 @@ export class WorktreeManager {
   }
 
   private async reconcilePool(pool: WorktreePoolRow): Promise<void> {
+    // First, before any check that can fail the whole pool: staging is what a crash left, and a
+    // pool whose identity or marker cannot be proven is exactly the one nobody will clean up.
+    await this.removeLeftoverSeedStaging(pool);
     const now = this.deps.now();
     const identity = this.identity(pool.mainCheckoutRoot);
     const slots = this.store.slots(pool.id);
@@ -2008,13 +2043,6 @@ export class WorktreeManager {
     if (marker?.poolId !== pool.id) {
       await failPool("pool marker is missing, unreadable, or belongs to another pool");
       return;
-    }
-    // Seed staging no live seed owns is what a crash, or a cleanup that failed, left behind.
-    // It sits outside every slot, so removing it never touches a checkout.
-    try {
-      await removeLeftoverStaging(pool.poolPath, this.liveSeedStaging);
-    } catch (error) {
-      console.warn(`[worktrees] leftover seed staging in ${pool.poolPath} could not be removed: ${bounded(String(error))}`);
     }
     let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
     try {

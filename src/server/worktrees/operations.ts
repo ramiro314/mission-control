@@ -17,6 +17,7 @@ import {
   type WorktreeRepositoryView,
   type WorktreeRiskKey,
   type WorktreeSlotDependenciesView,
+  isWorktreeOwnerKind,
 } from "@shared/worktrees.ts";
 import { run } from "../util/exec.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
@@ -46,7 +47,7 @@ import {
   type NativePoolStatus,
   type NativeSlotStatus,
 } from "./manager.ts";
-import type { WorktreeSlotRow } from "./store.ts";
+import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
@@ -169,7 +170,7 @@ function ownerView(
 ): WorktreeOwnerView | null {
   const kind = status.slot.activeOwnerKind;
   const key = status.slot.activeOwnerKey;
-  if ((kind !== "task" && kind !== "check" && kind !== "manual" && kind !== "warm") || !key) return null;
+  if (!isWorktreeOwnerKind(kind) || !key) return null;
   if (kind === "task") {
     const parsed = taskIdentity(key);
     const row = parsed ? task.get(parsed.id) : null;
@@ -264,6 +265,10 @@ export function slotDependencies(input: {
         : null,
     };
   }
+  // A write-ahead with no claim running, `interrupted`, or a state a later build wrote: the
+  // slot's last claim or seed was cut off, and nothing about it can be trusted as current.
+  // Startup records a write-ahead as interrupted; the next claim starts cold either way.
+  if (depsCutOff(slot.depsState)) return { ...base, state: "interrupted" };
   switch (slot.depsState) {
     case null:
       return { ...base, state: "never" };
@@ -278,19 +283,9 @@ export function slotDependencies(input: {
         ? { ...base, state: "current", defaultSha: input.defaultSha }
         : { ...base, state: "stale", defaultSha: input.defaultSha };
     }
-    case "failed":
+    default:
       // Decoded and bounded where the record is written; values were redacted before it was.
       return { ...base, state: "failed", failure: decodeClaimFailure(slot.depsLastError ?? "") };
-    // `claiming` or `seeding` with no claim running is a write-ahead whose daemon is gone;
-    // startup reconcile is about to record it as interrupted, and the next claim starts cold
-    // either way. A seed that was stopped is recorded as interrupted directly.
-    case "claiming":
-    case "seeding":
-    case "interrupted":
-      return { ...base, state: "interrupted" };
-    default:
-      // A state a later build wrote. Fail closed: nothing about it can be trusted as current.
-      return { ...base, state: "interrupted" };
   }
 }
 

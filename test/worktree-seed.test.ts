@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,7 @@ import {
   wipeSeedPaths,
   type CloneTree,
 } from "../src/server/worktrees/seed.ts";
+import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 // Seeding through the real manager, real Git and real files. Only the clone itself is faked:
@@ -606,18 +607,69 @@ test("each path is staged whole and renamed into place, so the checkout never ho
   await m.release(result.lease);
 });
 
-test("an exclusion that matches a whole seed path leaves that path out and the target's own copy alone", async () => {
+test("an exclusion that removes a whole seed path makes the seed incomplete, so the steps still run", async () => {
   const fixture = repository("mission-seed-exclude-whole-");
   const claim = claimWith({ paths: ["deps", "more"], exclude: ["more"] });
   const m = manager(claim, { cloneTree: recordingClone([]) }, 2);
   await warmPool(m, fixture.clone, fixture.sha, 2, "exclude-whole");
   makeCold(slotAt(m, 1).id);
+  const before = runCount(slotAt(m, 1).path);
   const result = leased(await acquire(m, fixture.clone, fixture.sha, "exclude-whole:target"));
   assert.equal(result.claimWarning, undefined, "nothing to place is not a failed placement");
+  // The source matched this commit exactly, but `more` was not placed, so the target did not get
+  // the source's tree and must not inherit its fingerprint: the steps ran on top of the seed.
+  assert.equal(runCount(result.lease.path), before + 1);
   assert.equal(slotAt(m, 1).depsState, "current");
   assert.equal(readFileSync(join(result.lease.path, "deps", "marker"), "utf8"), slotAt(m, 2).path);
-  assert.equal(readFileSync(join(result.lease.path, "more", "marker"), "utf8"), result.lease.path);
+  assert.equal(readFileSync(join(result.lease.path, "more", "marker"), "utf8"), result.lease.path, "the target's own copy stayed");
   await m.release(result.lease);
+});
+
+test("a seed whose exclusions remove every path is no seed: the cold target installs itself", async () => {
+  const fixture = repository("mission-seed-exclude-all-");
+  const claim = claimWith({ paths: ["deps"], exclude: ["deps"] });
+  const m = manager(claim, { cloneTree: recordingClone([]) }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "exclude-all");
+  makeCold(slotAt(m, 1).id);
+  rmrf(join(slotAt(m, 1).path, "deps"));
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "exclude-all:target"));
+  assert.equal(result.claimWarning, undefined);
+  assert.equal(runCount(result.lease.path), before + 1, "never recorded current on the source's fingerprint alone");
+  assert.equal(readFileSync(join(result.lease.path, "deps", "marker"), "utf8"), result.lease.path, "installed by its own step");
+  assert.equal(slotAt(m, 1).depsState, "current");
+  assert.equal(slotAt(m, 2).state, "available");
+  await m.release(result.lease);
+});
+
+test("with no fingerprint paths a settled slot never re-seeds, and a cold one seeds from the most recent sibling", async () => {
+  const fixture = repository("mission-seed-no-fingerprint-");
+  const claim = WorktreeClaimSchema.parse({ steps: [{ argv: INSTALL }], seed: SEED });
+  const sources: string[] = [];
+  const m = manager(claim, { cloneTree: recordingClone(sources) }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "no-fingerprint");
+  assert.equal(slotAt(m, 2).depsFingerprint, null, "a claim with no fingerprint paths records none");
+
+  // Settled slot: the claim runs in place, as it does on every lease, and nothing is copied over
+  // the slot's own fresh install.
+  const before = runCount(slotAt(m, 1).path);
+  const settled = leased(await acquire(m, fixture.clone, fixture.sha, "no-fingerprint:settled"));
+  assert.equal(sources.length, 0);
+  assert.equal(runCount(settled.lease.path), before + 1);
+  await m.release(settled.lease);
+
+  // Cold slot: the idle sibling is a source even with no fingerprint, and since there is nothing
+  // to inherit the steps run on top of the seed.
+  makeCold(slotAt(m, 1).id);
+  rmrf(join(slotAt(m, 1).path, "deps"));
+  const cold = leased(await acquire(m, fixture.clone, fixture.sha, "no-fingerprint:cold"));
+  assert.equal(cold.lease.path, slotAt(m, 1).path);
+  assert.deepEqual(sources, [join(slotAt(m, 2).path, "deps"), join(slotAt(m, 2).path, "more")]);
+  assert.equal(readFileSync(join(cold.lease.path, "deps", "marker"), "utf8"), slotAt(m, 2).path, "the seed placed the sibling's tree");
+  assert.equal(runCount(cold.lease.path), before + 2, "and every step still ran");
+  assert.equal(slotAt(m, 1).depsState, "current");
+  assert.equal(slotAt(m, 1).depsFingerprint, null);
+  await m.release(cold.lease);
 });
 
 test("a seed that reaches the claim's time limit records interrupted, returns its source and runs no step", async () => {
@@ -684,6 +736,73 @@ test("a seed whose staged path cannot be placed records interrupted and runs no 
   await m.release(result.lease);
 });
 
+// ---- a Stop or the deadline while the seed is being placed ----
+
+/**
+ * A seed of an exact-match source, interrupted from `afterSeedRename` once `at` is renamed into
+ * the target: the moment the checkout is already changing. Placement must notice before the
+ * next rename, or after the last one, and the seed must be recorded interrupted, never current.
+ */
+async function interruptedPlacement(
+  prefix: string,
+  at: "deps" | "more",
+  interrupt: (m: WorktreeManager, targetId: string, clock: { offset: number }) => void,
+) {
+  const fixture = repository(prefix);
+  const claim = claimWith(SEED);
+  const clock = { offset: 0 };
+  let targetId = "";
+  let m!: WorktreeManager;
+  const renamed: string[] = [];
+  m = manager(claim, {
+    now: () => Date.now() + clock.offset,
+    cloneTree: recordingClone([]),
+    afterSeedRename: (path) => {
+      renamed.push(path);
+      if (path === at) interrupt(m, targetId, clock);
+    },
+  }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, prefix);
+  targetId = slotAt(m, 1).id;
+  makeCold(targetId);
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, `${prefix}:target`));
+  const target = slotAt(m, 1);
+  assert.equal(target.depsState, "interrupted", "a seed ended while it was being placed is never trusted");
+  assert.equal(target.depsFingerprint, null, "not even when its source matched this commit exactly");
+  assert.equal(runCount(result.lease.path), before, "no step ran on the half-placed tree");
+  assert.equal(slotAt(m, 2).state, "available", "the source had already gone back to the pool");
+  assert.deepEqual(readdirSync(seedStagingRoot(m.store.pools()[0]!.poolPath)), [], "staging is gone");
+  await m.release(result.lease);
+  return { warning: result.claimWarning, renamed };
+}
+
+function stop(m: WorktreeManager, targetId: string): void {
+  const running = m.claims.get(targetId);
+  assert.ok(running, "the claim is still running while its seed is placed");
+  assert.ok(m.stopClaim(targetId, running.id));
+}
+
+test("a Stop between seed renames is noticed before the next rename and records interrupted", async () => {
+  const { warning, renamed } = await interruptedPlacement("mission-seed-stop-placing-", "deps", (m, id) => stop(m, id));
+  assert.deepEqual(renamed, ["deps"], "the second path was never renamed in");
+  assert.match(warning?.reason ?? "", /dependency seed was stopped/);
+});
+
+test("a Stop after the last seed rename still records interrupted, never current", async () => {
+  const { warning, renamed } = await interruptedPlacement("mission-seed-stop-placed-", "more", (m, id) => stop(m, id));
+  assert.deepEqual(renamed, ["deps", "more"]);
+  assert.match(warning?.reason ?? "", /dependency seed was stopped/);
+});
+
+test("the claim's deadline passing between seed renames records interrupted", async () => {
+  const { warning, renamed } = await interruptedPlacement("mission-seed-late-placing-", "deps", (_m, _id, clock) => {
+    clock.offset += 11 * 60_000;
+  });
+  assert.deepEqual(renamed, ["deps"]);
+  assert.match(warning?.reason ?? "", /dependency seed reached the claim's time limit/);
+});
+
 // ---- crash and restart ----
 
 test("a crash mid-copy with the source held: startup returns the source and records the target interrupted", async () => {
@@ -720,6 +839,35 @@ test("a crash mid-copy with the source held: startup returns the source and reco
   assert.equal(source.depsState, "current");
   assert.equal(source.depsFingerprint, sourceFingerprint, "a source is only read, so its fingerprint stands");
   assert.deepEqual(readdirSync(seedStagingRoot(poolPath)), [], "leftover staging was removed");
+});
+
+test("leftover staging is removed even when a crash is followed by a pool marker that cannot be proven", async () => {
+  const fixture = repository("mission-seed-crash-marker-");
+  const claim = claimWith(SEED);
+  let copying = false;
+  const crashing = manager(claim, {
+    cloneTree: async () => {
+      copying = true;
+      return new Promise(() => {});
+    },
+  }, 2);
+  await warmPool(crashing, fixture.clone, fixture.sha, 2, "crash-marker");
+  makeCold(slotAt(crashing, 1).id);
+  void acquire(crashing, fixture.clone, fixture.sha, "crash-marker:target");
+  await waitFor(() => copying, "the seed to start copying");
+  const poolPath = crashing.store.pools()[0]!.poolPath;
+  assert.equal(readdirSync(seedStagingRoot(poolPath)).length, 1);
+
+  // The marker is gone, so the whole pool fails reconciliation, and staging still goes.
+  rmSync(join(poolPath, WORKTREE_POOL_MARKER));
+  const restarted = manager(claim, {}, 2);
+  await restarted.reconcile();
+  assert.deepEqual(readdirSync(seedStagingRoot(poolPath)), []);
+  assert.match(restarted.store.pools()[0]!.reconciliationError ?? "", /pool marker/);
+  const target = slotAt(restarted, 1);
+  assert.equal(target.state, "quarantined");
+  assert.equal(target.depsState, "interrupted");
+  assert.equal(target.depsFingerprint, null);
 });
 
 test("a crash between seed renames leaves the target interrupted, never trusted", async () => {
