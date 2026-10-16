@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, matchesGlob } from "node:path";
 import type { WorktreeClaimSeed } from "@shared/protocol.ts";
@@ -131,6 +132,22 @@ export async function expandSeedPaths(
 function absent(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** How a seed looks a path up. Injected, so a test can fail one lookup the way a disk can. */
+export type SeedLstat = (path: string) => Promise<Stats>;
+
+/**
+ * A path's stat, or null when it is genuinely not there. Any other failure throws: a path the
+ * seed cannot inspect is never treated as missing, excluded or empty.
+ */
+async function presentStat(path: string, inspect: SeedLstat = lstat): Promise<Stats | null> {
+  try {
+    return await inspect(path);
+  } catch (error) {
+    if (absent(error)) return null;
+    throw error;
+  }
 }
 
 /** A directory's entries, sorted. Empty only when the directory genuinely does not exist. */
@@ -291,6 +308,7 @@ async function removeExclusions(
   relative: string,
   exclude: readonly string[],
   budget: SeedBudget,
+  inspect: SeedLstat,
 ): Promise<void> {
   if (exclude.length === 0) return;
   const matches = (path: string): boolean => exclude.some((glob) => matchesGlob(path, glob));
@@ -306,7 +324,7 @@ async function removeExclusions(
     } catch (error) {
       // A directory that is gone has nothing left to exclude. Any other failure means its
       // excluded content may still be there, so it fails the seed rather than pass it.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (absent(error)) return;
       throw error;
     }
     for (const child of children) {
@@ -317,7 +335,8 @@ async function removeExclusions(
       else if (child.isDirectory()) await walk(path, childRelative);
     }
   };
-  const stat = await lstat(stagedRoot).catch(() => null);
+  // A staged root that cannot be looked up is not one with nothing to exclude.
+  const stat = await presentStat(stagedRoot, inspect);
   if (stat?.isDirectory()) await walk(stagedRoot, relative);
 }
 
@@ -353,6 +372,8 @@ export async function stageSeed(input: {
   signal: AbortSignal;
   deadline: number;
   now: () => number;
+  /** How the staged clone is looked up. The real `lstat` unless a test injects a failure. */
+  lstat?: SeedLstat;
 }): Promise<SeedStageResult> {
   try {
     return await stageWithin(input, { signal: input.signal, deadline: input.deadline, now: input.now });
@@ -375,7 +396,7 @@ async function stageWithin(
       placeable.push(entry);
       continue;
     }
-    const stat = await lstat(join(input.targetRoot, parent)).catch(() => null);
+    const stat = await presentStat(join(input.targetRoot, parent));
     if (stat?.isDirectory()) placeable.push(entry);
   }
   if (placeable.length === 0) return { kind: "abandoned", reason: "the source has none of the seed paths" };
@@ -405,10 +426,11 @@ async function stageWithin(
     });
     if (cloned.outcome === "stopped" || cloned.outcome === "timedOut") return { kind: cloned.outcome };
     if (cloned.outcome === "failed") return { kind: "abandoned", reason: `${entry.path} could not be cloned: ${cloned.reason}` };
-    await removeExclusions(destination, entry.path, input.seed.exclude, budget);
+    const inspect = input.lstat ?? lstat;
+    await removeExclusions(destination, entry.path, input.seed.exclude, budget, inspect);
     // An exclusion that matched the whole path leaves nothing to place, and the target's own
     // copy of that path is left as it is. The seed is then incomplete.
-    if (await lstat(destination).catch(() => null)) staged.push({ path: entry.path, staged: destination });
+    if (await presentStat(destination, inspect)) staged.push({ path: entry.path, staged: destination });
     else complete = false;
   }
   // Nothing after the last clone may outlast the Stop or the deadline unseen.
@@ -454,7 +476,7 @@ export async function placeSeed(input: {
     if (before) return before;
     const target = join(input.targetRoot, entry.path);
     try {
-      if (await lstat(target).catch(() => null)) {
+      if (await presentStat(target)) {
         await rename(target, join(input.stagingDirectory, `${index}.replaced`));
       }
       await rename(entry.staged, target);

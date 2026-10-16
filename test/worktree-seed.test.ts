@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { cp } from "node:fs/promises";
+import { cp, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -305,6 +305,39 @@ test("an exclusion walk that cannot read a directory abandons the seed instead o
   chmodSync(locked, 0o700);
   assert.equal(result.kind, "abandoned");
   assert.match(result.kind === "abandoned" ? result.reason : "", /staging failed: .*(EACCES|permission denied)/i);
+});
+
+test("a staged root whose lookup fails before the exclusion walk abandons the seed, never places it", async () => {
+  const { source, target, staging } = stagingFixture("mission-seed-exclude-root-lookup-");
+  const looked: string[] = [];
+  let failed = false;
+  const result = await stageSeed({
+    sourceRoot: source,
+    targetRoot: target,
+    seed: { paths: ["deps"], exclude: ["**/*.tmp"] },
+    stagingDirectory: staging,
+    clone: async (request) => {
+      await cp(request.source, request.destination, { recursive: true });
+      return { outcome: "cloned" };
+    },
+    signal: new AbortController().signal,
+    deadline: Date.now() + 60_000,
+    now: Date.now,
+    // The staged root's first lookup fails the way a disk can, transiently; every later
+    // lookup of it succeeds. Skipping the walk on that failure would place `deps/x.tmp`, which
+    // the operator excluded, in a seed the next lookup then finds whole.
+    lstat: async (path) => {
+      looked.push(path);
+      if (!failed && path.endsWith(join("0", "deps"))) {
+        failed = true;
+        throw Object.assign(new Error(`EIO: i/o error, lstat '${path}'`), { code: "EIO" });
+      }
+      return lstat(path);
+    },
+  });
+  assert.ok(failed, "the staged root was looked up through the injected seam");
+  assert.equal(result.kind, "abandoned");
+  assert.match(result.kind === "abandoned" ? result.reason : "", /staging failed: EIO/);
 });
 
 test("a Stop or the deadline landing during exclusion work ends the seed, not the next clone", async () => {

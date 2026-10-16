@@ -298,8 +298,9 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   ignored (each Git call is bounded by what is left of the claim's time, and by a minute at
   most), each clone, the exclusion walk, and placement. Whichever lands first ends the seed as
   `interrupted`.
-- **An exclusion walk that cannot read** a directory in the clone, for any reason other than the
-  directory having vanished, abandons the seed and the steps run. The excluded content may
+- **An exclusion walk that cannot read** a directory in the clone, or cannot look up the staged
+  clone itself, for any reason other than it having vanished, abandons the seed and the steps
+  run. The excluded content may
   still be in that directory, so the clone is never placed.
 - **A tree that cannot be inspected is never read as empty.** Expanding the seed paths treats
   only a path that is genuinely not there as no match. A permission or I/O error while listing a
