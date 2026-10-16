@@ -1597,10 +1597,11 @@ same submission without creating another refinement or recording an operator dec
 ### Automatic recovery before review
 
 Capture integrity compares each file with its registered byte count and SHA-256 before copying
-it into immutable evidence storage. A new registration id does not replace an earlier id at the
-same path. If the file changed, capture must refuse the stale registration even when another id
-correctly describes the current bytes. This checks evidence identity, not whether the proof is
-sufficient or the implementation is correct.
+it into immutable evidence storage. Only the latest registration of a checkout path is reserved,
+as submission creation above describes: an earlier id at the same path whose digest the file no
+longer has is skipped at reservation rather than refused at capture, and an earlier id with the
+same digest is kept. A reserved registration whose file changes afterwards is still refused. This
+checks evidence identity, not whether the proof is sufficient or the implementation is correct.
 
 New agent-file capture failures on active, live bindings with automatic resumption now send an
 `evidence_capture_repair` packet to the bound session. It names the failure and reserved sources,
