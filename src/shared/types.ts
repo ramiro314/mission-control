@@ -2266,6 +2266,48 @@ export interface TaskClaimWarning {
   truncatedBytes: number;
 }
 
+/**
+ * A manual lease being acquired in the background, as `make session` polls it. The daemon
+ * answers a manual acquire with `202` and this request's id when the pool has a dependency
+ * claim, because a claim can outlast any HTTP request. In memory only: a request unknown after
+ * a restart is a `404`.
+ */
+export type ManualWorktreeRequestView =
+  | {
+      requestId: string;
+      state: "claiming";
+      /** Since the daemon accepted the request. */
+      elapsedMs: number;
+      /**
+       * The claim step running right now. Null while the slot is still being chosen, reset or
+       * set up, or its fingerprint read.
+       */
+      step: {
+        /** 1-based, of `stepCount`. */
+        step: number;
+        stepCount: number;
+        /** The step's command as text, cut to a fixed bound. */
+        command: string;
+        elapsedMs: number;
+      } | null;
+    }
+  | {
+      requestId: string;
+      state: "granted";
+      elapsedMs: number;
+      lease: { path: string; leaseId: string; baseSha: string };
+      /** Present when the claim failed. The lease is granted anyway. */
+      claimWarning?: Omit<TaskClaimWarning, "repoRoot">;
+    }
+  | {
+      requestId: string;
+      state: "failed";
+      elapsedMs: number;
+      reason: string;
+      /** `expired` is a grant nobody picked up within the pickup window. */
+      outcome: "notAcquired" | "outcomeUnknown" | "expired";
+    };
+
 export interface Task {
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */

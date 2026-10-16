@@ -1784,10 +1784,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
     }
     const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const owner = { kind: "manual", key: ownerKey } as const;
+    // A claim may run far longer than one HTTP request, and a caller that gave up would leave
+    // the lease granted to nobody. So a pool with a claim is acquired in the background and
+    // polled for. A pool without one answers synchronously, exactly as before, which keeps an
+    // older `make session` working against this daemon.
+    if (worktrees.poolClaim(parsed.data.repositoryPath)) {
+      const requestId = worktrees.manualRequests.start({
+        repositoryPath: parsed.data.repositoryPath,
+        baseSha,
+        owner,
+      });
+      return c.json({ requestId, baseSha }, 202);
+    }
     const acquired = await worktrees.acquire({
       repositoryPath: parsed.data.repositoryPath,
       baseSha,
-      owner: { kind: "manual", key: ownerKey },
+      owner,
     });
     if (acquired.outcome === "acquired") {
       return c.json({
@@ -1800,6 +1813,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       { error: acquired.reason, outcome: acquired.outcome },
       acquired.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  app.get("/api/worktrees/manual/requests/:requestId", (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const view = worktrees.manualRequests.view(c.req.param("requestId"));
+    // Requests live in daemon memory, so one this daemon does not know was accepted by a daemon
+    // that has since restarted, or never existed.
+    if (!view) return c.json({ error: "manual acquire request was not found" }, 404);
+    return c.json(view);
   });
 
   app.post("/api/worktrees/manual/return", async (c) => {
