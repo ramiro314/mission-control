@@ -32,6 +32,40 @@ function boundedReason(value: string): string {
   return bytes.length <= MAX_REASON_BYTES ? value : bytes.subarray(0, MAX_REASON_BYTES).toString("utf8");
 }
 
+/**
+ * The Stop and the claim's deadline a seed works within. Every phase of a seed's preparation
+ * checks it between units of work and bounds its Git calls by what is left, so neither a Stop
+ * nor the deadline waits on a large tree or a slow Git.
+ */
+export interface SeedBudget {
+  signal: AbortSignal;
+  deadline: number;
+  now: () => number;
+}
+
+/** Thrown when a seed's Stop or deadline lands mid-preparation, and turned into its result. */
+class SeedEnded extends Error {
+  constructor(readonly ended: "stopped" | "timedOut") {
+    super(`the dependency seed was ${ended === "stopped" ? "stopped" : "out of time"}`);
+  }
+}
+
+function checkBudget(budget: SeedBudget | undefined): void {
+  if (!budget) return;
+  if (budget.signal.aborted) throw new SeedEnded("stopped");
+  if (budget.now() >= budget.deadline) throw new SeedEnded("timedOut");
+}
+
+/** A Git call's limit: its own minute, or what is left of the claim's time if that is less. */
+function gitTimeoutMs(budget: SeedBudget | undefined): number {
+  return budget ? Math.max(1, Math.min(60_000, budget.deadline - budget.now())) : 60_000;
+}
+
+/** A checkout's Git administrative path, in any letter case: never a seed path. */
+function gitAdministrative(name: string): boolean {
+  return name.toLowerCase() === ".git";
+}
+
 /** One path a seed path glob matched, repository-relative, and whether it is a directory. */
 export interface SeedEntry {
   path: string;
@@ -44,21 +78,27 @@ export interface SeedEntry {
  * the depth a glob names. A wildcard does not match a name starting with a dot, as everywhere
  * `matchesGlob` is used. An intermediate segment must be a real directory: a symlink is never
  * followed out of the tree. A path inside another matched path is dropped, because cloning
- * the outer one already carries it. `.git` is never a seed path.
+ * the outer one already carries it. `.git` is never a seed path, in any
+ * letter case and at any depth, whether named literally or matched by a pattern.
  */
-export async function expandSeedPaths(root: string, globs: readonly string[]): Promise<SeedEntry[]> {
+export async function expandSeedPaths(
+  root: string,
+  globs: readonly string[],
+  budget?: SeedBudget,
+): Promise<SeedEntry[]> {
   const found = new Map<string, boolean>();
   for (const glob of globs) {
     const segments = glob.split("/");
-    if (segments[0] === ".git") continue;
     let level: string[] = [""];
     for (const [index, segment] of segments.entries()) {
       const last = index === segments.length - 1;
       const next: string[] = [];
       for (const parent of level) {
-        const names = /[*?[{]/.test(segment)
+        checkBudget(budget);
+        const names = (/[*?[{]/.test(segment)
           ? await childNames(join(root, parent)).then((all) => all.filter((name) => matchesGlob(name, segment)))
-          : [segment];
+          : [segment]
+        ).filter((name) => !gitAdministrative(name));
         for (const name of names) {
           const relative = parent ? `${parent}/${name}` : name;
           let stat;
@@ -89,15 +129,19 @@ async function childNames(directory: string): Promise<string[]> {
   }
 }
 
-async function git(root: string, args: string[], input?: string) {
-  return trackOwnWorktreeProcess((onSpawn) =>
+async function git(root: string, args: string[], input: string | undefined, budget: SeedBudget | undefined) {
+  checkBudget(budget);
+  const result = await trackOwnWorktreeProcess((onSpawn) =>
     run("git", ["-C", root, ...args], {
-      timeoutMs: 60_000,
+      timeoutMs: gitTimeoutMs(budget),
       maxBuffer: 16 * 1024 * 1024,
       ...(input !== undefined ? { input } : {}),
       onSpawn,
     }),
   );
+  // A call cut short by the claim's time is the deadline, never a Git refusal.
+  checkBudget(budget);
+  return result;
 }
 
 export type IgnoredProof = { ok: true } | { ok: false; reason: string };
@@ -108,9 +152,18 @@ export type IgnoredProof = { ok: true } | { ok: false; reason: string };
  * a path that does not exist yet. `check-ignore` already reports a tracked path as not ignored;
  * `ls-files` also catches a tracked file inside an ignored directory.
  */
-export async function proveIgnored(root: string, entries: readonly SeedEntry[]): Promise<IgnoredProof> {
+export async function proveIgnored(
+  root: string,
+  entries: readonly SeedEntry[],
+  budget?: SeedBudget,
+): Promise<IgnoredProof> {
   if (entries.length === 0) return { ok: true };
-  const tracked = await git(root, ["ls-files", "-z", "--cached", "--", ...entries.map((entry) => `:(literal)${entry.path}`)]);
+  const tracked = await git(
+    root,
+    ["ls-files", "-z", "--cached", "--", ...entries.map((entry) => `:(literal)${entry.path}`)],
+    undefined,
+    budget,
+  );
   if (tracked.code !== 0 || tracked.outcomeUnknown || tracked.overflowed) {
     return { ok: false, reason: `git ls-files failed: ${tracked.stderr.trim() || `exit ${tracked.code}`}` };
   }
@@ -119,7 +172,7 @@ export async function proveIgnored(root: string, entries: readonly SeedEntry[]):
     trackedFiles.some((file) => file === entry.path || file.startsWith(`${entry.path}/`)));
   if (trackedEntry) return { ok: false, reason: `${trackedEntry.path} holds tracked files` };
   const asked = entries.map((entry) => (entry.directory ? `${entry.path}/` : entry.path));
-  const ignored = await git(root, ["check-ignore", "-z", "--stdin"], `${asked.join("\0")}\0`);
+  const ignored = await git(root, ["check-ignore", "-z", "--stdin"], `${asked.join("\0")}\0`, budget);
   // 0: some are ignored, 1: none are. Anything else is Git refusing to answer.
   if ((ignored.code !== 0 && ignored.code !== 1) || ignored.outcomeUnknown || ignored.overflowed) {
     return { ok: false, reason: `git check-ignore failed: ${ignored.stderr.trim() || `exit ${ignored.code}`}` };
@@ -219,7 +272,12 @@ export function copyOnWriteClone(
  * (`**\/node_modules/.cache`). A matched directory is removed whole and not walked; a symlink is
  * never followed.
  */
-async function removeExclusions(stagedRoot: string, relative: string, exclude: readonly string[]): Promise<void> {
+async function removeExclusions(
+  stagedRoot: string,
+  relative: string,
+  exclude: readonly string[],
+  budget: SeedBudget,
+): Promise<void> {
   if (exclude.length === 0) return;
   const matches = (path: string): boolean => exclude.some((glob) => matchesGlob(path, glob));
   if (matches(relative)) {
@@ -227,13 +285,18 @@ async function removeExclusions(stagedRoot: string, relative: string, exclude: r
     return;
   }
   const walk = async (directory: string, at: string): Promise<void> => {
+    checkBudget(budget);
     let children;
     try {
       children = await readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (error) {
+      // A directory that is gone has nothing left to exclude. Any other failure means its
+      // excluded content may still be there, so it fails the seed rather than pass it.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
     }
     for (const child of children) {
+      checkBudget(budget);
       const path = join(directory, child.name);
       const childRelative = `${at}/${child.name}`;
       if (matches(childRelative)) await rm(path, { recursive: true, force: true });
@@ -277,9 +340,22 @@ export async function stageSeed(input: {
   deadline: number;
   now: () => number;
 }): Promise<SeedStageResult> {
-  const matched = await expandSeedPaths(input.sourceRoot, input.seed.paths);
+  try {
+    return await stageWithin(input, { signal: input.signal, deadline: input.deadline, now: input.now });
+  } catch (error) {
+    if (error instanceof SeedEnded) return { kind: error.ended };
+    return { kind: "abandoned", reason: boundedReason(`staging failed: ${error instanceof Error ? error.message : String(error)}`) };
+  }
+}
+
+async function stageWithin(
+  input: Parameters<typeof stageSeed>[0],
+  budget: SeedBudget,
+): Promise<SeedStageResult> {
+  const matched = await expandSeedPaths(input.sourceRoot, input.seed.paths, budget);
   const placeable: SeedEntry[] = [];
   for (const entry of matched) {
+    checkBudget(budget);
     const parent = dirname(entry.path);
     if (parent === ".") {
       placeable.push(entry);
@@ -289,7 +365,7 @@ export async function stageSeed(input: {
     if (stat?.isDirectory()) placeable.push(entry);
   }
   if (placeable.length === 0) return { kind: "abandoned", reason: "the source has none of the seed paths" };
-  const proof = await proveIgnored(input.targetRoot, placeable);
+  const proof = await proveIgnored(input.targetRoot, placeable, budget);
   if (!proof.ok) return { kind: "abandoned", reason: proof.reason };
   // The seed replaces the target's tree only if it replaces every seed path the target has. A
   // path the target holds that the source does not supply would keep the target's own, possibly
@@ -298,32 +374,31 @@ export async function stageSeed(input: {
   const supplied = placeable.map((entry) => entry.path);
   const coveredBySeed = (path: string): boolean =>
     supplied.some((source) => path === source || path.startsWith(`${source}/`));
-  const unreplaced = (await expandSeedPaths(input.targetRoot, input.seed.paths)).filter((entry) => !coveredBySeed(entry.path));
+  const unreplaced = (await expandSeedPaths(input.targetRoot, input.seed.paths, budget))
+    .filter((entry) => !coveredBySeed(entry.path));
   const staged: StagedSeedPath[] = [];
   let complete = placeable.length === matched.length && unreplaced.length === 0;
-  try {
-    for (const [index, entry] of placeable.entries()) {
-      if (input.signal.aborted) return { kind: "stopped" };
-      const holder = join(input.stagingDirectory, String(index));
-      await mkdir(holder, { recursive: true });
-      const destination = join(holder, basename(entry.path));
-      const cloned = await input.clone({
-        source: join(input.sourceRoot, entry.path),
-        destination,
-        signal: input.signal,
-        timeoutMs: input.deadline - input.now(),
-      });
-      if (cloned.outcome === "stopped" || cloned.outcome === "timedOut") return { kind: cloned.outcome };
-      if (cloned.outcome === "failed") return { kind: "abandoned", reason: `${entry.path} could not be cloned: ${cloned.reason}` };
-      await removeExclusions(destination, entry.path, input.seed.exclude);
-      // An exclusion that matched the whole path leaves nothing to place, and the target's own
-      // copy of that path is left as it is. The seed is then incomplete.
-      if (await lstat(destination).catch(() => null)) staged.push({ path: entry.path, staged: destination });
-      else complete = false;
-    }
-  } catch (error) {
-    return { kind: "abandoned", reason: boundedReason(`staging failed: ${error instanceof Error ? error.message : String(error)}`) };
+  for (const [index, entry] of placeable.entries()) {
+    checkBudget(budget);
+    const holder = join(input.stagingDirectory, String(index));
+    await mkdir(holder, { recursive: true });
+    const destination = join(holder, basename(entry.path));
+    const cloned = await input.clone({
+      source: join(input.sourceRoot, entry.path),
+      destination,
+      signal: input.signal,
+      timeoutMs: input.deadline - input.now(),
+    });
+    if (cloned.outcome === "stopped" || cloned.outcome === "timedOut") return { kind: cloned.outcome };
+    if (cloned.outcome === "failed") return { kind: "abandoned", reason: `${entry.path} could not be cloned: ${cloned.reason}` };
+    await removeExclusions(destination, entry.path, input.seed.exclude, budget);
+    // An exclusion that matched the whole path leaves nothing to place, and the target's own
+    // copy of that path is left as it is. The seed is then incomplete.
+    if (await lstat(destination).catch(() => null)) staged.push({ path: entry.path, staged: destination });
+    else complete = false;
   }
+  // Nothing after the last clone may outlast the Stop or the deadline unseen.
+  checkBudget(budget);
   // Every path excluded is no seed at all: the target was never touched, and the steps run.
   if (staged.length === 0) return { kind: "abandoned", reason: "the exclusions removed every seed path" };
   return { kind: "staged", staged, complete };

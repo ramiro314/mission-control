@@ -269,6 +269,9 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
 - **Only ignored paths.** Every matched path must be ignored by Git in the target and hold
   nothing tracked (`git ls-files`, then `git check-ignore`, asked with a trailing slash for a
   directory). A path whose parent directory the target's commit does not have is left out.
+  `.git`, in any letter case and at any depth, is never a seed path: the schema refuses it, and
+  expansion drops it whether it was named or matched by a pattern, because on a case-insensitive
+  disk `.Git` is the checkout's own Git administrative pointer.
 - **Staging, then rename.** Each matched path is cloned into
   `<pool directory>/.seed-staging/<id>/`, on the same volume and outside every checkout, and the
   exclusions are removed there. Only then is each path renamed into the target, with any existing
@@ -290,7 +293,14 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   run.
 - **A failed clone** abandons the seed, removes its staging, and the steps run. It is not a
   failed claim, and the target was never touched.
-- **One deadline.** The seed spends the claim's `timeoutMinutes` together with the steps.
+- **One deadline.** The seed spends the claim's `timeoutMinutes` together with the steps. Every
+  phase of a seed checks the Stop and that deadline: expanding the globs, proving the paths
+  ignored (each Git call is bounded by what is left of the claim's time, and by a minute at
+  most), each clone, the exclusion walk, and placement. Whichever lands first ends the seed as
+  `interrupted`.
+- **An exclusion walk that cannot read** a directory in the clone, for any reason other than the
+  directory having vanished, abandons the seed and the steps run. The excluded content may
+  still be in that directory, so the clone is never placed.
 
 **The environment.** Each step gets the same scrubbed base a check command gets (see "A trimmed
 environment" under [Running a check command](#running-a-check-command)), plus only the variables

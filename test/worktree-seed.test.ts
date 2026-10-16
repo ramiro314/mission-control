@@ -24,6 +24,7 @@ import {
   expandSeedPaths,
   removeLeftoverStaging,
   seedStagingRoot,
+  stageSeed,
   wipeSeedPaths,
   type CloneTree,
 } from "../src/server/worktrees/seed.ts";
@@ -199,6 +200,10 @@ test("the claim's seed is strict, bounded, and refuses ** in a seed path but not
     { paths: ["a"], extra: true },
     { paths: Array.from({ length: 65 }, (_, index) => `p${index}`) },
     { paths: ["a"], exclude: Array.from({ length: 65 }, (_, index) => `e${index}`) },
+    // The checkout's Git administrative path, in any letter case and at any depth.
+    { paths: [".git"] },
+    { paths: [".Git"] },
+    { paths: ["apps/web/.GIT"] },
   ]) {
     assert.throws(() => WorktreeClaimSchema.parse({ steps: [{ argv: ["x"] }], seed }), JSON.stringify(seed).slice(0, 60));
   }
@@ -251,6 +256,103 @@ test("seed globs expand level by level, keep the outermost match, and never name
     { path: "apps/web/node_modules", directory: true },
     { path: "node_modules", directory: true },
   ]);
+});
+
+test("expansion never yields .git, whatever its letter case or however it is matched", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-seed-dotgit-"));
+  mkdirSync(join(root, ".git", "objects"), { recursive: true });
+  mkdirSync(join(root, ".github"));
+  mkdirSync(join(root, "apps", "web", ".git"), { recursive: true });
+  // Expansion is also handed globs the schema refuses, because an older or hand-edited setting
+  // never went through it. On a case-insensitive disk `.Git` names the real `.git`; the name
+  // is refused before the disk is asked, so this holds on every platform.
+  const entries = await expandSeedPaths(root, [".Git", ".GIT/objects", ".g*", ".[gG][iI][tT]", "apps/*/.git", "apps/web/.Git"]);
+  assert.deepEqual(entries, [{ path: ".github", directory: true }]);
+});
+
+/** A source with `deps/{keep,x.tmp}` beside a target clone that ignores `deps/`. */
+function stagingFixture(prefix: string) {
+  const { clone } = repository(prefix);
+  const source = mkdtempSync(join(tmpdir(), `${prefix}source-`));
+  mkdirSync(join(source, "deps"));
+  writeFileSync(join(source, "deps", "keep"), "keep");
+  writeFileSync(join(source, "deps", "x.tmp"), "excluded");
+  const staging = mkdtempSync(join(tmpdir(), `${prefix}staging-`));
+  return { source, target: clone, staging };
+}
+
+test("an exclusion walk that cannot read a directory abandons the seed instead of passing it", async () => {
+  const { source, target, staging } = stagingFixture("mission-seed-exclude-unreadable-");
+  let locked = "";
+  const result = await stageSeed({
+    sourceRoot: source,
+    targetRoot: target,
+    seed: { paths: ["deps"], exclude: ["**/*.tmp"] },
+    stagingDirectory: staging,
+    // The clone succeeds, but a directory inside it cannot be listed, so the walk cannot tell
+    // what excluded content it holds.
+    clone: async (request) => {
+      await cp(request.source, request.destination, { recursive: true });
+      locked = join(request.destination, "locked");
+      mkdirSync(locked);
+      chmodSync(locked, 0o000);
+      return { outcome: "cloned" };
+    },
+    signal: new AbortController().signal,
+    deadline: Date.now() + 60_000,
+    now: Date.now,
+  });
+  chmodSync(locked, 0o700);
+  assert.equal(result.kind, "abandoned");
+  assert.match(result.kind === "abandoned" ? result.reason : "", /staging failed: .*(EACCES|permission denied)/i);
+});
+
+test("a Stop or the deadline landing during exclusion work ends the seed, not the next clone", async () => {
+  for (const ending of ["stopped", "timedOut"] as const) {
+    const { source, target, staging } = stagingFixture(`mission-seed-exclude-${ending}-`);
+    const control = new AbortController();
+    let offset = 0;
+    const result = await stageSeed({
+      sourceRoot: source,
+      targetRoot: target,
+      seed: { paths: ["deps"], exclude: ["**/*.tmp"] },
+      stagingDirectory: staging,
+      // The only path's clone finishes just as the Stop or the deadline lands, so only the
+      // exclusion work that follows it can notice.
+      clone: async (request) => {
+        await cp(request.source, request.destination, { recursive: true });
+        if (ending === "stopped") control.abort("stopped");
+        else offset += 11 * 60_000;
+        return { outcome: "cloned" };
+      },
+      signal: control.signal,
+      deadline: Date.now() + 10 * 60_000,
+      now: () => Date.now() + offset,
+    });
+    assert.deepEqual(result, { kind: ending }, `a seed ${ending} after its last clone is never staged`);
+  }
+});
+
+test("a Stop before preparation clones nothing", async () => {
+  const { source, target, staging } = stagingFixture("mission-seed-prepare-stopped-");
+  const control = new AbortController();
+  control.abort("stopped");
+  let cloned = 0;
+  const result = await stageSeed({
+    sourceRoot: source,
+    targetRoot: target,
+    seed: { paths: ["deps"], exclude: [] },
+    stagingDirectory: staging,
+    clone: async () => {
+      cloned += 1;
+      return { outcome: "cloned" };
+    },
+    signal: control.signal,
+    deadline: Date.now() + 60_000,
+    now: Date.now,
+  });
+  assert.deepEqual(result, { kind: "stopped" });
+  assert.equal(cloned, 0);
 });
 
 test("copy-on-write is the only copy: the argv clones or refuses, and a refusal is never a byte copy", async () => {
@@ -818,8 +920,9 @@ test("with no fingerprint paths a settled slot never re-seeds, and a cold one se
 test("a seed that reaches the claim's time limit records interrupted, returns its source and runs no step", async () => {
   const fixture = repository("mission-seed-timeout-");
   const claim = claimWith(SEED);
-  // The clock jumps past the claim's 10-minute limit while the first path is cloned, so the
-  // second path's clone is handed no time at all: the deadline the seed and the steps share.
+  // The clock jumps past the claim's 10-minute limit while the first path is cloned. The
+  // deadline the seed and the steps share is noticed right after, before the second path is
+  // ever handed to a clone.
   let offset = 0;
   const remaining: number[] = [];
   const m = manager(claim, {
@@ -837,9 +940,8 @@ test("a seed that reaches the claim's time limit records interrupted, returns it
   makeCold(slotAt(m, 1).id);
   const before = runCount(slotAt(m, 1).path);
   const result = leased(await acquire(m, fixture.clone, fixture.sha, "timeout:target"));
-  assert.equal(remaining.length, 2);
+  assert.equal(remaining.length, 1, "no clone started past the limit");
   assert.ok(remaining[0]! > 0 && remaining[0]! <= claim.timeoutMinutes * 60_000, "the seed spends the claim's deadline");
-  assert.ok(remaining[1]! <= 0, "the second clone was given nothing past the limit");
   assert.match(result.claimWarning?.reason ?? "", /dependency seed reached the claim's time limit/);
   assert.equal(result.claimWarning?.step, 1);
   const target = slotAt(m, 1);

@@ -3059,6 +3059,12 @@ const WorktreeClaimSeedPathSchema = z
   .refine(
     (glob) => glob.split("/").every((segment) => !segment.includes("**")),
     "a seed path cannot use **; name each directory level, with * for one level",
+  )
+  // In any letter case: on a case-insensitive disk `.Git` is the worktree's own `.git`, and a
+  // seed must never replace a checkout's Git administrative pointer.
+  .refine(
+    (glob) => glob.split("/").every((segment) => segment.toLowerCase() !== ".git"),
+    "a seed path cannot name .git",
   );
 
 /** A path removed from a seed's clone before it is placed. `**` is allowed here. */
