@@ -322,6 +322,31 @@ test("a refused draft shows how many times GitHub refused it and why, and reads 
   await shoot(dashboard, "findings-modal-refused-detail", modal);
 });
 
+// A refused draft never reached GitHub, so a dry-run pull request carrying only one still says
+// nothing on it was posted.
+test("a dry run whose only finding GitHub refused 3 times still says nothing was posted", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedLedger(daemon, [{
+    number: 608,
+    posture: "dry-run",
+    findings: [{
+      id: "dry-refused", title: "Refused, then back to dry run", body: "BODY refused in dry run.",
+      severity: "major", status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null,
+      postRefusals: 3, lastPostError: REFUSAL_REASON,
+    }],
+  }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+  await findingsButton(dashboard, 608).click();
+  const modal = findingsDialog(dashboard, 608);
+  await expect(modal.locator("tr.wf-run-finding-row")).toHaveCount(1);
+  await expect(modal.locator("tr.wf-run-finding-row").locator("td").nth(5))
+    .toHaveText("RefusedGitHub refused it 3 times");
+  await expect(modal.getByText("Dry run: nothing on this pull request was posted")).toBeVisible();
+  await shoot(dashboard, "findings-modal-dry-run-refused", modal);
+});
+
 test("an open Findings modal refreshes on the panel's poll", async ({ dashboard, daemon }) => {
   seedLedger(daemon, [{ number: 605, posture: "live", findings: [SIX[0]!] }]);
   await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);

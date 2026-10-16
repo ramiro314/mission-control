@@ -330,6 +330,17 @@ test("the dry-run line appears only when the posture was not live and nothing re
     nothingPostedLine(row({ reviewPosture: "not-allowlisted" }), drafts),
     "Not on the allowlist: nothing on this pull request was posted",
   );
+  // A draft GitHub refused 3 times never reached GitHub either, so it keeps the line.
+  const refused = [finding({ postRefusals: 3, lastPostError: "Line could not be resolved (HTTP 422)" })];
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "dry-run" }), refused),
+    "Dry run: nothing on this pull request was posted",
+  );
+  // Unless an earlier version of it was posted.
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "dry-run" }), [{ ...refused[0]!, postedAt: 5 }]),
+    null,
+  );
 });
 
 test("the modal's header words for state and rounds", () => {
