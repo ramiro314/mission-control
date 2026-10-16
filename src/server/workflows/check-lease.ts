@@ -8,6 +8,7 @@ import { verifyPinnedBase } from "../dispatcher.ts";
 import { verifyHeadIs } from "../git/ensemble-snapshot.ts";
 import { run, stubRun, type RunResult } from "../util/exec.ts";
 import { LegacyTreehouseService } from "../worktrees/legacy-treehouse.ts";
+import type { WorktreeClaimWarning } from "../worktrees/claim.ts";
 import { WorktreeManager } from "../worktrees/manager.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 
@@ -329,6 +330,48 @@ export type CheckTreeOwnership =
   /** Held, under this label. The MANAGER compares it against the row's token, not us. */
   | { state: "held"; holder: string };
 
+/** What a provider is asked for when it takes a tree for one attempt. */
+export interface CheckTreeAcquireInput {
+  repoRoot: string;
+  attemptId: string;
+  baseSha: string;
+  /** Told when a dependency claim is about to run inside the acquisition. See `acquireForAttempt`. */
+  onClaimStart?: () => void;
+  /** Stops the acquisition's dependency claim, whether it is running or has yet to start. */
+  signal?: AbortSignal;
+}
+
+/** A tree a provider took, and what its dependency claim said, when one ran inside the take. */
+export interface CheckTreeTaken {
+  path: string;
+  holderToken: string;
+  leaseId: string | null;
+  /** Present only when a claim ran during the take and failed. The tree is still ours. */
+  claimFailure?: CheckClaimFailure;
+}
+
+/** A failed dependency claim, with the fingerprint paths of the claim that ran. */
+export interface CheckClaimFailure {
+  warning: WorktreeClaimWarning;
+  fingerprintPaths: string[];
+}
+
+/**
+ * The dependency claim in an attempt's tree failed, so the check's Command must not run.
+ *
+ * Thrown by `acquireForAttempt` only AFTER the tree is confirmed back, so a caller that catches
+ * it owns no lease and has nothing to clean up. A throw rather than a field on a returned path,
+ * so that no caller can be handed a tree whose dependencies are known to be wrong and run in it
+ * by forgetting to look. Who owns the failure, the change or the machine, is the runtime's
+ * question: see `CheckRuntime`.
+ */
+export class CheckDependencyClaimError extends Error {
+  constructor(readonly failure: CheckClaimFailure) {
+    super(`the dependency claim failed at step ${failure.warning.step} of ${failure.warning.stepCount}`);
+    this.name = "CheckDependencyClaimError";
+  }
+}
+
 /**
  * Everything `CheckLeaseManager` needs from a worktree source, and the only route it has to
  * one.
@@ -369,11 +412,7 @@ export interface CheckTreeProvider extends CheckTreeReleaseProvider {
    * `baseSha` is passed here anyway because a provider that CREATES a tree (rather than
    * being handed a warm one) can start it at the right commit in one step.
    */
-  acquire(input: {
-    repoRoot: string;
-    attemptId: string;
-    baseSha: string;
-  }): Promise<{ path: string; holderToken: string; leaseId: string | null }>;
+  acquire(input: CheckTreeAcquireInput): Promise<CheckTreeTaken>;
   /** Bring an already-taken tree to `baseSha`, or throw. Called once the row is durable. */
   pin(input: { repoRoot: string; path: string; baseSha: string }): Promise<void>;
 }
@@ -434,11 +473,7 @@ const GIT_WORKTREE_REMOVE_TIMEOUT_MS = 30_000;
 export class GitCheckTreeProvider implements CheckTreeProvider {
   readonly kind: WorktreeProvider = "git";
 
-  async acquire(input: {
-    repoRoot: string;
-    attemptId: string;
-    baseSha: string;
-  }): Promise<{ path: string; holderToken: string; leaseId: string | null }> {
+  async acquire(input: CheckTreeAcquireInput): Promise<CheckTreeTaken> {
     mkdirSync(CHECK_WORKTREES_DIR, { recursive: true });
     const path = join(CHECK_WORKTREES_DIR, input.attemptId);
     if (existsSync(path)) {
@@ -545,16 +580,17 @@ export class MissionCheckTreeProvider implements CheckTreeProvider {
 
   constructor(private readonly manager: WorktreeManager) {}
 
-  async acquire(input: {
-    repoRoot: string;
-    attemptId: string;
-    baseSha: string;
-  }): Promise<{ path: string; holderToken: string; leaseId: string | null }> {
+  async acquire(input: CheckTreeAcquireInput): Promise<CheckTreeTaken> {
     const acquired = await this.manager.acquire({
       repositoryPath: input.repoRoot,
       baseSha: input.baseSha,
       owner: { kind: "check", key: input.attemptId },
       awaitingDomainRecord: true,
+      // The pool's claim runs inside this lease under the same rules as a task's: skipped on a
+      // matching fingerprint, handed over with a warning when it fails.
+      runClaim: true,
+      ...(input.onClaimStart ? { onClaimStart: input.onClaimStart } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     if (acquired.outcome === "notAcquired") {
       throw new NativeCheckNotAcquiredError(acquired.reason);
@@ -566,6 +602,14 @@ export class MissionCheckTreeProvider implements CheckTreeProvider {
       path: acquired.lease.path,
       holderToken: acquired.lease.leaseId,
       leaseId: acquired.lease.leaseId,
+      ...(acquired.claimWarning
+        ? {
+            claimFailure: {
+              warning: acquired.claimWarning,
+              fingerprintPaths: acquired.claimFingerprintPaths ?? [],
+            },
+          }
+        : {}),
     };
   }
 
@@ -787,7 +831,10 @@ export class CheckLeaseManager {
    * the check still produces a real verdict. An ambiguous native outcome remains
    * infrastructure and never attempts a second acquisition.
    *
-   * Every failure here is infrastructure and never a verdict.
+   * Every failure here is infrastructure and never a verdict, with one exception the caller
+   * decides: the repository's dependency claim, which runs inside the native lease and against
+   * the cold fallback's tree alike. A claim that fails hands the tree straight back and throws
+   * `CheckDependencyClaimError`, so a returned path always has its claim behind it.
    */
   async acquireForAttempt(input: {
     attemptId: string;
@@ -795,6 +842,18 @@ export class CheckLeaseManager {
     nodeId: string;
     repoRoot: string;
     headSha: string;
+    /**
+     * Told once when a dependency claim is about to run for this attempt, synchronously and
+     * never for a claim the fingerprint skips. The check runtime gives up its check slot here.
+     */
+    onClaimStart?: () => void;
+    /**
+     * Aborted when the attempt's run is cancelled. An attempt already aborted takes no tree at
+     * all. Otherwise the dependency claim follows the signal in a pool slot and in the cold
+     * fallback alike: a running claim stops, and one that registers after the abort stops before
+     * its first step. Either way the attempt ends with the dependency failure a stop produces.
+     */
+    signal?: AbortSignal;
   }): Promise<string> {
     const { attemptId, repoRoot } = input;
     // Claimed SYNCHRONOUSLY, before the first await, and this ordering is the guard rather
@@ -811,6 +870,9 @@ export class CheckLeaseManager {
     }
     this.busy.add(attemptId);
     try {
+      if (input.signal?.aborted) {
+        throw new Error(`check attempt ${attemptId} was cancelled before it took a worktree`);
+      }
       // Resolved BEFORE anything is leased, so a caller naming a commit this repository does
       // not have costs an error rather than a pool slot that then has to be unwound.
       const baseSha = await this.verifyBase(repoRoot, input.headSha);
@@ -830,9 +892,17 @@ export class CheckLeaseManager {
       // before reservation degrades once to disposable Git; an ambiguous native outcome
       // fails closed so the same attempt cannot acquire twice.
       let provider = this.mission;
-      let taken: Awaited<ReturnType<CheckTreeProvider["acquire"]>>;
+      let taken: CheckTreeTaken;
+      const onClaimStart = input.onClaimStart;
+      const signal = input.signal;
       try {
-        taken = await provider.acquire({ repoRoot, attemptId, baseSha });
+        taken = await provider.acquire({
+          repoRoot,
+          attemptId,
+          baseSha,
+          ...(onClaimStart ? { onClaimStart } : {}),
+          ...(signal ? { signal } : {}),
+        });
       } catch (error) {
         if (!(error instanceof NativeCheckNotAcquiredError)) throw error;
         provider = this.git;
@@ -877,6 +947,28 @@ export class CheckLeaseManager {
           // exist before it starts - and the unwind below distinguishes "we could not record
           // it" from "we could not prepare it" on exactly that basis.
           await provider.pin({ repoRoot, path, baseSha });
+          // The cold fallback runs the repository's claim too, against its own disposable
+          // tree, once that tree is recorded and pinned: a failure or a stop in it then unwinds
+          // through the same hand-back below as any other preparation failure.
+          let claimFailure = taken.claimFailure;
+          if (provider === this.git) {
+            const claimed = await this.missionManager.claimDisposableTree({
+              repositoryPath: repoRoot,
+              path,
+              baseSha,
+              owner: { kind: "check", key: attemptId },
+              ...(onClaimStart ? { onClaimStart } : {}),
+              ...(signal ? { signal } : {}),
+            });
+            if (claimed.kind === "unproven") throw new Error(claimed.reason);
+            if (claimed.kind === "failed") {
+              claimFailure = { warning: claimed.warning, fingerprintPaths: claimed.fingerprintPaths };
+            }
+          }
+          // A failed claim does not run the Command, so the tree has no further use to this
+          // attempt. It goes back through the unwind below, which confirms the return before
+          // the typed error reaches the caller.
+          if (claimFailure) throw new CheckDependencyClaimError(claimFailure);
         } catch (err) {
           // The lease is LIVE and we are about to throw, so nothing downstream will ever
           // record this tree - the pool would lose the slot permanently. Hand it back while
@@ -897,6 +989,9 @@ export class CheckLeaseManager {
           if (returned.code === 0) {
             if (inserted) this.store.delete(attemptId);
             this.justAcquired.delete(path);
+            // A dependency failure keeps its type, and only here, once the tree is confirmed
+            // back: the caller turns it into a verdict, which it may only do with no lease left.
+            if (err instanceof CheckDependencyClaimError) throw err;
             throw new Error(cause);
           }
           if (inserted) this.store.setState(attemptId, "returning", this.now());

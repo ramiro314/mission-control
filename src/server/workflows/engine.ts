@@ -69,6 +69,7 @@ import {
   tailBounded,
   type CheckRunDeps,
   type CheckScheduler,
+  type CheckSlot,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
 import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
@@ -584,6 +585,13 @@ export class WorkflowEngine {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
   private scheduledAttempts = new Set<string>();
+  /**
+   * One abort controller per check attempt from the moment it is claimed until it settles.
+   * Cancelling a run aborts its attempts' controllers, and the dependency claim follows the
+   * signal wherever the attempt has got to: a claim already running is stopped, and one that has
+   * not registered yet is stopped the moment it does.
+   */
+  private readonly checkAttemptAborts = new Map<string, AbortController>();
 
   constructor(
     readonly store: WorkflowStore,
@@ -1101,10 +1109,13 @@ export class WorkflowEngine {
         // while the attempt waits for a check slot would take the machine lease inside that
         // slot without having queued behind `testCheckLimit`.
         const testLease = checkLimitHeld && target?.kind === "check" && this.leasesTests(target.slot);
-        const run = () => this.runAttempt(attempt, checkLimitHeld, testLease);
+        const run = (slot?: CheckSlot) => this.runAttempt(attempt, checkLimitHeld, testLease, slot);
+        // The held check slot goes to the attempt, which gives it up while a dependency claim
+        // runs and takes one again before its Command spawns. The test gate is not released:
+        // it orders test checks, and a claim does not change that order.
         const checkRun = testLease
-          ? () => this.testCheckLimit(() => this.checkLimit(run))
-          : () => this.checkLimit(run);
+          ? () => this.testCheckLimit(() => this.checkLimit((slot) => run(slot)))
+          : () => this.checkLimit((slot) => run(slot));
         // A Command whose per-run allowance is already spent needs no execution capacity:
         // `runCheck` records budget_spent without calling the executor. Starting that attempt
         // directly prevents a repair round from sitting behind unrelated builds merely to be
@@ -1195,6 +1206,7 @@ export class WorkflowEngine {
     initial: WorkflowNodeAttempt,
     checkLimitHeld = false,
     testLease = false,
+    checkSlot?: CheckSlot,
   ): Promise<void> {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
@@ -1213,7 +1225,7 @@ export class WorkflowEngine {
       }
     }
     if (isCheck(node)) {
-      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, testLease);
+      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, testLease, checkSlot);
       return;
     }
     if (!isPersona(node)) return;
@@ -1582,12 +1594,61 @@ export class WorkflowEngine {
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
     checkLimitHeld: boolean,
     scheduledTestLease: boolean,
+    scheduledSlot?: CheckSlot,
   ): Promise<void> {
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
     if (!claimed) return;
+    // Armed in the same synchronous run as the claim, so there is no moment at which the
+    // attempt is running and a run cancel cannot reach it.
+    const abort = new AbortController();
+    this.checkAttemptAborts.set(claimed.id, abort);
+    try {
+      await this.runClaimedCheckAttempt(
+        claimed,
+        submission,
+        run,
+        version,
+        node,
+        checkLimitHeld,
+        scheduledTestLease,
+        scheduledSlot,
+        abort.signal,
+      );
+    } finally {
+      if (this.checkAttemptAborts.get(claimed.id) === abort) this.checkAttemptAborts.delete(claimed.id);
+    }
+  }
 
+  /**
+   * Abort these check attempts' work in progress: the dependency claim each is running or is
+   * about to run. A cancelled run calls it with the attempts it was running. Returns how many
+   * of them were check attempts still in flight. The command a check already spawned is not
+   * signalled; its result is recorded as audit-only, as it always was after a cancel.
+   */
+  stopCheckAttempts(attemptIds: readonly string[]): number {
+    let stopped = 0;
+    for (const id of attemptIds) {
+      const abort = this.checkAttemptAborts.get(id);
+      if (!abort) continue;
+      abort.abort("cancelled");
+      stopped += 1;
+    }
+    return stopped;
+  }
+
+  private async runClaimedCheckAttempt(
+    claimed: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+    checkLimitHeld: boolean,
+    scheduledTestLease: boolean,
+    scheduledSlot: CheckSlot | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) {
       this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
@@ -1603,20 +1664,35 @@ export class WorkflowEngine {
     // fallback path that gates only the executor. Either way the executor is told, rather than
     // reading the setting again - see the pump.
     const testLease = checkLimitHeld ? scheduledTestLease : this.leasesTests(node.slot);
+    // On the fallback path the slot is only taken around the executor, after the attempt ref
+    // is bound, so the ref carries a handle onto whichever slot that wrapper holds.
+    let fallbackSlot: CheckSlot | undefined;
+    const checkSlot: CheckSlot | undefined = checkLimitHeld
+      ? scheduledSlot
+      : {
+          release: () => fallbackSlot?.release(),
+          reacquire: () => fallbackSlot?.reacquire() ?? Promise.resolve(),
+        };
     const attemptRef = {
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
       testLease,
+      signal,
+      ...(checkSlot ? { checkSlot } : {}),
     };
     const baseDeps = this.checkDeps(attemptRef);
+    const gated = <T>(fn: () => Promise<T>): Promise<T> => this.checkLimit((slot) => {
+      fallbackSlot = slot;
+      return fn();
+    });
     const deps = !checkLimitHeld && baseDeps.execute
       ? {
           ...baseDeps,
           execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
             testLease
-              ? this.testCheckLimit(() => this.checkLimit(() => baseDeps.execute!(request)))
-              : this.checkLimit(() => baseDeps.execute!(request)),
+              ? this.testCheckLimit(() => gated(() => baseDeps.execute!(request)))
+              : gated(() => baseDeps.execute!(request)),
         }
       : baseDeps;
 
