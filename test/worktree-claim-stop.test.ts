@@ -28,6 +28,7 @@ const { getTask: getDurableTask, openDb } = await import("../src/server/db.ts");
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
 type Task = import("../src/shared/types.ts").Task;
+type TaskRepoEntry = import("../src/shared/types.ts").TaskRepoEntry;
 type WorktreeManagerT = InstanceType<typeof WorktreeManager>;
 type Dispatcher = import("../src/server/dispatcher.ts").Dispatcher;
 
@@ -55,11 +56,18 @@ function seedRepo(): { repo: string; sha: string } {
   return { repo: clone, sha: gitIn(clone, "rev-parse", "HEAD") };
 }
 
-/** A step that records its pid and then waits forever, so only a Stop or a kill ends it. */
+/**
+ * A step that starts a long-lived descendant in its own process group, records both pids, and
+ * then waits forever, so only a Stop or a kill ends either. A real install's build scripts are
+ * exactly such descendants; killing the leader alone would leak them. The descendant's pid is
+ * written before the leader's, so a leader pid on disk means both exist.
+ */
 const SLEEPER = [
   process.execPath,
   "-e",
-  `const fs=require("fs");fs.mkdirSync("deps",{recursive:true});` +
+  `const fs=require("fs");const {spawn}=require("child_process");fs.mkdirSync("deps",{recursive:true});` +
+    `const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});` +
+    `fs.writeFileSync("deps/child.pid",String(child.pid));` +
     `console.log("resolving fixture packages");` +
     `fs.writeFileSync("deps/leader.pid",String(process.pid));setInterval(()=>{},1000);`,
 ];
@@ -107,14 +115,47 @@ function alive(pid: number): boolean {
   }
 }
 
-/** The pid the running sleeper step wrote into the slot, once it has. */
-async function stepPid(m: WorktreeManagerT): Promise<number> {
-  const pidFile = () => {
+/** The pids the running sleeper step wrote into the slot, its own and its descendant's. */
+async function stepPids(m: WorktreeManagerT): Promise<{ leader: number; child: number }> {
+  const deps = () => {
     const slot = m.store.slots().find((entry) => entry.depsState === "claiming");
-    return slot ? join(slot.path, "deps", "leader.pid") : "";
+    return slot ? join(slot.path, "deps") : "";
   };
-  await waitFor(() => pidFile() !== "" && existsSync(pidFile()), "the claim step to start");
-  return Number(readFileSync(pidFile(), "utf8"));
+  await waitFor(() => deps() !== "" && existsSync(join(deps(), "leader.pid")), "the claim step to start");
+  return {
+    leader: Number(readFileSync(join(deps(), "leader.pid"), "utf8")),
+    child: Number(readFileSync(join(deps(), "child.pid"), "utf8")),
+  };
+}
+
+/** Fail with `label` rather than hang the suite when `pending` never settles. */
+async function settlesWithin<T>(pending: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** An attached repository entry that has not been provisioned yet. */
+function attachedRepo(repoRoot: string): TaskRepoEntry {
+  return {
+    repoRoot,
+    worktreePath: null,
+    branch: null,
+    provider: null,
+    worktreeLeaseId: null,
+    baseSha: null,
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+  };
 }
 
 // ---- the claim registry ----
@@ -176,12 +217,14 @@ test("Stop kills the claim's process group and hands the slot over as a failed c
   const { repo, sha } = seedRepo();
   const m = claimManager();
   const pending = m.acquire({ repositoryPath: repo, baseSha: sha, owner: { kind: "task", key: "task-stop:0" }, runClaim: true });
-  const pid = await stepPid(m);
+  const { leader, child } = await stepPids(m);
+  assert.notEqual(leader, child);
   const running = m.runningTaskClaim("task-stop");
   assert.ok(running?.claim.step, "the claim is on its first step");
 
   assert.equal(m.stopClaim(running.claim.slotId, "some-other-claim"), null);
-  assert.equal(alive(pid), true, "a Stop for another claim leaves this one running");
+  assert.equal(alive(leader), true, "a Stop for another claim leaves this one's step running");
+  assert.equal(alive(child), true, "and leaves the step's descendant running too");
   assert.equal(m.stopClaim(running.claim.slotId, running.claim.id)?.id, running.claim.id);
 
   const result = await pending;
@@ -190,7 +233,10 @@ test("Stop kills the claim's process group and hands the slot over as a failed c
   assert.equal(result.claimWarning?.step, 1);
   assert.equal(result.claimWarning?.reason, "was stopped");
   assert.match(result.claimWarning?.tail ?? "", /resolving fixture packages/);
-  await waitFor(() => !alive(pid), "the step's process to be killed");
+  // The whole process group, not only the step it started: a descendant the step spawned (an
+  // install's build script, say) is killed with it rather than leaked.
+  await waitFor(() => !alive(leader), "the step's process to be killed");
+  await waitFor(() => !alive(child), "the step's descendant to be killed with its group");
 
   const slot = m.store.slots().find((entry) => entry.id === running.claim.slotId)!;
   assert.equal(slot.state, "leased", "a stopped claim never quarantines the slot");
@@ -216,6 +262,8 @@ test("the task carries an Installing dependencies phase, and Stop lets its dispa
   const worktrees = claimManager();
   const { manager, supervisor, dispatcher } = taskManagerFor(registry, worktrees);
   t.after(() => manager.stop());
+  // A regression that leaves a claim running must fail this test, not hang the file on its step.
+  t.after(() => worktrees.stopClaims());
   const id = "task-claim-stop";
   registry.upsertTask(mkTask({ id, status: "dispatching", repoRoot: repo, agent: "claude", intent: "fix the build" }));
   const upserts: Task[] = [];
@@ -225,7 +273,7 @@ test("the task carries an Installing dependencies phase, and Stop lets its dispa
   t.after(unsubscribe);
 
   const dispatched = dispatcher.dispatch(id, { baseSha: sha });
-  const pid = await stepPid(worktrees);
+  const { leader: pid, child } = await stepPids(worktrees);
   await waitFor(() => registry.getTask(id)?.provisioning != null, "the provisioning phase");
   const provisioning = registry.getTask(id)!.provisioning!;
   assert.equal(provisioning.phase, "installingDependencies");
@@ -246,6 +294,7 @@ test("the task carries an Installing dependencies phase, and Stop lets its dispa
   assert.ok(worktrees.stopClaim(provisioning.slotId, provisioning.claimId));
   await dispatched;
   await waitFor(() => !alive(pid), "the step's process to be killed");
+  await waitFor(() => !alive(child), "the step's descendant to be killed with its group");
 
   const task = registry.getTask(id)!;
   assert.equal(task.status, "running", task.error ?? "");
@@ -282,18 +331,21 @@ test("task cancel during a claim stops it, and the dispatch tears down as for an
   const worktrees = claimManager();
   const { manager, supervisor, dispatcher } = taskManagerFor(registry, worktrees);
   t.after(() => manager.stop());
+  // A regression that leaves a claim running must fail this test, not hang the file on its step.
+  t.after(() => worktrees.stopClaims());
   const id = "task-claim-cancel";
   registry.upsertTask(mkTask({ id, status: "dispatching", repoRoot: repo, agent: "claude", intent: "never runs" }));
 
   const dispatched = dispatcher.dispatch(id, { baseSha: sha });
-  const pid = await stepPid(worktrees);
+  const { leader: pid, child } = await stepPids(worktrees);
   await waitFor(() => registry.getTask(id)?.provisioning != null, "the provisioning phase");
 
   const cancelled = await manager.cancel(id);
   assert.deepEqual(cancelled, { ok: true });
   // Without the stop the dispatch would wait out a claim that never ends.
-  await dispatched;
+  await settlesWithin(dispatched, 60_000, "the dispatch waited out the claim instead of stopping it");
   await waitFor(() => !alive(pid), "the step's process to be killed");
+  await waitFor(() => !alive(child), "the step's descendant to be killed with its group");
 
   const task = registry.getTask(id)!;
   assert.equal(task.status, "cancelled");
@@ -306,6 +358,65 @@ test("task cancel during a claim stops it, and the dispatch tears down as for an
     "the slot to return to the pool",
   );
   assert.equal(worktrees.store.slots()[0]!.depsState, "failed");
+});
+
+test("a cancel during the primary repository's claim starts no attached repository's claim", async (t) => {
+  const primary = seedRepo();
+  const attached = seedRepo();
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  const worktrees = claimManager();
+  const { manager, supervisor, dispatcher } = taskManagerFor(registry, worktrees);
+  t.after(() => manager.stop());
+  // A regression that leaves a claim running must fail this test, not hang the file on its step.
+  t.after(() => worktrees.stopClaims());
+  const id = "task-claim-cancel-multi";
+  // Every owner a claim ran for, in order: `<task>:0` is the primary, `<task>:1` the attached repo.
+  const claimed: string[] = [];
+  const unsubscribe = worktrees.onClaimChange((claim) => {
+    if (!claimed.includes(claim.owner.key)) claimed.push(claim.owner.key);
+  });
+  t.after(unsubscribe);
+  registry.upsertTask(mkTask({
+    id,
+    status: "dispatching",
+    repoRoot: primary.repo,
+    agent: "claude",
+    intent: "never runs",
+    extraRepos: [attachedRepo(attached.repo)],
+  }));
+
+  const dispatched = dispatcher.dispatch(id, { baseSha: primary.sha });
+  const { leader, child } = await stepPids(worktrees);
+  await waitFor(() => registry.getTask(id)?.provisioning != null, "the provisioning phase");
+  assert.equal(registry.getTask(id)!.provisioning!.repoRoot, primary.repo, "the primary's claim is the one running");
+
+  assert.deepEqual(await manager.cancel(id), { ok: true });
+  // The attached repository's claim runs the same never-ending step. Had the dispatch gone on
+  // to provision it after the cancel, nothing would ever stop it and this would not settle.
+  await settlesWithin(dispatched, 60_000, "the dispatch provisioned the attached repository after the cancel");
+  await waitFor(() => !alive(leader) && !alive(child), "the primary claim's process group to be killed");
+
+  assert.deepEqual(claimed, [`${id}:0`], "no claim ever ran for the attached repository");
+  assert.equal(
+    worktrees.store.slots().length,
+    1,
+    "the attached repository was never acquired: its pool has no slot at all",
+  );
+  const task = registry.getTask(id)!;
+  assert.equal(task.status, "cancelled");
+  assert.equal(task.worktreePath, null, `the primary's tree was torn down: ${task.error}`);
+  assert.equal(task.worktreeLeaseId, null);
+  assert.deepEqual(
+    task.extraRepos.map((entry) => [entry.repoRoot, entry.worktreePath, entry.worktreeLeaseId]),
+    [[attached.repo, null, null]],
+    "the attached repository stays on the task, unprovisioned",
+  );
+  assert.equal(supervisor.starts.length, 0, "nothing launched into a cancelled task");
+  await waitFor(
+    () => worktrees.store.slots().every((slot) => slot.state === "available"),
+    "the primary's slot to return to the pool",
+  );
 });
 
 test("a dispatching task without a running claim step carries no provisioning key at all", () => {
