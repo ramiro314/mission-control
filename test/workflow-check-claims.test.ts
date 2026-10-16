@@ -601,18 +601,16 @@ const context: WorkflowContextSnapshot = {
   compaction: { status: "fallback", runner: null, model: null, error: null },
 };
 
-const GATES: WorkflowCheckSlot[] = ["lint", "typecheck", "test"];
-
-/** Session → three Check gates on three Commands → Join → End. */
-const threeGates: PublishedWorkflowGraph = {
+/** Session → one Check gate per Command → Join → End. */
+const gatesGraph = (gates: readonly WorkflowCheckSlot[]): PublishedWorkflowGraph => ({
   nodes: [
     { id: "session", kind: "session", position: { x: 0, y: 0 } },
-    ...GATES.map((slot, index) => ({ id: slot, kind: "check" as const, slot, position: { x: 200, y: index * 100 } })),
+    ...gates.map((slot, index) => ({ id: slot, kind: "check" as const, slot, position: { x: 200, y: index * 100 } })),
     { id: "join", kind: "all_pass", position: { x: 450, y: 100 } },
     { id: "end", kind: "end", outcome: "Complete", position: { x: 700, y: 0 } },
   ],
   edges: [
-    ...GATES.flatMap((slot): PublishedWorkflowGraph["edges"] => [
+    ...gates.flatMap((slot): PublishedWorkflowGraph["edges"] => [
       { id: `s-${slot}`, source: "session", sourcePort: "submitted", target: slot, targetPort: "activate" },
       { id: `${slot}-pass`, source: slot, sourcePort: "pass", target: "join", targetPort: "result" },
       { id: `${slot}-fail`, source: slot, sourcePort: "fail", target: "join", targetPort: "result" },
@@ -620,9 +618,12 @@ const threeGates: PublishedWorkflowGraph = {
     { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
     { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
   ],
-};
+});
 
-function seedRun(id: string): InstanceType<typeof WorkflowStore> {
+function seedRun(
+  id: string,
+  gates: readonly WorkflowCheckSlot[] = ["lint", "typecheck", "test"],
+): InstanceType<typeof WorkflowStore> {
   const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 });
   db.prepare(
     `INSERT INTO workflow_definitions (
@@ -635,7 +636,7 @@ function seedRun(id: string): InstanceType<typeof WorkflowStore> {
        id, workflow_id, version, source_draft_revision, graph_json,
        completion_policy_json, binding_defaults_json, published_at
      ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
-  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify(threeGates), defaults);
+  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify(gatesGraph(gates)), defaults);
   const store = new WorkflowStore();
   const binding = store.insertBinding({
     id: `binding-${id}`,
@@ -683,13 +684,13 @@ const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string 
   model: { id: snapshot.model ?? "fake-model", source: "config" },
 });
 
-const policy = () => ({
+const policy = (checkTestLease = false) => ({
   liveEnabled: false,
   repoAllowlist: ["/repo"],
   kindWorkflowDefaults: { ship: null },
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
-  checkTestLease: false,
+  checkTestLease,
   checkTestConcurrency: null,
   skipPassedJudges: true,
 });
@@ -803,5 +804,73 @@ test("cancelling a run stops the claims its running check attempts wait on", asy
     releaseClaims();
     await engine.stop();
     await manager.stop();
+  }
+});
+
+test("a claiming test check gives up its check slot but keeps the test lease", async () => {
+  // One check slot and the test lease on. The first test-running check to arrive claims, so it
+  // gives up its check slot: lint must run in that slot, while the second test-running check
+  // stays queued behind the test lease the claimer still holds, and starts only after the
+  // claimer has taken a check slot back, run, and finished.
+  const store = seedRun("test-lease", ["test", "affected-tests", "lint"]);
+  const events: string[] = [];
+  let claimer: WorkflowCheckSlot | null = null;
+  let finishClaim!: () => void;
+  const claimHeld = new Promise<void>((resolve) => { finishClaim = resolve; });
+  const testLeases: Array<boolean | undefined> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    retryBaseMs: 1,
+    runnerFor: noRunner,
+    resolveExecution: passingExecution,
+    workflowPolicy: () => policy(true),
+    workflowCommand: catalog,
+    checkSchedule: createCheckScheduler(1),
+    checkDeps: (ref) => ({
+      checkoutSubpath: async () => null,
+      execute: async (request) => {
+        // The pump queues lint on the check limiter before a test check has cleared the test
+        // gate, so lint can reach the one slot first. It then backs off once, as an ordinary
+        // infrastructure retry, so its real run is the one in the slot the claimer gave up.
+        if (request.slot === "lint" && claimer === null) {
+          return { kind: "infrastructure", reason: "arrived before the claim began", ranNothing: true };
+        }
+        events.push(`${request.slot}:start`);
+        if (request.slot !== "lint") testLeases.push(ref.testLease);
+        if (request.slot !== "lint" && claimer === null) {
+          claimer = request.slot;
+          assert.ok(ref.checkSlot, "the engine did not hand the attempt its check slot");
+          ref.checkSlot.release();
+          events.push(`${request.slot}:claiming`);
+          await claimHeld;
+          await ref.checkSlot.reacquire();
+          events.push(`${request.slot}:reacquired`);
+        }
+        events.push(`${request.slot}:end`);
+        return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 };
+      },
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-test-lease");
+    await waitFor(() => events.includes("lint:end"), "lint to run in the slot the claimer gave up");
+    const other = claimer === "test" ? "affected-tests" : "test";
+    // Give the queued test check every chance to start if the lease were released.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(events.includes(`${other}:start`), false, "a second test check ran while the first held the test lease");
+    assert.deepEqual(events, [`${claimer}:start`, `${claimer}:claiming`, "lint:start", "lint:end"]);
+
+    finishClaim();
+    await waitFor(() => store.getRun("run-test-lease")?.status === "completed", "the run to complete");
+    assert.deepEqual(events.slice(4), [
+      `${claimer}:reacquired`,
+      `${claimer}:end`,
+      `${other}:start`,
+      `${other}:end`,
+    ]);
+    assert.deepEqual(testLeases, [true, true], "each test check was not told it takes the test lease");
+  } finally {
+    finishClaim();
+    await engine.stop();
   }
 });
