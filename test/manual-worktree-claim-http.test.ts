@@ -1,6 +1,8 @@
-import { afterEach, test } from "node:test";
+import { afterEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ManualWorktreeRequestView } from "../src/shared/types.ts";
 import { WorktreeClaimSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
 import { openDb } from "../src/server/db.ts";
@@ -11,6 +13,7 @@ import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
 import { buildClaimEnvironment, type ClaimStepResult } from "../src/server/worktrees/claim.ts";
 import { WorktreeManager, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
+import { MANUAL_PICKUP_WINDOW_MS } from "../src/server/worktrees/manual-requests.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -257,6 +260,82 @@ test("an unpicked grant whose slot is occupied stays leased", async () => {
   }
   assert.equal(worktrees.store.slots()[0]!.state, "leased");
   assert.equal(worktrees.lookupLease({ leaseId }).state, "active");
+});
+
+test("an unpicked grant whose worktree is dirty stays leased, with its work intact", async () => {
+  const { clone } = mkOriginAndClone("mission-manual-claim-dirty-");
+  const { worktrees, post, poll } = harness(CLAIM, { manualPickupWindowMs: 300 });
+  const returns: Array<{ ownerAuthorized?: boolean; requireClean?: boolean }> = [];
+  const release = worktrees.release.bind(worktrees);
+  worktrees.release = async (lease, options = {}) => {
+    returns.push(options);
+    return release(lease, options);
+  };
+  const { requestId } = await accepted(post, { repositoryPath: clone });
+  await waitFor(() => worktrees.store.slots()[0]?.state, (state) => state === "leased", "the grant");
+  const slot = worktrees.store.slots()[0]!;
+  const leaseId = slot.activeLeaseId!;
+  // Work the caller never came back for, but that is still somebody's.
+  const work = join(slot.path, "unsaved-notes.txt");
+  writeFileSync(work, "do not discard\n");
+
+  const settled = await waitFor(
+    () => (returns.length > 0 ? poll(requestId) : null),
+    (r) => r !== null && r.body.state === "failed" && /stays leased/.test(r.body.reason),
+    "the refused return",
+  );
+  assert.deepEqual(returns, [{ ownerAuthorized: true, requireClean: true }]);
+  if (settled?.body.state === "failed") {
+    assert.equal(settled.body.outcome, "expired");
+    assert.match(settled.body.reason, /dirty/);
+  }
+  assert.equal(worktrees.store.slots()[0]!.state, "leased");
+  assert.equal(worktrees.lookupLease({ leaseId }).state, "active");
+  assert.equal(readFileSync(work, "utf8"), "do not discard\n");
+});
+
+test("the production pickup window is ten minutes", async (t) => {
+  assert.equal(MANUAL_PICKUP_WINDOW_MS, 10 * 60_000);
+  // No `manualPickupWindowMs`: this manager carries the daemon's default. Only `setTimeout` is
+  // mocked, so Git and the claim run for real while the window is stepped through by hand.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const settle = async (read: () => boolean, label: string) => {
+    const deadline = Date.now() + 15_000;
+    while (!read()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    // Let the background acquire resume past the grant and arm its pickup timer.
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const { clone } = mkOriginAndClone("mission-manual-claim-default-window-");
+  const { worktrees, post } = harness(CLAIM);
+  // The expiry calls `release` synchronously when its timer fires, so this count says whether
+  // a return has begun before the slot row could show it.
+  const returns: Array<{ ownerAuthorized?: boolean; requireClean?: boolean }> = [];
+  const release = worktrees.release.bind(worktrees);
+  worktrees.release = async (lease, options = {}) => {
+    returns.push(options);
+    return release(lease, options);
+  };
+  await accepted(post, { repositoryPath: clone });
+  await settle(
+    () => worktrees.store.slots()[0]?.state === "leased" && worktrees.claims.list().length === 0,
+    "the grant",
+  );
+  const leaseId = worktrees.store.slots()[0]!.activeLeaseId!;
+
+  mock.timers.tick(MANUAL_PICKUP_WINDOW_MS - 1);
+  await settle(() => true, "a turn");
+  assert.equal(returns.length, 0, "no return begins one millisecond before the window");
+  assert.equal(worktrees.store.slots()[0]!.state, "leased");
+  assert.equal(worktrees.lookupLease({ leaseId }).state, "active");
+
+  mock.timers.tick(1);
+  assert.deepEqual(returns, [{ ownerAuthorized: true, requireClean: true }], "the return begins at ten minutes");
+  await settle(() => worktrees.store.slots()[0]!.state === "available", "the return at ten minutes");
+  assert.equal(worktrees.lookupLease({ leaseId }).state, "released");
 });
 
 test("a pool with no claim still answers 201 with the lease, synchronously", async () => {
