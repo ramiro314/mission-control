@@ -201,6 +201,16 @@ test("the claim's seed is strict, bounded, and refuses ** in a seed path but not
   ]) {
     assert.throws(() => WorktreeClaimSchema.parse({ steps: [{ argv: ["x"] }], seed }), JSON.stringify(seed).slice(0, 60));
   }
+  // Exactly the documented maximum is accepted on each list, one past it (above) is refused.
+  const atMost = WorktreeClaimSchema.parse({
+    steps: [{ argv: ["x"] }],
+    seed: {
+      paths: Array.from({ length: 64 }, (_, index) => `p${index}`),
+      exclude: Array.from({ length: 64 }, (_, index) => `e${index}`),
+    },
+  });
+  assert.equal(atMost.seed?.paths.length, 64);
+  assert.equal(atMost.seed?.exclude.length, 64);
   // The patch route takes the seed with the rest of the claim, and backups carry it with no new domain.
   assert.equal(
     WorktreesConfigPatchSchema.safeParse({
@@ -607,6 +617,70 @@ test("an exclusion that matches a whole seed path leaves that path out and the t
   assert.equal(slotAt(m, 1).depsState, "current");
   assert.equal(readFileSync(join(result.lease.path, "deps", "marker"), "utf8"), slotAt(m, 2).path);
   assert.equal(readFileSync(join(result.lease.path, "more", "marker"), "utf8"), result.lease.path);
+  await m.release(result.lease);
+});
+
+test("a seed that reaches the claim's time limit records interrupted, returns its source and runs no step", async () => {
+  const fixture = repository("mission-seed-timeout-");
+  const claim = claimWith(SEED);
+  // The clock jumps past the claim's 10-minute limit while the first path is cloned, so the
+  // second path's clone is handed no time at all: the deadline the seed and the steps share.
+  let offset = 0;
+  const remaining: number[] = [];
+  const m = manager(claim, {
+    now: () => Date.now() + offset,
+    cloneTree: async (request) => {
+      remaining.push(request.timeoutMs);
+      // The production clone's own guard: no time left is a timeout, never a copy.
+      if (request.timeoutMs <= 0) return { outcome: "timedOut" };
+      await cp(request.source, request.destination, { recursive: true, verbatimSymlinks: true });
+      offset += 11 * 60_000;
+      return { outcome: "cloned" };
+    },
+  }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "timeout");
+  makeCold(slotAt(m, 1).id);
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "timeout:target"));
+  assert.equal(remaining.length, 2);
+  assert.ok(remaining[0]! > 0 && remaining[0]! <= claim.timeoutMinutes * 60_000, "the seed spends the claim's deadline");
+  assert.ok(remaining[1]! <= 0, "the second clone was given nothing past the limit");
+  assert.match(result.claimWarning?.reason ?? "", /dependency seed reached the claim's time limit/);
+  assert.equal(result.claimWarning?.step, 1);
+  const target = slotAt(m, 1);
+  assert.equal(target.depsState, "interrupted", "a timeout during a seed is not an ordinary failure");
+  assert.equal(target.depsFingerprint, null);
+  assert.equal(runCount(result.lease.path), before, "no step ran after the timed-out seed");
+  assert.equal(slotAt(m, 2).state, "available", "the source went back to the pool");
+  assert.equal(slotAt(m, 2).activeOwnerKind, null);
+  assert.deepEqual(readdirSync(seedStagingRoot(m.store.pools()[0]!.poolPath)), [], "staging is gone");
+  await m.release(result.lease);
+});
+
+test("a seed whose staged path cannot be placed records interrupted and runs no step", async () => {
+  const fixture = repository("mission-seed-unplaced-");
+  const claim = claimWith(SEED);
+  let poolPath = "";
+  const m = manager(claim, {
+    cloneTree: recordingClone([]),
+    // After `deps` is placed, the staged `more` vanishes, so its rename fails.
+    afterSeedRename: (path) => {
+      if (path !== "deps") return;
+      for (const id of readdirSync(seedStagingRoot(poolPath))) rmrf(join(seedStagingRoot(poolPath), id, "1"));
+    },
+  }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "unplaced");
+  poolPath = m.store.pools()[0]!.poolPath;
+  makeCold(slotAt(m, 1).id);
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "unplaced:target"));
+  assert.match(result.claimWarning?.reason ?? "", /dependency seed failed: more could not be placed/);
+  const target = slotAt(m, 1);
+  assert.equal(target.depsState, "interrupted", "a half-placed seed is never trusted, nor abandoned");
+  assert.equal(target.depsFingerprint, null);
+  assert.equal(runCount(result.lease.path), before, "no step ran on the half-placed tree");
+  assert.equal(slotAt(m, 2).state, "available", "the source was returned before placement began");
+  assert.deepEqual(readdirSync(seedStagingRoot(poolPath)), [], "staging is gone");
   await m.release(result.lease);
 });
 
