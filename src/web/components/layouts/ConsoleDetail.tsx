@@ -952,6 +952,7 @@ export function ConsoleDetail({
                 controller={view.files}
                 fileCommentThreads={view.fileCommentThreads}
                 fileCommentReviews={view.fileCommentReviews}
+                fileCommentsLoaded={view.fileCommentsLoaded}
                 fileLineRequest={view.fileLineRequest}
                 fileCommentRequest={view.fileCommentRequest}
                 onExtract={extractFiles}

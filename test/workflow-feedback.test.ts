@@ -272,6 +272,9 @@ test("a handoff on the session's own checkout names no repository and keeps its 
     workflowEvidence: false,
   });
   assert.doesNotMatch(rendered.payload, /Repository:/);
+  assert.match(rendered.payload, /get_pull_request_policy immediately before creating each PR/);
+  assert.match(rendered.payload, /-F draft=true/);
+  assert.match(rendered.payload, /Only the human may promote/);
   assert.match(
     rendered.payload,
     /Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request/,

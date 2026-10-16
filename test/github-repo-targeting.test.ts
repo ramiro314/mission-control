@@ -1253,6 +1253,7 @@ const AGENT_TEXT_SOURCES = [
   "src/server/task-contract.ts",
   "src/server/workflows/feedback.ts",
   "src/server/foreman/review-followup.ts",
+  "src/server/skills/pull-request-policy.ts",
 ];
 
 /**

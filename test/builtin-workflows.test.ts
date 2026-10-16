@@ -1,3 +1,4 @@
+import { LEGACY_PULL_REQUEST_PROMPT } from "../src/server/workflows/pull-request-guidance-snapshot.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -603,7 +604,8 @@ test("version 8 opens the pull request as a stage, and waits rather than prepari
   const shipped = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
   assert.equal(node.action.sourceSessionActionId, "builtin:pull-request");
   assert.equal(node.action.sourceRevision, shipped.revision);
-  assert.equal(sha256(node.action.promptMarkdown), PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256);
+  assert.equal(node.action.promptMarkdown, LEGACY_PULL_REQUEST_PROMPT);
+  assert.notEqual(node.action.promptMarkdown, shipped.promptMarkdown);
   assert.equal(node.action.requiredSkillId, "pull-request");
   assert.deepEqual(node.action.completion, { kind: "pull_request" });
 
@@ -686,7 +688,9 @@ test("version 9 judges code quality before the verified PR action and completes 
 
   const pullRequest = version.graph.nodes.find((node) => node.id === "nmr-pull-request");
   assert.ok(pullRequest && pullRequest.kind === "session_action");
-  assert.equal(sha256(pullRequest.action.promptMarkdown), PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256);
+  const shippedAction = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
+  assert.equal(pullRequest.action.promptMarkdown, LEGACY_PULL_REQUEST_PROMPT);
+  assert.notEqual(pullRequest.action.promptMarkdown, shippedAction.promptMarkdown);
   assert.deepEqual(pullRequest.action.completion, { kind: "pull_request" });
 
   const route = (source: string, port: string) => version.graph.edges
@@ -1369,8 +1373,8 @@ const PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256 =
 
 /**
  * The Pull Request action's text as the issue closing line versions shipped it. Pinned rather
- * than compared with the live action, which is the source an edit would move: editing
- * `actions/pull-request.md` fails here until a version is appended and these are frozen.
+ * than compared with the live action: `actions/pull-request.md` moves on (upstream's concise
+ * guidance did) and reaches newly published workflows, never a shipped built-in version.
  */
 const PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE_SHA256 =
   "38a31167eead7cd3ffaf0b501ee95113c10adff06f3dc86db1e08426799621fb";

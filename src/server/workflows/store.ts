@@ -114,6 +114,10 @@ import {
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import {
   WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
+  workflowPreparationRecovery,
+  WORKFLOW_CAPTURE_REPAIR_LIMIT,
+  WORKFLOW_MAPPING_RECOVERY_DELAYS,
+  WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS,
   withInspectorGate,
   workflowInspectorGate,
   workflowRoundLimitParkedPhase,
@@ -1405,7 +1409,7 @@ type WorkflowSubmissionOrigin =
       nodeAttemptId: string;
     }
   | {
-      kind: "evidence_preflight" | "evidence_recovery";
+      kind: "evidence_preflight" | "evidence_recovery" | "evidence_capture_repair";
       segment: number;
       parentSubmissionId: string;
     };
@@ -1415,7 +1419,7 @@ interface WorkflowSubmissionOriginColumns {
   parentSubmissionId: string | null;
   continuationNodeId: string | null;
   continuationNodeAttemptId: string | null;
-  refinementReason: "session_action" | "evidence_preflight" | "evidence_recovery" | null;
+  refinementReason: "session_action" | "evidence_preflight" | "evidence_recovery" | "evidence_capture_repair" | null;
 }
 
 function workflowSubmissionOriginColumns(
@@ -1444,6 +1448,7 @@ function workflowSubmissionOriginColumns(
         continuationNodeAttemptId: origin.nodeAttemptId,
         refinementReason: origin.kind,
       };
+    case "evidence_capture_repair":
     case "evidence_recovery":
     case "evidence_preflight":
       if (origin.segment <= 0 || !origin.parentSubmissionId) {
@@ -1534,6 +1539,7 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
         };
       }
       break;
+    case "evidence_capture_repair":
     case "evidence_recovery":
     case "evidence_preflight":
       if (
@@ -2271,6 +2277,7 @@ const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, WorkflowRunPhase | null> 
   // review that was never re-delivered, on a run whose whole problem is that nothing moved.
   parked_repair_reminder: null,
   evidence_readiness: "evidence_readiness",
+  evidence_capture_repair: "image_evidence_capture",
 };
 
 /**
@@ -2285,6 +2292,7 @@ const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, WorkflowRunPhase | null> 
 const DELIVERY_RUN_STATUS: Partial<Record<WorkflowDeliveryKind, WorkflowRun["status"]>> = {
   session_action: "waiting_for_action",
   evidence_readiness: "waiting_for_evidence_readiness",
+  evidence_capture_repair: "blocked",
 };
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
@@ -6206,7 +6214,7 @@ export class WorkflowStore {
   evidenceInheritanceSource(
     submission: WorkflowSubmission,
   ): { source: WorkflowSubmission; mode: "refinement" | "round" } | null {
-    if ((submission.refinementReason === "evidence_preflight" || submission.refinementReason === "evidence_recovery") && submission.parentSubmissionId) {
+    if ((submission.refinementReason === "evidence_preflight" || submission.refinementReason === "evidence_recovery" || submission.refinementReason === "evidence_capture_repair") && submission.parentSubmissionId) {
       const parent = this.getSubmission(submission.parentSubmissionId);
       return parent ? { source: parent, mode: "refinement" } : null;
     }
@@ -7273,6 +7281,11 @@ export class WorkflowStore {
     if (own !== null) return withInspectorGate(own, gate);
     // Standing still, the run's existing payload is still this phase's own.
     if (nextPhase === run.currentPhase) return run.gateState;
+    if (nextPhase === "image_evidence_capture") {
+      const latest = this.latestSubmission(run.id);
+      const failure = latest ? this.evidencePreparationFailure(latest.id) : null;
+      if (failure) return withInspectorGate(failure, gate);
+    }
     // Moving, the note belongs to the phase being left; only the gate crosses.
     return (gate as unknown as WorkflowJson | null);
   }
@@ -9449,7 +9462,7 @@ export class WorkflowStore {
   consecutiveEvidencePreflightRefinements(submissionId: string): number {
     let current = this.getSubmission(submissionId);
     let refinements = 0;
-    while ((current?.refinementReason === "evidence_preflight" || current?.refinementReason === "evidence_recovery") && current.parentSubmissionId) {
+    while ((current?.refinementReason === "evidence_preflight" || current?.refinementReason === "evidence_recovery" || current?.refinementReason === "evidence_capture_repair") && current.parentSubmissionId) {
       if (current.refinementReason === "evidence_preflight") refinements += 1;
       current = this.getSubmission(current.parentSubmissionId);
     }
@@ -9512,8 +9525,131 @@ export class WorkflowStore {
     return row?.state === "failed";
   }
 
+  evidencePreparationFailure(submissionId: string): { [key: string]: WorkflowJson } | null {
+    const row = this.db.prepare(`SELECT payload_json FROM workflow_events
+      WHERE event_kind = 'evidence_preparation_failed'
+        AND event_id = ?`).get(`evidence-preparation-failed:${submissionId}`) as { payload_json: string } | undefined;
+    return row ? JSON.parse(row.payload_json) as { [key: string]: WorkflowJson } : null;
+  }
+
+  /** Failure, retry disposition and its restart receipt commit together. */
+  failEvidencePreparation(input: {
+    submissionId: string; kind: "capture" | "mapping"; automatic: boolean;
+    detail: { [key: string]: WorkflowJson }; now: number;
+  }): WorkflowRun {
+    return transaction(this.db, () => {
+      const submission = this.mustSubmission(input.submissionId);
+      const attempts = this.listSubmissions(submission.runId).filter((candidate) =>
+        candidate.round === submission.round && candidate.triggerSource === "session"
+        && candidate.refinementReason === (input.kind === "capture" ? "evidence_capture_repair" : "evidence_recovery")).length;
+      const limit = input.kind === "capture" ? WORKFLOW_CAPTURE_REPAIR_LIMIT : WORKFLOW_MAPPING_RECOVERY_DELAYS.length;
+      const detail = this.evidencePreparationFailure(submission.id) ?? {
+        ...input.detail,
+        ...(input.automatic ? { preparationRecovery: {
+          kind: input.kind, submissionId: submission.id, attempts, limit,
+          state: attempts < limit ? "pending" : "exhausted",
+          retryAt: input.kind === "mapping" && attempts < limit
+            ? input.now + WORKFLOW_MAPPING_RECOVERY_DELAYS[attempts]! : null,
+        } } : {}),
+      };
+      this.setSubmissionState(submission.id, "failed", input.now);
+      const run = this.setRunState(submission.runId, "blocked",
+        input.kind === "capture" ? "image_evidence_capture" : "evidence_reconciliation_error", detail, input.now);
+      this.appendEvent(run.id, "evidence_preparation_failed", detail, input.now,
+        `evidence-preparation-failed:${submission.id}`);
+      return run;
+    });
+  }
+
+  private captureRepairInputsChanged(parent: WorkflowSubmission, binding: WorkflowBinding): boolean {
+    const failure = this.evidencePreparationFailure(parent.id);
+    // A generation bump alone says nothing about the failed proof. Require a replacement
+    // for its source, or explicit restaging of a parent item (which need not bump generation).
+    return Boolean(this.db.prepare(`SELECT 1 FROM workflow_evidence_staging s
+      WHERE s.note_key = ? AND s.state = 'staged'
+        AND (s.repository_scope = 'all' OR s.source_root = ?)
+        AND EXISTS (
+          SELECT 1 FROM workflow_evidence_reservations r
+          JOIN workflow_evidence_staging p ON p.id = r.staging_id
+          WHERE r.submission_id = ? AND (
+            s.id = p.id OR (
+              p.client_item_id = ? AND s.generation > ? AND s.source_kind = 'agent'
+              AND s.evidence_kind = p.evidence_kind AND s.source_root = p.source_root
+              AND s.source_locator = p.source_locator
+            )
+          )
+        ) LIMIT 1`)
+      .get(binding.noteKey, binding.repoRoot || binding.sessionCwd || "", parent.id,
+        typeof failure?.itemClientId === "string" ? failure.itemClientId : null,
+        parent.stagedImageGeneration ?? 0));
+  }
+
+  /** Persist eligible idle time; delivery age and time spent working are not idle time. */
+  observeEvidenceCaptureRepairIdle(input: { runId: string; now: number; settledSince: number | null }): boolean {
+    return transaction(this.db, () => {
+      const { now, settledSince } = input;
+      const run = this.getRun(input.runId);
+      const recovery = run ? workflowPreparationRecovery(runLifecycleRecord(run)) : null;
+      const latest = run ? this.latestSubmission(run.id) : null;
+      const binding = run ? this.getBinding(run.bindingId) : null;
+      if (!run || !latest || !binding || recovery?.kind !== "capture" || recovery.state !== "pending"
+          || recovery.submissionId !== latest.id) return false;
+      const delivered = this.listDeliveries(run.id).find((delivery) => delivery.submissionId === latest.id
+        && delivery.kind === "evidence_capture_repair" && delivery.state === "delivered");
+      const idleSince = settledSince === null || !delivered || this.captureRepairInputsChanged(latest, binding)
+        ? null : recovery.idleSince === null || settledSince > recovery.idleSince ? now : recovery.idleSince;
+      const stalled = idleSince !== null && idleSince + WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS <= now;
+      if (!stalled && idleSince === recovery.idleSince) return false;
+      const detail = this.evidencePreparationFailure(latest.id);
+      if (!detail) return false;
+      this.setRunState(run.id, "blocked", "image_evidence_capture", {
+        ...detail, preparationRecovery: { ...recovery, idleSince, state: stalled ? "stalled" : "pending" },
+      }, now);
+      if (stalled) this.appendEvent(run.id, "evidence_capture_repair_stalled", { submissionId: latest.id }, now,
+        `evidence-capture-stalled:${latest.id}`);
+      return true;
+    });
+  }
+
+  reserveEvidenceCaptureRepair(input: {
+    id: string; runId: string; parentId: string; now: number;
+  }): WorkflowSubmission | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      const parent = this.getSubmission(input.parentId);
+      if (!run || !parent || parent.runId !== run.id || this.latestSubmission(run.id)?.id !== parent.id) return null;
+      const recovery = workflowPreparationRecovery(runLifecycleRecord(run));
+      const binding = this.getBinding(run.bindingId);
+      if (recovery?.kind !== "capture" || recovery.state !== "pending" || recovery.submissionId !== parent.id
+          || !binding?.sessionId || binding.state !== "active" || binding.deliveryMode !== "live"
+          || this.getWorkflowVersionById(run.workflowVersionId)?.resumptionPolicy !== "auto") return null;
+      const deliveries = this.listDeliveries(run.id);
+      if (!deliveries.some((delivery) => delivery.submissionId === parent.id
+          && delivery.kind === "evidence_capture_repair" && delivery.state === "delivered")
+          || deliveries.some((delivery) => ["sending", "uncertain", "prepared"].includes(delivery.state))) return null;
+      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || "");
+      if (!this.captureRepairInputsChanged(parent, binding)) return null;
+      const attempts = this.listSubmissions(run.id).filter((candidate) => candidate.round === parent.round
+        && candidate.refinementReason === "evidence_capture_repair").length;
+      if (attempts >= WORKFLOW_CAPTURE_REPAIR_LIMIT) return null;
+      this.insertSubmissionInTransaction({
+        id: input.id, runId: run.id, round: parent.round,
+        origin: { kind: "evidence_capture_repair", segment: parent.segment + 1, parentSubmissionId: parent.id },
+        triggerSource: "session", triggerKey: `evidence-capture-repair:${parent.id}:${generation}`,
+        context: {}, evidence: {}, mode: parent.mode, now: input.now,
+      });
+      this.setRunState(run.id, "capturing", "evidence_readiness_capture", null, input.now);
+      this.appendEvent(run.id, "evidence_capture_repair_reserved", {
+        submissionId: input.id, parentSubmissionId: parent.id, round: parent.round,
+        segment: parent.segment + 1, generation,
+      }, input.now);
+      return this.mustSubmission(input.id);
+    });
+  }
+
   reserveEvidenceRecovery(input: {
     id: string; runId: string; parentId: string; requestId: string; reason: string; now: number;
+    automatic?: boolean;
   }): { submission: WorkflowSubmission; idempotent: boolean } | null {
     return transaction(this.db, () => {
       const key = `evidence-recovery:${input.runId}:${input.requestId}`;
@@ -9526,6 +9662,16 @@ export class WorkflowStore {
           || !["blocked", "waiting_for_evidence_readiness", "waiting_for_session"].includes(run.status)) return null;
       const binding = this.getBinding(run.bindingId);
       if (!binding?.sessionId || binding.state !== "active") return null;
+      if (input.automatic) {
+        const recovery = workflowPreparationRecovery(runLifecycleRecord(run));
+        if (recovery?.kind !== "mapping" || recovery.state !== "pending"
+            || recovery.submissionId !== parent.id || recovery.retryAt === null || recovery.retryAt > input.now
+            || binding.deliveryMode !== "live"
+            || this.getWorkflowVersionById(run.workflowVersionId)?.resumptionPolicy !== "auto"
+            || this.listSubmissions(run.id).filter((candidate) => candidate.round === parent.round
+              && candidate.refinementReason === "evidence_recovery" && candidate.triggerSource === "session").length
+              >= WORKFLOW_MAPPING_RECOVERY_DELAYS.length) return null;
+      }
       const inFlight = this.db.prepare(`SELECT 1 FROM workflow_deliveries
         WHERE run_id = ? AND state IN ('sending', 'uncertain') LIMIT 1`).get(run.id);
       if (inFlight) return null;
@@ -9540,7 +9686,7 @@ export class WorkflowStore {
       this.insertSubmissionInTransaction({
         id: input.id, runId: run.id, round: parent.round,
         origin: { kind: "evidence_recovery", segment: parent.segment + 1, parentSubmissionId: parent.id },
-        triggerSource: "manual", triggerKey: key, mode: parent.mode,
+        triggerSource: input.automatic ? "session" : "manual", triggerKey: key, mode: parent.mode,
         context: workflowJson(recovered), evidence: workflowJson(context.evidence), reserveEvidence: false, now: input.now,
       });
       this.inheritSubmissionEvidenceInTransaction({
@@ -11098,7 +11244,8 @@ export class WorkflowStore {
     // round. An action asks it to perform one instruction, and the daemon's own observer
     // owns what happens next - re-arming here would let the session's completion signal
     // open a repair round that competes with the continuation segment for the same turn.
-    if (delivery.kind === "session_action" || delivery.kind === "evidence_readiness") return null;
+    if (delivery.kind === "session_action" || delivery.kind === "evidence_readiness"
+        || delivery.kind === "evidence_capture_repair") return null;
     if (this.rearmDrainCompletionForDelivery(delivery, now)) return "drain";
     return null;
   }

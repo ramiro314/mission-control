@@ -96,6 +96,7 @@ const config: SkillsConfig = {
   generation: 3,
   generationAt: 100,
   commitPlanHtml: false,
+  alwaysDraftPr: false,
   planStorage: "repository",
 };
 
