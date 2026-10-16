@@ -9,16 +9,19 @@ import {
 } from "../src/shared/inspector-findings.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
 
-// The phase 1 rule table, first match wins. Every consumer - the findings route's clients,
+// The rule table, first match wins. Every consumer - the findings route's clients,
 // Foreman's relay, the workflow packet and the dashboard table - reads this one function,
 // so a row is pinned here once rather than in each of them.
 const URL_NOW = "https://github.com/o/r/pull/7#discussion_r123";
 const URL_EARLIER = "https://github.com/o/r/pull/7#discussion_r45";
 
-const none: FindingPublication = { state: "not-posted", url: null, postedAt: null, earlierPost: false };
-const unknown: FindingPublication = { state: "unknown", url: null, postedAt: null, earlierPost: false };
+// A row with no refusal reads zero and no reason; the refusal cases below say otherwise.
+type Want = Omit<FindingPublication, "refusals" | "reason"> & Partial<FindingPublication>;
+const none: Want = { state: "not-posted", url: null, postedAt: null, earlierPost: false };
+const unknown: Want = { state: "unknown", url: null, postedAt: null, earlierPost: false };
+const REASON = "Line could not be resolved (HTTP 422)";
 
-const cases: { name: string; row: FindingPublicationInput; want: FindingPublication }[] = [
+const cases: { name: string; row: FindingPublicationInput; want: Want }[] = [
   {
     name: "posting reads posting, whatever the row says about an earlier post",
     row: { status: "posting", postedAt: 100, githubUrl: URL_EARLIER, legacyPosted: null },
@@ -94,11 +97,59 @@ const cases: { name: string; row: FindingPublicationInput; want: FindingPublicat
     row: { status: "open", postedAt: 200, githubUrl: "", legacyPosted: null },
     want: { state: "posted", url: null, postedAt: 200, earlierPost: false },
   },
+  // Phase 4: the refusal state. The reason shows from the first counted refusal, not only at
+  // the cap, so the operator and the session know why a draft is still not on GitHub.
+  {
+    name: "a draft refused once stays not-posted and carries its count and reason",
+    row: { status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null, postRefusals: 1, lastPostError: REASON },
+    want: { ...none, refusals: 1, reason: REASON },
+  },
+  {
+    name: "a draft refused twice stays not-posted",
+    row: { status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null, postRefusals: 2, lastPostError: REASON },
+    want: { ...none, refusals: 2, reason: REASON },
+  },
+  {
+    name: "a draft refused 3 times reads refused",
+    row: { status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null, postRefusals: 3, lastPostError: REASON },
+    want: { state: "refused", url: null, postedAt: null, earlierPost: false, refusals: 3, reason: REASON },
+  },
+  {
+    name: "a refused draft whose earlier version was posted keeps the earlier link",
+    row: { status: "drafted", postedAt: 100, githubUrl: URL_EARLIER, legacyPosted: null, postRefusals: 3, lastPostError: REASON },
+    want: { state: "refused", url: URL_EARLIER, postedAt: 100, earlierPost: true, refusals: 3, reason: REASON },
+  },
+  {
+    name: "a refused draft with no recorded reason carries none",
+    row: { status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null, postRefusals: 1, lastPostError: null },
+    want: { ...none, refusals: 1, reason: null },
+  },
+  {
+    name: "a stale reason with no counted refusal is not shown",
+    row: { status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null, postRefusals: 0, lastPostError: REASON },
+    want: none,
+  },
+  {
+    name: "a draft from a snapshot older than the refusal fields reads zero refusals",
+    row: { status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null },
+    want: none,
+  },
+  {
+    // The count is about offering a draft. Once GitHub has the finding, it says nothing.
+    name: "a posted row ignores the refusals it collected as a draft",
+    row: { status: "open", postedAt: 200, githubUrl: URL_NOW, legacyPosted: null, postRefusals: 2, lastPostError: REASON },
+    want: { state: "posted", url: URL_NOW, postedAt: 200, earlierPost: false },
+  },
+  {
+    name: "a resolved never-posted row ignores its refusals",
+    row: { status: "resolved", postedAt: null, githubUrl: null, legacyPosted: null, postRefusals: 3, lastPostError: REASON },
+    want: none,
+  },
 ];
 
 for (const c of cases) {
   test(`findingPublication: ${c.name}`, () => {
-    assert.deepEqual(findingPublication(c.row), c.want);
+    assert.deepEqual(findingPublication(c.row), { refusals: 0, reason: null, ...c.want });
   });
 }
 

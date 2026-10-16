@@ -41,6 +41,9 @@ interface SeedFinding {
   postedAt: number | null;
   githubUrl: string | null;
   legacyPosted: "posted" | "unposted" | "unknown" | null;
+  /** Validation refusals GitHub pinned on a draft, and its reason. Zero and null when absent. */
+  postRefusals?: number;
+  lastPostError?: string | null;
 }
 
 interface SeedPr {
@@ -91,11 +94,11 @@ function insertFinding(
     `INSERT INTO inspector_comments
        (id, pr_key, fingerprint, path, line, title, body, severity, round, status,
         replies, answered_comment_id, created_at, updated_at,
-        posted_at, github_url, legacy_posted)
-     VALUES (?, ?, ?, 'src/example.ts', 10, ?, ?, ?, 2, ?, 0, NULL, ?, ?, ?, ?, ?)`,
+        posted_at, github_url, legacy_posted, post_refusals, last_post_error)
+     VALUES (?, ?, ?, 'src/example.ts', 10, ?, ?, ?, 2, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     f.id, prKey, `fp-${f.id}`, f.title, f.body, f.severity, f.status, now, now,
-    f.postedAt, f.githubUrl, f.legacyPosted,
+    f.postedAt, f.githubUrl, f.legacyPosted, f.postRefusals ?? 0, f.lastPostError ?? null,
   );
 }
 
@@ -251,6 +254,97 @@ test("the Findings control is on every row with a finding, and a dry run says so
   const closed = findingsDialog(dashboard, 604);
   await expect(closed.locator(".inspector-findings-pr")).toContainText("closed");
   await expect(closed.locator("tr.wf-run-finding-row")).toHaveCount(1);
+});
+
+// A draft GitHub refused after a switch to live. Below the cap it still reads Not posted, and
+// says how many times and why from the first refusal; at 3 it reads Refused. Both stay
+// unresolved, so their bodies stay on screen and the row keeps counting them.
+const REFUSAL_REASON = "Line could not be resolved (HTTP 422)";
+
+test("a refused draft shows how many times GitHub refused it and why, and reads Refused at 3", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedLedger(daemon, [{
+    number: 607,
+    posture: "live",
+    findings: [
+      {
+        id: "refused-once", title: "GitHub refused this once", body: "BODY refused once.",
+        severity: "major", status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null,
+        postRefusals: 1, lastPostError: REFUSAL_REASON,
+      },
+      {
+        id: "refused-thrice", title: "GitHub refused this three times", body: "BODY refused three times.",
+        severity: "major", status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null,
+        postRefusals: 3, lastPostError: REFUSAL_REASON,
+      },
+    ],
+  }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+  // Both refused drafts are still open findings on the row.
+  await expect(dashboard.locator(".sc-row").filter({ hasText: "repo#607" })).toContainText("2 findings");
+
+  await findingsButton(dashboard, 607).click();
+  const modal = findingsDialog(dashboard, 607);
+  const rows = modal.locator("tr.wf-run-finding-row");
+  await expect(rows).toHaveCount(2);
+  const row = (title: string): Locator => rows.filter({ hasText: title });
+  const posted = (title: string): Locator => row(title).locator("td").nth(5);
+
+  // Once: Not posted, the count on its own line, GitHub's reason on hover and focus.
+  await expect(posted("GitHub refused this once")).toHaveText("Not postedGitHub refused it 1 time");
+  const once = posted("GitHub refused this once").getByText("Not posted", { exact: true });
+  await expect(once).toHaveAccessibleDescription(`GitHub's reason: ${REFUSAL_REASON}`);
+  await expect(row("GitHub refused this once").locator("td").nth(4)).toHaveText("drafted");
+
+  // Three times: Refused, with the same reason.
+  await expect(posted("GitHub refused this three times")).toHaveText("RefusedGitHub refused it 3 times");
+  const thrice = posted("GitHub refused this three times").getByText("Refused", { exact: true });
+  await expect(thrice).toHaveAccessibleDescription(`GitHub's reason: ${REFUSAL_REASON}`);
+  await thrice.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(`GitHub's reason: ${REFUSAL_REASON}`);
+  await expect(row("GitHub refused this three times").locator("td").nth(4)).toHaveText("drafted");
+
+  // Still unresolved, so both bodies are on screen.
+  await expect(modal.getByText("BODY refused once.")).toBeVisible();
+  await expect(modal.getByText("BODY refused three times.")).toBeVisible();
+  await shoot(dashboard, "findings-modal-refused", modal);
+
+  // The detail row carries the reason too.
+  for (const title of ["GitHub refused this once", "GitHub refused this three times"]) {
+    await row(title).getByRole("button", { name: "Show finding" }).click();
+    const detail = modal.locator(`#wf-run-finding-refused-${title.endsWith("once") ? "once" : "thrice"}`);
+    await expect(detail.locator("dt", { hasText: "Why GitHub refused it" })).toBeVisible();
+    await expect(detail.locator("dd", { hasText: REFUSAL_REASON })).toBeVisible();
+  }
+  await expectContentClearsBorder(modal);
+  await shoot(dashboard, "findings-modal-refused-detail", modal);
+});
+
+// A refused draft never reached GitHub, so a dry-run pull request carrying only one still says
+// nothing on it was posted.
+test("a dry run whose only finding GitHub refused 3 times still says nothing was posted", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedLedger(daemon, [{
+    number: 608,
+    posture: "dry-run",
+    findings: [{
+      id: "dry-refused", title: "Refused, then back to dry run", body: "BODY refused in dry run.",
+      severity: "major", status: "drafted", postedAt: null, githubUrl: null, legacyPosted: null,
+      postRefusals: 3, lastPostError: REFUSAL_REASON,
+    }],
+  }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+  await findingsButton(dashboard, 608).click();
+  const modal = findingsDialog(dashboard, 608);
+  await expect(modal.locator("tr.wf-run-finding-row")).toHaveCount(1);
+  await expect(modal.locator("tr.wf-run-finding-row").locator("td").nth(5))
+    .toHaveText("RefusedGitHub refused it 3 times");
+  await expect(modal.getByText("Dry run: nothing on this pull request was posted")).toBeVisible();
+  await shoot(dashboard, "findings-modal-dry-run-refused", modal);
 });
 
 test("an open Findings modal refreshes on the panel's poll", async ({ dashboard, daemon }) => {

@@ -168,6 +168,34 @@ test("an adopted pull request returns every finding, in every status, in the ren
   );
 });
 
+// A draft GitHub refused 3 times is no longer offered, but it is not resolved: it still counts
+// as an open finding, so Shipping and YOLO still see it (they count every row that is not
+// resolved) and Foreman, which triggers on that count, still relays it.
+test("a refused draft stays unresolved, and its count and reason travel with it", async () => {
+  adopt(8);
+  const key = "owner/repo#8";
+  const reason = "Line could not be resolved (HTTP 422)";
+  seed("f-once", "drafted", "major", { prKey: key, postRefusals: 1, lastPostError: reason });
+  seed("f-capped", "drafted", "major", { prKey: key, postRefusals: 3, lastPostError: reason });
+
+  const res = await app.request(`/api/inspector/findings?pr=${encodeURIComponent(key)}`, {
+    headers: LOOPBACK,
+  });
+  assert.equal(res.status, 200);
+  const body = InspectorFindingsResponseSchema.parse(await res.json());
+  assert.equal(body.pr.openFindings, 2, "a refused draft is still an open finding");
+  assert.equal(body.pr.resolvedFindings, 0);
+  const byFp = new Map(body.findings.map((f) => [f.fingerprint, findingPublication(f)]));
+  assert.deepEqual(
+    (({ state, refusals, reason: why }) => ({ state, refusals, why }))(byFp.get("f-once")!),
+    { state: "not-posted", refusals: 1, why: reason },
+  );
+  assert.deepEqual(
+    (({ state, refusals, reason: why }) => ({ state, refusals, why }))(byFp.get("f-capped")!),
+    { state: "refused", refusals: 3, why: reason },
+  );
+});
+
 test("an adopted pull request with no findings returns an empty list rather than a 404", async () => {
   adopt(9);
   const res = await app.request(`/api/inspector/findings?pr=${encodeURIComponent("owner/repo#9")}`, {

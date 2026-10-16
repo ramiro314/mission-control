@@ -23221,6 +23221,15 @@ button.sc-row:focus-visible {
   border-collapse: separate;
   border-spacing: 0;
 }
+/* The Posted cell's second line on a draft GitHub refused, in every view the shared findings
+   table is drawn in. Attention rather than danger: the draft is still a finding to act on,
+   and the refusal is GitHub's answer about where it can be anchored, not a failure. */
+.inspector-finding-refusals {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--attention);
+}
 
 /* ---- the Foreman ledger's own cells ----
    Six outcomes now, not four dispositions - see `episodeOutcome`. The two that await you

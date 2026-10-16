@@ -740,5 +740,7 @@ test("a finding raised again carries its earlier post until a new one is confirm
     url,
     postedAt: 1_234,
     earlierPost: true,
+    refusals: 0,
+    reason: null,
   });
 });

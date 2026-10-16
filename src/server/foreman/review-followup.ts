@@ -700,11 +700,19 @@ function publicationCounts(findings: readonly InspectorComment[]): string {
   const counts: Record<FindingPublicationState, number> = {
     posted: 0,
     "not-posted": 0,
+    refused: 0,
     posting: 0,
     unknown: 0,
   };
   for (const finding of findings) counts[findingPublication(finding).state] += 1;
-  const parts = [`${counts.posted} posted on GitHub`, `${counts["not-posted"]} not posted`];
+  // A refused draft is not posted either. It is named, so the agent knows it is not coming.
+  const notPosted = counts["not-posted"] + counts.refused;
+  const parts = [
+    `${counts.posted} posted on GitHub`,
+    counts.refused > 0
+      ? `${notPosted} not posted (${counts.refused} refused by GitHub)`
+      : `${notPosted} not posted`,
+  ];
   if (counts.posting > 0) parts.push(`${counts.posting} being posted now`);
   if (counts.unknown > 0) parts.push(`${counts.unknown} not known to be posted`);
   return parts.join(", ");

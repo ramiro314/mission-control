@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "@shared/types.ts";
-import { findingPublication } from "@shared/inspector-findings.ts";
+import { findingPublication, refusalTimes } from "@shared/inspector-findings.ts";
 import type { PipelineStatus } from "../workflows/pipeline-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -42,6 +42,15 @@ export interface InspectorFindingPostedCell {
   /** The GitHub comment the label links to, or null for plain text. */
   href: string | null;
   tooltip: string | null;
+  /** A second line under the label: how often GitHub refused a draft. Null for none. */
+  note: string | null;
+}
+
+/** GitHub's reason a draft was refused, as its tooltip and its detail row both say it. */
+export function inspectorFindingRefusalReason(finding: InspectorComment): string | null {
+  const publication = findingPublication(finding);
+  if (publication.refusals === 0) return null;
+  return publication.reason ?? "GitHub gave no reason";
 }
 
 /**
@@ -50,30 +59,42 @@ export interface InspectorFindingPostedCell {
  */
 export function inspectorFindingPostedCell(finding: InspectorComment): InspectorFindingPostedCell {
   const publication = findingPublication(finding);
+  const refusal = inspectorFindingRefusalReason(finding);
+  const reasonTip = refusal ? `GitHub's reason: ${refusal}` : null;
+  const note = refusal ? `GitHub refused it ${refusalTimes(publication.refusals)}` : null;
+  // A draft posted earlier links to that version, refused or not: it is still where it lives.
+  const earlier = (base: string): InspectorFindingPostedCell => ({
+    label: `${base} (posted earlier)`,
+    href: publication.url,
+    tooltip: [
+      reasonTip,
+      publication.url
+        ? "Not posted again. Open the earlier version on GitHub"
+        : "Not posted again. An earlier version was posted on GitHub",
+    ].filter((part): part is string => part !== null).join(". "),
+    note,
+  });
   switch (publication.state) {
     case "posted":
       return publication.url
-        ? { label: "Posted", href: publication.url, tooltip: "Open this finding on GitHub" }
+        ? { label: "Posted", href: publication.url, tooltip: "Open this finding on GitHub", note: null }
         : {
           label: "Posted",
           href: null,
           tooltip: "Posted on GitHub. The link is recorded on GitHub Inspector's next pass",
+          note: null,
         };
     case "not-posted":
-      if (publication.earlierPost) {
-        return {
-          label: "Not posted (posted earlier)",
-          href: publication.url,
-          tooltip: publication.url
-            ? "Not posted again. Open the earlier version on GitHub"
-            : "Not posted again. An earlier version was posted on GitHub",
-        };
-      }
-      return { label: "Not posted", href: null, tooltip: null };
+      if (publication.earlierPost) return earlier("Not posted");
+      return { label: "Not posted", href: null, tooltip: reasonTip, note };
+    case "refused":
+      // No longer offered. It stays unresolved, so its Status still reads drafted.
+      if (publication.earlierPost) return earlier("Refused");
+      return { label: "Refused", href: null, tooltip: reasonTip, note };
     case "posting":
-      return { label: "Posting", href: null, tooltip: null };
+      return { label: "Posting", href: null, tooltip: null, note: null };
     case "unknown":
-      return { label: "Unknown", href: null, tooltip: UNKNOWN_POSTED_TOOLTIP };
+      return { label: "Unknown", href: null, tooltip: UNKNOWN_POSTED_TOOLTIP, note: null };
     default: {
       const exhaustive: never = publication.state;
       return exhaustive;
@@ -83,16 +104,25 @@ export function inspectorFindingPostedCell(finding: InspectorComment): Inspector
 
 function PostedCell({ finding }: { finding: InspectorComment }): React.JSX.Element {
   const cell = inspectorFindingPostedCell(finding);
+  let label: React.JSX.Element;
   if (cell.href) {
-    return (
+    label = (
       <Tooltip label={cell.tooltip ?? "Open on GitHub"}>
         <a href={cell.href} target="_blank" rel="noreferrer">{cell.label}</a>
       </Tooltip>
     );
+  } else {
+    label = cell.tooltip
+      ? <Tooltip label={cell.tooltip}><span>{cell.label}</span></Tooltip>
+      : <span>{cell.label}</span>;
   }
-  return cell.tooltip
-    ? <Tooltip label={cell.tooltip}><span>{cell.label}</span></Tooltip>
-    : <span>{cell.label}</span>;
+  if (!cell.note) return label;
+  return (
+    <>
+      {label}
+      <span className="inspector-finding-refusals">{cell.note}</span>
+    </>
+  );
 }
 
 const COLUMNS = ["Severity", "Finding", "Where", "Round", "Status", "Posted", "Detail"] as const;
@@ -126,6 +156,7 @@ export function InspectorFindingsTable({
             const open = openFinding === finding.id;
             // An unresolved finding's body is never behind a disclosure.
             const unresolved = finding.status !== "resolved";
+            const refusal = inspectorFindingRefusalReason(finding);
             return (
               <Fragment key={finding.id}>
                 <tr className={`wf-run-ledger-row wf-run-finding-row is-${finding.severity}`}>
@@ -171,6 +202,9 @@ export function InspectorFindingsTable({
                       {!unresolved && <p>{inspectorFindingBody(finding)}</p>}
                       <dl className="wf-run-facts-list">
                         <div><dt>Fingerprint</dt><dd><code>{finding.fingerprint}</code></dd></div>
+                        {refusal !== null && (
+                          <div><dt>Why GitHub refused it</dt><dd>{refusal}</dd></div>
+                        )}
                         <div><dt>Recorded</dt><dd>{when(finding.createdAt)}</dd></div>
                         <div><dt>Last change</dt><dd>{when(finding.updatedAt)}</dd></div>
                       </dl>

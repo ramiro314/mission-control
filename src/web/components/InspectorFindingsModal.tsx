@@ -33,7 +33,20 @@ export function nothingPostedLine(
   if (pr.reviewPosture === null || pr.reviewPosture === "live") return null;
   const anyPosted = findings.some((finding) => {
     const publication = findingPublication(finding);
-    return publication.state !== "not-posted" || publication.earlierPost;
+    if (publication.earlierPost) return true;
+    switch (publication.state) {
+      case "not-posted":
+      case "refused":
+        return false;
+      case "posted":
+      case "posting":
+      case "unknown":
+        return true;
+      default: {
+        const exhaustive: never = publication.state;
+        return exhaustive;
+      }
+    }
   });
   if (anyPosted) return null;
   return pr.reviewPosture === "not-allowlisted"

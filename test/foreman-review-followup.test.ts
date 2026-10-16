@@ -734,6 +734,32 @@ test("a finding being posted is counted on its own", () => {
   assert.match(p, /Being posted now/);
 });
 
+// A refused draft stays unresolved. GitHub will not take it, so the relay is the only place
+// the session reads it: Foreman still relays it, and says GitHub refused it and why.
+test("a draft GitHub refused is still relayed, with how many times and why", () => {
+  const reason = "Line could not be resolved (HTTP 422)";
+  const drafts = [
+    finding({ fingerprint: "once", title: "Refused once", status: "drafted", postedAt: null, githubUrl: null, postRefusals: 1, lastPostError: reason }),
+    finding({ fingerprint: "capped", title: "Refused three times", status: "drafted", postedAt: null, githubUrl: null, postRefusals: 3, lastPostError: reason }),
+  ];
+  const d = decide({
+    session: mkSession({ inspector: inspector({ open: 2, postedOpen: 0 }) }),
+    findings: drafts,
+  });
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.match(d.payload, /GitHub Inspector has 2 unresolved findings on it \(0 posted on GitHub, 2 not posted \(1 refused by GitHub\)\)/);
+  assert.match(
+    d.payload,
+    /## MAJOR - Refused once\n.*\nNot posted yet\. GitHub refused it 1 time: Line could not be resolved \(HTTP 422\)\. Mission Control offers it again on the next push\.\n/,
+  );
+  assert.match(
+    d.payload,
+    /## MAJOR - Refused three times\n.*\nNot posted\. GitHub refused it 3 times: Line could not be resolved \(HTTP 422\)\n/,
+  );
+  assert.doesNotMatch(d.payload, /only copy/, "a refused draft carries its refusal line instead");
+});
+
 // ---- one session, several pull requests (a multi-repo task) ----
 //
 // The premise this half exists for: a multi-repo task's session opens one pull request per
