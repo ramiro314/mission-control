@@ -85,6 +85,8 @@ export const OVERLAY_IDS = {
   // The session footer's Return to backlog confirm. A per-session confirm like Kill, so the
   // fleet's `k` and `r` must not reach the session behind it while it is up.
   requeue: "requeue",
+  // Settings > GitHub Inspector's read-only findings for one pull request.
+  inspectorFindings: "inspector-findings",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

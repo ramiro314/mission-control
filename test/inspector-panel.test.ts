@@ -5,12 +5,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   InspectorSettingsPanel,
   canResolveFindings,
+  canViewFindings,
   inspectionSummary,
 } from "../src/web/components/InspectorSettingsPanel.tsx";
+import {
+  inspectorPrStateWord,
+  inspectorRoundsLabel,
+  nothingPostedLine,
+} from "../src/web/components/InspectorFindingsModal.tsx";
 import { INSPECTOR_MODEL_SPEC } from "../src/shared/inspector.ts";
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
-import type { InspectorInspection } from "../src/shared/types.ts";
+import type { InspectorComment, InspectorInspection } from "../src/shared/types.ts";
 
 // What is at stake: this panel is the ONLY place a dry run is legible. It reviews, finds
 // things, posts nothing and says nothing anywhere else - so a phrase that is wrong here is
@@ -223,7 +229,7 @@ test("the resolve control names the pull request it acts on, so a table of them 
   assert.match(html, /aria-label="Resolve GitHub Inspector&#x27;s findings on repo#494"/);
   // In the ledger's own action cell, under a column that names it.
   assert.match(html, /<span class="sc-act"><button type="button" class="settings-link"/);
-  assert.match(html, /<span class="sc-act">Resolve<\/span>/);
+  assert.match(html, /<span class="sc-act">Actions<\/span>/);
   // And a row with nothing to resolve leaves the cell empty rather than dropping it, or the
   // grid would shift every column on the rows that do offer it.
   const clean = render(state({ inspections: [row({ number: 495, openFindings: 0, round: 5 })] }));
@@ -247,4 +253,90 @@ test("the resolved tally says closed rather than fixed, because it cannot tell t
   // The tooltip is where the three routes are named, so the number is not merely vague.
   assert.match(html, /review round confirms a push fixed it/);
   assert.match(html, /an operator resolves it here/);
+});
+
+// ---- the Findings modal --------------------------------------------------------------
+
+test("the Findings control is offered on every row with a finding, open or closed", () => {
+  assert.equal(canViewFindings(row({ openFindings: 1 })), true);
+  // Resolved findings only: the record of what was said, still worth reading.
+  assert.equal(canViewFindings(row({ openFindings: 0, resolvedFindings: 2 })), true);
+  // A retired row keeps its findings and its control, unlike Resolve.
+  assert.equal(canViewFindings(row({ openFindings: 3, state: "closed", mergedAt: 1 })), true);
+  assert.equal(canViewFindings(row({ openFindings: 0, resolvedFindings: 0, round: 4 })), false);
+});
+
+test("the Findings control is named for the pull request by its full key", () => {
+  const html = render(
+    state({
+      inspections: [
+        row({ key: "owner/repo#494", number: 494, openFindings: 1, round: 2 }),
+        row({ key: "owner/repo#495", number: 495, openFindings: 0, round: 2 }),
+      ],
+    }),
+  );
+  assert.match(html, /aria-label="View GitHub Inspector&#x27;s findings on owner\/repo#494"/);
+  assert.doesNotMatch(html, /findings on owner\/repo#495"/);
+  assert.match(html, /Open a pull request&#x27;s Findings to read what GitHub Inspector found\./);
+  assert.doesNotMatch(html, /the only place GitHub Inspector&#x27;s findings exist/);
+});
+
+function finding(over: Partial<InspectorComment> = {}): InspectorComment {
+  return {
+    id: "f1",
+    prKey: "owner/repo#1",
+    fingerprint: "fp",
+    path: "src/a.ts",
+    line: 1,
+    title: "t",
+    body: "b",
+    severity: "major",
+    round: 1,
+    status: "drafted",
+    replies: 0,
+    answeredCommentId: null,
+    postedAt: null,
+    githubUrl: null,
+    legacyPosted: null,
+    createdAt: 0,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+test("the dry-run line appears only when the posture was not live and nothing reached GitHub", () => {
+  const drafts = [finding()];
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "dry-run" }), drafts),
+    "Dry run: nothing on this pull request was posted",
+  );
+  assert.equal(nothingPostedLine(row({ reviewPosture: "live" }), drafts), null);
+  // A null posture is a row from an older build, which may have been live.
+  assert.equal(nothingPostedLine(row({ reviewPosture: null }), drafts), null);
+  // Reviewed live first, then in dry run: the earlier round's comments are on GitHub.
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "dry-run" }), [
+      ...drafts,
+      finding({ id: "f2", status: "resolved", postedAt: 5 }),
+    ]),
+    null,
+  );
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "dry-run" }), [finding({ postedAt: 5 })]),
+    null,
+    "a draft whose earlier version was posted is on GitHub",
+  );
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "not-allowlisted" }), drafts),
+    "Not on the allowlist: nothing on this pull request was posted",
+  );
+});
+
+test("the modal's header words for state and rounds", () => {
+  assert.equal(inspectorPrStateWord(row({ state: "open" })), "open");
+  assert.equal(inspectorPrStateWord(row({ state: "closed", mergedAt: 1 })), "merged");
+  assert.equal(inspectorPrStateWord(row({ state: "closed", mergedAt: null })), "closed");
+  assert.equal(inspectorRoundsLabel(0), "not reviewed yet");
+  assert.equal(inspectorRoundsLabel(1), "1 review round");
+  assert.equal(inspectorRoundsLabel(3), "3 review rounds");
 });
