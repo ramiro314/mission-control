@@ -392,12 +392,7 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   let at = -1;
   for (const heading of [
     "## For Humans",
-    "### Why",
-    "### What changed",
-    "### Tradeoffs",
-    "### Known gaps",
     "### Evidence",
-    "### Follow-up work",
     "## For Agents",
   ]) {
     const found = text.indexOf(`\n${heading}\n`, at + 1);

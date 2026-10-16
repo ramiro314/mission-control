@@ -2852,6 +2852,7 @@ export function App(): React.JSX.Element {
     files,
     fileCommentThreads,
     fileCommentReviews,
+    fileCommentsLoaded: hasSnapshot,
     fileLineRequest,
     fileCommentRequest,
     onReset: setResetSessionId,
@@ -4411,6 +4412,7 @@ export function App(): React.JSX.Element {
             controller={files}
             fileCommentThreads={fileCommentThreads}
             fileCommentReviews={fileCommentReviews}
+            fileCommentsLoaded={hasSnapshot}
             fileLineRequest={fileLineRequest}
             fileCommentRequest={fileCommentRequest}
             onClose={closeFiles}

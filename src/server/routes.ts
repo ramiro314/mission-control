@@ -7250,6 +7250,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return {
       enabled: cfg.enabled,
       commitPlanHtml: cfg.commitPlanHtml,
+      alwaysDraftPr: cfg.alwaysDraftPr,
       planStorage: cfg.planStorage,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
@@ -7270,6 +7271,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   app.get("/api/skills", (c) => c.json(skillsView()));
+
+  // Read the live preference, including for sessions launched outside Mission Control.
+  // Corrupt stored settings must never be interpreted as permission to create a ready PR.
+  app.get("/api/skills/pull-request-policy", (c) => {
+    const problem = skillsConfigProblem();
+    if (problem) return c.json({ error: problem }, 409);
+    return c.json({ alwaysDraftPr: getSkillsConfig().alwaysDraftPr });
+  });
 
   /**
    * Reconcile, then persist - both inside `applySkillsConfig`, so this route cannot

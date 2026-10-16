@@ -43,6 +43,7 @@ import {
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
 import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
+import { LEGACY_PULL_REQUEST_PROMPT } from "./pull-request-guidance-snapshot.ts";
 import { LEGACY_DOCUMENTATION_GUIDANCE } from "./documentation-guidance-snapshots.ts";
 import {
   BUILTIN_SESSION_ACTIONS,
@@ -236,7 +237,10 @@ function builtinSessionActionSnapshot(
     );
   }
   const snapshot = sessionActionSnapshotOf(action);
-  const promptMarkdown = prompts?.[sessionActionId];
+  // These authored versions predate the concise PR guidance. Their persisted IDs must
+  // continue resolving the exact prompt they shipped, independently of the live catalog.
+  const promptMarkdown = prompts?.[sessionActionId]
+    ?? (sessionActionId === PULL_REQUEST_SESSION_ACTION_ID ? LEGACY_PULL_REQUEST_PROMPT : undefined);
   return promptMarkdown === undefined ? snapshot : { ...snapshot, promptMarkdown };
 }
 
@@ -303,26 +307,21 @@ function appendGpt6Version(
 }
 
 /**
- * Publish the current Pull Request action without changing any previously bound version.
+ * Publish the Pull Request action with the issue closing line without changing any previously
+ * bound version.
  *
- * Every version before this one keeps the action text it shipped with, so a binding pinned to
- * it is not rewritten by an edit to `actions/pull-request.md`.
+ * Every version before this one keeps the action text it shipped with (upstream's
+ * `LEGACY_PULL_REQUEST_PROMPT`), and this one keeps its own, so a binding pinned to either is not
+ * rewritten by an edit to `actions/pull-request.md`.
  */
 function appendIssueClosingLineVersion(
   versions: BuiltinWorkflowSource["versions"],
 ): BuiltinWorkflowSource["versions"] {
   const previous = versions.at(-1);
   if (!previous) throw new Error("the issue closing line version requires a previous version");
-  const frozen = versions.map((version) => ({
-    ...version,
-    sessionActionPrompts: {
-      [PULL_REQUEST_SESSION_ACTION_ID]: PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE,
-      ...version.sessionActionPrompts,
-    },
-  }));
-  return [...frozen, {
+  return [...versions, {
     ...previous,
-    sessionActionPrompts: undefined,
+    sessionActionPrompts: { [PULL_REQUEST_SESSION_ACTION_ID]: PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE },
     sourceDraftRevision: previous.sourceDraftRevision + 1,
   }];
 }
@@ -1156,12 +1155,12 @@ const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
 };
 
 /**
- * The Pull Request action as every version before the issue closing line shipped it.
+ * The Pull Request action as the issue closing line versions shipped it.
  *
  * Deliberately the exact text rather than a reconstruction from `actions/pull-request.md`: a
  * binding pinned to one of those versions keeps the instruction it was published with.
  */
-const PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE = `# Pull Request
+const PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE = `# Pull Request
 
 Prepare the reviewed work as a reviewer-ready pull request.
 
@@ -1197,6 +1196,10 @@ text for each image. With an older CLI, upload through GitHub's signed-in web in
 published description or comment renders the attachments before treating the evidence handoff as
 complete. \`## For Agents\` carries the design decisions and the implementation detail. Follow that
 contract exactly rather than inventing a shape here.
+
+When the work comes from a GitHub issue, the body carries the closing line the skill's
+"Closing the issue the work came from" rule gives: \`Closes #<n>\`, or \`Part of #<n>\` with the
+human steps left under the known gaps. A title's \`(#<n>)\` closes nothing.
 
 Every claim in the evidence subsection is something that was run and reported, not something
 assumed. A list of changed files is not a description. Neither is a restatement of the diff.
