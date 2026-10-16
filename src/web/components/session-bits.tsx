@@ -2103,10 +2103,12 @@ export function TaskClaimWarnings({
     <div className="task-claim-warnings" role="group" aria-label="Dependency install warnings">
       {warnings.map((warning) => (
         <details key={`${warning.repoRoot}:${warning.step}`} className="task-claim-warning">
-          <summary>
-            Dependency install failed in {repoLeaf(warning.repoRoot)}: step {warning.step} of{" "}
-            {warning.stepCount} {warning.reason}.
-          </summary>
+          <Tooltip label={`Show the failing command and its output in ${warning.repoRoot}`}>
+            <summary>
+              Dependency install failed in {repoLeaf(warning.repoRoot)}: step {warning.step} of{" "}
+              {warning.stepCount} {warning.reason}.
+            </summary>
+          </Tooltip>
           <code className="task-claim-command" aria-label={`Failed command: ${warning.command}`}>{warning.command}</code>
           {warning.tail ? (
             <pre className="task-claim-tail" aria-label="Dependency install output tail" tabIndex={0}>
