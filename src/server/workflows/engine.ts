@@ -69,6 +69,7 @@ import {
   tailBounded,
   type CheckRunDeps,
   type CheckScheduler,
+  type CheckSlot,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
 import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
@@ -1101,10 +1102,13 @@ export class WorkflowEngine {
         // while the attempt waits for a check slot would take the machine lease inside that
         // slot without having queued behind `testCheckLimit`.
         const testLease = checkLimitHeld && target?.kind === "check" && this.leasesTests(target.slot);
-        const run = () => this.runAttempt(attempt, checkLimitHeld, testLease);
+        const run = (slot?: CheckSlot) => this.runAttempt(attempt, checkLimitHeld, testLease, slot);
+        // The held check slot goes to the attempt, which gives it up while a dependency claim
+        // runs and takes one again before its Command spawns. The test gate is not released:
+        // it orders test checks, and a claim does not change that order.
         const checkRun = testLease
-          ? () => this.testCheckLimit(() => this.checkLimit(run))
-          : () => this.checkLimit(run);
+          ? () => this.testCheckLimit(() => this.checkLimit((slot) => run(slot)))
+          : () => this.checkLimit((slot) => run(slot));
         // A Command whose per-run allowance is already spent needs no execution capacity:
         // `runCheck` records budget_spent without calling the executor. Starting that attempt
         // directly prevents a repair round from sitting behind unrelated builds merely to be
@@ -1195,6 +1199,7 @@ export class WorkflowEngine {
     initial: WorkflowNodeAttempt,
     checkLimitHeld = false,
     testLease = false,
+    checkSlot?: CheckSlot,
   ): Promise<void> {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
@@ -1213,7 +1218,7 @@ export class WorkflowEngine {
       }
     }
     if (isCheck(node)) {
-      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, testLease);
+      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, testLease, checkSlot);
       return;
     }
     if (!isPersona(node)) return;
@@ -1582,6 +1587,7 @@ export class WorkflowEngine {
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
     checkLimitHeld: boolean,
     scheduledTestLease: boolean,
+    scheduledSlot?: CheckSlot,
   ): Promise<void> {
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
@@ -1603,20 +1609,34 @@ export class WorkflowEngine {
     // fallback path that gates only the executor. Either way the executor is told, rather than
     // reading the setting again - see the pump.
     const testLease = checkLimitHeld ? scheduledTestLease : this.leasesTests(node.slot);
+    // On the fallback path the slot is only taken around the executor, after the attempt ref
+    // is bound, so the ref carries a handle onto whichever slot that wrapper holds.
+    let fallbackSlot: CheckSlot | undefined;
+    const checkSlot: CheckSlot | undefined = checkLimitHeld
+      ? scheduledSlot
+      : {
+          release: () => fallbackSlot?.release(),
+          reacquire: () => fallbackSlot?.reacquire() ?? Promise.resolve(),
+        };
     const attemptRef = {
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
       testLease,
+      ...(checkSlot ? { checkSlot } : {}),
     };
     const baseDeps = this.checkDeps(attemptRef);
+    const gated = <T>(fn: () => Promise<T>): Promise<T> => this.checkLimit((slot) => {
+      fallbackSlot = slot;
+      return fn();
+    });
     const deps = !checkLimitHeld && baseDeps.execute
       ? {
           ...baseDeps,
           execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
             testLease
-              ? this.testCheckLimit(() => this.checkLimit(() => baseDeps.execute!(request)))
-              : this.checkLimit(() => baseDeps.execute!(request)),
+              ? this.testCheckLimit(() => gated(() => baseDeps.execute!(request)))
+              : gated(() => baseDeps.execute!(request)),
         }
       : baseDeps;
 

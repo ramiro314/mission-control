@@ -427,6 +427,12 @@ export interface WorkflowManagerOptions {
    */
   unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
   /**
+   * Stop the dependency claims running for these check attempts, beside the runtime whose
+   * leases run them. A cancelled run calls it for every attempt it was running, so an install
+   * that may run for hours does not outlive the run that asked for it. Absent stops nothing.
+   */
+  stopCheckClaims?: (attemptIds: readonly string[]) => void;
+  /**
    * Whether an external orchestrator may claim this session right now.
    *
    * Injected rather than imported: the owner of that answer is the orchestrator holding the
@@ -620,6 +626,7 @@ export class WorkflowManager {
   private readonly confirmInjection: typeof confirmReservedInjection;
   private readonly requireSkill: NonNullable<WorkflowManagerOptions["requireSkill"]>;
   private readonly schedule: ReviewScheduler;
+  private readonly stopCheckClaims: (attemptIds: readonly string[]) => void;
   private retentionTimer: ReturnType<typeof setInterval> | null = null;
   private retentionRunning = false;
   private resumptionTimer: ReturnType<typeof setInterval> | null = null;
@@ -667,6 +674,7 @@ export class WorkflowManager {
     // this one would hand back exactly the split this is meant to close, and would silently
     // ignore `engine.concurrency` too. The assignment below therefore comes AFTER the spread
     // of `options.engine`, so no caller can reintroduce a second scheduler.
+    this.stopCheckClaims = options.stopCheckClaims ?? (() => {});
     this.schedule = options.reviewScheduler
       ?? options.engine?.schedule
       ?? createReviewScheduler(options.engine?.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
@@ -2668,7 +2676,14 @@ export class WorkflowManager {
   cancel(runId: string, requestId: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    // Read before the cancel, which moves every running attempt to `cancelled`. A running check
+    // attempt may be waiting on a dependency claim; its claim stops, settles as a failed claim,
+    // and the attempt's result is then recorded as audit-only like any after a cancel.
+    const running = this.store.listAttemptsForRun(run.id)
+      .filter((attempt) => attempt.state === "running")
+      .map((attempt) => attempt.id);
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
+    if (running.length > 0) this.stopCheckClaims(running);
     this.publishRun(run.id);
     return { ok: true, value: cancelled, idempotent: run.status === "cancelled" };
   }

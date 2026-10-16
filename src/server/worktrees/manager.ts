@@ -94,6 +94,12 @@ export type WorktreeAcquireResult =
        * anyway: a failed claim hands the slot over with this warning, never quarantines it.
        */
       claimWarning?: WorktreeClaimWarning;
+      /**
+       * The fingerprint paths of the claim that failed, beside `claimWarning` only. A check
+       * decides who owns its failure by these, and reading them from the claim that actually
+       * ran keeps a settings edit made meanwhile from changing the answer.
+       */
+      claimFingerprintPaths?: string[];
     }
   | { outcome: "notAcquired"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
@@ -221,6 +227,28 @@ type ClaimRun =
   | { kind: "shutdown" }
   /** The write-ahead or its settlement could not be recorded. */
   | { kind: "unrecorded"; reason: string };
+
+/** What `claimDisposableTree` did. */
+export type DisposableClaimResult =
+  /** The repository has no claim. The tree is used as it is. */
+  | { kind: "none" }
+  | { kind: "succeeded" }
+  /** A step failed, timed out or was stopped. The tree is proven, but its dependencies are not. */
+  | { kind: "failed"; warning: WorktreeClaimWarning; fingerprintPaths: string[] }
+  /** The tree cannot be used: the daemon is stopping, or the final proof failed. */
+  | { kind: "unproven"; reason: string };
+
+/**
+ * Tell a caller its claim is about to run. A hook that throws must not fail a claim, or leave a
+ * slot reserved behind it, so its error is logged and dropped.
+ */
+function notifyClaimStart(onClaimStart: (() => void) | undefined): void {
+  try {
+    onClaimStart?.();
+  } catch (error) {
+    console.warn(`[worktrees] claim start hook failed: ${bounded(String(error))}`);
+  }
+}
 
 const SLOT_OBSERVATION_CONCURRENCY = 8;
 
@@ -574,10 +602,16 @@ export class WorktreeManager {
     /** Protect the grant until its task/check row is durably written. */
     awaitingDomainRecord?: boolean;
     /**
-     * Run the pool's dependency claim inside this lease. Task dispatch asks for it; check and
-     * manual leases keep their behavior until their own change.
+     * Run the pool's dependency claim inside this lease. Task dispatch and check attempts ask
+     * for it; manual leases keep their behavior until their own change.
      */
     runClaim?: boolean;
+    /**
+     * Told once, synchronously, when the claim's steps are about to run: after the fingerprint
+     * check decided they must, before the write-ahead. Never told for a claim that is skipped.
+     * A check attempt gives up its check-concurrency slot here, since an install is not a build.
+     */
+    onClaimStart?: () => void;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -819,7 +853,13 @@ export class WorktreeManager {
 
         let claimWarning: WorktreeClaimWarning | undefined;
         if (claim && claimControl) {
-          const claimed = await this.claimDependencies(reservation, claim, input.baseSha, claimControl);
+          const claimed = await this.claimDependencies(
+            reservation,
+            claim,
+            input.baseSha,
+            claimControl,
+            input.onClaimStart,
+          );
           if (claimed.kind === "shutdown") {
             // Left exactly as the write-ahead left it. Startup finds the slot provisioning with
             // `deps_state = claiming`, quarantines it and marks it interrupted: the same cost a
@@ -882,7 +922,9 @@ export class WorktreeManager {
             baseSha: input.baseSha,
             slotVersion: leased.version,
           },
-          ...(claimWarning ? { claimWarning } : {}),
+          ...(claimWarning && claim
+            ? { claimWarning, claimFingerprintPaths: [...claim.fingerprintPaths] }
+            : {}),
         };
       } catch (error) {
         const reason = bounded(String(error));
@@ -906,6 +948,7 @@ export class WorktreeManager {
     claim: WorktreeClaim,
     sha: string,
     control: AbortController,
+    onClaimStart?: () => void,
   ): Promise<ClaimRun> {
     let fingerprint: string | null = null;
     if (claim.fingerprintPaths.length > 0) {
@@ -928,6 +971,7 @@ export class WorktreeManager {
     ) {
       return { kind: "skipped" };
     }
+    notifyClaimStart(onClaimStart);
     if (!this.store.beginClaim(reservation.id, reservation.version, this.deps.now())) {
       return { kind: "unrecorded", reason: "the dependency claim intent could not be recorded" };
     }
@@ -1027,6 +1071,86 @@ export class WorktreeManager {
   /** Told whenever any claim starts, moves to its next step, or ends. Returns the unsubscribe. */
   onClaimChange(listener: (claim: RunningClaim) => void): () => void {
     return this.claims.subscribe(listener);
+  }
+
+  /**
+   * Stop the running claims this owner holds: a cancelled task's, or a cancelled run's check
+   * attempt's. Each settles as a failed claim and hands its slot over, so the caller that waits
+   * on it continues as it would after any failed claim. Returns how many were running.
+   */
+  stopClaimsFor(owner: WorktreeOwner): number {
+    return this.claims.stopOwned((held) => held.kind === owner.kind && held.key === owner.key).length;
+  }
+
+  /**
+   * The pool's claim, run against a tree the pool does not own: the cold, disposable worktree
+   * a check falls back to when the pool refuses it. The same steps, environment, deadline, Stop
+   * and shutdown rules as a slot's claim, and the same final proof afterwards. What it lacks is
+   * a slot row, so there is no fingerprint to skip on and nothing durable to write ahead: the
+   * tree was created for this one attempt and is removed with it.
+   *
+   * Runs whenever the repository's policy carries a claim, whether or not native pooling is
+   * enabled for it, since the claim describes the repository's dependencies rather than the
+   * pool. A repository whose identity or policy cannot be read here has no claim to run.
+   */
+  async claimDisposableTree(input: {
+    repositoryPath: string;
+    path: string;
+    baseSha: string;
+    owner: WorktreeOwner;
+    onClaimStart?: () => void;
+  }): Promise<DisposableClaimResult> {
+    const identity = this.identity(input.repositoryPath);
+    if (!identity) return { kind: "none" };
+    let claim: WorktreeClaim | null;
+    try {
+      claim = this.deps.resolvePolicy(identity.gitCommonDirectory).claim ?? null;
+    } catch {
+      return { kind: "none" };
+    }
+    if (!claim) return { kind: "none" };
+    // Keyed by the tree's path, which no slot id can equal. Maintenance and the slot view look
+    // only at slot ids, while shutdown and a run cancel find this claim like any other.
+    const key = `disposable:${input.path}`;
+    const control = this.claims.register(key, input.owner, this.deps.now());
+    if (!control) return { kind: "unproven", reason: STOPPING_REASON };
+    try {
+      notifyClaimStart(input.onClaimStart);
+      const outcome = await runClaimSteps({
+        claim,
+        cwd: input.path,
+        signal: control.signal,
+        environment: this.deps.claimEnvironment,
+        runStep: this.deps.runClaimStep,
+        now: this.deps.now,
+        onStep: (step) => this.claims.progress(key, control, step),
+      });
+      if (!outcome.ok && this.claims.stopping) return { kind: "unproven", reason: STOPPED_REASON };
+      // The same proof a slot takes before its grant: a step that rewrote a tracked file or
+      // attached a branch has left a tree the command must not be run in.
+      const inspection = await this.deps.git.inspect(input.path);
+      if (
+        !inspection.ok ||
+        inspection.value.path !== input.path ||
+        inspection.value.commonDirectory !== identity.gitCommonDirectory ||
+        inspection.value.head !== input.baseSha ||
+        inspection.value.dirty ||
+        !inspection.value.detached
+      ) {
+        return {
+          kind: "unproven",
+          reason: inspection.ok
+            ? "the check worktree failed path, repository, exact HEAD, cleanliness, or detached-HEAD verification after its dependency claim"
+            : inspection.reason,
+        };
+      }
+      if (outcome.ok) return { kind: "succeeded" };
+      const summary = describeClaimFailure(outcome.warning).split("\n", 1)[0];
+      console.warn(`[worktrees] dependency claim failed in ${input.path}: ${summary}`);
+      return { kind: "failed", warning: outcome.warning, fingerprintPaths: [...claim.fingerprintPaths] };
+    } finally {
+      this.claims.unregister(key, control);
+    }
   }
 
   /**
