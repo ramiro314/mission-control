@@ -333,6 +333,54 @@ test("a Stop or the deadline landing during exclusion work ends the seed, not th
   }
 });
 
+test("expansion fails closed when it cannot inspect the tree, and only real absence is no match", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-seed-expand-unreadable-"));
+  mkdirSync(join(root, "pkgs", "a", "node_modules"), { recursive: true });
+  mkdirSync(join(root, "locked"));
+  writeFileSync(join(root, "locked", "x"), "x");
+  writeFileSync(join(root, "plain-file"), "not a directory");
+  // Genuinely absent, or under a file rather than a directory: simply no match.
+  assert.deepEqual(await expandSeedPaths(root, ["absent/*/node_modules", "plain-file/x", "absent"]), []);
+  chmodSync(join(root, "pkgs"), 0o000); // cannot be listed
+  chmodSync(join(root, "locked"), 0o600); // can be listed, but nothing inside can be looked up
+  try {
+    await assert.rejects(expandSeedPaths(root, ["pkgs/*/node_modules"]), /EACCES|permission denied/i);
+    await assert.rejects(expandSeedPaths(root, ["locked/x"]), /EACCES|permission denied/i);
+  } finally {
+    chmodSync(join(root, "pkgs"), 0o700);
+    chmodSync(join(root, "locked"), 0o700);
+  }
+});
+
+test("a source branch that cannot be read abandons the seed before any clone", async () => {
+  const { source, target, staging } = stagingFixture("mission-seed-source-unreadable-");
+  mkdirSync(join(source, "pkgs", "a", "node_modules"), { recursive: true });
+  chmodSync(join(source, "pkgs"), 0o000);
+  let cloned = 0;
+  let result;
+  try {
+    result = await stageSeed({
+      sourceRoot: source,
+      targetRoot: target,
+      seed: { paths: ["deps", "pkgs/*/node_modules"], exclude: [] },
+      stagingDirectory: staging,
+      clone: async () => {
+        cloned += 1;
+        return { outcome: "cloned" };
+      },
+      signal: new AbortController().signal,
+      deadline: Date.now() + 60_000,
+      now: Date.now,
+    });
+  } finally {
+    chmodSync(join(source, "pkgs"), 0o700);
+  }
+  // Not a seed of `deps` alone that the target could inherit a fingerprint from.
+  assert.equal(result.kind, "abandoned");
+  assert.match(result.kind === "abandoned" ? result.reason : "", /staging failed: .*(EACCES|permission denied)/i);
+  assert.equal(cloned, 0);
+});
+
 test("a Stop before preparation clones nothing", async () => {
   const { source, target, staging } = stagingFixture("mission-seed-prepare-stopped-");
   const control = new AbortController();
@@ -704,6 +752,39 @@ test("an interrupted slot whose seed paths match a tracked file fails its claim 
   assert.match(again.claimWarning?.reason ?? "", /interrupted seed paths could not be removed/);
   assert.equal(slotAt(m, 1).depsState, "interrupted");
   assert.equal(runCount(again.lease.path), before, "still no step ran");
+  await m.release(again.lease);
+});
+
+test("an interrupted wipe that cannot inspect a seed path removes nothing and stays interrupted", async () => {
+  const fixture = repository("mission-seed-wipe-uninspectable-");
+  const claim = claimWith({ paths: ["deps", "more/*/x"], exclude: [] });
+  const m = manager(claim, { cloneTree: async () => ({ outcome: "failed", reason: "no reflink here" }) }, 1);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "wipe-uninspectable");
+  const slot = slotAt(m, 1);
+  db.prepare("UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL WHERE id = ?").run(slot.id);
+  mkdirSync(join(slot.path, "more", "pkg", "x"), { recursive: true });
+  writeFileSync(join(slot.path, "deps", "half"), "half-renamed");
+  chmodSync(join(slot.path, "more"), 0o000);
+  const before = runCount(slot.path);
+  let result: Extract<WorktreeAcquireResult, { outcome: "acquired" }>;
+  try {
+    result = leased(await acquire(m, fixture.clone, fixture.sha, "wipe-uninspectable:target"));
+  } finally {
+    chmodSync(join(slot.path, "more"), 0o700);
+  }
+  assert.match(result.claimWarning?.reason ?? "", /interrupted seed paths could not be removed: seed paths could not be inspected/);
+  assert.equal(existsSync(join(slot.path, "deps", "half")), true, "nothing was removed on a partial view");
+  assert.equal(slotAt(m, 1).depsState, "interrupted", "the cleanup is still owed");
+  assert.equal(runCount(slot.path), before, "no step ran over the uninspected tree");
+  await m.release(result.lease);
+
+  // Readable again: the next claim removes every seed path, then installs cold.
+  const again = leased(await acquire(m, fixture.clone, fixture.sha, "wipe-uninspectable:again"));
+  assert.equal(again.claimWarning, undefined);
+  assert.equal(existsSync(join(slot.path, "deps", "half")), false);
+  assert.equal(existsSync(join(slot.path, "more", "pkg", "x")), false);
+  assert.equal(runCount(slot.path), before + 1);
+  assert.equal(slotAt(m, 1).depsState, "current");
   await m.release(again.lease);
 });
 

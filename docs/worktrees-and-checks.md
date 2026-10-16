@@ -301,6 +301,11 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
 - **An exclusion walk that cannot read** a directory in the clone, for any reason other than the
   directory having vanished, abandons the seed and the steps run. The excluded content may
   still be in that directory, so the clone is never placed.
+- **A tree that cannot be inspected is never read as empty.** Expanding the seed paths treats
+  only a path that is genuinely not there as no match. A permission or I/O error while listing a
+  directory or looking up a path abandons the seed, so the steps run, and fails an interrupted
+  wipe without removing anything, so the slot stays `interrupted` and its next claim tries
+  again.
 
 **The environment.** Each step gets the same scrubbed base a check command gets (see "A trimmed
 environment" under [Running a check command](#running-a-check-command)), plus only the variables

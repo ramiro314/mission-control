@@ -104,8 +104,9 @@ export async function expandSeedPaths(
           let stat;
           try {
             stat = await lstat(join(root, relative));
-          } catch {
-            continue;
+          } catch (error) {
+            if (absent(error)) continue;
+            throw error;
           }
           if (last) found.set(relative, stat.isDirectory());
           else if (stat.isDirectory()) next.push(relative);
@@ -121,11 +122,24 @@ export async function expandSeedPaths(
     .map((path) => ({ path, directory: found.get(path)! }));
 }
 
+/**
+ * Whether a filesystem error means the path is genuinely not there. Anything else, a
+ * permission or an I/O failure, means the tree could not be inspected, and a seed that cannot
+ * see a path must never conclude it has none: the error propagates, so staging is abandoned and
+ * an interrupted wipe fails, keeping its obligation.
+ */
+function absent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** A directory's entries, sorted. Empty only when the directory genuinely does not exist. */
 async function childNames(directory: string): Promise<string[]> {
   try {
     return (await readdir(directory)).sort();
-  } catch {
-    return [];
+  } catch (error) {
+    if (absent(error)) return [];
+    throw error;
   }
 }
 
@@ -461,7 +475,13 @@ export type SeedWipeResult = { ok: true; removed: string[] } | { ok: false; reas
  */
 export async function wipeSeedPaths(root: string, seed: WorktreeClaimSeed | undefined): Promise<SeedWipeResult> {
   if (!seed) return { ok: true, removed: [] };
-  const entries = await expandSeedPaths(root, seed.paths);
+  let entries: SeedEntry[];
+  try {
+    entries = await expandSeedPaths(root, seed.paths);
+  } catch (error) {
+    // A seed path that cannot be seen cannot be confirmed gone. Nothing is removed.
+    return { ok: false, reason: boundedReason(`seed paths could not be inspected: ${error instanceof Error ? error.message : String(error)}`) };
+  }
   const proof = await proveIgnored(root, entries);
   if (!proof.ok) return { ok: false, reason: proof.reason };
   try {
