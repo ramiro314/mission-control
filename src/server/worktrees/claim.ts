@@ -15,7 +15,7 @@ import type { GitResult } from "./git.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 import type { WorktreeOwner } from "./manager.ts";
 
-// The dependency claim: a pool's ordered dependency steps, run inside a task lease after reset
+// The dependency claim: a pool's ordered dependency steps, run inside a task or check lease after reset
 // or add and setup, and before the final proof, so a leased slot has dependencies for the
 // commit it was leased at.
 //
@@ -226,6 +226,33 @@ export function claimFingerprint(claim: WorktreeClaim, blobs: readonly TreeBlob[
       }),
     )
     .digest("hex");
+}
+
+/**
+ * The paths matching `fingerprintPaths` whose blob differs between two commits' trees: changed,
+ * added on one side, or removed on the other. Sorted. Empty when the globs match nothing that
+ * differs, including when there are no globs at all.
+ *
+ * The same globs and the same matching as `claimFingerprint`, so "this change touched the
+ * claim's inputs" and "this commit's fingerprint differs" can never disagree about a path.
+ */
+export function changedFingerprintInputs(
+  fingerprintPaths: readonly string[],
+  head: readonly TreeBlob[],
+  base: readonly TreeBlob[],
+): string[] {
+  if (fingerprintPaths.length === 0) return [];
+  const matching = (blobs: readonly TreeBlob[]): Map<string, string> => new Map(
+    blobs
+      .filter((blob) => fingerprintPaths.some((glob) => matchesGlob(blob.path, glob)))
+      .map((blob) => [blob.path, blob.object]),
+  );
+  const headInputs = matching(head);
+  const baseInputs = matching(base);
+  const changed = new Set<string>();
+  for (const [path, object] of headInputs) if (baseInputs.get(path) !== object) changed.add(path);
+  for (const path of baseInputs.keys()) if (!headInputs.has(path)) changed.add(path);
+  return [...changed].sort();
 }
 
 export interface ClaimStepRequest {

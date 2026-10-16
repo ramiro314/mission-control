@@ -1,4 +1,3 @@
-import { createLimiter } from "../llm/structured.ts";
 import { resolveRepoPath } from "../repos.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
@@ -122,8 +121,14 @@ export type CheckExecutionResult =
   }
   /** The configured executable is not there. A settings problem, not a defect. */
   | { kind: "unavailable"; note: string }
-  /** It could not be run, or died without answering. Never a fail. */
-  | { kind: "infrastructure"; reason: string };
+  /**
+   * It could not be run, or died without answering. Never a fail.
+   *
+   * `ranNothing` says the Command was never started, so the run it reserved goes back: a
+   * dependency claim that failed for a reason the change does not own is retried as the same
+   * execution, and must not have spent one.
+   */
+  | { kind: "infrastructure"; reason: string; ranNothing?: boolean };
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
@@ -171,13 +176,75 @@ export interface CheckRunDeps {
  */
 export const DEFAULT_CHECK_CONCURRENCY = 2;
 
-/** Runs `fn` once the shared check budget has a slot. Same shape as `ReviewScheduler`. */
-export type CheckScheduler = <T>(fn: () => Promise<T>) => Promise<T>;
+/**
+ * The check slot an attempt holds while `fn` runs, which it may give up and take back.
+ *
+ * A check's dependency claim can run for hours, and an install is not a build: an attempt that
+ * held its slot through one would leave every other check in the daemon queued behind it. So
+ * the attempt releases the slot while it claims and takes one again before its Command spawns.
+ * Releasing twice, or taking back a slot still held, does nothing; whichever is held when `fn`
+ * settles is returned with it.
+ */
+export interface CheckSlot {
+  release(): void;
+  reacquire(): Promise<void>;
+}
+
+/**
+ * Runs `fn` once the shared check budget has a slot. Same shape as `ReviewScheduler`, with the
+ * held slot handed to `fn`. A scheduler that hands none, such as a test's pass-through, simply
+ * keeps the slot for the whole attempt.
+ */
+export type CheckScheduler = <T>(fn: (slot?: CheckSlot) => Promise<T>) => Promise<T>;
 
 export function createCheckScheduler(
   concurrency: number = DEFAULT_CHECK_CONCURRENCY,
 ): CheckScheduler {
-  return createLimiter(concurrency);
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  // The loop re-checks the count on every wake, as `createLimiter` does, so two waiters woken
+  // in one tick cannot both take one slot.
+  const take = async (): Promise<void> => {
+    while (active >= concurrency) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    }
+    active++;
+  };
+  const give = (): void => {
+    active--;
+    waiting.shift()?.();
+  };
+  return async function schedule<T>(fn: (slot?: CheckSlot) => Promise<T>): Promise<T> {
+    await take();
+    const state: { held: boolean; taking: Promise<void> | null } = { held: true, taking: null };
+    const slot: CheckSlot = {
+      release() {
+        if (!state.held) return;
+        state.held = false;
+        give();
+      },
+      reacquire() {
+        if (state.held) return Promise.resolve();
+        state.taking ??= take().then(() => {
+          state.held = true;
+          state.taking = null;
+        });
+        return state.taking;
+      },
+    };
+    try {
+      return await fn(slot);
+    } finally {
+      if (state.held) {
+        state.held = false;
+        give();
+      } else if (state.taking) {
+        // `fn` settled while still waiting to take a slot back; that slot is returned the
+        // moment it is taken, so a waiter nobody awaits cannot keep it.
+        void state.taking.then(() => slot.release());
+      }
+    }
+  };
 }
 
 /** The sentence a build with no execution runtime gives, in one place so tests can name it. */
@@ -408,7 +475,10 @@ export async function runCheck(
     headSha: input.headSha,
     baseBranch: input.baseBranch ?? null,
   });
-  if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };
+  if (result.kind === "infrastructure") {
+    if (result.ranNothing && reservation?.granted) input.releaseRun?.();
+    return { kind: "infrastructure", reason: result.reason };
+  }
   if (result.kind === "unavailable") {
     return outcome(slot, "unavailable", result.note, { command });
   }

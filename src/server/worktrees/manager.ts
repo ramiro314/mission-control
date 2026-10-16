@@ -95,6 +95,12 @@ export type WorktreeAcquireResult =
        * anyway: a failed claim hands the slot over with this warning, never quarantines it.
        */
       claimWarning?: WorktreeClaimWarning;
+      /**
+       * The fingerprint paths of the claim that failed, beside `claimWarning` only. A check
+       * decides who owns its failure by these, and reading them from the claim that actually
+       * ran keeps a settings edit made meanwhile from changing the answer.
+       */
+      claimFingerprintPaths?: string[];
     }
   | { outcome: "notAcquired"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
@@ -225,6 +231,86 @@ type ClaimRun =
   | { kind: "shutdown" }
   /** The write-ahead or its settlement could not be recorded. */
   | { kind: "unrecorded"; reason: string };
+
+/** What `claimDisposableTree` did. */
+export type DisposableClaimResult =
+  /** The repository has no claim. The tree is used as it is. */
+  | { kind: "none" }
+  | { kind: "succeeded" }
+  /** A step failed, timed out or was stopped. The tree is proven, but its dependencies are not. */
+  | { kind: "failed"; warning: WorktreeClaimWarning; fingerprintPaths: string[] }
+  /** The tree cannot be used: the daemon is stopping, or the final proof failed. */
+  | { kind: "unproven"; reason: string };
+
+/** The physical Git common directory of a repository, from Git itself, or why it could not be read. */
+async function gitCommonDirectory(
+  repositoryPath: string,
+): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
+  const result = await run(
+    "git",
+    ["-C", repositoryPath, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { timeoutMs: 15_000 },
+  );
+  const reported = result.stdout.trim();
+  if (result.code !== 0 || result.outcomeUnknown || !reported) {
+    return {
+      ok: false,
+      reason: `git rev-parse --git-common-dir failed: ${bounded(result.stderr.trim() || `exit ${result.code}`)}`,
+    };
+  }
+  try {
+    return { ok: true, value: await realpath(reported) };
+  } catch (error) {
+    return { ok: false, reason: `the common directory ${reported} could not be resolved: ${bounded(String(error))}` };
+  }
+}
+
+/**
+ * Null when a disposable check tree is at exactly `sha`, detached, and clean with untracked
+ * files counted, as a slot must be before its grant. Otherwise why not.
+ */
+async function proveDisposableTree(path: string, sha: string): Promise<string | null> {
+  const [head, status, branch] = await Promise.all([
+    run("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
+    run("git", ["-C", path, "status", "--porcelain=v1", "--untracked-files=all"], { timeoutMs: 15_000 }),
+    run("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"], { timeoutMs: 15_000 }),
+  ]);
+  if (head.code !== 0 || head.outcomeUnknown || status.code !== 0 || status.outcomeUnknown || branch.outcomeUnknown) {
+    return "the check worktree's state could not be read";
+  }
+  if (head.stdout.trim() !== sha) return "the check worktree is no longer at its exact commit";
+  if (status.stdout.trim() !== "") return "the check worktree failed its cleanliness verification";
+  if (branch.code === 0) return "the check worktree has a branch attached";
+  return null;
+}
+
+/**
+ * Make a claim's controller follow its caller's signal, and return the unsubscribe. A signal
+ * that is already aborted aborts the claim at once, so a stop requested before the claim
+ * registered still lands: its first step sees it and never starts.
+ */
+function followSignal(signal: AbortSignal | undefined, control: AbortController): () => void {
+  if (!signal) return () => {};
+  const abort = (): void => control.abort("stopped");
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  signal.addEventListener("abort", abort, { once: true });
+  return () => signal.removeEventListener("abort", abort);
+}
+
+/**
+ * Tell a caller its claim is about to run. A hook that throws must not fail a claim, or leave a
+ * slot reserved behind it, so its error is logged and dropped.
+ */
+function notifyClaimStart(onClaimStart: (() => void) | undefined): void {
+  try {
+    onClaimStart?.();
+  } catch (error) {
+    console.warn(`[worktrees] claim start hook failed: ${bounded(String(error))}`);
+  }
+}
 
 const SLOT_OBSERVATION_CONCURRENCY = 8;
 
@@ -604,10 +690,24 @@ export class WorktreeManager {
     /** Protect the grant until its task/check row is durably written. */
     awaitingDomainRecord?: boolean;
     /**
-     * Run the pool's dependency claim inside this lease. Task dispatch and the background
-     * manual acquire ask for it; check leases keep their behavior until their own change.
+     * Run the pool's dependency claim inside this lease. Task dispatch, check attempts and the
+     * background manual acquire ask for it. The synchronous manual acquire, for a pool with no
+     * claim, does not.
      */
     runClaim?: boolean;
+    /**
+     * Told once, synchronously, when the claim's steps are about to run: after the fingerprint
+     * check decided they must, before the write-ahead. Never told for a claim that is skipped.
+     * A check attempt gives up its check-concurrency slot here, since an install is not a build.
+     */
+    onClaimStart?: () => void;
+    /**
+     * The caller's own stop for this lease's claim. The claim follows it from the moment it
+     * registers: aborted already, the claim stops before its first step; aborted later, the
+     * running step is stopped. Either way it settles as a failed claim and the lease is granted
+     * with the warning, as for a Stop. A check attempt passes its run's cancel here.
+     */
+    signal?: AbortSignal;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -792,6 +892,7 @@ export class WorktreeManager {
       // provisioning reservation; nothing was granted and nothing ran.
       return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
     }
+    const unfollow = claimControl ? followSignal(input.signal, claimControl) : () => {};
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
@@ -849,7 +950,13 @@ export class WorktreeManager {
 
         let claimWarning: WorktreeClaimWarning | undefined;
         if (claim && claimControl) {
-          const claimed = await this.claimDependencies(reservation, claim, input.baseSha, claimControl);
+          const claimed = await this.claimDependencies(
+            reservation,
+            claim,
+            input.baseSha,
+            claimControl,
+            input.onClaimStart,
+          );
           if (claimed.kind === "shutdown") {
             // Left exactly as the write-ahead left it. Startup finds the slot provisioning with
             // `deps_state = claiming`, quarantines it and marks it interrupted: the same cost a
@@ -912,13 +1019,16 @@ export class WorktreeManager {
             baseSha: input.baseSha,
             slotVersion: leased.version,
           },
-          ...(claimWarning ? { claimWarning } : {}),
+          ...(claimWarning && claim
+            ? { claimWarning, claimFingerprintPaths: [...claim.fingerprintPaths] }
+            : {}),
         };
       } catch (error) {
         const reason = bounded(String(error));
         this.quarantineReservation(reservation, "native worktree materialization outcome is unknown", reason);
         return { outcome: "outcomeUnknown", reason };
       } finally {
+        unfollow();
         if (claimControl) this.claims.unregister(reservation.id, claimControl);
       }
     });
@@ -936,6 +1046,7 @@ export class WorktreeManager {
     claim: WorktreeClaim,
     sha: string,
     control: AbortController,
+    onClaimStart?: () => void,
   ): Promise<ClaimRun> {
     let fingerprint: string | null = null;
     if (claim.fingerprintPaths.length > 0) {
@@ -958,6 +1069,7 @@ export class WorktreeManager {
     ) {
       return { kind: "skipped" };
     }
+    notifyClaimStart(onClaimStart);
     if (!this.store.beginClaim(reservation.id, reservation.version, this.deps.now())) {
       return { kind: "unrecorded", reason: "the dependency claim intent could not be recorded" };
     }
@@ -1063,6 +1175,88 @@ export class WorktreeManager {
   /** Told whenever any claim starts, moves to its next step, or ends. Returns the unsubscribe. */
   onClaimChange(listener: (claim: RunningClaim) => void): () => void {
     return this.claims.subscribe(listener);
+  }
+
+  /**
+   * The pool's claim, run against a tree the pool does not own: the cold, disposable worktree
+   * a check falls back to when the pool refuses it. The same steps, environment, deadline, Stop
+   * and shutdown rules as a slot's claim. What it lacks is a slot row, so there is no
+   * fingerprint to skip on and nothing durable to write ahead: the tree was created for this
+   * one attempt and is removed with it.
+   *
+   * Runs whenever the repository's policy carries a claim, whether or not native pooling is
+   * enabled for it, since the claim describes the repository's dependencies rather than the
+   * pool. It fails closed: a repository whose common directory or policy cannot be read is
+   * `unproven`, never `none`, because only a policy that was read and has no claim says the
+   * Command may run without one. The common directory comes from the pool's own identity when
+   * that resolves, and from Git otherwise, so a repository the pool refuses because its
+   * metadata is relocated still finds the claim configured for it.
+   */
+  async claimDisposableTree(input: {
+    repositoryPath: string;
+    path: string;
+    baseSha: string;
+    owner: WorktreeOwner;
+    onClaimStart?: () => void;
+    /** As for `acquire`: the claim follows it from the moment it registers. */
+    signal?: AbortSignal;
+  }): Promise<DisposableClaimResult> {
+    const pooled = this.identity(input.repositoryPath)?.gitCommonDirectory;
+    const commonDirectory = pooled
+      ? { ok: true as const, value: pooled }
+      : await gitCommonDirectory(input.repositoryPath);
+    if (!commonDirectory.ok) {
+      return {
+        kind: "unproven",
+        reason: `the repository's dependency claim could not be looked up: ${commonDirectory.reason}`,
+      };
+    }
+    let claim: WorktreeClaim | null;
+    try {
+      claim = this.deps.resolvePolicy(commonDirectory.value).claim ?? null;
+    } catch (error) {
+      return {
+        kind: "unproven",
+        reason: `the repository's dependency claim could not be looked up: ${bounded(String(error))}`,
+      };
+    }
+    if (!claim) return { kind: "none" };
+    // Keyed by the tree's path, which no slot id can equal. Maintenance and the slot view look
+    // only at slot ids, while shutdown and a run cancel find this claim like any other.
+    const key = `disposable:${input.path}`;
+    const control = this.claims.register(key, input.owner, this.deps.now());
+    if (!control) return { kind: "unproven", reason: STOPPING_REASON };
+    const unfollow = followSignal(input.signal, control);
+    try {
+      notifyClaimStart(input.onClaimStart);
+      const outcome = await runClaimSteps({
+        claim,
+        cwd: input.path,
+        signal: control.signal,
+        environment: this.deps.claimEnvironment,
+        runStep: this.deps.runClaimStep,
+        now: this.deps.now,
+        onStep: (step) => this.claims.progress(key, control, step),
+      });
+      if (!outcome.ok && this.claims.stopping) return { kind: "unproven", reason: STOPPED_REASON };
+      if (!outcome.ok) {
+        // A failed claim is reported as one, with its tail, even when the step also left the
+        // tree dirty: the Command does not run either way, and the tree is removed with the
+        // attempt, so the proof below has nothing left to protect.
+        const summary = describeClaimFailure(outcome.warning).split("\n", 1)[0];
+        console.warn(`[worktrees] dependency claim failed in ${input.path}: ${summary}`);
+        return { kind: "failed", warning: outcome.warning, fingerprintPaths: [...claim.fingerprintPaths] };
+      }
+      // The same proof a slot takes before its grant, asked of Git directly because this tree
+      // is not the pool's: a step that rewrote a tracked file, left an untracked file Git does
+      // not ignore, moved HEAD or attached a branch has left a tree the Command must not run in.
+      const proof = await proveDisposableTree(input.path, input.baseSha);
+      if (proof) return { kind: "unproven", reason: `${proof} after its dependency claim` };
+      return { kind: "succeeded" };
+    } finally {
+      unfollow();
+      this.claims.unregister(key, control);
+    }
   }
 
   /**

@@ -339,6 +339,29 @@ async function changedPathsBase(
 }
 
 /**
+ * The merge base of `headSha` with the ref a change is measured from: `origin/<baseBranch>`
+ * for a task that names one, else the source ref `changedPathsSince` uses. The same base, so a
+ * question about "what this change touched" agrees with the diff the session shows.
+ *
+ * Fails closed: no source ref, no shared history or a git failure is an error, never an answer
+ * that something did or did not change.
+ */
+export async function mergeBaseWithSource(
+  cwd: string,
+  headSha: string,
+  baseBranch: string | null = null,
+): Promise<{ ok: true; base: string } | { ok: false; reason: string }> {
+  const source = await changeSourceRef(cwd, baseBranch);
+  if (!source.ok) return source;
+  if (!source.ref) return { ok: false, reason: "no source branch is available" };
+  const mb = await git(cwd, ["merge-base", headSha, source.ref]);
+  const merged = mb.code === 0 ? mb.stdout.trim() : "";
+  return merged
+    ? { ok: true, base: merged }
+    : { ok: false, reason: `${headSha.slice(0, 12)} has no merge base with ${source.ref}` };
+}
+
+/**
  * The tracked paths a checkout DELETED since its source branch - the half `changedPathsSince`
  * leaves out on purpose, from the same base. A caller asking which tests a change can break
  * needs it: a test importing a deleted file is broken by the change without being touched.

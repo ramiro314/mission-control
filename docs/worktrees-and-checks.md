@@ -166,11 +166,12 @@ active lease.
 
 A warm slot keeps whatever its last occupant installed, which is not necessarily what the next
 commit needs. A pool's **claim** closes that gap. It is an ordered list of dependency steps that
-runs inside every task lease and every manual lease, after the reset or add and after the setup
-command on a new slot, and before the final proof. A dispatched task's slot, and a `make session`
-slot, therefore has dependencies for the commit it was leased at. A manual lease waits on its
-claim through the 202-and-poll described under [Native pools](#native-pools). Check leases do
-not run the claim yet: they lease exactly as they did before.
+runs inside every task lease, every check lease and every manual lease, after the reset or add
+and after the setup command on a new slot, and before the final proof. A dispatched task's slot,
+a check's, and a `make session` slot therefore have dependencies for the commit they were leased
+at. A check that falls back to a throwaway Git worktree runs the same claim there (see
+[Check leases](#check-leases)). A manual lease waits on its claim through the 202-and-poll
+described under [Native pools](#native-pools).
 
 The claim is per pool, with no global default. It is stored beside `setupArgv` in that
 repository's `worktrees` entry, so settings backups capture it, and it is set through
@@ -337,7 +338,7 @@ Each slot card of a pool with a claim shows the slot's dependency state:
 
 | State | Meaning |
 |---|---|
-| never installed | No claim has run in this slot. Its next task lease runs every step. |
+| never installed | No claim has run in this slot. Its next task or check lease runs every step. |
 | current | The last claim succeeded, and its fingerprint matches the claim's fingerprint at the fetched default branch. Also shown when no default can be read, or when the claim lists no fingerprint paths, since neither is evidence of staleness. |
 | stale | The last claim succeeded, but the fetched default branch's fingerprint differs from the slot's. The next lease runs the claim again. |
 | installing | A claim is running in the slot right now, with its step, its command, the elapsed time and **Stop**. |
@@ -595,6 +596,60 @@ conditionally returns the exact native lease. A missing, stale, occupied, or unc
 kept for startup or maintenance reconciliation rather than guessed away. Native check leak
 reclamation runs on the native maintenance cadence after slot startup reconciliation.
 
+#### The dependency claim in a check lease
+
+A check lease runs the pool's [dependency claim](#dependency-claims) under the same rules as a
+task lease: the same steps, environment, deadline, fingerprint skip and final proof. The cold
+fallback runs the same claim against its throwaway tree once that tree is recorded and pinned. It
+runs whenever the repository's settings carry a claim, even with native pooling off, because the
+claim describes the repository's dependencies, not the pool. The claim is looked up by the
+repository's Git common directory, read from Git when the pool cannot identify the repository,
+for example one whose metadata is relocated. A lookup that fails is infrastructure and the tree
+is removed. Only settings that were read and carry no claim let the command run without one.
+That tree has no slot row, so it never skips on a fingerprint. The final proof still applies to
+a claim that succeeded: a step that rewrites a tracked file, leaves an untracked file Git does
+not ignore, moves HEAD or attaches a branch leaves a tree the command is never run in. A claim
+that failed is reported as a dependency failure with its tail even if it also dirtied the tree,
+because the tree is removed either way.
+
+**A failed claim does not run the check's Command.** The tree goes straight back to the pool, or
+is removed, before the attempt reports anything, and the attempt records a dependency failure
+with the claim's output tail. Who owns the failure is decided by the claim's fingerprint paths:
+
+- If any blob matching them differs between the check's head and its merge base with the base
+  branch (the task's base branch, or origin's default), the change owns it. The check **fails**,
+  with the claim's tail as its output and a note naming the failing step and the changed inputs.
+- If none differs, it is **infrastructure**, for example a registry outage or an expired token.
+  The engine retries it as the same execution, up to its usual three attempts, and then blocks
+  the run with `infrastructure_error`. The reason carries the tail.
+- A claim with no fingerprint paths cannot trace a failure to the change, and neither can a
+  merge base that cannot be read, so both count as infrastructure.
+
+A failed claim never spends the Command's run budget, whichever way it is decided, because the
+Command did not run. The comparison reads both trees from objects in the main checkout, never
+from the worktree, and measures from the merge base rather than the base branch's tip, so a
+lockfile the base branch changed after the branch was cut is not blamed on the change.
+
+**The check slot while claiming.** The daemon runs two check commands at once. An attempt whose
+claim runs gives its check slot up for as long as the claim runs, and takes one again before
+anything else runs in its tree: affected-test selection, the test lease and the spawn. A claim
+that may run for hours therefore never keeps another check queued, and a third check runs while
+two claim. A claim skipped on a matching fingerprint keeps its slot throughout. The order of the
+checks, the run-budget reservation taken before the lease, and the machine-wide test lease taken
+after it are unchanged.
+
+**Timeouts.** The Command's own timeout starts when it spawns, after the claim, so claim time
+never counts against it. A slow install ends under the claim's own `timeoutMinutes`, as a
+dependency failure, never as a timed-out check.
+
+**Cancel.** Cancelling a run stops the claims of its running attempts, in a pool slot or a
+fallback tree alike. That includes an attempt that has not reached its claim yet, for example
+one still resolving its commit or resetting its slot: its claim stops before its first step the
+moment it registers, and an attempt cancelled before it reaches its lease takes no worktree at
+all. A stopped claim settles as a failed one: the slot records `failed` and goes back to the
+pool, and the attempt is recorded as cancelled with the run. A check command that already
+spawned is not signalled by a run cancel; its result is recorded as audit-only.
+
 #### Historical Treehouse check rows
 
 Rows that already record provider `treehouse` keep their exact provider authority and
@@ -647,7 +702,8 @@ What a Command gets:
   commit and cleaned with `clean -fd`, never `-fdx`, which preserves the pool's ignored
   dependencies. That keeps whatever the slot last installed, which is not necessarily what this
   commit needs. Making it current is the pool's [dependency claim](#dependency-claims), which
-  runs today in task and manual leases only, so a check still runs against whatever it finds. A
+  runs inside the check's lease before the command (see
+  [The dependency claim in a check lease](#the-dependency-claim-in-a-check-lease)). A
   subdirectory command runs in that subdirectory *of the leased tree*.
 - **A trimmed environment.** The daemon's auth token is removed, along with any variable that
   overrides where its state directory lives and anything whose name reads like a credential

@@ -502,9 +502,9 @@ test("on a new slot a task's claim runs after the setup command has finished", a
 });
 
 test("a lease that does not ask for the claim does not run it", async () => {
-  // Check leases, and a manual acquire the route answers synchronously because its pool had no
-  // claim when it asked. The background manual acquire asks for it; see
-  // test/manual-worktree-claim-http.test.ts.
+  // An acquire without `runClaim`, whatever its owner kind: the manual acquire the route answers
+  // synchronously because its pool had no claim when it asked. Task dispatch, check attempts and
+  // the background manual acquire all ask for it; see test/manual-worktree-claim-http.test.ts.
   const fixture = repository("mission-claim-other-kinds-");
   const m = manager(claimOf({ steps: [{ argv: recordStep("one") }] }));
   const manual = leased(await m.acquire({ repositoryPath: fixture.clone, baseSha: fixture.sha, owner: { kind: "manual", key: "m1" } }));
