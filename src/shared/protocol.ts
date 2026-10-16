@@ -2999,6 +2999,8 @@ export const WORKTREES_CONFIG_LIMITS = {
   maxClaimFingerprintPathBytes: 1024,
   defaultClaimTimeoutMinutes: 10,
   maxClaimTimeoutMinutes: 240,
+  maxClaimSeedPaths: 64,
+  maxClaimSeedExcludes: 64,
 } as const;
 
 const WorktreeSetupArgvSchema = z
@@ -3026,17 +3028,60 @@ const WorktreeClaimVariableNameSchema = z
  * Anything that cannot be such a path is refused rather than silently matching nothing: an
  * absolute path, a `.` or `..` segment, an empty segment, or a backslash.
  */
+function repositoryRelativeGlob(glob: string): boolean {
+  return !glob.startsWith("/") &&
+    !glob.includes("\\") &&
+    glob.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
 const WorktreeClaimFingerprintPathSchema = z
   .string()
   .min(1)
   .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
   .refine(
-    (glob) =>
-      !glob.startsWith("/") &&
-      !glob.includes("\\") &&
-      glob.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."),
+    repositoryRelativeGlob,
     "a fingerprint path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
   );
+
+/**
+ * One seed path: a repository-relative glob matched level by level in a sibling slot, so each
+ * segment is a literal name or a one-level pattern. `**` is refused, because matching it would
+ * mean walking every installed dependency tree to find the paths to clone.
+ */
+const WorktreeClaimSeedPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  )
+  .refine(
+    (glob) => glob.split("/").every((segment) => !segment.includes("**")),
+    "a seed path cannot use **; name each directory level, with * for one level",
+  );
+
+/** A path removed from a seed's clone before it is placed. `**` is allowed here. */
+const WorktreeClaimSeedExcludeSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed exclusion is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * Which ignored dependency trees a cold slot clones copy-on-write from an idle sibling before
+ * its steps run, and what to leave out of the clone.
+ */
+const WorktreeClaimSeedSchema = z
+  .object({
+    paths: z.array(WorktreeClaimSeedPathSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedPaths),
+    exclude: z.array(WorktreeClaimSeedExcludeSchema).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedExcludes).default([]),
+  })
+  .strict();
+export type WorktreeClaimSeed = z.infer<typeof WorktreeClaimSeedSchema>;
 
 const WorktreeClaimStepSchema = z
   .object({
@@ -3071,6 +3116,11 @@ export const WorktreeClaimSchema = z
       .array(WorktreeClaimFingerprintPathSchema)
       .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPaths)
       .default([]),
+    /**
+     * Seeding. Not a fingerprint input: what a seed copies changes how a cold slot gets its
+     * dependencies, never which dependencies a commit needs.
+     */
+    seed: WorktreeClaimSeedSchema.optional(),
   })
   .strict();
 export type WorktreeClaim = z.infer<typeof WorktreeClaimSchema>;

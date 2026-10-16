@@ -16,6 +16,10 @@ export interface ClaimDraft {
   timeoutMinutes: string;
   /** One glob per line. */
   fingerprintPaths: string;
+  /** One glob per line. Blank, with no exclusions, means the claim does not seed. */
+  seedPaths: string;
+  /** One glob per line. */
+  seedExclude: string;
 }
 
 /** What is wrong, by the field the editor shows it beside. */
@@ -24,6 +28,8 @@ export interface ClaimDraftErrors {
   steps: string[];
   timeoutMinutes: string[];
   fingerprintPaths: string[];
+  seedPaths: string[];
+  seedExclude: string[];
   /** Keyed by step index. */
   argv: Record<number, string[]>;
   env: Record<number, string[]>;
@@ -37,12 +43,16 @@ export function draftFromClaim(claim: WorktreeClaim | null): ClaimDraft {
       steps: [],
       timeoutMinutes: String(DEFAULT_CLAIM_TIMEOUT_MINUTES),
       fingerprintPaths: "",
+      seedPaths: "",
+      seedExclude: "",
     };
   }
   return {
     steps: claim.steps.map((step) => ({ argv: step.argv.join("\n"), env: step.env.join(" ") })),
     timeoutMinutes: String(claim.timeoutMinutes),
     fingerprintPaths: claim.fingerprintPaths.join("\n"),
+    seedPaths: claim.seed?.paths.join("\n") ?? "",
+    seedExclude: claim.seed?.exclude.join("\n") ?? "",
   };
 }
 
@@ -58,19 +68,36 @@ export function draftNames(text: string): string[] {
 /**
  * The claim this draft describes, as the route will see it. Nothing is validated here: a
  * blank or non-numeric timeout is sent as typed so the route refuses it by its own rule.
+ * Blank seed paths and exclusions leave `seed` out, which is a claim that never seeds. Any
+ * other combination is sent as typed, so exclusions with no paths are refused by the route
+ * rather than dropped here.
  */
 export function claimFromDraft(draft: ClaimDraft): unknown {
   const typed = draft.timeoutMinutes.trim();
   const timeout = typed === "" ? Number.NaN : Number(typed);
+  const seedPaths = draftLines(draft.seedPaths);
+  const seedExclude = draftLines(draft.seedExclude);
   return {
     steps: draft.steps.map((step) => ({ argv: draftLines(step.argv), env: draftNames(step.env) })),
     timeoutMinutes: Number.isFinite(timeout) ? timeout : typed,
     fingerprintPaths: draftLines(draft.fingerprintPaths),
+    ...(seedPaths.length > 0 || seedExclude.length > 0
+      ? { seed: { paths: seedPaths, exclude: seedExclude } }
+      : {}),
   };
 }
 
 export function emptyClaimErrors(): ClaimDraftErrors {
-  return { general: [], steps: [], timeoutMinutes: [], fingerprintPaths: [], argv: {}, env: {} };
+  return {
+    general: [],
+    steps: [],
+    timeoutMinutes: [],
+    fingerprintPaths: [],
+    seedPaths: [],
+    seedExclude: [],
+    argv: {},
+    env: {},
+  };
 }
 
 /**
@@ -103,6 +130,8 @@ export function hasClaimFieldErrors(errors: ClaimDraftErrors): boolean {
   return errors.steps.length > 0 ||
     errors.timeoutMinutes.length > 0 ||
     errors.fingerprintPaths.length > 0 ||
+    errors.seedPaths.length > 0 ||
+    errors.seedExclude.length > 0 ||
     Object.keys(errors.argv).length > 0 ||
     Object.keys(errors.env).length > 0;
 }
@@ -153,6 +182,7 @@ export function claimErrorsFrom(error: string, draft: ClaimDraft): ClaimDraftErr
   const claim = claimFromDraft(draft) as {
     steps: Array<{ argv: string[]; env: string[] }>;
     fingerprintPaths: string[];
+    seed?: { paths: string[]; exclude: string[] };
   };
   for (const issue of issues) {
     const at = issue.path.indexOf("claim");
@@ -180,6 +210,13 @@ export function claimErrorsFrom(error: string, draft: ClaimDraft): ClaimDraftErr
     } else if (field === "fingerprintPaths") {
       const glob = typeof index === "number" ? claim.fingerprintPaths[index] : undefined;
       errors.fingerprintPaths.push(glob !== undefined ? `${glob}: ${issue.message}` : issue.message);
+    } else if (field === "seed" && (index === "paths" || index === "exclude")) {
+      const globs = index === "paths" ? claim.seed?.paths : claim.seed?.exclude;
+      const glob = typeof part === "number" ? globs?.[part] : undefined;
+      const message = glob !== undefined ? `${glob}: ${issue.message}` : issue.message;
+      (index === "paths" ? errors.seedPaths : errors.seedExclude).push(message);
+    } else if (field === "seed") {
+      errors.seedPaths.push(issue.message);
     } else {
       errors.general.push(issue.message);
     }

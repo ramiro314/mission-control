@@ -169,7 +169,7 @@ function ownerView(
 ): WorktreeOwnerView | null {
   const kind = status.slot.activeOwnerKind;
   const key = status.slot.activeOwnerKey;
-  if ((kind !== "task" && kind !== "check" && kind !== "manual") || !key) return null;
+  if ((kind !== "task" && kind !== "check" && kind !== "manual" && kind !== "warm") || !key) return null;
   if (kind === "task") {
     const parsed = taskIdentity(key);
     const row = parsed ? task.get(parsed.id) : null;
@@ -178,7 +178,11 @@ function ownerView(
   return {
     kind,
     key,
-    label: kind === "check" ? `Check ${key}` : `Manual lease ${key.slice(0, 8)}`,
+    label: kind === "check"
+      ? `Check ${key}`
+      : kind === "warm"
+        ? "Seeding another slot's dependencies"
+        : `Manual lease ${key.slice(0, 8)}`,
   };
 }
 
@@ -277,9 +281,11 @@ export function slotDependencies(input: {
     case "failed":
       // Decoded and bounded where the record is written; values were redacted before it was.
       return { ...base, state: "failed", failure: decodeClaimFailure(slot.depsLastError ?? "") };
-    // `claiming` with no claim running is a write-ahead whose daemon is gone; startup
-    // reconcile is about to record it as interrupted, and the next claim starts cold either way.
+    // `claiming` or `seeding` with no claim running is a write-ahead whose daemon is gone;
+    // startup reconcile is about to record it as interrupted, and the next claim starts cold
+    // either way. A seed that was stopped is recorded as interrupted directly.
     case "claiming":
+    case "seeding":
     case "interrupted":
       return { ...base, state: "interrupted" };
     default:
@@ -400,7 +406,11 @@ export class WorktreeOperationsService {
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
           const actions: Array<"return" | "destroy"> = [];
-          if (entry.slot.state === "leased") actions.push("return", "destroy");
+          // A `warm` lease belongs to the seed copying from it, which returns it the moment the
+          // copy ends. Nothing an operator could do to it here would be safer than that.
+          if (entry.slot.state === "leased") {
+            if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
+          }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
             actions.push("destroy");
           }
@@ -1267,6 +1277,8 @@ export class WorktreeOperationsService {
         await this.reclaimTask(parsedTask.id);
       } else if (owner.kind === "check") {
         await this.recoverCheck(owner.key);
+      } else if (owner.kind === "warm") {
+        throw new WorktreeOperationError(409, "a dependency seed holds this slot and returns it when its copy ends", "changed");
       } else {
         const found = this.manager.lookupLease({ path: target.path, owner: { kind: "manual", key: owner.key } });
         if (found.state !== "active") throw new WorktreeOperationError(409, "manual lease changed after preview", "changed");

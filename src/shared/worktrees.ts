@@ -29,7 +29,8 @@ export type WorktreeRiskKey =
   | "foreign";
 
 export interface WorktreeOwnerView {
-  kind: "task" | "check" | "manual";
+  /** `warm` is maintenance holding the slot for a moment, such as a seed copying from it. */
+  kind: "task" | "check" | "manual" | "warm";
   key: string;
   label: string;
 }

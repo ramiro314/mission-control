@@ -65,5 +65,11 @@ export function nativeWorktreeOwnerReferenced(
             LIMIT 1`,
         )
         .get(reference.slotId, reference.leaseId, reference.owner.key) !== undefined;
+    case "warm":
+      // A `warm` owner is a Warm or a seed running in this daemon, and has no row anywhere.
+      // The manager answers for the ones running now before it asks here, so reaching this
+      // means the operation is gone. That is definite: at startup reconcile, which runs
+      // before anything can start one, every `warm` owner is unreferenced, never unknown.
+      return false;
   }
 }

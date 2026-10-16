@@ -230,10 +230,21 @@ test("the claim draft round-trips a stored claim and sends exactly what was type
   assert.deepEqual(draftNames(" A_1,B_2\nC_3  "), ["A_1", "B_2", "C_3"]);
   // An argument keeps its spaces: a line is an argument, never split on whitespace.
   assert.deepEqual(
-    (claimFromDraft({ steps: [{ argv: "node\n-e\nconsole.log( 1 )\n", env: "" }], timeoutMinutes: "5", fingerprintPaths: "" }) as WorktreeClaim).steps[0]!.argv,
+    (claimFromDraft({ steps: [{ argv: "node\n-e\nconsole.log( 1 )\n", env: "" }], timeoutMinutes: "5", fingerprintPaths: "", seedPaths: "", seedExclude: "" }) as WorktreeClaim).steps[0]!.argv,
     ["node", "-e", "console.log( 1 )"],
   );
   assert.equal(draftFromClaim(null).steps.length, 0);
+
+  // Seeding round-trips one glob per line, and blank seed fields leave the claim unseeded.
+  const seeded = WorktreeClaimSchema.parse({
+    ...claim,
+    seed: { paths: ["node_modules", "apps/*/node_modules"], exclude: ["**/node_modules/.cache"] },
+  });
+  const seededDraft = draftFromClaim(seeded);
+  assert.equal(seededDraft.seedPaths, "node_modules\napps/*/node_modules");
+  assert.equal(seededDraft.seedExclude, "**/node_modules/.cache");
+  assert.deepEqual(claimFromDraft(seededDraft), seeded);
+  assert.equal("seed" in (claimFromDraft(draft) as object), false, "an unseeded claim sends no seed at all");
 });
 
 test("the route's schema refusal lands beside the claim field that caused it", () => {
@@ -244,6 +255,8 @@ test("the route's schema refusal lands beside the claim field that caused it", (
     ],
     timeoutMinutes: "0",
     fingerprintPaths: "yarn.lock\n../outside.json",
+    seedPaths: "node_modules\n**/node_modules",
+    seedExclude: "/abs/.cache",
   };
   const parsed = WorktreesConfigPatchSchema.safeParse({
     repositories: { "/repo/.git": { claim: claimFromDraft(draft) } },
@@ -260,8 +273,19 @@ test("the route's schema refusal lands beside the claim field that caused it", (
   assert.equal(errors.timeoutMinutes.length, 1);
   assert.equal(errors.fingerprintPaths.length, 1);
   assert.match(errors.fingerprintPaths[0]!, /^\.\.\/outside\.json: a fingerprint path is a repository-relative glob/);
+  assert.deepEqual(errors.seedPaths, ["**/node_modules: a seed path cannot use **; name each directory level, with * for one level"]);
+  assert.equal(errors.seedExclude.length, 1);
+  assert.match(errors.seedExclude[0]!, /^\/abs\/\.cache: a seed exclusion is a repository-relative glob/);
 
-  const blankTimeout = { ...draft, steps: [{ argv: "true", env: "" }], timeoutMinutes: "", fingerprintPaths: "" };
+  // Exclusions with no seed paths are sent as typed, so the route refuses them beside the paths.
+  const excludeOnly = { ...draft, steps: [{ argv: "true", env: "" }], timeoutMinutes: "10", fingerprintPaths: "", seedPaths: "", seedExclude: "**/.cache" };
+  const refusedExclude = WorktreesConfigPatchSchema.safeParse({
+    repositories: { "/repo/.git": { claim: claimFromDraft(excludeOnly) } },
+  });
+  assert.equal(refusedExclude.success, false);
+  assert.equal(claimErrorsFrom(refusedExclude.error!.message, excludeOnly).seedPaths.length, 1);
+
+  const blankTimeout = { ...draft, steps: [{ argv: "true", env: "" }], timeoutMinutes: "", fingerprintPaths: "", seedPaths: "", seedExclude: "" };
   const refusedBlank = WorktreesConfigPatchSchema.safeParse({
     repositories: { "/repo/.git": { claim: claimFromDraft(blankTimeout) } },
   });
@@ -270,7 +294,7 @@ test("the route's schema refusal lands beside the claim field that caused it", (
 
   const noSteps = { ...draft, steps: [] };
   const refusedEmpty = WorktreesConfigPatchSchema.safeParse({
-    repositories: { "/repo/.git": { claim: claimFromDraft({ ...noSteps, timeoutMinutes: "10", fingerprintPaths: "" }) } },
+    repositories: { "/repo/.git": { claim: claimFromDraft({ ...noSteps, timeoutMinutes: "10", fingerprintPaths: "", seedPaths: "", seedExclude: "" }) } },
   });
   assert.equal(claimErrorsFrom(refusedEmpty.error!.message, noSteps).steps.length, 1);
 

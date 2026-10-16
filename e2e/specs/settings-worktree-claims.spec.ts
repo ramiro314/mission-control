@@ -218,7 +218,7 @@ test("the claim editor saves through the settings route and every slot shows its
       .toContainText("No claim has run in this slot. Its next task lease runs every step.");
     await expect(pool.getByRole("region", { name: "Slot 2 dependencies" })).toContainText("interrupted");
     await expect(pool.getByRole("region", { name: "Slot 2 dependencies" }))
-      .toContainText("A restart cut off this slot’s last claim. Its next claim starts cold.");
+      .toContainText("A restart, or a stop during a seed, cut off this slot’s last claim. Its next claim removes the seed paths and starts cold.");
     // That earlier build's output is withheld, whatever it holds: only its summary line shows.
     const legacy = pool.getByRole("region", { name: "Slot 3 dependencies" });
     await expect(legacy).toContainText("failed");
