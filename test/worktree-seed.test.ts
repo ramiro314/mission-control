@@ -506,6 +506,44 @@ test("the warm lease keeps an occupied source from quarantine, and its owner is 
   await m.release(other.lease);
 });
 
+test("recovering an interrupted seed runs every step even after the operator narrows the seed paths", async () => {
+  const fixture = repository("mission-seed-narrowed-");
+  const claim = claimWith(SEED);
+  let targetId = "";
+  let m!: WorktreeManager;
+  m = manager(claim, {
+    cloneTree: recordingClone([]),
+    // Stopped once both `deps` and `more` were renamed into the target.
+    afterSeedRename: (path) => {
+      if (path !== "more") return;
+      const running = m.claims.get(targetId);
+      assert.ok(running);
+      m.stopClaim(targetId, running.id);
+    },
+  }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "narrowed");
+  targetId = slotAt(m, 1).id;
+  makeCold(targetId);
+  const stopped = leased(await acquire(m, fixture.clone, fixture.sha, "narrowed:stopped"));
+  assert.equal(slotAt(m, 1).depsState, "interrupted");
+  await m.release(stopped.lease);
+  // What the cut-off seed left in `more`, which the narrowed configuration no longer names.
+  writeFileSync(join(slotAt(m, 1).path, "more", "marker"), "half-renamed by the cut-off seed");
+
+  // The operator narrows the seed to `deps`. The wipe and the seed now cover `deps` alone, and
+  // the source matches this commit exactly, yet the steps must still run to repair `more`.
+  const sources: string[] = [];
+  const narrowed = manager(claimWith({ paths: ["deps"], exclude: [] }), { cloneTree: recordingClone(sources) }, 2);
+  const before = runCount(slotAt(narrowed, 1).path);
+  const recovered = leased(await acquire(narrowed, fixture.clone, fixture.sha, "narrowed:recovered"));
+  assert.equal(recovered.lease.path, slotAt(narrowed, 1).path);
+  assert.deepEqual(sources, [join(slotAt(narrowed, 2).path, "deps")], "the recovery still seeds");
+  assert.equal(runCount(recovered.lease.path), before + 1, "but never skips the steps on the inherited fingerprint");
+  assert.equal(readFileSync(join(recovered.lease.path, "more", "marker"), "utf8"), recovered.lease.path, "the steps repaired `more`");
+  assert.equal(slotAt(narrowed, 1).depsState, "current");
+  await narrowed.release(recovered.lease);
+});
+
 test("a stop during a seed records interrupted, and the next claim wipes the seed paths and starts cold", async () => {
   const fixture = repository("mission-seed-stop-");
   const claim = claimWith(SEED);

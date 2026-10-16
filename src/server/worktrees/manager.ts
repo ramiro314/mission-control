@@ -1211,6 +1211,12 @@ export class WorktreeManager {
         sha,
         fingerprint,
         exactOnly: !cold,
+        // Recovering a cut-off seed never skips the steps on an inherited fingerprint. The
+        // write-ahead does not record which seed paths the cut-off seed touched, and the
+        // operator may have narrowed `seed.paths` since: the wipe above removed only the paths
+        // configured now, so a path the old seed half-renamed can survive it. The steps are
+        // what repair that tree, so they always run.
+        inherit: !interrupted,
         control,
         deadline,
         pool: where.pool,
@@ -1261,12 +1267,14 @@ export class WorktreeManager {
     fingerprint: string | null;
     /** A stale slot seeds only from a sibling that matches its commit exactly. */
     exactOnly: boolean;
+    /** Whether a seed from an exact match may skip the steps on the inherited fingerprint. */
+    inherit: boolean;
     control: AbortController;
     deadline: number;
     pool: WorktreePoolRow;
     identity: WorktreeRepositoryIdentity;
   }): Promise<ClaimRun | null> {
-    const { reservation, claim, seed, sha, fingerprint, exactOnly, control, deadline } = input;
+    const { reservation, claim, seed, sha, fingerprint, exactOnly, inherit, control, deadline } = input;
     const seeded = await this.seedTree({
       pool: input.pool,
       identity: input.identity,
@@ -1304,7 +1312,7 @@ export class WorktreeManager {
       console.warn(`[worktrees] dependency seed interrupted in ${reservation.path}: ${seeded.reason}`);
       return { kind: "failed", warning };
     }
-    if (seeded.kind === "placed" && fingerprint !== null && seeded.fingerprint === fingerprint) {
+    if (inherit && seeded.kind === "placed" && fingerprint !== null && seeded.fingerprint === fingerprint) {
       // The source's dependencies are this commit's: the ordinary skip rule, applied to the
       // fingerprint the target inherited.
       const settled = this.store.finishSeed(

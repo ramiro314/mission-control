@@ -352,7 +352,11 @@ as it does after a restart during setup, and marks its `deps_state` as `interrup
 found `claiming` or `seeding`. That marking happens on every reconciliation path, including one
 that quarantines the whole pool because its identity or marker cannot be proven. If that slot
 ever returns to the pool, its next claim first removes the pool's seed paths, then starts cold:
-it seeds if a sibling qualifies, and otherwise runs every step.
+it seeds if a sibling qualifies, and runs every step either way. That recovering claim never
+skips the steps on an inherited fingerprint, even from an exact match. The write-ahead does not
+record which seed paths the cut-off seed touched, and the operator may have narrowed
+`seed.paths` since, so the wipe can only remove the paths configured now. The steps repair
+whatever an older configuration's seed left behind.
 
 - **The interrupted wipe** removes a seed path only once Git confirms it is ignored and holds
   nothing tracked. A matched path that is tracked, or not ignored, is never removed, and then
