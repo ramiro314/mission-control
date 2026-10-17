@@ -190,12 +190,19 @@ died before reading them. It never touches another daemon's failed scope. So a s
 that starts between an OOM stop and the owning daemon's `outcome` read cannot wipe that
 `Result=oom-kill`.
 
-**No test scope lands in the operator's user manager.**
+**Test scopes stay apart from the operator's.**
 
 - **Under the test runner.** `sessionScope` follows the boundary `launchHome` already draws in
   `src/server/terminal/home.ts`. Built on its production deps, it returns every command unwrapped
   while `underTestRunner()` (`src/server/util/test-runner.ts`) is true, and a daemon a test spawns
   inherits that signal.
+- **Where this stops.** Like `openDb`, this is not a sandbox. A test that spawns plain `node` and
+  strips `NODE_TEST_CONTEXT`, `MISSION_TEST_STATE` and the inherited home has built the daemon's
+  own launch, so `underTestRunner()` cannot see it. `test/daemon-keep-alive.test.ts` and
+  `test/daemon-state-ownership.test.ts` do this today. Any SDK session such a daemon started would
+  be wrapped for real. Its scopes still carry the `<instance>` of its own temp state home, so they
+  never collide with, or get reset by, the operator's daemon, and its reset never touches the
+  operator's scopes.
 - **Tests that need the wrapping** inject their own deps:
   - the unit tests inject fakes;
   - the Linux real-systemd test injects the real `systemd-run` and `systemctl`, with an
@@ -394,8 +401,8 @@ It is expected to skip on GitHub-hosted CI and
 run on a developer's Linux machine. It passes test-only properties (`MemoryMax=64M`,
 `MemorySwapMax=0`) through an internal option that production code never sets. It lands in
 slice 1, which also delivers the `outcome` it asserts on. It injects its own deps, with an
-`<instance>` derived from its temp home, so `underTestRunner()` does not unwrap it and its scopes
-and reset never touch the operator's.
+`<instance>` derived from its temp home. So `underTestRunner()` does not unwrap it, and its real
+scopes in the operator's user manager never collide with or reset the operator's.
 
 - The wrapped process's `/proc/<pid>/cgroup` ends in
   `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<instance>-<label>-*.scope`, and its
@@ -451,8 +458,11 @@ changed), and `npm run test:e2e` for the new spec.
 - **AC7.** macOS, Windows, and Linux without `systemd-run` or a user manager spawn exactly as
   today. On Linux, one log line says when isolation is off or partial.
 - **AC8.** The docs listed above describe the behavior and the per-OS fallback.
-- **AC9.** A daemon's startup reset touches only its own instance's scopes. No `node --test` worker,
-  daemon spawned by one, or e2e run creates a scope in the operator's user manager.
+- **AC9.** A daemon's startup reset touches only its own instance's scopes. The following are
+  always named under their own `<instance>`, so they never collide with or reset the operator's:
+  the Linux real-systemd test, a daemon a test spawns, and a scrubbed-environment daemon.
+  On production deps, a test worker and any daemon that inherits its test-runner signal create
+  no scope at all, and neither does an e2e spec.
 
 ## Known gaps
 
@@ -570,3 +580,21 @@ Revision 5 fixes it and changes nothing else.
   - The new AC9 holds both properties, and the fork contracts now name AC1 to AC9.
 - **Superseded.** The Pi unit-name shape recorded in repair round 2,
   `mission-control-<session>-<nonce>-<n>`, gains the same `<instance>` prefix.
+
+### GitHub Inspector finding 2 on PR #550 (2026-10-17)
+
+The finding was *AC9 overstates test isolation from the operator's user manager* (minor).
+Revision 6 fixes it and changes nothing else.
+
+- **The problem.** AC9 claimed no test or test-spawned daemon creates a scope in the operator's
+  user manager. Two cases contradict that:
+  - the Linux real-systemd test creates real scopes there on purpose;
+  - `test/daemon-keep-alive.test.ts` and `test/daemon-state-ownership.test.ts` strip
+    `NODE_TEST_CONTEXT` before spawning `node`, so `underTestRunner()` cannot see those daemons.
+- **The fix.**
+  - AC9 now states what the design gives. Every such scope is named under its own `<instance>`
+    and never collides with or resets the operator's. "No scope at all" is claimed only on
+    production deps under the test-runner signal, and in e2e specs.
+  - The test-runner bullet gains a "Where this stops" note on scrubbed spawns, in the shape
+    AGENTS.md uses for `openDb`.
+  - The heading over that list no longer claims more than the design gives.
