@@ -87,6 +87,9 @@ export const OVERLAY_IDS = {
   requeue: "requeue",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
+  // Library › Commands: import a Command document (preview, then apply) and export one.
+  commandDocumentImport: "command-document-import",
+  commandDocumentExport: "command-document-export",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

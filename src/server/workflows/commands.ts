@@ -1,5 +1,5 @@
 import type { UpdateWorkflowCommand } from "@shared/protocol.ts";
-import type { WorkflowCommandView } from "@shared/workflow.ts";
+import type { WorkflowCheckSlot, WorkflowCommandOverride, WorkflowCommandView } from "@shared/workflow.ts";
 import type { Registry } from "../registry.ts";
 import { WorkflowStore } from "./store.ts";
 import type { WorkflowCommandStoreWrite } from "./store.ts";
@@ -8,6 +8,27 @@ import type { LegacyCheckCommand } from "./config.ts";
 import { workflowLog } from "./log.ts";
 
 export type WorkflowCommandMutation = WorkflowCommandStoreWrite;
+
+/** One slot's complete new override list, written under the revision it was computed from. */
+export interface WorkflowCommandOverridesWrite {
+  slot: WorkflowCheckSlot;
+  expectedRevision: number;
+  overrides: readonly WorkflowCommandOverride[];
+}
+
+/**
+ * Thrown inside a multi-write transaction to roll every write in it back. `alongside` callers
+ * throw it too, so a refusal from another catalog in the same transaction undoes the Commands.
+ */
+export class WorkflowCommandsTogetherConflict extends Error {
+  constructor(readonly what: string) {
+    super(`${what} changed while it was being written`);
+  }
+}
+
+export type WorkflowCommandsTogetherResult =
+  | { ok: true; views: WorkflowCommandView[] }
+  | { ok: false; conflict: string };
 
 /**
  * Ownership of the Global Command catalog: what each portable workflow slot runs here.
@@ -87,6 +108,49 @@ export class WorkflowCommandManager {
       return views;
     });
     for (const view of changed) this.registry.upsertWorkflowCommand(view);
+  }
+
+  /**
+   * Replace several slots' override lists, and whatever `alongside` writes through this store's
+   * connection, in ONE transaction: the Command document's apply.
+   *
+   * Each slot is written through its own compare-and-swap under the revision the caller computed
+   * the list from, and keeps its default and run budget exactly as stored - a document describes
+   * rows, never a slot's machine-wide settings. Any refusal, from a slot or from `alongside`
+   * throwing `WorkflowCommandsTogetherConflict`, rolls back everything, so a document lands
+   * whole or not at all. Events go out after the commit, one per slot that moved, as `replace`
+   * does.
+   */
+  replaceOverridesTogether(
+    writes: readonly WorkflowCommandOverridesWrite[],
+    alongside: () => void,
+    now = Date.now(),
+  ): WorkflowCommandsTogetherResult {
+    let views: WorkflowCommandView[];
+    try {
+      views = this.store.transact(() => {
+        const written: WorkflowCommandView[] = [];
+        for (const write of writes) {
+          const current = this.store.getWorkflowCommand(write.slot);
+          if (!current) throw new WorkflowCommandsTogetherConflict(`the ${write.slot} Command`);
+          const result = this.store.replaceWorkflowCommandCas(
+            write.slot,
+            write.expectedRevision,
+            { defaultCommand: current.defaultCommand, overrides: write.overrides, maxRuns: current.maxRuns },
+            now,
+          );
+          if (!result.ok) throw new WorkflowCommandsTogetherConflict(`the ${write.slot} Command`);
+          written.push(result.view);
+        }
+        alongside();
+        return written;
+      });
+    } catch (caught) {
+      if (caught instanceof WorkflowCommandsTogetherConflict) return { ok: false, conflict: caught.what };
+      throw caught;
+    }
+    for (const view of views) this.registry.upsertWorkflowCommand(view);
+    return { ok: true, views };
   }
 
   private publish(result: WorkflowCommandStoreWrite): WorkflowCommandMutation {

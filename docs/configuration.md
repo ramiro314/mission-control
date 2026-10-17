@@ -246,6 +246,12 @@ the application and are not copied. Snapshots also exclude tasks, queues, schedu
 workflow bindings and runs, reviews, telemetry and spend history, operational away or lease state,
 derived reload generations, credentials, tokens, and environment secrets.
 
+A snapshot is this machine's whole configuration and restores in place. To carry one
+repository's Command overrides and stored testing settings to another checkout or machine, or to
+review them as a file, export a [Command document](library-and-line.md#command-documents) from
+Library › Commands instead: its paths are repository-relative, and importing it previews every
+change before applying it.
+
 Skills snapshots include the catalog-wide default and explicit row choices. Restoring an older
 snapshot with no catalog default keeps its previous opt-in meaning, so absent row choices stay off.
 

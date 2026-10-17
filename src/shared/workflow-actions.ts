@@ -11,6 +11,8 @@ export const WORKFLOW_ACTION_ROUTES = [
   ["POST", "/mcp/workflow-commands/affected-tests", "workflow.command"],
   // The affected-tests page's stored testing settings, edited beside the Command they configure.
   ["PUT", "/api/testing-settings", "workflow.command"],
+  // A Command document: one repository's overrides and testing settings, applied together.
+  ["POST", "/api/command-documents/apply", "workflow.command"],
   ["PATCH", "/api/workflows/:id", "workflow.edit"],
   ["DELETE", "/api/workflows/:id", "workflow.archive"],
   ["POST", "/api/workflows/:id/unarchive", "workflow.unarchive"],

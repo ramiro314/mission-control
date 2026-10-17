@@ -32,6 +32,8 @@ import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { TestingSettingsSection } from "./TestingSettingsSection.tsx";
+import { CommandDocumentExportModal, CommandDocumentImportModal } from "./CommandDocumentModals.tsx";
+import { commandDocumentChangeCount, type CommandDocumentApplied } from "@shared/command-document.ts";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -435,6 +437,15 @@ export function CommandLibrary({
    */
   const [testingDirty, setTestingDirty] = useState(false);
   const anyDirty = dirty || testingDirty;
+  /** Which Command document modal is open. */
+  const [documentModal, setDocumentModal] = useState<"import" | "export" | null>(null);
+  /** What the last applied document wrote, said on the page the modal closed onto. */
+  const [documentNotice, setDocumentNotice] = useState<string | null>(null);
+  /**
+   * Bumped after a document is applied. The testing settings rows are read over HTTP when the
+   * section mounts, so a new key remounts it onto what the document stored.
+   */
+  const [testingGeneration, setTestingGeneration] = useState(0);
 
   // This screen has no document editor, so its ladder is the two rungs the other three
   // share minus the CodeMirror case: a press inside the default/override fields or the
@@ -563,6 +574,28 @@ export function CommandLibrary({
       danger: true,
       onConfirm: action,
     });
+  }
+
+  /**
+   * Open the import modal. Applying a document can rewrite the open slot and the testing rows
+   * under any unsaved typing, so that typing is discarded first, through the same guard.
+   */
+  function openImport(): void {
+    guardDiscard("Importing a document", () => {
+      adopt(selected);
+      setTestingGeneration((generation) => generation + 1);
+      setDocumentNotice(null);
+      setDocumentModal("import");
+    });
+  }
+
+  function documentApplied(applied: CommandDocumentApplied): void {
+    const count = commandDocumentChangeCount(applied.preview);
+    setDocumentModal(null);
+    setTestingGeneration((generation) => generation + 1);
+    setDocumentNotice(count === 0
+      ? `Nothing changed: ${applied.repoRoot} already matched the document.`
+      : `Applied ${count} ${count === 1 ? "change" : "changes"} to ${applied.repoRoot}.`);
   }
 
   function select(slot: WorkflowCheckSlot): void {
@@ -712,6 +745,16 @@ export function CommandLibrary({
           These slots ship with Mission Control, and only a release adds one. A workflow
           names a slot, never a command.
         </p>
+        {/* Catalog-wide rather than per slot: a document is one repository's rows across every
+            slot and its testing settings, so its doors sit with the rail, not the slot header. */}
+        <div className="wf-command-rail-actions">
+          <Tooltip label="Paste or upload one repository's overrides and testing settings, preview every change, and apply them in one step">
+            <button className="btn btn-ghost" onClick={openImport}>Import document</button>
+          </Tooltip>
+          <Tooltip label="Read one repository's overrides and testing settings out as a document">
+            <button className="btn btn-ghost" onClick={() => setDocumentModal("export")}>Export document</button>
+          </Tooltip>
+        </div>
       </aside>
 
       <div className="wf-command-workspace">
@@ -826,6 +869,9 @@ export function CommandLibrary({
             </p>
           )}
           {error && <p className="wf-error" role="alert">{error}</p>}
+          {documentNotice && (
+            <p className="wf-command-document-notice" role="status">{documentNotice}</p>
+          )}
 
           {/* The one setting on this screen that is not an argv, and it sits above the table
               rather than inside it because it belongs to the SLOT: the default and every
@@ -1045,6 +1091,7 @@ export function CommandLibrary({
               save on their own, under their own revision, never with the Command above. */}
           {selectedSlot === "affected-tests" && (
             <TestingSettingsSection
+              key={testingGeneration}
               overrideRoots={selected?.overrides.map((entry) => entry.repoRoot) ?? []}
               repos={commandRepoOptions(repos, allowlist)}
               onDirtyChange={setTestingDirty}
@@ -1054,6 +1101,19 @@ export function CommandLibrary({
       </div>
 
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
+      {documentModal === "import" && (
+        <CommandDocumentImportModal
+          repos={commandRepoOptions(repos, allowlist)}
+          onClose={() => setDocumentModal(null)}
+          onApplied={documentApplied}
+        />
+      )}
+      {documentModal === "export" && (
+        <CommandDocumentExportModal
+          repos={commandRepoOptions(repos, allowlist)}
+          onClose={() => setDocumentModal(null)}
+        />
+      )}
     </section>
   );
 }

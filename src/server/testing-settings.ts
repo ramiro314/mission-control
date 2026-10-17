@@ -28,7 +28,7 @@ import type { TestingSettingsStoreWrite, WorkflowStore } from "./workflows/store
  * file for a submodule or linked worktree). A folder that no longer exists holds none, so a row
  * left behind by a deleted app still belongs to the root that stored it.
  */
-function crossesRepositoryBoundary(root: string, scope: string): boolean {
+export function crossesRepositoryBoundary(root: string, scope: string): boolean {
   if (scope === "") return false;
   let dir = root;
   for (const segment of scope.split("/")) {
@@ -72,18 +72,27 @@ export class TestingSettingsCatalog {
    * folder between the root and the row's path, the row's own included, holds a `.git`.
    */
   forRepository(repoRoot: string): StoredTestingLayer[] {
+    return this.rowsForRepository(repoRoot).map(({ scope, view }) => ({ settings: view.settings, scope }));
+  }
+
+  /**
+   * The rows `forRepository` lays, each with the view it came from: the key it is stored under
+   * and its revision, which a write to it has to name. A Command document reads a repository's
+   * rows through this, so it finds exactly the rows the gate would lay.
+   */
+  rowsForRepository(repoRoot: string): Array<{ scope: string; view: TestingSettingsView }> {
     const roots = [...new Set([repoRoot, realpathOr(repoRoot)])];
-    const layers = new Map<string, StoredTestingLayer>();
+    const rows = new Map<string, { scope: string; view: TestingSettingsView }>();
     for (const view of this.store.listTestingSettings()) {
       for (const root of roots) {
         const scope = view.repoRoot === root
           ? ""
           : view.repoRoot.startsWith(`${root}/`) ? testingScopePath(view.repoRoot.slice(root.length + 1)) : null;
-        if (scope === null || layers.has(scope) || crossesRepositoryBoundary(root, scope)) continue;
-        layers.set(scope, { settings: view.settings, scope });
+        if (scope === null || rows.has(scope) || crossesRepositoryBoundary(root, scope)) continue;
+        rows.set(scope, { scope, view });
       }
     }
-    return [...layers.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
+    return [...rows.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
   }
 
   /** Replace one row under its expected revision. The route has validated and resolved the path. */
