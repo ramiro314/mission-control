@@ -158,27 +158,30 @@ test("each partition shows its folder, Command, file count, outcome and folded o
         partition({ subpath: "apps/api", status: "failed", exitCode: 1, fileCount: 2, truncatedBytes: 40, output: "api tail" }),
         partition(),
       ],
-      partitionCount: 4,
     }),
   }));
-  assert.match(html, /Partitions \(4\)/);
+  assert.match(html, /Partitions \(3\)/);
   assert.match(html, /<ul class="wf-run-partitions" aria-label="Partitions">/);
   assert.match(html, /aria-label="Partition repository root"[^]*?<code>repository root<\/code>[^]*?1 file · exit 0 · global default/);
   assert.match(html, /class="wf-run-partition is-failed" aria-label="Partition apps\/api"[^]*?>Failed<[^]*?2 files · exit 1</);
   assert.match(html, /<code class="wf-run-partition-command">npm test -- \{junit\} \{files\}<\/code>/);
   assert.match(html, /<pre class="wf-run-partition-output">api tail<\/pre>[^]*?Earlier 40 bytes of output were omitted\./);
-  assert.match(html, /1 more partitions are not listed here\./);
   assert.ok(hasTooltip(html, "Show the end of this partition's output"));
 });
 
-test("selected tests no Command could run are listed apart, with the gate's rule said", () => {
+test("selected tests no Command could run are every one listed apart, with the gate's rule said", () => {
+  const unrun = Array.from({ length: 7 }, (_, i) => `packages/p${i}/a.test.ts`);
   const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {
-    report: report({ selectedCount: 3, unrun: ["packages/ui/a.test.ts", "tools/b.test.ts"], unrunCount: 60 }),
+    report: report({ selectedCount: 7, unrun }),
   }));
-  assert.match(html, /Selected but unrun \(60\)/);
+  assert.match(html, /Selected but unrun \(7\)/);
   assert.match(html, /The gate decided on the partitions that ran\./);
-  assert.match(html, /<ul aria-label="Selected but unrun tests"><li><code>packages\/ui\/a\.test\.ts<\/code><\/li>/);
-  assert.match(html, /58 more are not listed here/);
+  // Five inline, and the other two folded beneath them: every one is listed.
+  assert.match(html, /<ul aria-label="Selected but unrun tests"><li><code>packages\/p0\/a\.test\.ts<\/code><\/li>/);
+  assert.match(html, /<summary[^>]*>2 more unrun<\/summary>[^]*?<ul aria-label="More selected but unrun tests">/);
+  for (const path of unrun) assert.ok(html.includes(`<li><code>${path}</code></li>`), path);
+  assert.ok(hasTooltip(html, "Show the rest of the selected tests that did not run"));
+  assert.doesNotMatch(html, /not listed here/);
 });
 
 test("an outcome recorded before partitions existed shows neither section", () => {

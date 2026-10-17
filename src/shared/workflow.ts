@@ -3860,11 +3860,13 @@ export const AFFECTED_TESTS_LIMITS = {
   /** Selection diagnostics kept, and the length of each. */
   diagnostics: 10,
   diagnostic: 1_000,
-  /** Partitions run detail lists, and the output tail each keeps. */
-  partitions: 50,
+  /**
+   * The most partitions one gate can have: a slot's every override, plus the root's command. A
+   * structural bound the schema checks, never a display cap: run detail records every partition.
+   */
+  partitions: WORKFLOW_LIMITS.commandOverrides + 1,
+  /** The output tail each partition keeps. */
   partitionOutput: 2_000,
-  /** Selected-but-unrun test files run detail lists. */
-  unrunShown: 50,
 } as const;
 
 /** How one partition of an affected-tests gate ended. APPEND-ONLY: durable in `output_json`. */
@@ -3954,21 +3956,17 @@ export interface WorkflowAffectedTestsReport {
   /** What selection could not do for this repository, one sentence each. Absent when nothing. */
   diagnostics?: string[];
   /**
-   * Each invocation the gate ran, in the order it ran them, capped at
-   * `AFFECTED_TESTS_LIMITS.partitions`. Absent on outcomes recorded before partitions existed, and
-   * on a gate that ran nothing.
+   * Every invocation the gate ran, in the order it ran them; never capped, since a gate cannot have
+   * more than `AFFECTED_TESTS_LIMITS.partitions`. Absent on outcomes recorded before partitions
+   * existed, and on a gate that ran nothing.
    */
   partitions?: WorkflowAffectedTestsPartition[];
-  /** How many partitions ran, before the cap. */
-  partitionCount?: number;
   /**
-   * Selected test files no command could run: outside every subdirectory override, with no root
-   * override or global default. Repository-relative, sorted, capped at `unrunShown`. The gate
-   * decides on the partitions that ran. Absent when every selected file ran.
+   * Every selected test file no command could run: outside every subdirectory override, with no
+   * root override or global default. Repository-relative, sorted, never capped. The gate decides on
+   * the partitions that ran. Absent when every selected file ran.
    */
   unrun?: string[];
-  /** How many selected test files were not run, before the cap. */
-  unrunCount?: number;
 }
 
 /**

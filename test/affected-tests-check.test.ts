@@ -11,6 +11,7 @@ import {
 import {
   AFFECTED_TESTS_LIMITS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_LIMITS,
   commandTemplateProblem,
   emptyWorkflowCommandView,
   type WorkflowCheckOutcome,
@@ -18,7 +19,13 @@ import {
 import { CheckRuntime } from "../src/server/workflows/check-runtime.ts";
 import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { CheckSpawnOutcome, SupervisedCheckRequest } from "../src/server/workflows/check-supervisor.ts";
-import { runCheck, type CheckResult, type CheckRunReservation } from "../src/server/workflows/checks.ts";
+import {
+  runCheck,
+  type CheckExecutionRequest,
+  type CheckExecutionResult,
+  type CheckResult,
+  type CheckRunReservation,
+} from "../src/server/workflows/checks.ts";
 import { checkVerdict } from "../src/server/workflows/engine.ts";
 import { AffectedTestsDetails } from "../src/web/workflows/WorkflowRuns.tsx";
 import type { StoredTestingLayer, StoredTestingSettings } from "../src/shared/testing-config.ts";
@@ -57,6 +64,8 @@ type Run = { argv: string[]; files: string[]; workingSubpath: string; junit: str
 type Answer = {
   exitCode: number;
   xml?: string;
+  /** What the run prints; `run N` by default. */
+  output?: string;
   /** What the supervisor reports instead of an ordinary exit: a timeout, or a group left running. */
   abnormal?: Pick<CheckSpawnOutcome, "result" | "emptiness">;
 };
@@ -113,7 +122,7 @@ function harness(options: {
     options.onSpawn?.(false);
     if (answer.abnormal) return { ...answer.abnormal, supervisor: null };
     return {
-      result: { kind: "exited", exitCode: answer.exitCode, output: `run ${runs.length}\n`, truncatedBytes: 0 },
+      result: { kind: "exited", exitCode: answer.exitCode, output: answer.output ?? `run ${runs.length}\n`, truncatedBytes: 0 },
       emptiness: "empty",
       supervisor: null,
     };
@@ -131,7 +140,13 @@ function harness(options: {
       ? [...(options.stored ? [{ settings: options.stored, scope: "" }] : []), ...(options.subdirectories ?? [])]
       : []),
   });
-  const execute = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
+  const executor = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
+  // What the executor answered, before `runCheck` bounds it for the outcome.
+  let raw: CheckExecutionResult | null = null;
+  const execute = async (request: CheckExecutionRequest): Promise<CheckExecutionResult> => {
+    raw = await executor(request);
+    return raw;
+  };
   const run = (): Promise<CheckResult> => runCheck({
     slot: "affected-tests",
     command: {
@@ -166,6 +181,7 @@ function harness(options: {
     released: () => released,
     reserved: () => reserved,
     handedOff: () => handedOff,
+    raw: () => raw,
     budget: options.budget,
   };
 }
@@ -338,7 +354,7 @@ test("a monorepo change runs each app's selected tests in that app, and the rest
     + "Ran 7 selected test files in 3 partitions; all passed.");
 
   // Run detail's record of each partition.
-  assert.equal(outcome.affected?.partitionCount, 3);
+  assert.equal(outcome.affected?.partitions?.length, 3);
   assert.deepEqual(outcome.affected?.partitions?.map(({ subpath, source, fileCount, status, exitCode, note }) =>
     ({ subpath, source, fileCount, status, exitCode, note })), [
     { subpath: "", source: "default", fileCount: 2, status: "passed", exitCode: 0, note: "Ran 2 selected test files; all passed." },
@@ -348,7 +364,6 @@ test("a monorepo change runs each app's selected tests in that app, and the rest
   assert.deepEqual(outcome.affected?.partitions?.map((partition) => partition.command), [TEMPLATE, TEMPLATE, TEMPLATE]);
   assert.deepEqual(outcome.affected?.partitions?.map((partition) => partition.output), ["run 1\n", "run 2\n", "run 3\n"]);
   assert.equal(outcome.affected?.unrun, undefined);
-  assert.equal(outcome.affected?.unrunCount, undefined);
   // The gate's output keeps every partition's, each under a banner naming it.
   assert.match(outcome.output, /\[Mission Control\] the repository root: 2 files, passed\.\n\nrun 1\n/);
   assert.match(outcome.output, /\[Mission Control\] apps\/web: 3 files, passed\.\n\nrun 3\n/);
@@ -443,7 +458,6 @@ test("a selected test no Command can run is listed as unrun, and the gate decide
   assert.equal(outcome.status, "passed", outcome.note);
   assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["apps/api", "apps/web"]);
   assert.deepEqual(outcome.affected?.unrun, ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]);
-  assert.equal(outcome.affected?.unrunCount, 2);
   assert.equal(outcome.affected?.selectedCount, 7, "unrun tests are still selected");
   assert.match(outcome.note, /Ran 5 selected test files in 2 partitions; all passed\. 2 selected test files were not run: no affected-tests Command covers them\.$/);
   // The outcome names the first partition's command when the root has none.
@@ -611,14 +625,24 @@ test("a rerun that leaves its process group running ends the gate before the nex
   assert.equal(h.released(), 0);
 });
 
+/** The `index`th one-test folder of `capHarness`, in path order. */
+function folderOf(index: number): string {
+  return `pkg/p${String(index).padStart(3, "0")}`;
+}
+
 /**
  * A repository of `count` one-test folders. `covered` gives each folder its own override; otherwise
- * only `run/` has one, so every folder's test is selected but unrun. No global default either way.
+ * only `run/` has one, so every folder's test is selected but unrun. `withRoot` adds a test at the
+ * root and a global default to run it; otherwise there is no default.
  */
-function capHarness(count: number, covered: boolean) {
+function capHarness(count: number, covered: boolean, withRoot = false) {
   const root = tree({ tests: { patterns: ["**/*.test.ts"], includeImporters: false } });
-  const folders = Array.from({ length: count }, (_, index) => `pkg/p${String(index).padStart(2, "0")}`);
-  const files = [...folders.map((folder) => `${folder}/a.test.ts`), ...(covered ? [] : ["run/a.test.ts"])];
+  const folders = Array.from({ length: count }, (_, index) => folderOf(index));
+  const files = [
+    ...(withRoot ? ["a.test.ts"] : []),
+    ...folders.map((folder) => `${folder}/a.test.ts`),
+    ...(covered ? [] : ["run/a.test.ts"]),
+  ];
   for (const file of files) {
     mkdirSync(join(root, dirname(file)), { recursive: true });
     writeFileSync(join(root, file), "export {};\n");
@@ -629,7 +653,7 @@ function capHarness(count: number, covered: boolean) {
     changed: files,
     tracked: files,
     overrides,
-    defaultCommand: null,
+    defaultCommand: withRoot ? TEMPLATE : null,
     answer: () => ({ exitCode: 0 }),
   });
 }
@@ -642,47 +666,82 @@ function section(html: string, heading: string, ends: string[]): string {
   return html.slice(start, stops.length === 0 ? html.length : Math.min(...stops));
 }
 
-for (const count of [AFFECTED_TESTS_LIMITS.partitions, AFFECTED_TESTS_LIMITS.partitions + 1]) {
-  test(`${count} partitions record at most the cap, keep the full count, and run detail counts the rest`, async () => {
-    const h = capHarness(count, true);
+for (const [count, withRoot] of [[51, false], [WORKFLOW_LIMITS.commandOverrides, true]] as const) {
+  const total = count + (withRoot ? 1 : 0);
+  test(`${total} partitions are every one recorded and listed in run detail`, async () => {
+    const h = capHarness(count, true, withRoot);
+    // `check` parses the outcome through the durable schema, so the most a gate can have fits it.
     const outcome = await h.check();
     assert.equal(outcome.status, "passed", outcome.note);
-    // Every partition RAN; only the record is capped.
-    assert.equal(h.runs.length, count);
+    assert.equal(h.runs.length, total);
     const partitions = outcome.affected!.partitions!;
-    assert.equal(partitions.length, AFFECTED_TESTS_LIMITS.partitions);
-    assert.equal(outcome.affected!.partitionCount, count);
-    assert.deepEqual(partitions.map((partition) => partition.subpath), h.runs.slice(0, AFFECTED_TESTS_LIMITS.partitions).map((run) => run.workingSubpath));
+    assert.deepEqual(partitions.map((partition) => partition.subpath), h.runs.map((run) => run.workingSubpath));
+    if (withRoot) assert.equal(total, AFFECTED_TESTS_LIMITS.partitions);
 
     const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: outcome.affected! }));
-    const listed = section(html, `Partitions (${count})`, ["Selected but unrun", "Settings:"]);
-    assert.equal(listed.match(/aria-label="Partition /g)?.length, AFFECTED_TESTS_LIMITS.partitions);
-    const unlisted = count - AFFECTED_TESTS_LIMITS.partitions;
-    if (unlisted > 0) assert.match(listed, new RegExp(`${unlisted} more partitions are not listed here\\.`));
-    else assert.doesNotMatch(listed, /more partitions are not listed/);
+    const listed = section(html, `Partitions (${total})`, ["Selected but unrun", "Settings:"]);
+    assert.equal(listed.match(/aria-label="Partition /g)?.length, total);
+    assert.match(listed, new RegExp(`aria-label="Partition ${folderOf(count - 1)}"`));
+    assert.doesNotMatch(listed, /not listed here/);
   });
+}
 
-  test(`${count} selected-but-unrun tests record at most the cap, keep the full count, and run detail counts the rest`, async () => {
+for (const count of [51, 300]) {
+  test(`${count} selected-but-unrun tests are every one recorded and listed in run detail`, async () => {
     const h = capHarness(count, false);
     const outcome = await h.check();
     // The one covered test ran and passed; the gate decided on it.
     assert.equal(outcome.status, "passed", outcome.note);
     assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["run"]);
     const unrun = outcome.affected!.unrun!;
-    assert.equal(unrun.length, AFFECTED_TESTS_LIMITS.unrunShown);
-    assert.equal(outcome.affected!.unrunCount, count);
-    assert.equal(unrun[0], "pkg/p00/a.test.ts");
-    assert.equal(unrun.at(-1), `pkg/p${AFFECTED_TESTS_LIMITS.unrunShown - 1}/a.test.ts`);
+    assert.equal(unrun.length, count);
+    assert.equal(unrun[0], `${folderOf(0)}/a.test.ts`);
+    assert.equal(unrun.at(-1), `${folderOf(count - 1)}/a.test.ts`);
     assert.match(outcome.note, new RegExp(`${count} selected test files were not run`));
 
     const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: outcome.affected! }));
     const listed = section(html, `Selected but unrun (${count})`, ["Settings:"]);
-    assert.equal(listed.match(/<li><code>/g)?.length, AFFECTED_TESTS_LIMITS.unrunShown);
-    const unlisted = count - AFFECTED_TESTS_LIMITS.unrunShown;
-    if (unlisted > 0) assert.match(listed, new RegExp(`${unlisted} more are not listed here`));
-    else assert.doesNotMatch(listed, /more are not listed here/);
+    // Five inline and the rest folded, every one of them a list item.
+    assert.equal(listed.match(/<li><code>/g)?.length, count);
+    assert.match(listed, new RegExp(`${count - 5} more unrun`));
+    assert.doesNotMatch(listed, /not listed here/);
   });
 }
+
+test("the gate's combined output keeps the outcome's tail, counting every byte it drops, while each partition keeps its own", async () => {
+  const outputs: Record<string, string> = {
+    "": `root start ${"r".repeat(2_990)}root end\n`,
+    "apps/api": `api start ${"a".repeat(2_990)}api end\n`,
+    "apps/web": `web start ${"w".repeat(2_990)}web end\n`,
+  };
+  const h = monorepoHarness({ answer: (run) => ({ exitCode: 0, output: outputs[run.workingSubpath]! }) });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed", outcome.note);
+
+  // Bounded by the executor itself, not only by `runCheck` afterwards.
+  const raw = h.raw();
+  assert.equal(raw?.kind, "decided");
+  if (raw?.kind !== "decided") return;
+  const kept = Buffer.byteLength(raw.output);
+  assert.ok(kept <= WORKFLOW_EXECUTION_LIMITS.checkOutput, `kept ${kept} bytes`);
+  const banners = ["the repository root: 2 files", "apps/api: 2 files", "apps/web: 3 files"]
+    .map((label) => `[Mission Control] ${label}, passed.\n\n`);
+  const whole = banners.map((banner, index) => banner + Object.values(outputs)[index]).join("\n\n");
+  assert.equal(raw.truncatedBytes, Buffer.byteLength(whole) - kept);
+  // The tail: the last partition's output ends it, and the first partition's start is gone.
+  assert.ok(raw.output.endsWith("web end\n"));
+  assert.ok(!raw.output.includes("root start"));
+  // The outcome records the same bound, and each partition its own 2,000-byte tail.
+  assert.equal(outcome.output, raw.output);
+  assert.equal(outcome.truncatedBytes, raw.truncatedBytes);
+  for (const partition of outcome.affected!.partitions!) {
+    assert.equal(Buffer.byteLength(partition.output), AFFECTED_TESTS_LIMITS.partitionOutput);
+    assert.equal(
+      partition.truncatedBytes,
+      Buffer.byteLength(outputs[partition.subpath]!) - AFFECTED_TESTS_LIMITS.partitionOutput,
+    );
+  }
+});
 
 test("a single partition reads exactly as the one invocation it always was", async () => {
   const root = tree(CONFIG);
@@ -701,7 +760,6 @@ test("a single partition reads exactly as the one invocation it always was", asy
     output: "run 1\n",
     truncatedBytes: 0,
   }]);
-  assert.equal(outcome.affected?.partitionCount, 1);
 });
 
 test("a repository with no subdirectory scope records neither scopes nor diagnostics", async () => {

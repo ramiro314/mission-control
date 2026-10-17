@@ -186,8 +186,7 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
     .map((target) => ({ target, files: byTarget.get(target)! }));
   const planned: WorkflowAffectedTestsReport = unrun.length === 0 ? report : {
     ...report,
-    unrun: unrun.slice(0, AFFECTED_TESTS_LIMITS.unrunShown).map((path) => clip(path, AFFECTED_TESTS_LIMITS.path)),
-    unrunCount: unrun.length,
+    unrun: unrun.map((path) => clip(path, AFFECTED_TESTS_LIMITS.path)),
   };
   if (partitions.length === 0) {
     // Selected, but no Command can run any of it. Nothing ran, so the run goes back.
@@ -447,6 +446,12 @@ function decideGate(
       .join("\n\n");
     truncatedBytes = runs.reduce((sum, { run }) => sum + run.truncatedBytes, 0);
   }
+  // Each run's output is bounded, but their sum grows with the partitions. The gate's own output
+  // keeps the tail the outcome keeps, and every byte dropped here is counted; each partition's
+  // own tail stays in its partition record.
+  const bounded = tailBounded(output, WORKFLOW_EXECUTION_LIMITS.checkOutput);
+  output = bounded.text;
+  truncatedBytes += bounded.droppedBytes;
 
   const affected: WorkflowAffectedTestsReport = {
     ...plan.report,
@@ -454,8 +459,8 @@ function decideGate(
     flakes: flakes.slice(0, AFFECTED_TESTS_LIMITS.flakes),
     failureCount: failures.length,
     failures: failures.slice(0, AFFECTED_TESTS_LIMITS.failures),
-    partitions: runs.slice(0, AFFECTED_TESTS_LIMITS.partitions).map(partitionOf),
-    partitionCount: runs.length,
+    // Every partition: there are at most as many as the slot has Commands.
+    partitions: runs.map(partitionOf),
   };
   return decided(failed.length === 0 ? "passed" : "failed", clip(`${note}${unrunNote}`, NOTE_MAX), {
     exitCode,

@@ -469,23 +469,19 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
 }
 
 /**
- * Each invocation the gate ran: where, with which Command, for how many files, and how it ended,
+ * Every invocation the gate ran: where, with which Command, for how many files, and how it ended,
  * with its own output tail folded beneath it. Absent on outcomes recorded before partitions
  * existed, and on a gate that ran nothing.
  */
 function AffectedTestsPartitions({ report }: { report: WorkflowAffectedTestsReport }): React.JSX.Element | null {
   const partitions = report.partitions ?? [];
   if (partitions.length === 0) return null;
-  const total = report.partitionCount ?? partitions.length;
   return (
     <>
-      <h5>Partitions ({total})</h5>
+      <h5>Partitions ({partitions.length})</h5>
       <ul className="wf-run-partitions" aria-label="Partitions">
         {partitions.map((partition) => <PartitionItem key={partition.subpath} partition={partition} />)}
       </ul>
-      {total > partitions.length && (
-        <p className="wf-run-meta">{total - partitions.length} more partitions are not listed here.</p>
-      )}
     </>
   );
 }
@@ -525,22 +521,33 @@ function PartitionItem({ partition }: { partition: WorkflowAffectedTestsPartitio
 }
 
 /**
- * Selected test files no Command could run: outside every subdirectory override, with no root
+ * Every selected test file no Command could run: outside every subdirectory override, with no root
  * override or global default. Listed so a gate that passed on the partitions that ran is never
- * read as having run them.
+ * read as having run them. The first few show inline and the rest fold, as the selection does,
+ * but every one is listed.
  */
 function UnrunTests({ report }: { report: WorkflowAffectedTestsReport }): React.JSX.Element | null {
   const unrun = report.unrun ?? [];
   if (unrun.length === 0) return null;
-  const total = report.unrunCount ?? unrun.length;
+  const inline = unrun.slice(0, AFFECTED_SELECTION_INLINE);
+  const folded = unrun.slice(AFFECTED_SELECTION_INLINE);
   return (
     <>
-      <h5>Selected but unrun ({total})</h5>
+      <h5>Selected but unrun ({unrun.length})</h5>
       <p>No affected-tests Command covers these, so they did not run. The gate decided on the partitions that ran.</p>
       <ul aria-label="Selected but unrun tests">
-        {unrun.map((path) => <li key={path}><code>{path}</code></li>)}
+        {inline.map((path) => <li key={path}><code>{path}</code></li>)}
       </ul>
-      <UnlistedTests total={total} listed={unrun.length} />
+      {folded.length > 0 && (
+        <details>
+          <Tooltip label="Show the rest of the selected tests that did not run">
+            <summary>{folded.length} more unrun</summary>
+          </Tooltip>
+          <ul aria-label="More selected but unrun tests">
+            {folded.map((path) => <li key={path}><code>{path}</code></li>)}
+          </ul>
+        </details>
+      )}
     </>
   );
 }

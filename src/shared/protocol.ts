@@ -7072,9 +7072,8 @@ export const WorkflowAffectedTestsReportSchema = z.object({
     output: z.string().max(AFFECTED_TESTS_LIMITS.partitionOutput),
     truncatedBytes: z.number().int().min(0),
   })).max(AFFECTED_TESTS_LIMITS.partitions).optional(),
-  partitionCount: z.number().int().min(0).optional(),
-  unrun: z.array(AffectedTestPathSchema).max(AFFECTED_TESTS_LIMITS.unrunShown).optional(),
-  unrunCount: z.number().int().min(0).optional(),
+  // Every selected file no command ran: bounded by the selection, not by a display cap.
+  unrun: z.array(AffectedTestPathSchema).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */

@@ -1065,11 +1065,14 @@ A partition whose process group could not be shown to have exited (a timeout, or
 behind) ends the gate there, as a single run always did, because nothing else may run in that
 worktree until it is accounted for.
 
-Run detail lists each partition under **Partitions**: its folder, the Command it ran, its file
-count, its outcome and exit code, and its output tail, folded. The card's command output joins
-every partition's under a line naming it, and the outcome's command is the root's Command, or the
-first subdirectory's when the root has none. A repository with one Command has one partition,
-whose note reads as the gate's note always did.
+Run detail lists every partition under **Partitions**: its folder, the Command it ran, its file
+count, its outcome and exit code, and the last 2,000 bytes of its output, folded. A gate has at
+most one partition per Command, so the list is never cut short. **Selected but unrun** lists every
+such test too: the first five inline and the rest folded beneath them. The card's command output
+joins every partition's under a line naming it and keeps the last 4,000 bytes of the whole, saying
+how many earlier bytes were dropped. The outcome's command is the root's Command, or the first
+subdirectory's when the root has none. A repository with one Command has one partition, whose note
+reads as the gate's note always did.
 
 **The repair packet names each test that failed twice**, one requested change per test, with the
 runner's message and detail, instead of quoting the end of the output. At most 20 tests are
