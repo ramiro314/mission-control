@@ -503,9 +503,13 @@ Worktrees**:
 
 Both are ordinary worktree actions (`"action": "warm"`, with a `slot` or `pool` target) and go
 through the same preview and execute as Return and Destroy. The preview lists the slots it will
-warm. A slot that is leased, quarantined, mid-transition, occupied, not proven clean, or already
-covered by a queued operation is never a target: named directly it blocks the preview, and in a
-pool Warm it is left out and counted in the preview. A pool with no claim, or with native
+warm. Idle means exactly what it means to acquisition: the preview, the slot card's **Warm**
+button and the check each slot gets when its turn comes all apply acquisition's one idle rule
+(`idleSlotRefusal`), the preview to its last observation and the turn to a fresh screening. A
+slot that is leased, quarantined, mid-transition, occupied, not proven clean, still referenced by
+its last owner, or already covered by a queued operation is never a target: named directly it
+blocks the preview with the rule's own reason, and in a pool Warm it is left out and counted in
+the preview. A pool with no claim, or with native
 worktrees disabled, has nothing to warm. Nothing in a Warm discards work, so it asks for no
 acknowledgement.
 
@@ -550,10 +554,14 @@ The slot card's **Stop** stops the same claim, but the Warm then carries on with
 
 **The full log.** Each Warm writes everything it did and every line of claim output, redacted,
 to `logs/worktree-warm/<operationId>.log` under the daemon's state directory, created the first
-time the Warm holds a slot. The operation links it, and each slot it held records the path as
+time the Warm holds a slot. The log is never cut, and the daemon never holds it in memory: when
+the disk falls behind a step that prints faster than it can be written, the step's output pipes
+are paused until the log drains, so the step blocks on its own pipe while its time limit keeps
+running. The operation links it, and each slot it held records the path as
 its `deps_log_path`, so the slot card keeps a **Last Warm log** link after the Warm is dismissed
 and after a restart. Both links download through `GET /api/worktrees/warm-logs/<operationId>`,
-which serves only a log a listed operation or a slot row names. A log that neither names is
+which serves only a log a listed operation or a slot row names, streamed from the file in bounded
+chunks with the length the log had when the download began. A log that neither names is
 removed when a Warm finishes, when one is dismissed, and once at startup, so a slot's earlier log
 goes as soon as a later Warm replaces its link and the operation that wrote it is dismissed.
 

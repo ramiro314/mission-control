@@ -313,18 +313,27 @@ function notRunWarning(claim: WorktreeClaim, reason: string): WorktreeClaimWarni
 interface ClaimOptions {
   /** The state the slot holds while the claim writes: provisioning in an acquire, leased in a Warm. */
   slotState?: WorktreeClaimSlotState;
-  /** Told what the claim is doing and every step's redacted output, for a view that follows it live. */
-  output?: (text: string) => void;
+  /**
+   * Told what the claim is doing and every step's redacted output, for a view that follows it
+   * live. A promise it returns is backpressure on the running step's output.
+   */
+  output?: (text: string) => void | Promise<void>;
 }
 
-/** Tell a live view something. A listener that throws must never fail the claim it watches. */
-function sayTo(output: ((text: string) => void) | undefined): ((text: string) => void) | null {
+type Say = (text: string) => void | Promise<void>;
+
+/**
+ * Tell a live view something, handing back any backpressure it asks for. A listener that
+ * throws must never fail the claim it watches.
+ */
+function sayTo(output: Say | undefined): Say | null {
   if (!output) return null;
   return (text) => {
     try {
-      output(text);
+      return output(text);
     } catch (error) {
       console.warn(`[worktrees] claim output listener failed: ${bounded(String(error))}`);
+      return undefined;
     }
   };
 }
@@ -501,6 +510,108 @@ function exactSlotPath(
     pathContains(pool.poolPath, slot.path) &&
     slot.path === join(pool.poolPath, String(slot.ordinal), identity.repositoryName)
   );
+}
+
+/**
+ * What decides whether a slot is idle: every fact the rule reads, however it was gathered.
+ * Acquisition gathers them fresh under its screening; the inventory reads them from its last
+ * observation. Both hand them to `idleSlotRefusal`, so the rule has one owner.
+ */
+export interface IdleSlotFacts {
+  state: string;
+  /** The slot's path is exactly the one its pool owns. */
+  exactPath: boolean;
+  activeIdentity: "none" | "present" | "invalid";
+  /** The last-released owner: none, an incomplete identity, still referencing it, gone, or unreadable. */
+  lastOwner: "none" | "invalid" | "referenced" | "absent" | "unknown";
+  /** Why the last owner could not be read, when `lastOwner` is unknown. */
+  lastOwnerError?: string | null;
+  occupancy: WorktreeOccupancy | undefined;
+  /** A Git registration that is not bare, locked or prunable. */
+  registrationSafe: boolean;
+  /**
+   * The slot's Git state. Left out to check only the rules before it, so a caller can skip a
+   * Git read for a slot an earlier rule already refuses: null then still needs these checks.
+   */
+  inspection?: { ok: true; pathMatches: boolean; dirty: boolean } | { ok: false; reason: string };
+}
+
+/**
+ * Why a slot is not idle. `quarantine` is acquisition's verdict on it: anything the slot cannot
+ * prove is quarantined, while a slot that is simply not available, or whose last owner still
+ * references it, is left as it is.
+ */
+export interface IdleSlotRefusal {
+  kind: "notAvailable" | "notIdle";
+  reason: string;
+  detail: string | null;
+  quarantine: boolean;
+}
+
+/**
+ * The one definition of an idle slot, which acquisition, seed-source selection, Warm's own
+ * check when a slot's turn comes, the Warm preview and the slot card's Warm action all share.
+ * Null when every rule passes (and, with `inspection` left out, every rule before it).
+ */
+export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
+  const refuse = (reason: string, detail: string | null = null): IdleSlotRefusal =>
+    ({ kind: "notIdle", reason, detail, quarantine: true });
+  if (facts.state !== "available") {
+    return { kind: "notAvailable", reason: `the slot is ${facts.state}`, detail: null, quarantine: false };
+  }
+  if (!facts.exactPath) return refuse("slot path is not the exact path owned by its native pool");
+  if (facts.activeIdentity === "invalid") return refuse("available slot has incomplete active lease identity");
+  if (facts.activeIdentity === "present") return refuse("available slot still carries active lease identity");
+  if (facts.lastOwner === "invalid") return refuse("last-released lease identity is incomplete");
+  if (facts.lastOwner === "referenced") {
+    // The recoverable release/domain-row crash window. The slot stays available but is not
+    // idle until the exact owner clears its durable row.
+    return { kind: "notIdle", reason: "its last owner still references it", detail: null, quarantine: false };
+  }
+  if (facts.lastOwner === "unknown") {
+    return refuse("last-released domain ownership could not be read", facts.lastOwnerError ?? null);
+  }
+  if (!facts.occupancy || facts.occupancy.status === "unknown") {
+    return refuse("slot occupancy is unknown", facts.occupancy?.status === "unknown" ? facts.occupancy.reason : null);
+  }
+  if (facts.occupancy.occupants.length > 0) return refuse("an available slot has process occupancy");
+  if (!facts.registrationSafe) return refuse("slot has no safe Git worktree registration");
+  if (!facts.inspection) return null;
+  if (!facts.inspection.ok) return refuse("slot Git state could not be inspected", facts.inspection.reason);
+  if (!facts.inspection.pathMatches) return refuse("slot belongs to a different Git common directory");
+  if (facts.inspection.dirty) return refuse("available slot has dirty or untracked work");
+  return null;
+}
+
+function identityFact(reference: WorktreeOwnerReference | null | "invalid"): IdleSlotFacts["activeIdentity"] {
+  return reference === null ? "none" : reference === "invalid" ? "invalid" : "present";
+}
+
+/**
+ * `idleSlotRefusal` over an inventory observation rather than a fresh screening. What the
+ * observation could not read counts against the slot, as it would at acquisition.
+ */
+export function observedIdleRefusal(status: NativeSlotStatus): IdleSlotRefusal | null {
+  const prior = lastReference(status.slot);
+  return idleSlotRefusal({
+    state: status.slot.state,
+    exactPath: status.nativePath,
+    activeIdentity: identityFact(activeReference(status.slot)),
+    lastOwner: prior === null
+      ? "none"
+      : prior === "invalid"
+        ? "invalid"
+        : status.ownerReferenced === true
+          ? "referenced"
+          : status.ownerReferenced === false
+            ? "absent"
+            : "unknown",
+    occupancy: status.occupancy,
+    registrationSafe: status.registered === true,
+    inspection: status.observedHead === null || status.dirty === null || status.repositoryMatches === null
+      ? { ok: false, reason: "the slot's Git state could not be read" }
+      : { ok: true, pathMatches: status.repositoryMatches, dirty: status.dirty },
+  });
 }
 
 /** Native worktree sweep interval, or null when MISSION_WORKTREE_SWEEP_MS disables it. */
@@ -832,78 +943,55 @@ export class WorktreeManager {
     const occupancy = await this.occupancy(available.map((slot) => slot.path));
     const idle: Array<{ slot: WorktreeSlotRow; head: string }> = [];
     for (const slot of available) {
-      if (!exactSlotPath(pool, identity, slot)) {
-        this.quarantine(slot, "slot path is not the exact path owned by its native pool");
-        continue;
-      }
-      const active = activeReference(slot);
-      if (active !== null) {
-        this.quarantine(
-          slot,
-          active === "invalid"
-            ? "available slot has incomplete active lease identity"
-            : "available slot still carries active lease identity",
-        );
-        continue;
-      }
       const priorReference = lastReference(slot);
-      if (priorReference === "invalid") {
-        this.quarantine(slot, "last-released lease identity is incomplete");
-        continue;
-      }
-      if (priorReference) {
+      let lastOwner: IdleSlotFacts["lastOwner"] = priorReference === null
+        ? "none"
+        : priorReference === "invalid" ? "invalid" : "absent";
+      let lastOwnerError: string | null = null;
+      if (priorReference && priorReference !== "invalid" && exactSlotPath(pool, identity, slot) && activeReference(slot) === null) {
         try {
-          if (await this.ownerReferenced(priorReference)) {
-            // This is the recoverable release/domain-row crash window. Keep the slot
-            // available but ineligible until the exact owner clears its durable row.
-            continue;
-          }
+          if (await this.ownerReferenced(priorReference)) lastOwner = "referenced";
         } catch (error) {
-          this.quarantine(slot, "last-released domain ownership could not be read", String(error));
-          continue;
+          lastOwner = "unknown";
+          lastOwnerError = String(error);
         }
       }
-      const observedOccupancy = occupancy.get(slot.path);
-      if (!observedOccupancy || observedOccupancy.status === "unknown") {
-        this.quarantine(
-          slot,
-          "slot occupancy is unknown",
-          observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
-        );
-        continue;
-      }
-      if (observedOccupancy.occupants.length > 0) {
-        this.quarantine(slot, "an available slot has process occupancy");
-        continue;
-      }
       const registration = registrationFor(registrations.value, slot.path);
-      if (!registration || registration.bare || registration.locked || registration.prunable) {
-        this.quarantine(slot, "slot has no safe Git worktree registration");
+      const facts: IdleSlotFacts = {
+        state: slot.state,
+        exactPath: exactSlotPath(pool, identity, slot),
+        activeIdentity: identityFact(activeReference(slot)),
+        lastOwner,
+        lastOwnerError,
+        occupancy: occupancy.get(slot.path),
+        registrationSafe: Boolean(registration && !registration.bare && !registration.locked && !registration.prunable),
+      };
+      // The rules before the Git state first, so a slot one of them refuses costs no Git read.
+      let refusal = idleSlotRefusal(facts);
+      let head: string | null = null;
+      if (!refusal) {
+        let inspected: IdleSlotFacts["inspection"];
+        try {
+          const inspection = await this.deps.git.inspect(slot.path);
+          inspected = inspection.ok
+            ? {
+                ok: true,
+                pathMatches: inspection.value.path === slot.path &&
+                  inspection.value.commonDirectory === identity.gitCommonDirectory,
+                dirty: inspection.value.dirty,
+              }
+            : { ok: false, reason: inspection.reason };
+          if (inspection.ok) head = inspection.value.head;
+        } catch (error) {
+          inspected = { ok: false, reason: String(error) };
+        }
+        refusal = idleSlotRefusal({ ...facts, inspection: inspected });
+      }
+      if (refusal) {
+        if (refusal.quarantine) this.quarantine(slot, refusal.reason, refusal.detail);
         continue;
       }
-      let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
-      try {
-        inspection = await this.deps.git.inspect(slot.path);
-      } catch (error) {
-        this.quarantine(slot, "slot Git state could not be inspected", String(error));
-        continue;
-      }
-      if (!inspection.ok) {
-        this.quarantine(slot, "slot Git state could not be inspected", inspection.reason);
-        continue;
-      }
-      if (
-        inspection.value.path !== slot.path ||
-        inspection.value.commonDirectory !== identity.gitCommonDirectory
-      ) {
-        this.quarantine(slot, "slot belongs to a different Git common directory");
-        continue;
-      }
-      if (inspection.value.dirty) {
-        this.quarantine(slot, "available slot has dirty or untracked work");
-        continue;
-      }
-      idle.push({ slot, head: inspection.value.head });
+      idle.push({ slot, head: head! });
     }
     return { ok: true, idle };
   }
@@ -1347,7 +1435,7 @@ export class WorktreeManager {
     pool: WorktreePoolRow;
     identity: WorktreeRepositoryIdentity;
     slotState: WorktreeClaimSlotState;
-    say: ((text: string) => void) | null;
+    say: Say | null;
   }): Promise<ClaimRun | null> {
     const { reservation, claim, seed, sha, fingerprint, exactOnly, inherit, control, deadline, slotState, say } = input;
     const seeded = await this.seedTree({
@@ -1658,8 +1746,8 @@ export class WorktreeManager {
     slotId: string;
     operationId: string;
     signal: AbortSignal;
-    /** Told what the Warm is doing and the claim's redacted output. */
-    output: (text: string) => void;
+    /** Told what the Warm is doing and the claim's redacted output; a promise is backpressure. */
+    output: (text: string) => void | Promise<void>;
     /**
      * Recorded on the slot row once the slot is held, as its most recent Warm log, so the slot
      * card can reach it after a restart. Called first, so the file exists before it is named.
@@ -1775,7 +1863,7 @@ export class WorktreeManager {
     control: AbortController;
     log: { path: string; open: () => void } | null;
     signal: AbortSignal;
-    say: (text: string) => void;
+    say: Say;
   }): Promise<WarmSlotResult> {
     const { reservation, pool, identity, claim, say } = input;
     const entered = await this.enteredSinceReservation(reservation, "it was warmed");

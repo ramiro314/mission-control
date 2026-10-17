@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
-import { lstat, readFile, readdir, rm } from "node:fs/promises";
+import { lstat, open, readdir, rm } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { basename, dirname, join } from "node:path";
 import type { WorktreesConfig, WorktreesConfigPatch } from "@shared/protocol.ts";
 import {
@@ -54,6 +55,7 @@ import {
 } from "./git.ts";
 import {
   WorktreeManager,
+  observedIdleRefusal,
   type NativePoolStatus,
   type NativeSlotStatus,
   type WarmSlotResult,
@@ -168,8 +170,12 @@ interface WarmRun {
  * One Warm's full log, opened the first time a Warm holds a slot, so a Warm that skipped every
  * target writes nothing. Appended in order; a write that fails is reported once and the Warm
  * carries on, because the log is a record of the Warm, never a part of it.
+ *
+ * The log is complete, so it is never cut, and a disk slower than the step is never absorbed
+ * in memory either: once the stream's buffer is full, `write` returns a promise that settles on
+ * `drain`, and the claim pauses the step's pipes until it does.
  */
-class WarmLogFile {
+export class WarmLogFile {
   private stream: WriteStream | null = null;
   private broken = false;
 
@@ -192,9 +198,22 @@ class WarmLogFile {
     this.stream.write(this.header());
   }
 
-  write(text: string): void {
-    if (!this.stream || this.broken || !text) return;
-    this.stream.write(text);
+  write(text: string): void | Promise<void> {
+    const stream = this.stream;
+    if (!stream || this.broken || !text) return undefined;
+    if (stream.write(text)) return undefined;
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        stream.off("drain", done);
+        stream.off("error", done);
+        stream.off("close", done);
+        resolve();
+      };
+      stream.once("drain", done);
+      // A broken or closed log never holds the step: the record stops, the Warm does not.
+      stream.once("error", done);
+      stream.once("close", done);
+    });
   }
 
   close(): Promise<void> {
@@ -497,9 +516,9 @@ export class WorktreeOperationsService {
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
             actions.push("destroy");
           }
-          // Warm prepares an idle slot ahead of time, so only an available one in a pool whose
-          // claim it would run.
-          if (entry.slot.state === "available" && exact && pool.policy.enabled && pool.policy.claim) {
+          // Warm prepares an idle slot ahead of time: one acquisition's own rule calls idle, in a
+          // pool whose claim it would run. The preview applies the same rule.
+          if (pool.policy.enabled && pool.policy.claim && pool.identityValid && pool.markerValid && !observedIdleRefusal(entry)) {
             actions.push("warm");
           }
           return {
@@ -1106,21 +1125,16 @@ export class WorktreeOperationsService {
       : pool.slots.filter((slot) => slot.slot.id === target.slotId);
     const leftOut: string[] = [];
     for (const slot of candidates) {
-      const why = slot.slot.state !== "available"
+      // Acquisition's own idle rule, read from this observation. The slot is held to the same
+      // rule again, freshly, when its turn comes.
+      const refusal = observedIdleRefusal(slot);
+      const why = refusal?.kind === "notAvailable"
         ? `Slot ${slot.slot.ordinal} is ${slot.slot.state}. Warm never touches a slot that is leased, quarantined or changing.`
-        : observed.pending.has(slot.slot.path)
-          ? `Slot ${slot.slot.ordinal} already has an operation queued.`
-          : !slot.nativePath || slot.registered !== true || slot.repositoryMatches !== true
-            ? `Slot ${slot.slot.ordinal}'s exact path, Git registration or repository ownership is not proven.`
-            : slot.occupancy.status !== "known"
-              ? `Slot ${slot.slot.ordinal}'s process occupancy is unknown.`
-              : slot.occupancy.occupants.length > 0
-                ? `Slot ${slot.slot.ordinal} has processes inside it.`
-                : slot.dirty !== false
-                  ? `Slot ${slot.slot.ordinal} is not proven clean.`
-                  : slot.ownerReferenced === true
-                    ? `Slot ${slot.slot.ordinal}'s last owner still references it.`
-                    : null;
+        : refusal
+          ? `Slot ${slot.slot.ordinal} is not idle: ${refusal.reason}.`
+          : observed.pending.has(slot.slot.path)
+            ? `Slot ${slot.slot.ordinal} already has an operation queued.`
+            : null;
       if (why) {
         if (target.kind === "slot") blockers.push(why);
         else leftOut.push(why);
@@ -1441,16 +1455,18 @@ export class WorktreeOperationsService {
    * A Warm's output, already redacted: into its tail and its log. The dashboard learns of it
    * through the content-free worktrees bump, at most once per `warmTailIntervalMs`.
    */
-  private warmOutput(entry: HeldOperation, text: string): void {
+  private warmOutput(entry: HeldOperation, text: string): void | Promise<void> {
     const warm = entry.warm;
-    if (!warm || !text) return;
+    if (!warm || !text) return undefined;
     warm.ring.push(Buffer.from(text, "utf8"));
-    warm.log.write(text);
-    if (warm.timer) return;
-    warm.timer = unref(setTimeout(() => {
-      warm.timer = null;
-      this.deps.notifyChanged();
-    }, this.deps.warmTailIntervalMs));
+    const backpressure = warm.log.write(text);
+    if (!warm.timer) {
+      warm.timer = unref(setTimeout(() => {
+        warm.timer = null;
+        this.deps.notifyChanged();
+      }, this.deps.warmTailIntervalMs));
+    }
+    return backpressure;
   }
 
   private warmLogPath(id: string): string {
@@ -1498,16 +1514,37 @@ export class WorktreeOperationsService {
   }
 
   /**
-   * A Warm log's text, for the operation view's and the slot card's link. Only a log a listed
+   * A Warm log, for the operation view's and the slot card's link. Only a log a listed
    * operation or a slot row names is served; null for anything else.
+   *
+   * A log is complete and unbounded, so it is never read into memory: the caller gets a stream
+   * of exactly the `size` bytes the file held when it was opened. A running Warm keeps
+   * appending, and a fixed length keeps the response's length true.
    */
-  async warmLog(id: string): Promise<{ id: string; path: string; text: string } | null> {
+  async warmLog(id: string): Promise<{ id: string; path: string; size: number; stream: Readable } | null> {
     if (!WARM_LOG_ID.test(id)) return null;
     const path = this.warmLogPath(id);
     if (!this.operations.has(id) && !this.manager.store.depsLogPaths().has(path)) return null;
+    let handle: Awaited<ReturnType<typeof open>>;
     try {
-      return { id, path, text: await readFile(path, "utf8") };
+      handle = await open(path, "r");
     } catch {
+      return null;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        await handle.close();
+        return null;
+      }
+      if (stat.size === 0) {
+        await handle.close();
+        return { id, path, size: 0, stream: Readable.from([]) };
+      }
+      // Closes the handle when it ends, errors, or is destroyed by a client that went away.
+      return { id, path, size: stat.size, stream: handle.createReadStream({ start: 0, end: stat.size - 1 }) };
+    } catch {
+      await handle.close().catch(() => {});
       return null;
     }
   }

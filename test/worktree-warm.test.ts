@@ -12,8 +12,8 @@ import {
   type NativeWorktreeLease,
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
-import { RedactedOutput, buildClaimEnvironment } from "../src/server/worktrees/claim.ts";
-import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
+import { RedactedOutput, buildClaimEnvironment, runClaimStep } from "../src/server/worktrees/claim.ts";
+import { WarmLogFile, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
@@ -171,6 +171,17 @@ async function warm(
   return ops.submit(preview.token, []).operation.id;
 }
 
+/** A served Warm log's whole text, read through the stream the route sends. */
+async function logText(ops: WorktreeOperationsService, id: string): Promise<string | null> {
+  const log = await ops.warmLog(id);
+  if (!log) return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of log.stream) chunks.push(Buffer.from(chunk as Buffer));
+  const text = Buffer.concat(chunks);
+  assert.equal(text.length, log.size, "the stream carries exactly the size it was served with");
+  return text.toString("utf8");
+}
+
 function runCount(path: string): number {
   const file = join(path, "logs", "runs");
   return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").length : 0;
@@ -269,7 +280,7 @@ test("Warm holds the slot, resets it to origin's default, claims, returns it, an
   assert.match(text, /^installing fixture packages$/m);
   assert.match(text, /Returning the slot to the pool/);
   assert.match(text, /Slot 1: warmed/);
-  assert.equal((await ops.warmLog(first))?.text, text);
+  assert.equal(await logText(ops, first), text);
 
   const card = (await ops.inventory()).repositories.flatMap((repo) => repo.slots).find((entry) => entry.id === slot!.slotId);
   assert.deepEqual(card?.warmLog, { id: first, path: logPath });
@@ -524,7 +535,7 @@ test("the Warm log sweep keeps only the logs a listed operation or a slot row na
   assert.equal(existsSync(named), true);
   assert.equal(existsSync(orphan), false);
   assert.equal(existsSync(other), true, "only Warm logs are this sweep's to remove");
-  assert.equal((await ops.warmLog("named-op"))?.text, "left by an earlier daemon\n");
+  assert.equal(await logText(ops, "named-op"), "left by an earlier daemon\n");
   assert.equal(await ops.warmLog("orphan-op"), null);
   assert.equal(await ops.warmLog("../named-op"), null, "an id never names a path outside the log directory");
   const card = (await ops.inventory()).repositories.flatMap((repo) => repo.slots).find((entry) => entry.id === slot!.slotId);
@@ -645,6 +656,123 @@ test("an ordinary claim failure returns the slot available with failed dependenc
     assert.match(card.dependencies.failure.tail, /E401 fixture registry refused the token/);
   }
   assert.deepEqual(card?.warmLog, { id, path: logPath });
+});
+
+// ---- one idle rule ----
+
+test("the Warm preview, the slot card and acquisition judge idleness by the same rule", async () => {
+  const fixture = repository("mission-warm-idle-rule-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [dirty, referenced] = await idleSlots(m, fixture.clone, fixture.sha, 2);
+  // An untracked, unignored file: acquisition quarantines such a slot.
+  writeFileSync(join(dirty!.path, "stray.txt"), "left behind\n");
+  // A slot whose last owner still references it: acquisition leaves it alone, unquarantined.
+  const stillReferenced = manager({ claim: claimOf(INSTALL) }, {
+    ownerReferenced: async (reference) => reference.slotId === referenced!.slotId,
+  });
+  const ops = service(stillReferenced, logsDirectory());
+
+  const cards = (await ops.inventory()).repositories.flatMap((repo) => repo.slots);
+  for (const card of cards) assert.ok(!card.actions.includes("warm"), `slot ${card.ordinal} is not idle, so no card offers Warm`);
+  const dirtyPreview = await ops.preview({ action: "warm", target: { kind: "slot", slotId: dirty!.slotId } });
+  assert.equal(dirtyPreview.allowed, false);
+  assert.deepEqual(dirtyPreview.blockers, ["Slot 1 is not idle: available slot has dirty or untracked work."]);
+  const referencedPreview = await ops.preview({ action: "warm", target: { kind: "slot", slotId: referenced!.slotId } });
+  assert.deepEqual(referencedPreview.blockers, ["Slot 2 is not idle: its last owner still references it."]);
+
+  // Acquisition, under the same rule, quarantines the dirty slot with the reason the preview
+  // gave, leaves the referenced one available, and makes a new slot instead.
+  const acquired = await stillReferenced.acquire({ repositoryPath: fixture.clone, baseSha: fixture.sha, owner: { kind: "manual", key: "after" } });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  assert.notEqual(acquired.lease.slotId, dirty!.slotId);
+  assert.notEqual(acquired.lease.slotId, referenced!.slotId);
+  const dirtyRow = stillReferenced.store.slot(dirty!.slotId)!;
+  assert.equal(dirtyRow.state, "quarantined");
+  assert.equal(dirtyRow.quarantineReason, "available slot has dirty or untracked work");
+  assert.equal(stillReferenced.store.slot(referenced!.slotId)!.state, "available");
+  await stillReferenced.release(acquired.lease, { ownerAuthorized: true });
+});
+
+// ---- backpressure and bounded reads of the full log ----
+
+test("a claim step's output pauses its pipes while the reader asks it to wait, and loses nothing", async () => {
+  const lines = 4_000;
+  // Far more than a pipe holds, so the child really blocks while its reader waits.
+  const argv = [
+    process.execPath,
+    "-e",
+    `const line="x".repeat(1023)+"\\n";for(let i=0;i<${lines};i+=1)process.stdout.write(line);`,
+  ];
+  let calls = 0;
+  let received = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const running = runClaimStep({
+    argv,
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMs: 60_000,
+    signal: new AbortController().signal,
+    onOutput: (text) => {
+      calls += 1;
+      received += Buffer.byteLength(text, "utf8");
+      // The first piece holds the step until the gate opens.
+      return calls === 1 ? gate : undefined;
+    },
+  });
+  await waitFor(() => calls >= 1, "the first piece of output");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(calls, 1, "nothing more is read while the reader is waiting");
+  release();
+  const result = await running;
+  assert.equal(result.outcome, "exited");
+  if (result.outcome === "exited") assert.equal(result.code, 0);
+  assert.equal(received, lines * 1024, "every byte arrived once the reader caught up");
+});
+
+test("a full Warm log asks the writer to wait until it drains, and keeps every byte", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-warm-log-file-"));
+  const log = new WarmLogFile("op", join(dir, "logs", "op.log"), () => "header\n");
+  log.open();
+  assert.equal(log.write("small\n"), undefined, "a write the buffer takes needs no wait");
+  const big = "y".repeat(4 * 1024 * 1024);
+  const wait = log.write(big);
+  assert.ok(wait instanceof Promise, "a write past the buffer returns backpressure");
+  await wait;
+  await log.close();
+  assert.equal(readFileSync(join(dir, "logs", "op.log"), "utf8"), `header\nsmall\n${big}`);
+});
+
+test("a Warm with a lot of output keeps it all in its log, and a download streams a fixed length", async () => {
+  const fixture = repository("mission-warm-big-log-");
+  const lines = 20_000;
+  const chatty = [
+    process.execPath,
+    "-e",
+    `for(let i=0;i<${lines};i+=1)process.stdout.write("package line "+i+" "+"z".repeat(200)+"\\n");`,
+  ];
+  const m = manager({ claim: claimOf(chatty) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const logs = logsDirectory();
+  const ops = service(m, logs);
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await ops.idle();
+  const text = readFileSync(join(logs, `${id}.log`), "utf8");
+  const logged = text.split("\n").filter((line) => line.startsWith("package line ")).length;
+  assert.equal(logged, lines, "the full log is complete");
+  assert.equal(m.store.slot(slot!.slotId)!.depsState, "current");
+
+  // A download streams exactly the bytes the log held when it was opened, even while it grows.
+  const served = await ops.warmLog(id);
+  assert.ok(served);
+  writeFileSync(join(logs, `${id}.log`), "appended after the download began\n", { flag: "a" });
+  const chunks: Buffer[] = [];
+  for await (const chunk of served.stream) chunks.push(Buffer.from(chunk as Buffer));
+  assert.ok(chunks.length > 1, "the log arrives in bounded chunks, never as one buffer");
+  assert.equal(Buffer.concat(chunks).toString("utf8"), text);
 });
 
 // ---- redaction of streamed output ----

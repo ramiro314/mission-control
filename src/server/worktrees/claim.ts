@@ -266,8 +266,12 @@ export interface ClaimStepRequest {
    * Told each piece of the step's output as it arrives, decoded on character boundaries, for a
    * view that follows a step live (a Warm's tail and log). The step's bounded tail is kept
    * either way. Unredacted: `runClaimSteps` removes claim variable values before passing it on.
+   *
+   * Returning a promise is backpressure: both pipes are paused until it settles, so a step that
+   * prints faster than its reader keeps up blocks on its own pipe instead of the daemon
+   * buffering its output. The step's time limit keeps running meanwhile.
    */
-  onOutput?: (text: string) => void;
+  onOutput?: (text: string) => void | Promise<void>;
 }
 
 export type ClaimStepResult =
@@ -366,14 +370,27 @@ export async function runClaimStep(
     // One decoder per stream, so a character split across two chunks of one stream is never
     // joined with bytes from the other.
     const decoders = request.onOutput ? [new StringDecoder("utf8"), new StringDecoder("utf8")] as const : null;
+    // How many of the reader's waits are outstanding; the pipes flow again once none are.
+    let waiting = 0;
+    const pipes = () => [child.stdout, child.stderr];
     const forward = (text: string): void => {
       if (!text) return;
+      let wait: void | Promise<void>;
       try {
-        request.onOutput?.(text);
+        wait = request.onOutput?.(text);
       } catch (error) {
         // A live view of the step is never part of the step.
         console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+        return;
       }
+      if (!wait || settled) return;
+      waiting += 1;
+      if (waiting === 1) for (const pipe of pipes()) pipe?.pause();
+      const resume = (): void => {
+        waiting -= 1;
+        if (waiting === 0) for (const pipe of pipes()) pipe?.resume();
+      };
+      wait.then(resume, resume);
     };
     child.stdout?.on("data", (chunk: Buffer) => {
       ring.push(chunk);
@@ -484,14 +501,16 @@ export async function runClaimSteps(input: {
   /**
    * Told each step's command as it begins, then its output as it arrives, with every value the
    * step received already removed, then how it ended. For a view that follows the claim live.
+   * A promise it returns for a step's output is backpressure, as for `ClaimStepRequest`.
    */
-  onOutput?: (text: string) => void;
+  onOutput?: (text: string) => void | Promise<void>;
 }): Promise<ClaimStepsOutcome> {
-  const say = (text: string): void => {
+  const say = (text: string): void | Promise<void> => {
     try {
-      input.onOutput?.(text);
+      return input.onOutput?.(text);
     } catch (error) {
       console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
     }
   };
   const outcome = await runClaimStepsInner(input, input.onOutput ? say : null);
@@ -504,7 +523,7 @@ export async function runClaimSteps(input: {
 
 async function runClaimStepsInner(
   input: Parameters<typeof runClaimSteps>[0],
-  say: ((text: string) => void) | null,
+  say: ((text: string) => void | Promise<void>) | null,
 ): Promise<ClaimStepsOutcome> {
   const limitMs = input.claim.timeoutMinutes * 60_000;
   const deadline = input.deadline ?? input.now() + limitMs;
@@ -780,22 +799,22 @@ export class RedactedOutput {
   private readonly hold: number;
   private readonly secrets: ReadonlyArray<{ name: string; value: string }>;
 
+  /** `sink` may return a promise as backpressure; `push` and `flush` hand it back. */
   constructor(
     secrets: ReadonlyArray<{ name: string; value: string }>,
-    private readonly sink: (text: string) => void,
+    private readonly sink: (text: string) => void | Promise<void>,
   ) {
     this.secrets = secrets.filter((secret) => secret.value.length > 0);
     this.hold = Math.max(0, ...this.secrets.map((secret) => secret.value.length - 1));
   }
 
-  push(text: string): void {
+  push(text: string): void | Promise<void> {
     if (this.secrets.length === 0) {
-      if (text) this.sink(text);
-      return;
+      return text ? this.sink(text) : undefined;
     }
     this.pending += text;
     let cut = this.pending.length - this.hold;
-    if (cut <= 0) return;
+    if (cut <= 0) return undefined;
     // A value that starts before `cut` is complete in `pending` (it is at most `hold + 1`
     // long), so the only way to split one is to cut through it. Move the cut back to its start
     // until no complete value straddles it; values may overlap, hence the loop.
@@ -810,17 +829,17 @@ export class RedactedOutput {
         }
       }
     }
-    if (cut <= 0) return;
+    if (cut <= 0) return undefined;
     const ready = this.pending.slice(0, cut);
     this.pending = this.pending.slice(cut);
-    this.sink(redactClaimValues(ready, this.secrets, { leadingFragments: false }));
+    return this.sink(redactClaimValues(ready, this.secrets, { leadingFragments: false }));
   }
 
-  flush(): void {
-    if (!this.pending) return;
+  flush(): void | Promise<void> {
+    if (!this.pending) return undefined;
     const rest = this.pending;
     this.pending = "";
-    this.sink(redactClaimValues(rest, this.secrets, { leadingFragments: false }));
+    return this.sink(redactClaimValues(rest, this.secrets, { leadingFragments: false }));
   }
 }
 
