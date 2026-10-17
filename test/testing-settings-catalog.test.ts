@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -218,6 +218,46 @@ test("the gate's repository lookup returns the root and its subdirectories, thro
   assert.deepEqual(s.forRepository(root), expected);
   assert.deepEqual(s.forRepository(link), expected);
   assert.deepEqual(s.forRepository(join(home, "elsewhere")), []);
+});
+
+test("rows of a repository nested inside another stay with the nested repository, never the parent", async () => {
+  const s = catalog();
+  const request = app(s);
+  const parent = repository();
+  mkdirSync(join(parent, "apps/a"), { recursive: true });
+  // An independent repository initialized below the parent, and a submodule-style checkout whose
+  // `.git` is a file: both are other repositories, whatever their paths share with the parent's.
+  const nested = join(parent, "vendor/lib");
+  mkdirSync(join(nested, "src"), { recursive: true });
+  execFileSync("git", ["init", "-q", nested]);
+  const submodule = join(parent, "packages/sub");
+  mkdirSync(join(submodule, "src"), { recursive: true });
+  writeFileSync(join(submodule, ".git"), "gitdir: ../../.git/modules/sub\n");
+
+  const save = async (path: string, smoke: string) => {
+    const response = await request("/api/testing-settings", put({
+      repoRoot: path, expectedRevision: 0, settings: { tests: { smokeSet: [smoke] } },
+    }));
+    assert.equal(response.status, 200, await response.text());
+  };
+  await save(parent, "parent.ts");
+  await save(join(parent, "apps/a"), "a.ts");
+  // Saved through the route: git resolves both to the NESTED repository, which owns them.
+  await save(nested, "nested.ts");
+  await save(join(nested, "src"), "nested-src.ts");
+  // Written straight to the catalog, as a restored snapshot could hold it.
+  assert.equal(s.replace({
+    repoRoot: join(submodule, "src"), expectedRevision: 0, settings: { tests: { smokeSet: ["sub.ts"] } },
+  }).ok, true);
+
+  assert.deepEqual(s.forRepository(parent), [
+    { scope: "", settings: { tests: { smokeSet: ["parent.ts"] } } },
+    { scope: "apps/a", settings: { tests: { smokeSet: ["a.ts"] } } },
+  ]);
+  assert.deepEqual(s.forRepository(nested), [
+    { scope: "", settings: { tests: { smokeSet: ["nested.ts"] } } },
+    { scope: "src", settings: { tests: { smokeSet: ["nested-src.ts"] } } },
+  ]);
 });
 
 test("without a catalog the routes answer 503", async () => {

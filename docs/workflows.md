@@ -1112,6 +1112,8 @@ root's merged settings, for the files inside that folder:
 - The gate runs when a layer exists at any scope, so a monorepo whose only settings are stored for
   its apps still runs it, over the defaults at the root. A folder row that sets nothing is not a
   scope.
+- A folder inside an independent repository or a submodule nested in this one (anything with its
+  own `.git` on the way down) belongs to that repository, so its rows never shape this one's gate.
 
 Per scope, the tests are the tracked files whose nearest scope it is and that match its effective
 patterns. Selection is shaped per scope, but the selected files still run through **one

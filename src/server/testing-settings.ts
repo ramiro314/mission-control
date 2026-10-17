@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { UpdateTestingSettings } from "@shared/protocol.ts";
 import {
   testingScopePath,
@@ -19,6 +21,22 @@ import type { TestingSettingsStoreWrite, WorkflowStore } from "./workflows/store
 //
 // No server event: the only surface that edits them reads them over HTTP when it opens and
 // learns of another window's save from the 409 compare-and-swap refusal.
+
+/**
+ * Whether `scope` below `root` lies inside another repository: some folder from the first
+ * segment down to the scope itself holds a `.git` (a directory for an independent repository, a
+ * file for a submodule or linked worktree). A folder that no longer exists holds none, so a row
+ * left behind by a deleted app still belongs to the root that stored it.
+ */
+function crossesRepositoryBoundary(root: string, scope: string): boolean {
+  if (scope === "") return false;
+  let dir = root;
+  for (const segment of scope.split("/")) {
+    dir = join(dir, segment);
+    if (existsSync(join(dir, ".git"))) return true;
+  }
+  return false;
+}
 
 export class TestingSettingsCatalog {
   constructor(readonly store: WorkflowStore) {}
@@ -48,6 +66,10 @@ export class TestingSettingsCatalog {
    * Rows are keyed by canonical path, the main checkout's realpath or a subdirectory below it.
    * A caller holding the root as spelled through a symlink still finds them, by also matching
    * under the realpath, and a row both spellings reach is returned once.
+   *
+   * A path below the root is not necessarily the root's: an independent repository or a
+   * submodule can sit inside it, and its rows belong to it. A row is the root's only when no
+   * folder between the root and the row's path, the row's own included, holds a `.git`.
    */
   forRepository(repoRoot: string): StoredTestingLayer[] {
     const roots = [...new Set([repoRoot, realpathOr(repoRoot)])];
@@ -57,7 +79,7 @@ export class TestingSettingsCatalog {
         const scope = view.repoRoot === root
           ? ""
           : view.repoRoot.startsWith(`${root}/`) ? testingScopePath(view.repoRoot.slice(root.length + 1)) : null;
-        if (scope === null || layers.has(scope)) continue;
+        if (scope === null || layers.has(scope) || crossesRepositoryBoundary(root, scope)) continue;
         layers.set(scope, { settings: view.settings, scope });
       }
     }
