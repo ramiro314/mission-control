@@ -3,6 +3,7 @@ import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, matchesGlob } from "node:path";
 import type { WorktreeClaimSeed } from "@shared/protocol.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
 import { run } from "../util/exec.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
@@ -240,12 +241,15 @@ export function copyOnWriteArgv(platform: NodeJS.Platform, source: string, desti
   return null;
 }
 
-/** The production clone: `cp` with the platform's copy-on-write flag, in its own process group. */
+/**
+ * The production clone: the platform's own `/bin/cp` with its copy-on-write flag, in its own
+ * process group. `cp` overrides the pinned path for a test's fake.
+ */
 export function copyOnWriteClone(
   options: { platform?: NodeJS.Platform; cp?: string } = {},
 ): CloneTree {
   const platform = options.platform ?? process.platform;
-  const cp = options.cp ?? "cp";
+  const executable = options.cp ?? FIXED_OS_EXECUTABLES.cp;
   return (request) => {
     const argv = copyOnWriteArgv(platform, request.source, request.destination);
     if (!argv) return Promise.resolve({ outcome: "failed", reason: `copy-on-write cloning is not supported on ${platform}` });
@@ -257,7 +261,7 @@ export function copyOnWriteClone(
       const timers: Array<ReturnType<typeof setTimeout>> = [];
       // The clone runs from the pool's directory, never from inside a slot, so the occupancy
       // check has nothing of ours to mistake for somebody working there.
-      const child = spawn(cp, argv, {
+      const child = spawn(executable, argv, {
         ...processLifetime.treeRootOptions,
         cwd: dirname(request.destination),
         shell: false,

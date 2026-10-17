@@ -58,8 +58,8 @@ There are two explicit exceptions:
   shared child environment, under the Workflow process supervisor. Their resolved record carries
   `id: null` so it cannot impersonate a built-in catalog entry.
 - Truly fixed OS utilities are absolute paths declared in `FIXED_OS_EXECUTABLES`. The class is
-  currently `/usr/bin/env`, `/bin/sh`, and `/usr/bin/osascript`. Do not add a bare command to this
-  class.
+  currently `/usr/bin/env`, `/bin/sh`, `/usr/bin/osascript`, `/usr/bin/open`, `/usr/bin/tail` and
+  `/bin/cp`. Do not add a bare command to this class.
 
 ## Session ownership
 

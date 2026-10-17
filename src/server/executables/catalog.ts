@@ -160,6 +160,10 @@ export const FIXED_OS_EXECUTABLES = {
   // Keep Awake's Linux inhibitor runs this as its command, so `systemd-inhibit` exits, and
   // releases its lock, when the daemon does. GNU coreutils; `--pid` is a GNU extension.
   tail: "/usr/bin/tail",
+  // Seeding's copy-on-write clone. Pinned rather than searched because its flags are the
+  // platform's own: `-c` is macOS clonefile and `--reflink=always` is GNU coreutils, so a PATH
+  // that put GNU `cp` first on a Mac would turn the clone into a refusal or something else.
+  cp: "/bin/cp",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

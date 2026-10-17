@@ -265,7 +265,9 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
 - **Copy-on-write only.** Each path is cloned with `cp -c -R` on macOS (clonefile) or
   `cp -R --reflink=always` on Linux. Where the filesystem cannot clone, `cp` refuses and there is
   no seed. It is never replaced by a byte copy, which would be slower than the install. The clone
-  runs from the pool's directory, never from inside a slot.
+  runs from the pool's directory, never from inside a slot. `cp` is the pinned `/bin/cp`, never
+  a PATH search, because those flags are the platform's own: a GNU `cp` found first on a Mac
+  would not clone.
 - **Only ignored paths.** Every matched path must be ignored by Git in the target and hold
   nothing tracked (`git ls-files`, then `git check-ignore`, asked with a trailing slash for a
   directory). A path whose parent directory the target's commit does not have is left out.
