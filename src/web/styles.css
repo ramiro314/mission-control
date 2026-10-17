@@ -834,6 +834,19 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-operation-removed { list-style: none; margin: 0; padding: 0; }
 .wt-operation-actions { display: flex; gap: 6px; margin-left: auto; }
 
+/* A Warm is one row per operation: its head, the slots it covers and what became of each, then
+   its live tail. The row stacks instead of wrapping, so the tail gets the full width. */
+.wt-warm { align-items: stretch; display: grid; gap: 6px; }
+.wt-warm-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.wt-warm-head strong { color: var(--fg); }
+.wt-warm-targets { display: grid; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.wt-warm-targets li { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.wt-warm-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.wt-warm-detail { color: var(--muted); flex: 1 1 100%; overflow-wrap: anywhere; }
+.wt-warm-tail { margin: 0; max-height: 180px; }
+.wt-warm-note { margin: 0; }
+.wt-warm-log { font-size: 11px; margin: 6px 0 0; }
+
 .wt-bulk-bar {
   align-items: center;
   background: color-mix(in oklab, var(--wt-danger) 7%, var(--bg-2));

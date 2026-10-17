@@ -12,11 +12,12 @@ import type {
   WorktreeRiskKey,
   WorktreeSlotDependenciesView,
   WorktreeSlotDependencyState,
+  WorktreeWarmTargetOutcome,
 } from "@shared/worktrees.ts";
-import { worktreeRetryRequest } from "@shared/worktrees.ts";
+import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { openWorktreeTerminal } from "../lib/api.ts";
+import { openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
@@ -59,6 +60,7 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   reconcile: "Reconcile",
   destroy: "Destroy",
   legacyReturn: "Legacy return",
+  warm: "Warm",
 };
 
 /**
@@ -95,7 +97,7 @@ function OperationList({
   onDismiss: (operation: WorktreeOperationView) => void;
 }): React.JSX.Element | null {
   if (operations.length === 0) return null;
-  const pending = operations.filter((operation) => operation.state !== "failed");
+  const pending = operations.filter(worktreeOperationPending);
   const failed = operations.filter((operation) => operation.state === "failed");
   return (
     <section className="wt-operations" aria-label="Background cleanup">
@@ -153,6 +155,141 @@ function OperationList({
           })}
         </ul>
       )}
+    </section>
+  );
+}
+
+const WARM_TARGET_CHIPS: Record<WorktreeWarmTargetOutcome, { label: string; tone: string }> = {
+  pending: { label: "waiting", tone: "neutral" },
+  running: { label: "warming", tone: "working" },
+  warmed: { label: "warmed", tone: "ready" },
+  claimFailed: { label: "claim failed", tone: "danger" },
+  skipped: { label: "skipped", tone: "attention" },
+  cancelled: { label: "cancelled", tone: "attention" },
+  failed: { label: "failed", tone: "danger" },
+};
+
+function warmTitle(operation: WorktreeOperationView): string {
+  const request = operation.request;
+  if (request.action === "warm" && request.target.kind === "pool") return "Warm idle slots";
+  const target = operation.warm?.targets[0];
+  return target ? `Warm slot ${target.ordinal}` : "Warm";
+}
+
+function warmStateChip(operation: WorktreeOperationView): { label: string; tone: string } {
+  switch (operation.state) {
+    case "queued":
+      return { label: operation.warm?.cancelRequested ? "cancelled" : "queued", tone: "working" };
+    case "running":
+      return { label: operation.warm?.cancelRequested ? "cancelling" : "in progress", tone: "working" };
+    case "failed":
+      return { label: "failed", tone: "danger" };
+    case "finished":
+      return { label: "finished", tone: "ready" };
+  }
+}
+
+/**
+ * One Warm: its slots and what happened to each, the live output tail while it runs, Cancel,
+ * and the full log. A finished Warm stays listed until it is dismissed, so a slot it skipped
+ * is still listed as skipped after the Warm moves on.
+ */
+function WarmOperation({
+  operation,
+  onCancel,
+  onDismiss,
+}: {
+  operation: WorktreeOperationView;
+  onCancel: (operation: WorktreeOperationView) => void;
+  onDismiss: (operation: WorktreeOperationView) => void;
+}): React.JSX.Element {
+  const warm = operation.warm;
+  const pending = worktreeOperationPending(operation);
+  const title = warmTitle(operation);
+  const chip = warmStateChip(operation);
+  const tail = useRef<HTMLPreElement>(null);
+  // The tail follows the newest output, as a terminal does.
+  useEffect(() => {
+    const node = tail.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [warm?.tail]);
+  return (
+    <li className="wt-operation wt-warm" aria-label={title}>
+      <div className="wt-warm-head">
+        <StateChip label={chip.label} tone={chip.tone} />
+        <strong>{title}</strong>
+        <span className="wt-operation-actions">
+          {warm?.log && (
+            <Tooltip label={`Download this Warm's full log, kept at ${warm.log.path}`}>
+              <a
+                className="btn btn-ghost"
+                aria-label={`Download the full log of ${title}`}
+                href={worktreeWarmLogUrl(warm.log.id)}
+                download={`worktree-warm-${warm.log.id}.log`}
+              >
+                Full log
+              </a>
+            </Tooltip>
+          )}
+          {pending && (
+            <Tooltip label="Stop the running step's process group and return the slot to the pool; slots not reached yet are left alone">
+              <button className="btn btn-secondary" type="button" disabled={warm?.cancelRequested} onClick={() => onCancel(operation)}>
+                {warm?.cancelRequested ? "Cancelling…" : "Cancel"}
+              </button>
+            </Tooltip>
+          )}
+          {!pending && (
+            <Tooltip label="Hide this Warm's report; the slots keep their dependencies and their last log">
+              <button className="btn btn-ghost" type="button" onClick={() => onDismiss(operation)}>Dismiss</button>
+            </Tooltip>
+          )}
+        </span>
+      </div>
+      {warm && (
+        <ul className="wt-warm-targets" aria-label={`${title} slots`}>
+          {warm.targets.map((target) => {
+            const outcome = WARM_TARGET_CHIPS[target.outcome];
+            return (
+              <li key={target.slotId}>
+                <StateChip label={outcome.label} tone={outcome.tone} />
+                <span>Slot {target.ordinal}</span>
+                <Tooltip label={target.path}><code className="wt-warm-path">{target.path}</code></Tooltip>
+                {target.detail && <span className="wt-warm-detail">{target.detail}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {warm && (pending || warm.tail) && (
+        <pre ref={tail} className="wt-deps-tail wt-warm-tail" aria-label={`${title} output`} tabIndex={0}>
+          {warm.tail ? warm.tail.replace(/\n+$/, "") : pending ? "Waiting for output…" : ""}
+        </pre>
+      )}
+      {warm && warm.truncatedBytes > 0 && (
+        <p className="wt-warm-note">Showing the last part of the output; the full log has the rest.</p>
+      )}
+      {operation.error && <span className="wt-operation-error">{operation.error}</span>}
+    </li>
+  );
+}
+
+function WarmOperations({
+  operations,
+  onCancel,
+  onDismiss,
+}: {
+  operations: WorktreeOperationView[];
+  onCancel: (operation: WorktreeOperationView) => void;
+  onDismiss: (operation: WorktreeOperationView) => void;
+}): React.JSX.Element | null {
+  if (operations.length === 0) return null;
+  return (
+    <section className="wt-operations wt-warm-operations" aria-label="Warm operations">
+      <ul className="wt-operation-list">
+        {operations.map((operation) => (
+          <WarmOperation key={operation.id} operation={operation} onCancel={onCancel} onDismiss={onDismiss} />
+        ))}
+      </ul>
     </section>
   );
 }
@@ -427,6 +564,19 @@ function SlotCard({
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
       {slot.dependencies && <SlotDependencies slotId={slot.id} ordinal={slot.ordinal} dependencies={slot.dependencies} />}
+      {slot.warmLog && (
+        <p className="wt-warm-log">
+          <Tooltip label={`Download the full log of the last Warm that held this slot, kept at ${slot.warmLog.path}`}>
+            <a
+              aria-label={`Download slot ${slot.ordinal}'s last Warm log`}
+              href={worktreeWarmLogUrl(slot.warmLog.id)}
+              download={`worktree-warm-${slot.warmLog.id}.log`}
+            >
+              Last Warm log
+            </a>
+          </Tooltip>
+        </p>
+      )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
@@ -451,6 +601,13 @@ function SlotCard({
         <Tooltip label={terminal?.blurb ?? "No terminal backend is currently available"}>
           <button className="btn btn-ghost" type="button" disabled={!terminal} onClick={() => void openTerminal()}>Open terminal</button>
         </Tooltip>
+        {!pending && slot.actions.includes("warm") && (
+          <Tooltip label="Preview preparing this idle slot ahead of time: fetch, reset to origin's default branch, and seed or run the pool's claim">
+            <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "warm", target: { kind: "slot", slotId: slot.id } }, event.currentTarget)}>
+              Warm
+            </button>
+          </Tooltip>
+        )}
         {!pending && slot.actions.includes("return") && (
           <Tooltip label="Preview returning this slot through its current task, check, or manual lease owner">
             <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "return", slotId: slot.id }, event.currentTarget)}>
@@ -863,6 +1020,11 @@ function PoolRow({
           </fieldset>
           <ClaimEditor repo={repo} updateConfig={updateConfig} />
           <div className="wt-maintenance-actions">
+            {repo.policy.claim && repo.policy.enabled && repo.counts.available > 0 && (
+              <Tooltip label="Preview warming every available slot in this pool, one at a time, under the pool's claim">
+                <button className="btn btn-secondary" type="button" onClick={(event) => onAction({ action: "warm", target: { kind: "pool", poolId: repo.id } }, event.currentTarget)}>Warm idle slots</button>
+              </Tooltip>
+            )}
             <Tooltip label="Preview reconciling durable slot records with Git and filesystem state">
               <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "reconcile", poolId: repo.id }, event.currentTarget)}>Reconcile</button>
             </Tooltip>
@@ -924,6 +1086,7 @@ function PoolSkeleton(): React.JSX.Element {
 
 function dialogTitle(request: WorktreeActionRequest): string {
   if (request.action === "legacyReturn") return "Return legacy worktree";
+  if (request.action === "warm") return request.target.kind === "pool" ? "Warm idle slots" : "Warm worktree";
   if (request.action === "destroy" && request.target.kind === "slots") {
     const count = request.target.slotIds.length;
     return `Destroy ${count} selected ${count === 1 ? "worktree" : "worktrees"}`;
@@ -995,7 +1158,9 @@ function ActionDialog({
           {preview.consequences.length > 0 && <section><h4>What happens</h4><ul>{preview.consequences.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.requiredAcknowledgements.length > 0 && <fieldset className="wt-acknowledgements"><legend>Required acknowledgements</legend>{preview.risks.filter((item) => item.acknowledgeable).map((item) => <Tooltip key={item.key} label={`Acknowledge this previewed risk: ${item.label}`}><label><input type="checkbox" checked={acks.has(item.key)} onChange={(event) => setAcks((current) => { const next = new Set(current); if (event.target.checked) next.add(item.key); else next.delete(item.key); return next; })} />I understand: {item.label}</label></Tooltip>)}</fieldset>}
         </div>
-        <footer className="modal-foot"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label="Queue this exact preview; it is rechecked against current state and runs in the background"><button className="btn btn-danger" type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Queueing…" : "Execute"}</button></Tooltip></footer>
+        <footer className="modal-foot"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label={preview.request.action === "warm"
+                ? "Queue this Warm; each slot is checked again when its turn comes, and one that is no longer idle is skipped"
+                : "Queue this exact preview; it is rechecked against current state and runs in the background"}><button className={preview.request.action === "warm" ? "btn btn-primary" : "btn btn-danger"} type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Queueing…" : "Execute"}</button></Tooltip></footer>
       </div>
     </Overlay>
   );
@@ -1017,7 +1182,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
   const pendingBySlot = useMemo(() => {
     const pending = new Map<string, WorktreeOperationView>();
     for (const operation of operations) {
-      if (operation.state === "failed") continue;
+      if (!worktreeOperationPending(operation)) continue;
       for (const target of operation.targets) if (target.provider === "mission") pending.set(target.id, operation);
     }
     return pending;
@@ -1093,8 +1258,13 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <button type="button" className="btn btn-ghost" onClick={() => void state.refresh()} disabled={loading}>Refresh</button>
           </Tooltip>
         </div>
+        <WarmOperations
+          operations={operations.filter((operation) => operation.request.action === "warm")}
+          onCancel={(operation) => void state.cancelOperation(operation.id)}
+          onDismiss={(operation) => void state.dismissOperation(operation.id)}
+        />
         <OperationList
-          operations={operations}
+          operations={operations.filter((operation) => operation.request.action !== "warm")}
           onRetry={(operation, retry, source) => request(retry, source, operation.id)}
           onDismiss={(operation) => void state.dismissOperation(operation.id)}
         />

@@ -8,6 +8,7 @@ import type {
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
 import {
+  cancelWorktreeOperation,
   dismissWorktreeOperation,
   executeWorktreeAction,
   fetchWorktrees,
@@ -43,7 +44,7 @@ export interface WorktreesState {
   previewError: string | null;
   previewChanged: boolean;
   busy: boolean;
-  /** Background cleanups: queued, running, or failed and not yet dismissed. */
+  /** Background operations: queued, running, or a failed or finished report not yet dismissed. */
   operations: WorktreeOperationView[];
   refresh: () => Promise<void>;
   /**
@@ -55,6 +56,8 @@ export interface WorktreesState {
   executePreview: (acks: WorktreeRiskKey[]) => Promise<boolean>;
   discardPreview: () => void;
   dismissOperation: (id: string) => Promise<void>;
+  /** Cancel a queued or running Warm. */
+  cancelOperation: (id: string) => Promise<void>;
 }
 
 /** An accepted Execute, shown until an inventory read that began after it lands. */
@@ -220,6 +223,13 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     void refresh();
   }, [refresh]);
 
+  const cancelOperation = useCallback(async (id: string): Promise<void> => {
+    const result = await cancelWorktreeOperation(id);
+    // A 404 is a Warm that finished first; the refresh shows how it ended.
+    if (!result.ok && result.status !== 404) setError(`That Warm could not be cancelled: ${result.error}`);
+    void refresh();
+  }, [refresh]);
+
   const operations = useMemo(() => {
     const observed = inventory?.operations ?? [];
     const known = new Set(observed.map((entry) => entry.id));
@@ -242,5 +252,6 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     executePreview,
     discardPreview,
     dismissOperation,
+    cancelOperation,
   };
 }
