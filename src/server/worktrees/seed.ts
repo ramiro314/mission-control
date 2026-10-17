@@ -446,7 +446,12 @@ async function stageWithin(
 
 export type SeedPlaceResult =
   | { ok: true }
-  | { ok: false; reason: string }
+  /**
+   * A rename failed. `touched` is false when nothing in the target had changed yet, as when a
+   * tree on another volume refuses the very first rename with EXDEV: that is no seed at all,
+   * and the steps run. Once anything was renamed in or aside, the seed paths are half placed.
+   */
+  | { ok: false; reason: string; touched: boolean }
   /** A Stop or the claim's deadline landed while placing: some paths may already be renamed. */
   | { ok: false; ended: "stopped" | "timedOut" };
 
@@ -468,7 +473,11 @@ export async function placeSeed(input: {
   now: () => number;
   /** Called after each rename. A test injects a crash, a Stop or a late clock here. */
   afterRename?: (path: string) => Promise<void> | void;
+  /** How a path is renamed. The real `rename` unless a test injects a failure such as EXDEV. */
+  rename?: (from: string, to: string) => Promise<void>;
 }): Promise<SeedPlaceResult> {
+  const move = input.rename ?? rename;
+  let touched = false;
   const ended = (): SeedPlaceResult | null =>
     input.signal.aborted
       ? { ok: false, ended: "stopped" }
@@ -481,38 +490,80 @@ export async function placeSeed(input: {
     const target = join(input.targetRoot, entry.path);
     try {
       if (await presentStat(target)) {
-        await rename(target, join(input.stagingDirectory, `${index}.replaced`));
+        await move(target, join(input.stagingDirectory, `${index}.replaced`));
+        touched = true;
       }
-      await rename(entry.staged, target);
+      await move(entry.staged, target);
+      touched = true;
     } catch (error) {
-      return { ok: false, reason: boundedReason(`${entry.path} could not be placed: ${error instanceof Error ? error.message : String(error)}`) };
+      return {
+        ok: false,
+        reason: boundedReason(`${entry.path} could not be placed: ${error instanceof Error ? error.message : String(error)}`),
+        touched,
+      };
     }
     await input.afterRename?.(entry.path);
   }
   return ended() ?? { ok: true };
 }
 
-export type SeedWipeResult = { ok: true; removed: string[] } | { ok: false; reason: string };
+export type SeedWipeResult =
+  | { ok: true; removed: string[] }
+  | { ok: false; reason: string }
+  /** The Stop or the claim's deadline landed mid-wipe: some seed paths may already be gone. */
+  | { ok: false; ended: "stopped" | "timedOut" };
+
+/**
+ * Remove a seed path whole, one directory entry at a time, checking the budget between
+ * entries: a monorepo's `node_modules` is too large to remove in one uninterruptible call.
+ */
+async function removeSeedPath(path: string, budget: SeedBudget | undefined): Promise<void> {
+  checkBudget(budget);
+  const stat = await presentStat(path);
+  if (!stat) return;
+  if (stat.isDirectory()) {
+    for (const name of await childNames(path)) {
+      checkBudget(budget);
+      await rm(join(path, name), { recursive: true, force: true });
+    }
+  }
+  await rm(path, { recursive: true, force: true });
+}
 
 /**
  * An interrupted seed's cleanup: remove every seed path in `root`, but only once Git confirms
  * each one is ignored and holds nothing tracked. A single path that fails the proof removes
  * nothing at all, so the claim fails with the reason instead of deleting work.
  */
-export async function wipeSeedPaths(root: string, seed: WorktreeClaimSeed | undefined): Promise<SeedWipeResult> {
+export async function wipeSeedPaths(
+  root: string,
+  seed: WorktreeClaimSeed | undefined,
+  budget?: SeedBudget,
+): Promise<SeedWipeResult> {
   if (!seed) return { ok: true, removed: [] };
+  try {
+    return await wipeWithin(root, seed, budget);
+  } catch (error) {
+    if (error instanceof SeedEnded) return { ok: false, ended: error.ended };
+    throw error;
+  }
+}
+
+async function wipeWithin(root: string, seed: WorktreeClaimSeed, budget: SeedBudget | undefined): Promise<SeedWipeResult> {
   let entries: SeedEntry[];
   try {
-    entries = await expandSeedPaths(root, seed.paths);
+    entries = await expandSeedPaths(root, seed.paths, budget);
   } catch (error) {
+    if (error instanceof SeedEnded) throw error;
     // A seed path that cannot be seen cannot be confirmed gone. Nothing is removed.
     return { ok: false, reason: boundedReason(`seed paths could not be inspected: ${error instanceof Error ? error.message : String(error)}`) };
   }
-  const proof = await proveIgnored(root, entries);
+  const proof = await proveIgnored(root, entries, budget);
   if (!proof.ok) return { ok: false, reason: proof.reason };
   try {
-    for (const entry of entries) await rm(join(root, entry.path), { recursive: true, force: true });
+    for (const entry of entries) await removeSeedPath(join(root, entry.path), budget);
   } catch (error) {
+    if (error instanceof SeedEnded) throw error;
     return { ok: false, reason: boundedReason(`seed paths could not be removed: ${error instanceof Error ? error.message : String(error)}`) };
   }
   return { ok: true, removed: entries.map((entry) => entry.path) };

@@ -62,7 +62,7 @@ test("the claim editor saves seed paths and exclusions, and refuses a bad glob b
   await expect(seedPaths).toHaveValue("");
   await expect(seedExclude).toHaveValue("");
   await expect(editor.getByText(
-    "A slot with no trusted fingerprint clones these ignored paths copy-on-write from an idle sibling before its steps run.",
+    "A cold slot (new, never claimed, failed or interrupted) clones these ignored paths copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded seeds only when it is stale and a sibling matches its commit exactly.",
     { exact: false },
   )).toBeVisible();
 

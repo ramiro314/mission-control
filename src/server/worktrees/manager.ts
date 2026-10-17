@@ -207,6 +207,8 @@ export interface WorktreeManagerDeps {
   cloneTree: CloneTree;
   /** Told after each seed rename into a target, before the next. A test injects a crash here. */
   afterSeedRename?: (path: string) => Promise<void> | void;
+  /** How a seed renames into its target. The real `rename` unless a test injects EXDEV. */
+  seedRename?: (from: string, to: string) => Promise<void>;
 }
 
 const DEFAULT_DEPS: WorktreeManagerDeps = {
@@ -257,6 +259,12 @@ type SeedRun =
   /** Stopped, timed out, or not placed whole: the target's seed paths cannot be trusted. */
   | { kind: "interrupted"; reason: string }
   | { kind: "unrecorded" };
+
+/** The warning reason for an interrupted seed's wipe that a Stop or the claim's deadline ended. */
+const WIPE_ENDED = {
+  stopped: "did not run, because removing the interrupted seed paths was stopped",
+  timedOut: "did not run, because removing the interrupted seed paths reached the claim's time limit",
+} as const;
 
 /** The warning reason for a seed a Stop or the claim's deadline ended. */
 const SEED_ENDED = {
@@ -1184,13 +1192,26 @@ export class WorktreeManager {
     // be half renamed. A state a later build wrote is treated the same way.
     const interrupted = depsCutOff(recorded?.depsState ?? null);
     if (interrupted && claim.seed) {
-      const wiped = await wipeSeedPaths(reservation.path, claim.seed);
+      // The wipe spends the claim's deadline and honours its Stop like every seed phase, so a
+      // large tree cannot hide a Stop or eat the steps' time unseen.
+      const wiped = await wipeSeedPaths(reservation.path, claim.seed, {
+        signal: control.signal,
+        deadline,
+        now: this.deps.now,
+      });
       if (!wiped.ok) {
+        // Left `claiming` while the daemon stops: startup records it as interrupted.
+        if ("ended" in wiped && this.claims.stopping) return { kind: "shutdown" };
         // Still interrupted, not failed: the seed paths may be half renamed, or half removed by
         // this very wipe, and only `interrupted` makes the next claim remove them again before
         // anything else. The lease is granted with the warning, as for any failed claim.
         return settleFailed(
-          notRunWarning(claim, `did not run, because the interrupted seed paths could not be removed: ${wiped.reason}`),
+          notRunWarning(
+            claim,
+            "ended" in wiped
+              ? WIPE_ENDED[wiped.ended]
+              : `did not run, because the interrupted seed paths could not be removed: ${wiped.reason}`,
+          ),
           "interrupted",
         );
       }
@@ -1503,10 +1524,17 @@ export class WorktreeManager {
         deadline: input.deadline,
         now: this.deps.now,
         ...(this.deps.afterSeedRename ? { afterRename: this.deps.afterSeedRename } : {}),
+        ...(this.deps.seedRename ? { rename: this.deps.seedRename } : {}),
       });
       // A seed an exclusion left a whole path out of did not place the source's tree, so it
       // inherits nothing and the steps run on top of what it did place.
       if (placed.ok) return { kind: "placed", fingerprint: staged.complete ? sourceFingerprint : null };
+      // A rename that failed before anything in the target changed placed nothing: no seed.
+      // The cold check fallback's tree can sit on another volume than the pool's staging, and
+      // its first rename then fails with EXDEV; that must run the steps, not fail the claim.
+      if ("reason" in placed && !placed.touched) {
+        return { kind: "abandoned", reason: `the seed could not be placed: ${placed.reason}` };
+      }
       return {
         kind: "interrupted",
         reason: "ended" in placed

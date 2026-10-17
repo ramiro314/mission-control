@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { cp, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,7 @@ import {
   copyOnWriteArgv,
   copyOnWriteClone,
   expandSeedPaths,
+  placeSeed,
   removeLeftoverStaging,
   seedStagingRoot,
   stageSeed,
@@ -484,7 +485,7 @@ test("the interrupted wipe removes only paths Git confirms are ignored, and refu
   writeFileSync(join(clone, "deps", "half"), "half-renamed");
   const tracked = await wipeSeedPaths(clone, { paths: ["deps", "tracked"], exclude: [] });
   assert.equal(tracked.ok, false);
-  assert.match(tracked.ok ? "" : tracked.reason, /tracked holds tracked files/);
+  assert.match("reason" in tracked ? tracked.reason : "", /tracked holds tracked files/);
   assert.equal(existsSync(join(clone, "deps", "half")), true);
   assert.equal(existsSync(join(clone, "tracked", "file")), true);
 
@@ -493,7 +494,7 @@ test("the interrupted wipe removes only paths Git confirms are ignored, and refu
   writeFileSync(join(clone, "loose", "work"), "somebody's work");
   const loose = await wipeSeedPaths(clone, { paths: ["deps", "loose"], exclude: [] });
   assert.equal(loose.ok, false);
-  assert.match(loose.ok ? "" : loose.reason, /loose is not ignored by Git/);
+  assert.match("reason" in loose ? loose.reason : "", /loose is not ignored by Git/);
   assert.equal(existsSync(join(clone, "loose", "work")), true);
   assert.equal(existsSync(join(clone, "deps", "half")), true);
 });
@@ -786,6 +787,53 @@ test("an interrupted slot whose seed paths match a tracked file fails its claim 
   assert.equal(slotAt(m, 1).depsState, "interrupted");
   assert.equal(runCount(again.lease.path), before, "still no step ran");
   await m.release(again.lease);
+});
+
+test("the interrupted wipe honours its budget: an expired deadline or a Stop removes nothing more", async () => {
+  const { clone } = repository("mission-seed-wipe-budget-");
+  mkdirSync(join(clone, "deps", "pkg"), { recursive: true });
+  writeFileSync(join(clone, "deps", "pkg", "file"), "installed");
+  const expired = await wipeSeedPaths(clone, { paths: ["deps"], exclude: [] }, {
+    signal: new AbortController().signal,
+    deadline: Date.now() - 1,
+    now: Date.now,
+  });
+  assert.deepEqual(expired, { ok: false, ended: "timedOut" });
+  const stopped = new AbortController();
+  stopped.abort("stopped");
+  assert.deepEqual(
+    await wipeSeedPaths(clone, { paths: ["deps"], exclude: [] }, { signal: stopped.signal, deadline: Date.now() + 60_000, now: Date.now }),
+    { ok: false, ended: "stopped" },
+  );
+  assert.equal(existsSync(join(clone, "deps", "pkg", "file")), true, "nothing was removed");
+});
+
+test("a Stop that lands before an interrupted slot's wipe stops the wipe and keeps the cleanup owed", async () => {
+  const fixture = repository("mission-seed-wipe-stopped-");
+  const claim = claimWith(SEED);
+  const m = manager(claim, { cloneTree: recordingClone([]) }, 1);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "wipe-stopped");
+  const slot = slotAt(m, 1);
+  db.prepare("UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL WHERE id = ?").run(slot.id);
+  writeFileSync(join(slot.path, "deps", "half"), "half-renamed");
+  const before = runCount(slot.path);
+  const result = leased(await m.acquire({
+    repositoryPath: fixture.clone,
+    baseSha: fixture.sha,
+    owner: { kind: "task", key: "wipe-stopped:target" },
+    runClaim: true,
+    // The claim's own start: the Stop lands after its deadline is set and before the wipe.
+    onClaimStart: () => {
+      const running = m.claims.get(slot.id);
+      assert.ok(running);
+      m.stopClaim(slot.id, running.id);
+    },
+  }));
+  assert.match(result.claimWarning?.reason ?? "", /removing the interrupted seed paths was stopped/);
+  assert.equal(existsSync(join(slot.path, "deps", "half")), true, "the wipe saw the Stop before removing anything");
+  assert.equal(slotAt(m, 1).depsState, "interrupted", "the cleanup is still owed");
+  assert.equal(runCount(slot.path), before, "no step ran");
+  await m.release(result.lease);
 });
 
 test("an interrupted wipe that cannot inspect a seed path removes nothing and stays interrupted", async () => {
@@ -1284,6 +1332,68 @@ test("a seed source left leased by a crash and still occupied is quarantined, ne
 });
 
 // ---- the cold check fallback ----
+
+test("a placement failure says whether it changed the target", async () => {
+  const target = mkdtempSync(join(tmpdir(), "mission-seed-place-target-"));
+  const staging = mkdtempSync(join(tmpdir(), "mission-seed-place-staging-"));
+  const staged = join(staging, "0", "deps");
+  mkdirSync(staged, { recursive: true });
+  const exdev = async () => {
+    throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+  };
+  const base = { stagingDirectory: staging, signal: new AbortController().signal, deadline: Date.now() + 60_000, now: Date.now };
+  // Nothing at the target yet: the first rename is refused, and nothing changed.
+  const untouched = await placeSeed({ ...base, targetRoot: target, staged: [{ path: "deps", staged }], rename: exdev });
+  assert.equal(untouched.ok, false);
+  assert.equal("touched" in untouched && untouched.touched, false);
+  assert.match("reason" in untouched ? untouched.reason : "", /EXDEV/);
+  // An existing target path renamed aside, then the clone refused: the target has changed.
+  mkdirSync(join(target, "deps"));
+  let renames = 0;
+  const touched = await placeSeed({
+    ...base,
+    targetRoot: target,
+    staged: [{ path: "deps", staged }],
+    rename: async (from, to) => {
+      renames += 1;
+      if (renames === 2) await exdev();
+      const { rename } = await import("node:fs/promises");
+      await rename(from, to);
+    },
+  });
+  assert.equal("touched" in touched && touched.touched, true);
+});
+
+test("a cold check tree on another volume gets no seed, so its steps run instead of failing the claim", async () => {
+  const fixture = repository("mission-seed-cold-xdev-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  let tree = "";
+  const m = manager(claim, {
+    cloneTree: recordingClone(sources),
+    // The pool's staging and the check tree are on different filesystems.
+    seedRename: async (from, to) => {
+      if (to.startsWith(tree)) throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+      const { rename } = await import("node:fs/promises");
+      await rename(from, to);
+    },
+  }, 1);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "cold-xdev");
+  // Physical, so it matches the working directory the steps report on a /var -> /private/var Mac.
+  tree = join(realpathSync(mkdtempSync(join(tmpdir(), "mission-seed-cold-xdev-tree-"))), "check");
+  gitIn(fixture.clone, "worktree", "add", "-q", "--detach", tree, fixture.sha);
+  const result = await m.claimDisposableTree({
+    repositoryPath: fixture.clone,
+    path: tree,
+    baseSha: fixture.sha,
+    owner: { kind: "check", key: "cold-xdev-attempt" },
+  });
+  assert.deepEqual(result, { kind: "succeeded" }, "no seed is not a failed claim");
+  assert.equal(sources.length, 2, "the clone into the pool's staging ran");
+  assert.equal(runCount(tree), 1, "the steps installed the tree themselves");
+  assert.equal(readFileSync(join(tree, "deps", "marker"), "utf8"), tree);
+  assert.equal(slotAt(m, 1).state, "available");
+});
 
 test("the cold check fallback seeds its disposable tree from an idle slot and skips the steps on a match", async () => {
   const fixture = repository("mission-seed-cold-");

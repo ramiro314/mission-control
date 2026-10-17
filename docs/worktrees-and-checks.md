@@ -294,12 +294,17 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   Exclusions that remove every path are no seed at all: the target is untouched and the steps
   run.
 - **A failed clone** abandons the seed, removes its staging, and the steps run. It is not a
-  failed claim, and the target was never touched.
+  failed claim, and the target was never touched. So does a placement whose first rename fails
+  before anything in the target changed, as when the cold check fallback's tree sits on another
+  volume than the pool's staging and the rename is refused with `EXDEV`. A rename that fails
+  after something was placed or moved aside records `interrupted`.
 - **One deadline.** The seed spends the claim's `timeoutMinutes` together with the steps. Every
   phase of a seed checks the Stop and that deadline: expanding the globs, proving the paths
   ignored (each Git call is bounded by what is left of the claim's time, and by a minute at
   most), each clone, the exclusion walk, and placement. Whichever lands first ends the seed as
-  `interrupted`.
+  `interrupted`. The interrupted wipe works within the same budget: it checks both before each
+  Git call and between the entries of every seed path it removes, so a large `node_modules`
+  cannot hide a Stop, and a wipe that a Stop or the deadline ends leaves the slot `interrupted`.
 - **An exclusion walk that cannot read** a directory in the clone, or cannot look up the staged
   clone itself, for any reason other than it having vanished, abandons the seed and the steps
   run. The excluded content may
