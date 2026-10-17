@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   buildTestingScopes,
   mergeTestingLayers,
@@ -150,11 +150,17 @@ function onDisk(files: Record<string, string>): { root: string; tracked: string[
   return { root, tracked: Object.keys(files) };
 }
 
-async function selectOnDisk(root: string, tracked: string[], changed: string[]) {
+async function selectOnDisk(
+  root: string,
+  tracked: string[],
+  changed: string[],
+  readFile?: (abs: string) => string | null,
+) {
   const selection = await selectAffectedTests(root, config({ tests: { patterns: ["**/*.test.{ts,tsx,js}"] } }), {
     changedPaths: async () => ({ ok: true, repoRoot: root, paths: changed }),
     deletedPaths: async () => ({ ok: true, repoRoot: root, paths: [] }),
     trackedFiles: async () => tracked,
+    ...(readFile ? { readFile } : {}),
   });
   assert.ok(selection.ok, selection.ok ? "" : selection.reason);
   return selection;
@@ -318,4 +324,86 @@ test("workspace package names resolve bare and with a subpath, inside the worksp
     + "does not read, so imports of it were resolved through its types, main or index file, and its subpaths inside "
     + "packages/rich.",
   ]);
+});
+
+test("a malformed workspace manifest is reported and resolves nothing, and a duplicate name keeps the first workspace", async () => {
+  const { root, tracked } = onDisk({
+    "package.json": JSON_FILE({ private: true, workspaces: ["packages/*"] }),
+    "packages/broken/package.json": "{ \"name\": \"broken\",",
+    "packages/broken/index.ts": "export const broken = 1;\n",
+    // Two workspaces claim "dup"; the first by path, packages/a, is the one imports reach.
+    "packages/a/package.json": JSON_FILE({ name: "dup" }),
+    "packages/a/index.ts": "export const a = 1;\n",
+    "packages/b/package.json": JSON_FILE({ name: "dup" }),
+    "packages/b/index.ts": "export const b = 1;\n",
+    "app/broken.test.ts": "import { broken } from \"broken\";\n",
+    "app/dup.test.ts": "import { a } from \"dup\";\n",
+  });
+  const selection = await selectOnDisk(root, tracked, ["packages/broken/index.ts", "packages/b/index.ts"]);
+  // Only packages/b changed, so dup.test.ts is not selected: "dup" resolves to packages/a.
+  assert.deepEqual(selection.files, []);
+  assert.deepEqual(selection.diagnostics, [
+    "Workspace package \"dup\" is declared by both packages/a and packages/b; packages/a was used.",
+    "packages/broken/package.json could not be read or parsed, so the package it describes was not resolved.",
+  ]);
+
+  const first = await selectOnDisk(root, tracked, ["packages/a/index.ts"]);
+  assert.deepEqual(first.files, [{ path: "app/dup.test.ts", reason: "imports", via: "packages/a/index.ts" }]);
+});
+
+test("in a folder with both, tsconfig.json governs and jsconfig.json is not read", async () => {
+  const { root, tracked } = onDisk({
+    "apps/x/tsconfig.json": JSON_FILE({ compilerOptions: { paths: { "@x/*": ["./ts/*"] } } }),
+    "apps/x/jsconfig.json": JSON_FILE({ compilerOptions: { paths: { "@x/*": ["./js/*"] } } }),
+    "apps/x/ts/a.ts": "export const a = 1;\n",
+    "apps/x/js/a.ts": "export const a = 1;\n",
+    "apps/x/pick.test.ts": "import { a } from \"@x/a\";\n",
+  });
+  const viaJs = await selectOnDisk(root, tracked, ["apps/x/js/a.ts"]);
+  assert.deepEqual(viaJs.files, [], "the jsconfig's target must not select the importer");
+  const viaTs = await selectOnDisk(root, tracked, ["apps/x/ts/a.ts"]);
+  assert.deepEqual(viaTs.files, [{ path: "apps/x/pick.test.ts", reason: "imports", via: "apps/x/ts/a.ts" }]);
+});
+
+test("configs and manifests are parsed once per gate, however many importers they govern, and afresh next gate", async () => {
+  const { root, tracked } = onDisk({
+    "package.json": JSON_FILE({ private: true, workspaces: ["packages/*"] }),
+    "packages/ui/package.json": JSON_FILE({ name: "@acme/ui" }),
+    "packages/ui/index.ts": "export const ui = 1;\n",
+    "apps/web/tsconfig.json": JSON_FILE({ compilerOptions: { paths: { "@web/*": ["src/*"] } } }),
+    "apps/web/src/util.ts": "export const u = 1;\n",
+    // Three importers in three folders, all governed by apps/web/tsconfig.json, each also
+    // importing the workspace package.
+    "apps/web/src/a.test.ts": "import { u } from \"@web/util\";\nimport { ui } from \"@acme/ui\";\n",
+    "apps/web/src/nested/b.test.ts": "import { u } from \"@web/util\";\nimport { ui } from \"@acme/ui\";\n",
+    "apps/web/test/c.test.ts": "import { u } from \"@web/util\";\nimport { ui } from \"@acme/ui\";\n",
+  });
+  const reads = new Map<string, number>();
+  const counting = (abs: string): string | null => {
+    const path = relative(root, abs).split("\\").join("/");
+    reads.set(path, (reads.get(path) ?? 0) + 1);
+    try {
+      return readFileSync(abs, "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const parsed = () => ({
+    "apps/web/tsconfig.json": reads.get("apps/web/tsconfig.json") ?? 0,
+    "package.json": reads.get("package.json") ?? 0,
+    "packages/ui/package.json": reads.get("packages/ui/package.json") ?? 0,
+  });
+
+  const changed = ["apps/web/src/util.ts", "packages/ui/index.ts"];
+  const gate = await selectOnDisk(root, tracked, changed, counting);
+  assert.deepEqual(gate.files.map((file) => file.path), [
+    "apps/web/src/a.test.ts",
+    "apps/web/src/nested/b.test.ts",
+    "apps/web/test/c.test.ts",
+  ]);
+  assert.deepEqual(parsed(), { "apps/web/tsconfig.json": 1, "package.json": 1, "packages/ui/package.json": 1 });
+
+  // The next gate builds its own resolver, so it reads them again rather than trusting a stale parse.
+  await selectOnDisk(root, tracked, changed, counting);
+  assert.deepEqual(parsed(), { "apps/web/tsconfig.json": 2, "package.json": 2, "packages/ui/package.json": 2 });
 });

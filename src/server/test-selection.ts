@@ -49,6 +49,11 @@ export interface TestSelectionDeps {
   deletedPaths?: (treeRoot: string, baseBranch: string | null) => Promise<ChangedPathsResult>;
   /** Defaults to `git ls-files`. Repository-relative, forward slashes. */
   trackedFiles?: (treeRoot: string) => Promise<string[] | null>;
+  /**
+   * Reads a scanned source, config or manifest by absolute path; null when it cannot be read.
+   * Defaults to reading the file, skipping one over 1 MiB.
+   */
+  readFile?: (abs: string) => string | null;
 }
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -276,6 +281,8 @@ class ImportResolver {
     private readonly files: ReadonlySet<string>,
     /** The tracked files still present, where configs and workspace manifests are looked for. */
     private readonly present: ReadonlySet<string>,
+    /** How every file this gate scans, and every config and manifest it parses, is read. */
+    readonly readFile: (abs: string) => string | null = readSource,
   ) {}
 
   /** The repository-relative file `specifier` names from `importer`, or null. */
@@ -418,7 +425,7 @@ class ImportResolver {
       this.diagnostics.add(`${path} resolves outside the repository, so its paths and baseUrl were not used.`);
       return null;
     }
-    const text = readSource(join(this.treeRoot, path));
+    const text = this.readFile(join(this.treeRoot, path));
     try {
       const parsed = text === null ? null : parseJsonc(text);
       if (isRecord(parsed)) return parsed;
@@ -499,7 +506,7 @@ class ImportResolver {
     // A package with no manifest is normal (a bare tsconfig package); one that will not parse is not.
     if (this.inside(path) && isFile(join(this.treeRoot, path))) {
       try {
-        const text = readSource(join(this.treeRoot, path));
+        const text = this.readFile(join(this.treeRoot, path));
         const parsed: unknown = text === null ? null : JSON.parse(text);
         if (isRecord(parsed)) manifest = parsed;
       } catch {
@@ -616,7 +623,7 @@ function testsReachingChanges(
   while (queue.length > 0) {
     const file = queue.pop()!;
     if (!isSource(file)) continue;
-    const source = readSource(join(treeRoot, file));
+    const source = resolver.readFile(join(treeRoot, file));
     if (source === null) continue;
     for (const specifier of scanImportSpecifiers(source)) {
       const target = resolver.resolve(file, specifier);
@@ -685,7 +692,8 @@ export async function selectAffectedTests(
   const importing = tests.filter((file) => testingScopeOf(scopes, file).tests.includeImporters);
   const diagnostics: string[] = [];
   if (importing.length > 0 && changed.size > 0) {
-    const resolver = new ImportResolver(treeRoot, new Set([...present, ...deleted]), present);
+    // One resolver per gate: each config and manifest is parsed once here, and again next gate.
+    const resolver = new ImportResolver(treeRoot, new Set([...present, ...deleted]), present, deps.readFile);
     const reached = testsReachingChanges(treeRoot, importing, changed, resolver);
     for (const [file, via] of reached) {
       if (!selected.has(file)) selected.set(file, { path: file, reason: "imports", via });
