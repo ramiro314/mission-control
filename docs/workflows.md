@@ -1048,15 +1048,16 @@ The `flakes` block is read by [CI flake reporting](flaky-tests.md), not by this 
 `src/shared/testing-config.ts`.
 
 **Stored settings** are for a repository that will not commit the file. The affected-tests page
-in Library › Commands has a **Testing settings** section with one row per repository root: every
-root that has stored settings or an `affected-tests` override at its root, and any root you add.
-Folders inside a repository get rows of their own (see [subdirectory scopes](#subdirectory-scopes)).
-Each row edits `tests.patterns` and `tests.smokeSet` (one glob per line) and
-`tests.includeImporters` (Inherit, On or Off). Each list also says where it comes from:
-**Inherit** leaves the key unset, so the committed file or the default decides, and **This row**
-stores the list as typed. This row with no globs stores an empty list, which replaces the committed
-one: an empty smoke set runs no smoke test. Typing a glob switches a list to This row. Each row
-saves on its own through
+in Library › Commands has a **Testing settings** section with one row per path that has stored
+settings or an `affected-tests` override: each repository root, and each folder inside a
+repository, such as one app of a monorepo. **Add a repository or folder** adds a row for a path that
+has neither. A root row is the root's stored layer; a folder row is a
+[subdirectory scope](#subdirectory-scopes). Each row edits `tests.patterns` and `tests.smokeSet`
+(one glob per line) and `tests.includeImporters` (Inherit, On or Off). Each list also says where it
+comes from: **Inherit** leaves the key unset, so the committed file or the default decides (the
+root's settings, for a folder row), and **This row** stores the list as typed. This row with no
+globs stores an empty list, which replaces the inherited one: an empty smoke set runs no smoke
+test. Typing a glob switches a list to This row. Each row saves on its own through
 `PUT /api/testing-settings`, keyed by the repository's canonical main-checkout path, or a
 subdirectory below it, the same key a Command override uses:
 
@@ -1071,8 +1072,10 @@ subdirectory below it, the same key a Command override uses:
 
 Stored settings supersede one rule of the [flake-aware testing plan](plans/flake-aware-testing/plan.md):
 `tests.*` selection settings no longer have to be committed and reviewed like code, and a stored
-key overrides the committed file's. The committed file is still read, is still reviewed with the
-change, and is still the only source of `flakes`.
+key overrides the committed file's. A key stored for a folder goes further and overrides the
+root's for the files inside that folder, which the committed file, flat and repository-wide, cannot
+express. The committed file is still read, is still reviewed with the change, and is still the only
+source of `flakes`.
 
 A gitignored **`.mission/testing.local.json`** in your own checkout (the session's repository,
 not the check's worktree) has the last word: a key set locally replaces the stored and committed
