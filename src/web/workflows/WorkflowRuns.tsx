@@ -7,6 +7,7 @@ import type {
   WorkflowContextSnapshot,
   WorkflowDelivery,
   WorkflowHumanDecision,
+  WorkflowAffectedTestsPartition,
   WorkflowAffectedTestsReport,
   WorkflowCheckOutcome,
   WorkflowNamedTest,
@@ -451,6 +452,8 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
           <UnlistedTests total={report.failureCount} listed={report.failures.length} />
         </>
       )}
+      <AffectedTestsPartitions report={report} />
+      <UnrunTests report={report} />
       <TestingSettingsSourcesLine settings={report.settings} />
       <TestingScopesLines settings={report.settings} />
       {report.diagnostics && report.diagnostics.length > 0 && (
@@ -462,6 +465,83 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Each invocation the gate ran: where, with which Command, for how many files, and how it ended,
+ * with its own output tail folded beneath it. Absent on outcomes recorded before partitions
+ * existed, and on a gate that ran nothing.
+ */
+function AffectedTestsPartitions({ report }: { report: WorkflowAffectedTestsReport }): React.JSX.Element | null {
+  const partitions = report.partitions ?? [];
+  if (partitions.length === 0) return null;
+  const total = report.partitionCount ?? partitions.length;
+  return (
+    <>
+      <h5>Partitions ({total})</h5>
+      <ul className="wf-run-partitions" aria-label="Partitions">
+        {partitions.map((partition) => <PartitionItem key={partition.subpath} partition={partition} />)}
+      </ul>
+      {total > partitions.length && (
+        <p className="wf-run-meta">{total - partitions.length} more partitions are not listed here.</p>
+      )}
+    </>
+  );
+}
+
+function PartitionItem({ partition }: { partition: WorkflowAffectedTestsPartition }): React.JSX.Element {
+  const place = partition.subpath || "repository root";
+  const files = `${partition.fileCount} ${partition.fileCount === 1 ? "file" : "files"}`;
+  const meta = [
+    files,
+    `exit ${partition.exitCode}`,
+    partition.source === "default" ? "global default" : null,
+  ].filter((part): part is string => part !== null);
+  return (
+    <li className={`wf-run-partition is-${partition.status}`} aria-label={`Partition ${place}`}>
+      <div className="wf-run-partition-head">
+        <span className={`workflow-chip workflow-${partition.status}`}>
+          {partition.status === "passed" ? "Passed" : "Failed"}
+        </span>
+        <code>{place}</code>
+        <span className="wf-run-meta">{meta.join(" · ")}</span>
+      </div>
+      <code className="wf-run-partition-command">{formatCheckCommand(partition.command)}</code>
+      <p className="wf-run-meta">{partition.note}</p>
+      {partition.output && (
+        <details>
+          <Tooltip label="Show the end of this partition's output">
+            <summary>Output tail</summary>
+          </Tooltip>
+          <pre className="wf-run-partition-output">{partition.output}</pre>
+          {partition.truncatedBytes > 0 && (
+            <p className="wf-run-meta">Earlier {partition.truncatedBytes} bytes of output were omitted.</p>
+          )}
+        </details>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Selected test files no Command could run: outside every subdirectory override, with no root
+ * override or global default. Listed so a gate that passed on the partitions that ran is never
+ * read as having run them.
+ */
+function UnrunTests({ report }: { report: WorkflowAffectedTestsReport }): React.JSX.Element | null {
+  const unrun = report.unrun ?? [];
+  if (unrun.length === 0) return null;
+  const total = report.unrunCount ?? unrun.length;
+  return (
+    <>
+      <h5>Selected but unrun ({total})</h5>
+      <p>No affected-tests Command covers these, so they did not run. The gate decided on the partitions that ran.</p>
+      <ul aria-label="Selected but unrun tests">
+        {unrun.map((path) => <li key={path}><code>{path}</code></li>)}
+      </ul>
+      <UnlistedTests total={total} listed={unrun.length} />
+    </>
   );
 }
 

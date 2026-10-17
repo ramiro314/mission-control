@@ -3422,7 +3422,18 @@ button.wf-run-version:focus-visible {
 .wf-run-affected ul { margin: 2px 0 8px; padding-left: 18px; font-size: 12px; line-height: 1.5; }
 .wf-run-affected code { font-size: 11.5px; }
 .wf-run-affected details { margin: 0 0 8px; font-size: 12px; }
-.wf-run-check-output {
+/* One row per partition of an affected-tests gate: its chip, folder and counts on one line, then
+   the Command it ran and its note, with its output tail folded. */
+.wf-run-affected ul.wf-run-partitions { list-style: none; padding-left: 0; }
+.wf-run-partition { margin: 0 0 6px; padding: 4px 0 4px 8px; border-left: 2px solid var(--border); }
+.wf-run-partition.is-passed { border-left-color: var(--idle); }
+.wf-run-partition.is-failed { border-left-color: var(--danger); }
+.wf-run-partition-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.wf-run-partition-command { display: block; overflow-wrap: anywhere; color: var(--muted); }
+.wf-run-partition .wf-run-meta { margin: 2px 0; }
+.wf-run-partition details { margin: 2px 0 0; }
+.wf-run-check-output,
+.wf-run-partition-output {
   margin: 4px 0 0;
   padding: 6px 8px;
   max-height: 260px;

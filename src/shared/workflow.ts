@@ -3579,6 +3579,52 @@ export function resolveWorkflowCommand(
   return null;
 }
 
+/**
+ * Every place an `affected-tests` gate can run tests in one repository: the command the
+ * repository ROOT resolves (its own override, a broader one covering it, or the global default),
+ * then each override on a subdirectory inside it, sorted by path.
+ *
+ * Independent of where the session stands, and that is the point. A monorepo change decides which
+ * apps run; the session's folder still picks the `test`, `lint`, `typecheck` and `build` Command,
+ * through `resolveWorkflowCommand`, but not which partitions an affected-tests gate has. Each
+ * selected test then goes to the DEEPEST target whose `workingSubpath` contains it - `""` contains
+ * everything - and a test no target contains is selected but unrun.
+ */
+export function affectedTestsTargets(
+  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null,
+  repoRoot: string,
+): WorkflowCommandResolution[] {
+  if (!view) return [];
+  const root = resolveWorkflowCommand(view, { cwd: null, repoRoot, checkoutSubpath: "" });
+  const nested = new Map<string, WorkflowCommandResolution>();
+  for (const entry of view.overrides) {
+    const workingSubpath = checkCommandSubpath(repoRoot, entry.repoRoot);
+    // The write boundary refuses a duplicate root, so a tie is two spellings of one folder.
+    if (!workingSubpath || nested.has(workingSubpath)) continue;
+    nested.set(workingSubpath, { command: [...entry.command], workingSubpath, source: "override" });
+  }
+  const subdirectories = [...nested.values()]
+    .sort((a, b) => (a.workingSubpath < b.workingSubpath ? -1 : a.workingSubpath > b.workingSubpath ? 1 : 0));
+  return root ? [root, ...subdirectories] : subdirectories;
+}
+
+/**
+ * The target a repository-relative test file runs in: the deepest one whose subdirectory holds
+ * it, or null when none does (no root command, and outside every subdirectory override).
+ */
+export function affectedTestsTargetFor<T extends Pick<WorkflowCommandResolution, "workingSubpath">>(
+  targets: readonly T[],
+  path: string,
+): T | null {
+  let best: T | null = null;
+  for (const target of targets) {
+    const sub = target.workingSubpath;
+    if (sub !== "" && !subpathWithin(path, sub)) continue;
+    if (!best || sub.length > best.workingSubpath.length) best = target;
+  }
+  return best;
+}
+
 /** Drop a single trailing separator so `/repo/` and `/repo` compare equal. */
 function trimSlash(p: string): string {
   return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
@@ -3814,7 +3860,39 @@ export const AFFECTED_TESTS_LIMITS = {
   /** Selection diagnostics kept, and the length of each. */
   diagnostics: 10,
   diagnostic: 1_000,
+  /** Partitions run detail lists, and the output tail each keeps. */
+  partitions: 50,
+  partitionOutput: 2_000,
+  /** Selected-but-unrun test files run detail lists. */
+  unrunShown: 50,
 } as const;
+
+/** How one partition of an affected-tests gate ended. APPEND-ONLY: durable in `output_json`. */
+export const AFFECTED_TESTS_PARTITION_STATUSES = ["passed", "failed"] as const;
+export type AffectedTestsPartitionStatus = (typeof AFFECTED_TESTS_PARTITION_STATUSES)[number];
+
+/**
+ * One invocation of an affected-tests gate: the Command one override (or the root's command) ran,
+ * in its subdirectory, for the selected tests inside it.
+ */
+export interface WorkflowAffectedTestsPartition {
+  /** Repository-relative; `""` is the repository root. */
+  subpath: string;
+  /** The template, never the argv expanded with the files. */
+  command: string[];
+  /** Whether the root ran an override or the slot's global default. Subdirectories are overrides. */
+  source: "override" | "default";
+  fileCount: number;
+  status: AffectedTestsPartitionStatus;
+  /** The last run's exit code: the rerun's when there was one. */
+  exitCode: number;
+  /** One sentence, as the gate's note reads for a single invocation. */
+  note: string;
+  /** The tail of this partition's output, rerun included, bounded by `partitionOutput`. */
+  output: string;
+  /** Bytes of this partition's output not kept in `output`. */
+  truncatedBytes: number;
+}
 
 /** Why a test file was selected. APPEND-ONLY: durable in `output_json`. */
 export const WORKFLOW_TEST_SELECTION_REASONS = ["changed", "imports", "smoke"] as const;
@@ -3875,6 +3953,22 @@ export interface WorkflowAffectedTestsReport {
   };
   /** What selection could not do for this repository, one sentence each. Absent when nothing. */
   diagnostics?: string[];
+  /**
+   * Each invocation the gate ran, in the order it ran them, capped at
+   * `AFFECTED_TESTS_LIMITS.partitions`. Absent on outcomes recorded before partitions existed, and
+   * on a gate that ran nothing.
+   */
+  partitions?: WorkflowAffectedTestsPartition[];
+  /** How many partitions ran, before the cap. */
+  partitionCount?: number;
+  /**
+   * Selected test files no command could run: outside every subdirectory override, with no root
+   * override or global default. Repository-relative, sorted, capped at `unrunShown`. The gate
+   * decides on the partitions that ran. Absent when every selected file ran.
+   */
+  unrun?: string[];
+  /** How many selected test files were not run, before the cap. */
+  unrunCount?: number;
 }
 
 /**

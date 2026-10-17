@@ -378,9 +378,10 @@ export class CheckRuntime {
     let affected: { ctx: AffectedTestsContext; plan: Extract<AffectedTestsPlan, { kind: "run" }> } | null = null;
     if (request.slot === "affected-tests") {
       const ctx: AffectedTestsContext = {
-        template: request.command,
+        // Absent on a request built before partitions existed: the one target it names.
+        targets: request.affectedTargets
+          ?? [{ command: request.command, workingSubpath: request.workingSubpath, source: "override" }],
         treeRoot: leasePath,
-        workingSubpath: request.workingSubpath,
         localRoot: request.repoRoot,
         baseBranch: request.baseBranch ?? null,
         // `request.repoRoot` is the main checkout: the key a root row is stored by, and the
@@ -447,7 +448,10 @@ export class CheckRuntime {
       extraEnv[CHECK_TEST_LEASE_HELD_ENV] = "1";
     }
 
-    const spawn = (command: readonly string[]): Promise<CheckSpawnOutcome> =>
+    const spawn = (
+      command: readonly string[],
+      workingSubpath: string = request.workingSubpath,
+    ): Promise<CheckSpawnOutcome> =>
       this.supervise(
         {
           attemptId: attempt.attemptId,
@@ -457,7 +461,7 @@ export class CheckRuntime {
           // shared main repository behind a linked worktree, so a check would test an
           // unrelated checkout and report the answer as if it were about this submission.
           leasePath,
-          workingSubpath: request.workingSubpath,
+          workingSubpath,
           timeoutMs,
           extraEnv,
         },
@@ -468,10 +472,11 @@ export class CheckRuntime {
       );
     let outcome: CheckSpawnOutcome;
     try {
-      // An affected-tests run may spawn twice - the selection, then its failed files once more -
-      // under this one worktree lease and this one test lease.
+      // An affected-tests run spawns twice per partition at most - its files, then its failed files
+      // once more - one partition after another, each in its own subdirectory, all under this one
+      // worktree lease and this one test lease.
       outcome = affected
-        ? await runAffectedTests(affected.ctx, affected.plan, (argv) => spawn(argv))
+        ? await runAffectedTests(affected.ctx, affected.plan, (argv, workingSubpath) => spawn(argv, workingSubpath))
         : await spawn(request.command);
     } catch (err) {
       // The supervisor is written not to throw, and a lease outliving one that did would be a

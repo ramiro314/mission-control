@@ -835,7 +835,10 @@ subdirectory to stand in, so a losing subdirectory override never lends it one.
 Resolution is therefore three rungs, in this order: the longest matching subdirectory or
 repository override, then the slot's global default, then *skipped*. Everything after that -
 consent, Trust, the run budget, the platform floor, the runtime - is unchanged, and a
-configured default still runs only in a repository that holds the Workflows grant.
+configured default still runs only in a repository that holds the Workflows grant. The
+`affected-tests` slot does not pick one Command by the session's folder: it runs each selected
+test through the Command for that test's own folder (see [partitions](#partitions)), and is
+skipped only when the repository has no `affected-tests` Command anywhere.
 
 Saving a slot replaces its default, its complete override list and its run budget in one
 compare-and-swap, so the parts are never stored apart and a second window's save is refused
@@ -955,7 +958,7 @@ laptop run the whole suite. Its Command is a **template** with two placeholders:
 - `{files}` must be a whole argument. It becomes one argument per selected test file, relative
   to where the command runs.
 - `{junit}` may sit inside an argument. It becomes the path Mission Control reads JUnit XML
-  results from, in a temporary directory per attempt.
+  results from, in a temporary directory per [partition](#partitions).
 
 A template missing either is refused when saved, and fails the check if one reaches a run. For
 this repository:
@@ -1019,20 +1022,54 @@ In a repository with [subdirectory scopes](#subdirectory-scopes), each file is j
 nearest scope's settings instead of the root's alone.
 
 A repository with no `.mission/testing.json`, no stored testing settings and no local
-`.mission/testing.local.json` skips the gate with a note naming all three. An invalid committed
+`.mission/testing.local.json` skips the gate with a note naming all three. A template missing a
+placeholder on any of the repository's `affected-tests` Commands fails the gate before anything
+runs, and the note names that Command's folder. An invalid committed
 file fails the gate with the error, because the file is
 part of the change. An
 empty selection skips with "No tests were selected for this change." A gate that stops before
-running anything (no settings, an empty selection, a bad template) hands its run back, so it does
-not spend the Command's per-run budget.
+running anything (no settings, an empty selection, a bad template, or a selection no Command
+covers) hands its run back, so it does not spend the Command's per-run budget.
 
 **Failures are rerun once.** When the command exits non-zero, Mission Control reads `{junit}`,
 reruns only the failed files (every selected file if a failure names no selected file) with the
 same template, and fails the gate only for tests that failed both times. A test that failed once
 and passed on the rerun is a **local flake**: it is listed on the card and does not fail the
 gate. Results that cannot be read, or a non-zero exit whose results name no failing test, fail
-the gate with the output tail. Both runs happen inside one worktree lease and one test lease, and
-the lease is taken only after selection, so a change that selects nothing never waits for it.
+the gate with the output tail. Each [partition](#partitions) reruns its own failed files, in its
+own folder. Every run happens inside one worktree lease and one test lease, and the lease is taken
+only after selection, so a change that selects nothing never waits for it.
+
+##### Partitions
+
+Selection runs once, across the whole repository. Each selected test then runs through the
+**deepest `affected-tests` override whose folder contains it**, so in a monorepo with overrides for
+`apps/web` and `apps/api`, a change touching both apps runs each app's tests in that app:
+
+- Each partition runs its own Command in its own folder, with `{files}` relative to that folder
+  and its own `{junit}` path. Results map back to repository paths.
+- A test outside every subdirectory override runs through the repository's own override, or, when
+  it has none, the slot's global default, at the repository root.
+- A test none of them can run, because there is no root override and no default, is listed in
+  run detail as **selected but unrun**. The gate decides on the partitions that ran. If no
+  partition ran at all, the gate is skipped and hands its run back.
+- Partitions run one after another, every one of them, even after one fails. The gate passes only
+  if every partition passes.
+- One gate attempt spends **one run** of the Command's per-run budget, however many partitions it
+  has.
+- Partitions do not depend on the session's folder. The change decides which apps run. The
+  session's folder still decides which `test`, `lint`, `typecheck` and `build` Command a check
+  uses.
+
+A partition whose process group could not be shown to have exited (a timeout, or a child left
+behind) ends the gate there, as a single run always did, because nothing else may run in that
+worktree until it is accounted for.
+
+Run detail lists each partition under **Partitions**: its folder, the Command it ran, its file
+count, its outcome and exit code, and its output tail, folded. The card's command output joins
+every partition's under a line naming it, and the outcome's command is the root's Command, or the
+first subdirectory's when the root has none. A repository with one Command has one partition,
+whose note reads as the gate's note always did.
 
 **The repair packet names each test that failed twice**, one requested change per test, with the
 runner's message and detail, instead of quoting the end of the output. At most 20 tests are
@@ -1152,9 +1189,9 @@ root's merged settings, for the files inside that folder:
   own `.git` on the way down) belongs to that repository, so its rows never shape this one's gate.
 
 Per scope, the tests are the tracked files whose nearest scope it is and that match its effective
-patterns. Selection is shaped per scope, but the selected files still run through **one
-invocation**: the `affected-tests` Command the session's folder resolves, with each file relative
-to that Command's subdirectory (`../` for a file outside it), exactly as before. Imports resolve
+patterns. Selection is shaped per scope, and the selected files then run in
+[partitions](#partitions), by `affected-tests` override rather than by scope: a scope with no
+override of its own runs through the nearest override above it. Imports resolve
 through each file's own nearest `tsconfig.json` or `jsconfig.json` and the workspace package names
 ([resolving imports](#resolving-imports)), not through its scope, so an import written through an
 app's own alias selects its importer whether or not the app has a scope. Run detail lists each

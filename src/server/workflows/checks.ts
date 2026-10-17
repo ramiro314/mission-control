@@ -3,6 +3,7 @@ import {
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  affectedTestsTargets,
   checkBlockedReason,
   checkCommandSubpath,
   formatCheckCommand,
@@ -10,6 +11,7 @@ import {
   type WorkflowAffectedTestsReport,
   type WorkflowCheckOutcome,
   type WorkflowCheckSlot,
+  type WorkflowCommandResolution,
   type WorkflowCommandView,
   type WorkflowPolicy,
 } from "@shared/workflow.ts";
@@ -87,6 +89,13 @@ export interface CheckExecutionRequest {
   workingSubpath: string;
   /** The commit the submission captured, or null when the capture recorded none. */
   headSha: string | null;
+  /**
+   * For `affected-tests`: every place the gate can run tests in this repository, root first then
+   * each subdirectory override - see `affectedTestsTargets`. The selection is partitioned across
+   * them, and `command` and `workingSubpath` above are the first one's. Absent means the one
+   * target those two name.
+   */
+  affectedTargets?: WorkflowCommandResolution[];
   /**
    * The branch on `origin` the change is measured from: the task's base branch, or null or
    * absent for origin's default. Read by the slot that selects by what changed, `affected-tests`.
@@ -395,13 +404,23 @@ export async function runCheck(
   // session's position inside its own checkout - see `resolveWorkflowCommand`'s third
   // applicability route. Null (no cwd, no repository, or git could not say) declines nested
   // matching and lands on the repository-wide entry, which is the safe direction.
-  const checkoutSubpath = input.cwd && input.repoRoot
+  //
+  // An `affected-tests` gate in a known repository asks no question about the session's position:
+  // it partitions its selection across every target the repository has, so the change decides
+  // which apps run. It is "configured" when any target exists, and the first one - the root's
+  // command when there is one - is the command the outcome names.
+  const affectedTargets = slot === "affected-tests" && input.repoRoot
+    ? affectedTestsTargets(input.command, input.repoRoot)
+    : null;
+  const checkoutSubpath = !affectedTargets && input.cwd && input.repoRoot
     ? await (deps.checkoutSubpath ?? defaultCheckoutSubpath)(input.cwd, input.repoRoot)
     : null;
-  const resolved = resolveWorkflowCommand(
-    input.command,
-    { cwd: input.cwd, repoRoot: input.repoRoot, checkoutSubpath },
-  );
+  const resolved = affectedTargets
+    ? affectedTargets[0] ?? null
+    : resolveWorkflowCommand(
+      input.command,
+      { cwd: input.cwd, repoRoot: input.repoRoot, checkoutSubpath },
+    );
   if (!resolved) {
     return outcome(
       slot,
@@ -474,6 +493,7 @@ export async function runCheck(
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
     baseBranch: input.baseBranch ?? null,
+    ...(affectedTargets ? { affectedTargets } : {}),
   });
   if (result.kind === "infrastructure") {
     if (result.ranNothing && reservation?.granted) input.releaseRun?.();
