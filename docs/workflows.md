@@ -1065,6 +1065,16 @@ A partition whose process group could not be shown to have exited (a timeout, or
 behind) ends the gate there, as a single run always did, because nothing else may run in that
 worktree until it is accounted for.
 
+**A partitioned gate holds the machine's test lease for every partition.** The command timeout
+applies to each run and each rerun on its own, not to the gate. A gate with *N* partitions can
+therefore hold the [test lease](#test-checks-share-the-machine) for up to 2*N* timeouts, where a
+single invocation held it for at most two: three slow apps under the 60-minute `affected-tests`
+default could hold it for six hours. A test check elsewhere on the machine that waits longer than
+its own wait ceiling ends as an infrastructure failure and retries, even though nothing is wrong
+with it. There is deliberately no deadline for the whole gate, because one would leave later
+partitions unrun, and the gate runs all of them. A monorepo whose apps have slow suites pays that
+wait on every other test check while the gate runs.
+
 Run detail lists every partition under **Partitions**: its folder, the Command it ran, its file
 count, its outcome and exit code, and the last 2,000 bytes of its output, folded. A gate has at
 most one partition per Command, so the list is never cut short. **Selected but unrun** lists every
