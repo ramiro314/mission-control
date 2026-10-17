@@ -5,14 +5,15 @@ import { junitCaseKey, parseJUnit, type JUnitCase } from "@shared/junit.ts";
 import { expandTestCommandTemplate } from "@shared/command-template.ts";
 import {
   AFFECTED_TESTS_LIMITS,
+  WORKFLOW_LIMITS,
   commandTemplateProblem,
   type WorkflowAffectedTestsReport,
   type WorkflowNamedTest,
   type WorkflowSelectedTest,
   type WorkflowTestFailure,
 } from "@shared/workflow.ts";
-import type { LayeredTestingConfig, StoredTestingLayer } from "@shared/testing-config.ts";
-import { readTestingConfig } from "../testing-config.ts";
+import type { StoredTestingLayer, TestingScopes } from "@shared/testing-config.ts";
+import { resolveTestingScopes } from "../testing-config.ts";
 import { realpathOr } from "../util/repo-doc.ts";
 import { selectAffectedTests, type TestSelectionDeps } from "../test-selection.ts";
 import type { CheckExecutionResult } from "./checks.ts";
@@ -44,11 +45,12 @@ export interface AffectedTestsContext {
   /** The task's base branch the change is measured from, or null for origin's default. */
   baseBranch: string | null;
   /**
-   * The repository root's stored testing settings, read when selection starts rather than when
-   * the context is built, so a failed read is caught with the rest of selection. Absent or null
+   * Every stored testing settings row for the repository, the root's with scope `""` and each
+   * subdirectory's with its repository-relative path. Read when selection starts rather than
+   * when the context is built, so a failed read is caught with the rest of selection. Absent
    * means none are stored.
    */
-  readStoredSettings?: () => StoredTestingLayer | null;
+  readStoredSettings?: () => readonly StoredTestingLayer[];
   selection?: TestSelectionDeps;
 }
 
@@ -57,13 +59,27 @@ export type AffectedTestsPlan =
   | { kind: "done"; result: CheckExecutionResult }
   | { kind: "run"; files: WorkflowSelectedTest[]; report: WorkflowAffectedTestsReport };
 
-function settingsOf(merged: LayeredTestingConfig): WorkflowAffectedTestsReport["settings"] {
+/**
+ * The root's effective settings, as before scopes existed, plus each subdirectory scope's
+ * sources. A scope's globs are not recorded: they are bounded per scope, not across scopes, and
+ * the sources already say which row to open.
+ */
+function settingsOf(scopes: TestingScopes): WorkflowAffectedTestsReport["settings"] {
+  const { root } = scopes;
+  const subdirectories = scopes.scopes.slice(1);
   return {
-    patterns: merged.config.tests.patterns,
-    includeImporters: merged.config.tests.includeImporters,
-    smokeSet: merged.config.tests.smokeSet,
-    localKeys: merged.localKeys,
-    sources: merged.sources,
+    patterns: root.config.tests.patterns,
+    includeImporters: root.config.tests.includeImporters,
+    smokeSet: root.config.tests.smokeSet,
+    localKeys: root.localKeys,
+    sources: root.sources,
+    ...(subdirectories.length === 0 ? {} : {
+      scopes: subdirectories.slice(0, AFFECTED_TESTS_LIMITS.scopes).map((scope) => ({
+        path: clip(scope.path, WORKFLOW_LIMITS.checkRepoRoot),
+        sources: scope.sources,
+      })),
+      scopeCount: subdirectories.length,
+    }),
   };
 }
 
@@ -80,7 +96,7 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
   const problem = commandTemplateProblem("affected-tests", ctx.template);
   if (problem) return { kind: "done", result: decided("failed", problem) };
 
-  const read = readTestingConfig(ctx.treeRoot, ctx.localRoot, ctx.readStoredSettings?.() ?? null);
+  const read = resolveTestingScopes(ctx.treeRoot, ctx.localRoot, ctx.readStoredSettings?.() ?? []);
   if (!read.ok) {
     if (read.kind === "missing") return { kind: "done", result: decided("skipped", read.note) };
     if (read.kind === "invalid-local") {
@@ -92,7 +108,9 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
     return { kind: "done", result: decided("failed", read.note) };
   }
 
-  const selection = await selectAffectedTests(ctx.treeRoot, read.merged.config, ctx.selection, ctx.baseBranch);
+  // Selection is shaped per scope; the files still run through the one Command the session's
+  // cwd resolved, with paths relative to its subdirectory (`../` outside it).
+  const selection = await selectAffectedTests(ctx.treeRoot, read.scopes, ctx.selection, ctx.baseBranch);
   if (!selection.ok) {
     return {
       kind: "done",
@@ -106,7 +124,12 @@ export async function planAffectedTests(ctx: AffectedTestsContext): Promise<Affe
     flakes: [],
     failureCount: 0,
     failures: [],
-    settings: settingsOf(read.merged),
+    settings: settingsOf(read.scopes),
+    ...(selection.diagnostics.length === 0 ? {} : {
+      diagnostics: selection.diagnostics
+        .slice(0, AFFECTED_TESTS_LIMITS.diagnostics)
+        .map((note) => clip(note, AFFECTED_TESTS_LIMITS.diagnostic)),
+    }),
   };
   if (selection.files.length === 0) {
     return {

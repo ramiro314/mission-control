@@ -83,6 +83,41 @@ test("run detail names the source of every effective key, and keeps a local flak
   assert.match(legacy, /testing\.local\.json<\/code>: tests\.smokeSet/);
 });
 
+test("run detail lists each subdirectory scope's sources and the selection notes, and counts unlisted scopes", () => {
+  const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {
+    report: report({
+      settings: {
+        patterns: [],
+        includeImporters: true,
+        smokeSet: [],
+        localKeys: [],
+        sources: [
+          { key: "tests.patterns", layer: "stored", scope: "" },
+          { key: "tests.includeImporters", layer: "default", scope: null },
+          { key: "tests.smokeSet", layer: "stored", scope: "" },
+        ],
+        scopes: [{
+          path: "apps/web",
+          sources: [
+            { key: "tests.patterns", layer: "stored", scope: "apps/web" },
+            { key: "tests.includeImporters", layer: "default", scope: null },
+            { key: "tests.smokeSet", layer: "stored", scope: "" },
+          ],
+        }],
+        scopeCount: 3,
+      },
+      diagnostics: ["Per-app aliases are not resolved yet."],
+    }),
+  }));
+  assert.match(html, /<ul[^>]*aria-label="Testing scopes"><li><code>apps\/web<\/code>: <code>tests\.patterns<\/code> stored \(apps\/web\), <code>tests\.includeImporters<\/code> default, <code>tests\.smokeSet<\/code> stored \(root\)<\/li><\/ul>/);
+  assert.match(html, /2 more testing scopes are not listed here\./);
+  assert.match(html, /<h5>Selection notes<\/h5><ul aria-label="Selection notes"><li>Per-app aliases are not resolved yet\.<\/li><\/ul>/);
+
+  // An outcome without scopes or notes shows neither.
+  const plain = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: report() }));
+  assert.doesNotMatch(plain, /Testing scopes|Selection notes/);
+});
+
 test("a capped failure or flake list says how many it leaves out", () => {
   const failures = Array.from({ length: 20 }, (_, i) => ({ file: "test/a.test.ts", name: `f${i}`, message: "x" }));
   const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {

@@ -87,9 +87,12 @@ toggle, and the editor shows the exact split under every rule before you save.
 
 The `affected-tests` page adds a **Testing settings** section below the rules: one row per
 repository root, editing the root's stored `tests.patterns`, `tests.includeImporters` and
-`tests.smokeSet` for a repository that does not commit `.mission/testing.json`. Each row saves on
-its own, under its own revision, never with the Command. See
-[testing settings](workflows.md#testing-settings) for how the layers merge.
+`tests.smokeSet` for a repository that does not commit `.mission/testing.json`, and one row per
+folder inside a repository that has stored settings or an `affected-tests` override, such as one
+app of a monorepo. A folder's globs are relative to it and its unset keys come from the root. Each
+row saves on its own, under its own revision, never with the Command. See
+[testing settings](workflows.md#testing-settings) for how the layers merge, and
+[subdirectory scopes](workflows.md#subdirectory-scopes) for folders.
 
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the

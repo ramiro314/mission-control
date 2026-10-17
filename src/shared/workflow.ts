@@ -3809,6 +3809,11 @@ export const AFFECTED_TESTS_LIMITS = {
   path: 1_000,
   testName: 500,
   failureMessage: 2_000,
+  /** Subdirectory testing scopes whose sources run detail lists. */
+  scopes: 50,
+  /** Selection diagnostics kept, and the length of each. */
+  diagnostics: 10,
+  diagnostic: 1_000,
 } as const;
 
 /** Why a test file was selected. APPEND-ONLY: durable in `output_json`. */
@@ -3859,7 +3864,17 @@ export interface WorkflowAffectedTestsReport {
      * testing settings existed, which run detail then describes by `localKeys` alone.
      */
     sources?: TestingSettingsSource[];
+    /**
+     * Every subdirectory testing scope's path and per-key sources, capped at
+     * `AFFECTED_TESTS_LIMITS.scopes`. The root's are `sources` above. Absent on outcomes recorded
+     * before subdirectory scopes existed, and on a repository with none.
+     */
+    scopes?: Array<{ path: string; sources: TestingSettingsSource[] }>;
+    /** How many subdirectory scopes there were, before the cap. */
+    scopeCount?: number;
   };
+  /** What selection could not do for this repository, one sentence each. Absent when nothing. */
+  diagnostics?: string[];
 }
 
 /**

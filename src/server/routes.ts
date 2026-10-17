@@ -2569,7 +2569,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // --- Stored testing settings: the affected-tests selection keys, without a committed file ---
   //
-  // One row per repository root, keyed by the same canonical path as Command overrides, and
+  // One row per repository root or subdirectory, keyed by the same canonical path as Command overrides, and
   // replaced whole under a compare-and-swap revision. The schema refuses `flakes` and every
   // unknown key, so an invalid row can never be stored for the gate to trip over later.
   app.get("/api/testing-settings", (c) => {
@@ -2583,15 +2583,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!testingSettings) return c.json({ error: "Testing settings catalog unavailable" }, 503);
     const parsed = await parseBody(c, UpdateTestingSettingsSchema);
     if (!parsed.ok) return parsed.res;
-    // Root scopes only, for now: the gate applies a repository root's row, and a row stored for
-    // a folder inside one would be a setting that silently does nothing until subdirectory
-    // scopes ship. Resolved through git so the key is the canonical main checkout.
+    // A repository root, or a subdirectory inside one (a scope over the root's settings for the
+    // files inside it). Resolved through git so the key is canonical: the main checkout's
+    // realpath, or a subdirectory below it, exactly as a Command override is keyed. A path
+    // spelled any other way (a symlink, a linked worktree, a trailing slash) is refused with the
+    // canonical spelling, because the gate looks rows up by that key and would never find it.
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error, code: "testing_settings_not_a_repository" }, 400);
-    if (resolved.repoRoot !== parsed.data.repoRoot) {
+    const located = await resolveRepoPath(parsed.data.repoRoot);
+    if (!located || located.repoRoot !== resolved.repoRoot) {
+      return c.json({ error: `not a git repository: ${parsed.data.repoRoot}`, code: "testing_settings_not_a_repository" }, 400);
+    }
+    if (located.path !== parsed.data.repoRoot) {
       return c.json({
-        error: `Testing settings are stored for a repository root. Use ${resolved.repoRoot}, not a path inside it.`,
-        code: "testing_settings_not_a_root",
+        error: `Testing settings are stored by canonical path. Use ${located.path}.`,
+        code: "testing_settings_not_canonical",
       }, 400);
     }
     const result = testingSettings.replace(parsed.data);

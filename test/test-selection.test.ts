@@ -4,7 +4,12 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseTestingConfig, type TestingConfig } from "../src/shared/testing-config.ts";
+import {
+  buildTestingScopes,
+  mergeTestingLayers,
+  parseTestingConfig,
+  type TestingScopes,
+} from "../src/shared/testing-config.ts";
 import { scanImportSpecifiers, selectAffectedTests } from "../src/server/test-selection.ts";
 
 function git(cwd: string, ...args: string[]): void {
@@ -18,10 +23,11 @@ function write(root: string, files: Record<string, string>): void {
   }
 }
 
-function config(value: unknown): TestingConfig {
+/** A committed file's settings, as root-only scopes: what a repository without subdirectory rows selects with. */
+function config(value: unknown): TestingScopes {
   const parsed = parseTestingConfig(JSON.stringify(value));
   assert.ok(parsed.ok);
-  return parsed.config;
+  return buildTestingScopes(mergeTestingLayers(parsed.config, null, null));
 }
 
 /** A repository whose `main` is the base and whose checked-out branch is the change. */

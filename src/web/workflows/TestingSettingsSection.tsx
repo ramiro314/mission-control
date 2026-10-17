@@ -15,22 +15,25 @@ import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
 /**
  * The "Testing settings" section of the affected-tests page in Library › Commands.
  *
- * It edits a repository root's STORED testing settings: `tests.patterns`,
- * `tests.includeImporters` and `tests.smokeSet`, kept in Mission Control for a repository that
- * will not commit `.mission/testing.json`. They overlay the committed file key by key, and the
- * local file overlays them, so the order is committed, then stored, then local.
+ * It edits STORED testing settings: `tests.patterns`, `tests.includeImporters` and
+ * `tests.smokeSet`, kept in Mission Control for a repository that will not commit
+ * `.mission/testing.json`. At a repository root they overlay the committed file key by key, and
+ * the local file overlays them, so the order is committed, then stored, then local. A row for a
+ * subdirectory (one app of a monorepo) is a scope: its keys replace the root's for the files
+ * inside it, its globs are relative to it, and a key it leaves to Inherit falls through.
  *
- * One row per repository root that has stored settings or an affected-tests override at its
- * root, plus an add row for a root that has neither. Each row saves on its own, under the
- * revision it loaded; a save another window beat is refused with 409 and the row reloads what
- * is stored. The rows are read over HTTP when the section opens: nothing else edits them, and
- * the refusal is how this window learns of another one.
+ * One row per path that has stored settings or an affected-tests override, the root and every
+ * subdirectory, plus an add row for a path that has neither. Each row saves on its own, under the
+ * revision it loaded; a save another window beat is refused with 409 and the row reloads what is
+ * stored. The rows are read over HTTP when the section opens: nothing else edits them, and the
+ * refusal is how this window learns of another one.
  */
 
 /**
  * Whether a list key is stored by this row. `inherit` leaves the key unset, so the committed
- * file or the default decides; `set` stores the typed list, and a `set` list with no globs
- * stores an empty list - which REPLACES a committed one, the way the local file can.
+ * file or the default decides (the root's settings, for a subdirectory row); `set` stores the
+ * typed list, and a `set` list with no globs stores an empty list - which REPLACES the inherited
+ * one, the way the local file can.
  */
 export type TestingListMode = "inherit" | "set";
 
@@ -41,6 +44,41 @@ export interface TestingSettingsDraft {
   includeImporters: "inherit" | "on" | "off";
   smokeSetMode: TestingListMode;
   smokeSet: string;
+}
+
+/** Where a row's path sits: its repository, and the subdirectory inside it (`""` at the root). */
+export interface TestingSettingsLocation {
+  repoRoot: string;
+  subpath: string;
+}
+
+/** A resolved path as a location, or null when the daemon's answer does not place it in its repository. */
+export function testingSettingsLocationOf(resolved: { repoRoot: string; path: string }): TestingSettingsLocation | null {
+  if (resolved.path === resolved.repoRoot) return { repoRoot: resolved.repoRoot, subpath: "" };
+  const prefix = `${resolved.repoRoot}/`;
+  return resolved.path.startsWith(prefix)
+    ? { repoRoot: resolved.repoRoot, subpath: resolved.path.slice(prefix.length) }
+    : null;
+}
+
+/**
+ * The rows in display order: grouped by repository, the root before its subdirectories. A path
+ * whose repository could not be resolved (its folder is gone) sorts by its own path.
+ */
+export function testingSettingsRowOrder(
+  paths: readonly string[],
+  locations: ReadonlyMap<string, TestingSettingsLocation | null>,
+): string[] {
+  const keyOf = (path: string): [string, string] => {
+    const location = locations.get(path);
+    return location ? [location.repoRoot, location.subpath] : [path, ""];
+  };
+  return [...new Set(paths)].sort((a, b) => {
+    const [ra, sa] = keyOf(a);
+    const [rb, sb] = keyOf(b);
+    if (ra !== rb) return ra < rb ? -1 : 1;
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
 }
 
 export function testingSettingsDraftFrom(view: TestingSettingsView | null): TestingSettingsDraft {
@@ -101,6 +139,17 @@ export function testingSettingsRevisionLine(view: TestingSettingsView | null): s
   return `Stored revision ${view.revision}`;
 }
 
+/** What a row's glob lists are relative to, and where Inherit takes a key from. */
+export function testingSettingsRowScope(location: TestingSettingsLocation | null): {
+  globsRelativeTo: string;
+  inheritFrom: string;
+} {
+  if (location && location.subpath !== "") {
+    return { globsRelativeTo: location.subpath, inheritFrom: "the repository root's settings" };
+  }
+  return { globsRelativeTo: "the repository", inheritFrom: "the committed file or the default" };
+}
+
 export function TestingSettingsSection({
   overrideRoots,
   repos,
@@ -114,10 +163,12 @@ export function TestingSettingsSection({
 }): React.JSX.Element {
   const [stored, setStored] = useState<TestingSettingsView[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  /** Override paths that resolved to a repository root, canonical. */
-  const [overrideRepoRoots, setOverrideRepoRoots] = useState<string[]>([]);
-  /** Roots the operator added in this visit that have nothing stored yet. */
+  /** Override paths that resolved, canonical: a repository root or a subdirectory inside one. */
+  const [overridePaths, setOverridePaths] = useState<string[]>([]);
+  /** Paths the operator added in this visit that have nothing stored yet. */
   const [added, setAdded] = useState<string[]>([]);
+  /** Each row path's repository and subdirectory, once resolved; null when it does not resolve. */
+  const [locations, setLocations] = useState<ReadonlyMap<string, TestingSettingsLocation | null>>(() => new Map());
   const [addPath, setAddPath] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -135,24 +186,49 @@ export function TestingSettingsSection({
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  // Which override paths are repository roots. A subdirectory override has no root row here:
-  // stored settings apply at a repository root.
+  const remember = useCallback((entries: ReadonlyArray<readonly [string, TestingSettingsLocation | null]>): void => {
+    setLocations((current) => {
+      const next = new Map(current);
+      for (const [path, location] of entries) next.set(path, location);
+      return next;
+    });
+  }, []);
+
+  // Every override path gets a row, the root's and each subdirectory's, under its canonical
+  // spelling: the key a stored row for it is saved by. A path that no longer resolves has none.
   const overrideKey = overrideRoots.join("\n");
   useEffect(() => {
     let alive = true;
     void Promise.all(overrideKey.split("\n").filter(Boolean).map(async (path) => {
       const resolved = await resolveRepo(path);
-      return resolved.ok && resolved.path === resolved.repoRoot ? resolved.repoRoot : null;
-    })).then((roots) => {
-      if (alive) setOverrideRepoRoots(roots.filter((root): root is string => root !== null));
+      return resolved.ok ? resolved : null;
+    })).then((results) => {
+      if (!alive) return;
+      const found = results.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      setOverridePaths(found.map((entry) => entry.path));
+      remember(found.map((entry) => [entry.path, testingSettingsLocationOf(entry)] as const));
     });
     return () => { alive = false; };
-  }, [overrideKey]);
+  }, [overrideKey, remember]);
 
   const byRoot = useMemo(() => new Map((stored ?? []).map((view) => [view.repoRoot, view])), [stored]);
-  const roots = useMemo(
-    () => [...new Set([...byRoot.keys(), ...overrideRepoRoots, ...added])].sort(),
-    [added, byRoot, overrideRepoRoots],
+
+  // Where each stored row sits, so a subdirectory row can say which repository it belongs to.
+  const storedKey = [...byRoot.keys()].sort().join("\n");
+  useEffect(() => {
+    let alive = true;
+    void Promise.all(storedKey.split("\n").filter(Boolean).map(async (path) => {
+      const resolved = await resolveRepo(path);
+      return [path, resolved.ok && resolved.path === path ? testingSettingsLocationOf(resolved) : null] as const;
+    })).then((entries) => {
+      if (alive) remember(entries);
+    });
+    return () => { alive = false; };
+  }, [remember, storedKey]);
+
+  const rows = useMemo(
+    () => testingSettingsRowOrder([...byRoot.keys(), ...overridePaths, ...added], locations),
+    [added, byRoot, locations, overridePaths],
   );
 
   const onSaved = useCallback((root: string, view: TestingSettingsView | null): void => {
@@ -168,7 +244,7 @@ export function TestingSettingsSection({
   }, [onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
-  async function addRoot(): Promise<void> {
+  async function addRow(): Promise<void> {
     const typed = addPath.trim();
     if (!typed || adding) return;
     setAdding(true);
@@ -179,11 +255,9 @@ export function TestingSettingsSection({
         setAddError(resolved.error);
         return;
       }
-      if (resolved.path !== resolved.repoRoot) {
-        setAddError(`Testing settings are stored for a repository root. Use ${resolved.repoRoot}, not a folder inside it.`);
-        return;
-      }
-      setAdded((current) => (current.includes(resolved.repoRoot) ? current : [...current, resolved.repoRoot]));
+      // A folder inside a repository is a subdirectory scope, kept under its canonical path.
+      remember([[resolved.path, testingSettingsLocationOf(resolved)]]);
+      setAdded((current) => (current.includes(resolved.path) ? current : [...current, resolved.path]));
       setAddPath("");
     } finally {
       setAdding(false);
@@ -200,20 +274,27 @@ export function TestingSettingsSection({
         order is committed, then stored, then local. Choose Inherit to let the committed file or
         the default decide. The gate runs when any of the three exists.
       </p>
+      <p className="wf-command-hint">
+        A row for a folder inside a repository, such as one app of a monorepo, applies to the files
+        inside it: a key it sets replaces the root&apos;s there, its globs are relative to the
+        folder, and a key left to Inherit comes from the repository root. The selected tests still
+        run through the one Command the session&apos;s folder picks.
+      </p>
       {loadError && <p className="wf-error" role="alert">{loadError}</p>}
       {stored === null && !loadError && <p className="wf-command-hint">Loading testing settings…</p>}
-      {stored !== null && roots.map((root) => (
+      {stored !== null && rows.map((path) => (
         <TestingSettingsRow
-          key={root}
-          root={root}
-          view={byRoot.get(root) ?? null}
+          key={path}
+          root={path}
+          location={locations.get(path) ?? null}
+          view={byRoot.get(path) ?? null}
           onSaved={onSaved}
           onDirty={onRowDirty}
         />
       ))}
       {stored !== null && (
         <div className="wf-testing-settings-add">
-          <label htmlFor="wf-testing-settings-add">Add a repository</label>
+          <label htmlFor="wf-testing-settings-add">Add a repository or folder</label>
           <RepoCombobox
             id="wf-testing-settings-add"
             inputRef={addRef}
@@ -222,11 +303,11 @@ export function TestingSettingsSection({
             value={addPath}
             onChange={setAddPath}
             disabled={adding}
-            placeholder="/path/to/repository"
+            placeholder="/path/to/repository or a folder inside it"
           />
-          <Tooltip label="Add a row for this repository's testing settings - Save on the row stores them">
-            <button className="btn" disabled={adding || !addPath.trim()} onClick={() => void addRoot()}>
-              Add repository
+          <Tooltip label="Add a row for this repository's or folder's testing settings - Save on the row stores them">
+            <button className="btn" disabled={adding || !addPath.trim()} onClick={() => void addRow()}>
+              Add row
             </button>
           </Tooltip>
           {addError && <p className="wf-error" role="alert">{addError}</p>}
@@ -240,16 +321,18 @@ export function TestingSettingsSection({
 function ListModeSelect({
   id,
   label,
+  inheritFrom,
   value,
   onChange,
 }: {
   id: string;
   label: string;
+  inheritFrom: string;
   value: TestingListMode;
   onChange: (mode: TestingListMode) => void;
 }): React.JSX.Element {
   return (
-    <Tooltip label="Inherit leaves this key to the committed file or the default. This row stores the list below, even when it is empty.">
+    <Tooltip label={`Inherit leaves this key to ${inheritFrom}. This row stores the list below, even when it is empty.`}>
       <select
         id={id}
         aria-label={label}
@@ -266,11 +349,13 @@ function ListModeSelect({
 
 function TestingSettingsRow({
   root,
+  location,
   view,
   onSaved,
   onDirty,
 }: {
   root: string;
+  location: TestingSettingsLocation | null;
   view: TestingSettingsView | null;
   onSaved: (root: string, view: TestingSettingsView | null) => void;
   onDirty: (root: string, dirty: boolean) => void;
@@ -282,6 +367,8 @@ function TestingSettingsRow({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const dirty = testingSettingsDraftDirty(draft, baseline);
+  const scope = testingSettingsRowScope(location);
+  const subdirectory = location !== null && location.subpath !== "";
 
   const adopt = useCallback((next: TestingSettingsView | null): void => {
     setBaseline(next);
@@ -333,17 +420,25 @@ function TestingSettingsRow({
   return (
     <fieldset className="wf-testing-settings-row" aria-label={`Testing settings for ${root}`}>
       <legend>
-        <RepositoryName path={root} className="wf-command-rule-name" />
+        <RepositoryName path={location?.repoRoot ?? root} className="wf-command-rule-name" />
+        {subdirectory && <> <code className="wf-testing-settings-subpath">{location.subpath}</code></>}
       </legend>
       <p className="wf-testing-settings-path">
         <span className="wf-command-rule-path">{root}</span>
         <span className="wf-command-revision">{testingSettingsRevisionLine(baseline)}</span>
       </p>
+      {subdirectory && (
+        <p className="wf-command-hint">
+          Applies to files inside <code>{location.subpath}</code>. A key set here replaces the
+          repository root&apos;s for them; Inherit takes it from the root.
+        </p>
+      )}
       <div className="wf-testing-settings-fields">
         <label htmlFor={`${id}-patterns`}>Test patterns</label>
         <ListModeSelect
           id={`${id}-patterns-mode`}
           label="Patterns come from"
+          inheritFrom={scope.inheritFrom}
           value={draft.patternsMode}
           onChange={(mode) => setDraft((current) => ({ ...current, patternsMode: mode }))}
         />
@@ -352,16 +447,16 @@ function TestingSettingsRow({
           className="field-input"
           rows={3}
           spellCheck={false}
-          placeholder={draft.patternsMode === "set" ? "No globs: an empty list" : "test/**/*.test.ts"}
+          placeholder={draft.patternsMode === "set" ? "No globs: an empty list" : subdirectory ? "src/**/*.test.ts" : "test/**/*.test.ts"}
           value={draft.patterns}
           onChange={(event) => setDraft((current) => testingSettingsDraftTyped(current, "patterns", event.target.value))}
         />
         <p className="wf-command-hint">
-          tests.patterns: one repository-relative glob per line. This row with no globs stores an
-          empty list, replacing the committed one.
+          tests.patterns: one glob per line, relative to {subdirectory ? <code>{scope.globsRelativeTo}</code> : scope.globsRelativeTo}.
+          This row with no globs stores an empty list, replacing the inherited one.
         </p>
         <label htmlFor={`${id}-importers`}>Include importers</label>
-        <Tooltip label="Also select tests that import a changed file. Inherit lets the committed file or the default (on) decide.">
+        <Tooltip label={`Also select tests that import a changed file. Inherit lets ${scope.inheritFrom} decide.`}>
           <select
             id={`${id}-importers`}
             className="field-input"
@@ -381,6 +476,7 @@ function TestingSettingsRow({
         <ListModeSelect
           id={`${id}-smoke-mode`}
           label="Smoke globs come from"
+          inheritFrom={scope.inheritFrom}
           value={draft.smokeSetMode}
           onChange={(mode) => setDraft((current) => ({ ...current, smokeSetMode: mode }))}
         />
@@ -389,13 +485,14 @@ function TestingSettingsRow({
           className="field-input"
           rows={2}
           spellCheck={false}
-          placeholder={draft.smokeSetMode === "set" ? "No globs: an empty list" : "test/smoke.test.ts"}
+          placeholder={draft.smokeSetMode === "set" ? "No globs: an empty list" : subdirectory ? "src/smoke.test.ts" : "test/smoke.test.ts"}
           value={draft.smokeSet}
           onChange={(event) => setDraft((current) => testingSettingsDraftTyped(current, "smokeSet", event.target.value))}
         />
         <p className="wf-command-hint">
-          tests.smokeSet: globs that always run, one per line. This row with no globs stores an
-          empty list, so no smoke test runs.
+          tests.smokeSet: globs that always run, one per line, relative to{" "}
+          {subdirectory ? <code>{scope.globsRelativeTo}</code> : scope.globsRelativeTo}. This row with no
+          globs stores an empty list, so no smoke test runs{subdirectory ? " here" : ""}.
         </p>
       </div>
       {error && <p className="wf-error" role="alert">{error}</p>}

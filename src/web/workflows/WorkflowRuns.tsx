@@ -452,7 +452,49 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
         </>
       )}
       <TestingSettingsSourcesLine settings={report.settings} />
+      <TestingScopesLines settings={report.settings} />
+      {report.diagnostics && report.diagnostics.length > 0 && (
+        <>
+          <h5>Selection notes</h5>
+          <ul aria-label="Selection notes">
+            {report.diagnostics.map((note) => <li key={note}>{note}</li>)}
+          </ul>
+        </>
+      )}
     </div>
+  );
+}
+
+/**
+ * Each subdirectory testing scope's sources, one line per scope, after the root's line. A key a
+ * scope inherited names the layer it came from, so `stored (root)` under `apps/web` says the
+ * root row decides there. Absent on outcomes recorded before scopes existed.
+ */
+function TestingScopesLines({
+  settings,
+}: {
+  settings: WorkflowAffectedTestsReport["settings"];
+}): React.JSX.Element | null {
+  const scopes = settings.scopes ?? [];
+  if (scopes.length === 0) return null;
+  const unlisted = (settings.scopeCount ?? scopes.length) - scopes.length;
+  return (
+    <>
+      <ul className="wf-run-meta wf-run-settings-scopes" aria-label="Testing scopes">
+        {scopes.map((scope) => (
+          <li key={scope.path}>
+            <code>{scope.path}</code>:{" "}
+            {scope.sources.map((source, index) => (
+              <Fragment key={source.key}>
+                {index > 0 && ", "}
+                <code>{source.key}</code> {testingSettingsSourceLabel(source)}
+              </Fragment>
+            ))}
+          </li>
+        ))}
+      </ul>
+      {unlisted > 0 && <p className="wf-run-meta">{unlisted} more testing scopes are not listed here.</p>}
+    </>
   );
 }
 

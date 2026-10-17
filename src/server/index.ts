@@ -326,7 +326,7 @@ const checkLeases = new CheckLeaseManager(undefined, {
 // else, so every test-running check in this daemon reads them per check.
 const checkRuntime = new CheckRuntime(checkLeases, {
   testPolicy: getWorkflowPolicy,
-  storedTestingSettings: (repoRoot) => testingSettings.forRepoRoot(repoRoot),
+  storedTestingLayers: (repoRoot) => testingSettings.forRepository(repoRoot),
 });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);

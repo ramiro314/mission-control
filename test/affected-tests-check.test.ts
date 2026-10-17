@@ -18,7 +18,16 @@ import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { CheckSpawnOutcome, SupervisedCheckRequest } from "../src/server/workflows/check-supervisor.ts";
 import { runCheck } from "../src/server/workflows/checks.ts";
 import { checkVerdict } from "../src/server/workflows/engine.ts";
-import type { StoredTestingSettings } from "../src/shared/testing-config.ts";
+import type { StoredTestingLayer, StoredTestingSettings } from "../src/shared/testing-config.ts";
+import { PER_APP_ALIASES_UNRESOLVED } from "../src/server/test-selection.ts";
+import {
+  MONOREPO_CHANGED,
+  MONOREPO_ROOT_SETTINGS,
+  MONOREPO_SELECTED,
+  MONOREPO_SUBDIRECTORY_LAYERS,
+  MONOREPO_TRACKED,
+  monorepoTree,
+} from "./helpers/monorepo-testing-fixture.ts";
 
 // The affected-tests executor, end to end through `runCheck`, with only the two things that
 // would need a real pool and a real suite stubbed: the lease manager hands back a fixture tree,
@@ -54,6 +63,12 @@ function harness(options: {
   budget?: { released: number };
   /** The repository root's stored testing settings, as the daemon's catalog would answer. */
   stored?: StoredTestingSettings;
+  /** Subdirectory rows, repository-relative, beside the root's. */
+  subdirectories?: StoredTestingLayer[];
+  /** Affected-tests overrides, keyed by absolute path, as the Commands catalog holds them. */
+  overrides?: Array<{ repoRoot: string; command: string[] }>;
+  /** Where the session stands, repository-relative. The root by default. */
+  sessionSubpath?: string;
 }) {
   const runs: Run[] = [];
   let released = 0;
@@ -91,20 +106,26 @@ function harness(options: {
       deletedPaths: async () => ({ ok: true, repoRoot: options.root, paths: [] }),
       trackedFiles: async () => options.tracked,
     },
-    storedTestingSettings: (repoRoot) => (repoRoot === options.root ? options.stored ?? null : null),
+    storedTestingLayers: (repoRoot) => (repoRoot === options.root
+      ? [...(options.stored ? [{ settings: options.stored, scope: "" }] : []), ...(options.subdirectories ?? [])]
+      : []),
   });
   const execute = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
   const check = async (): Promise<WorkflowCheckOutcome> => {
     const result = await runCheck({
       slot: "affected-tests",
-      command: { ...emptyWorkflowCommandView("affected-tests"), defaultCommand: options.template ?? TEMPLATE },
+      command: {
+        ...emptyWorkflowCommandView("affected-tests"),
+        defaultCommand: options.template ?? TEMPLATE,
+        ...(options.overrides ? { overrides: options.overrides } : {}),
+      },
       policy: { checksEnabled: true, repoAllowlist: [options.root] },
       reserveRun: options.budget ? () => ({ granted: true, spent: 0 }) : null,
       releaseRun: options.budget ? () => { options.budget!.released++; } : undefined,
-      cwd: options.root,
+      cwd: options.sessionSubpath ? join(options.root, options.sessionSubpath) : options.root,
       repoRoot: options.root,
       headSha: "a".repeat(40),
-    }, { execute, checkoutSubpath: async () => "" });
+    }, { execute, checkoutSubpath: async () => options.sessionSubpath ?? "" });
     assert.equal(result.kind, "outcome", JSON.stringify(result));
     if (result.kind !== "outcome") throw new Error("unreachable");
     // Whatever was recorded must read back through the durable schema unchanged.
@@ -184,6 +205,67 @@ test("a stored row that sets nothing skips like a repository with no settings at
   const outcome = await h.check();
   assert.equal(outcome.status, "skipped");
   assert.match(outcome.note, /no stored testing settings/);
+});
+
+test("subdirectory scopes shape the selection, which still runs as one invocation of the session's override", async () => {
+  // A monorepo with two app scopes and no root tsconfig. The session stands in apps/web, so the
+  // apps/web override runs - once, for every selected file, with paths relative to apps/web and
+  // `../` for the files outside it, exactly as before scopes existed.
+  const root = realpathSync(monorepoTree());
+  const h = harness({
+    root,
+    changed: MONOREPO_CHANGED,
+    tracked: MONOREPO_TRACKED,
+    stored: MONOREPO_ROOT_SETTINGS,
+    subdirectories: MONOREPO_SUBDIRECTORY_LAYERS,
+    overrides: [{ repoRoot: join(root, "apps/web"), command: TEMPLATE }],
+    sessionSubpath: "apps/web",
+    answer: () => ({ exitCode: 0 }),
+  });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed", outcome.note);
+  assert.equal(h.runs.length, 1, "one invocation, not one per app");
+  assert.deepEqual(h.runs[0]!.files, [
+    "../api/lib/c.spec.ts",
+    "../api/smoke.spec.ts",
+    "smoke/web.smoke.ts",
+    "src/a.test.ts",
+    "../../tools/root-smoke.test.ts",
+  ]);
+  assert.deepEqual(outcome.affected?.selected.map((file) => file.path), MONOREPO_SELECTED.map((file) => file.path));
+
+  // The root's sources stay where they were, and each scope's are recorded beside them.
+  assert.deepEqual(outcome.affected?.settings.sources?.map((source) => source.layer), ["stored", "default", "stored"]);
+  assert.equal(outcome.affected?.settings.scopeCount, 2);
+  assert.deepEqual(outcome.affected?.settings.scopes, [
+    {
+      path: "apps/api",
+      sources: [
+        { key: "tests.patterns", layer: "stored", scope: "apps/api" },
+        { key: "tests.includeImporters", layer: "stored", scope: "apps/api" },
+        { key: "tests.smokeSet", layer: "stored", scope: "" },
+      ],
+    },
+    {
+      path: "apps/web",
+      sources: [
+        { key: "tests.patterns", layer: "stored", scope: "apps/web" },
+        { key: "tests.includeImporters", layer: "default", scope: null },
+        { key: "tests.smokeSet", layer: "stored", scope: "apps/web" },
+      ],
+    },
+  ]);
+  assert.deepEqual(outcome.affected?.diagnostics, [PER_APP_ALIASES_UNRESOLVED]);
+});
+
+test("a repository with no subdirectory scope records neither scopes nor diagnostics", async () => {
+  const root = tree(CONFIG);
+  const h = harness({ root, changed: ["test/a.test.ts"], tracked: TRACKED, answer: () => ({ exitCode: 0 }) });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed");
+  assert.equal(outcome.affected?.settings.scopes, undefined);
+  assert.equal(outcome.affected?.settings.scopeCount, undefined);
+  assert.equal(outcome.affected?.diagnostics, undefined);
 });
 
 test("a pass runs only the selection, one argv element per file, and records the template", async () => {

@@ -982,6 +982,9 @@ selected when:
    TS only; other languages get (1) and (3);
 3. it matches `tests.smokeSet`, which always runs.
 
+In a repository with [subdirectory scopes](#subdirectory-scopes), each file is judged by its
+nearest scope's settings instead of the root's alone.
+
 A repository with no `.mission/testing.json`, no stored testing settings and no local
 `.mission/testing.local.json` skips the gate with a note naming all three. An invalid committed
 file fails the gate with the error, because the file is
@@ -1047,14 +1050,15 @@ The `flakes` block is read by [CI flake reporting](flaky-tests.md), not by this 
 **Stored settings** are for a repository that will not commit the file. The affected-tests page
 in Library › Commands has a **Testing settings** section with one row per repository root: every
 root that has stored settings or an `affected-tests` override at its root, and any root you add.
+Folders inside a repository get rows of their own (see [subdirectory scopes](#subdirectory-scopes)).
 Each row edits `tests.patterns` and `tests.smokeSet` (one glob per line) and
 `tests.includeImporters` (Inherit, On or Off). Each list also says where it comes from:
 **Inherit** leaves the key unset, so the committed file or the default decides, and **This row**
 stores the list as typed. This row with no globs stores an empty list, which replaces the committed
 one: an empty smoke set runs no smoke test. Typing a glob switches a list to This row. Each row
 saves on its own through
-`PUT /api/testing-settings`, keyed by the repository's canonical main-checkout path, the same key a
-root Command override uses:
+`PUT /api/testing-settings`, keyed by the repository's canonical main-checkout path, or a
+subdirectory below it, the same key a Command override uses:
 
 - The settings are validated on save, so an invalid row cannot be stored. Only the three `tests.*`
   keys are accepted. `flakes` is refused, because only the [CI flake report](flaky-tests.md) reads
@@ -1062,7 +1066,8 @@ root Command override uses:
   defaults.
 - Every save carries the revision the row loaded. A save another window made first is refused with
   409, and the row reloads what is stored.
-- This release stores settings for a repository root only. A path inside a repository is refused.
+- A row is keyed by canonical path. A path spelled another way (through a symlink, or inside a
+  linked worktree) is refused with the canonical spelling, because the gate looks rows up by it.
 
 Stored settings supersede one rule of the [flake-aware testing plan](plans/flake-aware-testing/plan.md):
 `tests.*` selection settings no longer have to be committed and reviewed like code, and a stored
@@ -1080,6 +1085,43 @@ A key is `committed`, `stored (<scope>)`, `local`, or `default` when no layer se
 repository has no committed file. A `flakes.*` key the local file set is listed after them.
 Outcomes recorded before stored settings existed keep their old line, which lists only the keys
 that came from the local file.
+
+###### Subdirectory scopes
+
+Settings can also be stored for a folder inside a repository, such as one app of a monorepo. The
+section lists a row for every subdirectory that has stored settings or an `affected-tests`
+override, and **Add a repository or folder** takes a folder too. Such a row is a **scope** over the
+root's merged settings, for the files inside that folder:
+
+| Scope | Lowest | Then | Highest |
+|---|---|---|---|
+| Repository root | committed `.mission/testing.json` | stored at the root | `.mission/testing.local.json` |
+| Subdirectory (`apps/web`) | the root's merged result | stored at `apps/web` | none |
+
+- A key the folder sets replaces the root's value for the files inside it. The local file stays
+  root-only, so inside `apps/web` a key stored for `apps/web` wins over the local file, and a key
+  `apps/web` leaves to Inherit still comes from the local file when it sets one.
+- Its `tests.patterns` and `tests.smokeSet` are **relative to the folder**: `src/**/*.test.ts` in
+  the `apps/web` row means `apps/web/src/**/*.test.ts`.
+- A key it does not set falls through to the root, and keeps the root's meaning: a root glob is
+  still repository-relative inside the folder.
+- Nested folders apply nearest first. A file belongs to its nearest scope only, so a root smoke
+  glob that matches a file inside a folder with its own smoke set no longer selects it.
+- `tests.includeImporters` applies per scope: a folder that turns it off selects its tests by
+  change and smoke set alone.
+- The gate runs when a layer exists at any scope, so a monorepo whose only settings are stored for
+  its apps still runs it, over the defaults at the root. A folder row that sets nothing is not a
+  scope.
+
+Per scope, the tests are the tracked files whose nearest scope it is and that match its effective
+patterns. Selection is shaped per scope, but the selected files still run through **one
+invocation**: the `affected-tests` Command the session's folder resolves, with each file relative
+to that Command's subdirectory (`../` for a file outside it), exactly as before. Imports are still
+resolved through the root `tsconfig.json` only, so an import written through an app's own
+`tsconfig.json` or `jsconfig.json` alias, or through a workspace package name, does not yet select
+its importer. Run detail says so under **Selection notes**, and lists each scope's sources below
+the root's, for example `apps/web: tests.patterns stored (apps/web), tests.includeImporters
+default, tests.smokeSet stored (root)`.
 
 Stored settings are part of [settings snapshots](configuration.md#automatic-settings-snapshots),
 as the `testing-settings` domain. A restore makes the catalog exactly the snapshot's: a row the

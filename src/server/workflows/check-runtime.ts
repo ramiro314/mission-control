@@ -21,7 +21,7 @@ import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-gro
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
 import { resolveCapturedCommit } from "./commit-id.ts";
 import type { TestSelectionDeps } from "../test-selection.ts";
-import type { StoredTestingSettings } from "@shared/testing-config.ts";
+import type { StoredTestingLayer } from "@shared/testing-config.ts";
 import {
   planAffectedTests,
   runAffectedTests,
@@ -219,11 +219,12 @@ export interface CheckRuntimeDeps {
   /** How an affected-tests check reads changed and tracked files. Defaults to git. */
   testSelection?: TestSelectionDeps;
   /**
-   * A repository root's stored testing settings, or null for none. Defaults to none, so a
-   * runtime nobody wired to the catalog behaves exactly as it did before the catalog existed.
-   * The daemon passes the Library's testing settings catalog.
+   * Every stored testing settings row for a repository: the root's with scope `""` and each
+   * subdirectory's with its repository-relative path. Defaults to none, so a runtime nobody
+   * wired to the catalog behaves exactly as it did before the catalog existed. The daemon
+   * passes the Library's testing settings catalog.
    */
-  storedTestingSettings?: (repoRoot: string) => StoredTestingSettings | null;
+  storedTestingLayers?: (repoRoot: string) => StoredTestingLayer[];
   /** Defaults to `claimInputsChangedSinceMergeBase`. Asked only after a failed dependency claim. */
   claimInputsChanged?: typeof claimInputsChangedSinceMergeBase;
 }
@@ -246,7 +247,7 @@ export class CheckRuntime {
   private readonly acquireTestLease: CheckTestLeaseAcquirer;
   private readonly env: NodeJS.ProcessEnv;
   private readonly testSelection: TestSelectionDeps | undefined;
-  private readonly storedTestingSettings: ((repoRoot: string) => StoredTestingSettings | null) | undefined;
+  private readonly storedTestingLayers: ((repoRoot: string) => StoredTestingLayer[]) | undefined;
   private readonly claimInputsChanged: typeof claimInputsChangedSinceMergeBase;
 
   /**
@@ -273,7 +274,7 @@ export class CheckRuntime {
     this.acquireTestLease = deps.acquireTestLease ?? acquireCheckTestLease;
     this.env = deps.env ?? process.env;
     this.testSelection = deps.testSelection;
-    this.storedTestingSettings = deps.storedTestingSettings;
+    this.storedTestingLayers = deps.storedTestingLayers;
     this.claimInputsChanged = deps.claimInputsChanged ?? claimInputsChangedSinceMergeBase;
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
@@ -382,11 +383,9 @@ export class CheckRuntime {
         workingSubpath: request.workingSubpath,
         localRoot: request.repoRoot,
         baseBranch: request.baseBranch ?? null,
-        // The root scope: `request.repoRoot` is the main checkout, the key a root row is stored by.
-        readStoredSettings: () => {
-          const settings = this.storedTestingSettings?.(request.repoRoot) ?? null;
-          return settings ? { settings, scope: "" } : null;
-        },
+        // `request.repoRoot` is the main checkout: the key a root row is stored by, and the
+        // prefix of every subdirectory row's key.
+        readStoredSettings: () => this.storedTestingLayers?.(request.repoRoot) ?? [],
         selection: this.testSelection,
       };
       let plan: AffectedTestsPlan;
