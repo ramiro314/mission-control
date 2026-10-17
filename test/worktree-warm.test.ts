@@ -12,7 +12,7 @@ import {
   type NativeWorktreeLease,
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
-import { RedactedOutput, buildClaimEnvironment, runClaimStep } from "../src/server/worktrees/claim.ts";
+import { RedactedOutput, buildClaimEnvironment, runClaimStep, runClaimSteps } from "../src/server/worktrees/claim.ts";
 import { WarmLogFile, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
@@ -860,6 +860,35 @@ test("a Warm with a lot of output keeps it all in its log, and a download stream
 });
 
 // ---- redaction of streamed output ----
+
+test("a value split across two stdout writes is redacted even when stderr lands between its halves", async () => {
+  const value = "s3cr3t-token-value-0123456789";
+  const half = Math.floor(value.length / 2);
+  let streamed = "";
+  const outcome = await runClaimSteps({
+    claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["install"], env: ["A_TOKEN"] }], fingerprintPaths: [] }),
+    cwd: process.cwd(),
+    signal: new AbortController().signal,
+    environment: async () => ({ env: { A_TOKEN: value }, received: ["A_TOKEN"], missing: [] }),
+    // The pipes interleave as they arrive: stdout's first half, a stderr line, stdout's second half.
+    runStep: async (request) => {
+      await request.onOutput?.(`token=${value.slice(0, half)}`, "stdout");
+      await request.onOutput?.("warning: progress from stderr\n", "stderr");
+      await request.onOutput?.(`${value.slice(half)}\ndone\n`, "stdout");
+      return { outcome: "exited", code: 0, signal: null, tail: "", truncatedBytes: 0 };
+    },
+    now: Date.now,
+    onOutput: (text) => {
+      streamed += text;
+    },
+  });
+  assert.equal(outcome.ok, true);
+  assert.match(streamed, /token=\[A_TOKEN redacted\]/, "stdout's value is redacted as one value");
+  assert.match(streamed, /warning: progress from stderr/, "stderr's output still arrives");
+  assert.match(streamed, /done/);
+  assert.ok(!streamed.includes(value.slice(0, half)), "the first half never reaches the view");
+  assert.ok(!streamed.includes(value.slice(half)), "nor the second");
+});
 
 test("streamed claim output never carries a value, however the pipe splits it", () => {
   const secrets = [{ name: "A_TOKEN", value: "s3cr3t-value-123" }, { name: "B_TOKEN", value: "other-secret" }];

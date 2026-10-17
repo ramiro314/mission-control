@@ -538,8 +538,10 @@ the two never share a slot.
 **Watching a Warm.** The operations list above the pools shows each Warm with its slots and what
 became of each one (waiting, warming, warmed, claim failed, skipped, cancelled or failed), and,
 while it runs, a live output tail: the last 4,000 bytes of the claim's output, with every claim
-variable value removed. The value is removed even when the pipe splits it across two writes,
-because the stream holds back the last few characters that could still be the start of one. The
+variable value removed. The value is removed even when the pipe splits it across two writes, and
+even when the step's other pipe writes between the two halves: stdout and stderr are redacted
+separately, each holding back what could still be the start of a value, and each releases whole
+lines, so the two interleave at line boundaries. The
 tail reaches the dashboard through the ordinary `worktrees_changed` bump, at most once a second
 while output arrives. A finished Warm stays listed, with its report and its log, until you
 dismiss it, and counts toward the 64 operations that may be listed at once.

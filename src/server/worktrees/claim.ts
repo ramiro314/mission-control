@@ -270,9 +270,15 @@ export interface ClaimStepRequest {
    * Returning a promise is backpressure: both pipes are paused until it settles, so a step that
    * prints faster than its reader keeps up blocks on its own pipe instead of the daemon
    * buffering its output. The step's time limit keeps running meanwhile.
+   *
+   * `stream` names the pipe each piece came from. The two pipes interleave arbitrarily, so a
+   * reader that must see each stream's text contiguously, as redaction does, keeps them apart.
    */
-  onOutput?: (text: string) => void | Promise<void>;
+  onOutput?: (text: string, stream: ClaimOutputStream) => void | Promise<void>;
 }
+
+/** Which of a step's pipes a piece of its output came from. */
+export type ClaimOutputStream = "stdout" | "stderr";
 
 export type ClaimStepResult =
   | { outcome: "exited"; code: number | null; signal: string | null; tail: string; truncatedBytes: number }
@@ -373,11 +379,11 @@ export async function runClaimStep(
     // How many of the reader's waits are outstanding; the pipes flow again once none are.
     let waiting = 0;
     const pipes = () => [child.stdout, child.stderr];
-    const forward = (text: string): void => {
+    const forward = (text: string, stream: ClaimOutputStream): void => {
       if (!text) return;
       let wait: void | Promise<void>;
       try {
-        wait = request.onOutput?.(text);
+        wait = request.onOutput?.(text, stream);
       } catch (error) {
         // A live view of the step is never part of the step.
         console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -394,17 +400,20 @@ export async function runClaimStep(
     };
     child.stdout?.on("data", (chunk: Buffer) => {
       ring.push(chunk);
-      if (decoders) forward(decoders[0].write(chunk));
+      if (decoders) forward(decoders[0].write(chunk), "stdout");
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       ring.push(chunk);
-      if (decoders) forward(decoders[1].write(chunk));
+      if (decoders) forward(decoders[1].write(chunk), "stderr");
     });
     child.once("error", (error) => {
       if (child.pid === undefined) finish({ outcome: "spawnFailed", reason: error.message });
     });
     child.once("close", (code, signal) => {
-      if (decoders) for (const decoder of decoders) forward(decoder.end());
+      if (decoders) {
+        forward(decoders[0].end(), "stdout");
+        forward(decoders[1].end(), "stderr");
+      }
       const { text, truncatedBytes } = tail();
       finish(ending
         ? { outcome: ending, tail: text, truncatedBytes }
@@ -569,7 +578,12 @@ async function runClaimStepsInner(
     // The command is the operator's own argv, never a value; what the step prints goes through
     // the same redaction as its stored tail before anything outside the step sees it.
     say?.(`${index > 0 ? "\n" : ""}$ ${renderClaimArgv(step.argv)}\n`);
-    const live = say ? new RedactedOutput(secrets, say) : null;
+    // One redactor per pipe, both feeding the same view. The pipes interleave arbitrarily, so a
+    // value one stream splits across two writes can have the other stream's output land between
+    // its halves; only a stream's own text, kept contiguous, still shows the whole value.
+    const live = say
+      ? { stdout: new RedactedOutput(secrets, say), stderr: new RedactedOutput(secrets, say) }
+      : null;
     let result: ClaimStepResult;
     try {
       result = await input.runStep({
@@ -578,12 +592,13 @@ async function runClaimStepsInner(
         env: built.env,
         timeoutMs: remaining,
         signal: input.signal,
-        ...(live ? { onOutput: (text: string) => live.push(text) } : {}),
+        ...(live ? { onOutput: (text: string, stream: ClaimOutputStream) => live[stream].push(text) } : {}),
       });
     } catch (error) {
       result = { outcome: "spawnFailed", reason: error instanceof Error ? error.message : String(error) };
     } finally {
-      live?.flush();
+      live?.stdout.flush();
+      live?.stderr.flush();
       cleanupAgentSubprocessEnv(built.env);
     }
     const missing = built.missing.length > 0 ? ` (no value for ${built.missing.join(", ")})` : "";
@@ -785,6 +800,9 @@ export function redactClaimValues(
   return redacted + text.slice(cursor);
 }
 
+/** How long an unterminated line may grow in a redactor before it streams anyway. */
+const MAX_OPEN_LINE = 4_096;
+
 /**
  * A step's output, streamed with every value the step received removed, however the pipe cut
  * it. A value can arrive split across two pieces, so the stream holds back the last
@@ -792,12 +810,20 @@ export function redactClaimValues(
  * never releases text that ends inside a complete value. What it releases is therefore always
  * whole around every value it contains, and `flush` releases the rest when the step ends.
  *
- * The live view lags the step by at most that many characters, a few dozen for a token.
+ * It releases whole lines where it can: a value with no newline cannot span a line end, so
+ * every complete line is safe, and a step's stdout and stderr, each with a redactor of its own,
+ * then interleave at line boundaries. A line still open past `MAX_OPEN_LINE` characters streams
+ * at the value-safe cut instead. The live view therefore lags the step by at most one line.
+ *
+ * One redactor reads one stream. Two streams' text concatenated can put one stream's output
+ * between the halves of a value the other split, and then neither half matches.
  */
 export class RedactedOutput {
   private pending = "";
   private readonly hold: number;
   private readonly secrets: ReadonlyArray<{ name: string; value: string }>;
+  /** No value holds a newline, so no value can span a line end and a whole line is safe. */
+  private readonly lineSafe: boolean;
 
   /** `sink` may return a promise as backpressure; `push` and `flush` hand it back. */
   constructor(
@@ -806,6 +832,7 @@ export class RedactedOutput {
   ) {
     this.secrets = secrets.filter((secret) => secret.value.length > 0);
     this.hold = Math.max(0, ...this.secrets.map((secret) => secret.value.length - 1));
+    this.lineSafe = this.secrets.every((secret) => !/[\r\n]/.test(secret.value));
   }
 
   push(text: string): void | Promise<void> {
@@ -813,7 +840,12 @@ export class RedactedOutput {
       return text ? this.sink(text) : undefined;
     }
     this.pending += text;
-    let cut = this.pending.length - this.hold;
+    // Whole lines first: a step's two pipes each have a redactor, and releasing complete lines
+    // keeps their interleaving at line boundaries instead of mid-word. A line still open past
+    // MAX_OPEN_LINE characters streams anyway, up to the value-safe cut.
+    const lineEnd = this.lineSafe ? this.pending.lastIndexOf("\n") + 1 : 0;
+    const open = this.pending.length - lineEnd;
+    let cut = open > MAX_OPEN_LINE ? Math.max(lineEnd, this.pending.length - this.hold) : lineEnd;
     if (cut <= 0) return undefined;
     // A value that starts before `cut` is complete in `pending` (it is at most `hold + 1`
     // long), so the only way to split one is to cut through it. Move the cut back to its start
