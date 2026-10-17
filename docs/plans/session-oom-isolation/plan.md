@@ -1,0 +1,438 @@
+# One systemd scope per agent session, so an OOM stops only that session
+
+Shaped 2026-10-17. Every decision below came from the interview recorded in
+[Decisions](#decisions). Fork feature `fork:session-oom-isolation`, an upstream candidate.
+
+On Linux, an SDK agent session, and everything it starts, runs in the daemon's own cgroup. When
+one of those processes runs the machine out of memory, the kernel kills that one process, and
+systemd then stops the whole unit it was in: the daemon, the dashboard renderer and every other
+session go with it. This plan moves each SDK session into a transient systemd scope of its own,
+so the unit systemd stops is that session's and nothing else's.
+
+## Goals
+
+- An OOM kill inside an agent session stops that session, never the daemon, the dashboard, or
+  another session.
+- In a global OOM, the kernel prefers agent sessions over the dashboard renderer and the daemon.
+- A task whose session was stopped this way says so: "stopped: the session ran out of memory
+  (peak 15.2 GB)".
+- Stopping or restarting the daemon still stops its SDK sessions, as it does today.
+- macOS, Windows, and Linux without a systemd user manager spawn exactly as today.
+
+## Non-goals
+
+- A memory cap (`MemoryMax`/`MemoryHigh`) on sessions.
+- Terminal-runtime agents and one-shot runners. See [Known gaps](#known-gaps).
+- Resuming or re-dispatching a session automatically after an OOM stop.
+- A new wire field, session-card label, or Setup diagnostic.
+- Moving the daemon or renderer out of the terminal tab's scope under `make start`.
+
+## What happened on 2026-10-17
+
+From this machine's kernel and user journals:
+
+1. **02:44:04.** A global OOM (`constraint=CONSTRAINT_NONE`). The kernel killed one process:
+   `WebKitWebProcess` pid 2140516, 15.2 GB anonymous RSS, `oom_score_adj` 200, in
+   `app-ghostty-surface-transient-1003006.scope`. It was a Tauri webview, most likely `tauri dev`
+   started by an agent working on OpenDAM.
+2. **02:44:04.** systemd: "The kernel OOM killer killed some processes in this unit." The scope
+   has `OOMPolicy=stop` (systemd's `DefaultOOMPolicy`), so systemd began stopping the whole scope,
+   sending SIGTERM to every process in it: the daemon, the renderer, every SDK agent.
+3. **02:44:05.** The Electron main process, in its own `app-mission\x2dcontrol-<pid>.scope`
+   (created by Chromium's portal code, not by Mission Control), dumped core.
+4. **02:45:34.** "Stopping timed out. Killing.", then "Failed with result 'oom-kill'", with a
+   20.5 GB memory peak and a 4.1 GB swap peak.
+
+The kernel picked the right victim. The blast radius came from step 2: whatever the kernel kills,
+systemd stops every process that shares its unit. Raising `oom_score_adj` alone cannot fix that,
+because the victim would still share the daemon's unit.
+
+## How it works today
+
+**Who shares the daemon's cgroup.** Only SDK-runtime agents and their children. The daemon itself
+runs in the terminal tab's scope under `make start`, in `mission-control.service` when installed
+as a unit (`scripts/install-service.mjs`), or in the Electron app's process tree. Each of those
+units stops whole on an OOM kill.
+
+**Terminal-runtime agents do not.** `inUserScope` (`src/server/graphical-session.ts`) already
+starts tmux and Herdr servers in their own `run-*.scope` in `app.slice`, and a WezTerm tab belongs
+to WezTerm's GUI. An OOM there stops that server's agents, never the daemon.
+
+**SDK spawn seams, one per harness:**
+
+- **Claude:** the vendor's `spawnClaudeCodeProcess` hook, which `startQuery` in
+  `src/server/harness/claude/sdk-deps.ts` installs for interactive sessions only. Catalog probes
+  and one-shot queries use the vendor's own spawner.
+- **Codex:** `spawnAppServer` in `src/server/harness/codex/sdk-deps.ts`, one server per session.
+  The model-catalog probe calls it too.
+- **Pi:** no agent process. The SDK runs inside the daemon. Its only children are bash-tool
+  commands, which Pi spawns itself through the `spawnHook` passed to `createBashToolDefinition`
+  in `src/server/harness/pi/sdk-deps.ts`. The hook may rewrite the command, cwd and env.
+
+**The exit path.** A driver emits `{ kind: "exited", reason, resumable }`
+(`src/server/harness/types.ts`). The supervisor's `pump` (`src/server/sdk/supervisor.ts`) hands it
+to `registry.applyDriverEvent`, which discards `reason` and calls `beginEviction`
+(`src/server/registry.ts`). That emits `session_exit` at once and `session_remove` 8 s later.
+On `session_remove`, `src/server/tasks.ts` calls `agentWentAway` and then `settleAgentGone`, which
+writes `failed` with "the agent's session ended with no outcome recorded". The task-failed alert
+fires from that status. The Codex app-server's exit is not observed at all today.
+
+**`systemd-run --scope` execs in place.** `child.pid`, `recoveryProcessId`, the `{pid, startMs}`
+lifetime, every by-pid kill, `daemonOwnedPids` discovery and session transfer all still see the
+agent. `src/server/discovery/processes.ts` already lists `systemd-run` among its wrappers.
+
+**Probed on this machine** (systemd 262, cgroup v2, `memory` delegated to the user manager):
+
+- `systemd-run --user --scope` accepts `OOMPolicy`, `TimeoutStopSec`, `BindsTo` and `After`
+  naming the caller's own unit, `MemoryMax` and `MemoryHigh`. It auto-creates
+  `app-mission\x2dcontrol\x2dsessions.slice` on first use.
+- It refuses `OOMScoreAdjust` ("Unknown assignment"), because a scope has no exec context.
+  `choom -n 500 --` (util-linux) sets the value, and children inherit it.
+- In a 64 MB test scope, `OOMPolicy=stop` stopped every process in the scope (the stand-in agent
+  exited 143). `OOMPolicy=continue` killed only the memory hog.
+- A scope started without `--collect` keeps `Result=oom-kill` and `MemoryPeak` after it fails.
+  `systemctl --user show` reads them the moment the agent exits, even while a straggler keeps the
+  scope `deactivating`. `reset-failed` then unloads it.
+
+## Design
+
+### Where the processes live
+
+```mermaid
+flowchart LR
+  subgraph Before["Before: one unit, OOMPolicy=stop"]
+    D1[daemon] --- R1[renderer]
+    D1 --> A1[claude SDK agent]
+    A1 --> W1["dev server (15 GB)"]
+  end
+  subgraph After["After"]
+    subgraph U["daemon's unit"]
+      D2[daemon] --- R2[renderer]
+    end
+    subgraph S["app-mission-control-sessions.slice"]
+      subgraph SA["mission-control-<session A> scope, OOMPolicy=stop, adj 500"]
+        A2[claude SDK agent] --> W2["dev server (15 GB)"]
+      end
+      subgraph SB["mission-control-<session B> scope"]
+        B2[codex app-server]
+      end
+    end
+    D2 -. spawns, BindsTo .-> SA
+    D2 -. spawns, BindsTo .-> SB
+  end
+```
+
+Before, the OOM kill of the dev server makes systemd stop the daemon's whole unit. After, it stops
+session A's scope: session A ends, while the daemon, the renderer and session B keep running.
+
+### 1. The session scope
+
+A new module, `src/server/platform/session-scope.ts` (next to `process-lifetime.ts`), owns how a
+session's process is wrapped. It reuses `userManagerReachable` from `graphical-session.ts`, which
+becomes an export, rather than restating it. It resolves `systemd-run`, `systemctl` and `choom`
+through `locateExecutable`.
+
+```ts
+interface SessionScope {
+  /** The argv to spawn in place of `[bin, ...args]`, and the scope's unit when one was made. */
+  wrap(bin: string, args: readonly string[], env: NodeJS.ProcessEnv, label: string):
+    { bin: string; args: string[]; unit: string | null };
+  /** After the wrapped process exited: whether its scope was stopped for an OOM kill. Never throws. */
+  outcome(unit: string): Promise<{ oomKilled: boolean; peakBytes: number | null } | null>;
+}
+```
+
+On Linux, with `systemd-run` resolved and the user manager reachable, `wrap` returns:
+
+```
+systemd-run --user --scope --quiet
+  --unit=mission-control-<label>-<nonce>
+  --slice=app-mission\x2dcontrol\x2dsessions.slice
+  -p OOMPolicy=stop -p TimeoutStopSec=10s
+  -p BindsTo=<daemon unit> -p After=<daemon unit>
+  -- choom -n 500 -- <bin> <args...>
+```
+
+| Part | Why |
+| --- | --- |
+| Own scope, no `--collect` | Bounds the OOM blast radius to the session. A failed scope keeps its `Result` until `outcome` reads and resets it. A scope that ends cleanly is collected by systemd as usual. |
+| `--unit=mission-control-<label>-<nonce>` | `<label>` is the session's id, `sdk:` prefix stripped. The nonce stops a resumed session's new scope from colliding with its predecessor's. An operator can tell which session a scope belongs to in `systemctl --user status`. |
+| Dedicated slice | One place that lists every session and their total memory, with room for a later aggregate cap that does not touch the scopes. |
+| `OOMPolicy=stop` | Explicit, so a user's `DefaultOOMPolicy=continue` cannot change it. An OOM kill anywhere in the session stops the whole session. |
+| `TimeoutStopSec=10s` | The incident's stop took 90 s to finish. A session being stopped has nothing to flush for that long. |
+| `BindsTo`/`After` the daemon's unit | Today `systemctl --user stop` or `restart` of `mission-control.service` kills SDK children through the unit's cgroup. Once they leave it, only this keeps that true. The unit is the leaf of the daemon's own `/proc/self/cgroup` when it is a `.service` or `.scope` of this user manager. Otherwise both properties are omitted, and the session relies on stdin EOF and `stopAll`, as an unscoped child does today. |
+| `choom -n 500` | In a global OOM, agents (500) outrank the renderer (Chromium sets 300) and the daemon (inherited, 200 on this machine). Children inherit it. It applies even when no scope can be made, as long as `choom` resolves. |
+
+**Fallbacks.** Each is decided once per daemon run:
+
+- **Not Linux:** nothing is wrapped and nothing is logged.
+- **Linux, `systemd-run` missing or the user manager unreachable:** no scope. `choom` still
+  applies when it resolves. One log line.
+- **The full property set refused by this systemd:** the first `wrap` probes it once with
+  `/bin/true`. On refusal it probes again without `OOMPolicy`. The scope still keeps the daemon out
+  of the session's unit, but an older systemd may not stop the session whole. If that is refused
+  too, no scope. One log line names what was dropped. A wrapper that cannot start must never
+  become a session that cannot start, and the probe is what guarantees it.
+- **`choom` missing:** no `oom_score_adj` change, mentioned in the same log line.
+
+**Startup hygiene.** On Linux with the manager reachable, the daemon resets any failed
+`mission-control-*.scope` unit left by a previous run that died before reading it.
+
+**`choom` becomes a registered executable**, per the
+[change contracts](../../agent-guides/change-contracts.md#executable-and-child-process-changes):
+append `choom` to `EXECUTABLE_IDS` in `src/shared/executables.ts`, and add its `ExecutableSpec` to
+`src/server/executables/catalog.ts` with the `CHOOM_BIN` override suffix. It is not
+operator-facing, so it gets no Setup row. `src/server/discovery/processes.ts` adds `choom` to its
+wrappers next to `systemd-run`.
+
+### 2. Where each harness wraps
+
+Each harness wraps at the spawn seam it already owns, through the one shared helper. No route,
+supervisor or registry code branches on the agent.
+
+- **Claude.** Inside the `spawnClaudeCodeProcess` hook. The hook spawns the wrapped argv, and the
+  vendor gets the same child it gets today: pid, stdio, signal and exit. `startQuery`'s params
+  carry the session's label. Catalog probes and one-shot queries install no hook and stay
+  unwrapped.
+- **Codex.** `spawnAppServer` takes an optional label. `connect` passes the session's, and the
+  model-catalog probe passes none and stays unwrapped. `spawnAppServer` gains the exit listener it
+  lacks today.
+- **Pi.** The existing bash-tool `spawnHook` rewrites `command` to
+  `exec <systemd-run ...> -- <choom -n 500> -- /bin/sh -c '<command>'`, quoted with the existing
+  `shellCommand`. That gives one scope per command, labelled with the session and a counter, with
+  the same properties plus `--collect`. An OOM stops only that command: Pi sees it exit 143, and the
+  session continues. Pi's process-group kill still reaches the command, because the scope does
+  not change its process group.
+
+### 3. Reporting an OOM stop
+
+```mermaid
+flowchart LR
+  K[kernel OOM kill] --> SD["systemd stops the session scope, Result=oom-kill"]
+  SD --> X[agent exits]
+  X --> SEAM["spawn seam: outcome(unit) then reset-failed"]
+  SEAM --> DRV["driver emits exited with cause out_of_memory"]
+  DRV --> REG["registry.beginEviction keeps the cause"]
+  REG --> RM[session_remove]
+  RM --> T["settleAgentGone: failed, 'stopped: the session ran out of memory (peak 15.2 GB)'"]
+  T --> AL[existing task-failed alert]
+```
+
+1. The spawn seam (the Claude hook, `spawnAppServer`) hears its child exit and calls
+   `outcome(unit)`: `systemctl --user show <unit> -p Result -p MemoryPeak` with a 2 s timeout,
+   then `systemctl --user reset-failed <unit>`. systemd sets `Result=oom-kill` the moment it reacts
+   to the kill, before the agent exits, so it is there to read.
+2. The driver awaits that outcome before it emits `exited`. The event gains an optional cause:
+   `{ kind: "exited"; reason; resumable; cause?: { kind: "out_of_memory"; peakBytes: number | null } }`.
+3. `registry.applyDriverEvent` passes the cause to `beginEviction`, still the one eviction path,
+   which keeps it until `session_remove` has been handled. Nothing changes on the wire:
+   `session_exit` and `session_remove` keep their shapes.
+4. `settleAgentGone` reads the cause and writes `failed` with "stopped: the session ran out of
+   memory (peak 15.2 GB)", plus the existing retained-worktree suffix. The peak is `MemoryPeak` in
+   base-1024 units with one decimal, as systemd's own summary prints it. Without `MemoryPeak`
+   (older systemd), the parenthetical is dropped. The existing task-failed alert carries the text.
+   Nothing resumes automatically.
+5. The daemon logs one line per OOM stop, with the session id, the unit and the peak.
+
+A session with no task gets only the log line. A merged pull request still outranks this, because
+`reconcileMergedTasks` runs first.
+
+**Pi's command scopes are not read back.** Pi spawns those commands itself, and the hook never
+sees them exit. systemd's journal records each OOM under its session-named unit, and the agent
+sees exit 143. The round 2 option text said the daemon would log it. The plan review settled on
+the journal instead. See [Decisions](#decisions).
+
+### 4. Docs
+
+- `docs/harnesses-and-terminals.md`, "Linux display and process scopes": a subsection on session
+  scopes. It covers what is wrapped, the argv and its properties, `BindsTo`, `choom`, the fallback
+  per platform, and the fact that terminal-runtime agents already live outside the daemon's cgroup.
+- `docs/configuration.md`: `MISSION_CHOOM_BIN`.
+- `docs/troubleshooting.md`: a new entry, "A task failed with 'stopped: the session ran out of
+  memory'". It explains what happened, points at
+  `systemctl --user status 'app-mission\x2dcontrol\x2dsessions.slice'` and
+  `journalctl --user -u 'mission-control-*'`, and links the known gaps.
+- `docs/session-lifecycle.md`: the exit cause that rides `beginEviction`.
+- `docs/setup.md`: a row for session memory isolation in the Linux feature table.
+
+## Fork tracking
+
+A new fork feature, slug `session-oom-isolation`. The first implementation pull request creates
+the `fork:session-oom-isolation` label and the `Fork feature: Agent session OOM isolation` tracking
+issue, following `docs/fork/README.md`. Every pull request of the feature carries the label and a
+"Fork feature changes" section.
+
+- **Intent:** an OOM in an agent session stops that session, not the daemon or the dashboard.
+- **Behavior contracts:** AC1 to AC7 below.
+- **Upstream behavior it assumes:**
+  - the vendor `spawnClaudeCodeProcess` hook;
+  - `spawnAppServer` being the one Codex spawn;
+  - Pi's bash `spawnHook` being able to rewrite `command`;
+  - `beginEviction` being the one eviction path;
+  - `settleAgentGone` writing the departure text.
+- **Upstream surfaces touched:**
+  - the three `sdk-deps.ts` files;
+  - `harness/types.ts`, `registry.ts` and `tasks.ts`;
+  - `graphical-session.ts`;
+  - the executable registry and `discovery/processes.ts`.
+- **Fork-only files:** `src/server/platform/session-scope.ts` and its tests.
+- **Plan docs:** this plan.
+- **Upstream candidate:** yes. It is generic Linux robustness with no fork-specific behavior.
+
+## Delivery order
+
+Three slices. Each lands green on its own, in this order.
+
+1. **Isolation.** `session-scope.ts`, the `choom` registration, the Claude and Codex seams,
+   `BindsTo`, the probe and fallback log line, the startup reset, unit tests, the Linux
+   real-systemd test, and the docs for these. This slice alone fixes the incident.
+2. **Pi tool commands.** The `spawnHook` rewrite, its tests and its docs line.
+3. **Reporting.** `outcome`, the `exited` cause, `beginEviction`, the `settleAgentGone` text, the log
+   line, the Playwright spec and the troubleshooting entry.
+
+## Verification
+
+Run single files with the suite's loader, for example
+`node --test --import ./test/setup-state.mjs --import tsx test/session-scope.test.ts`.
+
+### Unit tests (`test/`, `node:test`)
+
+- **`test/session-scope.test.ts`:**
+  - **Linux with a manager and every executable:** the exact argv, meaning the unit-name shape, the
+    slice, every property, `BindsTo`/`After` taken from a given daemon cgroup, and `choom`.
+  - **`BindsTo`/`After` omitted** when the daemon's cgroup leaf is not a unit of this user manager.
+  - **darwin and win32:** argv unchanged, `unit` null, nothing logged.
+  - **Linux without `systemd-run` or a manager:** no scope, `choom` applied, exactly one log line
+    across two wraps.
+  - **`choom` missing:** a scope without `choom`, and the log line says so.
+  - **The probe refuses `OOMPolicy`:** it retries without it. If it refuses entirely, unwrapped.
+  - **`outcome`:**
+    - `oom-kill` with a peak gives `oomKilled: true`;
+    - `success` gives `oomKilled: false`;
+    - a `systemctl` failure or timeout gives `null`;
+    - `reset-failed` follows every read.
+- **Claude seam:** the hook spawns the wrapped argv and returns that child. A catalog probe stays
+  unwrapped.
+- **Codex seam:** `spawnAppServer` wraps with a label and does not wrap without one. Its exit
+  listener calls `outcome`.
+- **Pi seam:** the rewritten command survives quotes, `$` and newlines when it is run through a
+  real `/bin/sh` with pass-through fakes for `systemd-run` and `choom`.
+- **Registry and tasks:**
+  - an `exited` event with an `out_of_memory` cause fails the task with the out-of-memory text;
+  - without a cause the text is unchanged;
+  - a merged pull request still settles `done`;
+  - eviction still goes through `beginEviction` alone.
+- **`test/executable-contracts.test.ts`** passes with `choom` registered.
+
+### Linux-only real-systemd test
+
+`test/session-scope-linux.test.ts` skips unless the platform is Linux, the user manager is
+reachable, and `systemd-run` and `choom` resolve. It is expected to skip on GitHub-hosted CI and
+run on a developer's Linux machine. It passes test-only properties (`MemoryMax=64M`,
+`MemorySwapMax=0`) through an internal option that production code never sets.
+
+- The wrapped process's `/proc/<pid>/cgroup` ends in
+  `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<label>-*.scope`, and its
+  `oom_score_adj` is 500. The test process's own cgroup is unchanged.
+- A memory-hog child is OOM-killed. The wrapped process then exits from systemd's SIGTERM, its
+  sleeping sibling is gone, `outcome` returns `{ oomKilled: true, peakBytes > 0 }`, and after
+  `reset-failed` the unit is gone. The test process, standing in for the daemon, is still alive.
+- `BindsTo`: a stand-in daemon in a scope of its own wraps a sleeper bound to it. Stopping the
+  stand-in's scope stops the sleeper's.
+
+### End-to-end spec (`e2e/`, Playwright)
+
+The task-failure text is a UI change, so `e2e/session-oom.spec.ts` covers it. It is Linux-only,
+because the scope path exists only there, and it spends no model tokens. The fixture sets:
+
+- a fake `systemd-run` through `MISSION_SYSTEMD_RUN_BIN`, which records its argv and execs what
+  follows `--`;
+- a fake `choom` through `MISSION_CHOOM_BIN`, which does the same;
+- a fake `systemctl` through `MISSION_SYSTEMCTL_BIN`, which answers `show` with `Result=oom-kill`
+  and `MemoryPeak=1610612736`, and `reset-failed` with exit 0;
+- a runtime directory holding listening `systemd/private` and `bus` sockets, so the manager reads
+  as reachable.
+
+The fake `claude` gains a mode that ends the session as a killed process would. The spec
+dispatches an SDK task. It asserts that the dashboard shows the task failed with "stopped: the
+session ran out of memory (peak 1.5 GB)", and that the recorded `systemd-run` argv names the
+sessions slice.
+
+### Gates
+
+`npm run typecheck`, `npm run lint`, `npm run build` and `npm run smoke` (the runtime spawn path
+changed), and `npm run test:e2e` for the new spec.
+
+### Acceptance criteria
+
+- **AC1.** On Linux with a user manager, a Claude SDK session's agent and its children run in
+  `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<session>-<nonce>.scope` with
+  `oom_score_adj` 500. The daemon is not in that scope.
+- **AC2.** The same holds for a Codex SDK session's app-server. Catalog probes stay unwrapped.
+- **AC3.** Each Pi bash-tool command runs in its own scope in that slice with `oom_score_adj` 500.
+  An OOM stops that command only, and the Pi session continues.
+- **AC4.** An OOM kill inside a session's scope stops that scope only. The daemon and other
+  sessions keep running.
+- **AC5.** A task whose session was stopped this way fails with "stopped: the session ran out of
+  memory (peak N GB)", visible in the dashboard, and the daemon logs one line. Nothing resumes
+  automatically.
+- **AC6.** Stopping the daemon's unit stops its session scopes.
+- **AC7.** macOS, Windows, and Linux without `systemd-run` or a user manager spawn exactly as
+  today. On Linux, one log line says when isolation is off or partial.
+- **AC8.** The docs listed above describe the behavior and the per-OS fallback.
+
+## Known gaps
+
+- **Terminal-runtime agents** still share their multiplexer's scope: a tmux or Herdr server's
+  `run-*.scope`, or WezTerm's GUI. An OOM there stops that server's other agents, never the daemon.
+  A tmux built with systemd support, like this machine's 3.8, already puts each pane in a
+  `tmux-spawn-*.scope` of its own.
+- **One-shot runners** stay in the cgroup of whoever spawned them, the daemon or the Foreman
+  worker. That covers `claude -p`, `codex exec`, LLM jobs, Inspector and Foreman's runners.
+- **Pi's agent loop runs in the daemon**, so Pi's own memory is the daemon's.
+- **No memory cap.** A runaway still drives the machine into a global OOM, and the desktop may
+  thrash before the kernel acts. Only its session dies.
+- **Under `make start`,** the daemon, renderer, Vite and Foreman worker still share the terminal
+  tab's scope with anything else run in that tab.
+- **The Electron main crash** that followed (the core dump at 02:44:05) is not addressed.
+- **GitHub-hosted CI has no user manager**, so the real-systemd test skips there. The argv and
+  flow tests run everywhere.
+- **A session's scope survives a daemon that dies without its unit stopping**, as with a
+  `tsx watch` restart. The agent exits on stdin EOF, as an unscoped child does today.
+
+## Decisions
+
+### Round 1 (2026-10-17)
+
+| Question | Answer |
+| --- | --- |
+| Raise `oom_score_adj` as well as the scope? | Scope + `oom_score_adj` 500 via `choom` |
+| What happens to the rest of a session after an OOM kill in its scope? | Stop the whole session (`OOMPolicy=stop`) |
+| Memory cap on the scope? | No cap in this plan |
+| Which spawns get a scope? | Claude SDK sessions, Codex SDK sessions, Pi bash-tool commands (one scope per command). Not terminal-runtime agents or one-shot runners |
+| How is an OOM-stopped session reported? | Task failure text + daemon log line, no new wire field |
+| Bind the scope to the daemon's unit? | Yes: `BindsTo` the daemon's unit |
+| How visible is the fallback? | One daemon log line on Linux only |
+| How does the real-systemd test run? | Linux-only, skipped without a user manager |
+
+The per-session scope itself was not put to a vote. The journal shows that `oom_score_adj` alone
+cannot fix the incident.
+
+### Round 2 (2026-10-17)
+
+| Question | Answer |
+| --- | --- |
+| Which slice do the scopes go in? | A dedicated `mission-control-sessions` slice under `app.slice` |
+| A Pi bash command is OOM-killed: then what? | Only that command stops, and the Pi session continues |
+| What happens to the task after an OOM stop? | It fails with the out-of-memory text. No automatic resume |
+| Upstream candidate? | Yes |
+
+### Plan review (2026-10-17)
+
+| Question | Answer |
+| --- | --- |
+| The daemon cannot see a Pi bash command exit. How is a Pi command's OOM recorded? | systemd journal only, as written. The round 2 Pi option had said the daemon would log it, but Pi spawns those commands itself, so the daemon never sees them exit |
+| What happens after this plan is approved? | Create tickets after the plan merges |
+
+Revision 1 was approved as a complete bundle. Revision 2 records this review and changes nothing
+else.
