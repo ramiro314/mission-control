@@ -67,7 +67,10 @@ to WezTerm's GUI. An OOM there stops that server's agents, never the daemon.
   The model-catalog probe calls it too.
 - **Pi:** no agent process. The SDK runs inside the daemon. Its only children are bash-tool
   commands, which Pi spawns itself through the `spawnHook` passed to `createBashToolDefinition`
-  in `src/server/harness/pi/sdk-deps.ts`. The hook may rewrite the command, cwd and env.
+  in `src/server/harness/pi/sdk-deps.ts`. The hook may rewrite the command, cwd and env. Pi runs
+  each command as `<shell> <args> <command>`, where `{ shell, args }` comes from
+  `getShellConfig(shellPath)`, which Pi 0.87.1 exports: `/bin/bash -c`, else `bash` on `PATH`, else
+  `sh -c`. Mission Control passes no `shellPath`.
 
 **The exit path.** A driver emits `{ kind: "exited", reason, resumable }`
 (`src/server/harness/types.ts`). The supervisor's `pump` (`src/server/sdk/supervisor.ts`) hands it
@@ -174,8 +177,8 @@ systemd-run --user --scope --quiet
 - **Not Linux:** nothing is wrapped and nothing is logged.
 - **Linux, `systemd-run` missing or the user manager unreachable:** no scope. `choom` still
   applies when it resolves. One log line.
-- **The full property set refused by this systemd:** the first `wrap` probes it once with
-  `/bin/true`. On refusal it probes again without `OOMPolicy`. The scope still keeps the daemon out
+- **The full property set refused by this systemd:** the first `wrap` probes it once, running the
+  daemon's own Node (`process.execPath -e ""`), which exists wherever the daemon does. On refusal it probes again without `OOMPolicy`. The scope still keeps the daemon out
   of the session's unit, but an older systemd may not stop the session whole. If that is refused
   too, no scope. One log line names what was dropped. A wrapper that cannot start must never
   become a session that cannot start, and the probe is what guarantees it.
@@ -204,9 +207,17 @@ supervisor or registry code branches on the agent.
   model-catalog probe passes none and stays unwrapped. `spawnAppServer` gains the exit listener it
   lacks today, and that listener calls `outcome`.
 - **Pi.** The existing bash-tool `spawnHook` rewrites `command` to
-  `exec <systemd-run ...> -- <choom -n 500> -- /bin/sh -c '<command>'`, quoted with the existing
-  `shellCommand`. That gives one scope per command, labelled with the session and a counter, with
-  the same properties plus `--collect`. An OOM stops only that command: Pi sees it exit 143, and the
+  `exec <systemd-run ...> -- <choom -n 500> -- <shell> <args> '<command>'`, quoted with the existing
+  `shellCommand`. `<shell> <args>` is exactly what Pi's exported `getShellConfig` returns for the
+  `shellPath` Mission Control passes to `createBashToolDefinition` (none today). The command
+  therefore runs in the scope under the same shell Pi would have used, `/bin/bash -c` on a normal
+  Linux machine, never a substituted `/bin/sh`. When that config uses stdin transport (Pi does so
+  only for a legacy WSL bash on Windows), the hook leaves the command unwrapped.
+  Each command gets its own scope named `mission-control-<session>-<nonce>-<n>`. `<nonce>` is minted
+  once per session launch, as it is for session scopes, and `<n>` counts that launch's commands.
+  So a resumed session's command can never collide with a command scope a previous run left
+  active, for example a backgrounded dev server after a `tsx watch` restart. The scopes carry the
+  same properties plus `--collect`. An OOM stops only that command: Pi sees it exit 143, and the
   session continues. Pi's process-group kill still reaches the command, because the scope does
   not change its process group.
 
@@ -276,7 +287,8 @@ issue, following `docs/fork/README.md`. Every pull request of the feature carrie
 - **Upstream behavior it assumes:**
   - the vendor `spawnClaudeCodeProcess` hook;
   - `spawnAppServer` being the one Codex spawn;
-  - Pi's bash `spawnHook` being able to rewrite `command`;
+  - Pi's bash `spawnHook` being able to rewrite `command`, and Pi's exported `getShellConfig`
+    naming the shell its bash tool runs;
   - `beginEviction` being the one eviction path;
   - `settleAgentGone` writing the departure text.
 - **Upstream surfaces touched:**
@@ -327,8 +339,15 @@ Run single files with the suite's loader, for example
   child's exit calls `outcome`. A catalog probe stays unwrapped.
 - **Codex seam** (slice 1): `spawnAppServer` wraps with a label and does not wrap without one. Its exit
   listener calls `outcome`.
-- **Pi seam** (slice 2): the rewritten command survives quotes, `$` and newlines when it is run through a
-  real `/bin/sh` with pass-through fakes for `systemd-run` and `choom`.
+- **Pi seam** (slice 2):
+  - the inner shell and its args equal what Pi's `getShellConfig` returns for the same
+    `shellPath`, by absolute path when Pi resolved one;
+  - the rewritten command is run through Pi's own shell with pass-through fakes for `systemd-run`
+    and `choom`. It keeps quotes, `$` and newlines intact, and it runs bash-only constructs:
+    `[[ ]]`, an array, `set -o pipefail` and process substitution;
+  - the unit name has the shape `mission-control-<session>-<nonce>-<n>`, and two launches of the
+    same session name their first command differently;
+  - a stdin-transport shell config leaves the command unwrapped.
 - **Registry and tasks** (slice 3):
   - an `exited` event with an `out_of_memory` cause fails the task with the out-of-memory text;
   - without a cause the text is unchanged;
@@ -338,8 +357,15 @@ Run single files with the suite's loader, for example
 
 ### Linux-only real-systemd test
 
-`test/session-scope-linux.test.ts` skips unless the platform is Linux, the user manager is
-reachable, and `systemd-run` and `choom` resolve. It is expected to skip on GitHub-hosted CI and
+`test/session-scope-linux.test.ts` skips unless all of these hold:
+
+- the platform is Linux;
+- the user manager is reachable;
+- `systemd-run` and `choom` resolve;
+- the user manager's cgroup delegates the `memory` controller, meaning `memory` is listed in
+  `cgroup.controllers` of `user@<uid>.service`.
+
+It is expected to skip on GitHub-hosted CI and
 run on a developer's Linux machine. It passes test-only properties (`MemoryMax=64M`,
 `MemorySwapMax=0`) through an internal option that production code never sets. It lands in
 slice 1, which also delivers the `outcome` it asserts on.
@@ -347,7 +373,8 @@ slice 1, which also delivers the `outcome` it asserts on.
 - The wrapped process's `/proc/<pid>/cgroup` ends in
   `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<label>-*.scope`, and its
   `oom_score_adj` is 500. The test process's own cgroup is unchanged.
-- A memory-hog child is OOM-killed. The wrapped process then exits from systemd's SIGTERM, its
+- A memory-hog child is OOM-killed. The hog allocates at most 512 MB, so it cannot press on the
+  machine even if the cap were not applied. The wrapped process then exits from systemd's SIGTERM, its
   sleeping sibling is gone, `outcome` returns `{ oomKilled: true, peakBytes > 0 }`, and after
   `reset-failed` the unit is gone. The test process, standing in for the daemon, is still alive.
 - `BindsTo`: a stand-in daemon in a scope of its own wraps a sleeper bound to it. Stopping the
@@ -382,7 +409,8 @@ changed), and `npm run test:e2e` for the new spec.
   `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<session>-<nonce>.scope` with
   `oom_score_adj` 500. The daemon is not in that scope.
 - **AC2.** The same holds for a Codex SDK session's app-server. Catalog probes stay unwrapped.
-- **AC3.** Each Pi bash-tool command runs in its own scope in that slice with `oom_score_adj` 500.
+- **AC3.** Each Pi bash-tool command runs in its own scope in that slice with `oom_score_adj` 500,
+  under the same shell Pi's bash tool would have used.
   An OOM stops that command only, and the Pi session continues.
 - **AC4.** An OOM kill inside a session's scope stops that scope only. The daemon and other
   sessions keep running.
@@ -464,3 +492,25 @@ nothing else.
   - The Delivery order, the Verification lists and the `SessionScope` description now say so.
 - **The fork-tracking behavior contracts named AC1 to AC7.** They now name AC1 to AC8, so the docs
   requirement is a contract a sync keeps true as well.
+
+### Plan validation repair round 2 (2026-10-17)
+
+The Plan Feasibility judge raised two blocking Pi-seam findings. Revision 4 fixes both. It also
+takes up the judge's non-blocking notes, and changes nothing else.
+
+- **The rewrite hard-coded `/bin/sh`.**
+  - The problem: where `/bin/sh` is not bash, for example dash on Debian and Ubuntu, bash syntax
+    in a Pi command would break.
+  - The fix: the rewrite now re-invokes exactly the `{ shell, args }` that Pi's exported
+    `getShellConfig` returns, and leaves a stdin-transport config unwrapped.
+  - The slice 2 test asserts that shell and runs bash-only constructs through the rewrite.
+- **Pi command scopes had no nonce.**
+  - The problem: a resumed session's command N could collide with an active scope a previous run
+    left behind, and systemd-run would refuse to start it.
+  - The fix: Pi command units are now `mission-control-<session>-<nonce>-<n>`, and the slice 2 test
+    pins that shape.
+- **Non-blocking notes:**
+  - the property probe runs the daemon's own Node instead of `/bin/true`;
+  - the Linux real-systemd test also requires a delegated `memory` controller;
+  - the test caps its memory hog at 512 MB.
+- **Propagated to:** How it works today, the fork tracking assumptions, and AC3.
