@@ -86,6 +86,9 @@ export const STATE_DENY_DIRS = [
   "headless",
   "plans",
   "update-helper.lock.d",
+  // Warm logs (`logs/worktree-warm/`): claim step output, which is the operator's, not the
+  // reviewed worktree's.
+  "logs",
 ] as const;
 
 /** Dispatched worktrees live in the state dir, and the Inspector reviews one of them. */

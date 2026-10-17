@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+// Resolves no state home, so importing it ahead of the home set below is safe.
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 // Startup removes every Warm log that no slot row names, and keeps the ones a slot row does.
 // No Warm survives a restart, so at startup "no live operation" is always true. This launches
@@ -25,7 +27,6 @@ process.env.HARNESS_HOME = state;
 const { closeDb, openDb } = await import("../src/server/db.ts");
 const { WorktreeStore } = await import("../src/server/worktrees/store.ts");
 const { WORKTREE_WARM_LOGS_DIR } = await import("../src/server/config.ts");
-const { ensureNativeStateLockAddon } = await import("./helpers/native-state-lock.ts");
 
 ensureNativeStateLockAddon();
 
