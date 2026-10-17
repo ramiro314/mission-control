@@ -410,6 +410,65 @@ test("Cancel during a seed returns the slot interrupted, so its next claim start
   assert.equal(m.store.slot(held[1]!.slotId)!.depsState, "current");
 });
 
+/**
+ * A step that rewrites the tracked `lock.txt` and leaves an untracked, unignored file before it
+ * waits on its gate, as a misbehaving install might.
+ */
+function dirtyingStep(gate: string, pidFile: string): string[] {
+  return [
+    process.execPath,
+    "-e",
+    `const fs=require("fs");fs.writeFileSync("lock.txt","rewritten by the step\\n");` +
+      `fs.writeFileSync("stray.txt","left by the step\\n");` +
+      `fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));console.log("waiting for the gate");` +
+      `const wait=()=>{if(!fs.existsSync(${JSON.stringify(gate)}))return setTimeout(wait,25);` +
+      `process.exit(Number(fs.readFileSync(${JSON.stringify(gate)},"utf8")))};wait();`,
+  ];
+}
+
+test("Cancel returns the slot available even when the stopped step changed tracked files", async () => {
+  const fixture = repository("mission-warm-cancel-dirty-");
+  const dir = mkdtempSync(join(tmpdir(), "mission-warm-gate-"));
+  const pidFile = join(dir, "pid");
+  const m = manager({ claim: claimOf(dirtyingStep(join(dir, "never"), pidFile)) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const ops = service(m, logsDirectory());
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await waitFor(async () => /^waiting for the gate$/m.test((await operation(ops, id)).warm?.tail ?? ""), "the step");
+  assert.equal(readFileSync(join(slot!.path, "lock.txt"), "utf8"), "rewritten by the step\n");
+  const pid = Number(readFileSync(pidFile, "utf8"));
+
+  assert.equal(ops.cancel(id), true);
+  await ops.idle();
+
+  assert.equal(alive(pid), false, "the step's process group was killed");
+  const row = m.store.slot(slot!.slotId)!;
+  assert.equal(row.state, "available", "Cancel returns the slot, not a quarantine");
+  assert.equal(row.depsState, "failed", "a Cancel during a step follows the Stop rule");
+  assert.equal(readFileSync(join(slot!.path, "lock.txt"), "utf8"), "v1\n", "the return's reset discarded the tracked change");
+  assert.equal(existsSync(join(slot!.path, "stray.txt")), false, "and the untracked file");
+  assert.equal(gitIn(slot!.path, "status", "--porcelain=v1", "--untracked-files=all"), "", "the returned tree is clean");
+  const view = await operation(ops, id);
+  assert.equal(view.warm?.targets[0]?.outcome, "cancelled");
+  assert.match(view.warm?.tail ?? "", /^Returning the slot to the pool, discarding what the stopped step changed$/m);
+});
+
+test("a claim that dirties tracked files and finishes on its own is still quarantined, as at acquisition", async () => {
+  const fixture = repository("mission-warm-dirty-claim-");
+  const dir = mkdtempSync(join(tmpdir(), "mission-warm-gate-"));
+  const gate = join(dir, "gate");
+  writeFileSync(gate, "0");
+  const m = manager({ claim: claimOf(dirtyingStep(gate, join(dir, "pid"))) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const ops = service(m, logsDirectory());
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await ops.idle();
+  const row = m.store.slot(slot!.slotId)!;
+  assert.equal(row.state, "quarantined", "nothing stopped this claim, so its tracked changes fail the proof");
+  assert.equal(row.quarantineReason, "warmed slot verification failed");
+  assert.equal((await operation(ops, id)).warm?.targets[0]?.outcome, "failed");
+});
+
 test("Cancel on a queued Warm finishes it with every target cancelled and touches nothing", async () => {
   const fixture = repository("mission-warm-cancel-queued-");
   const dir = mkdtempSync(join(tmpdir(), "mission-warm-gate-"));
@@ -540,6 +599,31 @@ test("the Warm log sweep keeps only the logs a listed operation or a slot row na
   assert.equal(await ops.warmLog("../named-op"), null, "an id never names a path outside the log directory");
   const card = (await ops.inventory()).repositories.flatMap((repo) => repo.slots).find((entry) => entry.id === slot!.slotId);
   assert.deepEqual(card?.warmLog, { id: "named-op", path: named }, "the slot card reaches its log after a restart");
+});
+
+test("destroying the last slot that names a dismissed Warm's log removes the log", async () => {
+  const fixture = repository("mission-warm-destroy-log-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const logs = logsDirectory();
+  const ops = service(m, logs);
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await ops.idle();
+  const logPath = join(logs, `${id}.log`);
+
+  // Dismissed while the slot still names it: kept, and still reachable from the slot card.
+  assert.equal(ops.dismiss(id), true);
+  await ops.sweepWarmLogs();
+  assert.equal(existsSync(logPath), true);
+  assert.equal(m.store.slot(slot!.slotId)!.depsLogPath, logPath);
+
+  // Destroying that slot removes the last row naming the log, and the destroy itself sweeps it.
+  const destroy = await ops.preview({ action: "destroy", target: { kind: "slot", slotId: slot!.slotId } });
+  assert.equal(destroy.allowed, true, destroy.blockers.join("; "));
+  ops.submit(destroy.token, destroy.requiredAcknowledgements);
+  await ops.idle();
+  assert.equal(m.store.slot(slot!.slotId), null);
+  assert.equal(existsSync(logPath), false, "a log no operation and no slot names is removed");
 });
 
 test("a running Warm's output bumps the worktrees revision at most once per interval", async () => {

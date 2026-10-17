@@ -546,7 +546,12 @@ dismiss it, and counts toward the 64 operations that may be listed at once.
 
 **Cancel** on a queued Warm finishes it at once, with every slot cancelled and none touched. On a
 running Warm it stops the claim, which sends SIGTERM to the running step's process group and
-SIGKILL after five seconds. The slot it holds is returned to the pool as available, and its
+SIGKILL after five seconds. The slot it holds is returned to the pool as available through the
+ordinary return, whose reset discards whatever the stopped step had changed, tracked files
+included: only that Warm's own step ran there since the slot was held idle and clean. The return
+still proves the reset tree clean and detached, and quarantines the slot if it cannot. (A claim
+that changes a tracked file and finishes on its own, uncancelled, still fails the proof and is
+quarantined, exactly as at acquisition.) Its
 `deps_state` follows the Stop rule: `failed` when the Cancel landed during a step, so the next
 claim reruns the steps in place, and `interrupted` when it landed during a seed, so the next claim
 removes the seed paths and starts cold. Slots the Warm had not reached are listed as cancelled.
@@ -562,8 +567,10 @@ its `deps_log_path`, so the slot card keeps a **Last Warm log** link after the W
 and after a restart. Both links download through `GET /api/worktrees/warm-logs/<operationId>`,
 which serves only a log a listed operation or a slot row names, streamed from the file in bounded
 chunks with the length the log had when the download began. A log that neither names is
-removed when a Warm finishes, when one is dismissed, and once at startup, so a slot's earlier log
-goes as soon as a later Warm replaces its link and the operation that wrote it is dismissed.
+removed when a Warm finishes, when one is dismissed, after every cleanup operation (a Destroy
+or Prune can remove the last slot row naming a log), and once at startup. A slot's earlier log
+therefore goes as soon as a later Warm replaces its link and the operation that wrote it is
+dismissed, and a slot's last log goes with the slot.
 
 ### Settings > Worktrees
 

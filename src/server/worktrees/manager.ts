@@ -1903,18 +1903,26 @@ export class WorktreeManager {
     // The ordinary owner-authorized return: occupancy, a fresh fetch, the reset to origin's
     // default, and the clean, detached proof. Nothing is returned while the daemon stops:
     // startup does that, through the same path.
-    const giveBack = async (): Promise<string | null> => {
+    //
+    // `discardStepChanges` is for a Cancel: the return's reset then discards whatever the
+    // stopped step left in the tree, tracked changes included, instead of refusing a dirty
+    // slot. Only this Warm's own step ran here since the slot was held idle and clean, so there
+    // is no one else's work to lose. The return still proves the reset tree clean and detached,
+    // and quarantines the slot if it cannot.
+    const giveBack = async (discardStepChanges: boolean): Promise<string | null> => {
       if (this.claims.stopping) return STOPPED_REASON;
-      say("Returning the slot to the pool\n");
+      say(discardStepChanges
+        ? "Returning the slot to the pool, discarding what the stopped step changed\n"
+        : "Returning the slot to the pool\n");
       try {
-        const released = await this.releaseLocked(lease, { ownerAuthorized: true, requireClean: true });
+        const released = await this.releaseLocked(lease, { ownerAuthorized: true, requireClean: !discardStepChanges });
         return released.outcome === "released" || released.outcome === "alreadyReleased" ? null : released.reason;
       } catch (error) {
         return bounded(String(error));
       }
     };
-    const returnedAfter = async (outcome: WarmSlotResult): Promise<WarmSlotResult> => {
-      const refused = await giveBack();
+    const returnedAfter = async (outcome: WarmSlotResult, discardStepChanges = false): Promise<WarmSlotResult> => {
+      const refused = await giveBack(discardStepChanges);
       if (!refused) return outcome;
       say(`The slot could not be returned: ${refused}\n`);
       return { outcome: "failed", reason: `the slot could not be returned to the pool: ${refused}` };
@@ -1964,6 +1972,17 @@ export class WorktreeManager {
       return { outcome: "failed", reason: claimed.reason };
     }
 
+    // Cancel returns the slot as available, whatever its stopped step left behind: straight to
+    // the ordinary return, whose reset puts the tree back and whose own proof decides. The
+    // claim already recorded `deps_state` by the Stop rule.
+    if (claimed.kind === "failed" && input.signal.aborted) {
+      const { warning } = claimed;
+      return returnedAfter(
+        { outcome: "cancelled", reason: `cancelled while the claim ran: step ${warning.step} of ${warning.stepCount} ${warning.reason}` },
+        true,
+      );
+    }
+
     // The proof an acquired slot gets before its grant. A claim step that modified a tracked
     // file, or attached a branch, is quarantined here as it would be there.
     let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
@@ -1987,11 +2006,7 @@ export class WorktreeManager {
       say(`The warmed slot failed its verification and was quarantined: ${reason}\n`);
       return { outcome: "failed", reason };
     }
-    if (claimed.kind === "failed") {
-      return returnedAfter(input.signal.aborted
-        ? { outcome: "cancelled", reason: `cancelled while the claim ran: step ${claimed.warning.step} of ${claimed.warning.stepCount} ${claimed.warning.reason}` }
-        : { outcome: "claimFailed", warning: claimed.warning });
-    }
+    if (claimed.kind === "failed") return returnedAfter({ outcome: "claimFailed", warning: claimed.warning });
     return returnedAfter({ outcome: "warmed", stepsSkipped: claimed.kind === "skipped" });
   }
 

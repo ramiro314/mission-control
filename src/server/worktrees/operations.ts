@@ -1589,6 +1589,9 @@ export class WorktreeOperationsService {
       }
     } finally {
       this.deps.notifyChanged();
+      // A destroy or prune can remove the last slot row that names a Warm log, after its Warm
+      // was already dismissed. Whatever the outcome, partial removals included, the log goes now.
+      await this.sweepWarmLogs();
     }
   }
 
