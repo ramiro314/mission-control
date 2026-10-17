@@ -5,6 +5,8 @@ import {
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_LIMITS,
+  affectedTestsTargetFor,
+  affectedTestsTargets,
   checkBlockedReason,
   checkCommandRoot,
   liveDeliveryLaunchBlock,
@@ -654,4 +656,92 @@ test("the slot list is append-only and every slot is reachable", () => {
   // matching a configured command and skips forever, which looks exactly like a repository
   // nobody configured.
   assert.deepEqual([...WORKFLOW_CHECK_SLOTS], ["test", "lint", "typecheck", "build", "documentation", "affected-tests"]);
+});
+
+test("affected-tests targets are the root's command, then every subdirectory override, whatever the session's position", () => {
+  const view = {
+    defaultCommand: ["default", "{junit}", "{files}"],
+    overrides: [
+      { repoRoot: `${REPO}/apps/web`, command: ["web", "{junit}", "{files}"] },
+      // A spelling with a trailing separator is the same folder, and is not listed twice.
+      { repoRoot: `${REPO}/apps/web/`, command: ["web-again", "{junit}", "{files}"] },
+      { repoRoot: `${REPO}/apps/api`, command: ["api", "{junit}", "{files}"] },
+      // Another repository's override is not this one's partition.
+      { repoRoot: "/repos/other/apps/web", command: ["other", "{junit}", "{files}"] },
+      { repoRoot: `${REPO}-backup/apps/web`, command: ["backup", "{junit}", "{files}"] },
+    ],
+  };
+  assert.deepEqual(affectedTestsTargets(view, REPO), [
+    { command: ["default", "{junit}", "{files}"], workingSubpath: "", source: "default" },
+    { command: ["api", "{junit}", "{files}"], workingSubpath: "apps/api", source: "override" },
+    { command: ["web", "{junit}", "{files}"], workingSubpath: "apps/web", source: "override" },
+  ]);
+
+  // A root override beats a broader one above the repository, and both beat the default.
+  const rooted = affectedTestsTargets({
+    ...view,
+    overrides: [...view.overrides, { repoRoot: "/repos", command: ["broad"] }, { repoRoot: REPO, command: ["root"] }],
+  }, REPO);
+  assert.deepEqual(rooted[0], { command: ["root"], workingSubpath: "", source: "override" });
+
+  // No root command at all: only the subdirectories, and a file outside them has no target.
+  const nested = affectedTestsTargets({ ...view, defaultCommand: null }, REPO);
+  assert.deepEqual(nested.map((target) => target.workingSubpath), ["apps/api", "apps/web"]);
+  assert.equal(affectedTestsTargetFor(nested, "tools/x.test.ts"), null);
+  assert.equal(affectedTestsTargetFor(nested, "apps/web/src/a.test.ts")?.workingSubpath, "apps/web");
+  // By whole components: apps/webby is not inside apps/web.
+  assert.equal(affectedTestsTargetFor(nested, "apps/webby/a.test.ts"), null);
+
+  // The deepest holding target wins, and the root holds everything else.
+  const deep = [
+    ...affectedTestsTargets(view, REPO),
+    { command: ["src"], workingSubpath: "apps/web/src", source: "override" as const },
+  ];
+  assert.equal(affectedTestsTargetFor(deep, "apps/web/src/a.test.ts")?.workingSubpath, "apps/web/src");
+  assert.equal(affectedTestsTargetFor(deep, "apps/web/smoke.ts")?.workingSubpath, "apps/web");
+  assert.equal(affectedTestsTargetFor(deep, "tools/x.test.ts")?.workingSubpath, "");
+
+  assert.deepEqual(affectedTestsTargets(null, REPO), []);
+});
+
+test("an affected-tests gate is configured by any target, and hands every target to the executor", async () => {
+  // Only subdirectory overrides and no default. The session stands at the root, where resolving
+  // one Command by its position finds nothing and would have skipped the gate.
+  const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
+  await runCheck({
+    slot: "affected-tests",
+    policy: ALLOWED,
+    reserveRun: () => ({ granted: true, spent: 0 }),
+    command: commandView({
+      overrides: [
+        { repoRoot: `${REPO}/apps/web`, command: ["web", "{junit}", "{files}"] },
+        { repoRoot: `${REPO}/apps/api`, command: ["api", "{junit}", "{files}"] },
+      ],
+    }, "affected-tests"),
+    cwd: REPO,
+    repoRoot: REPO,
+    headSha: "b".repeat(40),
+  }, {
+    execute: stub.execute,
+    checkoutSubpath: async () => assert.fail("partitioning never asks where the session stands"),
+  });
+  assert.equal(stub.seen.length, 1);
+  assert.deepEqual(stub.seen[0]!.affectedTargets?.map((target) => target.workingSubpath), ["apps/api", "apps/web"]);
+  // The request's own command and directory are the first target's.
+  assert.deepEqual(stub.seen[0]!.command, ["api", "{junit}", "{files}"]);
+  assert.equal(stub.seen[0]!.workingSubpath, "apps/api");
+
+  // Other slots still resolve by the session's position, and carry no targets.
+  const other = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
+  await runCheck({
+    slot: "test",
+    policy: ALLOWED,
+    reserveRun: () => ({ granted: true, spent: 0 }),
+    command: commandView({ overrides: [{ repoRoot: `${REPO}/apps/web`, command: ["web"] }] }),
+    cwd: `${REPO}/apps/web`,
+    repoRoot: REPO,
+    headSha: "b".repeat(40),
+  }, { execute: other.execute, checkoutSubpath: async () => "apps/web" });
+  assert.equal(other.seen[0]!.affectedTargets, undefined);
+  assert.equal(other.seen[0]!.workingSubpath, "apps/web");
 });
