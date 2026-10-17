@@ -1000,10 +1000,11 @@ Each scanned file's imports resolve the way its own app sees them:
   and `${configDir}` is the folder of the config in use.
 - Last come workspace package names. The root `package.json`'s `workspaces` globs (a list, or
   `{ "packages": [...] }`, with `!` globs excluded) map each workspace's `name` to its folder. A
-  bare `name` resolves through a string `exports`, then `types`, then `main`, then `index`. A
-  `name/sub` resolves inside the workspace's folder.
+  bare `name` resolves through its `exports` when that is a string, else `main`, else `index`.
+  `types` is not an entry point. A `name/sub` resolves inside the workspace's folder.
 
-Nothing resolves outside the repository, whether by path or through a symlink. What selection
+Nothing resolves outside the repository, whether by path or through a symlink: a tracked file
+whose real location is outside is neither resolved to nor read. What selection
 could not follow is listed under **Selection notes** in run detail, and never fails the gate:
 
 - an `extends` that names nothing inside the repository (the config's own settings still
@@ -1011,7 +1012,8 @@ could not follow is listed under **Selection notes** in run detail, and never fa
 - an `extends` cycle;
 - a config or `package.json` that does not parse;
 - a workspace name declared twice;
-- a workspace whose `exports` is a map of conditions or subpaths, which is not read.
+- a workspace whose `exports` is a map rather than a string, even `{ ".": "./x.ts" }`, which is
+  not read, so `main` or `index` is used.
 
 In a repository with [subdirectory scopes](#subdirectory-scopes), each file is judged by its
 nearest scope's settings instead of the root's alone.

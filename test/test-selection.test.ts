@@ -286,13 +286,23 @@ test("workspace package names resolve bare and with a subpath, inside the worksp
     "packages/core/lib/main.ts": "export const main = 1;\n",
     "packages/plain/package.json": JSON_FILE({ name: "plain" }),
     "packages/plain/index.ts": "export const plain = 1;\n",
-    // An exports map with conditions is not read: `types` resolves instead, and it is reported.
+    // An exports map with conditions is not read: `main` resolves instead, and it is reported.
     "packages/rich/package.json": JSON_FILE({
       name: "@acme/rich",
-      types: "src/index.ts",
+      main: "src/index.ts",
       exports: { ".": { import: "./dist/index.js" }, "./feature": "./src/feature.ts" },
     }),
     "packages/rich/src/index.ts": "export const rich = 1;\n",
+    // `types` is not an entry point: `main` is, so a change to it selects the importer.
+    "packages/typed/package.json": JSON_FILE({ name: "typed", types: "src/types.ts", main: "src/main.ts" }),
+    "packages/typed/src/types.ts": "export type T = number;\n",
+    "packages/typed/src/main.ts": "export const typed = 1;\n",
+    // An object `exports`, even `{ ".": string }`, is a map: reported, and `main` resolves.
+    "packages/dot/package.json": JSON_FILE({ name: "dot", exports: { ".": "./src/entry.ts" }, main: "lib/main.ts" }),
+    "packages/dot/src/entry.ts": "export const entry = 1;\n",
+    "packages/dot/lib/main.ts": "export const dot = 1;\n",
+    "app/typed.test.ts": "import { typed } from \"typed\";\n",
+    "app/dot.test.ts": "import { dot } from \"dot\";\n",
     "packages/ignored/package.json": JSON_FILE({ name: "ignored" }),
     "packages/ignored/index.ts": "export const ignored = 1;\n",
     "app/ui.test.ts": "import { Button } from \"@acme/ui\";\n",
@@ -310,20 +320,65 @@ test("workspace package names resolve bare and with a subpath, inside the worksp
     "packages/core/lib/main.ts",
     "packages/plain/index.ts",
     "packages/rich/src/index.ts",
+    "packages/typed/src/main.ts",
+    "packages/dot/lib/main.ts",
     "packages/ignored/index.ts",
   ]);
   assert.deepEqual(selection.files, [
     { path: "app/button.test.ts", reason: "imports", via: "packages/ui/src/button.tsx" },
     { path: "app/core.test.ts", reason: "imports", via: "packages/core/lib/main.ts" },
+    { path: "app/dot.test.ts", reason: "imports", via: "packages/dot/lib/main.ts" },
     { path: "app/plain.test.ts", reason: "imports", via: "packages/plain/index.ts" },
     { path: "app/rich.test.ts", reason: "imports", via: "packages/rich/src/index.ts" },
+    { path: "app/typed.test.ts", reason: "imports", via: "packages/typed/src/main.ts" },
     { path: "app/ui.test.ts", reason: "imports", via: "packages/ui/src/button.tsx" },
   ]);
-  assert.deepEqual(selection.diagnostics, [
-    "Workspace package \"@acme/rich\" (packages/rich) has an exports map beyond a single string, which selection "
-    + "does not read, so imports of it were resolved through its types, main or index file, and its subpaths inside "
-    + "packages/rich.",
+  const mapNote = (name: string, dir: string) =>
+    `Workspace package "${name}" (${dir}) has an exports map rather than a single string, which selection `
+    + `does not read, so imports of it were resolved through its main or index file, and its subpaths inside ${dir}.`;
+  assert.deepEqual(selection.diagnostics, [mapNote("@acme/rich", "packages/rich"), mapNote("dot", "packages/dot")]);
+});
+
+test("every * in a target receives the capture literally, replacement tokens included", async () => {
+  const { root, tracked } = onDisk({
+    "tsconfig.json": JSON_FILE({ compilerOptions: { paths: { "@gen/*": ["generated/*/*.ts"] } } }),
+    "generated/$&/$&.ts": "export const g = 1;\n",
+    "generated/$`/$`.ts": "export const h = 1;\n",
+    "tools/amp.test.ts": "import { g } from \"@gen/$&\";\n",
+    "tools/tick.test.ts": "import { h } from \"@gen/$`\";\n",
+  });
+  const selection = await selectOnDisk(root, tracked, ["generated/$&/$&.ts", "generated/$`/$`.ts"]);
+  assert.deepEqual(selection.files, [
+    { path: "tools/amp.test.ts", reason: "imports", via: "generated/$&/$&.ts" },
+    { path: "tools/tick.test.ts", reason: "imports", via: "generated/$`/$`.ts" },
   ]);
+});
+
+test("a tracked source symlinked out of the tree is neither resolved nor read; one pointing inside still is", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "test-selection-outside-src-"));
+  write(outside, {
+    "secret.ts": "export const s = 1;\n",
+    // A test whose real file lives outside: if it were read, its import would select it.
+    "outside.test.ts": "import { real } from \"./real.ts\";\n",
+  });
+  const { root, tracked } = onDisk({
+    "src/real.ts": "export const real = 1;\n",
+    "test/linked.test.ts": "import { s } from \"../src/secret.ts\";\n",
+    "test/inner.test.ts": "import { real } from \"../src/inner.ts\";\n",
+  });
+  symlinkSync(join(outside, "secret.ts"), join(root, "src/secret.ts"));
+  symlinkSync(join(outside, "outside.test.ts"), join(root, "src/outside.test.ts"));
+  symlinkSync("real.ts", join(root, "src/inner.ts"));
+  tracked.push("src/secret.ts", "src/outside.test.ts", "src/inner.ts");
+
+  const selection = await selectOnDisk(root, tracked, ["src/secret.ts", "src/inner.ts"]);
+  // linked.test.ts reaches the changed symlink out of the tree: refused, so not selected.
+  // inner.test.ts reaches a symlink inside the tree: selected.
+  assert.deepEqual(selection.files, [{ path: "test/inner.test.ts", reason: "imports", via: "src/inner.ts" }]);
+
+  // src/outside.test.ts is never read, so its import of a changed file inside selects nothing.
+  const throughOutside = await selectOnDisk(root, tracked, ["src/real.ts"]);
+  assert.deepEqual(throughOutside.files, []);
 });
 
 test("a malformed workspace manifest is reported and resolves nothing, and a duplicate name keeps the first workspace", async () => {

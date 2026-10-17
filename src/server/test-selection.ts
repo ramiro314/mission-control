@@ -205,15 +205,10 @@ function splitPackageSpecifier(specifier: string): { name: string; sub: string }
   return { name: parts.slice(0, count).join("/"), sub: parts.slice(count).join("/") };
 }
 
-/** A workspace's `exports` for `.` when it is one string, null when absent, "rich" for anything more. */
+/** A workspace's top-level `exports` when it is a string, null when absent, "rich" for any map or list. */
 function exportsTarget(exports: unknown): string | null | "rich" {
   if (exports === undefined || exports === null) return null;
-  if (typeof exports === "string") return exports;
-  if (typeof exports === "object" && !Array.isArray(exports)) {
-    const entries = Object.entries(exports as Record<string, unknown>);
-    if (entries.length === 1 && entries[0]![0] === "." && typeof entries[0]![1] === "string") return entries[0]![1];
-  }
-  return "rich";
+  return typeof exports === "string" ? exports : "rich";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -274,6 +269,8 @@ class ImportResolver {
   private readonly manifests = new Map<string, Record<string, unknown> | null>();
   private workspaces: Map<string, WorkspacePackage> | null = null;
   private realRoot: string | null | undefined;
+  /** By repository-relative path: whether it exists with its real location inside the tree. */
+  private readonly insideCache = new Map<string, boolean>();
 
   constructor(
     private readonly treeRoot: string,
@@ -301,7 +298,8 @@ class ImportResolver {
         if (!matches) continue;
         const middle = specifier.slice(alias.prefix.length, specifier.length - alias.suffix.length);
         for (const target of alias.targets) {
-          const resolved = this.resolveFile(alias.wildcard ? target.replaceAll("*", middle) : target);
+          // split/join, not replaceAll: the capture is inserted literally, `$&` and all.
+          const resolved = this.resolveFile(alias.wildcard ? target.split("*").join(middle) : target);
           if (resolved) return resolved;
         }
       }
@@ -318,22 +316,37 @@ class ImportResolver {
     const candidate = joinRelative("", path);
     if (escapesTree(candidate)) return null;
     if (candidate !== "") {
-      if (this.files.has(candidate)) return candidate;
+      if (this.has(candidate)) return candidate;
       for (const ext of SOURCE_EXTENSIONS) {
-        if (this.files.has(candidate + ext)) return candidate + ext;
+        if (this.has(candidate + ext)) return candidate + ext;
       }
       const dot = candidate.lastIndexOf(".");
       const ext = dot > candidate.lastIndexOf("/") ? candidate.slice(dot) : "";
       for (const replacement of JS_TO_TS[ext] ?? []) {
         const swapped = candidate.slice(0, dot) + replacement;
-        if (this.files.has(swapped)) return swapped;
+        if (this.has(swapped)) return swapped;
       }
     }
     for (const ext of SOURCE_EXTENSIONS) {
       const index = child(candidate, `index${ext}`);
-      if (this.files.has(index)) return index;
+      if (this.has(index)) return index;
     }
     return null;
+  }
+
+  /**
+   * Whether a specifier may resolve to `path`: a file the change deleted (never read, so judged
+   * as spelled), or a present file whose real location is inside the tree. A tracked symlink out
+   * of the tree is refused, as if it were not there.
+   */
+  private has(path: string): boolean {
+    if (!this.files.has(path)) return false;
+    return !this.present.has(path) || this.inside(path);
+  }
+
+  /** A scanned file's source, or null when it cannot be read or its real location is outside the tree. */
+  readScanned(path: string): string | null {
+    return this.inside(path) ? this.readFile(join(this.treeRoot, path)) : null;
   }
 
   // ---- tsconfig.json and jsconfig.json ----
@@ -479,21 +492,28 @@ class ImportResolver {
 
   /** Whether `path` exists and stays inside the tree, through symlinks as well as spelled. */
   private inside(path: string): boolean {
-    if (escapesTree(path)) return false;
-    if (this.realRoot === undefined) {
-      try {
-        this.realRoot = realpathSync(this.treeRoot);
-      } catch {
-        this.realRoot = null;
+    const cached = this.insideCache.get(path);
+    if (cached !== undefined) return cached;
+    let result = false;
+    if (!escapesTree(path)) {
+      if (this.realRoot === undefined) {
+        try {
+          this.realRoot = realpathSync(this.treeRoot);
+        } catch {
+          this.realRoot = null;
+        }
+      }
+      if (this.realRoot !== null) {
+        try {
+          const real = realpathSync(join(this.treeRoot, path));
+          result = real === this.realRoot || real.startsWith(this.realRoot + sep);
+        } catch {
+          // Missing: not inside.
+        }
       }
     }
-    if (this.realRoot === null) return false;
-    try {
-      const real = realpathSync(join(this.treeRoot, path));
-      return real === this.realRoot || real.startsWith(this.realRoot + sep);
-    } catch {
-      return false;
-    }
+    this.insideCache.set(path, result);
+    return result;
   }
 
   // ---- Workspace packages ----
@@ -562,8 +582,8 @@ class ImportResolver {
   }
 
   /**
-   * A workspace package specifier: `name` through a string `exports`, else `types`, `main`, then
-   * `index`; `name/sub` inside the workspace's directory.
+   * A workspace package specifier: `name` through a string `exports`, else `main`, else `index`;
+   * `name/sub` inside the workspace's directory.
    */
   private resolveWorkspace(specifier: string): string | null {
     const pkg = splitPackageSpecifier(specifier);
@@ -571,15 +591,15 @@ class ImportResolver {
     if (pkg === null || workspace === undefined) return null;
     const exports = exportsTarget(workspace.manifest.exports);
     if (exports === "rich") {
-      this.diagnostics.add(`Workspace package "${pkg.name}" (${workspace.dir}) has an exports map beyond `
-        + "a single string, which selection does not read, so imports of it were resolved through its types, main or "
+      this.diagnostics.add(`Workspace package "${pkg.name}" (${workspace.dir}) has an exports map rather than `
+        + "a single string, which selection does not read, so imports of it were resolved through its main or "
         + `index file, and its subpaths inside ${workspace.dir}.`);
     }
     // A workspace is never the root (its manifest is `<dir>/package.json`), so `dir/` bounds it.
     const within = (file: string | null) => (file !== null && file.startsWith(`${workspace.dir}/`) ? file : null);
     if (pkg.sub !== "") return within(this.resolveFile(joinRelative(workspace.dir, pkg.sub)));
     const manifest = workspace.manifest;
-    const entries = [exports === "rich" ? null : exports, manifest.types, manifest.typings, manifest.main].filter(isString);
+    const entries = [exports === "rich" ? null : exports, manifest.main].filter(isString);
     for (const entry of [...entries, "index"]) {
       const resolved = within(this.resolveFile(joinRelative(workspace.dir, entry)));
       if (resolved) return resolved;
@@ -623,7 +643,7 @@ function testsReachingChanges(
   while (queue.length > 0) {
     const file = queue.pop()!;
     if (!isSource(file)) continue;
-    const source = resolver.readFile(join(treeRoot, file));
+    const source = resolver.readScanned(file);
     if (source === null) continue;
     for (const specifier of scanImportSpecifiers(source)) {
       const target = resolver.resolve(file, specifier);
