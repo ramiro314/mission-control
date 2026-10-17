@@ -415,7 +415,100 @@ test("a subdirectory's testing settings are edited in Library and shape the gate
   await expect(card.getByRole("list", { name: "Testing scopes" })).toContainText(
     "apps/web: tests.patterns stored (apps/web), tests.includeImporters default, tests.smokeSet stored (apps/web)",
   );
-  await expect(card.getByRole("list", { name: "Selection notes" })).toContainText("are not resolved yet");
+  // Per-app aliases are resolved now, so a monorepo with app scopes has nothing to note.
+  await expect(card.getByRole("list", { name: "Selection notes" })).toHaveCount(0);
   await card.scrollIntoViewIfNeeded();
   await shoot(dashboard, "run-detail-testing-scopes");
+});
+
+/**
+ * A monorepo app with its own `@web/*` alias and a workspace package, on main. The change, made
+ * in the session's checkout, touches one file behind each: only an import through the app's
+ * tsconfig.json or the workspace name reaches it.
+ */
+function commitAliasedApp(repo: string): void {
+  const files: Record<string, string> = {
+    "package.json": JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+    "packages/ui/package.json": JSON.stringify({ name: "@acme/ui", main: "src/index.ts" }),
+    "packages/ui/src/index.ts": "export const ui = 1;\n",
+    "apps/web/tsconfig.json": JSON.stringify({ compilerOptions: { paths: { "@web/*": ["./src/*"] } } }),
+    "apps/web/src/util.ts": "export const u = 1;\n",
+    "apps/web/src/alias.test.ts": "import { u } from \"@web/util\";\n",
+    "apps/web/src/ui.test.ts": "import { ui } from \"@acme/ui\";\n",
+    "apps/web/src/untouched.test.ts": "export {};\n",
+  };
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(repo, path, ".."), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  git("add", "-A");
+  git("-c", "user.name=e2e", "-c", "user.email=e2e@example.com", "commit", "-qm", "aliased monorepo app");
+  git("push", "-q", "origin", "main");
+}
+
+test("an import through an app's own alias or a workspace name selects its importer, with no selection notes", async ({
+  dashboard,
+  daemon,
+}) => {
+  commitAliasedApp(daemon.repo);
+  const sessionId = await dispatch(dashboard, daemon);
+  const sessions = await api<Array<{ id: string; cwd: string | null }>>(daemon, "/api/sessions");
+  const checkout = sessions.find((session) => session.id === sessionId)?.cwd ?? "";
+  expect(checkout, "the dispatched session reported a checkout").not.toBe("");
+
+  // The session's change: one file behind the alias, one inside the workspace package.
+  writeFileSync(join(checkout, "apps/web/src/util.ts"), "export const u = 2;\n");
+  writeFileSync(join(checkout, "packages/ui/src/index.ts"), "export const ui = 2;\n");
+  const git = (...args: string[]) => execFileSync("git", ["-C", checkout, ...args], { stdio: "pipe" });
+  git("add", "-A");
+  git("-c", "user.name=e2e", "-c", "user.email=e2e@example.com", "commit", "-qm", "touch the app and the package");
+
+  const command = ["sh", "-c", RUNNER, "sh", "{junit}", "{files}"];
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    checksEnabled: true,
+    repoAllowlist: [daemon.repo],
+    kindWorkflowDefaults: { ship: null },
+    checkCommands: [{ repoRoot: daemon.repo, slot: "affected-tests", command }],
+  }, "PUT");
+  // The root's patterns, and an app scope of its own: the monorepo shape that used to report
+  // per-app aliases as unresolved.
+  const rootPath = (await api<{ repoRoot: string }>(daemon, "/api/repos/resolve", { path: daemon.repo })).repoRoot;
+  await api(daemon, "/api/testing-settings", {
+    repoRoot: rootPath,
+    expectedRevision: 0,
+    settings: { tests: { patterns: ["**/*.test.ts"] } },
+  }, "PUT");
+  await api(daemon, "/api/testing-settings", {
+    repoRoot: `${rootPath}/apps/web`,
+    expectedRevision: 0,
+    settings: { tests: { patterns: ["src/**/*.test.ts"] } },
+  }, "PUT");
+
+  const runId = await submitRun(daemon, sessionId);
+  const run = await api<{ attempts: Array<{ nodeId: string; output: unknown }> }>(daemon, `/api/workflow-runs/${runId}`);
+  const outcome = run.attempts.find((attempt) => attempt.nodeId === "affected")!.output as {
+    affected: { selected: Array<{ path: string; reason: string; via?: string }>; diagnostics?: string[] };
+  };
+  expect(outcome.affected.selected).toEqual([
+    { path: "apps/web/src/alias.test.ts", reason: "imports", via: "apps/web/src/util.ts" },
+    { path: "apps/web/src/ui.test.ts", reason: "imports", via: "packages/ui/src/index.ts" },
+  ]);
+  expect(outcome.affected.diagnostics).toBeUndefined();
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const card = dashboard.locator("article.wf-run-check").filter({ hasText: "Command · affected-tests" });
+  if (!(await card.isVisible())) {
+    await dashboard.getByRole("button", { name: /^Passed \d+$/ }).first().click();
+    await dashboard.locator("button.wf-run-worklist-row.is-check").first().click();
+  }
+  await expect(card).toBeVisible({ timeout: 40_000 });
+  const selected = card.getByRole("list", { name: "Selected tests" });
+  await expect(selected).toContainText("apps/web/src/alias.test.ts");
+  await expect(selected).toContainText("apps/web/src/ui.test.ts");
+  await expect(selected).not.toContainText("apps/web/src/untouched.test.ts");
+  await expect(card.getByRole("list", { name: "Selection notes" })).toHaveCount(0);
+  await card.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "run-detail-per-app-aliases");
 });

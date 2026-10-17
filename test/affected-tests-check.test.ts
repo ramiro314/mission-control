@@ -19,7 +19,6 @@ import type { CheckSpawnOutcome, SupervisedCheckRequest } from "../src/server/wo
 import { runCheck } from "../src/server/workflows/checks.ts";
 import { checkVerdict } from "../src/server/workflows/engine.ts";
 import type { StoredTestingLayer, StoredTestingSettings } from "../src/shared/testing-config.ts";
-import { PER_APP_ALIASES_UNRESOLVED } from "../src/server/test-selection.ts";
 import {
   MONOREPO_CHANGED,
   MONOREPO_ROOT_SETTINGS,
@@ -230,6 +229,7 @@ test("subdirectory scopes shape the selection, which still runs as one invocatio
     "../api/smoke.spec.ts",
     "smoke/web.smoke.ts",
     "src/a.test.ts",
+    "src/alias.test.ts",
     "../../tools/root-smoke.test.ts",
   ]);
   assert.deepEqual(outcome.affected?.selected.map((file) => file.path), MONOREPO_SELECTED.map((file) => file.path));
@@ -255,7 +255,8 @@ test("subdirectory scopes shape the selection, which still runs as one invocatio
       ],
     },
   ]);
-  assert.deepEqual(outcome.affected?.diagnostics, [PER_APP_ALIASES_UNRESOLVED]);
+  // The app's own alias resolved, so there is nothing to note: the report carries no diagnostics.
+  assert.equal(outcome.affected?.diagnostics, undefined);
 });
 
 test("a repository with no subdirectory scope records neither scopes nor diagnostics", async () => {

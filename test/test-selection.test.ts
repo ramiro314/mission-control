@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -137,4 +137,185 @@ test("a deleted file still selects the tests that import it, directly and transi
     { path: "test/transitive.test.ts", reason: "imports", via: "src/shared/util.ts" },
   ]);
   assert.equal(selection.changedCount, 1);
+});
+
+// ---- Per-app resolution: the nearest tsconfig or jsconfig, and workspace package names -----
+
+const JSON_FILE = (value: unknown) => JSON.stringify(value, null, 2);
+
+/** Files on disk without git: `tracked` is every key, and selection's git reads are stubbed. */
+function onDisk(files: Record<string, string>): { root: string; tracked: string[] } {
+  const root = mkdtempSync(join(tmpdir(), "test-selection-apps-"));
+  write(root, files);
+  return { root, tracked: Object.keys(files) };
+}
+
+async function selectOnDisk(root: string, tracked: string[], changed: string[]) {
+  const selection = await selectAffectedTests(root, config({ tests: { patterns: ["**/*.test.{ts,tsx,js}"] } }), {
+    changedPaths: async () => ({ ok: true, repoRoot: root, paths: changed }),
+    deletedPaths: async () => ({ ok: true, repoRoot: root, paths: [] }),
+    trackedFiles: async () => tracked,
+  });
+  assert.ok(selection.ok, selection.ok ? "" : selection.reason);
+  return selection;
+}
+
+test("each file resolves through its nearest tsconfig or jsconfig, with relative and package extends", async () => {
+  const { root, tracked } = onDisk({
+    "package.json": JSON_FILE({ private: true, workspaces: ["packages/*"] }),
+    // The root config governs only files with no nearer config.
+    "tsconfig.json": JSON_FILE({
+      compilerOptions: { baseUrl: ".", paths: { "@web/*": ["apps/web/src/*"], "@gen/*": ["generated/*/*.ts"] } },
+    }),
+    // A base with paths and no baseUrl: its targets are relative to the base itself.
+    "tsconfig.base.json": "{\n  // shared by the apps\n  \"compilerOptions\": { \"paths\": { \"@lib/*\": [\"libs/*/index.ts\"], }, },\n}\n",
+    "libs/date/index.ts": "export const d = 1;\n",
+    "generated/user/user.ts": "export const u = 1;\n",
+    // Relative `extends`, written without `.json`.
+    "apps/web/tsconfig.json": JSON_FILE({ extends: "../../tsconfig.base", compilerOptions: { strict: true } }),
+    "apps/web/src/util.ts": "export const w = 1;\n",
+    "apps/web/src/lib.test.ts": "import { d } from \"@lib/date\";\n",
+    // The root's @web/* does not reach here: apps/web's own config is the nearest.
+    "apps/web/src/root-alias.test.ts": "import { w } from \"@web/util\";\n",
+    "tools/root.test.ts": "import { w } from \"@web/util\";\n",
+    // Both `*` in the target are replaced, not only the first.
+    "tools/gen.test.ts": "import { u } from \"@gen/user\";\n",
+    // A jsconfig's baseUrl resolves a bare specifier from it.
+    "apps/api/jsconfig.json": JSON_FILE({ compilerOptions: { baseUrl: "src" } }),
+    "apps/api/src/models/user.js": "module.exports = {};\n",
+    "apps/api/test/user.test.js": "const user = require(\"models/user\");\n",
+    // A package `extends` found as a workspace, whose `${configDir}` is the app that uses it.
+    "packages/tsconfig/package.json": JSON_FILE({ name: "@acme/tsconfig" }),
+    "packages/tsconfig/app.json": JSON_FILE({ compilerOptions: { paths: { "@app/*": ["${configDir}/src/*"] } } }),
+    "apps/pkg/tsconfig.json": JSON_FILE({ extends: "@acme/tsconfig/app.json" }),
+    "apps/pkg/src/y.ts": "export const y = 1;\n",
+    "apps/pkg/src/y.test.ts": "import { y } from \"@app/y\";\n",
+    "apps/nm/tsconfig.json": JSON_FILE({ extends: "@tsconfig/strict" }),
+    "apps/nm/lib/thing.ts": "export const t = 1;\n",
+    "apps/nm/thing.test.ts": "import { t } from \"thing\";\n",
+  });
+  // A package `extends` found in an installed, untracked node_modules inside the tree.
+  write(root, { "node_modules/@tsconfig/strict/tsconfig.json": JSON_FILE({ compilerOptions: { baseUrl: "${configDir}/lib" } }) });
+
+  const selection = await selectOnDisk(root, tracked, [
+    "libs/date/index.ts",
+    "generated/user/user.ts",
+    "apps/web/src/util.ts",
+    "apps/api/src/models/user.js",
+    "apps/pkg/src/y.ts",
+    "apps/nm/lib/thing.ts",
+  ]);
+  assert.deepEqual(selection.files, [
+    { path: "apps/api/test/user.test.js", reason: "imports", via: "apps/api/src/models/user.js" },
+    { path: "apps/nm/thing.test.ts", reason: "imports", via: "apps/nm/lib/thing.ts" },
+    { path: "apps/pkg/src/y.test.ts", reason: "imports", via: "apps/pkg/src/y.ts" },
+    { path: "apps/web/src/lib.test.ts", reason: "imports", via: "libs/date/index.ts" },
+    { path: "tools/gen.test.ts", reason: "imports", via: "generated/user/user.ts" },
+    { path: "tools/root.test.ts", reason: "imports", via: "apps/web/src/util.ts" },
+  ]);
+  assert.deepEqual(selection.diagnostics, []);
+});
+
+test("a config selection cannot follow is a diagnostic, never fatal, and nothing resolves outside the tree", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "test-selection-outside-"));
+  write(outside, {
+    "outside.json": JSON_FILE({ compilerOptions: { paths: { "@out/*": ["./*"] } } }),
+    "elsewhere/x.ts": "export {};\n",
+  });
+  const { root, tracked } = onDisk({
+    // Both bases are missing, but the config's own paths still apply.
+    "apps/broken/tsconfig.json": JSON_FILE({ extends: ["@missing/tsconfig", "./absent"], compilerOptions: { paths: { "@b/*": ["src/*"] } } }),
+    "apps/broken/src/b.ts": "export const b = 1;\n",
+    "apps/broken/src/b.test.ts": "import { b } from \"@b/b\";\n",
+    "apps/bad/tsconfig.json": "{ not json",
+    "apps/bad/src/x.ts": "export {};\n",
+    "apps/bad/x.test.ts": "import \"@x/x\";\n",
+    // An escaping `extends` and an escaping target are both refused.
+    "apps/escape/tsconfig.json": JSON_FILE({
+      extends: "../../../outside.json",
+      compilerOptions: { paths: { "@out/*": ["../../../elsewhere/*"] } },
+    }),
+    "apps/escape/e.test.ts": "import \"@out/x\";\n",
+  });
+  // A base spelled inside the tree that is a symlink out of it is refused too.
+  write(root, { "apps/link/tsconfig.json": JSON_FILE({ extends: "./linked.json" }), "apps/link/l.test.ts": "import \"@out/x\";\n" });
+  symlinkSync(join(outside, "outside.json"), join(root, "apps/link/linked.json"));
+  tracked.push("apps/link/tsconfig.json", "apps/link/l.test.ts");
+
+  const selection = await selectOnDisk(root, tracked, ["apps/broken/src/b.ts", "apps/bad/src/x.ts"]);
+  assert.deepEqual(selection.files, [
+    { path: "apps/broken/src/b.test.ts", reason: "imports", via: "apps/broken/src/b.ts" },
+  ]);
+  assert.deepEqual(selection.diagnostics, [
+    "apps/bad/tsconfig.json could not be read or parsed, so its paths and baseUrl were not used.",
+    "apps/broken/tsconfig.json extends \"./absent\", which was not found inside the repository, so its own settings were used without it.",
+    "apps/broken/tsconfig.json extends \"@missing/tsconfig\", which was not found inside the repository, so its own settings were used without it.",
+    "apps/escape/tsconfig.json extends \"../../../outside.json\", which was not found inside the repository, so its own settings were used without it.",
+    "apps/link/tsconfig.json extends \"./linked.json\", which was not found inside the repository, so its own settings were used without it.",
+  ]);
+});
+
+test("an extends cycle is reported and broken, and the rest of the chain still applies", async () => {
+  const { root, tracked } = onDisk({
+    "apps/cycle/tsconfig.json": JSON_FILE({ extends: "./a.json", compilerOptions: { paths: { "@c/*": ["src/*"] } } }),
+    "apps/cycle/a.json": JSON_FILE({ extends: "./tsconfig.json", compilerOptions: { baseUrl: "." } }),
+    "apps/cycle/src/c.ts": "export const c = 1;\n",
+    "apps/cycle/c.test.ts": "import { c } from \"@c/c\";\n",
+  });
+  const selection = await selectOnDisk(root, tracked, ["apps/cycle/src/c.ts"]);
+  assert.deepEqual(selection.files, [{ path: "apps/cycle/c.test.ts", reason: "imports", via: "apps/cycle/src/c.ts" }]);
+  assert.deepEqual(selection.diagnostics, [
+    "apps/cycle/a.json extends \"./tsconfig.json\", which extends it back, so that extends was ignored.",
+  ]);
+});
+
+test("workspace package names resolve bare and with a subpath, inside the workspace only", async () => {
+  const { root, tracked } = onDisk({
+    // The `{ packages }` form, with a `./` prefix and a negated glob.
+    "package.json": JSON_FILE({ private: true, workspaces: { packages: ["./packages/*", "!packages/ignored"] } }),
+    "packages/ui/package.json": JSON_FILE({ name: "@acme/ui", exports: "./src/index.ts" }),
+    "packages/ui/src/index.ts": "export * from \"./button.tsx\";\n",
+    "packages/ui/src/button.tsx": "export const Button = 1;\n",
+    "packages/core/package.json": JSON_FILE({ name: "core", main: "lib/main.js" }),
+    "packages/core/lib/main.ts": "export const main = 1;\n",
+    "packages/plain/package.json": JSON_FILE({ name: "plain" }),
+    "packages/plain/index.ts": "export const plain = 1;\n",
+    // An exports map with conditions is not read: `types` resolves instead, and it is reported.
+    "packages/rich/package.json": JSON_FILE({
+      name: "@acme/rich",
+      types: "src/index.ts",
+      exports: { ".": { import: "./dist/index.js" }, "./feature": "./src/feature.ts" },
+    }),
+    "packages/rich/src/index.ts": "export const rich = 1;\n",
+    "packages/ignored/package.json": JSON_FILE({ name: "ignored" }),
+    "packages/ignored/index.ts": "export const ignored = 1;\n",
+    "app/ui.test.ts": "import { Button } from \"@acme/ui\";\n",
+    "app/button.test.ts": "import { Button } from \"@acme/ui/src/button\";\n",
+    "app/core.test.ts": "import { main } from \"core\";\n",
+    "app/plain.test.ts": "import { plain } from \"plain\";\n",
+    "app/rich.test.ts": "import { rich } from \"@acme/rich\";\n",
+    "app/ignored.test.ts": "import { ignored } from \"ignored\";\n",
+    // A subpath that climbs out of its workspace is refused, inside the tree or not.
+    "app/escape.test.ts": "import \"core/../plain/index\";\nimport \"@acme/ui/../../../outside\";\n",
+    "app/third-party.test.ts": "import { z } from \"zod\";\n",
+  });
+  const selection = await selectOnDisk(root, tracked, [
+    "packages/ui/src/button.tsx",
+    "packages/core/lib/main.ts",
+    "packages/plain/index.ts",
+    "packages/rich/src/index.ts",
+    "packages/ignored/index.ts",
+  ]);
+  assert.deepEqual(selection.files, [
+    { path: "app/button.test.ts", reason: "imports", via: "packages/ui/src/button.tsx" },
+    { path: "app/core.test.ts", reason: "imports", via: "packages/core/lib/main.ts" },
+    { path: "app/plain.test.ts", reason: "imports", via: "packages/plain/index.ts" },
+    { path: "app/rich.test.ts", reason: "imports", via: "packages/rich/src/index.ts" },
+    { path: "app/ui.test.ts", reason: "imports", via: "packages/ui/src/button.tsx" },
+  ]);
+  assert.deepEqual(selection.diagnostics, [
+    "Workspace package \"@acme/rich\" (packages/rich) has an exports map beyond a single string, which selection "
+    + "does not read, so imports of it were resolved through its types, main or index file, and its subpaths inside "
+    + "packages/rich.",
+  ]);
 });

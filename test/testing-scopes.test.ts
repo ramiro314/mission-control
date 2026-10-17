@@ -13,7 +13,6 @@ import {
 } from "../src/shared/testing-config.ts";
 import { resolveTestingScopes } from "../src/server/testing-config.ts";
 import {
-  PER_APP_ALIASES_UNRESOLVED,
   matchesScopeKey,
   selectAffectedTests,
   testUniverse,
@@ -207,14 +206,13 @@ test("each scope's own patterns and smoke set select its tests, and keys it does
   //    patterns replace them there;
   //  - apps/api/lib/b.spec.ts imports a changed file, but the api app turned importers off;
   //  - apps/web/smoke.spec.ts matches the root's smoke glob, but the web app's own smoke set
-  //    replaces it there;
-  //  - apps/web/src/alias.test.ts reaches the change only through the app's own alias, which
-  //    is not resolved yet, and the diagnostics say so.
-  assert.deepEqual(selection.diagnostics, [PER_APP_ALIASES_UNRESOLVED]);
-  assert.match(PER_APP_ALIASES_UNRESOLVED, /not resolved yet/);
+  //    replaces it there.
+  // apps/web/src/alias.test.ts IS selected: it reaches the change through the app's own alias,
+  // which its nearest tsconfig.json resolves, so selection has nothing left to report.
+  assert.deepEqual(selection.diagnostics, []);
 });
 
-test("a repository with no subdirectory scope records no diagnostics and selects exactly as before", async () => {
+test("a repository with no subdirectory scope still resolves each app's own aliases, and records no diagnostics", async () => {
   const root = monorepoTree();
   const scopes = buildTestingScopes(rootOnly({ tests: { patterns: ["**/*.test.ts"] } }));
   const selection = await selectAffectedTests(root, scopes, {
@@ -224,5 +222,11 @@ test("a repository with no subdirectory scope records no diagnostics and selects
   });
   assert.ok(selection.ok);
   assert.deepEqual(selection.diagnostics, []);
-  assert.deepEqual(selection.files.map((file) => file.path), ["apps/api/lib/old.test.ts", "apps/web/src/a.test.ts"]);
+  // Import resolution follows the importer's nearest config, not its testing scope: the web app's
+  // `@web/*` alias selects alias.test.ts here exactly as it does with scopes.
+  assert.deepEqual(selection.files.map((file) => file.path), [
+    "apps/api/lib/old.test.ts",
+    "apps/web/src/a.test.ts",
+    "apps/web/src/alias.test.ts",
+  ]);
 });

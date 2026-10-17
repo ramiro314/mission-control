@@ -977,10 +977,41 @@ selected when:
    `path.matchesGlob`);
 2. `tests.includeImporters` is on and it imports a changed file, directly or through other
    files. The scanner reads static `import` and `export ... from`, `import()` and `require()` with
-   string literals, resolves relative specifiers (including `.js` written for a `.ts` file) and
-   the root `tsconfig.json`'s `compilerOptions.paths`, and ignores anything else. This is JS and
-   TS only; other languages get (1) and (3);
+   string literals, resolves them as described under [resolving imports](#resolving-imports), and
+   ignores anything else. This is JS and TS only; other languages get (1) and (3);
 3. it matches `tests.smokeSet`, which always runs.
+
+#### Resolving imports
+
+Each scanned file's imports resolve the way its own app sees them:
+
+- A relative specifier resolves from the file's folder. A `.js` written for a `.ts` file, and a
+  folder's `index`, resolve as they do today.
+- Any other specifier tries the file's nearest `tsconfig.json` or `jsconfig.json` first. That is
+  the closest one at or above the file, stopping at the repository root, with `tsconfig.json`
+  winning in a folder that has both. Its `compilerOptions.paths` are tried first, exact keys
+  before wildcards and the longest wildcard prefix first, and every `*` in a target takes what
+  the key's `*` matched. Its `baseUrl` is tried next. A nearer config replaces a farther one
+  entirely, as it does for TypeScript, so the root's aliases do not reach an app with its own
+  config.
+- `extends` is followed, as a string or a list. A relative base can be written with or without
+  `.json`. A package base is found as a workspace package, or in a `node_modules` folder inside
+  the tree. Each `baseUrl`, and each `paths` without one, is relative to the config that set it,
+  and `${configDir}` is the folder of the config in use.
+- Last come workspace package names. The root `package.json`'s `workspaces` globs (a list, or
+  `{ "packages": [...] }`, with `!` globs excluded) map each workspace's `name` to its folder. A
+  bare `name` resolves through a string `exports`, then `types`, then `main`, then `index`. A
+  `name/sub` resolves inside the workspace's folder.
+
+Nothing resolves outside the repository, whether by path or through a symlink. What selection
+could not follow is listed under **Selection notes** in run detail, and never fails the gate:
+
+- an `extends` that names nothing inside the repository (the config's own settings still
+  apply);
+- an `extends` cycle;
+- a config or `package.json` that does not parse;
+- a workspace name declared twice;
+- a workspace whose `exports` is a map of conditions or subpaths, which is not read.
 
 In a repository with [subdirectory scopes](#subdirectory-scopes), each file is judged by its
 nearest scope's settings instead of the root's alone.
@@ -1121,11 +1152,11 @@ root's merged settings, for the files inside that folder:
 Per scope, the tests are the tracked files whose nearest scope it is and that match its effective
 patterns. Selection is shaped per scope, but the selected files still run through **one
 invocation**: the `affected-tests` Command the session's folder resolves, with each file relative
-to that Command's subdirectory (`../` for a file outside it), exactly as before. Imports are still
-resolved through the root `tsconfig.json` only, so an import written through an app's own
-`tsconfig.json` or `jsconfig.json` alias, or through a workspace package name, does not yet select
-its importer. Run detail says so under **Selection notes**, and lists each scope's sources below
-the root's, for example `apps/web: tests.patterns stored (apps/web), tests.includeImporters
+to that Command's subdirectory (`../` for a file outside it), exactly as before. Imports resolve
+through each file's own nearest `tsconfig.json` or `jsconfig.json` and the workspace package names
+([resolving imports](#resolving-imports)), not through its scope, so an import written through an
+app's own alias selects its importer whether or not the app has a scope. Run detail lists each
+scope's sources below the root's, for example `apps/web: tests.patterns stored (apps/web), tests.includeImporters
 default, tests.smokeSet stored (root)`.
 
 Stored settings are part of [settings snapshots](configuration.md#automatic-settings-snapshots),
