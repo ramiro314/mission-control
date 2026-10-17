@@ -561,7 +561,9 @@ The slot card's **Stop** stops the same claim, but the Warm then carries on with
 
 **The full log.** Each Warm writes everything it did and every line of claim output, redacted,
 to `logs/worktree-warm/<operationId>.log` under the daemon's state directory, created the first
-time the Warm holds a slot. The log is never cut, and the daemon never holds it in memory: when
+time the Warm holds a slot. What happened to a slot before that, such as one skipped because it
+was leased meanwhile, is written right after the log's header, and every slot a Cancel kept the
+Warm from reaching is logged as cancelled. A Warm that never holds a slot writes no log. The log is never cut, and the daemon never holds it in memory: when
 the disk falls behind a step that prints faster than it can be written, the step's output pipes
 are paused until the log drains, so the step blocks on its own pipe while its time limit keeps
 running. The operation links it, and each slot it held records the path as

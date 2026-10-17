@@ -166,6 +166,9 @@ interface WarmRun {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+/** The most a Warm log keeps of what was recorded before it opened. */
+const MAX_EARLY_LOG_BYTES = 64 * 1024;
+
 /**
  * One Warm's full log, opened the first time a Warm holds a slot, so a Warm that skipped every
  * target writes nothing. Appended in order; a write that fails is reported once and the Warm
@@ -178,6 +181,14 @@ interface WarmRun {
 export class WarmLogFile {
   private stream: WriteStream | null = null;
   private broken = false;
+  /**
+   * What the Warm recorded before it first held a slot, such as an earlier target skipped
+   * because it was leased meanwhile. Written right after the header when the log opens, so the
+   * log still says what happened to every slot; dropped with the operation if it never opens.
+   * Only the Warm's own one-line results arrive before a slot is held, so the bound is generous.
+   */
+  private early: string[] = [];
+  private earlyBytes = 0;
 
   constructor(readonly id: string, readonly path: string, private readonly header: () => string) {}
 
@@ -195,12 +206,22 @@ export class WarmLogFile {
       console.warn(`[worktrees] Warm log ${this.path} could not be written: ${error.message}`);
     });
     this.stream = stream;
-    this.stream.write(this.header());
+    this.stream.write(this.header() + this.early.join(""));
+    this.early = [];
+    this.earlyBytes = 0;
   }
 
   write(text: string): void | Promise<void> {
     const stream = this.stream;
-    if (!stream || this.broken || !text) return undefined;
+    if (this.broken || !text) return undefined;
+    if (!stream) {
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (this.earlyBytes + bytes <= MAX_EARLY_LOG_BYTES) {
+        this.early.push(text);
+        this.earlyBytes += bytes;
+      }
+      return undefined;
+    }
     if (stream.write(text)) return undefined;
     return new Promise<void>((resolve) => {
       const done = (): void => {
@@ -1403,6 +1424,7 @@ export class WorktreeOperationsService {
         if (warm.controller.signal.aborted) {
           target.outcome = "cancelled";
           target.detail = "cancelled before its turn";
+          this.warmOutput(entry, `Slot ${target.ordinal}: cancelled. ${target.detail}\n`);
           continue;
         }
         target.outcome = "running";

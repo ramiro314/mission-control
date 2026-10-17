@@ -305,7 +305,8 @@ test("a slot leased while Warm idle slots is queued is skipped and listed as ski
   const gate = join(dir, "gate");
   const m = manager({ claim: claimOf(gatedStep(gate, join(dir, "pid"))) });
   const [first] = await idleSlots(m, fixture.clone, fixture.sha, 3);
-  const ops = service(m, logsDirectory());
+  const logs = logsDirectory();
+  const ops = service(m, logs);
 
   // The first Warm holds its slot on the gate, so the pool Warm queues behind it.
   const holding = await warm(ops, { kind: "slot", slotId: first!.slotId });
@@ -337,7 +338,37 @@ test("a slot leased while Warm idle slots is queued is skipped and listed as ski
   assert.equal(row.state, "leased");
   assert.equal(row.activeOwnerKey, "late", "Warm never touched the leased slot");
   assert.equal(row.depsState, null);
+
+  // Acquisition took the lowest idle slot, the pool Warm's first target, so that slot was
+  // skipped before the Warm held anything and its log opened. The log still records it, first.
+  assert.equal(done.warm!.targets[0]!.slotId, taken.lease.slotId);
+  const text = readFileSync(join(logs, `${pool}.log`), "utf8");
+  const skippedLine = text.indexOf(`Slot ${skipped!.ordinal}: skipped.`);
+  const warmedLine = text.indexOf(`Warming slot ${warmed!.ordinal} at `);
+  assert.ok(skippedLine > 0, "the skipped slot's result reaches the log");
+  assert.ok(warmedLine > skippedLine, "in the order it happened, after the header");
+  assert.match(text, new RegExp(`^Slot ${warmed!.ordinal}: warmed$`, "m"));
   await m.release(taken.lease, { ownerAuthorized: true });
+});
+
+test("a pool Warm cancelled mid-step logs the slot it never reached", async () => {
+  const fixture = repository("mission-warm-cancel-log-");
+  const dir = mkdtempSync(join(tmpdir(), "mission-warm-gate-"));
+  const m = manager({ claim: claimOf(gatedStep(join(dir, "never"), join(dir, "pid"))) });
+  const [first, second] = await idleSlots(m, fixture.clone, fixture.sha, 2);
+  const logs = logsDirectory();
+  const ops = service(m, logs);
+  const id = await warm(ops, { kind: "pool", poolId: first!.poolId });
+  await waitFor(async () => /^waiting for the gate$/m.test((await operation(ops, id)).warm?.tail ?? ""), "the first slot's step");
+  assert.equal(ops.cancel(id), true);
+  await ops.idle();
+
+  const view = await operation(ops, id);
+  assert.deepEqual(view.warm?.targets.map((target) => target.outcome), ["cancelled", "cancelled"]);
+  const text = readFileSync(join(logs, `${id}.log`), "utf8");
+  const ordinal = m.store.slot(second!.slotId)!.ordinal;
+  assert.match(text, new RegExp(`^Slot ${ordinal}: cancelled\\. cancelled before its turn$`, "m"));
+  assert.match(view.warm?.tail ?? "", new RegExp(`Slot ${ordinal}: cancelled\\. cancelled before its turn`));
 });
 
 // ---- Cancel ----
@@ -828,6 +859,26 @@ test("a full Warm log asks the writer to wait until it drains, and keeps every b
   await wait;
   await log.close();
   assert.equal(readFileSync(join(dir, "logs", "op.log"), "utf8"), `header\nsmall\n${big}`);
+});
+
+test("a Warm log keeps what was recorded before it opened, and a log that never opens writes nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-warm-log-early-"));
+  const log = new WarmLogFile("op", join(dir, "logs", "op.log"), () => "header\n");
+  assert.equal(log.write("Slot 1: skipped. the slot was leased by something else first\n"), undefined);
+  assert.equal(existsSync(join(dir, "logs", "op.log")), false, "nothing is written before the log opens");
+  log.open();
+  log.write("Warming slot 2\n");
+  await log.close();
+  assert.equal(
+    readFileSync(join(dir, "logs", "op.log"), "utf8"),
+    "header\nSlot 1: skipped. the slot was leased by something else first\nWarming slot 2\n",
+    "the early result follows the header, ahead of what came after",
+  );
+
+  const never = new WarmLogFile("none", join(dir, "logs", "none.log"), () => "header\n");
+  never.write("Slot 1: skipped. the slot is leased\n");
+  await never.close();
+  assert.equal(existsSync(join(dir, "logs", "none.log")), false, "a Warm that held no slot writes no log");
 });
 
 test("a Warm with a lot of output keeps it all in its log, and a download streams a fixed length", async () => {
