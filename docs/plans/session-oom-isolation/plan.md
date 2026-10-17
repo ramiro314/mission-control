@@ -155,7 +155,7 @@ On Linux, with `systemd-run` resolved and the user manager reachable, `wrap` ret
 
 ```
 systemd-run --user --scope --quiet
-  --unit=mission-control-<label>-<nonce>
+  --unit=mission-control-<instance>-<label>-<nonce>
   --slice=app-mission\x2dcontrol\x2dsessions.slice
   -p OOMPolicy=stop -p TimeoutStopSec=10s
   -p BindsTo=<daemon unit> -p After=<daemon unit>
@@ -165,7 +165,7 @@ systemd-run --user --scope --quiet
 | Part | Why |
 | --- | --- |
 | Own scope, no `--collect` | Bounds the OOM blast radius to the session. A failed scope keeps its `Result` until `outcome` reads and resets it. A scope that ends cleanly is collected by systemd as usual. |
-| `--unit=mission-control-<label>-<nonce>` | `<label>` is the session's id, `sdk:` prefix stripped. The nonce stops a resumed session's new scope from colliding with its predecessor's. An operator can tell which session a scope belongs to in `systemctl --user status`. |
+| `--unit=mission-control-<instance>-<label>-<nonce>` | `<instance>` is the first 8 hex characters of the SHA-256 of this daemon's resolved state home. Every daemon sharing the user manager therefore names its scopes apart: worktree daemons under `make start`, the installed service, and test and e2e daemons. `<label>` is the session's id, `sdk:` prefix stripped. The nonce stops a resumed session's new scope from colliding with its predecessor's. An operator can tell which session a scope belongs to in `systemctl --user status`. |
 | Dedicated slice | One place that lists every session and their total memory, with room for a later aggregate cap that does not touch the scopes. |
 | `OOMPolicy=stop` | Explicit, so a user's `DefaultOOMPolicy=continue` cannot change it. An OOM kill anywhere in the session stops the whole session. |
 | `TimeoutStopSec=10s` | The incident's stop took 90 s to finish. A session being stopped has nothing to flush for that long. |
@@ -184,8 +184,26 @@ systemd-run --user --scope --quiet
   become a session that cannot start, and the probe is what guarantees it.
 - **`choom` missing:** no `oom_score_adj` change, mentioned in the same log line.
 
-**Startup hygiene.** On Linux with the manager reachable, the daemon resets any failed
-`mission-control-*.scope` unit left by a previous run that died before reading it.
+**Startup hygiene.** On Linux with the manager reachable, the daemon resets failed
+`mission-control-<instance>-*.scope` units, its own instance's only, left by a previous run that
+died before reading them. It never touches another daemon's failed scope. So a second daemon
+that starts between an OOM stop and the owning daemon's `outcome` read cannot wipe that
+`Result=oom-kill`.
+
+**No test scope lands in the operator's user manager.**
+
+- **Under the test runner.** `sessionScope` follows the boundary `launchHome` already draws in
+  `src/server/terminal/home.ts`. Built on its production deps, it returns every command unwrapped
+  while `underTestRunner()` (`src/server/util/test-runner.ts`) is true, and a daemon a test spawns
+  inherits that signal.
+- **Tests that need the wrapping** inject their own deps:
+  - the unit tests inject fakes;
+  - the Linux real-systemd test injects the real `systemd-run` and `systemctl`, with an
+    `<instance>` derived from its own temp home, so its scopes and its reset are disjoint from the
+    operator's.
+- **The e2e daemon** is not under the test runner, so `e2e/fixtures/fake-agents.ts` points
+  `MISSION_SYSTEMD_RUN_BIN`, `MISSION_SYSTEMCTL_BIN` and `MISSION_CHOOM_BIN` at pass-through fakes
+  for every spec, the same way it already fakes the agent CLIs.
 
 **`choom` becomes a registered executable**, per the
 [change contracts](../../agent-guides/change-contracts.md#executable-and-child-process-changes):
@@ -213,7 +231,7 @@ supervisor or registry code branches on the agent.
   therefore runs in the scope under the same shell Pi would have used, `/bin/bash -c` on a normal
   Linux machine, never a substituted `/bin/sh`. When that config uses stdin transport (Pi does so
   only for a legacy WSL bash on Windows), the hook leaves the command unwrapped.
-  Each command gets its own scope named `mission-control-<session>-<nonce>-<n>`. `<nonce>` is minted
+  Each command gets its own scope named `mission-control-<instance>-<session>-<nonce>-<n>`. `<nonce>` is minted
   once per session launch, as it is for session scopes, and `<n>` counts that launch's commands.
   So a resumed session's command can never collide with a command scope a previous run left
   active, for example a backgrounded dev server after a `tsx watch` restart. The scopes carry the
@@ -283,19 +301,21 @@ issue, following `docs/fork/README.md`. Every pull request of the feature carrie
 "Fork feature changes" section.
 
 - **Intent:** an OOM in an agent session stops that session, not the daemon or the dashboard.
-- **Behavior contracts:** AC1 to AC8 below.
+- **Behavior contracts:** AC1 to AC9 below.
 - **Upstream behavior it assumes:**
   - the vendor `spawnClaudeCodeProcess` hook;
   - `spawnAppServer` being the one Codex spawn;
   - Pi's bash `spawnHook` being able to rewrite `command`, and Pi's exported `getShellConfig`
     naming the shell its bash tool runs;
   - `beginEviction` being the one eviction path;
-  - `settleAgentGone` writing the departure text.
+  - `settleAgentGone` writing the departure text;
+  - `underTestRunner()` marking every test worker and the daemons it spawns.
 - **Upstream surfaces touched:**
   - the three `sdk-deps.ts` files;
   - `harness/types.ts`, `registry.ts` and `tasks.ts`;
   - `graphical-session.ts`;
-  - the executable registry and `discovery/processes.ts`.
+  - the executable registry and `discovery/processes.ts`;
+  - `e2e/fixtures/fake-agents.ts`.
 - **Fork-only files:** `src/server/platform/session-scope.ts` and its tests.
 - **Plan docs:** this plan.
 - **Upstream candidate:** yes. It is generic Linux robustness with no fork-specific behavior.
@@ -307,7 +327,8 @@ Three slices. Each lands green on its own, in this order.
 1. **Isolation.** `session-scope.ts` with both `wrap` and `outcome`, the `choom` registration, and
    the Claude and Codex seams with exit listeners that call `outcome`, so a failed scope is read
    and reset as its process exits. Also the per-OOM log line, `BindsTo`, the probe and fallback
-   log line, the startup reset, the slice 1 unit tests, the Linux real-systemd test, and the docs
+   log line, the instance-scoped startup reset, the test-runner unwrap and the e2e pass-through
+   fakes, the slice 1 unit tests, the Linux real-systemd test, and the docs
    for these. This slice alone fixes the incident.
 2. **Pi tool commands.** The `spawnHook` rewrite, its tests and its docs line.
 3. **Reporting.** The driver awaiting `outcome` before it emits `exited`, the `exited` cause and its
@@ -325,6 +346,10 @@ Run single files with the suite's loader, for example
   - **Linux with a manager and every executable:** the exact argv, meaning the unit-name shape, the
     slice, every property, `BindsTo`/`After` taken from a given daemon cgroup, and `choom`.
   - **`BindsTo`/`After` omitted** when the daemon's cgroup leaf is not a unit of this user manager.
+  - **Instance prefix:** two state homes give two `<instance>` values, and the startup reset names
+    only `mission-control-<instance>-*.scope`.
+  - **Under the test runner:** built on production deps, `wrap` returns the command unwrapped;
+    injected deps still wrap.
   - **darwin and win32:** argv unchanged, `unit` null, nothing logged.
   - **Linux without `systemd-run` or a manager:** no scope, `choom` applied, exactly one log line
     across two wraps.
@@ -345,7 +370,7 @@ Run single files with the suite's loader, for example
   - the rewritten command is run through Pi's own shell with pass-through fakes for `systemd-run`
     and `choom`. It keeps quotes, `$` and newlines intact, and it runs bash-only constructs:
     `[[ ]]`, an array, `set -o pipefail` and process substitution;
-  - the unit name has the shape `mission-control-<session>-<nonce>-<n>`, and two launches of the
+  - the unit name has the shape `mission-control-<instance>-<session>-<nonce>-<n>`, and two launches of the
     same session name their first command differently;
   - a stdin-transport shell config leaves the command unwrapped.
 - **Registry and tasks** (slice 3):
@@ -368,10 +393,12 @@ Run single files with the suite's loader, for example
 It is expected to skip on GitHub-hosted CI and
 run on a developer's Linux machine. It passes test-only properties (`MemoryMax=64M`,
 `MemorySwapMax=0`) through an internal option that production code never sets. It lands in
-slice 1, which also delivers the `outcome` it asserts on.
+slice 1, which also delivers the `outcome` it asserts on. It injects its own deps, with an
+`<instance>` derived from its temp home, so `underTestRunner()` does not unwrap it and its scopes
+and reset never touch the operator's.
 
 - The wrapped process's `/proc/<pid>/cgroup` ends in
-  `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<label>-*.scope`, and its
+  `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<instance>-<label>-*.scope`, and its
   `oom_score_adj` is 500. The test process's own cgroup is unchanged.
 - A memory-hog child is OOM-killed. The hog allocates at most 512 MB, so it cannot press on the
   machine even if the cap were not applied. The wrapped process then exits from systemd's SIGTERM, its
@@ -383,7 +410,10 @@ slice 1, which also delivers the `outcome` it asserts on.
 ### End-to-end spec (`e2e/`, Playwright)
 
 The task-failure text is a UI change, so `e2e/session-oom.spec.ts` covers it in slice 3. It is Linux-only,
-because the scope path exists only there, and it spends no model tokens. The fixture sets:
+because the scope path exists only there, and it spends no model tokens. Every spec already gets
+pass-through `systemd-run`, `systemctl` and `choom` fakes from `e2e/fixtures/fake-agents.ts`
+(slice 1), so no e2e daemon creates a scope in the operator's user manager. For this spec the
+fixture sets:
 
 - a fake `systemd-run` through `MISSION_SYSTEMD_RUN_BIN`, which records its argv and execs what
   follows `--`;
@@ -406,7 +436,7 @@ changed), and `npm run test:e2e` for the new spec.
 ### Acceptance criteria
 
 - **AC1.** On Linux with a user manager, a Claude SDK session's agent and its children run in
-  `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<session>-<nonce>.scope` with
+  `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<instance>-<session>-<nonce>.scope` with
   `oom_score_adj` 500. The daemon is not in that scope.
 - **AC2.** The same holds for a Codex SDK session's app-server. Catalog probes stay unwrapped.
 - **AC3.** Each Pi bash-tool command runs in its own scope in that slice with `oom_score_adj` 500,
@@ -421,6 +451,8 @@ changed), and `npm run test:e2e` for the new spec.
 - **AC7.** macOS, Windows, and Linux without `systemd-run` or a user manager spawn exactly as
   today. On Linux, one log line says when isolation is off or partial.
 - **AC8.** The docs listed above describe the behavior and the per-OS fallback.
+- **AC9.** A daemon's startup reset touches only its own instance's scopes. No `node --test` worker,
+  daemon spawned by one, or e2e run creates a scope in the operator's user manager.
 
 ## Known gaps
 
@@ -514,3 +546,27 @@ takes up the judge's non-blocking notes, and changes nothing else.
   - the Linux real-systemd test also requires a delegated `memory` controller;
   - the test caps its memory hog at 512 MB.
 - **Propagated to:** How it works today, the fork tracking assumptions, and AC3.
+
+### GitHub Inspector finding on PR #550 (2026-10-17)
+
+The finding was *Startup reset-failed is not scoped to the daemon that owns the scope* (major).
+Revision 5 fixes it and changes nothing else.
+
+- **The problem.**
+  - Every daemon on the machine shares one user manager, one sessions slice and one unit-name
+    pattern: worktree daemons, the installed service, and test and e2e daemons.
+  - Each one reset every failed `mission-control-*.scope` at startup. So a second daemon starting
+    before the owning daemon's `outcome` read could wipe `Result=oom-kill`, and the task would
+    read "no outcome recorded".
+  - Separately, nothing stopped test and e2e daemons from creating scopes in the operator's user
+    manager.
+- **The fix.**
+  - Every unit name carries `<instance>`, a hash of the daemon's resolved state home, and the
+    startup reset names only `mission-control-<instance>-*.scope`.
+  - `sessionScope` built on production deps stays unwrapped under `underTestRunner()`, as
+    `launchHome` does.
+  - The Linux real-systemd test injects its deps with its own instance.
+  - The e2e fixture fakes `systemd-run`, `systemctl` and `choom` for every spec.
+  - The new AC9 holds both properties, and the fork contracts now name AC1 to AC9.
+- **Superseded.** The Pi unit-name shape recorded in repair round 2,
+  `mission-control-<session>-<nonce>-<n>`, gains the same `<instance>` prefix.
