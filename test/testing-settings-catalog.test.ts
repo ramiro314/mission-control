@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -141,7 +141,7 @@ test("the route stores a root's row, and a stale save is refused with 409 carryi
   assert.deepEqual(s.forRepoRoot(root), { tests: { smokeSet: ["test/b.test.ts"] } });
 });
 
-test("the route refuses flakes, unknown keys, a folder inside a repository, and a non-repository", async () => {
+test("the route refuses flakes, unknown keys, a non-canonical spelling, and a non-repository", async () => {
   const s = catalog();
   const request = app(s);
   const root = repository();
@@ -150,15 +150,114 @@ test("the route refuses flakes, unknown keys, a folder inside a repository, and 
   assert.equal(await refused({ repoRoot: root, expectedRevision: 0, settings: { flakes: { label: "x" } } }), 400);
   assert.equal(await refused({ repoRoot: root, expectedRevision: 0, settings: { tests: { smokeSets: [] } } }), 400);
   assert.equal(await refused({ repoRoot: root, expectedRevision: 0, settings: {}, extra: 1 }), 400);
+  // A subdirectory spelled through a symlink would be stored under a key the gate never asks
+  // about, so it is refused with the canonical spelling.
   mkdirSync(join(root, "apps"));
-  const nested = await request("/api/testing-settings", put({ repoRoot: join(root, "apps"), expectedRevision: 0, settings: {} }));
-  assert.equal(nested.status, 400);
-  assert.equal((await nested.json() as { code: string }).code, "testing_settings_not_a_root");
+  const link = join(home, `apps-link-${Date.now()}`);
+  symlinkSync(join(root, "apps"), link);
+  const aliased = await request("/api/testing-settings", put({ repoRoot: link, expectedRevision: 0, settings: {} }));
+  assert.equal(aliased.status, 400);
+  assert.deepEqual(await aliased.json(), {
+    error: `Testing settings are stored by canonical path. Use ${join(root, "apps")}.`,
+    code: "testing_settings_not_canonical",
+  });
+  const missing = await request("/api/testing-settings", put({
+    repoRoot: join(root, "nowhere"), expectedRevision: 0, settings: {},
+  }));
+  assert.equal(missing.status, 400);
   const outside = await request("/api/testing-settings", put({
     repoRoot: realpathSync(mkdtempSync(join(tmpdir(), "not-a-repo-"))), expectedRevision: 0, settings: {},
   }));
   assert.equal(outside.status, 400);
   assert.deepEqual(s.list(), [], "no refusal stored anything");
+});
+
+test("the route stores a subdirectory's row under its canonical path, beside the root's", async () => {
+  const s = catalog();
+  const request = app(s);
+  const root = repository();
+  const web = join(root, "apps", "web");
+  mkdirSync(web, { recursive: true });
+  const saved = await request("/api/testing-settings", put({
+    repoRoot: web, expectedRevision: 0, settings: { tests: { patterns: ["src/**/*.test.ts"] } },
+  }));
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as { repoRoot: string }).repoRoot, web);
+  assert.equal((await request("/api/testing-settings", put({
+    repoRoot: root, expectedRevision: 0, settings: { tests: { includeImporters: false } },
+  }))).status, 200);
+  assert.deepEqual(s.forRepository(root), [
+    { scope: "", settings: { tests: { includeImporters: false } } },
+    { scope: "apps/web", settings: { tests: { patterns: ["src/**/*.test.ts"] } } },
+  ]);
+});
+
+test("the gate's repository lookup returns the root and its subdirectories, through a symlink too, and nothing else", () => {
+  const s = catalog();
+  const root = repository();
+  const link = join(home, `repo-link-${Date.now()}`);
+  symlinkSync(root, link);
+  const write = (path: string, smoke: string) => assert.equal(
+    s.replace({ repoRoot: path, expectedRevision: 0, settings: { tests: { smokeSet: [smoke] } } }).ok,
+    true,
+  );
+  write(join(root, "apps/b"), "b.ts");
+  write(root, "root.ts");
+  write(join(root, "apps/a"), "a.ts");
+  write(join(root, "apps/a/nested"), "n.ts");
+  // A sibling whose name only starts like the repository's is a different repository.
+  write(`${root}-backup`, "other.ts");
+  write(`${root}-backup/apps/a`, "other.ts");
+
+  const expected = [
+    { scope: "", settings: { tests: { smokeSet: ["root.ts"] } } },
+    { scope: "apps/a", settings: { tests: { smokeSet: ["a.ts"] } } },
+    { scope: "apps/a/nested", settings: { tests: { smokeSet: ["n.ts"] } } },
+    { scope: "apps/b", settings: { tests: { smokeSet: ["b.ts"] } } },
+  ];
+  assert.deepEqual(s.forRepository(root), expected);
+  assert.deepEqual(s.forRepository(link), expected);
+  assert.deepEqual(s.forRepository(join(home, "elsewhere")), []);
+});
+
+test("rows of a repository nested inside another stay with the nested repository, never the parent", async () => {
+  const s = catalog();
+  const request = app(s);
+  const parent = repository();
+  mkdirSync(join(parent, "apps/a"), { recursive: true });
+  // An independent repository initialized below the parent, and a submodule-style checkout whose
+  // `.git` is a file: both are other repositories, whatever their paths share with the parent's.
+  const nested = join(parent, "vendor/lib");
+  mkdirSync(join(nested, "src"), { recursive: true });
+  execFileSync("git", ["init", "-q", nested]);
+  const submodule = join(parent, "packages/sub");
+  mkdirSync(join(submodule, "src"), { recursive: true });
+  writeFileSync(join(submodule, ".git"), "gitdir: ../../.git/modules/sub\n");
+
+  const save = async (path: string, smoke: string) => {
+    const response = await request("/api/testing-settings", put({
+      repoRoot: path, expectedRevision: 0, settings: { tests: { smokeSet: [smoke] } },
+    }));
+    assert.equal(response.status, 200, await response.text());
+  };
+  await save(parent, "parent.ts");
+  await save(join(parent, "apps/a"), "a.ts");
+  // Saved through the route: git resolves both to the NESTED repository, which owns them.
+  await save(nested, "nested.ts");
+  await save(join(nested, "src"), "nested-src.ts");
+  // Written straight to the catalog, as a restored snapshot could hold it.
+  assert.equal(s.replace({
+    repoRoot: join(submodule, "src"), expectedRevision: 0, settings: { tests: { smokeSet: ["sub.ts"] } },
+  }).ok, true);
+
+  assert.deepEqual(s.forRepository(parent), [
+    { scope: "", settings: { tests: { smokeSet: ["parent.ts"] } } },
+    { scope: "apps/a", settings: { tests: { smokeSet: ["a.ts"] } } },
+  ]);
+  assert.deepEqual(s.forRepository(nested), [
+    { scope: "", settings: { tests: { smokeSet: ["nested.ts"] } } },
+    { scope: "src", settings: { tests: { smokeSet: ["nested-src.ts"] } } },
+  ]);
 });
 
 test("without a catalog the routes answer 503", async () => {

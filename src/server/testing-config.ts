@@ -3,19 +3,21 @@ import {
   TESTING_CONFIG_LIMITS,
   TESTING_CONFIG_PATH,
   TESTING_LOCAL_CONFIG_PATH,
+  buildTestingScopes,
   mergeTestingLayers,
   parseTestingConfig,
   parseTestingLocalConfig,
   storedTestingSettingsKeys,
+  testingScopePath,
   type LayeredTestingConfig,
   type StoredTestingLayer,
   type TestingConfig,
+  type TestingScopes,
 } from "@shared/testing-config.ts";
 import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 
-/** A project's effective testing settings, or why there are none to use. */
-export type TestingConfigRead =
-  | { ok: true; merged: LayeredTestingConfig }
+/** Why a project has no testing settings to use. */
+type TestingConfigUnavailable =
   /** No committed file, no stored settings and no local file: not opted in. Not an error. */
   | { ok: false; kind: "missing"; note: string }
   /** The committed file cannot be used: it is part of the change, so the change is at fault. */
@@ -23,36 +25,36 @@ export type TestingConfigRead =
   /** The operator's local override cannot be used: their machine, not the change. */
   | { ok: false; kind: "invalid-local"; note: string };
 
+/** A project's effective root testing settings, or why there are none to use. */
+export type TestingConfigRead = { ok: true; merged: LayeredTestingConfig } | TestingConfigUnavailable;
+
+/** A project's testing scopes, or why there are none to use. */
+export type TestingScopesRead = { ok: true; scopes: TestingScopes } | TestingConfigUnavailable;
+
 function readFile(root: string, rel: string): { text: string } | { tooLarge: true } | null {
   const doc = readRepoDoc(root, realpathOr(root), join(root, rel), TESTING_CONFIG_LIMITS.fileBytes);
   if (!doc) return null;
   return doc.truncated ? { tooLarge: true } : { text: doc.text };
 }
 
+/** A stored layer that sets at least one key, or null: a row that sets none is not a layer. */
+function asLayer(stored: StoredTestingLayer | null | undefined): StoredTestingLayer | null {
+  return stored && storedTestingSettingsKeys(stored.settings).length > 0 ? stored : null;
+}
+
 /**
- * Read `.mission/testing.json` from `treeRoot` (the check's worktree, at the commit under
- * review), lay the repository's stored settings over it, and lay `.mission/testing.local.json`
- * from `localRoot` (the operator's own checkout) over both.
- *
- * Two roots because the local file is gitignored: a pooled check tree pinned to a commit does
- * not reliably carry it, while the checkout the operator edits does. Both are read through
- * `readRepoDoc`, so a symlink cannot point either read outside its repository.
- *
- * The gate has settings when ANY layer exists: the committed file, a stored row that sets at
- * least one key, or the local file. With none of the three it is skipped. A local file alone
- * opts that checkout in, laid over the defaults. Stored rows were validated when they were saved,
- * so only the two files can be invalid here, and each keeps its own rule: an invalid committed
- * file fails the gate and an invalid local file makes it unavailable.
+ * Merge the root's layers. `elsewhere` says whether a layer exists at some other scope, which
+ * is enough for the gate to run even when the root itself has none.
  */
-export function readTestingConfig(
+function readRootLayers(
   treeRoot: string,
   localRoot: string | null,
-  stored: StoredTestingLayer | null = null,
+  rootLayer: StoredTestingLayer | null,
+  elsewhere: boolean,
 ): TestingConfigRead {
-  const layer = stored && storedTestingSettingsKeys(stored.settings).length > 0 ? stored : null;
   const committed = readFile(treeRoot, TESTING_CONFIG_PATH);
   const local = localRoot ? readFile(localRoot, TESTING_LOCAL_CONFIG_PATH) : null;
-  if (!committed && !layer && !local) {
+  if (!committed && !rootLayer && !local && !elsewhere) {
     return {
       ok: false,
       kind: "missing",
@@ -78,5 +80,51 @@ export function readTestingConfig(
     if (!parsedLocal.ok) return { ok: false, kind: "invalid-local", note: parsedLocal.error };
     override = parsedLocal.config;
   }
-  return { ok: true, merged: mergeTestingLayers(base, layer, override) };
+  return { ok: true, merged: mergeTestingLayers(base, rootLayer, override) };
+}
+
+/**
+ * Read `.mission/testing.json` from `treeRoot` (the check's worktree, at the commit under
+ * review), lay the repository root's stored settings over it, and lay `.mission/testing.local.json`
+ * from `localRoot` (the operator's own checkout) over both.
+ *
+ * Two roots because the local file is gitignored: a pooled check tree pinned to a commit does
+ * not reliably carry it, while the checkout the operator edits does. Both are read through
+ * `readRepoDoc`, so a symlink cannot point either read outside its repository.
+ *
+ * The gate has settings when ANY layer exists: the committed file, a stored row that sets at
+ * least one key, or the local file. With none of the three it is skipped. A local file alone
+ * opts that checkout in, laid over the defaults. Stored rows were validated when they were saved,
+ * so only the two files can be invalid here, and each keeps its own rule: an invalid committed
+ * file fails the gate and an invalid local file makes it unavailable.
+ */
+export function readTestingConfig(
+  treeRoot: string,
+  localRoot: string | null,
+  stored: StoredTestingLayer | null = null,
+): TestingConfigRead {
+  return readRootLayers(treeRoot, localRoot, asLayer(stored), false);
+}
+
+/**
+ * Resolve a repository's testing scopes: the root's three layers, as `readTestingConfig` merges
+ * them, and a scope for every subdirectory row in `stored` that sets at least one key.
+ *
+ * `stored` is every row the catalog holds for the repository, the root's included, each with its
+ * repository-relative `scope` (`""` for the root). The local file stays root-only. The gate has
+ * settings when a layer exists at ANY scope, so a monorepo whose only settings are stored for its
+ * apps still runs it, over the defaults at the root.
+ */
+export function resolveTestingScopes(
+  treeRoot: string,
+  localRoot: string | null,
+  stored: readonly StoredTestingLayer[] = [],
+): TestingScopesRead {
+  const rootLayer = asLayer(stored.find((layer) => layer.scope === ""));
+  const subdirectories = stored.filter((layer) => (
+    layer.scope !== "" && testingScopePath(layer.scope) !== null && asLayer(layer) !== null
+  ));
+  const read = readRootLayers(treeRoot, localRoot, rootLayer, subdirectories.length > 0);
+  if (!read.ok) return read;
+  return { ok: true, scopes: buildTestingScopes(read.merged, subdirectories) };
 }

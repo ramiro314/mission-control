@@ -18510,6 +18510,10 @@ td.wf-command-rule-action {
 .wf-testing-settings-row > legend {
   padding: 0 4px;
 }
+.wf-testing-settings-subpath {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .wf-testing-settings-path {
   display: flex;
   flex-direction: column;

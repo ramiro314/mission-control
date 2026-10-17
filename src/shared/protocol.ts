@@ -7023,6 +7023,12 @@ const WorkflowNamedTestSchema = z.object({
   name: z.string().max(AFFECTED_TESTS_LIMITS.testName),
 });
 
+const TestingSettingsSourcesSchema = z.array(z.object({
+  key: z.enum(TESTING_SETTINGS_KEYS),
+  layer: z.enum(TESTING_SETTINGS_LAYERS),
+  scope: z.string().max(WORKFLOW_LIMITS.checkRepoRoot).nullable(),
+})).max(TESTING_SETTINGS_KEYS.length);
+
 /** What an `affected-tests` check selected and learned. See `WorkflowAffectedTestsReport`. */
 export const WorkflowAffectedTestsReportSchema = z.object({
   selectedCount: z.number().int().min(0),
@@ -7043,12 +7049,16 @@ export const WorkflowAffectedTestsReportSchema = z.object({
     smokeSet: z.array(z.string()),
     localKeys: z.array(z.string()),
     // Optional: an outcome recorded before stored testing settings existed has no sources.
-    sources: z.array(z.object({
-      key: z.enum(TESTING_SETTINGS_KEYS),
-      layer: z.enum(TESTING_SETTINGS_LAYERS),
-      scope: z.string().max(WORKFLOW_LIMITS.checkRepoRoot).nullable(),
-    })).max(TESTING_SETTINGS_KEYS.length).optional(),
+    sources: TestingSettingsSourcesSchema.optional(),
+    // Optional: absent before subdirectory scopes existed, and for a repository with none.
+    scopes: z.array(z.object({
+      path: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
+      sources: TestingSettingsSourcesSchema,
+    })).max(AFFECTED_TESTS_LIMITS.scopes).optional(),
+    scopeCount: z.number().int().min(0).optional(),
   }),
+  diagnostics: z.array(z.string().min(1).max(AFFECTED_TESTS_LIMITS.diagnostic))
+    .max(AFFECTED_TESTS_LIMITS.diagnostics).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */

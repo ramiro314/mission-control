@@ -1,16 +1,25 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join, matchesGlob, normalize, posix } from "node:path";
-import type { TestingConfig } from "@shared/testing-config.ts";
+import {
+  testingScopeOf,
+  testingScopeRelativePath,
+  type TestingScopes,
+} from "@shared/testing-config.ts";
 import type { WorkflowSelectedTest } from "@shared/workflow.ts";
 import { changedPathsSince, deletedPathsSince, type ChangedPathsResult } from "./diff.ts";
 import { run } from "./util/exec.ts";
 
-// Which tests an `affected-tests` check runs, from the project's `.mission/testing.json`:
+// Which tests an `affected-tests` check runs, from the project's testing scopes (the root's
+// layered settings, and a scope per subdirectory with stored settings):
 //
 //  1. test files the change added or modified, matched by `tests.patterns`;
 //  2. when `tests.includeImporters` is on, tests that import a changed file, directly or through
 //     other files - found with a lexical JS/TS import scanner, not a bundler;
 //  3. the smoke set, `tests.smokeSet`, which always runs.
+//
+// Every file is judged by its NEAREST scope's settings, and a scope's globs are matched relative
+// to the scope that set them. So a subdirectory's own `patterns` find the tests inside it, its
+// own `smokeSet` replaces the root's there, and a key it does not set falls through.
 //
 // "Changed" is measured from the merge base with the default branch, or with `origin/<base>` for
 // a task that names a base branch - the same base the session diff uses (`changedPathsSince`).
@@ -19,8 +28,24 @@ import { run } from "./util/exec.ts";
 // too many costs seconds while missing one costs a broken merge.
 
 export type TestSelection =
-  | { ok: true; files: WorkflowSelectedTest[]; changedCount: number }
+  | {
+    ok: true;
+    files: WorkflowSelectedTest[];
+    changedCount: number;
+    /** What selection could not do for this repository, one sentence each, for run detail. */
+    diagnostics: string[];
+  }
   | { ok: false; reason: string };
+
+/**
+ * Said whenever a repository has subdirectory scopes and imports are followed: import scanning
+ * still resolves aliases through the root `tsconfig.json` only, so in a monorepo an import
+ * written through an app's own alias or a workspace package name selects nothing yet.
+ */
+export const PER_APP_ALIASES_UNRESOLVED =
+  "Imports were resolved through relative paths and the root tsconfig.json's paths only. "
+  + "Aliases from a subdirectory's own tsconfig.json or jsconfig.json, and workspace package names, "
+  + "are not resolved yet, so a test that reaches a changed file only through one was not selected by its imports.";
 
 export interface TestSelectionDeps {
   /** Defaults to `changedPathsSince`. */
@@ -50,6 +75,36 @@ function isSource(path: string): boolean {
 
 function matchesAny(path: string, patterns: readonly string[]): boolean {
   return patterns.some((pattern) => matchesGlob(path, pattern));
+}
+
+/**
+ * Whether a repository-relative path matches its nearest scope's globs for `key`, matched
+ * relative to the scope that set them: a subdirectory's own globs see `src/a.test.ts` for
+ * `apps/web/src/a.test.ts`, while globs inherited from the root see the whole path.
+ */
+export function matchesScopeKey(
+  scopes: TestingScopes,
+  key: "tests.patterns" | "tests.smokeSet",
+  path: string,
+): boolean {
+  const scope = testingScopeOf(scopes, path);
+  const relative = testingScopeRelativePath(scope, key, path);
+  if (relative === null) return false;
+  return matchesAny(relative, key === "tests.patterns" ? scope.tests.patterns : scope.tests.smokeSet);
+}
+
+/**
+ * The test universe, per scope: the files whose nearest scope it is and that match its effective
+ * `patterns`. Every scope has an entry, in scope order, each list sorted. A file belongs to one
+ * scope only, so the lists never overlap.
+ */
+export function testUniverse(scopes: TestingScopes, files: Iterable<string>): Map<string, string[]> {
+  const universe = new Map<string, string[]>(scopes.scopes.map((scope) => [scope.path, []]));
+  for (const file of files) {
+    if (matchesScopeKey(scopes, "tests.patterns", file)) universe.get(testingScopeOf(scopes, file).path)!.push(file);
+  }
+  for (const list of universe.values()) list.sort();
+  return universe;
 }
 
 async function gitTrackedFiles(treeRoot: string): Promise<string[] | null> {
@@ -243,7 +298,7 @@ function testsReachingChanges(
 /** Select the tests one `affected-tests` check runs, in the check's worktree. */
 export async function selectAffectedTests(
   treeRoot: string,
-  config: TestingConfig,
+  scopes: TestingScopes,
   deps: TestSelectionDeps = {},
   /** The task's base branch, or null to measure from origin's default branch. */
   baseBranch: string | null = null,
@@ -265,24 +320,30 @@ export async function selectAffectedTests(
   // although nothing can be read from it.
   const deleted = deletedResult.paths.filter((file) => !present.has(file));
   const changed = new Set([...changedResult.paths.filter((file) => present.has(file)), ...deleted]);
-  const { patterns, includeImporters, smokeSet } = config.tests;
-  const tests = [...present].filter((file) => matchesAny(file, patterns)).sort();
+  const tests = [...testUniverse(scopes, present).values()].flat().sort();
 
   const selected = new Map<string, WorkflowSelectedTest>();
   for (const file of tests) {
     if (changed.has(file)) selected.set(file, { path: file, reason: "changed" });
   }
-  if (includeImporters && changed.size > 0) {
+  // Only tests whose own scope follows imports are walked from: a scope that turned
+  // `includeImporters` off selects its tests by change and smoke set alone.
+  const importing = tests.filter((file) => testingScopeOf(scopes, file).tests.includeImporters);
+  if (importing.length > 0 && changed.size > 0) {
     const resolver = new ImportResolver(new Set([...present, ...deleted]), readPathAliases(treeRoot));
-    const reached = testsReachingChanges(treeRoot, tests, changed, resolver);
+    const reached = testsReachingChanges(treeRoot, importing, changed, resolver);
     for (const [file, via] of reached) {
       if (!selected.has(file)) selected.set(file, { path: file, reason: "imports", via });
     }
   }
-  for (const file of [...present].filter((candidate) => matchesAny(candidate, smokeSet)).sort()) {
+  for (const file of [...present].filter((candidate) => matchesScopeKey(scopes, "tests.smokeSet", candidate)).sort()) {
     if (!selected.has(file)) selected.set(file, { path: file, reason: "smoke" });
   }
   const files = [...selected.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { ok: true, files, changedCount: changed.size };
+  const diagnostics: string[] = [];
+  if (scopes.scopes.length > 1 && scopes.scopes.some((scope) => scope.tests.includeImporters)) {
+    diagnostics.push(PER_APP_ALIASES_UNRESOLVED);
+  }
+  return { ok: true, files, changedCount: changed.size, diagnostics };
 }
 

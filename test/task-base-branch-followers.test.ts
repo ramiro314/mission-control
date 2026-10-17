@@ -8,7 +8,7 @@ import { trackedTaskManagers } from "./helpers/task-manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
-import { parseTestingConfig } from "../src/shared/testing-config.ts";
+import { buildTestingScopes, mergeTestingLayers, parseTestingConfig } from "../src/shared/testing-config.ts";
 import {
   emptyWorkflowCommandView,
   type PublishedWorkflowGraph,
@@ -147,9 +147,10 @@ test("affected tests are selected from the change against origin/<base>", async 
   const parsed = parseTestingConfig(JSON.stringify({ tests: { patterns: ["test/*.test.ts"] } }));
   assert.ok(parsed.ok);
 
-  const based = await selectAffectedTests(wt, parsed.config, {}, "release/2.0");
+  const scopes = buildTestingScopes(mergeTestingLayers(parsed.config, null, null));
+  const based = await selectAffectedTests(wt, scopes, {}, "release/2.0");
   assert.deepEqual(based.ok && based.files, [{ path: "test/feature.test.ts", reason: "changed" }]);
-  const plain = await selectAffectedTests(wt, parsed.config);
+  const plain = await selectAffectedTests(wt, scopes);
   assert.deepEqual(
     plain.ok && plain.files.map((file) => file.path),
     ["test/feature.test.ts", "test/windows.test.ts"],

@@ -9,8 +9,12 @@ import {
   testingSettingsDraftFrom,
   testingSettingsDraftTyped,
   testingSettingsFromDraft,
+  testingSettingsLocationOf,
   testingSettingsRevisionLine,
+  testingSettingsRowOrder,
+  testingSettingsRowScope,
   type TestingSettingsDraft,
+  type TestingSettingsLocation,
 } from "../src/web/workflows/TestingSettingsSection.tsx";
 
 // The affected-tests page's testing settings rows: what a typed draft stores and what a stored
@@ -104,4 +108,44 @@ test("the section explains the layer order before anything has loaded", () => {
   assert.match(html, /committed, then stored, then local/);
   assert.match(html, /The gate runs when any of the three exists/);
   assert.match(html, /Loading testing settings/);
+});
+
+test("a row's location names its repository and subdirectory, and rows list each root before its folders", () => {
+  assert.deepEqual(testingSettingsLocationOf({ repoRoot: "/r/repo", path: "/r/repo" }), { repoRoot: "/r/repo", subpath: "" });
+  assert.deepEqual(testingSettingsLocationOf({ repoRoot: "/r/repo", path: "/r/repo/apps/web" }), {
+    repoRoot: "/r/repo",
+    subpath: "apps/web",
+  });
+  assert.equal(testingSettingsLocationOf({ repoRoot: "/r/repo", path: "/r/repo-old/apps" }), null);
+
+  const locations = new Map<string, TestingSettingsLocation | null>([
+    ["/r/repo", { repoRoot: "/r/repo", subpath: "" }],
+    ["/r/repo/apps/web", { repoRoot: "/r/repo", subpath: "apps/web" }],
+    ["/r/repo/apps/api", { repoRoot: "/r/repo", subpath: "apps/api" }],
+    ["/r/repo-old", { repoRoot: "/r/repo-old", subpath: "" }],
+    ["/r/gone", null],
+  ]);
+  // Plain path order would put /r/repo-old between /r/repo and its folders.
+  assert.deepEqual(
+    testingSettingsRowOrder(["/r/repo/apps/web", "/r/repo-old", "/r/gone", "/r/repo", "/r/repo/apps/api", "/r/repo"], locations),
+    ["/r/gone", "/r/repo", "/r/repo/apps/api", "/r/repo/apps/web", "/r/repo-old"],
+  );
+});
+
+test("a subdirectory row's globs are relative to it, and Inherit takes a key from the root", () => {
+  assert.deepEqual(testingSettingsRowScope({ repoRoot: "/r", subpath: "apps/web" }), {
+    globsRelativeTo: "apps/web",
+    inheritFrom: "the repository root's settings",
+  });
+  assert.deepEqual(testingSettingsRowScope({ repoRoot: "/r", subpath: "" }), {
+    globsRelativeTo: "the repository",
+    inheritFrom: "the committed file or the default",
+  });
+  assert.deepEqual(testingSettingsRowScope(null), testingSettingsRowScope({ repoRoot: "/r", subpath: "" }));
+  const html = renderToStaticMarkup(createElement(TestingSettingsSection, {
+    overrideRoots: [],
+    repos: [],
+    onDirtyChange: () => {},
+  }));
+  assert.match(html, /its globs are relative to the\s+folder, and a key left to Inherit comes from the repository root/);
 });

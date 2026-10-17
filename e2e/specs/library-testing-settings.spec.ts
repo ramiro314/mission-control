@@ -226,7 +226,7 @@ test("a repository's root testing settings are edited in Library and run the gat
   await shoot(dashboard, "run-detail-settings-sources");
 });
 
-test("a repository with no override is added to Testing settings by its root, never by a folder inside it", async ({
+test("a repository with no override is added to Testing settings by its root, and a folder inside it adds its own row", async ({
   dashboard,
   daemon,
 }) => {
@@ -238,16 +238,13 @@ test("a repository with no override is added to Testing settings by its root, ne
   await expect(rows).toHaveCount(0);
   expect(await api<TestingSettingsView[]>(daemon, "/api/testing-settings")).toEqual([]);
 
-  const box = section.getByRole("combobox", { name: "Add a repository" });
-  const add = section.getByRole("button", { name: "Add repository" });
+  const box = section.getByRole("combobox", { name: "Add a repository or folder" });
+  const add = section.getByRole("button", { name: "Add row" });
 
-  // A folder inside the repository is refused in words, and adds no row.
-  const nested = join(daemon.repo, "packages", "web");
-  mkdirSync(nested, { recursive: true });
-  await box.fill(nested);
+  // A path that is not in any repository is refused in words, and adds no row.
+  await box.fill(join(daemon.repo, "..", "not-a-repository-anywhere"));
   await add.click();
-  await expect(section.getByRole("alert")).toContainText("Testing settings are stored for a repository root");
-  await expect(section.getByRole("alert")).toContainText(basename(daemon.repo));
+  await expect(section.getByRole("alert")).toContainText("not a git repository");
   await expect(rows).toHaveCount(0);
 
   // The repository itself adds one row, under its canonical root, with nothing stored yet.
@@ -304,4 +301,121 @@ test("a repository with no override is added to Testing settings by its root, ne
   await expect(reloaded).toContainText("Stored revision 3");
   const [inherited] = await api<TestingSettingsView[]>(daemon, "/api/testing-settings");
   expect(inherited!.settings).toEqual({ tests: { patterns: ["test/**/*.test.ts"], includeImporters: false } });
+});
+
+/** Commit a small monorepo app and nothing else: no `.mission/testing.json` anywhere. */
+function commitMonorepoApp(repo: string): void {
+  const files: Record<string, string> = {
+    "apps/web/src/a.test.ts": "export {};\n",
+    "apps/web/smoke/web.smoke.ts": "export {};\n",
+    // Matches the root's smoke glob below, but the app's own smoke set replaces it inside apps/web.
+    "apps/web/root-smoke.test.ts": "export {};\n",
+    "tools/root-smoke.test.ts": "export {};\n",
+  };
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(repo, path, ".."), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  git("add", "-A");
+  git("-c", "user.name=e2e", "-c", "user.email=e2e@example.com", "commit", "-qm", "monorepo app");
+  git("push", "-q", "origin", "main");
+}
+
+test("a subdirectory's testing settings are edited in Library and shape the gate's selection", async ({
+  dashboard,
+  daemon,
+}) => {
+  commitMonorepoApp(daemon.repo);
+  const sessionId = await dispatch(dashboard, daemon);
+  const command = ["sh", "-c", RUNNER, "sh", "{junit}", "{files}"];
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    checksEnabled: true,
+    repoAllowlist: [daemon.repo],
+    kindWorkflowDefaults: { ship: null },
+    checkCommands: [
+      { repoRoot: daemon.repo, slot: "affected-tests", command },
+      // A subdirectory override lists its folder's row with nothing stored.
+      { repoRoot: join(daemon.repo, "tools"), slot: "affected-tests", command },
+    ],
+  }, "PUT");
+
+  // The root's row, stored through the API: a smoke glob for every `root-smoke.test.ts`.
+  const rootPath = (await api<{ repoRoot: string }>(daemon, "/api/repos/resolve", { path: daemon.repo })).repoRoot;
+  await api(daemon, "/api/testing-settings", {
+    repoRoot: rootPath,
+    expectedRevision: 0,
+    settings: { tests: { smokeSet: ["**/root-smoke.test.ts"] } },
+  }, "PUT");
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/affected-tests`);
+  const section = dashboard.getByRole("region", { name: "Testing settings" });
+  await expect(section).toContainText("its globs are relative to the folder");
+  const rows = section.getByRole("group", { name: /^Testing settings for / });
+  await expect(rows).toHaveCount(2);
+  const tools = section.getByRole("group", { name: /^Testing settings for .*\/tools$/ });
+  await expect(tools).toContainText("Nothing stored yet");
+  await expect(tools).toContainText("Applies to files inside tools");
+
+  // The operator adds the app's folder: a row of its own, below the root's, nothing stored yet.
+  await section.getByRole("combobox", { name: "Add a repository or folder" }).fill(join(daemon.repo, "apps", "web"));
+  await section.getByRole("button", { name: "Add row" }).click();
+  await expect(rows).toHaveCount(3);
+  const app = section.getByRole("group", { name: /^Testing settings for .*\/apps\/web$/ });
+  await expect(app).toBeVisible();
+  await expect(rows.nth(1)).toHaveAccessibleName(/\/apps\/web$/);
+  await expect(app).toContainText("Nothing stored yet");
+  await expect(app).toContainText("Applies to files inside apps/web");
+  await expect(app).toContainText("relative to apps/web");
+
+  // Its globs are typed relative to the folder.
+  await app.getByLabel("Test patterns").fill("src/**/*.test.ts");
+  await app.getByLabel("Smoke set").fill("smoke/*.ts");
+  await app.getByRole("button", { name: "Save testing settings" }).click();
+  await expect(app).toContainText("Stored revision 1");
+  const stored = await api<TestingSettingsView[]>(daemon, "/api/testing-settings");
+  const appRow = stored.find((view) => view.repoRoot === `${rootPath}/apps/web`);
+  expect(appRow?.settings).toEqual({ tests: { patterns: ["src/**/*.test.ts"], smokeSet: ["smoke/*.ts"] } });
+  await shoot(dashboard, "testing-settings-subdirectory-row");
+
+  // A reload lists both rows again, the folder's with what it stored.
+  await dashboard.reload();
+  await expect(rows).toHaveCount(3);
+  await expect(app.getByLabel("Patterns come from")).toHaveValue("set");
+  await expect(app.getByLabel("Smoke set")).toHaveValue("smoke/*.ts");
+  await expect(app.getByLabel("Include importers")).toHaveValue("inherit");
+
+  // The gate: nothing changed, so the smoke sets decide. Inside apps/web the app's own smoke set
+  // replaces the root's, so apps/web/root-smoke.test.ts is NOT selected while tools' one is.
+  const runId = await submitRun(daemon, sessionId);
+  const run = await api<{ attempts: Array<{ nodeId: string; output: unknown }> }>(daemon, `/api/workflow-runs/${runId}`);
+  const outcome = run.attempts.find((attempt) => attempt.nodeId === "affected")!.output as {
+    affected: {
+      selected: Array<{ path: string; reason: string }>;
+      settings: { scopes: Array<{ path: string; sources: Array<{ key: string; layer: string; scope: string | null }> }> };
+      diagnostics: string[];
+    };
+  };
+  expect(outcome.affected.selected).toEqual([
+    { path: "apps/web/smoke/web.smoke.ts", reason: "smoke" },
+    { path: "tools/root-smoke.test.ts", reason: "smoke" },
+  ]);
+  expect(outcome.affected.settings.scopes.map((scope) => scope.path)).toEqual(["apps/web"]);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const card = dashboard.locator("article.wf-run-check").filter({ hasText: "Command · affected-tests" });
+  if (!(await card.isVisible())) {
+    await dashboard.getByRole("button", { name: /^Passed \d+$/ }).first().click();
+    await dashboard.locator("button.wf-run-worklist-row.is-check").first().click();
+  }
+  await expect(card).toBeVisible({ timeout: 40_000 });
+  await expect(card.getByRole("list", { name: "Selected tests" })).toContainText("apps/web/smoke/web.smoke.ts");
+  await expect(card.getByRole("list", { name: "Selected tests" })).not.toContainText("apps/web/root-smoke.test.ts");
+  await expect(card.getByRole("list", { name: "Testing scopes" })).toContainText(
+    "apps/web: tests.patterns stored (apps/web), tests.includeImporters default, tests.smokeSet stored (apps/web)",
+  );
+  await expect(card.getByRole("list", { name: "Selection notes" })).toContainText("are not resolved yet");
+  await card.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "run-detail-testing-scopes");
 });

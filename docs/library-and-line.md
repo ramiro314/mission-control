@@ -85,11 +85,16 @@ rather than silently overwriting your unsaved typing. Commands are stored as arg
 shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
 toggle, and the editor shows the exact split under every rule before you save.
 
-The `affected-tests` page adds a **Testing settings** section below the rules: one row per
-repository root, editing the root's stored `tests.patterns`, `tests.includeImporters` and
-`tests.smokeSet` for a repository that does not commit `.mission/testing.json`. Each row saves on
-its own, under its own revision, never with the Command. See
-[testing settings](workflows.md#testing-settings) for how the layers merge.
+The `affected-tests` page adds a **Testing settings** section below the rules, for a repository
+that does not commit `.mission/testing.json`. It has one row per path that has stored settings or
+an `affected-tests` override, each repository root and each folder inside a repository (such as
+one app of a monorepo), and **Add a repository or folder** adds a row for any other. Each row edits
+the stored `tests.patterns`, `tests.includeImporters` and `tests.smokeSet`. A folder's globs are
+relative to it and its unset keys come from the root. A folder inside a nested repository or
+submodule belongs to that repository, not this one. Each row saves on its own, under its own
+revision, never with the Command. See
+[testing settings](workflows.md#testing-settings) for how the layers merge, and
+[subdirectory scopes](workflows.md#subdirectory-scopes) for folders.
 
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
