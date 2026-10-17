@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { dirname, join } from "node:path";
 import {
   WorkflowCheckOutcomeSchema,
@@ -16,8 +18,9 @@ import {
 import { CheckRuntime } from "../src/server/workflows/check-runtime.ts";
 import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { CheckSpawnOutcome, SupervisedCheckRequest } from "../src/server/workflows/check-supervisor.ts";
-import { runCheck, type CheckRunReservation } from "../src/server/workflows/checks.ts";
+import { runCheck, type CheckResult, type CheckRunReservation } from "../src/server/workflows/checks.ts";
 import { checkVerdict } from "../src/server/workflows/engine.ts";
+import { AffectedTestsDetails } from "../src/web/workflows/WorkflowRuns.tsx";
 import type { StoredTestingLayer, StoredTestingSettings } from "../src/shared/testing-config.ts";
 import {
   MONOREPO_CHANGED,
@@ -51,7 +54,12 @@ function junit(root: string, cases: { file: string; name: string; failure?: stri
 }
 
 type Run = { argv: string[]; files: string[]; workingSubpath: string; junit: string };
-type Answer = { exitCode: number; xml?: string };
+type Answer = {
+  exitCode: number;
+  xml?: string;
+  /** What the supervisor reports instead of an ordinary exit: a timeout, or a group left running. */
+  abnormal?: Pick<CheckSpawnOutcome, "result" | "emptiness">;
+};
 
 function harness(options: {
   root: string;
@@ -80,13 +88,14 @@ function harness(options: {
   const runs: Run[] = [];
   let released = 0;
   let reserved = 0;
+  let handedOff = 0;
   const leases = {
     acquireForAttempt: async () => options.root,
     releaseForAttempt: async () => {
       released++;
       return { outcome: "returned" };
     },
-    handOffForReclaim: () => {},
+    handOffForReclaim: () => { handedOff++; },
     unresolvedLeaseForNode: () => false,
     processes: { record: () => {}, clear: () => {} },
   } as unknown as CheckLeaseManager;
@@ -102,6 +111,7 @@ function harness(options: {
     runs.push(run);
     if (answer.xml !== undefined) writeFileSync(junitPath, answer.xml);
     options.onSpawn?.(false);
+    if (answer.abnormal) return { ...answer.abnormal, supervisor: null };
     return {
       result: { kind: "exited", exitCode: answer.exitCode, output: `run ${runs.length}\n`, truncatedBytes: 0 },
       emptiness: "empty",
@@ -122,33 +132,42 @@ function harness(options: {
       : []),
   });
   const execute = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
+  const run = (): Promise<CheckResult> => runCheck({
+    slot: "affected-tests",
+    command: {
+      ...emptyWorkflowCommandView("affected-tests"),
+      defaultCommand: options.defaultCommand !== undefined ? options.defaultCommand : options.template ?? TEMPLATE,
+      ...(options.overrides ? { overrides: options.overrides } : {}),
+    },
+    policy: { checksEnabled: true, repoAllowlist: [options.root] },
+    reserveRun: options.reserve || options.budget
+      ? () => {
+        reserved++;
+        return options.reserve ? options.reserve() : { granted: true, spent: 0 };
+      }
+      : null,
+    releaseRun: options.budget ? () => { options.budget!.released++; } : undefined,
+    cwd: options.sessionSubpath ? join(options.root, options.sessionSubpath) : options.root,
+    repoRoot: options.root,
+    headSha: "a".repeat(40),
+  }, { execute, checkoutSubpath: async () => options.sessionSubpath ?? "" });
   const check = async (): Promise<WorkflowCheckOutcome> => {
-    const result = await runCheck({
-      slot: "affected-tests",
-      command: {
-        ...emptyWorkflowCommandView("affected-tests"),
-        defaultCommand: options.defaultCommand !== undefined ? options.defaultCommand : options.template ?? TEMPLATE,
-        ...(options.overrides ? { overrides: options.overrides } : {}),
-      },
-      policy: { checksEnabled: true, repoAllowlist: [options.root] },
-      reserveRun: options.reserve || options.budget
-        ? () => {
-          reserved++;
-          return options.reserve ? options.reserve() : { granted: true, spent: 0 };
-        }
-        : null,
-      releaseRun: options.budget ? () => { options.budget!.released++; } : undefined,
-      cwd: options.sessionSubpath ? join(options.root, options.sessionSubpath) : options.root,
-      repoRoot: options.root,
-      headSha: "a".repeat(40),
-    }, { execute, checkoutSubpath: async () => options.sessionSubpath ?? "" });
+    const result = await run();
     assert.equal(result.kind, "outcome", JSON.stringify(result));
     if (result.kind !== "outcome") throw new Error("unreachable");
     // Whatever was recorded must read back through the durable schema unchanged.
     assert.deepEqual(WorkflowCheckOutcomeSchema.parse(result.outcome), result.outcome);
     return result.outcome;
   };
-  return { runs, check, released: () => released, reserved: () => reserved, budget: options.budget };
+  return {
+    runs,
+    check,
+    run,
+    released: () => released,
+    reserved: () => reserved,
+    handedOff: () => handedOff,
+    budget: options.budget,
+  };
 }
 
 const CONFIG = { tests: { patterns: ["test/*.test.ts"], smokeSet: ["test/smoke.test.ts"] } };
@@ -538,6 +557,132 @@ test("one gate attempt spends one run of a capped budget however many partitions
   assert.equal(outcome.status, "budget_spent");
   assert.equal(spent, 1);
 });
+
+test("a partition that times out ends the gate there, unrun partitions after it, with the supervisor's answer kept", async () => {
+  const budget = { released: 0 };
+  const timedOut = "the affected-tests command timed out after 600000 ms";
+  const h = monorepoHarness({
+    budget,
+    // The second partition, apps/api, times out. Its group was torn down and proven empty.
+    answer: (run) => run.workingSubpath === "apps/api"
+      ? { exitCode: 0, abnormal: { result: { kind: "infrastructure", reason: timedOut }, emptiness: "empty" } }
+      : { exitCode: 0 },
+  });
+  const result = await h.run();
+  // apps/web, which would have run third, was never spawned.
+  assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["", "apps/api"]);
+  // The supervisor's own outcome, not a verdict built from the partitions that did finish.
+  assert.deepEqual(result, { kind: "infrastructure", reason: timedOut });
+  // A proven-empty group hands the tree back; a command did run, so the budget stays spent.
+  assert.equal(h.released(), 1);
+  assert.equal(h.handedOff(), 0);
+  assert.equal(h.reserved(), 1);
+  assert.equal(budget.released, 0);
+});
+
+test("a rerun that leaves its process group running ends the gate before the next partition", async () => {
+  let root = "";
+  const h = monorepoHarness({
+    answer: (run, index) => {
+      if (run.workingSubpath !== "apps/api") return { exitCode: 0 };
+      // The api app fails once, then its rerun exits 0 with a child still in the group.
+      if (index === 1) {
+        return { exitCode: 1, xml: junit(join(root, "apps/api"), [{ file: "lib/c.spec.ts", name: "c", failure: "boom" }]) };
+      }
+      return {
+        exitCode: 0,
+        abnormal: { result: { kind: "exited", exitCode: 0, output: "rerun\n", truncatedBytes: 0 }, emptiness: "not-empty" },
+      };
+    },
+  });
+  root = h.root;
+  const result = await h.run();
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.files]), [
+    ["", ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]],
+    ["apps/api", ["lib/c.spec.ts", "smoke.spec.ts"]],
+    ["apps/api", ["lib/c.spec.ts"]],
+  ]);
+  assert.equal(result.kind, "infrastructure");
+  if (result.kind !== "infrastructure") return;
+  // The rerun's own exit is what the reason carries, and the tree is kept for reclamation.
+  assert.match(result.reason, /ran and exited 0, but that result is not reported/);
+  assert.match(result.reason, /could not be proven empty \(not-empty\)/);
+  assert.equal(h.handedOff(), 1);
+  assert.equal(h.released(), 0);
+});
+
+/**
+ * A repository of `count` one-test folders. `covered` gives each folder its own override; otherwise
+ * only `run/` has one, so every folder's test is selected but unrun. No global default either way.
+ */
+function capHarness(count: number, covered: boolean) {
+  const root = tree({ tests: { patterns: ["**/*.test.ts"], includeImporters: false } });
+  const folders = Array.from({ length: count }, (_, index) => `pkg/p${String(index).padStart(2, "0")}`);
+  const files = [...folders.map((folder) => `${folder}/a.test.ts`), ...(covered ? [] : ["run/a.test.ts"])];
+  for (const file of files) {
+    mkdirSync(join(root, dirname(file)), { recursive: true });
+    writeFileSync(join(root, file), "export {};\n");
+  }
+  const overrides = (covered ? folders : ["run"]).map((folder) => ({ repoRoot: join(root, folder), command: TEMPLATE }));
+  return harness({
+    root,
+    changed: files,
+    tracked: files,
+    overrides,
+    defaultCommand: null,
+    answer: () => ({ exitCode: 0 }),
+  });
+}
+
+/** One section of the rendered card: from its heading to the next of `ends`, or the end. */
+function section(html: string, heading: string, ends: string[]): string {
+  const start = html.indexOf(heading);
+  assert.ok(start >= 0, `${heading} is rendered`);
+  const stops = ends.map((end) => html.indexOf(end, start + heading.length)).filter((at) => at >= 0);
+  return html.slice(start, stops.length === 0 ? html.length : Math.min(...stops));
+}
+
+for (const count of [AFFECTED_TESTS_LIMITS.partitions, AFFECTED_TESTS_LIMITS.partitions + 1]) {
+  test(`${count} partitions record at most the cap, keep the full count, and run detail counts the rest`, async () => {
+    const h = capHarness(count, true);
+    const outcome = await h.check();
+    assert.equal(outcome.status, "passed", outcome.note);
+    // Every partition RAN; only the record is capped.
+    assert.equal(h.runs.length, count);
+    const partitions = outcome.affected!.partitions!;
+    assert.equal(partitions.length, AFFECTED_TESTS_LIMITS.partitions);
+    assert.equal(outcome.affected!.partitionCount, count);
+    assert.deepEqual(partitions.map((partition) => partition.subpath), h.runs.slice(0, AFFECTED_TESTS_LIMITS.partitions).map((run) => run.workingSubpath));
+
+    const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: outcome.affected! }));
+    const listed = section(html, `Partitions (${count})`, ["Selected but unrun", "Settings:"]);
+    assert.equal(listed.match(/aria-label="Partition /g)?.length, AFFECTED_TESTS_LIMITS.partitions);
+    const unlisted = count - AFFECTED_TESTS_LIMITS.partitions;
+    if (unlisted > 0) assert.match(listed, new RegExp(`${unlisted} more partitions are not listed here\\.`));
+    else assert.doesNotMatch(listed, /more partitions are not listed/);
+  });
+
+  test(`${count} selected-but-unrun tests record at most the cap, keep the full count, and run detail counts the rest`, async () => {
+    const h = capHarness(count, false);
+    const outcome = await h.check();
+    // The one covered test ran and passed; the gate decided on it.
+    assert.equal(outcome.status, "passed", outcome.note);
+    assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["run"]);
+    const unrun = outcome.affected!.unrun!;
+    assert.equal(unrun.length, AFFECTED_TESTS_LIMITS.unrunShown);
+    assert.equal(outcome.affected!.unrunCount, count);
+    assert.equal(unrun[0], "pkg/p00/a.test.ts");
+    assert.equal(unrun.at(-1), `pkg/p${AFFECTED_TESTS_LIMITS.unrunShown - 1}/a.test.ts`);
+    assert.match(outcome.note, new RegExp(`${count} selected test files were not run`));
+
+    const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: outcome.affected! }));
+    const listed = section(html, `Selected but unrun (${count})`, ["Settings:"]);
+    assert.equal(listed.match(/<li><code>/g)?.length, AFFECTED_TESTS_LIMITS.unrunShown);
+    const unlisted = count - AFFECTED_TESTS_LIMITS.unrunShown;
+    if (unlisted > 0) assert.match(listed, new RegExp(`${unlisted} more are not listed here`));
+    else assert.doesNotMatch(listed, /more are not listed here/);
+  });
+}
 
 test("a single partition reads exactly as the one invocation it always was", async () => {
   const root = tree(CONFIG);
