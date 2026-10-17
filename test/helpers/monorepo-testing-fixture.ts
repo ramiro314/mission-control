@@ -32,7 +32,7 @@ export const MONOREPO_FILES: Record<string, string> = {
   "tools/root.test.ts": "export {};\n",
   "tools/root-smoke.test.ts": "export {};\n",
   "apps/web/package.json": JSON.stringify({ name: "web" }),
-  // A per-app alias. Not read yet: only the root tsconfig.json is, and there is none.
+  // A per-app alias, read because it is the nearest config to the app's files. There is no root one.
   "apps/web/tsconfig.json": JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@web/*": ["src/*"] } } }),
   "apps/web/src/util.ts": "export const u = 1;\n",
   "apps/web/src/a.test.ts": "import { u } from \"./util.ts\";\n",
@@ -95,5 +95,7 @@ export const MONOREPO_SELECTED = [
   { path: "apps/web/smoke/web.smoke.ts", reason: "smoke" },
   // Imports a changed file, through a relative specifier.
   { path: "apps/web/src/a.test.ts", reason: "imports", via: "apps/web/src/util.ts" },
+  // Imports the same file through the web app's own `@web/*` alias.
+  { path: "apps/web/src/alias.test.ts", reason: "imports", via: "apps/web/src/util.ts" },
   { path: "tools/root-smoke.test.ts", reason: "smoke" },
 ] as const;

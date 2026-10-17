@@ -1,5 +1,5 @@
-import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { join, matchesGlob, normalize, posix } from "node:path";
+import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { join, matchesGlob, normalize, posix, sep } from "node:path";
 import {
   testingScopeOf,
   testingScopeRelativePath,
@@ -23,9 +23,14 @@ import { run } from "./util/exec.ts";
 //
 // "Changed" is measured from the merge base with the default branch, or with `origin/<base>` for
 // a task that names a base branch - the same base the session diff uses (`changedPathsSince`).
-// The scanner is deliberately conservative: an import it cannot resolve (a package, a computed
-// specifier) is ignored, and a type-only import counts as a dependency, because running one test
-// too many costs seconds while missing one costs a broken merge.
+// The scanner is deliberately conservative: an import it cannot resolve (a third-party package, a
+// computed specifier) is ignored, and a type-only import counts as a dependency, because running
+// one test too many costs seconds while missing one costs a broken merge.
+//
+// A non-relative specifier resolves the way the importer's own app sees it (`ImportResolver`):
+// through the `paths` and `baseUrl` of the nearest tsconfig.json or jsconfig.json at or above the
+// importer, with its `extends` followed, and then through the root workspaces' package names.
+// Nothing resolves outside the tree.
 
 export type TestSelection =
   | {
@@ -37,16 +42,6 @@ export type TestSelection =
   }
   | { ok: false; reason: string };
 
-/**
- * Said whenever a repository has subdirectory scopes and imports are followed: import scanning
- * still resolves aliases through the root `tsconfig.json` only, so in a monorepo an import
- * written through an app's own alias or a workspace package name selects nothing yet.
- */
-export const PER_APP_ALIASES_UNRESOLVED =
-  "Imports were resolved through relative paths and the root tsconfig.json's paths only. "
-  + "Aliases from a subdirectory's own tsconfig.json or jsconfig.json, and workspace package names, "
-  + "are not resolved yet, so a test that reaches a changed file only through one was not selected by its imports.";
-
 export interface TestSelectionDeps {
   /** Defaults to `changedPathsSince`. */
   changedPaths?: (treeRoot: string, baseBranch: string | null) => Promise<ChangedPathsResult>;
@@ -54,6 +49,11 @@ export interface TestSelectionDeps {
   deletedPaths?: (treeRoot: string, baseBranch: string | null) => Promise<ChangedPathsResult>;
   /** Defaults to `git ls-files`. Repository-relative, forward slashes. */
   trackedFiles?: (treeRoot: string) => Promise<string[] | null>;
+  /**
+   * Reads a scanned source, config or manifest by absolute path; null when it cannot be read.
+   * Defaults to reading the file, skipping one over 1 MiB.
+   */
+  readFile?: (abs: string) => string | null;
 }
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -148,7 +148,71 @@ interface PathAlias {
   suffix: string;
   /** False for a key with no `*`, which names exactly one specifier. */
   wildcard: boolean;
+  /** Repository-relative. Every `*` in a target is replaced by what the key's `*` matched. */
   targets: string[];
+}
+
+/** What a config chain sets, before the directory of the config that uses it is known. */
+interface ConfigOptions {
+  /** Repository-relative, or still starting with `${configDir}`. */
+  baseUrl?: string;
+  /** The raw `paths` entries, and the directory of the config that set them. */
+  paths?: { entries: Array<[string, unknown]>; dir: string };
+}
+
+/** How one importer's nearest config resolves non-relative specifiers. */
+interface ResolvedConfig {
+  /** Exact keys first, then wildcards by longest prefix: the order TypeScript tries them. */
+  aliases: PathAlias[];
+  /** Repository-relative, or null when no config in the chain sets one. */
+  baseUrl: string | null;
+}
+
+interface WorkspacePackage {
+  dir: string;
+  manifest: Record<string, unknown>;
+}
+
+/** Looked for in each directory, in this order, as TypeScript's language service does. */
+const CONFIG_NAMES = ["tsconfig.json", "jsconfig.json"] as const;
+const CONFIG_DIR = "${configDir}";
+
+/** `dir/name`, where the repository root is "". */
+function child(dir: string, name: string): string {
+  return dir === "" ? name : `${dir}/${name}`;
+}
+
+function parentOf(path: string): string {
+  const dir = posix.dirname(path);
+  return dir === "." ? "" : dir;
+}
+
+/** A repository-relative join: "" for the root, and `../…` for an escape, which is refused later. */
+function joinRelative(dir: string, path: string): string {
+  const joined = posix.normalize(posix.join(dir === "" ? "." : dir, path)).replace(/\/$/, "");
+  return joined === "." ? "" : joined;
+}
+
+function escapesTree(path: string): boolean {
+  return path === ".." || path.startsWith("../") || posix.isAbsolute(path);
+}
+
+/** The package a bare specifier names, and the subpath inside it ("" for none). */
+function splitPackageSpecifier(specifier: string): { name: string; sub: string } | null {
+  const parts = specifier.split("/");
+  const count = specifier.startsWith("@") ? 2 : 1;
+  if (parts.length < count || parts.slice(0, count).some((part) => part === "")) return null;
+  return { name: parts.slice(0, count).join("/"), sub: parts.slice(count).join("/") };
+}
+
+/** A workspace's top-level `exports` when it is a string, null when absent, "rich" for any map or list. */
+function exportsTarget(exports: unknown): string | null | "rich" {
+  if (exports === undefined || exports === null) return null;
+  return typeof exports === "string" ? exports : "rich";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Strip `//` and `/* *\/` comments and trailing commas, so a tsconfig parses as JSON. */
@@ -174,72 +238,389 @@ function parseJsonc(text: string): unknown {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
 }
 
-/** `compilerOptions.paths` from the repository's root `tsconfig.json`, as repo-relative targets. */
-export function readPathAliases(treeRoot: string): PathAlias[] {
-  const text = readSource(join(treeRoot, "tsconfig.json"));
-  if (text === null) return [];
-  let config: unknown;
-  try {
-    config = parseJsonc(text);
-  } catch {
-    return [];
-  }
-  const options = (config as { compilerOptions?: { baseUrl?: unknown; paths?: unknown } })?.compilerOptions;
-  if (!options || typeof options.paths !== "object" || options.paths === null) return [];
-  const baseUrl = typeof options.baseUrl === "string" ? options.baseUrl : ".";
-  const aliases: PathAlias[] = [];
-  for (const [key, value] of Object.entries(options.paths as Record<string, unknown>)) {
-    if (!Array.isArray(value)) continue;
-    const star = key.indexOf("*");
-    const targets = value
-      .filter((target): target is string => typeof target === "string")
-      .map((target) => posix.normalize(posix.join(baseUrl, target)));
-    aliases.push(star === -1
-      ? { prefix: key, suffix: "", wildcard: false, targets }
-      : { prefix: key.slice(0, star), suffix: key.slice(star + 1), wildcard: true, targets });
-  }
-  return aliases;
+function isString(value: unknown): value is string {
+  return typeof value === "string";
 }
 
+/**
+ * Resolves the specifiers one gate's scan finds, the way each importer's own app resolves them:
+ *
+ *  - a relative specifier, from the importer's directory;
+ *  - otherwise the `paths`, then the `baseUrl`, of the nearest tsconfig.json or jsconfig.json at or
+ *    above the importer (tsconfig.json first in each directory), stopping at the tree root, with
+ *    its `extends` chain applied: relative, or a package found as a workspace or in a
+ *    `node_modules` inside the tree. Each `baseUrl`, and each `paths` without one, is relative to
+ *    the config that set it, and `${configDir}` is the directory of the config in use;
+ *  - otherwise a workspace package name from the root `package.json`'s `workspaces`.
+ *
+ * Every candidate keeps today's extension and JS-to-TS swaps, and nothing resolves outside the
+ * tree. One resolver serves one gate, so each config and manifest is parsed at most once; what it
+ * could not follow is collected in `diagnostics`, never thrown.
+ */
 class ImportResolver {
+  readonly diagnostics = new Set<string>();
+  /** Nearest config, by directory. */
+  private readonly nearest = new Map<string, ResolvedConfig | null>();
+  /** By config path. */
+  private readonly resolvedConfigs = new Map<string, ResolvedConfig | null>();
+  /** By config path: what it sets with its `extends` applied, or null when it cannot be read. */
+  private readonly options = new Map<string, ConfigOptions | null>();
+  /** By package directory. */
+  private readonly manifests = new Map<string, Record<string, unknown> | null>();
+  private workspaces: Map<string, WorkspacePackage> | null = null;
+  private realRoot: string | null | undefined;
+  /** By repository-relative path: whether it exists with its real location inside the tree. */
+  private readonly insideCache = new Map<string, boolean>();
+
   constructor(
+    private readonly treeRoot: string,
+    /** Every file a specifier may resolve to: the tracked files and the ones the change deleted. */
     private readonly files: ReadonlySet<string>,
-    private readonly aliases: readonly PathAlias[],
+    /** The tracked files still present, where configs and workspace manifests are looked for. */
+    private readonly present: ReadonlySet<string>,
+    /** How every file this gate scans, and every config and manifest it parses, is read. */
+    readonly readFile: (abs: string) => string | null = readSource,
   ) {}
 
   /** The repository-relative file `specifier` names from `importer`, or null. */
   resolve(importer: string, specifier: string): string | null {
     if (specifier.startsWith("./") || specifier.startsWith("../")) {
-      return this.resolveFile(posix.normalize(posix.join(posix.dirname(importer), specifier)));
+      return this.resolveFile(joinRelative(parentOf(importer), specifier));
     }
-    for (const alias of this.aliases) {
-      if (!alias.wildcard && specifier !== alias.prefix) continue;
-      if (!specifier.startsWith(alias.prefix) || !specifier.endsWith(alias.suffix)) continue;
-      const middle = specifier.slice(alias.prefix.length, specifier.length - alias.suffix.length);
-      for (const target of alias.targets) {
-        const resolved = this.resolveFile(target.replace("*", middle));
+    if (specifier === "" || specifier === "." || specifier === ".." || posix.isAbsolute(specifier)) return null;
+    const config = this.configFor(parentOf(importer));
+    if (config) {
+      for (const alias of config.aliases) {
+        const matches = alias.wildcard
+          ? specifier.length >= alias.prefix.length + alias.suffix.length
+            && specifier.startsWith(alias.prefix) && specifier.endsWith(alias.suffix)
+          : specifier === alias.prefix;
+        if (!matches) continue;
+        const middle = specifier.slice(alias.prefix.length, specifier.length - alias.suffix.length);
+        for (const target of alias.targets) {
+          // split/join, not replaceAll: the capture is inserted literally, `$&` and all.
+          const resolved = this.resolveFile(alias.wildcard ? target.split("*").join(middle) : target);
+          if (resolved) return resolved;
+        }
+      }
+      if (config.baseUrl !== null) {
+        const resolved = this.resolveFile(joinRelative(config.baseUrl, specifier));
         if (resolved) return resolved;
       }
+    }
+    return this.resolveWorkspace(specifier);
+  }
+
+  private resolveFile(path: string): string | null {
+    if (posix.isAbsolute(path)) return null;
+    const candidate = joinRelative("", path);
+    if (escapesTree(candidate)) return null;
+    if (candidate !== "") {
+      if (this.has(candidate)) return candidate;
+      for (const ext of SOURCE_EXTENSIONS) {
+        if (this.has(candidate + ext)) return candidate + ext;
+      }
+      const dot = candidate.lastIndexOf(".");
+      const ext = dot > candidate.lastIndexOf("/") ? candidate.slice(dot) : "";
+      for (const replacement of JS_TO_TS[ext] ?? []) {
+        const swapped = candidate.slice(0, dot) + replacement;
+        if (this.has(swapped)) return swapped;
+      }
+    }
+    for (const ext of SOURCE_EXTENSIONS) {
+      const index = child(candidate, `index${ext}`);
+      if (this.has(index)) return index;
     }
     return null;
   }
 
-  private resolveFile(candidate: string): string | null {
-    if (candidate.startsWith("../")) return null;
-    if (this.files.has(candidate)) return candidate;
-    for (const ext of SOURCE_EXTENSIONS) {
-      if (this.files.has(candidate + ext)) return candidate + ext;
+  /**
+   * Whether a specifier may resolve to `path`: a file the change deleted (never read, so judged
+   * as spelled), or a present file whose real location is inside the tree. A tracked symlink out
+   * of the tree is refused, as if it were not there.
+   */
+  private has(path: string): boolean {
+    if (!this.files.has(path)) return false;
+    return !this.present.has(path) || this.inside(path);
+  }
+
+  /** A scanned file's source, or null when it cannot be read or its real location is outside the tree. */
+  readScanned(path: string): string | null {
+    return this.inside(path) ? this.readFile(join(this.treeRoot, path)) : null;
+  }
+
+  // ---- tsconfig.json and jsconfig.json ----
+
+  /** The config that governs files in `dir`: the nearest one at or above it, up to the tree root. */
+  private configFor(dir: string): ResolvedConfig | null {
+    const cached = this.nearest.get(dir);
+    if (cached !== undefined) return cached;
+    const own = CONFIG_NAMES.map((name) => child(dir, name)).find((path) => this.present.has(path));
+    const found = own !== undefined ? this.resolvedConfig(own) : dir === "" ? null : this.configFor(parentOf(dir));
+    this.nearest.set(dir, found);
+    return found;
+  }
+
+  private resolvedConfig(path: string): ResolvedConfig | null {
+    const cached = this.resolvedConfigs.get(path);
+    if (cached !== undefined) return cached;
+    const options = this.configOptions(path, []);
+    let resolved: ResolvedConfig | null = null;
+    if (options !== null) {
+      const configDir = parentOf(path);
+      const fromConfigDir = (value: string) => joinRelative(configDir, `.${value.slice(CONFIG_DIR.length)}`);
+      const baseUrl = options.baseUrl === undefined
+        ? null
+        : options.baseUrl.startsWith(CONFIG_DIR) ? fromConfigDir(options.baseUrl) : options.baseUrl;
+      const aliases: PathAlias[] = [];
+      if (options.paths) {
+        const base = baseUrl ?? options.paths.dir;
+        for (const [key, value] of options.paths.entries) {
+          if (!Array.isArray(value)) continue;
+          const targets = value
+            .filter(isString)
+            .map((target) => (target.startsWith(CONFIG_DIR) ? fromConfigDir(target) : joinRelative(base, target)));
+          const star = key.indexOf("*");
+          aliases.push(star === -1
+            ? { prefix: key, suffix: "", wildcard: false, targets }
+            : { prefix: key.slice(0, star), suffix: key.slice(star + 1), wildcard: true, targets });
+        }
+        // A stable sort: exact keys first, then the longest wildcard prefix, as TypeScript matches.
+        aliases.sort((a, b) => Number(a.wildcard) - Number(b.wildcard)
+          || (a.wildcard ? b.prefix.length - a.prefix.length : 0));
+      }
+      resolved = { aliases, baseUrl };
     }
-    const dot = candidate.lastIndexOf(".");
-    const ext = dot > candidate.lastIndexOf("/") ? candidate.slice(dot) : "";
-    for (const replacement of JS_TO_TS[ext] ?? []) {
-      const swapped = candidate.slice(0, dot) + replacement;
-      if (this.files.has(swapped)) return swapped;
+    this.resolvedConfigs.set(path, resolved);
+    return resolved;
+  }
+
+  /** What `path` sets with its `extends` applied: each base in order, then its own options. */
+  private configOptions(path: string, stack: readonly string[]): ConfigOptions | null {
+    const cached = this.options.get(path);
+    if (cached !== undefined) return cached;
+    const config = this.readConfig(path);
+    let merged: ConfigOptions | null = null;
+    if (config !== null) {
+      merged = {};
+      const bases = isString(config.extends)
+        ? [config.extends]
+        : Array.isArray(config.extends) ? config.extends.filter(isString) : [];
+      for (const specifier of bases) {
+        const base = this.extendsTarget(path, specifier);
+        if (base === null) {
+          this.diagnostics.add(`${path} extends "${specifier}", which was not found inside the repository, `
+            + "so its own settings were used without it.");
+          continue;
+        }
+        if (base === path || stack.includes(base)) {
+          this.diagnostics.add(`${path} extends "${specifier}", which extends it back, so that extends was ignored.`);
+          continue;
+        }
+        const inherited = this.configOptions(base, [...stack, path]);
+        if (inherited !== null) merged = { ...merged, ...inherited };
+      }
+      const compilerOptions: Record<string, unknown> = isRecord(config.compilerOptions) ? config.compilerOptions : {};
+      const dir = parentOf(path);
+      if (isString(compilerOptions.baseUrl)) {
+        merged.baseUrl = compilerOptions.baseUrl.startsWith(CONFIG_DIR)
+          ? compilerOptions.baseUrl
+          : joinRelative(dir, compilerOptions.baseUrl);
+      }
+      if (isRecord(compilerOptions.paths)) merged.paths = { entries: Object.entries(compilerOptions.paths), dir };
     }
-    for (const ext of SOURCE_EXTENSIONS) {
-      if (this.files.has(`${candidate}/index${ext}`)) return `${candidate}/index${ext}`;
+    this.options.set(path, merged);
+    return merged;
+  }
+
+  private readConfig(path: string): Record<string, unknown> | null {
+    if (!this.inside(path)) {
+      this.diagnostics.add(`${path} resolves outside the repository, so its paths and baseUrl were not used.`);
+      return null;
+    }
+    const text = this.readFile(join(this.treeRoot, path));
+    try {
+      const parsed = text === null ? null : parseJsonc(text);
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Reported below.
+    }
+    this.diagnostics.add(`${path} could not be read or parsed, so its paths and baseUrl were not used.`);
+    return null;
+  }
+
+  /** The in-tree config file an `extends` entry names, or null when it names none. */
+  private extendsTarget(from: string, specifier: string): string | null {
+    const dir = parentOf(from);
+    const withJson = (path: string) => (path.endsWith(".json") ? [path] : [path, `${path}.json`]);
+    if (specifier === "." || specifier === ".." || specifier.startsWith("./") || specifier.startsWith("../")) {
+      return this.firstFile(withJson(joinRelative(dir, specifier)));
+    }
+    const pkg = posix.isAbsolute(specifier) ? null : splitPackageSpecifier(specifier);
+    if (pkg === null) return null;
+    for (const pkgDir of this.packageDirs(pkg.name, dir)) {
+      let candidates: string[];
+      if (pkg.sub === "") {
+        const field = this.manifestAt(pkgDir)?.tsconfig;
+        candidates = [...(isString(field) ? [joinRelative(pkgDir, field)] : []), child(pkgDir, "tsconfig.json")];
+      } else {
+        const target = joinRelative(pkgDir, pkg.sub);
+        candidates = [...withJson(target), child(target, "tsconfig.json")];
+      }
+      const found = this.firstFile(candidates);
+      if (found !== null) return found;
     }
     return null;
+  }
+
+  /** Where package `name` may live, seen from `dir`: its workspace, then each `node_modules` up to the root. */
+  private packageDirs(name: string, dir: string): string[] {
+    const dirs: string[] = [];
+    const workspace = this.workspaceMap().get(name);
+    if (workspace) dirs.push(workspace.dir);
+    for (let at = dir; ; at = parentOf(at)) {
+      const candidate = child(at, `node_modules/${name}`);
+      if (this.inside(candidate) && isDirectory(join(this.treeRoot, candidate))) dirs.push(candidate);
+      if (at === "") break;
+    }
+    return dirs;
+  }
+
+  private firstFile(candidates: readonly string[]): string | null {
+    return candidates.find((path) => this.inside(path) && isFile(join(this.treeRoot, path))) ?? null;
+  }
+
+  /** Whether `path` exists and stays inside the tree, through symlinks as well as spelled. */
+  private inside(path: string): boolean {
+    const cached = this.insideCache.get(path);
+    if (cached !== undefined) return cached;
+    let result = false;
+    if (!escapesTree(path)) {
+      if (this.realRoot === undefined) {
+        try {
+          this.realRoot = realpathSync(this.treeRoot);
+        } catch {
+          this.realRoot = null;
+        }
+      }
+      if (this.realRoot !== null) {
+        try {
+          const real = realpathSync(join(this.treeRoot, path));
+          result = real === this.realRoot || real.startsWith(this.realRoot + sep);
+        } catch {
+          // Missing: not inside.
+        }
+      }
+    }
+    this.insideCache.set(path, result);
+    return result;
+  }
+
+  // ---- Workspace packages ----
+
+  private manifestAt(dir: string): Record<string, unknown> | null {
+    const cached = this.manifests.get(dir);
+    if (cached !== undefined) return cached;
+    const path = child(dir, "package.json");
+    let manifest: Record<string, unknown> | null = null;
+    // A package with no manifest is normal (a bare tsconfig package); one that will not parse is not.
+    if (this.inside(path) && isFile(join(this.treeRoot, path))) {
+      try {
+        const text = this.readFile(join(this.treeRoot, path));
+        const parsed: unknown = text === null ? null : JSON.parse(text);
+        if (isRecord(parsed)) manifest = parsed;
+      } catch {
+        // Reported below.
+      }
+      if (manifest === null) {
+        this.diagnostics.add(`${path} could not be read or parsed, so the package it describes was not resolved.`);
+      }
+    }
+    this.manifests.set(dir, manifest);
+    return manifest;
+  }
+
+  /**
+   * Each workspace package's name, mapped to its directory: the tracked `package.json` files whose
+   * directories match the root `workspaces` globs (an array, or `{ packages }`), less any `!` glob.
+   */
+  private workspaceMap(): Map<string, WorkspacePackage> {
+    if (this.workspaces) return this.workspaces;
+    const map = new Map<string, WorkspacePackage>();
+    this.workspaces = map;
+    if (!this.present.has("package.json")) return map;
+    const root = this.manifestAt("");
+    const declared = root === null
+      ? []
+      : Array.isArray(root.workspaces)
+        ? root.workspaces
+        : isRecord(root.workspaces) && Array.isArray(root.workspaces.packages) ? root.workspaces.packages : [];
+    const globs = declared
+      .filter(isString)
+      .map((glob) => glob.trim().replace(/^(!?)\.\//, "$1").replace(/\/+$/, ""))
+      .filter((glob) => glob !== "" && glob !== "!");
+    const include = globs.filter((glob) => !glob.startsWith("!"));
+    const exclude = globs.filter((glob) => glob.startsWith("!")).map((glob) => glob.slice(1));
+    if (include.length === 0) return map;
+    const dirs = [...this.present]
+      .filter((file) => file.endsWith("/package.json"))
+      .map(parentOf)
+      .filter((dir) => !dir.split("/").includes("node_modules") && matchesAny(dir, include) && !matchesAny(dir, exclude))
+      .sort();
+    for (const dir of dirs) {
+      const name = this.manifestAt(dir)?.name;
+      if (!isString(name) || name === "") continue;
+      const existing = map.get(name);
+      if (existing) {
+        this.diagnostics.add(`Workspace package "${name}" is declared by both ${existing.dir} and ${dir}; `
+          + `${existing.dir} was used.`);
+        continue;
+      }
+      map.set(name, { dir, manifest: this.manifestAt(dir)! });
+    }
+    return map;
+  }
+
+  /**
+   * A workspace package specifier: `name` through a string `exports`, else `main`, else `index`;
+   * `name/sub` inside the workspace's directory.
+   */
+  private resolveWorkspace(specifier: string): string | null {
+    const pkg = splitPackageSpecifier(specifier);
+    const workspace = pkg === null ? undefined : this.workspaceMap().get(pkg.name);
+    if (pkg === null || workspace === undefined) return null;
+    const exports = exportsTarget(workspace.manifest.exports);
+    if (exports === "rich") {
+      this.diagnostics.add(`Workspace package "${pkg.name}" (${workspace.dir}) has an exports map rather than `
+        + "a single string, which selection does not read, so imports of it were resolved through its main or "
+        + `index file, and its subpaths inside ${workspace.dir}.`);
+    }
+    // A workspace is never the root (its manifest is `<dir>/package.json`), so `dir/` bounds it.
+    const within = (file: string | null) => (file !== null && file.startsWith(`${workspace.dir}/`) ? file : null);
+    if (pkg.sub !== "") return within(this.resolveFile(joinRelative(workspace.dir, pkg.sub)));
+    const manifest = workspace.manifest;
+    const entries = [exports === "rich" ? null : exports, manifest.main].filter(isString);
+    for (const entry of [...entries, "index"]) {
+      const resolved = within(this.resolveFile(joinRelative(workspace.dir, entry)));
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+}
+
+function isFile(abs: string): boolean {
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDirectory(abs: string): boolean {
+  try {
+    return statSync(abs).isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -262,7 +643,7 @@ function testsReachingChanges(
   while (queue.length > 0) {
     const file = queue.pop()!;
     if (!isSource(file)) continue;
-    const source = readSource(join(treeRoot, file));
+    const source = resolver.readScanned(file);
     if (source === null) continue;
     for (const specifier of scanImportSpecifiers(source)) {
       const target = resolver.resolve(file, specifier);
@@ -329,21 +710,20 @@ export async function selectAffectedTests(
   // Only tests whose own scope follows imports are walked from: a scope that turned
   // `includeImporters` off selects its tests by change and smoke set alone.
   const importing = tests.filter((file) => testingScopeOf(scopes, file).tests.includeImporters);
+  const diagnostics: string[] = [];
   if (importing.length > 0 && changed.size > 0) {
-    const resolver = new ImportResolver(new Set([...present, ...deleted]), readPathAliases(treeRoot));
+    // One resolver per gate: each config and manifest is parsed once here, and again next gate.
+    const resolver = new ImportResolver(treeRoot, new Set([...present, ...deleted]), present, deps.readFile);
     const reached = testsReachingChanges(treeRoot, importing, changed, resolver);
     for (const [file, via] of reached) {
       if (!selected.has(file)) selected.set(file, { path: file, reason: "imports", via });
     }
+    diagnostics.push(...[...resolver.diagnostics].sort());
   }
   for (const file of [...present].filter((candidate) => matchesScopeKey(scopes, "tests.smokeSet", candidate)).sort()) {
     if (!selected.has(file)) selected.set(file, { path: file, reason: "smoke" });
   }
   const files = [...selected.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const diagnostics: string[] = [];
-  if (scopes.scopes.length > 1 && scopes.scopes.some((scope) => scope.tests.includeImporters)) {
-    diagnostics.push(PER_APP_ALIASES_UNRESOLVED);
-  }
   return { ok: true, files, changedCount: changed.size, diagnostics };
 }
 
