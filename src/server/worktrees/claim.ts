@@ -448,11 +448,16 @@ export async function runClaimSteps(input: {
   environment: (names: readonly string[]) => Promise<ClaimEnvironment>;
   runStep: (request: ClaimStepRequest) => Promise<ClaimStepResult>;
   now: () => number;
+  /**
+   * When the claim's time runs out. Defaults to the claim's limit from now; a claim that seeded
+   * first passes the deadline it started with, so the seed and the steps share one limit.
+   */
+  deadline?: number;
   /** Told as each step begins, before its environment is built, so a view can say which runs. */
   onStep?: (step: RunningClaimStep) => void;
 }): Promise<ClaimStepsOutcome> {
   const limitMs = input.claim.timeoutMinutes * 60_000;
-  const deadline = input.now() + limitMs;
+  const deadline = input.deadline ?? input.now() + limitMs;
   const stepCount = input.claim.steps.length;
   const timedOut = `timed out at the claim's ${input.claim.timeoutMinutes}-minute limit`;
   for (const [index, step] of input.claim.steps.entries()) {

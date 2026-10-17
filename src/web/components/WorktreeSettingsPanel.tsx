@@ -304,7 +304,12 @@ function DependencyDetail({
       );
     }
     case "interrupted":
-      return <p className="wt-deps-detail">A restart cut off this slot&rsquo;s last claim. Its next claim starts cold.</p>;
+      return (
+        <p className="wt-deps-detail">
+          A restart, or a stop during a seed, cut off this slot&rsquo;s last claim. Its next claim
+          removes the seed paths and starts cold.
+        </p>
+      );
     default: {
       const unreachable: never = dependencies;
       return unreachable;
@@ -669,6 +674,42 @@ function ClaimEditor({
         />
         <FieldErrors id={`${base}-fingerprint-errors`} messages={errors.fingerprintPaths} />
         <p className="wt-claim-note">With no fingerprint paths the claim runs on every lease.</p>
+        <label htmlFor={`${base}-seed-paths`}>Seed paths, one repository-relative glob per line</label>
+        <textarea
+          id={`${base}-seed-paths`}
+          rows={Math.min(8, Math.max(2, draftLines(draft.seedPaths).length + 1))}
+          spellCheck={false}
+          placeholder={"node_modules\napps/*/node_modules"}
+          value={draft.seedPaths}
+          aria-invalid={errors.seedPaths.length > 0 ? true : undefined}
+          aria-describedby={errors.seedPaths.length > 0 ? `${base}-seed-paths-errors` : undefined}
+          onChange={(event) => {
+            setSaved(null);
+            setDraft((current) => ({ ...current, seedPaths: event.target.value }));
+          }}
+        />
+        <FieldErrors id={`${base}-seed-paths-errors`} messages={errors.seedPaths} />
+        <label htmlFor={`${base}-seed-exclude`}>Seed exclusions, one repository-relative glob per line</label>
+        <textarea
+          id={`${base}-seed-exclude`}
+          rows={Math.min(6, Math.max(2, draftLines(draft.seedExclude).length + 1))}
+          spellCheck={false}
+          placeholder="**/node_modules/.cache"
+          value={draft.seedExclude}
+          aria-invalid={errors.seedExclude.length > 0 ? true : undefined}
+          aria-describedby={errors.seedExclude.length > 0 ? `${base}-seed-exclude-errors` : undefined}
+          onChange={(event) => {
+            setSaved(null);
+            setDraft((current) => ({ ...current, seedExclude: event.target.value }));
+          }}
+        />
+        <FieldErrors id={`${base}-seed-exclude-errors`} messages={errors.seedExclude} />
+        <p className="wt-claim-note">
+          A cold slot (new, never claimed, failed or interrupted) clones these ignored paths
+          copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded
+          seeds only when it is stale and a sibling matches its commit exactly. Where the disk
+          cannot clone, there is no seed. With no seed paths, a slot never seeds.
+        </p>
       </div>
       <FieldErrors id={`${base}-general`} messages={errors.general} />
       {invalid && (

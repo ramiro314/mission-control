@@ -187,7 +187,11 @@ repository's `worktrees` entry, so settings backups capture it, and it is set th
           { "argv": ["yarn", "rebuild"], "env": [] }
         ],
         "timeoutMinutes": 10,
-        "fingerprintPaths": ["yarn.lock", ".yarnrc.yml", "package.json", "apps/*/package.json", ".yarn/releases/**"]
+        "fingerprintPaths": ["yarn.lock", ".yarnrc.yml", "package.json", "apps/*/package.json", ".yarn/releases/**"],
+        "seed": {
+          "paths": ["node_modules", "apps/*/node_modules", "packages/*/node_modules", ".yarn/install-state.gz"],
+          "exclude": ["**/node_modules/.cache"]
+        }
       }
     }
   }
@@ -206,6 +210,13 @@ repository's `worktrees` entry, so settings backups capture it, and it is set th
   dotfile directory is named literally (`.yarn/releases/**`). A glob that cannot be a
   repository-relative path is refused: a leading `/`, a `.` or `..` segment, an empty segment,
   or a backslash.
+- `seed` is optional. `seed.paths` holds 1 to 64 repository-relative globs naming the ignored
+  dependency trees a cold slot clones from a sibling (see "Seeding" below). Each segment is a
+  literal name or a one-level pattern such as `apps/*/node_modules`. `**` is refused, because
+  matching it would mean walking every installed tree to find what to clone. `seed.exclude` holds
+  up to 64 globs removed from the clone before it is placed, and these may use `**`
+  (`**/node_modules/.cache`). The seed is not a fingerprint input: it changes how a cold slot
+  gets its dependencies, never which dependencies a commit needs.
 - A patch's `claim` replaces the whole claim, and `"claim": null` removes it.
 
 **Fingerprints.** Before a claim runs, Mission Control hashes three inputs:
@@ -219,6 +230,90 @@ The hash is recorded on the slot only after every step succeeds. When the next c
 computes the same hash, the steps are skipped, so a slot that already matches costs nothing. Any
 change to a matching file, an argv or a name runs the steps again. An empty `fingerprintPaths`
 means the claim runs on every lease.
+
+**Seeding.** A full monorepo install is the slow part of a cold slot, and an idle sibling slot
+usually holds the very trees it needs. A claim whose pool configures `seed.paths` therefore
+seeds before its steps run when either of these holds:
+
+- the slot is cold: it is new, was never claimed, its last claim failed, or its last claim or
+  seed was interrupted. A slot whose last claim succeeded is not cold, even when its claim lists
+  no fingerprint paths and so recorded no fingerprint, or every lease would copy a sibling's tree
+  over its own fresh install;
+- its fingerprint is stale, **and** an idle sibling's fingerprint matches the leased commit's
+  exactly. A slot whose last claim succeeded with no fingerprint, before fingerprint paths were
+  configured, is stale as soon as the claim can compute one.
+
+Otherwise the claim runs in place, so a small lockfile change stays an incremental install.
+
+- **The source** is an idle sibling: an available slot of the same pool, with no active lease,
+  whose last owner is provably gone, with no process inside, and whose last claim succeeded. It
+  is screened by the same code acquisition screens an available slot with, so a sibling
+  acquisition would quarantine is quarantined here too, and is never a source. The first choice
+  is one whose fingerprint matches the leased commit's, and the next is the one most recently
+  claimed successfully, including one whose claim recorded no fingerprint. A stale slot takes
+  only the first choice. The main checkout is never a source. With no idle sibling
+  there is no seed, and the steps run alone.
+- **The `warm` lease.** The source is leased to a `warm` owner for the length of the copy,
+  through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
+  lease, reset or quarantine it meanwhile: a process in a leased slot does not quarantine it, and
+  another acquisition never sees it as available. Settings shows the owner as **warm**, "Seeding
+  another slot's dependencies", with no Return or Destroy, and never as a task. The owner is
+  referenced exactly while its seed runs in this daemon. Nothing about it is stored anywhere
+  else, so at startup every `warm` owner is definitely not referenced. The source goes back to
+  the pool through the ordinary owner-authorized return as soon as its clone is staged, before
+  anything is placed in the target. A source is only read, so its fingerprint stays valid.
+- **Copy-on-write only.** Each path is cloned with `cp -c -R` on macOS (clonefile) or
+  `cp -R --reflink=always` on Linux. Where the filesystem cannot clone, `cp` refuses and there is
+  no seed. It is never replaced by a byte copy, which would be slower than the install. The clone
+  runs from the pool's directory, never from inside a slot. `cp` is the pinned `/bin/cp`, never
+  a PATH search, because those flags are the platform's own: a GNU `cp` found first on a Mac
+  would not clone.
+- **Only ignored paths.** Every matched path must be ignored by Git in the target and hold
+  nothing tracked (`git ls-files`, then `git check-ignore`, asked with a trailing slash for a
+  directory). A path whose parent directory the target's commit does not have is left out.
+  `.git`, in any letter case and at any depth, is never a seed path: the schema refuses it, and
+  expansion drops it whether it was named or matched by a pattern, because on a case-insensitive
+  disk `.Git` is the checkout's own Git administrative pointer.
+- **Staging, then rename.** Each matched path is cloned into
+  `<pool directory>/.seed-staging/<id>/`, on the same volume and outside every checkout, and the
+  exclusions are removed there. Only then is each path renamed into the target, with any existing
+  tree renamed aside first. A path in the checkout is therefore the old tree, absent for one
+  rename, or the whole new one. The staging directory is removed when the seed ends. A Stop
+  and the claim's deadline are checked before every rename and once more after the last, so a
+  seed either one ends while it is being placed is recorded `interrupted`, never `current`, even
+  when its source matched the leased commit.
+- **After a seed** the target inherits the source's fingerprint, and the ordinary skip rule
+  decides. A source that matched the leased commit records `current`, and the steps are skipped.
+  Any other seed is followed by every step.
+- **An incomplete seed inherits nothing.** A seed inherits the source's fingerprint only when
+  it replaced every seed path the target has with the source's own. It is incomplete when an
+  exclusion removes a whole matched path (the target keeps its own copy), when a source path is
+  left out because the target's commit lacks its parent directory, or when the target holds a
+  seed path the source does not have (the target's own, possibly stale, copy stays). Then what
+  was placed is not the source's tree, the target inherits no fingerprint, and every step runs.
+  Exclusions that remove every path are no seed at all: the target is untouched and the steps
+  run.
+- **A failed clone** abandons the seed, removes its staging, and the steps run. It is not a
+  failed claim, and the target was never touched. So does a placement whose first rename fails
+  before anything in the target changed, as when the cold check fallback's tree sits on another
+  volume than the pool's staging and the rename is refused with `EXDEV`. A rename that fails
+  after something was placed or moved aside records `interrupted`.
+- **One deadline.** The seed spends the claim's `timeoutMinutes` together with the steps. Every
+  phase of a seed checks the Stop and that deadline: expanding the globs, proving the paths
+  ignored (each Git call is bounded by what is left of the claim's time, and by a minute at
+  most), each clone, the exclusion walk, and placement. Whichever lands first ends the seed as
+  `interrupted`. The interrupted wipe works within the same budget: it checks both before each
+  Git call and between the entries of every seed path it removes, so a large `node_modules`
+  cannot hide a Stop, and a wipe that a Stop or the deadline ends leaves the slot `interrupted`.
+- **An exclusion walk that cannot read** a directory in the clone, or cannot look up the staged
+  clone itself, for any reason other than it having vanished, abandons the seed and the steps
+  run. The excluded content may
+  still be in that directory, so the clone is never placed.
+- **A tree that cannot be inspected is never read as empty.** Expanding the seed paths treats
+  only a path that is genuinely not there as no match. A permission or I/O error while listing a
+  directory or looking up a path abandons the seed, so the steps run, and fails an interrupted
+  wipe without removing anything, so the slot stays `interrupted` and its next claim tries
+  again.
 
 **The environment.** Each step gets the same scrubbed base a check command gets (see "A trimmed
 environment" under [Running a check command](#running-a-check-command)), plus only the variables
@@ -270,17 +365,41 @@ on a claim step to give it back.
   is quarantined as any other unproven materialization is. `yarn install --immutable` is one way
   to honor that.
 
-**Crash and restart recovery.** Before any step runs, one durable write records the slot's
-`deps_state` as `claiming` and clears its fingerprint. Success then records `current` with the
+**Crash and restart recovery.** Before anything touches the tree, one durable write records the
+slot's `deps_state` as `claiming` and clears its fingerprint. A seed writes `seeding` the same
+way once its source is held, before any clone starts. Success then records `current` with the
 new fingerprint, and failure records `failed` with the failing step and its tail. A daemon that
 dies anywhere after that write leaves no fingerprint for a later lease to trust. Startup finds
 the slot still `provisioning` and quarantines it as an interrupted provisioning intent, exactly
-as it does after a restart during setup, and marks its `deps_state` as `interrupted`. That
-marking happens on every reconciliation path, including one that quarantines the whole pool
-because its identity or marker cannot be proven. If that
-slot ever returns to the pool, its next claim runs every step. A step's process group that
-outlived the daemon still has its working directory inside the slot. The occupancy check
-therefore sees it, and the slot is never handed out while it runs.
+as it does after a restart during setup, and marks its `deps_state` as `interrupted`, whether it
+found `claiming` or `seeding`. That marking happens on every reconciliation path, including one
+that quarantines the whole pool because its identity or marker cannot be proven. If that slot
+ever returns to the pool, its next claim first removes the pool's seed paths, then starts cold:
+it seeds if a sibling qualifies, and runs every step either way. That recovering claim never
+skips the steps on an inherited fingerprint, even from an exact match. The write-ahead does not
+record which seed paths the cut-off seed touched, and the operator may have narrowed
+`seed.paths` since, so the wipe can only remove the paths configured now. The steps repair
+whatever an older configuration's seed left behind.
+
+- **The interrupted wipe** removes a seed path only once Git confirms it is ignored and holds
+  nothing tracked. A matched path that is tracked, or not ignored, is never removed, and then
+  nothing else is either: the claim fails with a warning naming the path, and the lease is
+  granted with it. A wipe that fails partway, after removing some paths, fails the same way.
+  Either way the slot stays `interrupted` rather than `failed`, so the obligation to remove its
+  seed paths stays with it and its next claim tries the wipe again before anything else. A pool
+  with no `seed.paths` has nothing to remove, and the claim runs every step.
+- **A seed source** that a crash left leased to its `warm` owner is returned at startup through
+  the ordinary return path: the occupancy check, the reset to origin's default, and the clean,
+  detached proof. It becomes available with its fingerprint intact. A source the return cannot
+  prove, for example one a process is still inside, is quarantined.
+- **Seed staging** under `<pool directory>/.seed-staging/` that no live seed owns is removed by
+  every reconciliation, first, before any check that can fail the whole pool. A pool whose
+  identity or marker cannot be proven still loses its leftover staging, because removing it
+  touches no checkout. It is removed only when the pool's directory lies inside the daemon's
+  pools directory and the staging root is a real directory there, never a symlink.
+
+A claim step's process group that outlived the daemon still has its working directory inside
+the slot. The occupancy check therefore sees it, and the slot is never handed out while it runs.
 
 **Maintenance and shutdown.** The manager keeps an in-memory registry of the claims running
 right now. Periodic maintenance skips a slot whose claim is running instead of waiting for it,
@@ -305,8 +424,12 @@ recorded as cancelled. The stopped claim hands its slot over at once, the dispat
 task settled, and it tears the tree down exactly as it does for any cancel it notices. A task
 with attached repositories provisions them one at a time, and stops provisioning further
 repositories once the task is no longer dispatching, so no later repository's claim starts in
-place of the stopped one. Seeding does not exist yet, so a Stop or a cancel always lands during
-a step and always records `failed`.
+place of the stopped one. A Stop, a cancel or the claim's timeout decides `deps_state` by when it
+lands. During a step it records `failed`, like any failed claim, and the next claim reruns the
+steps in place. During a seed, including while its paths are renamed into place, it records
+`interrupted`, because the renames may be half done,
+and the next claim removes the seed paths and starts cold. Either way the lease is granted with
+the warning.
 
 **What the task shows.** While a dispatch waits on a claim step, its placeholder in the Board's
 and the Console rail's Working group says **Installing dependencies**, with the step, the
@@ -327,8 +450,12 @@ edit its claim under **Dependency claim, run on every task lease**:
   separated by spaces, commas or newlines, which no name can contain.
 - **Save claim** sends the whole claim through `PUT /api/worktrees/config`. The daemon's schema
   is the only validator. A refusal is placed beside the field it names: a variable name under
-  its step, a glob under the fingerprint paths, a timeout under the timeout. Nothing is saved
-  while any field is refused. **Remove claim** sends `"claim": null`.
+  its step, a glob under the fingerprint paths or the seed field that holds it, a timeout under
+  the timeout. Nothing is saved while any field is refused. **Remove claim** sends
+  `"claim": null`.
+- **Seed paths** and **Seed exclusions** take one glob per line. Leaving both blank saves a claim
+  that never seeds. Exclusions with no seed paths are refused beside the seed paths, rather than
+  dropped.
 - Each saved variable name shows **present** or **missing**, and where a present one was found:
   in the daemon's environment, or in the login shell. This is the same rule a step's
   environment uses, so the two cannot disagree. The value itself never leaves the daemon. A
@@ -343,7 +470,7 @@ Each slot card of a pool with a claim shows the slot's dependency state:
 | stale | The last claim succeeded, but the fetched default branch's fingerprint differs from the slot's. The next lease runs the claim again. |
 | installing | A claim is running in the slot right now, with its step, its command, the elapsed time and **Stop**. |
 | failed | The last claim failed, timed out or was stopped. The card shows the failing step, its reason, its command and the output tail, with claim variable values redacted. |
-| interrupted | A restart cut off the slot's last claim. Its next claim starts cold. |
+| interrupted | A restart, or a stop or timeout during a seed, cut off the slot's last claim. Its next claim removes the seed paths and starts cold. |
 
 The card also names the commit the slot's fingerprint was taken at. **Stale is judged against
 the last fetched `origin/<default>` ref**, the same cached ref the card's "Default" relation uses.
@@ -606,7 +733,11 @@ claim describes the repository's dependencies, not the pool. The claim is looked
 repository's Git common directory, read from Git when the pool cannot identify the repository,
 for example one whose metadata is relocated. A lookup that fails is infrastructure and the tree
 is removed. Only settings that were read and carry no claim let the command run without one.
-That tree has no slot row, so it never skips on a fingerprint. The final proof still applies to
+That tree has no slot row, so it has no recorded fingerprint and is always cold. When the
+repository's pool is enabled and configures `seed.paths`, the tree seeds under the same rule as a
+slot, from an idle slot of that pool, and skips its steps when the source's fingerprint matches
+the check's commit. There is no write-ahead to take, because the tree is removed with the
+attempt, so a seed stopped or timed out there is simply a failed claim. The final proof still applies to
 a claim that succeeded: a step that rewrites a tracked file, leaves an untracked file Git does
 not ignore, moves HEAD or attaches a branch leaves a tree the command is never run in. A claim
 that failed is reported as a dependency failure with its tail even if it also dirtied the tree,

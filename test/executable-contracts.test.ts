@@ -138,6 +138,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/worktrees/claim.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "operator-authored dependency claim step, resolved through the locator and streamed into a bounded tail in its own process group" },
   ],
+  "src/server/worktrees/seed.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "seeding's copy-on-write clone through the pinned /bin/cp, whose -c (macOS) or --reflink=always (Linux) must be the platform's own; never a PATH search" },
+  ],
   // Not daemon code: the CI flake report action, bundled into `.github/actions/`, runs on a
   // GitHub runner and never through the executable locator.
   "src/flake-report-action/index.ts": [

@@ -28,8 +28,20 @@ export type WorktreeRiskKey =
   | "legacy-unverifiable"
   | "foreign";
 
+/**
+ * Who may hold a native slot's lease: the one list the allocator validates against, the slot
+ * row's owner is read back through, and Settings names. `warm` is maintenance holding the slot
+ * for a moment, such as a seed copying from it, and is never a task.
+ */
+export const WORKTREE_OWNER_KINDS = ["task", "check", "manual", "warm"] as const;
+export type WorktreeOwnerKind = (typeof WORKTREE_OWNER_KINDS)[number];
+
+export function isWorktreeOwnerKind(value: unknown): value is WorktreeOwnerKind {
+  return typeof value === "string" && (WORKTREE_OWNER_KINDS as readonly string[]).includes(value);
+}
+
 export interface WorktreeOwnerView {
-  kind: "task" | "check" | "manual";
+  kind: WorktreeOwnerKind;
   key: string;
   label: string;
 }

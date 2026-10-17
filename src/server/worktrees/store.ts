@@ -18,10 +18,29 @@ export type WorktreeSlotState = (typeof WORKTREE_SLOT_STATES)[number];
  * - `claiming`: the write-ahead before a claim's first step. Only a live claim holds it, so
  *   startup finding it means the claim was interrupted.
  * - `failed`: the last claim failed, timed out or was stopped; it left no fingerprint.
- * - `interrupted`: startup found `claiming`. The next claim starts cold.
+ * - `interrupted`: startup found `claiming` or `seeding`, or a seed was stopped or timed out.
+ *   The next claim removes the seed paths and starts cold.
+ * - `seeding`: the write-ahead before a seed renames anything into the tree. Like `claiming`,
+ *   only a live claim holds it.
  */
-export const WORKTREE_DEPS_STATES = ["current", "claiming", "failed", "interrupted"] as const;
+export const WORKTREE_DEPS_STATES = ["current", "claiming", "failed", "interrupted", "seeding"] as const;
 export type WorktreeDepsState = (typeof WORKTREE_DEPS_STATES)[number];
+
+/** The write-aheads. Only a live claim holds one, so one found with no claim running was cut off. */
+export const WORKTREE_DEPS_WRITE_AHEAD_STATES = ["claiming", "seeding"] as const satisfies readonly WorktreeDepsState[];
+
+export function isDepsWriteAhead(state: string | null): boolean {
+  return (WORKTREE_DEPS_WRITE_AHEAD_STATES as readonly string[]).includes(state ?? "");
+}
+
+/**
+ * Whether a slot's last claim or seed was cut off, so its seed paths may be half renamed and
+ * its next claim must start cold: `interrupted`, a write-ahead, or a state a later build wrote.
+ * Only no state at all, `current` and `failed` are settled.
+ */
+export function depsCutOff(state: string | null): boolean {
+  return state !== null && state !== "current" && state !== "failed";
+}
 
 export interface WorktreePoolRow {
   id: string;
@@ -450,13 +469,66 @@ export class WorktreeStore {
     return Number(changed.changes) === 1;
   }
 
-  /** Settle a claim that held the write-ahead. A failure records no fingerprint. */
+  /**
+   * The seed's write-ahead, before anything is renamed into the tree. The same shape as
+   * `beginClaim`: one write that records the intent and clears the fingerprint.
+   */
+  beginSeed(slotId: string, version: number, now: number): boolean {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET deps_state = 'seeding', deps_fingerprint = NULL,
+           deps_fingerprint_sha = NULL, updated_at = ?
+         WHERE id = ? AND state = 'provisioning' AND version = ?`,
+      )
+      .run(now, slotId, version);
+    return Number(changed.changes) === 1;
+  }
+
+  /**
+   * Settle a seed that held the write-ahead. `current` is a seed whose source's fingerprint is
+   * this commit's, so the steps are skipped and the inherited fingerprint is trusted.
+   * `interrupted` is a seed that was stopped, timed out, or could not be placed whole: its
+   * paths may be half renamed, so the next claim removes them and starts cold.
+   */
+  finishSeed(
+    slotId: string,
+    version: number,
+    outcome:
+      | { state: "current"; fingerprint: string; sha: string }
+      | { state: "interrupted"; error: string | null },
+    now: number,
+  ): boolean {
+    const current = outcome.state === "current";
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET deps_state = ?, deps_fingerprint = ?, deps_fingerprint_sha = ?,
+           deps_claimed_at = ?, deps_last_error = ?, updated_at = ?
+         WHERE id = ? AND state = 'provisioning' AND version = ? AND deps_state = 'seeding'`,
+      )
+      .run(
+        outcome.state,
+        current ? outcome.fingerprint : null,
+        current ? outcome.sha : null,
+        now,
+        current ? null : outcome.error,
+        now,
+        slotId,
+        version,
+      );
+    return Number(changed.changes) === 1;
+  }
+
+  /**
+   * Settle a claim that held the write-ahead. A failure records no fingerprint. `interrupted`
+   * is a claim whose cleanup of an interrupted seed did not finish: the obligation to remove
+   * the seed paths stays with the slot, so its next claim tries again.
+   */
   finishClaim(
     slotId: string,
     version: number,
     outcome:
       | { state: "current"; fingerprint: string | null; sha: string }
-      | { state: "failed"; error: string },
+      | { state: "failed" | "interrupted"; error: string },
     now: number,
   ): boolean {
     const current = outcome.state === "current";
@@ -480,18 +552,18 @@ export class WorktreeStore {
   }
 
   /**
-   * Startup found a claim's write-ahead with no live claim behind it. The fingerprint was
-   * already cleared by the write-ahead; clearing it again here keeps that true for a row an
-   * older build might have touched.
+   * Startup found a claim's or a seed's write-ahead with no live claim behind it. The
+   * fingerprint was already cleared by the write-ahead; clearing it again here keeps that true
+   * for a row an older build might have touched.
    */
   markClaimInterrupted(slotId: string, now: number): boolean {
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL,
            deps_fingerprint_sha = NULL, updated_at = ?
-         WHERE id = ? AND deps_state = 'claiming'`,
+         WHERE id = ? AND deps_state IN (${WORKTREE_DEPS_WRITE_AHEAD_STATES.map(() => "?").join(", ")})`,
       )
-      .run(now, slotId);
+      .run(now, slotId, ...WORKTREE_DEPS_WRITE_AHEAD_STATES);
     return Number(changed.changes) === 1;
   }
 

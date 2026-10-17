@@ -441,6 +441,7 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
         steps: [{ argv: ["pnpm", "install", "--frozen-lockfile"], env: ["ARTIFACTORY_AUTH_TOKEN", "NPM_TOKEN"] }],
         timeoutMinutes: 15,
         fingerprintPaths: ["pnpm-lock.yaml", "apps/*/package.json"],
+        seed: { paths: ["node_modules", "apps/*/node_modules"], exclude: ["**/node_modules/.cache"] },
       },
     },
     claimVariables: [
@@ -501,6 +502,8 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
   assert.match(html, /value="ARTIFACTORY_AUTH_TOKEN NPM_TOKEN"/);
   assert.match(html, /value="15"/);
   assert.match(html, />pnpm-lock.yaml\napps\/\*\/package.json<\/textarea>/);
+  assert.match(html, /Seed paths, one repository-relative glob per line<\/label><textarea[^>]*>node_modules\napps\/\*\/node_modules<\/textarea>/);
+  assert.match(html, /Seed exclusions, one repository-relative glob per line<\/label><textarea[^>]*>\*\*\/node_modules\/\.cache<\/textarea>/);
   assert.match(html, /<code>ARTIFACTORY_AUTH_TOKEN<\/code><span class="wt-chip wt-chip-ready">present<\/span><span class="wt-claim-var-where">in the login shell<\/span>/);
   assert.match(html, /<code>NPM_TOKEN<\/code><span class="wt-chip wt-chip-danger">missing<\/span>/);
 
@@ -512,7 +515,7 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
   // Only the installing slot offers Stop, named for its slot.
   assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?aria-label="Stop slot 4 dependency claim"[^>]*>Stop<\/button>/);
   assert.equal(html.match(/dependency claim"/g)?.length, 1);
-  assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?starts cold/);
+  assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?a stop during a seed[\s\S]*?removes the seed paths and starts cold/);
   const legacy = html.slice(html.indexOf('aria-label="Slot 7 dependencies"'));
   assert.match(legacy, /^[\s\S]*?>failed<[\s\S]*?<p class="wt-deps-detail">legacy summary line<\/p>/);
   const legacyCard = legacy.slice(0, legacy.indexOf("</section>"));
