@@ -142,6 +142,12 @@ interface SessionScope {
 }
 ```
 
+Both methods land in slice 1 (see [Delivery order](#delivery-order)). Every seam that wraps a
+long-lived process (the Claude hook, `spawnAppServer`) calls `outcome` when that process exits,
+whatever the reason, so a failed scope is read and reset at once, never left loaded until the next
+daemon start. Slice 3 adds no systemd read of its own: it only carries the result `outcome`
+already returned into the `exited` event.
+
 On Linux, with `systemd-run` resolved and the user manager reachable, `wrap` returns:
 
 ```
@@ -191,12 +197,12 @@ Each harness wraps at the spawn seam it already owns, through the one shared hel
 supervisor or registry code branches on the agent.
 
 - **Claude.** Inside the `spawnClaudeCodeProcess` hook. The hook spawns the wrapped argv, and the
-  vendor gets the same child it gets today: pid, stdio, signal and exit. `startQuery`'s params
-  carry the session's label. Catalog probes and one-shot queries install no hook and stay
-  unwrapped.
+  vendor gets the same child it gets today: pid, stdio, signal and exit. The hook also listens for
+  that child's exit and calls `outcome`. `startQuery`'s params carry the session's label. Catalog
+  probes and one-shot queries install no hook and stay unwrapped.
 - **Codex.** `spawnAppServer` takes an optional label. `connect` passes the session's, and the
   model-catalog probe passes none and stays unwrapped. `spawnAppServer` gains the exit listener it
-  lacks today.
+  lacks today, and that listener calls `outcome`.
 - **Pi.** The existing bash-tool `spawnHook` rewrites `command` to
   `exec <systemd-run ...> -- <choom -n 500> -- /bin/sh -c '<command>'`, quoted with the existing
   `shellCommand`. That gives one scope per command, labelled with the session and a counter, with
@@ -218,6 +224,8 @@ flowchart LR
   T --> AL[existing task-failed alert]
 ```
 
+Steps 1 and 5 land in slice 1 with `outcome`. Steps 2 to 4 land in slice 3.
+
 1. The spawn seam (the Claude hook, `spawnAppServer`) hears its child exit and calls
    `outcome(unit)`: `systemctl --user show <unit> -p Result -p MemoryPeak` with a 2 s timeout,
    then `systemctl --user reset-failed <unit>`. systemd sets `Result=oom-kill` the moment it reacts
@@ -232,7 +240,8 @@ flowchart LR
    base-1024 units with one decimal, as systemd's own summary prints it. Without `MemoryPeak`
    (older systemd), the parenthetical is dropped. The existing task-failed alert carries the text.
    Nothing resumes automatically.
-5. The daemon logs one line per OOM stop, with the session id, the unit and the peak.
+5. The daemon logs one line per OOM stop, with the session id, the unit and the peak, where the
+   seam reads `outcome`.
 
 A session with no task gets only the log line. A merged pull request still outranks this, because
 `reconcileMergedTasks` runs first.
@@ -263,7 +272,7 @@ issue, following `docs/fork/README.md`. Every pull request of the feature carrie
 "Fork feature changes" section.
 
 - **Intent:** an OOM in an agent session stops that session, not the daemon or the dashboard.
-- **Behavior contracts:** AC1 to AC7 below.
+- **Behavior contracts:** AC1 to AC8 below.
 - **Upstream behavior it assumes:**
   - the vendor `spawnClaudeCodeProcess` hook;
   - `spawnAppServer` being the one Codex spawn;
@@ -283,12 +292,15 @@ issue, following `docs/fork/README.md`. Every pull request of the feature carrie
 
 Three slices. Each lands green on its own, in this order.
 
-1. **Isolation.** `session-scope.ts`, the `choom` registration, the Claude and Codex seams,
-   `BindsTo`, the probe and fallback log line, the startup reset, unit tests, the Linux
-   real-systemd test, and the docs for these. This slice alone fixes the incident.
+1. **Isolation.** `session-scope.ts` with both `wrap` and `outcome`, the `choom` registration, and
+   the Claude and Codex seams with exit listeners that call `outcome`, so a failed scope is read
+   and reset as its process exits. Also the per-OOM log line, `BindsTo`, the probe and fallback
+   log line, the startup reset, the slice 1 unit tests, the Linux real-systemd test, and the docs
+   for these. This slice alone fixes the incident.
 2. **Pi tool commands.** The `spawnHook` rewrite, its tests and its docs line.
-3. **Reporting.** `outcome`, the `exited` cause, `beginEviction`, the `settleAgentGone` text, the log
-   line, the Playwright spec and the troubleshooting entry.
+3. **Reporting.** The driver awaiting `outcome` before it emits `exited`, the `exited` cause and its
+   carriage through `beginEviction`, the `settleAgentGone` text, the registry and tasks tests, the
+   Playwright spec and the troubleshooting entry. It adds no systemd read of its own.
 
 ## Verification
 
@@ -297,7 +309,7 @@ Run single files with the suite's loader, for example
 
 ### Unit tests (`test/`, `node:test`)
 
-- **`test/session-scope.test.ts`:**
+- **`test/session-scope.test.ts`** (slice 1, `outcome` cases included):
   - **Linux with a manager and every executable:** the exact argv, meaning the unit-name shape, the
     slice, every property, `BindsTo`/`After` taken from a given daemon cgroup, and `choom`.
   - **`BindsTo`/`After` omitted** when the daemon's cgroup leaf is not a unit of this user manager.
@@ -311,25 +323,26 @@ Run single files with the suite's loader, for example
     - `success` gives `oomKilled: false`;
     - a `systemctl` failure or timeout gives `null`;
     - `reset-failed` follows every read.
-- **Claude seam:** the hook spawns the wrapped argv and returns that child. A catalog probe stays
-  unwrapped.
-- **Codex seam:** `spawnAppServer` wraps with a label and does not wrap without one. Its exit
+- **Claude seam** (slice 1): the hook spawns the wrapped argv and returns that child, and the
+  child's exit calls `outcome`. A catalog probe stays unwrapped.
+- **Codex seam** (slice 1): `spawnAppServer` wraps with a label and does not wrap without one. Its exit
   listener calls `outcome`.
-- **Pi seam:** the rewritten command survives quotes, `$` and newlines when it is run through a
+- **Pi seam** (slice 2): the rewritten command survives quotes, `$` and newlines when it is run through a
   real `/bin/sh` with pass-through fakes for `systemd-run` and `choom`.
-- **Registry and tasks:**
+- **Registry and tasks** (slice 3):
   - an `exited` event with an `out_of_memory` cause fails the task with the out-of-memory text;
   - without a cause the text is unchanged;
   - a merged pull request still settles `done`;
   - eviction still goes through `beginEviction` alone.
-- **`test/executable-contracts.test.ts`** passes with `choom` registered.
+- **`test/executable-contracts.test.ts`** (slice 1) passes with `choom` registered.
 
 ### Linux-only real-systemd test
 
 `test/session-scope-linux.test.ts` skips unless the platform is Linux, the user manager is
 reachable, and `systemd-run` and `choom` resolve. It is expected to skip on GitHub-hosted CI and
 run on a developer's Linux machine. It passes test-only properties (`MemoryMax=64M`,
-`MemorySwapMax=0`) through an internal option that production code never sets.
+`MemorySwapMax=0`) through an internal option that production code never sets. It lands in
+slice 1, which also delivers the `outcome` it asserts on.
 
 - The wrapped process's `/proc/<pid>/cgroup` ends in
   `app-mission\x2dcontrol\x2dsessions.slice/mission-control-<label>-*.scope`, and its
@@ -342,7 +355,7 @@ run on a developer's Linux machine. It passes test-only properties (`MemoryMax=6
 
 ### End-to-end spec (`e2e/`, Playwright)
 
-The task-failure text is a UI change, so `e2e/session-oom.spec.ts` covers it. It is Linux-only,
+The task-failure text is a UI change, so `e2e/session-oom.spec.ts` covers it in slice 3. It is Linux-only,
 because the scope path exists only there, and it spends no model tokens. The fixture sets:
 
 - a fake `systemd-run` through `MISSION_SYSTEMD_RUN_BIN`, which records its argv and execs what
@@ -436,3 +449,18 @@ cannot fix the incident.
 
 Revision 1 was approved as a complete bundle. Revision 2 records this review and changes nothing
 else.
+
+### Plan validation repair round 1 (2026-10-17)
+
+The Plan Validation Local v3 judges found two inconsistencies. Revision 3 fixes both and changes
+nothing else.
+
+- **Slice 1 depended on `outcome`, but `outcome` was assigned to slice 3.**
+  - The dependency: slice 1's unit tests and its Linux test assert on `outcome`, and slice 1 drops
+    `--collect`, so without a read its failed scopes would stay loaded until the next daemon start.
+  - The fix: `outcome` (the `systemctl show` read, `reset-failed` and the per-OOM log line) and the
+    seams' exit listeners that call it now land in slice 1. Slice 3 only carries the result into
+    the `exited` event and the task text.
+  - The Delivery order, the Verification lists and the `SessionScope` description now say so.
+- **The fork-tracking behavior contracts named AC1 to AC7.** They now name AC1 to AC8, so the docs
+  requirement is a contract a sync keeps true as well.
