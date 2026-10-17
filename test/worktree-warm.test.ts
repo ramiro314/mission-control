@@ -550,6 +550,103 @@ test("a running Warm's output bumps the worktrees revision at most once per inte
   assert.ok(bumps <= 10, `${bumps} bumps for about a hundred writes`);
 });
 
+test("a Warm's tail bumps the revision once at each interval boundary and never sooner", async (t) => {
+  const fixture = repository("mission-warm-boundary-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  // The Warm itself is held open, so the only bumps from here on are the tail's.
+  let output!: (text: string) => void;
+  let finish!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    m.warmSlot = async (input: Parameters<WorktreeManager["warmSlot"]>[0]) => {
+      output = input.output;
+      resolve();
+      await new Promise<void>((done) => {
+        finish = done;
+      });
+      return { outcome: "warmed", stepsSkipped: false };
+    };
+  });
+  let bumps = 0;
+  const ops = service(m, logsDirectory(), { notifyChanged: () => { bumps += 1; } });
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await entered;
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const before = bumps;
+    output("one\n");
+    output("two\n");
+    t.mock.timers.tick(999);
+    output("three\n");
+    assert.equal(bumps, before, "writes before the interval ends bump nothing");
+    t.mock.timers.tick(1);
+    assert.equal(bumps, before + 1, "exactly one bump at the 1,000 ms boundary, for all three writes");
+
+    output("four\n");
+    t.mock.timers.tick(500);
+    output("five\n");
+    output("six\n");
+    t.mock.timers.tick(499);
+    assert.equal(bumps, before + 1, "the next interval's writes wait for its own boundary");
+    t.mock.timers.tick(1);
+    assert.equal(bumps, before + 2, "and then bump once");
+
+    t.mock.timers.tick(10_000);
+    assert.equal(bumps, before + 2, "with no output there is no bump");
+  } finally {
+    t.mock.timers.reset();
+  }
+  finish();
+  await ops.idle();
+  assert.match((await operation(ops, id)).warm?.tail ?? "", /one\ntwo\nthree\nfour\nfive\nsix\n/);
+});
+
+test("an ordinary claim failure returns the slot available with failed dependencies, and keeps the failure", async () => {
+  const fixture = repository("mission-warm-claim-failed-");
+  const failing = [
+    process.execPath,
+    "-e",
+    `console.log("resolving fixture packages");console.error("E401 fixture registry refused the token");process.exit(3);`,
+  ];
+  const m = manager({ claim: claimOf(failing) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const logs = logsDirectory();
+  const ops = service(m, logs);
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await ops.idle();
+
+  const row = m.store.slot(slot!.slotId)!;
+  assert.equal(row.state, "available", "a failed claim never keeps or quarantines the slot");
+  assert.equal(row.depsState, "failed");
+  assert.equal(row.depsFingerprint, null, "so the next lease runs the claim again");
+  assert.equal(row.lastReleasedOwnerKind, "warm");
+  assert.match(row.depsLastError ?? "", /exited with code 3/);
+  assert.match(row.depsLastError ?? "", /E401 fixture registry refused the token/);
+
+  const view = await operation(ops, id);
+  assert.equal(view.state, "finished", "a claim failure is the Warm's result, not the operation failing");
+  assert.equal(view.warm?.cancelRequested, false);
+  assert.equal(view.warm?.targets[0]?.outcome, "claimFailed");
+  assert.equal(view.warm?.targets[0]?.detail, "Step 1 of 1 exited with code 3.");
+  assert.match(view.warm?.tail ?? "", /^E401 fixture registry refused the token$/m);
+
+  const logPath = join(logs, `${id}.log`);
+  const text = readFileSync(logPath, "utf8");
+  assert.match(text, /^E401 fixture registry refused the token$/m);
+  assert.match(text, /^Step 1 of 1 exited with code 3\.$/m);
+  assert.match(text, /^Returning the slot to the pool$/m);
+  assert.match(text, /^Slot 1: claimFailed\. Step 1 of 1 exited with code 3\.$/m);
+
+  const card = (await ops.inventory()).repositories.flatMap((repo) => repo.slots).find((entry) => entry.id === slot!.slotId);
+  assert.equal(card?.dependencies?.state, "failed");
+  if (card?.dependencies?.state === "failed") {
+    assert.equal(card.dependencies.failure.reason, "exited with code 3");
+    assert.match(card.dependencies.failure.tail, /E401 fixture registry refused the token/);
+  }
+  assert.deepEqual(card?.warmLog, { id, path: logPath });
+});
+
 // ---- redaction of streamed output ----
 
 test("streamed claim output never carries a value, however the pipe splits it", () => {
