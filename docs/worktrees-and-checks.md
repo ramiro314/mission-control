@@ -257,7 +257,8 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
   lease, reset or quarantine it meanwhile: a process in a leased slot does not quarantine it, and
   another acquisition never sees it as available. Settings shows the owner as **warm**, "Seeding
-  another slot's dependencies", with no Return or Destroy, and never as a task. The owner is
+  another slot's dependencies" (or, for a slot a Warm holds, "Warming this slot ahead of time";
+  see [Warm](#warm)), with no Return or Destroy, and never as a task. The owner is
   referenced exactly while its seed runs in this daemon. Nothing about it is stored anywhere
   else, so at startup every `warm` owner is definitely not referenced. The source goes back to
   the pool through the ordinary owner-authorized return as soon as its clone is staged, before
@@ -392,6 +393,15 @@ whatever an older configuration's seed left behind.
   the ordinary return path: the occupancy check, the reset to origin's default, and the clean,
   detached proof. It becomes available with its fingerprint intact. A source the return cannot
   prove, for example one a process is still inside, is quarantined.
+- **A Warm's target** that a crash left leased to its `warm:<operationId>` owner is returned the
+  same way. Its claim ran with the slot leased rather than provisioning, so startup finds the
+  lease with a `claiming` or `seeding` write-ahead, records `deps_state = interrupted`, and the
+  ordinary return makes it available. Its next claim removes the seed paths and starts cold.
+  A target the return cannot prove, such as one an orphaned step is still running in, is
+  quarantined. No Warm survives a restart: its operation lived only in daemon memory, so startup
+  finds every `warm` owner definitely unreferenced, never unknown.
+- **Warm logs** under `logs/worktree-warm/` that no slot row names are removed once startup has
+  reconciled the pools. A slot row keeps naming its most recent Warm's log, so that log survives.
 - **Seed staging** under `<pool directory>/.seed-staging/` that no live seed owns is removed by
   every reconciliation, first, before any check that can fail the whole pool. A pool whose
   identity or marker cannot be proven still loses its leftover staging, because removing it
@@ -480,6 +490,73 @@ publishes the ordinary `worktrees_changed` revision bump as it starts, as each s
 it settles. That bump is how the card moves between states, and the elapsed time counts up in the
 browser between bumps.
 
+#### Warm
+
+A claim runs when something leases a slot, so the first lease after a lockfile change pays for
+the install. **Warm** pays it ahead of time, on idle slots, so the next lease finds a matching
+fingerprint and skips the steps. A pool with a claim offers two triggers in **Settings >
+Worktrees**:
+
+- **Warm** on an available slot's card warms that slot.
+- **Warm idle slots** among a pool's maintenance actions warms every available slot of the pool,
+  one at a time, so a later slot can seed from one warmed before it.
+
+Both are ordinary worktree actions (`"action": "warm"`, with a `slot` or `pool` target) and go
+through the same preview and execute as Return and Destroy. The preview lists the slots it will
+warm. A slot that is leased, quarantined, mid-transition, occupied, not proven clean, or already
+covered by a queued operation is never a target: named directly it blocks the preview, and in a
+pool Warm it is left out and counted in the preview. A pool with no claim, or with native
+worktrees disabled, has nothing to warm. Nothing in a Warm discards work, so it asks for no
+acknowledgement.
+
+For each slot, in order, a Warm:
+
+1. checks the slot again. A slot that is no longer available and idle by acquisition's own
+   screening, for example one a task leased after the Warm was queued, is **skipped**, untouched,
+   and listed as skipped in the Warm's report;
+2. holds it under a `warm` lease owned by `warm:<operationId>`, through the ordinary reservation
+   and `finalizeLease`, so nothing else can lease, reset or quarantine it, and the claim's own
+   processes never count as occupancy of an available slot;
+3. fetches origin and resets the slot to its current default branch;
+4. runs the pool's claim under its usual rules: a matching fingerprint skips the steps, a cold
+   slot (or a stale one an idle sibling matches exactly) is seeded copy-on-write, and the steps
+   run otherwise;
+5. proves the tree exactly as an acquired slot is proved before its grant, and quarantines it if
+   a step modified a tracked file or attached a branch;
+6. returns it through the ordinary owner-authorized return: the occupancy check, a fresh fetch,
+   the reset to origin's default, and the clean, detached proof.
+
+A failed claim is recorded on the slot as any failed claim is, and the slot is still returned.
+Warms run one after another on a queue of their own, so a long install never holds up a
+Destroy or Return queued behind it. Each one's targets are pending to every other operation, so
+the two never share a slot.
+
+**Watching a Warm.** The operations list above the pools shows each Warm with its slots and what
+became of each one (waiting, warming, warmed, claim failed, skipped, cancelled or failed), and,
+while it runs, a live output tail: the last 4,000 bytes of the claim's output, with every claim
+variable value removed. The value is removed even when the pipe splits it across two writes,
+because the stream holds back the last few characters that could still be the start of one. The
+tail reaches the dashboard through the ordinary `worktrees_changed` bump, at most once a second
+while output arrives. A finished Warm stays listed, with its report and its log, until you
+dismiss it, and counts toward the 64 operations that may be listed at once.
+
+**Cancel** on a queued Warm finishes it at once, with every slot cancelled and none touched. On a
+running Warm it stops the claim, which sends SIGTERM to the running step's process group and
+SIGKILL after five seconds. The slot it holds is returned to the pool as available, and its
+`deps_state` follows the Stop rule: `failed` when the Cancel landed during a step, so the next
+claim reruns the steps in place, and `interrupted` when it landed during a seed, so the next claim
+removes the seed paths and starts cold. Slots the Warm had not reached are listed as cancelled.
+The slot card's **Stop** stops the same claim, but the Warm then carries on with its next slot.
+
+**The full log.** Each Warm writes everything it did and every line of claim output, redacted,
+to `logs/worktree-warm/<operationId>.log` under the daemon's state directory, created the first
+time the Warm holds a slot. The operation links it, and each slot it held records the path as
+its `deps_log_path`, so the slot card keeps a **Last Warm log** link after the Warm is dismissed
+and after a restart. Both links download through `GET /api/worktrees/warm-logs/<operationId>`,
+which serves only a log a listed operation or a slot row names. A log that neither names is
+removed when a Warm finishes, when one is dismissed, and once at startup, so a slot's earlier log
+goes as soon as a later Warm replaces its link and the operation that wrote it is dismissed.
+
 ### Settings > Worktrees
 
 Open **Settings > Worktrees** to configure and inspect the allocator. The page answers one
@@ -541,7 +618,8 @@ the ones the preview asked for. The dialog then closes, and the rest of the work
 ordered queue: it observes the lease, task or check owner, processes, Git state, and slot version
 again, then mutates. You can keep previewing and executing while earlier cleanups finish. Queued
 and running cleanups are listed above the pools, and each affected slot shows the pending action
-and offers no second one. A preview that names a slot which already has a cleanup queued is
+and offers no second one. A Warm is listed there too, with its own live view, and runs on a queue
+of its own (see [Warm](#warm)). A preview that names a slot which already has a cleanup queued is
 blocked for that slot, and Safe prune leaves such a slot to its own cleanup, so no dialog offers
 an Execute that could only be refused. At most 64 operations may be listed at once, counting queued and running
 cleanups and failure reports you have not dismissed. Beyond that, Execute says so and leaves the
@@ -589,6 +667,10 @@ The operations have deliberately narrow meanings:
   state.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
+- **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets
+  it to origin's default branch, seeds or claims it under the pool's claim, and returns it. It is
+  offered on an available slot's card and, as **Warm idle slots**, among a pool's maintenance
+  actions. It never touches a leased or quarantined slot. See [Warm](#warm).
 
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,

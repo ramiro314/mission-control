@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { matchesGlob } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { WorktreeClaim } from "@shared/protocol.ts";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import type { WorktreeClaimVariableSource, WorktreeClaimVariableView } from "@shared/worktrees.ts";
@@ -261,6 +262,12 @@ export interface ClaimStepRequest {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   signal: AbortSignal;
+  /**
+   * Told each piece of the step's output as it arrives, decoded on character boundaries, for a
+   * view that follows a step live (a Warm's tail and log). The step's bounded tail is kept
+   * either way. Unredacted: `runClaimSteps` removes claim variable values before passing it on.
+   */
+  onOutput?: (text: string) => void;
 }
 
 export type ClaimStepResult =
@@ -356,12 +363,31 @@ export async function runClaimStep(
       finish({ outcome: "spawnFailed", reason: error instanceof Error ? error.message : String(error) });
       return;
     }
-    child.stdout?.on("data", (chunk: Buffer) => ring.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => ring.push(chunk));
+    // One decoder per stream, so a character split across two chunks of one stream is never
+    // joined with bytes from the other.
+    const decoders = request.onOutput ? [new StringDecoder("utf8"), new StringDecoder("utf8")] as const : null;
+    const forward = (text: string): void => {
+      if (!text) return;
+      try {
+        request.onOutput?.(text);
+      } catch (error) {
+        // A live view of the step is never part of the step.
+        console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      ring.push(chunk);
+      if (decoders) forward(decoders[0].write(chunk));
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      ring.push(chunk);
+      if (decoders) forward(decoders[1].write(chunk));
+    });
     child.once("error", (error) => {
       if (child.pid === undefined) finish({ outcome: "spawnFailed", reason: error.message });
     });
     child.once("close", (code, signal) => {
+      if (decoders) for (const decoder of decoders) forward(decoder.end());
       const { text, truncatedBytes } = tail();
       finish(ending
         ? { outcome: ending, tail: text, truncatedBytes }
@@ -455,7 +481,31 @@ export async function runClaimSteps(input: {
   deadline?: number;
   /** Told as each step begins, before its environment is built, so a view can say which runs. */
   onStep?: (step: RunningClaimStep) => void;
+  /**
+   * Told each step's command as it begins, then its output as it arrives, with every value the
+   * step received already removed, then how it ended. For a view that follows the claim live.
+   */
+  onOutput?: (text: string) => void;
 }): Promise<ClaimStepsOutcome> {
+  const say = (text: string): void => {
+    try {
+      input.onOutput?.(text);
+    } catch (error) {
+      console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const outcome = await runClaimStepsInner(input, input.onOutput ? say : null);
+  if (input.onOutput && !outcome.ok) {
+    const { warning } = outcome;
+    say(`\nStep ${warning.step} of ${warning.stepCount} ${warning.reason}.\n`);
+  }
+  return outcome;
+}
+
+async function runClaimStepsInner(
+  input: Parameters<typeof runClaimSteps>[0],
+  say: ((text: string) => void) | null,
+): Promise<ClaimStepsOutcome> {
   const limitMs = input.claim.timeoutMinutes * 60_000;
   const deadline = input.deadline ?? input.now() + limitMs;
   const stepCount = input.claim.steps.length;
@@ -497,6 +547,10 @@ export async function runClaimSteps(input: {
       cleanupAgentSubprocessEnv(built.env);
       return fail(timedOut);
     }
+    // The command is the operator's own argv, never a value; what the step prints goes through
+    // the same redaction as its stored tail before anything outside the step sees it.
+    say?.(`${index > 0 ? "\n" : ""}$ ${renderClaimArgv(step.argv)}\n`);
+    const live = say ? new RedactedOutput(secrets, say) : null;
     let result: ClaimStepResult;
     try {
       result = await input.runStep({
@@ -505,10 +559,12 @@ export async function runClaimSteps(input: {
         env: built.env,
         timeoutMs: remaining,
         signal: input.signal,
+        ...(live ? { onOutput: (text: string) => live.push(text) } : {}),
       });
     } catch (error) {
       result = { outcome: "spawnFailed", reason: error instanceof Error ? error.message : String(error) };
     } finally {
+      live?.flush();
       cleanupAgentSubprocessEnv(built.env);
     }
     const missing = built.missing.length > 0 ? ` (no value for ${built.missing.join(", ")})` : "";
@@ -665,6 +721,13 @@ const MIN_REDACTED_FRAGMENT = 4;
 export function redactClaimValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>,
+  options: {
+    /**
+     * Whether the text may start partway through a value, as a tail the ring cut does. Output
+     * streamed from its first byte never does, so `RedactedOutput` turns this off.
+     */
+    leadingFragments?: boolean;
+  } = {},
 ): string {
   const spans: Array<{ start: number; end: number; name: string }> = [];
   for (const { name, value } of secrets) {
@@ -673,6 +736,7 @@ export function redactClaimValues(
     for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
       spans.push({ start: at, end: at + value.length, name });
     }
+    if (options.leadingFragments === false) continue;
     // The longest leading piece of the text that ends this value, as the ring's cut leaves it.
     for (let length = value.length - 1; length >= MIN_REDACTED_FRAGMENT; length -= 1) {
       if (text.startsWith(value.slice(-length))) {
@@ -700,6 +764,64 @@ export function redactClaimValues(
     cursor = span.end;
   }
   return redacted + text.slice(cursor);
+}
+
+/**
+ * A step's output, streamed with every value the step received removed, however the pipe cut
+ * it. A value can arrive split across two pieces, so the stream holds back the last
+ * `longest value - 1` characters it has seen, the most an unfinished value can occupy, and
+ * never releases text that ends inside a complete value. What it releases is therefore always
+ * whole around every value it contains, and `flush` releases the rest when the step ends.
+ *
+ * The live view lags the step by at most that many characters, a few dozen for a token.
+ */
+export class RedactedOutput {
+  private pending = "";
+  private readonly hold: number;
+  private readonly secrets: ReadonlyArray<{ name: string; value: string }>;
+
+  constructor(
+    secrets: ReadonlyArray<{ name: string; value: string }>,
+    private readonly sink: (text: string) => void,
+  ) {
+    this.secrets = secrets.filter((secret) => secret.value.length > 0);
+    this.hold = Math.max(0, ...this.secrets.map((secret) => secret.value.length - 1));
+  }
+
+  push(text: string): void {
+    if (this.secrets.length === 0) {
+      if (text) this.sink(text);
+      return;
+    }
+    this.pending += text;
+    let cut = this.pending.length - this.hold;
+    if (cut <= 0) return;
+    // A value that starts before `cut` is complete in `pending` (it is at most `hold + 1`
+    // long), so the only way to split one is to cut through it. Move the cut back to its start
+    // until no complete value straddles it; values may overlap, hence the loop.
+    for (let moved = true; moved && cut > 0;) {
+      moved = false;
+      for (const { value } of this.secrets) {
+        for (let at = this.pending.indexOf(value); at >= 0 && at < cut; at = this.pending.indexOf(value, at + 1)) {
+          if (at + value.length > cut) {
+            cut = at;
+            moved = true;
+          }
+        }
+      }
+    }
+    if (cut <= 0) return;
+    const ready = this.pending.slice(0, cut);
+    this.pending = this.pending.slice(cut);
+    this.sink(redactClaimValues(ready, this.secrets, { leadingFragments: false }));
+  }
+
+  flush(): void {
+    if (!this.pending) return;
+    const rest = this.pending;
+    this.pending = "";
+    this.sink(redactClaimValues(rest, this.secrets, { leadingFragments: false }));
+  }
 }
 
 /** A backtick run longer than any in `text`, at least `minimum` long, so `text` cannot close it. */

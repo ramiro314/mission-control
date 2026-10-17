@@ -47,6 +47,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     diagnostic: null,
     actions: ["return", "destroy"],
     dependencies: null,
+    warmLog: null,
   }],
 };
 
@@ -108,6 +109,7 @@ const state: WorktreesState = {
   executePreview: async () => true,
   discardPreview: () => {},
   dismissOperation: noop,
+  cancelOperation: noop,
 };
 
 function render(next: Partial<WorktreesState> = {}): string {
@@ -310,6 +312,7 @@ const queuedDestroy: WorktreeOperationView = {
   completed: [],
   queuedAt: 1,
   finishedAt: null,
+  warm: null,
 };
 
 test("a destroyable slot offers a bulk selection checkbox and no bulk bar until one is ticked", () => {
@@ -530,4 +533,78 @@ test("a pool without a claim shows no slot dependency state and offers to add a 
   const html = render();
   assert.doesNotMatch(html, /dependencies"/);
   assert.match(html, /No claim is configured\. Add a step to set one up\./);
+});
+
+test("Warm is offered on an idle slot and a pool with a claim, and a Warm shows its tail, Cancel, and log", () => {
+  const base = overCapacityPool.slots[0]!;
+  const claimPool: WorktreeRepositoryView = {
+    ...roomToGrowPool,
+    status: "attention",
+    counts: { ...roomToGrowPool.counts, available: 2 },
+    policy: {
+      ...roomToGrowPool.policy,
+      claim: { steps: [{ argv: ["yarn", "install"], env: [] }], timeoutMinutes: 10, fingerprintPaths: ["yarn.lock"] },
+    },
+    slots: [
+      {
+        ...base,
+        id: "w1",
+        ordinal: 1,
+        state: "available",
+        owner: null,
+        actions: ["destroy", "warm"],
+        warmLog: { id: "op-old", path: "/state/logs/worktree-warm/op-old.log" },
+      },
+      { ...base, id: "w2", ordinal: 2, state: "available", owner: null, actions: ["destroy", "warm"] },
+    ],
+  };
+  const running: WorktreeOperationView = {
+    id: "op-warm",
+    request: { action: "warm", target: { kind: "pool", poolId: claimPool.id } },
+    state: "running",
+    targets: [{ provider: "mission", id: "w2", path: "/state/worktrees/pool-2/2/repo" }],
+    error: null,
+    changed: false,
+    removals: [],
+    completed: [],
+    queuedAt: 1,
+    finishedAt: null,
+    warm: {
+      targets: [
+        { slotId: "w2", ordinal: 2, path: "/state/worktrees/pool-2/2/repo", outcome: "running", detail: null },
+        { slotId: "w3", ordinal: 3, path: "/state/worktrees/pool-2/3/repo", outcome: "skipped", detail: "the slot is leased" },
+      ],
+      tail: "$ yarn install\nresolving packages\n",
+      truncatedBytes: 0,
+      log: { id: "op-warm", path: "/state/logs/worktree-warm/op-warm.log" },
+      cancelRequested: false,
+    },
+  };
+  const html = render({ inventory: { ...inventory, repositories: [claimPool] }, operations: [running] });
+  assert.match(html, />Warm idle slots</);
+  assert.match(html, /aria-label="Warm operations"/);
+  assert.match(html, /aria-label="Warm idle slots output"[^>]*>\$ yarn install\nresolving packages</);
+  assert.match(html, />Cancel</);
+  assert.match(html, /href="\/api\/worktrees\/warm-logs\/op-warm"/);
+  assert.match(html, /aria-label="Download the full log of Warm idle slots"/);
+  assert.match(html, /skipped<\/span><span>Slot 3/);
+  assert.match(html, /the slot is leased/);
+  // The slot the Warm holds has a pending operation, so it offers no second Warm; the idle one does.
+  const slotOne = html.slice(html.indexOf('aria-label="Slot 1"'), html.indexOf('aria-label="Slot 2"'));
+  assert.match(slotOne, />Warm</);
+  assert.match(slotOne, /href="\/api\/worktrees\/warm-logs\/op-old"/);
+  assert.match(slotOne, />Last Warm log</);
+  const slotTwo = html.slice(html.indexOf('aria-label="Slot 2"'));
+  assert.match(slotTwo, /warm in progress/);
+  assert.doesNotMatch(slotTwo.slice(0, slotTwo.indexOf("</article>")), />Warm<\/button>/);
+  // A Warm is not a cleanup, so it is never listed among them.
+  assert.doesNotMatch(html, /aria-label="Background cleanup"/);
+
+  const finished = render({
+    inventory: { ...inventory, repositories: [claimPool] },
+    operations: [{ ...running, state: "finished", finishedAt: 2, warm: { ...running.warm!, cancelRequested: true } }],
+  });
+  assert.match(finished, />finished</);
+  assert.match(finished, />Dismiss</);
+  assert.doesNotMatch(finished, />Cancel</);
 });
