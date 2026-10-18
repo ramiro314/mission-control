@@ -316,12 +316,24 @@ export class CommandDocuments {
    * slot or testing row the document names has moved since: the operator applies what they
    * reviewed or nothing. Every write then goes through its catalog's compare-and-swap inside
    * one transaction, so a write that loses a race rolls the whole document back as stale.
+   *
+   * `alongside` runs last inside that same transaction, on this store's connection: clearing the
+   * pending proposal a document was applied from is written with the document or not at all. It
+   * runs in a transaction of its own when the document changes nothing, and never when the apply
+   * is refused. An error it throws rolls every write back and propagates.
    */
-  apply(repoRoot: string, document: CommandDocument, basis: CommandDocumentBasis, now = Date.now()): CommandDocumentApplyResult {
+  apply(
+    repoRoot: string,
+    document: CommandDocument,
+    basis: CommandDocumentBasis,
+    now = Date.now(),
+    alongside: () => void = () => undefined,
+  ): CommandDocumentApplyResult {
     const plan = planCommandDocument(document, this.state(repoRoot), this.folderProblem(repoRoot));
     if (!sameBasis(plan.preview.basis, basis)) return { kind: "stale", preview: plan.preview };
     if (plan.preview.problems.length > 0) return { kind: "invalid", preview: plan.preview };
     if (plan.commandWrites.length === 0 && plan.testingWrites.length === 0) {
+      this.testing.store.transact(alongside);
       return { kind: "applied", preview: plan.preview };
     }
     const result = this.commands.replaceOverridesTogether(plan.commandWrites, () => {
@@ -329,6 +341,7 @@ export class CommandDocuments {
         const written = this.testing.store.replaceTestingSettingsCas(write.key, write.expectedRevision, write.settings, now);
         if (!written.ok) throw new WorkflowCommandsTogetherConflict(`the testing settings for ${write.key}`);
       }
+      alongside();
     }, now);
     if (!result.ok) return { kind: "stale", preview: this.preview(repoRoot, document) };
     return { kind: "applied", preview: plan.preview };

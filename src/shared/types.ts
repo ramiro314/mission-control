@@ -3457,6 +3457,12 @@ export type ServerEvent =
        */
       blockedPrs: BlockedPr[];
       /**
+       * Pending Command document proposals, one per repository at most. Optional for an older
+       * daemon, which has none. Bounded by repositories with a proposal and by
+       * `COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES` per document.
+       */
+      commandDocumentProposals?: import("./command-document.ts").CommandDocumentProposal[];
+      /**
        * Every line-comment thread the daemon holds for a session it still knows about.
        *
        * BOUNDED BY LIVE SESSIONS, not by history. A thread belongs to exactly one session
@@ -3644,6 +3650,13 @@ export type ServerEvent =
    * than an upsert/remove pair: the set is small and re-derived whole on every PR poll.
    */
   | { type: "blocked_prs"; prs: BlockedPr[] }
+  /**
+   * The whole set of pending Command document proposals, emitted whenever a proposal is
+   * stored, replaced, applied or dismissed. A snapshot rather than an upsert/remove pair, for
+   * `blocked_prs`' reason: one row per repository at most, and a replacement is a remove and an
+   * add that must land together.
+   */
+  | { type: "command_document_proposals"; proposals: import("./command-document.ts").CommandDocumentProposal[] }
   /**
    * The settings status tuple, emitted whenever a config write or a task-source sweep
    * changed it. Reduced into `MissionState.settingsStatus`, which is the ONE client-side

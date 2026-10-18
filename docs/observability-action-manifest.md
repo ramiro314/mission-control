@@ -259,6 +259,7 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `complete_retro_no_change` | Retrospective owner, `session.retro_no_change` |
 | `complete_shape_tickets` | Shape tickets follow-up owner, `task.shape_tickets_complete` |
 | `set_affected_tests_command` | Command catalog owner, `workflow.command` |
+| `propose_command_document` | Command catalog owner, `workflow.command`; stores a pending proposal, never a live row |
 | `submit_ensemble_result` | Generic ensemble submission owner, `ensemble.submit` |
 | `get_plan_publication_context` | Publication-context read, explicitly excluded |
 | `submit_workflow_evidence` | Evidence owner, `runs.evidence_register`; capability probe excluded |

@@ -7543,11 +7543,13 @@ a.btn {
 .inbox-parked {
   border-left: 3px solid var(--danger);
 }
-/* Rows whose answer is a keystroke at a terminal somewhere else. A neutral rule rather than
+/* Rows whose answer is given somewhere else: a keystroke at a terminal, GitHub, or Library ›
+   Commands for a proposed document. A neutral rule rather than
    the accent, so the eye lands first on the two that can be settled from this list. */
 .inbox-dialog,
 .inbox-blocked,
 .inbox-blocked-pr,
+.inbox-command-proposal,
 .inbox-gate {
   border-left: 3px solid var(--border);
 }
@@ -18306,6 +18308,35 @@ button.lib-chip:focus-visible {
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   background: var(--panel-2);
+}
+/* A pending proposal per repository: an agent's document, waiting on a review. The attention
+   accent, because it is something owed rather than something done. */
+.wf-command-proposals {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-command-proposal {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--attention);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.wf-command-proposal > p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
 }
 /* ---- Command document import and export ---- */
 .command-document-modal { width: min(760px, 100%); }

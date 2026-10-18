@@ -359,6 +359,7 @@ export function App(): React.JSX.Element {
     pipelineRuns,
     pipelineCommissions,
     blockedPrs,
+    commandDocumentProposals,
     fileCommentThreads,
     fileCommentReviews,
     fleetCost,
@@ -1861,6 +1862,18 @@ export function App(): React.JSX.Element {
     },
     [navigate],
   );
+  /**
+   * The repository whose pending Command document proposal Library › Commands should open in its
+   * preview, set by the attention inbox and handed back (null) once the page has opened it.
+   */
+  const [commandProposalToReview, setCommandProposalToReview] = useState<string | null>(null);
+  const openCommandProposal = useCallback(
+    (repoRoot: string): void => {
+      setCommandProposalToReview(repoRoot);
+      navigate({ page: "library", shelf: "commands" });
+    },
+    [navigate],
+  );
   /** Land on the fleet with this session selected, drilling the board in if that is the layout. */
   const openSessionOnFleet = useCallback(
     (sessionId: string): void => {
@@ -2347,8 +2360,9 @@ export function App(): React.JSX.Element {
         pipelineCommissions,
         tasks,
         blockedPrs,
+        commandDocumentProposals,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, blockedPrs],
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, blockedPrs, commandDocumentProposals],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -3774,6 +3788,9 @@ export function App(): React.JSX.Element {
       <main className="lib-surface">
         <CommandLibrary
           commands={workflowCommands}
+          proposals={commandDocumentProposals}
+          reviewProposalFor={commandProposalToReview}
+          onProposalReviewOpened={() => setCommandProposalToReview(null)}
           hasSnapshot={hasSnapshot}
           initialSlot={libraryAssetId}
           isOverlayOpen={isOverlayOpen}
@@ -4575,6 +4592,7 @@ export function App(): React.JSX.Element {
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onOpenCommandProposal={openCommandProposal}
                 />
               )}
 

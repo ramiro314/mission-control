@@ -32,8 +32,13 @@ import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { TestingSettingsSection } from "./TestingSettingsSection.tsx";
-import { CommandDocumentExportModal, CommandDocumentImportModal } from "./CommandDocumentModals.tsx";
-import { commandDocumentChangeCount, type CommandDocumentApplied } from "@shared/command-document.ts";
+import { CommandDocumentExportModal, CommandDocumentImportModal, proposalOrigin } from "./CommandDocumentModals.tsx";
+import {
+  commandDocumentChangeCount,
+  commandDocumentEntryCount,
+  type CommandDocumentApplied,
+  type CommandDocumentProposal,
+} from "@shared/command-document.ts";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -364,6 +369,9 @@ function isSlot(value: string | null): value is WorkflowCheckSlot {
 
 export function CommandLibrary({
   commands,
+  proposals = [],
+  reviewProposalFor = null,
+  onProposalReviewOpened,
   hasSnapshot = false,
   initialSlot = null,
   isOverlayOpen,
@@ -373,6 +381,17 @@ export function CommandLibrary({
 }: {
   /** The live catalog, four entries in slot order. Never fetched again here. */
   commands: WorkflowCommandView[];
+  /**
+   * Pending Command document proposals, live off the snapshot. Each is drawn as a banner on its
+   * repository, whichever slot is open, and leads to the import preview.
+   */
+  proposals?: readonly CommandDocumentProposal[];
+  /**
+   * A repository whose pending proposal to open in its preview as soon as it is known: the
+   * attention inbox's Review proposal. Handed back through `onProposalReviewOpened`.
+   */
+  reviewProposalFor?: string | null;
+  onProposalReviewOpened?: () => void;
   /**
    * Whether the SSE snapshot has landed. Without it an unconfigured slot and an unread one
    * look identical, and this editor would invite an operator to type over a command that is
@@ -438,7 +457,9 @@ export function CommandLibrary({
   const [testingDirty, setTestingDirty] = useState(false);
   const anyDirty = dirty || testingDirty;
   /** Which Command document modal is open. */
-  const [documentModal, setDocumentModal] = useState<"import" | "export" | null>(null);
+  const [documentModal, setDocumentModal] = useState<"import" | "export" | "proposal" | null>(null);
+  /** The proposal the review modal opened on, held as it was: a replacement does not swap it. */
+  const [reviewing, setReviewing] = useState<CommandDocumentProposal | null>(null);
   /** What the last applied document wrote, said on the page the modal closed onto. */
   const [documentNotice, setDocumentNotice] = useState<string | null>(null);
   /**
@@ -589,9 +610,42 @@ export function CommandLibrary({
     });
   }
 
+  /** Open a pending proposal in the import preview, discarding unsaved typing through the same guard. */
+  function openProposal(proposal: CommandDocumentProposal): void {
+    guardDiscard("Reviewing a proposed document", () => {
+      adopt(selected);
+      setTestingGeneration((generation) => generation + 1);
+      setDocumentNotice(null);
+      setReviewing(proposal);
+      setDocumentModal("proposal");
+    });
+  }
+
+  // The inbox's Review proposal lands here with a repository. Opened once the proposal is in
+  // hand; a repository with none (applied or dismissed in another window meanwhile) is let go
+  // once the snapshot says so, rather than held to open a later, different proposal.
+  useEffect(() => {
+    if (reviewProposalFor === null) return;
+    const proposal = proposals.find((entry) => entry.repoRoot === reviewProposalFor);
+    if (proposal) openProposal(proposal);
+    if (proposal || hasSnapshot) onProposalReviewOpened?.();
+    // Keyed on the request and the set; `openProposal` reads current state through its guard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewProposalFor, proposals, hasSnapshot]);
+
+  function closeDocumentModal(): void {
+    setDocumentModal(null);
+    setReviewing(null);
+  }
+
+  function proposalDismissed(proposal: CommandDocumentProposal): void {
+    closeDocumentModal();
+    setDocumentNotice(`Dismissed the proposed document for ${proposal.repoRoot}. Nothing was changed.`);
+  }
+
   function documentApplied(applied: CommandDocumentApplied): void {
     const count = commandDocumentChangeCount(applied.preview);
-    setDocumentModal(null);
+    closeDocumentModal();
     setTestingGeneration((generation) => generation + 1);
     setDocumentNotice(count === 0
       ? `Nothing changed: ${applied.repoRoot} already matched the document.`
@@ -798,6 +852,32 @@ export function CommandLibrary({
                header renders one promoted verb and stops. */
             menuLabel="More Command actions"
           />
+
+          {/* One banner per repository with a pending proposal, above whichever slot is open: a
+              document spans every slot, so its banner belongs to the page, not to one slot. */}
+          {proposals.length > 0 && (
+            <ul className="wf-command-proposals" aria-label="Proposed Command documents">
+              {proposals.map((proposal) => {
+                const entries = commandDocumentEntryCount(proposal.document);
+                return (
+                  <li
+                    key={proposal.id}
+                    className="wf-command-proposal"
+                    aria-label={`Proposed Command document for ${proposal.repoRoot}`}
+                  >
+                    <p>
+                      <strong><RepositoryName path={proposal.repoRoot} /></strong>
+                      {": "}{proposalOrigin(proposal)} proposed {entries} {entries === 1 ? "entry" : "entries"} for
+                      this repository&apos;s Commands and testing settings. Nothing is applied until you review it.
+                    </p>
+                    <Tooltip label="Preview every change this proposal makes, then apply or dismiss it">
+                      <button type="button" className="btn" onClick={() => openProposal(proposal)}>Review proposal</button>
+                    </Tooltip>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
           {/* Two facts about the open slot, read-only because neither is a setting: how many
               exceptions it carries, and the shape of the execution the table below configures.
@@ -1104,8 +1184,19 @@ export function CommandLibrary({
       {documentModal === "import" && (
         <CommandDocumentImportModal
           repos={commandRepoOptions(repos, allowlist)}
-          onClose={() => setDocumentModal(null)}
+          onClose={closeDocumentModal}
           onApplied={documentApplied}
+        />
+      )}
+      {documentModal === "proposal" && reviewing && (
+        <CommandDocumentImportModal
+          key={reviewing.id}
+          repos={commandRepoOptions(repos, allowlist)}
+          proposal={reviewing}
+          proposalPending={proposals.some((entry) => entry.id === reviewing.id)}
+          onClose={closeDocumentModal}
+          onApplied={documentApplied}
+          onDismissed={proposalDismissed}
         />
       )}
       {documentModal === "export" && (

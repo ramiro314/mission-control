@@ -53,7 +53,10 @@ testing settings (`PUT /api/testing-settings`), and both of those for a whole re
 through a Command document (`POST /api/command-documents/apply`). The
 per-machine token above guards ingress only. The narrow agent tools, such as
 `set_affected_tests_command`, bound what an agent may do **through MCP**; they do not stop the
-same agent from calling the `/api/*` route directly.
+same agent from calling the `/api/*` route directly. The same holds for
+`propose_command_document`: the operator's review of a proposed Command document is an approval
+step on the MCP surface, and the apply route it leads to accepts a document from any loopback
+caller with no proposal and no review.
 
 Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
 Commands, testing settings and bulk apply) is a recorded follow-up:

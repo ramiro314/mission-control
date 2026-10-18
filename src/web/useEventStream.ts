@@ -1,6 +1,7 @@
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CommandDocumentProposal } from "@shared/command-document.ts";
 import type {
   BlockedPr,
   FileCommentReview,
@@ -123,6 +124,12 @@ export interface MissionState {
    * every `blocked_prs` frame. The daemon derives it; the inbox only draws it.
    */
   blockedPrs: BlockedPr[];
+  /**
+   * Pending Command document proposals, replaced whole by the snapshot and by every
+   * `command_document_proposals` frame. Library › Commands draws them as banners and the
+   * attention inbox lists them; neither decides anything about them.
+   */
+  commandDocumentProposals: CommandDocumentProposal[];
   /**
    * Every line-comment thread the daemon holds for a session it still knows about, each
    * carrying its own messages so a thread renders from ONE frame.
@@ -251,6 +258,7 @@ export function useEventStream(): MissionState {
     new Map(),
   );
   const [blockedPrs, setBlockedPrs] = useState<BlockedPr[]>([]);
+  const [commandDocumentProposals, setCommandDocumentProposals] = useState<CommandDocumentProposal[]>([]);
   const [fileCommentThreads, setFileCommentThreads] = useState<Map<string, FileCommentThread>>(
     new Map(),
   );
@@ -364,6 +372,8 @@ export function useEventStream(): MissionState {
           );
           // The `?? []` is the version-skew guard an older daemon needs.
           setBlockedPrs(msg.blockedPrs ?? []);
+          // The `?? []` is the version-skew guard an older daemon needs.
+          setCommandDocumentProposals(msg.commandDocumentProposals ?? []);
           // Replaced wholesale for the same reason, with this collection's own edge: a
           // session removed while a tab was disconnected takes its threads with it, and a
           // merge would leave an orphaned gutter on screen for the rest of the session.
@@ -606,6 +616,10 @@ export function useEventStream(): MissionState {
         case "blocked_prs":
           setBlockedPrs(msg.prs);
           break;
+        // Replaced whole: one proposal per repository, and a replacement must land as one frame.
+        case "command_document_proposals":
+          setCommandDocumentProposals(msg.proposals);
+          break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
@@ -725,6 +739,7 @@ export function useEventStream(): MissionState {
     pipelineRuns: pipelineRunsList,
     pipelineCommissions: pipelineCommissionsList,
     blockedPrs,
+    commandDocumentProposals,
     fileCommentThreads: fileCommentThreadsList,
     fileCommentReviews: fileCommentReviewsList,
     fleetCost,

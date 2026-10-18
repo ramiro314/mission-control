@@ -1,4 +1,5 @@
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
+import type { CommandDocumentProposal } from "@shared/command-document.ts";
 import type { BlockedPr, ReviewItem, Session, Task } from "@shared/types.ts";
 import {
   pipelineCommissionAttention,
@@ -144,6 +145,17 @@ export type AttentionItem =
     }
   | {
       /**
+       * A Command document an agent proposed for one of its task's repositories, which nothing
+       * applies until the operator reviews it. About a REPOSITORY, not a session: the proposing
+       * agent has often finished by the time anyone looks. Opening it leads to Library ›
+       * Commands' preview, where applying or dismissing it is what removes the row.
+       */
+      kind: "command_document_proposal";
+      id: string;
+      proposal: CommandDocumentProposal;
+    }
+  | {
+      /**
        * A session the fleet paints amber that NOTHING else in this fold accounts for.
        *
        * The backstop that makes `total` a superset of the pulse's `need you`. Two real
@@ -238,6 +250,8 @@ export interface AttentionInput {
   tasks?: readonly Task[];
   /** The daemon's blocked pull requests. Optional for the same fail-open reason as above. */
   blockedPrs?: readonly BlockedPr[];
+  /** Pending Command document proposals. Optional for the same fail-open reason as above. */
+  commandDocumentProposals?: readonly CommandDocumentProposal[];
 }
 
 /**
@@ -251,8 +265,9 @@ export interface AttentionInput {
  *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
  *  4. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
  *  5. **Blocked pull requests** - a conflicting PR that nothing is handling.
- *  6. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
- *  7. **Parked finalizations** - a stuck destructive step.
+ *  6. **Proposed Command documents** - an agent's proposal for a repository's Commands.
+ *  7. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
+ *  8. **Parked finalizations** - a stuck destructive step.
  *
  * The five that predate pipelines keep their relative order exactly: the new section was
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
@@ -398,6 +413,15 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     (a, b) => a.since - b.since || (a.url < b.url ? -1 : 1),
   )) {
     items.push({ kind: "blocked_pr", id: `blocked-pr:${pr.url}`, pr });
+  }
+
+  // (5b) Command documents an agent proposed, oldest first. Not marked `represented` for the
+  // blocked PR's reason: a proposal is an obligation about a repository's configuration, and an
+  // amber session that proposed one still owes its own answer below.
+  for (const proposal of [...(input.commandDocumentProposals ?? [])].sort(
+    (a, b) => a.proposedAt - b.proposedAt || (a.repoRoot < b.repoRoot ? -1 : 1),
+  )) {
+    items.push({ kind: "command_document_proposal", id: `command-document-proposal:${proposal.id}`, proposal });
   }
 
   // (6) The backstop: sessions the fleet paints amber that nothing above accounts for. See

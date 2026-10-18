@@ -51,9 +51,14 @@ obligation:
 
    A PR entering this section raises one `pr-conflict` desktop alert naming it (see
    [Blocked pull requests alert](#blocked-pull-requests-alert)).
-6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+6. **Proposed Command documents** - a [Command document](library-and-line.md#proposed-documents)
+   an agent session proposed for one of its task's repositories, oldest first. Each row names the
+   repository, the proposing task, and how many entries the document lists. **Review proposal**
+   opens Library › Commands on that proposal's preview, where you apply or dismiss it; either
+   clears the row. Nothing in a proposal is applied before then.
+7. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-7. **Stuck finalizations** - a promotion that stopped on an error.
+8. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides

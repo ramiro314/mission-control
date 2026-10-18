@@ -53,7 +53,7 @@ test("a pre-feature database upgrades additively and retains existing settings",
     assert.equal(old.prepare("SELECT * FROM managed_plans").all().length, 0);
     assert.equal(old.prepare("SELECT * FROM managed_plan_revisions").all().length, 0);
     upgradeDatabaseToCurrentSchema(old);
-    assert.equal((old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 7);
+    assert.equal((old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
   } finally { old.close(); }
 });
 
@@ -694,6 +694,6 @@ test("a fork database stamped 5 for testing settings still gains upstream's mana
     assert.deepEqual({ ...upgraded.prepare("SELECT settings_json, revision FROM testing_settings").get() },
       { settings_json: '{"tests":{"patterns":["test/**"]}}', revision: 3 }, "the fork's testing settings survive");
     assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 7);
+    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 8);
   } finally { upgraded.close(); }
 });

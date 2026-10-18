@@ -184,7 +184,9 @@ let db: DatabaseSync | undefined;
 //    database stamped 5 or 6 take its recovery point before the combined upgrade. The
 //    migrations themselves are not gated by this number, so a fork database stamped 5 still
 //    gains upstream's managed-plan schema (`test/managed-plans.test.ts` pins that path).
-export const CURRENT_DATABASE_SCHEMA_VERSION = 7;
+// 8: fork - pending Command document proposals (`command_document_proposals`), empty on an
+//    upgraded database. Machine state rather than configuration: no settings backup domain.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 8;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1038,6 +1040,23 @@ function createSchemaObjects(d: DatabaseSync): void {
       revision      INTEGER NOT NULL DEFAULT 1,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL
+    );
+
+    -- A Command document an agent session proposed for one of its task's repositories, waiting
+    -- for the operator to apply or dismiss it in Library > Commands. One row per repository: a
+    -- newer proposal replaces the row, and its new id is what an apply or dismissal of the old
+    -- one fails to match, so the newer stays pending. Nothing here is live configuration, and
+    -- no settings backup domain reads this table. document_json is validated against
+    -- CommandDocumentSchema on every write and every read.
+    CREATE TABLE IF NOT EXISTS command_document_proposals (
+      repo_root     TEXT PRIMARY KEY,
+      id            TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      task_id       TEXT,
+      task_title    TEXT,
+      session_id    TEXT,
+      session_name  TEXT,
+      proposed_at   INTEGER NOT NULL
     );
 
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,

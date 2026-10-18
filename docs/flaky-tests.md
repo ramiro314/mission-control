@@ -57,6 +57,12 @@ Command write the Mission MCP tools offer. It is not a boundary on the agent its
 loopback caller without a token, so a process in the agent's shell can write any Command
 override directly. See [Security](security.md#what-the-loopback-boundary-does-not-cover).
 
+`propose_command_document` is the other Command tool an agent has, and it writes nothing live: it
+stores a [proposed document](library-and-line.md#proposed-documents) for the calling session's own
+task repository, which the operator applies or dismisses in Library › Commands. Its review is an
+approval step on the MCP surface only, for the same reason: `POST /api/command-documents/apply`
+accepts any loopback caller.
+
 The copy the skill installs is `skills/testing-setup/assets/mission-flake-report/`, the second
 output of the same generator as this repository's copy (see [Changing the action](#changing-the-action)),
 because the packaged app ships `skills/` but not `.github/`. Run the setup again later and the

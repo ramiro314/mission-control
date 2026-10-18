@@ -1202,6 +1202,79 @@ server.registerTool(
   },
 );
 
+// Propose a Command document for one of this session's own task repositories. It writes NO live
+// row: the daemon stores it as that repository's one pending proposal (a newer one replaces it),
+// and the operator applies or dismisses it from Library › Commands. That approval step bounds the
+// MCP tool surface only: the daemon's `/api/*` routes accept any loopback caller without a token.
+// The daemon derives the session and task; `repository` may only pick among that task's
+// repositories. The document is checked in full by the daemon (`CommandDocumentSchema`), so the
+// shape here is only "an object".
+server.registerTool(
+  "propose_command_document",
+  {
+    title: "Propose a Command document for this task's repository",
+    description:
+      "Propose Command overrides and stored testing settings for one of this task's repositories, " +
+      "for the human to review and apply in Mission Control's Library › Commands. Nothing is " +
+      "applied by this call. A newer proposal for the same repository replaces the older one. " +
+      "The document is versioned JSON: {\"version\": 1, \"commands\": {\"<slot>\": [{\"path\": " +
+      "\"apps/web\", \"argv\": [...]}, {\"path\": \"apps/old\", \"remove\": true}]}, \"testing\": " +
+      "[{\"path\": \"apps/web\", \"settings\": {\"tests\": {\"patterns\": [...]}}}]}. Slots are test, " +
+      "lint, typecheck, build, documentation and affected-tests; paths are repository-relative and " +
+      "\"\" is the root. An affected-tests argv needs one element exactly {files} and one containing " +
+      "{junit}. The answer is the preview the human will see, including any problem to fix.",
+    inputSchema: {
+      document: z.record(z.unknown()).describe("The Command document, version 1."),
+      repository: z
+        .string()
+        .min(1)
+        .max(WORKFLOW_LIMITS.checkRepoRoot)
+        .optional()
+        .describe("Which of this task's repositories, as its repo-NN slot or path. Omit when the task has one."),
+    },
+  },
+  async ({ document, repository }) => {
+    try {
+      const res = await http("/mcp/command-documents/proposals", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        document,
+        ...(repository ? { repository } : {}),
+      });
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused the proposed Command document (${res.status}): ${await res.text()}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as {
+        proposal: { repoRoot: string };
+        replaced: string | null;
+        preview: {
+          commands: unknown[];
+          testing: unknown[];
+          unchanged: number;
+          problems: string[];
+        };
+      };
+      const changes = body.preview.commands.length + body.preview.testing.length;
+      const lines = [
+        `Proposed a Command document for ${body.proposal.repoRoot}` +
+          (body.replaced ? ", replacing the proposal that was pending there." : "."),
+        `Against what is stored now it makes ${changes} ${changes === 1 ? "change" : "changes"}` +
+          ` (${body.preview.unchanged} already as proposed). Nothing is applied until the human applies it.`,
+      ];
+      if (body.preview.problems.length > 0) {
+        lines.push(`The preview lists problems that block applying it:\n- ${body.preview.problems.join("\n- ")}`);
+      }
+      return textResult(lines.join("\n"));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // Submit this ensemble member's finished work for comparison. The member NEVER names itself: the
 // daemon derives which member from this session's pane/id/cwd, so the arguments carry only the
 // member's own bounded claims - no ensemble, member, task, session, worktree, artifact or ref id.

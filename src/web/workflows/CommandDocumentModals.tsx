@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   commandDocumentChangeCount,
   commandDocumentChangeSummary,
@@ -9,6 +9,7 @@ import {
   type CommandDocumentChangeKind,
   type CommandDocumentExport,
   type CommandDocumentPreview,
+  type CommandDocumentProposal,
 } from "@shared/command-document.ts";
 import type { StoredTestingSettings } from "@shared/testing-config.ts";
 import { WORKFLOW_CHECK_SLOTS, formatCheckCommand } from "@shared/workflow.ts";
@@ -154,18 +155,36 @@ function RepositoryField({
   );
 }
 
+/** Who proposed a document, as one phrase: the task's title, else the session's name. */
+export function proposalOrigin(proposal: Pick<CommandDocumentProposal, "taskTitle" | "sessionName">): string {
+  return proposal.taskTitle ? `the task "${proposal.taskTitle}"` : proposal.sessionName ? `the session "${proposal.sessionName}"` : "an agent session";
+}
+
 export function CommandDocumentImportModal({
   repos,
   onClose,
   onApplied,
+  proposal = null,
+  proposalPending = true,
+  onDismissed,
 }: {
   repos: string[];
   onClose: () => void;
   /** Called once a document has been written, with what was written. */
   onApplied: (applied: CommandDocumentApplied) => void;
+  /**
+   * A pending proposal to review instead of a pasted document. Its repository and document are
+   * fixed - what is reviewed is exactly what was proposed - and the preview is computed on open.
+   * Applying clears it; Dismiss proposal drops it unapplied.
+   */
+  proposal?: CommandDocumentProposal | null;
+  /** False once the proposal opened here is no longer the repository's pending one. */
+  proposalPending?: boolean;
+  /** Called once the proposal opened here has been dismissed. */
+  onDismissed?: (proposal: CommandDocumentProposal) => void;
 }): React.JSX.Element {
-  const [repo, setRepo] = useState("");
-  const [text, setText] = useState("");
+  const [repo, setRepo] = useState(proposal?.repoRoot ?? "");
+  const [text, setText] = useState(proposal ? commandDocumentText(proposal.document) : "");
   const [problems, setProblems] = useState<string[]>([]);
   /** The preview on screen, and the exact document it was computed for. */
   const [previewed, setPreviewed] = useState<{ preview: CommandDocumentPreview; document: CommandDocument } | null>(null);
@@ -217,6 +236,7 @@ export function CommandDocumentImportModal({
           repoRoot: previewed.preview.repoRoot,
           document: previewed.document,
           basis: previewed.preview.basis,
+          ...(proposal ? { proposalId: proposal.id } : {}),
         }),
       });
       onApplied(applied);
@@ -236,6 +256,34 @@ export function CommandDocumentImportModal({
     }
   }
 
+  // A proposal is previewed as it opens: the operator came here to review it, and a Preview
+  // button over a document they cannot edit would be one click that can only say the same thing.
+  const previewedOnOpen = useRef(false);
+  useEffect(() => {
+    if (!proposal || previewedOnOpen.current) return;
+    previewedOnOpen.current = true;
+    void preview();
+    // Once, for the proposal this modal opened on; `preview` reads the state it was seeded with.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposal]);
+
+  async function dismiss(): Promise<void> {
+    if (!proposal) return;
+    setBusy(true);
+    setProblems([]);
+    try {
+      await workflowRequest("/api/command-documents/proposals/dismiss", {
+        method: "POST",
+        body: JSON.stringify({ repoRoot: proposal.repoRoot, proposalId: proposal.id }),
+      });
+      onDismissed?.(proposal);
+    } catch (caught) {
+      setProblems(refusalLines(caught, "Could not dismiss this proposal"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const changes = previewed ? commandDocumentChangeCount(previewed.preview) : 0;
   const applicable = previewed !== null && changes > 0 && previewed.preview.problems.length === 0;
 
@@ -245,15 +293,28 @@ export function CommandDocumentImportModal({
       onClose={onClose}
       className="modal command-document-modal"
       role="dialog"
-      ariaLabel="Import a Command document"
+      ariaLabel={proposal ? "Review a proposed Command document" : "Import a Command document"}
     >
       <header className="modal-head">
-        <h2>Import a Command document</h2>
+        <h2>{proposal ? "Review a proposed Command document" : "Import a Command document"}</h2>
         <Tooltip label="Close without changing anything (Escape)">
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>✕</button>
         </Tooltip>
       </header>
       <div className="modal-body command-document-body">
+        {proposal && (
+          <p className="command-document-lead command-document-proposal-lead">
+            Proposed by {proposalOrigin(proposal)} on {new Date(proposal.proposedAt).toLocaleString()}.
+            Nothing in it is applied until you apply it here, and dismissing it changes nothing.
+          </p>
+        )}
+        {proposal && !proposalPending && (
+          <p className="command-document-stale" role="status">
+            This proposal is no longer the repository&apos;s pending one: it was replaced by a newer
+            proposal, or applied or dismissed in another window. Applying it still writes exactly
+            what this preview lists.
+          </p>
+        )}
         <p className="command-document-lead">
           One repository&apos;s Command overrides and testing settings. Rows the document does not
           mention stay as they are, and only a <code>&quot;remove&quot;: true</code> entry removes one.
@@ -263,7 +324,7 @@ export function CommandDocumentImportModal({
           id="command-document-import-repo"
           repos={repos}
           value={repo}
-          disabled={busy}
+          disabled={busy || proposal !== null}
           onChange={(value) => {
             setRepo(value);
             edited();
@@ -278,35 +339,39 @@ export function CommandDocumentImportModal({
             spellCheck={false}
             value={text}
             disabled={busy}
+            readOnly={proposal !== null}
             placeholder={'{ "version": 1, "commands": { "lint": [{ "path": "", "argv": ["npm", "run", "lint"] }] } }'}
             onChange={(event) => {
               setText(event.target.value);
               edited();
             }}
           />
-          <div className="command-document-upload">
-            <Tooltip label="Read a .json document from disk into the box above">
-              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => fileRef.current?.click()}>
-                Upload .json
-              </button>
-            </Tooltip>
-            <input
-              ref={fileRef}
-              className="command-document-file"
-              type="file"
-              accept=".json,application/json,text/plain"
-              aria-label="Command document file"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.currentTarget.value = "";
-                if (!file) return;
-                void file.text().then((loaded) => {
-                  setText(loaded);
-                  edited();
-                }, () => setProblems([`Could not read ${file.name}`]));
-              }}
-            />
-          </div>
+          {/* A proposal is reviewed as proposed, so it offers no way to load a different document. */}
+          {proposal === null && (
+            <div className="command-document-upload">
+              <Tooltip label="Read a .json document from disk into the box above">
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => fileRef.current?.click()}>
+                  Upload .json
+                </button>
+              </Tooltip>
+              <input
+                ref={fileRef}
+                className="command-document-file"
+                type="file"
+                accept=".json,application/json,text/plain"
+                aria-label="Command document file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.currentTarget.value = "";
+                  if (!file) return;
+                  void file.text().then((loaded) => {
+                    setText(loaded);
+                    edited();
+                  }, () => setProblems([`Could not read ${file.name}`]));
+                }}
+              />
+            </div>
+          )}
         </div>
         {problems.length > 0 && (
           <ul className="command-document-problems wf-error" role="alert" aria-label="Document problems">
@@ -322,9 +387,16 @@ export function CommandDocumentImportModal({
         {previewed && <CommandDocumentPreviewList preview={previewed.preview} />}
       </div>
       <footer className="modal-foot">
+        {proposal && (
+          <Tooltip label="Drop this proposal without applying any of it">
+            <button type="button" className="btn btn-ghost" disabled={busy || !proposalPending} onClick={() => void dismiss()}>
+              Dismiss proposal
+            </button>
+          </Tooltip>
+        )}
         <span className="actions-spacer" />
-        <Tooltip label="Close without changing anything">
-          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <Tooltip label={proposal ? "Close and keep the proposal pending" : "Close without changing anything"}>
+          <button type="button" className="btn btn-ghost" onClick={onClose}>{proposal ? "Later" : "Cancel"}</button>
         </Tooltip>
         {previewed ? (
           <Tooltip
