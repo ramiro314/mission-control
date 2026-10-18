@@ -605,16 +605,23 @@ export function TrustPanel({
  * and where do you change it" is the matrix's vocabulary, not each panel's.
  */
 /** Each mode as the operator reads it: what it is called, and what the agent will then do. */
-const TESTING_SETUP_CHOICES: ReadonlyArray<{ mode: TestingSetupMode; label: string; detail: string }> = [
+const TESTING_SETUP_CHOICES: ReadonlyArray<{
+  mode: TestingSetupMode;
+  label: string;
+  tooltip: string;
+  detail: string;
+}> = [
   {
     mode: "committed",
     label: "Commit a testing file",
+    tooltip: "Keep the testing settings in the repository, reviewed with its pull request",
     detail: "The agent asks you to approve every change in one form, then commits "
       + ".mission/testing.json with CI flake reporting and sets the affected-tests Command.",
   },
   {
     mode: "stored",
     label: "Store settings in Mission Control",
+    tooltip: "Keep the testing settings on this machine, applied from a proposal you review",
     detail: "For a repository that will not commit a testing file. The agent changes no file: it "
       + "proposes per-app affected-tests Commands and testing settings, which you apply from the "
       + "preview in Library › Commands.",
@@ -641,25 +648,29 @@ function TestingSetupChoice({
       <legend>Where should this repository's testing settings live?</legend>
       {TESTING_SETUP_CHOICES.map((choice, index) => (
         <div className="trust-setup-option" key={choice.mode}>
-          <label>
-            <input
-              type="radio"
-              name={`${id}-mode`}
-              value={choice.mode}
-              checked={mode === choice.mode}
-              aria-describedby={`${id}-${choice.mode}`}
-              autoFocus={index === 0}
-              onChange={() => setMode(choice.mode)}
-            />
-            <span className="trust-setup-option-label">{choice.label}</span>
-          </label>
+          <Tooltip label={choice.tooltip}>
+            <label>
+              <input
+                type="radio"
+                name={`${id}-mode`}
+                value={choice.mode}
+                checked={mode === choice.mode}
+                aria-describedby={`${id}-${choice.mode}`}
+                autoFocus={index === 0}
+                onChange={() => setMode(choice.mode)}
+              />
+              <span className="trust-setup-option-label">{choice.label}</span>
+            </label>
+          </Tooltip>
           <p id={`${id}-${choice.mode}`} className="settings-hint">{choice.detail}</p>
         </div>
       ))}
       <div className="trust-setup-actions">
-        <button type="button" className="btn btn-ghost" onClick={onCancel}>
-          Cancel
-        </button>
+        <Tooltip label="Close this choice without starting a testing setup">
+          <button type="button" className="btn btn-ghost" onClick={onCancel}>
+            Cancel
+          </button>
+        </Tooltip>
         <Tooltip label={mode ? "File and launch the testing setup task" : "Choose where the settings live first"}>
           <button
             type="button"
