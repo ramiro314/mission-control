@@ -108,6 +108,16 @@ function harnessOf(command: string): HarnessMatch | null {
   }
   // Wrapped invocation: trust a bare token only under a known launcher.
   if (!WRAPPERS.has(base)) return null;
+  // Or the command a launcher hands off after its `--`, path-qualified or not: the session
+  // scope starts an agent as `systemd-run ... -- choom -n 500 -- /abs/path/claude`. Only the
+  // token right after a separator counts, so a path that merely ends in an agent's name
+  // elsewhere on the line still does not.
+  const tokens = command.split(/\s+/);
+  for (let at = tokens.indexOf("--"); at >= 0; at = tokens.indexOf("--", at + 1)) {
+    const handedOff = (tokens[at + 1] ?? "").replace(/.*\//, "");
+    const harness = allHarnesses().find((h) => h.detect.commands.includes(handedOff));
+    if (harness) return { harness, native: false };
+  }
   for (const [agent, token] of WRAPPED_TOKENS) {
     if (token.test(command)) return { harness: harnessFor(agent), native: false };
   }
