@@ -23,11 +23,9 @@ import {
   type BacklogTrustView,
   type PlannerFact,
 } from "../../lib/backlog-copy.ts";
-import { relativeTime } from "../../lib/format.ts";
 import { BacklogTaskNotice, DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
 import { RelativeTime } from "../ClockText.tsx";
 import { Tooltip } from "../Tooltip.tsx";
-import { useClockValue } from "../../useNow.ts";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
 
@@ -141,7 +139,8 @@ function bandCount(rows: Row[]): string {
 interface PlannerRead {
   planned: boolean;
   reason: string | null;
-  facts: PlannerFact[];
+  /** The facts as of an instant: one of them is the head's age, so the popover keeps the clock. */
+  factsAt: (now: number) => PlannerFact[];
   readyCount: number;
 }
 
@@ -233,7 +232,7 @@ function BacklogRow({
             task={task}
             planned={planner.planned}
             reason={planner.reason}
-            facts={planner.facts}
+            factsAt={planner.factsAt}
             readyCount={planner.readyCount}
             busy={busy}
             onLaunch={onLaunch}
@@ -380,9 +379,6 @@ export function BacklogDrawer({
   }, [tasks, backlogPlan]);
   const ready = rows.filter((r) => r.band === "ready");
   const held = rows.filter((r) => r.band !== "ready");
-  // The planner's one clock-derived fact is the head task's age, so the drawer re-renders
-  // when that text moves rather than on every second.
-  const headAge = useClockValue((tick) => (ready[0] ? relativeTime(ready[0].task.createdAt, now ?? tick) : ""));
 
   /**
    * The planner's read of the head of the queue, or null when nothing is ready.
@@ -396,19 +392,14 @@ export function BacklogDrawer({
     const head = band[0];
     if (!head) return null;
     const entry = index.entries.get(head.id) ?? null;
+    const unblocks = dependentsIn(head, tasks, index);
     return {
       planned: entry !== null,
       reason: entry?.reason ?? null,
-      facts: plannerFacts({
-        task: head,
-        ready: band,
-        unblocks: dependentsIn(head, tasks, index),
-        now: now ?? Date.now(),
-      }),
+      factsAt: (at) => plannerFacts({ task: head, ready: band, unblocks, now: now ?? at }),
       readyCount: band.length,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- headAge is the clock, not a read: it changes exactly when the facts' "filed …" text would
-  }, [index, now, rows, tasks, headAge]);
+  }, [index, now, rows, tasks]);
 
   /** Run one row's mutation, holding that row inert until it lands and reporting a refusal. */
   async function act(

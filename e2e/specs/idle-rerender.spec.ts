@@ -79,6 +79,16 @@ test.describe("an idle board", () => {
     await expect(drawerAge).toBeVisible();
     const firstDrawerAge = await drawerAge.textContent();
     await expect(dashboard.locator(".line-bl-meta").first()).not.toHaveText(firstDrawerAge!, { timeout: 5_000 });
+    // And the planner's "filed …" fact, which the popover now clocks for itself.
+    await dashboard.getByRole("button", { name: "Next up: waiting its turn - why, and launch it now" }).click();
+    const planner = dashboard.getByRole("dialog", { name: "Why waiting its turn is next up" });
+    const filedFact = planner.locator(".bl-planner-why li", { hasText: /filed \d+s ago/ });
+    await expect(filedFact).toBeVisible();
+    const firstFact = await filedFact.textContent();
+    await expect(planner.locator(".bl-planner-why li", { hasText: "filed " })).not.toHaveText(firstFact!, {
+      timeout: 5_000,
+    });
+    await dashboard.keyboard.press("Escape");
     await dashboard.keyboard.press("Escape");
 
     // The tile's "last seen" reads seconds for its first minute and minutes after, so it moves
