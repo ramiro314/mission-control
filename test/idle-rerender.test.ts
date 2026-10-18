@@ -3,7 +3,7 @@ import test, { mock } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { LastSeen, RelativeTime } from "../src/web/components/ClockText.tsx";
+import { ClockText, LastSeen, RelativeTime } from "../src/web/components/ClockText.tsx";
 import { relativeTime, untilReset, uptime } from "../src/web/lib/format.ts";
 import { keepIfUnchanged } from "../src/web/lib/unchanged.ts";
 import { secondClock } from "../src/web/useNow.ts";
@@ -71,6 +71,15 @@ test("clock labels render the same text the render-time helpers did", () => {
   assert.equal(
     renderToStaticMarkup(createElement(LastSeen, { lastActivity: null, startedAt: now - 2 * 3_600_000 })),
     "up 2h",
+  );
+});
+
+test("a pinned instant makes a clock label a pure function of props", () => {
+  const now = 1_700_000_000_000;
+  assert.equal(renderToStaticMarkup(createElement(RelativeTime, { at: now - 42_000, now })), "42s ago");
+  assert.equal(
+    renderToStaticMarkup(createElement(ClockText, { read: (at: number) => `next in ${(now + 60_000 - at) / 1000}s`, now })),
+    "next in 60s",
   );
 });
 

@@ -9,6 +9,7 @@ import {
   type WorkflowConfirmRequest,
 } from "../../workflows/WorkflowConfirmModal.tsx";
 import { EnsembleProgressDots } from "../session-bits.tsx";
+import { ClockText } from "../ClockText.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 
@@ -67,7 +68,7 @@ function EnsembleRow({
   cancelDisabled,
 }: {
   run: EnsembleSummary;
-  now: number;
+  now?: number;
   onOpen: () => void;
   onCancel: () => void;
   cancelPending: boolean;
@@ -84,7 +85,8 @@ function EnsembleRow({
       <span className="line-ens-who">
         <strong>{run.title}</strong>
         <span className="line-ens-strategy">
-          {run.strategyLabel} · {fmtElapsed(run.createdAt, run.completedAt ?? now)} elapsed
+          {run.strategyLabel} ·{" "}
+          <ClockText read={(at) => fmtElapsed(run.createdAt, run.completedAt ?? at)} now={now} /> elapsed
         </span>
       </span>
       <span className="line-ens-progress">
@@ -141,8 +143,8 @@ export function DecideDrawer({
   summaries: readonly EnsembleSummary[];
   /** The daemon's own count, passed down rather than re-folded here. */
   attentionCount: number;
-  /** Injected so elapsed is a pure function of props - see the render tests. */
-  now: number;
+  /** Pins elapsed, for the render tests; omitted, each row's elapsed keeps its own clock. */
+  now?: number;
   onClose: () => void;
   onOpenEnsemble: (id: string) => void;
   onOpenAllEnsembles: () => void;

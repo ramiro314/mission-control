@@ -72,7 +72,6 @@ import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
 import type { LineStageId } from "@shared/line.ts";
 import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
-import { WithNow } from "./components/ClockText.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
 import type {
@@ -4267,7 +4266,7 @@ export function App(): React.JSX.Element {
             // and lifting that state up here would park a page's filter in App for the
             // lifetime of the session. Still only CONSTRUCTED here, so the ledger fetch
             // inside it happens the first time `#/shipped` is the route and never before.
-            <WithNow>{(now) => <ShipLogPage fleetCost={fleetCost} now={now} />}</WithNow>
+            <ShipLogPage fleetCost={fleetCost} />
           }
           settings={(
             <SettingsPage
@@ -4347,73 +4346,61 @@ export function App(): React.JSX.Element {
           />
         )}
         {lineDrawer === "decide" && (
-          <WithNow>{(now) => (
-            <DecideDrawer
-              summaries={ensembleSummaries}
-              attentionCount={ensembleAttentionCount}
-              now={now}
-              onClose={closeLineDrawer}
-              onOpenEnsemble={openEnsembleRun}
-              onOpenAllEnsembles={() => navigate({ page: "ensembles" })}
-            />
-          )}</WithNow>
+          <DecideDrawer
+            summaries={ensembleSummaries}
+            attentionCount={ensembleAttentionCount}
+            onClose={closeLineDrawer}
+            onOpenEnsemble={openEnsembleRun}
+            onOpenAllEnsembles={() => navigate({ page: "ensembles" })}
+          />
         )}
         {lineDrawer === "intake" && (
-          <WithNow>{(now) => (
-            <IntakeDrawer
-              schedules={schedules}
-              now={now}
-              onClose={closeLineDrawer}
-              onOpenMissions={openMissions}
-              onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
-            />
-          )}</WithNow>
+          <IntakeDrawer
+            schedules={schedules}
+            onClose={closeLineDrawer}
+            onOpenMissions={openMissions}
+            onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
+          />
         )}
         {lineDrawer === "backlog" && (
-          <WithNow>{(now) => (
-            <BacklogDrawer
-              // Every task, not `visibleBacklog`: the fleet filter narrows the BOARD, and a
-              // queue that answered "what would autopilot take next" out of a filtered list
-              // would contradict the count on the button that opened it. Dependencies also
-              // point at tasks that have already left the backlog.
-              tasks={tasks}
-              backlogPlan={foreman.backlogPlan}
-              now={now}
-              // The same three values the Foreman popover reads, from the same hook: the
-              // config the switch writes, the derived readout, and the gate that decides
-              // whether an armed autopilot actually launches anything (`worker.ts` takes
-              // `enabled && mode === "live"`). Threaded rather than re-fetched, so the two
-              // surfaces cannot disagree about a switch they both write.
-              autoBacklog={foreman.config?.autoBacklog ?? null}
-              autopilot={foreman.status?.autopilot ?? null}
-              autopilotLaunches={foremanEnabled && foremanMode === "live"}
-              onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
-              backlogTrust={backlogTrust}
-              onManageTrust={openForemanTrust}
-              onClose={closeLineDrawer}
-              onEditTask={openTaskEditor}
-              onOpenSitrep={() => {
-                // Closed, not swapped behind: the Sitrep is a modal panel over the fleet, and
-                // a drawer still pushing the board down under it is a surface the operator
-                // came back to without asking for it. This is also the one gesture that has
-                // to move the keyboard, which `closeLineDrawer` is exactly for.
-                closeLineDrawer();
-                setReportOpen(true);
-              }}
-            />
-          )}</WithNow>
+          <BacklogDrawer
+            // Every task, not `visibleBacklog`: the fleet filter narrows the BOARD, and a
+            // queue that answered "what would autopilot take next" out of a filtered list
+            // would contradict the count on the button that opened it. Dependencies also
+            // point at tasks that have already left the backlog.
+            tasks={tasks}
+            backlogPlan={foreman.backlogPlan}
+            // The same three values the Foreman popover reads, from the same hook: the
+            // config the switch writes, the derived readout, and the gate that decides
+            // whether an armed autopilot actually launches anything (`worker.ts` takes
+            // `enabled && mode === "live"`). Threaded rather than re-fetched, so the two
+            // surfaces cannot disagree about a switch they both write.
+            autoBacklog={foreman.config?.autoBacklog ?? null}
+            autopilot={foreman.status?.autopilot ?? null}
+            autopilotLaunches={foremanEnabled && foremanMode === "live"}
+            onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
+            backlogTrust={backlogTrust}
+            onManageTrust={openForemanTrust}
+            onClose={closeLineDrawer}
+            onEditTask={openTaskEditor}
+            onOpenSitrep={() => {
+              // Closed, not swapped behind: the Sitrep is a modal panel over the fleet, and
+              // a drawer still pushing the board down under it is a surface the operator
+              // came back to without asking for it. This is also the one gesture that has
+              // to move the keyboard, which `closeLineDrawer` is exactly for.
+              closeLineDrawer();
+              setReportOpen(true);
+            }}
+          />
         )}
         {lineDrawer === "shipped" && (
-          <WithNow>{(now) => (
-            <ShippedDrawer
-              now={now}
-              onClose={closeLineDrawer}
-              // No `closeLineDrawer()` beside it: leaving the fleet already drops the drawer
-              // through the route effect above, and calling both would move the keyboard back
-              // onto a stage button on a page we are navigating off.
-              onOpenShipLog={() => navigate({ page: "shipped" })}
-            />
-          )}</WithNow>
+          <ShippedDrawer
+            onClose={closeLineDrawer}
+            // No `closeLineDrawer()` beside it: leaving the fleet already drops the drawer
+            // through the route effect above, and calling both would move the keyboard back
+            // onto a stage button on a page we are navigating off.
+            onOpenShipLog={() => navigate({ page: "shipped" })}
+          />
         )}
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,

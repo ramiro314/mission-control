@@ -8,7 +8,8 @@ import { PrLink, SessionRef, sessionHandle } from "./settings-console.tsx";
 import { StandingIcon } from "./pr-standing-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { fetchInspectorPrs } from "../lib/api.ts";
-import { relativeTime } from "../lib/format.ts";
+import { RelativeTime } from "./ClockText.tsx";
+import { useClockValue } from "../useNow.ts";
 import { PR_STANDING_LABELS, prLabel, prStanding, type PrStanding } from "../lib/pr-standing.ts";
 import {
   SHIP_LOG_RANGES,
@@ -151,7 +152,7 @@ function RepoRow({
 }
 
 /** One pull request in the feed. */
-function FeedRow({ row, now }: { row: InspectorInspection; now: number }): React.JSX.Element {
+function FeedRow({ row, now }: { row: InspectorInspection; now?: number }): React.JSX.Element {
   const standing = prStanding(row);
   const label = prLabel(row);
   // The subline is whatever the label did NOT already say.
@@ -188,7 +189,7 @@ function FeedRow({ row, now }: { row: InspectorInspection; now: number }): React
             tooltip={`Opened by session ${row.sessionId}`}
           />
         )}
-        <span className="shiplog-when">{relativeTime(row.adoptedAt, now)}</span>
+        <span className="shiplog-when"><RelativeTime at={row.adoptedAt} now={now} /></span>
       </span>
     </li>
   );
@@ -197,11 +198,14 @@ function FeedRow({ row, now }: { row: InspectorInspection; now: number }): React
 export function ShipLogPage({
   /** App's live fleet-cost state, for the one KPI this page does not fold itself. */
   fleetCost,
-  /** Injected so every relative time on the page is a pure function of props, as elsewhere. */
+  /**
+   * Pins every relative time on the page, for the render tests. Omitted, each label keeps
+   * its own clock and the page itself re-renders only when the local day turns over.
+   */
   now,
 }: {
   fleetCost: FleetCost | null;
-  now: number;
+  now?: number;
 }): React.JSX.Element {
   const [rangeId, setRangeId] = useState<ShipLogRange["id"]>("week");
   const [repo, setRepo] = useState<string | null>(null);
@@ -239,11 +243,11 @@ export function ShipLogPage({
   // Every fold below is memoized on the ledger and the range rather than on `now`, which
   // ticks: re-tallying eleven hundred rows once a second to move one "2h ago" would be the
   // page's whole cost, and the day boundary these folds turn on moves once a day.
-  const day = useMemo(() => {
-    const d = new Date(now);
+  const day = useClockValue((tick) => {
+    const d = new Date(now ?? tick);
     d.setHours(0, 0, 0, 0);
     return d.getTime();
-  }, [now]);
+  });
   const inRange = useMemo(
     () => (rows ? rowsInRange(rows, day, range.days) : []),
     [rows, day, range.days],

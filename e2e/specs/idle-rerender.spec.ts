@@ -73,6 +73,14 @@ test.describe("an idle board", () => {
     const firstAge = await filed.textContent();
     await expect(filed).not.toHaveText(firstAge!, { timeout: 5_000 });
 
+    // The Backlog drawer's ages tick on their own too: it is handed no clock by App any more.
+    await dashboard.getByRole("button", { name: /^Backlog, / }).click();
+    const drawerAge = dashboard.locator(".line-bl-meta", { hasText: /\d+s ago$/ }).first();
+    await expect(drawerAge).toBeVisible();
+    const firstDrawerAge = await drawerAge.textContent();
+    await expect(dashboard.locator(".line-bl-meta").first()).not.toHaveText(firstDrawerAge!, { timeout: 5_000 });
+    await dashboard.keyboard.press("Escape");
+
     // The tile's "last seen" reads seconds for its first minute and minutes after, so it moves
     // within a minute whichever side of that line the session settled on.
     const seen = dashboard.locator("main.board .tile .tile-seen");
@@ -122,45 +130,113 @@ test.describe("an idle board", () => {
  * React 19.2 reports every component render on its "Components ⚛" performance track -
  * through `console.timeStamp`, or `performance.measure` when the props changed - which is
  * what the original report was read from. `dist/` is a production build with no such track,
- * so this one test runs the development dashboard.
+ * so these tests run the development dashboard.
  */
+async function countRenders(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __renders: Record<string, number> };
+    w.__renders = {};
+    const count = (name: string): void => {
+      const bare = name.replace(/^\u200b/, "");
+      w.__renders[bare] = (w.__renders[bare] ?? 0) + 1;
+    };
+    const timeStamp = console.timeStamp.bind(console);
+    console.timeStamp = ((name: string, ...rest: unknown[]) => {
+      if (rest[2] === "Components \u269b") count(name);
+      return (timeStamp as (...args: unknown[]) => void)(name, ...rest);
+    }) as typeof console.timeStamp;
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) count(entry.name);
+    }).observe({ entryTypes: ["measure"] });
+  });
+}
+
+async function renders(page: Page): Promise<Record<string, number>> {
+  return page.evaluate(() => ({ ...(window as unknown as { __renders: Record<string, number> }).__renders }));
+}
+
+/**
+ * Renders per component across an idle window, after proving the track is being read at
+ * all - a React upgrade that moved it would otherwise pass these tests vacuously.
+ *
+ * Twelve seconds is three of the four-second polls and two of the five-second ones.
+ */
+async function idleWindow(page: Page, mustHaveRendered: string): Promise<Record<string, number>> {
+  // Every hook's first read has landed by now.
+  await page.waitForTimeout(6_000);
+  expect(
+    (await renders(page))[mustHaveRendered] ?? 0,
+    `React's component track should have reported ${mustHaveRendered}'s first renders`,
+  ).toBeGreaterThan(0);
+  // Off every control, so a resting pointer's tooltip is not part of the count.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => {
+    (window as unknown as { __renders: Record<string, number> }).__renders = {};
+  });
+  await page.waitForTimeout(12_000);
+  return renders(page);
+}
+
 test("an idle dashboard does not re-render App", async ({ dashboard, daemon }) => {
   test.setTimeout(240_000);
   await idleSession(daemon);
   await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
   const dev = await startDevDashboard(daemon);
   try {
-    await dashboard.addInitScript(() => {
-      const w = window as unknown as { __appRenders: number };
-      w.__appRenders = 0;
-      const count = (name: unknown): void => {
-        if (name === "App" || name === "​App") w.__appRenders += 1;
-      };
-      const timeStamp = console.timeStamp.bind(console);
-      console.timeStamp = ((name: string, ...rest: unknown[]) => {
-        if (rest[2] === "Components ⚛") count(name);
-        return (timeStamp as (...args: unknown[]) => void)(name, ...rest);
-      }) as typeof console.timeStamp;
-      new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) count(entry.name);
-      }).observe({ entryTypes: ["measure"] });
-    });
+    await countRenders(dashboard);
     await dashboard.goto(`${dev.origin}/#/fleet`);
     await expect(dashboard.locator("main.board .tile")).toHaveCount(1);
-    // Every hook's first read has landed by now, and the count proves the track is being
-    // read at all - a React upgrade that moved it would otherwise pass this test vacuously.
-    await dashboard.waitForTimeout(6_000);
-    const atLoad = await dashboard.evaluate(() => (window as unknown as { __appRenders: number }).__appRenders);
-    expect(atLoad, "React's component track should have reported App's first renders").toBeGreaterThan(0);
+    const idle = await idleWindow(dashboard, "App");
+    // Before the fix this window held about eight App renders, each one re-rendering the
+    // whole board.
+    expect(idle.App ?? 0, "App should not re-render while nothing changes").toBeLessThanOrEqual(1);
+  } finally {
+    dev.stop();
+  }
+});
 
-    // Three of the four-second polls and two of the five-second ones. Before the fix this
-    // window held about six App renders, each one re-rendering the whole board.
-    await dashboard.evaluate(() => {
-      (window as unknown as { __appRenders: number }).__appRenders = 0;
-    });
-    await dashboard.waitForTimeout(12_000);
-    const idle = await dashboard.evaluate(() => (window as unknown as { __appRenders: number }).__appRenders);
-    expect(idle, "App should not re-render while nothing changes").toBeLessThanOrEqual(1);
+/**
+ * The conversation's tool runs, the second- and third-largest counts in the original report.
+ *
+ * They have no clock of their own - a folded run's span and timestamp are fixed facts - so
+ * every render they did was App's poll cascading down. Five runs here rendered 95 times each
+ * in thirty seconds before the fix: one per App render.
+ */
+test("an idle conversation does not re-render its tool runs", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  await api(daemon, "/api/tasks", {
+    repoRoot: daemon.repo,
+    title: "ran some tools",
+    intent: "run some tools",
+    workflowId: null,
+  });
+  type Row = { id: string; state: string; cwd: string | null; agentSessionId: string | null };
+  const settled = async (): Promise<Row | undefined> =>
+    (await api<Row[]>(daemon, "/api/sessions")).find((s) => s.state === "idle" && s.cwd && s.agentSessionId);
+  await expect.poll(async () => Boolean(await settled()), {
+    timeout: 120_000,
+    message: "the dispatched session should settle idle",
+  }).toBe(true);
+  // `E2E_TERMINAL_RUN` is the fake agent's folded run of tool-only turns. Delivered on its
+  // own, because the daemon wraps a dispatch's goal in context and the fake matches the
+  // exact prompt.
+  const { id } = (await settled())!;
+  await api(daemon, `/api/sessions/${encodeURIComponent(id)}/inject`, {
+    text: "E2E_TERMINAL_RUN",
+    origin: "foreman",
+    buffer: false,
+  });
+  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "terminal" }, "PUT");
+  const dev = await startDevDashboard(daemon);
+  try {
+    await countRenders(dashboard);
+    await dashboard.goto(`${dev.origin}/#/fleet`);
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+    await expect(dashboard.locator(".pty-toolrun")).toHaveCount(1);
+    const idle = await idleWindow(dashboard, "TerminalToolRun");
+    expect(idle.TerminalToolRun ?? 0, "a finished tool run should not re-render").toBe(0);
+    expect(idle.ToolChips ?? 0, "its command list should not re-render").toBe(0);
+    expect(idle.App ?? 0, "App should not re-render while nothing changes").toBeLessThanOrEqual(1);
   } finally {
     dev.stop();
   }

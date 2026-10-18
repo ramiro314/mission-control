@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
 import { fetchInspectorPrs } from "../../lib/api.ts";
-import { relativeTime } from "../../lib/format.ts";
+import { RelativeTime } from "../ClockText.tsx";
 import {
   PR_STANDINGS,
   PR_STANDING_LABELS,
@@ -81,7 +81,7 @@ function ShippedRow({
   now,
 }: {
   row: InspectorInspection;
-  now: number;
+  now?: number;
 }): React.JSX.Element {
   const standing = prStanding(row);
   const label = prLabel(row);
@@ -122,19 +122,19 @@ function ShippedRow({
             tooltip={`Opened by session ${row.sessionId}`}
           />
         )}
-        <span className="line-ship-when">{relativeTime(row.adoptedAt, now)}</span>
+        <span className="line-ship-when"><RelativeTime at={row.adoptedAt} now={now} /></span>
       </span>
     </li>
   );
 }
 
 export function ShippedDrawer({
-  /** Injected so every relative time is a pure function of props, as on the other drawers. */
+  /** Pins every relative time, for the render tests; omitted, each label keeps its own clock. */
   now,
   onClose,
   onOpenShipLog,
 }: {
-  now: number;
+  now?: number;
   onClose: () => void;
   onOpenShipLog: () => void;
 }): React.JSX.Element {
