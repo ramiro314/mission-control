@@ -8,7 +8,7 @@ import { CONVERSATION_TEXT_MAX_LENGTH } from "../../src/shared/protocol.ts";
 import { WRAPUP_PR } from "../../src/shared/queue.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { argvValue, recordsIn } from "../fixtures/records.ts";
+import { argvValue, recordsIn, scopeArgvs } from "../fixtures/records.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { settled } from "../fixtures/settle.ts";
@@ -233,14 +233,7 @@ test("on Linux the SDK session's agent runs through the session scope, and only 
 }) => {
   test.skip(process.platform !== "linux", "the session scope wraps only on Linux");
   await dispatch(dashboard, daemon);
-  // What the pass-through fakes were handed, one argument per line. See `passThrough` in
-  // fake-agents.ts: they record, then exec the agent in place.
-  const handed = (prefix: string): string[][] =>
-    existsSync(daemon.recordDir)
-      ? readdirSync(daemon.recordDir)
-          .filter((name) => name.startsWith(prefix) && name.endsWith(".argv"))
-          .map((name) => readFileSync(join(daemon.recordDir, name), "utf8").split("\n").filter(Boolean))
-      : [];
+  const handed = (prefix: "systemd-run-" | "choom-") => scopeArgvs(daemon.recordDir, prefix);
   const isClaude = (argv: string[]) => argv.some((arg) => arg.endsWith("fake-claude"));
   await expect
     .poll(() => handed("choom-").filter(isClaude).length, { message: "the session never reached choom" })

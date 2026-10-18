@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeCodexCatalogMode } from "../fixtures/fake-agents.ts";
-import { recordsIn } from "../fixtures/records.ts";
+import { recordsIn, scopeArgvs } from "../fixtures/records.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 const CODEX_DEFAULT = "Default model for dispatched Codex sessions";
@@ -157,4 +157,8 @@ test("Codex pickers show its discovered catalog and retain selection through dis
     // First page asks for no cursor at all rather than a null one.
     expect(record.params).toEqual({});
   }
+  // A probe runs no session, so it never goes through the session scope's pass-through fakes.
+  const isCodex = (argv: string[]) => argv.some((arg) => arg.endsWith("fake-codex"));
+  expect(scopeArgvs(daemon.recordDir, "choom-").filter(isCodex)).toEqual([]);
+  expect(scopeArgvs(daemon.recordDir, "systemd-run-").filter(isCodex)).toEqual([]);
 });

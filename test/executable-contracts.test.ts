@@ -94,7 +94,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Claude SDK local-spawn callback uses the harness-resolved CLI path, or the locator-resolved systemd-run and choom that scope it, and reports its exact child identity for transfer recovery" },
   ],
   "src/server/harness/codex/sdk-deps.ts": [
-    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Codex path resolved by the harness before transport creation" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Codex path resolved by the harness before transport creation, or the locator-resolved systemd-run and choom that scope a session's app-server" },
   ],
   "src/server/harness/pi/model-catalog.ts": [
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Pi path resolved before catalog discovery" },

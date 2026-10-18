@@ -315,6 +315,9 @@ async function readCatalog(
  * `tmpdir()` as the cwd for the reason Pi's probe uses it: a catalog is a property of the
  * installation and the account, not of whichever repository happened to ask, and a probe
  * should not read an arbitrary checkout's Codex configuration on the way past.
+ *
+ * No session either: a probe is short-lived and runs no agent, so it is never wrapped in a
+ * session scope and stays in the daemon's cgroup.
  */
 async function spawnProbeConnection(executable: string): Promise<AppServerTransport> {
   const env = agentSubprocessEnv(process.env);
