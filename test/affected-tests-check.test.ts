@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { dirname, join } from "node:path";
 import {
   WorkflowCheckOutcomeSchema,
 } from "../src/shared/protocol.ts";
 import {
   AFFECTED_TESTS_LIMITS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_LIMITS,
   commandTemplateProblem,
   emptyWorkflowCommandView,
   type WorkflowCheckOutcome,
@@ -16,8 +19,15 @@ import {
 import { CheckRuntime } from "../src/server/workflows/check-runtime.ts";
 import type { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { CheckSpawnOutcome, SupervisedCheckRequest } from "../src/server/workflows/check-supervisor.ts";
-import { runCheck } from "../src/server/workflows/checks.ts";
+import {
+  runCheck,
+  type CheckExecutionRequest,
+  type CheckExecutionResult,
+  type CheckResult,
+  type CheckRunReservation,
+} from "../src/server/workflows/checks.ts";
 import { checkVerdict } from "../src/server/workflows/engine.ts";
+import { AffectedTestsDetails } from "../src/web/workflows/WorkflowRuns.tsx";
 import type { StoredTestingLayer, StoredTestingSettings } from "../src/shared/testing-config.ts";
 import {
   MONOREPO_CHANGED,
@@ -50,8 +60,15 @@ function junit(root: string, cases: { file: string; name: string; failure?: stri
   return `<?xml version="1.0"?><testsuites>${body.join("")}</testsuites>`;
 }
 
-type Run = { argv: string[]; files: string[] };
-type Answer = { exitCode: number; xml?: string };
+type Run = { argv: string[]; files: string[]; workingSubpath: string; junit: string };
+type Answer = {
+  exitCode: number;
+  xml?: string;
+  /** What the run prints; `run N` by default. */
+  output?: string;
+  /** What the supervisor reports instead of an ordinary exit: a timeout, or a group left running. */
+  abnormal?: Pick<CheckSpawnOutcome, "result" | "emptiness">;
+};
 
 function harness(options: {
   root: string;
@@ -59,7 +76,15 @@ function harness(options: {
   tracked: string[];
   answer: (run: Run, index: number) => Answer;
   template?: string[];
+  /** The slot's global default; `template` (or `TEMPLATE`) unless set, and null for none. */
+  defaultCommand?: string[] | null;
   budget?: { released: number };
+  /** Answer each claim on the run budget; granted every time when only `budget` is set. */
+  reserve?: () => CheckRunReservation;
+  /** How long each "test run" takes, so overlapping runs would be seen. */
+  delayMs?: number;
+  /** Called as each run starts (true) and ends (false). */
+  onSpawn?: (entering: boolean) => void;
   /** The repository root's stored testing settings, as the daemon's catalog would answer. */
   stored?: StoredTestingSettings;
   /** Subdirectory rows, repository-relative, beside the root's. */
@@ -71,13 +96,15 @@ function harness(options: {
 }) {
   const runs: Run[] = [];
   let released = 0;
+  let reserved = 0;
+  let handedOff = 0;
   const leases = {
     acquireForAttempt: async () => options.root,
     releaseForAttempt: async () => {
       released++;
       return { outcome: "returned" };
     },
-    handOffForReclaim: () => {},
+    handOffForReclaim: () => { handedOff++; },
     unresolvedLeaseForNode: () => false,
     processes: { record: () => {}, clear: () => {} },
   } as unknown as CheckLeaseManager;
@@ -86,12 +113,16 @@ function harness(options: {
     const dest = argv.find((arg) => arg.startsWith("--test-reporter-destination="))!;
     const junitPath = dest.slice("--test-reporter-destination=".length);
     const files = argv.slice(TEMPLATE.length - 1);
-    const run = { argv, files };
+    const run = { argv, files, workingSubpath: request.workingSubpath, junit: junitPath };
+    options.onSpawn?.(true);
+    if (options.delayMs) await new Promise((done) => setTimeout(done, options.delayMs));
     const answer = options.answer(run, runs.length);
     runs.push(run);
     if (answer.xml !== undefined) writeFileSync(junitPath, answer.xml);
+    options.onSpawn?.(false);
+    if (answer.abnormal) return { ...answer.abnormal, supervisor: null };
     return {
-      result: { kind: "exited", exitCode: answer.exitCode, output: `run ${runs.length}\n`, truncatedBytes: 0 },
+      result: { kind: "exited", exitCode: answer.exitCode, output: answer.output ?? `run ${runs.length}\n`, truncatedBytes: 0 },
       emptiness: "empty",
       supervisor: null,
     };
@@ -109,29 +140,50 @@ function harness(options: {
       ? [...(options.stored ? [{ settings: options.stored, scope: "" }] : []), ...(options.subdirectories ?? [])]
       : []),
   });
-  const execute = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
+  const executor = runtime.executorFor({ attemptId: "attempt-1", submissionId: "s", nodeId: "n", testLease: false });
+  // What the executor answered, before `runCheck` bounds it for the outcome.
+  let raw: CheckExecutionResult | null = null;
+  const execute = async (request: CheckExecutionRequest): Promise<CheckExecutionResult> => {
+    raw = await executor(request);
+    return raw;
+  };
+  const run = (): Promise<CheckResult> => runCheck({
+    slot: "affected-tests",
+    command: {
+      ...emptyWorkflowCommandView("affected-tests"),
+      defaultCommand: options.defaultCommand !== undefined ? options.defaultCommand : options.template ?? TEMPLATE,
+      ...(options.overrides ? { overrides: options.overrides } : {}),
+    },
+    policy: { checksEnabled: true, repoAllowlist: [options.root] },
+    reserveRun: options.reserve || options.budget
+      ? () => {
+        reserved++;
+        return options.reserve ? options.reserve() : { granted: true, spent: 0 };
+      }
+      : null,
+    releaseRun: options.budget ? () => { options.budget!.released++; } : undefined,
+    cwd: options.sessionSubpath ? join(options.root, options.sessionSubpath) : options.root,
+    repoRoot: options.root,
+    headSha: "a".repeat(40),
+  }, { execute, checkoutSubpath: async () => options.sessionSubpath ?? "" });
   const check = async (): Promise<WorkflowCheckOutcome> => {
-    const result = await runCheck({
-      slot: "affected-tests",
-      command: {
-        ...emptyWorkflowCommandView("affected-tests"),
-        defaultCommand: options.template ?? TEMPLATE,
-        ...(options.overrides ? { overrides: options.overrides } : {}),
-      },
-      policy: { checksEnabled: true, repoAllowlist: [options.root] },
-      reserveRun: options.budget ? () => ({ granted: true, spent: 0 }) : null,
-      releaseRun: options.budget ? () => { options.budget!.released++; } : undefined,
-      cwd: options.sessionSubpath ? join(options.root, options.sessionSubpath) : options.root,
-      repoRoot: options.root,
-      headSha: "a".repeat(40),
-    }, { execute, checkoutSubpath: async () => options.sessionSubpath ?? "" });
+    const result = await run();
     assert.equal(result.kind, "outcome", JSON.stringify(result));
     if (result.kind !== "outcome") throw new Error("unreachable");
     // Whatever was recorded must read back through the durable schema unchanged.
     assert.deepEqual(WorkflowCheckOutcomeSchema.parse(result.outcome), result.outcome);
     return result.outcome;
   };
-  return { runs, check, released: () => released };
+  return {
+    runs,
+    check,
+    run,
+    released: () => released,
+    reserved: () => reserved,
+    handedOff: () => handedOff,
+    raw: () => raw,
+    budget: options.budget,
+  };
 }
 
 const CONFIG = { tests: { patterns: ["test/*.test.ts"], smokeSet: ["test/smoke.test.ts"] } };
@@ -206,10 +258,10 @@ test("a stored row that sets nothing skips like a repository with no settings at
   assert.match(outcome.note, /no stored testing settings/);
 });
 
-test("subdirectory scopes shape the selection, which still runs as one invocation of the session's override", async () => {
-  // A monorepo with two app scopes and no root tsconfig. The session stands in apps/web, so the
-  // apps/web override runs - once, for every selected file, with paths relative to apps/web and
-  // `../` for the files outside it, exactly as before scopes existed.
+test("subdirectory scopes shape the selection, and the web app's override runs only the web app's tests", async () => {
+  // A monorepo with two app scopes and no root tsconfig. Only apps/web has an override, so its
+  // tests run there, relative to it, and every other selected test runs through the global
+  // default at the root. The session standing in apps/web changes none of that.
   const root = realpathSync(monorepoTree());
   const h = harness({
     root,
@@ -223,14 +275,9 @@ test("subdirectory scopes shape the selection, which still runs as one invocatio
   });
   const outcome = await h.check();
   assert.equal(outcome.status, "passed", outcome.note);
-  assert.equal(h.runs.length, 1, "one invocation, not one per app");
-  assert.deepEqual(h.runs[0]!.files, [
-    "../api/lib/c.spec.ts",
-    "../api/smoke.spec.ts",
-    "smoke/web.smoke.ts",
-    "src/a.test.ts",
-    "src/alias.test.ts",
-    "../../tools/root-smoke.test.ts",
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.files]), [
+    ["", ["apps/api/lib/c.spec.ts", "apps/api/smoke.spec.ts", "packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]],
+    ["apps/web", ["smoke/web.smoke.ts", "src/a.test.ts", "src/alias.test.ts"]],
   ]);
   assert.deepEqual(outcome.affected?.selected.map((file) => file.path), MONOREPO_SELECTED.map((file) => file.path));
 
@@ -257,6 +304,462 @@ test("subdirectory scopes shape the selection, which still runs as one invocatio
   ]);
   // The app's own alias resolved, so there is nothing to note: the report carries no diagnostics.
   assert.equal(outcome.affected?.diagnostics, undefined);
+});
+
+// ---- Partitions: a monorepo with two apps and a package --------------------------------------
+
+/** One affected-tests override per app, as the Commands catalog keys them: by absolute path. */
+function appOverrides(root: string): Array<{ repoRoot: string; command: string[] }> {
+  return [
+    { repoRoot: join(root, "apps/web"), command: TEMPLATE },
+    { repoRoot: join(root, "apps/api"), command: TEMPLATE },
+  ];
+}
+
+type HarnessOptions = Parameters<typeof harness>[0];
+
+/** The fixture monorepo's gate, with each app's override and whatever else `over` sets. */
+function monorepoHarness(over: Partial<HarnessOptions> | ((root: string) => Partial<HarnessOptions>) = {}) {
+  const root = realpathSync(monorepoTree());
+  return {
+    root,
+    ...harness({
+      root,
+      changed: MONOREPO_CHANGED,
+      tracked: MONOREPO_TRACKED,
+      stored: MONOREPO_ROOT_SETTINGS,
+      subdirectories: MONOREPO_SUBDIRECTORY_LAYERS,
+      overrides: appOverrides(root),
+      answer: () => ({ exitCode: 0 }),
+      ...(typeof over === "function" ? over(root) : over),
+    }),
+  };
+}
+
+test("a monorepo change runs each app's selected tests in that app, and the rest at the root", async () => {
+  const h = monorepoHarness({ budget: { released: 0 } });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed", outcome.note);
+
+  // One invocation per partition: the root's (the global default) first, then each app by path,
+  // each in its own subdirectory with files relative to it. No `../` reaches any of them.
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.files]), [
+    ["", ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]],
+    ["apps/api", ["lib/c.spec.ts", "smoke.spec.ts"]],
+    ["apps/web", ["smoke/web.smoke.ts", "src/a.test.ts", "src/alias.test.ts"]],
+  ]);
+  // Selected once, across the repository.
+  assert.deepEqual(outcome.affected?.selected.map((file) => file.path), MONOREPO_SELECTED.map((file) => file.path));
+  assert.equal(outcome.note, "`node --test --test-reporter=junit --test-reporter-destination={junit} {files}`: "
+    + "Ran 7 selected test files in 3 partitions; all passed.");
+
+  // Run detail's record of each partition.
+  assert.equal(outcome.affected?.partitions?.length, 3);
+  assert.deepEqual(outcome.affected?.partitions?.map(({ subpath, source, fileCount, status, exitCode, note }) =>
+    ({ subpath, source, fileCount, status, exitCode, note })), [
+    { subpath: "", source: "default", fileCount: 2, status: "passed", exitCode: 0, note: "Ran 2 selected test files; all passed." },
+    { subpath: "apps/api", source: "override", fileCount: 2, status: "passed", exitCode: 0, note: "Ran 2 selected test files; all passed." },
+    { subpath: "apps/web", source: "override", fileCount: 3, status: "passed", exitCode: 0, note: "Ran 3 selected test files; all passed." },
+  ]);
+  assert.deepEqual(outcome.affected?.partitions?.map((partition) => partition.command), [TEMPLATE, TEMPLATE, TEMPLATE]);
+  assert.deepEqual(outcome.affected?.partitions?.map((partition) => partition.output), ["run 1\n", "run 2\n", "run 3\n"]);
+  assert.equal(outcome.affected?.unrun, undefined);
+  // The gate's output keeps every partition's, each under a banner naming it.
+  assert.match(outcome.output, /\[Mission Control\] the repository root: 2 files, passed\.\n\nrun 1\n/);
+  assert.match(outcome.output, /\[Mission Control\] apps\/web: 3 files, passed\.\n\nrun 3\n/);
+
+  // Three invocations spent one run of the budget, and kept it.
+  assert.equal(h.reserved(), 1);
+  assert.equal(h.budget!.released, 0);
+});
+
+test("each partition writes its own JUnit file and reruns only its own failed files once, in its own subdirectory", async () => {
+  let root = "";
+  const junits: string[] = [];
+  const h = monorepoHarness({
+    answer: (run, index) => {
+      junits.push(run.junit);
+      // The api app's first run fails one test; its rerun passes. The web app fails twice.
+      if (run.workingSubpath === "apps/api" && index === 1) {
+        return { exitCode: 1, xml: junit(join(root, "apps/api"), [{ file: "lib/c.spec.ts", name: "c timing", failure: "timed out" }]) };
+      }
+      if (run.workingSubpath === "apps/web") {
+        return { exitCode: 1, xml: junit(join(root, "apps/web"), [{ file: "src/a.test.ts", name: "adds", failure: "1 !== 2" }]) };
+      }
+      return { exitCode: 0 };
+    },
+  });
+  root = h.root;
+  const outcome = await h.check();
+
+  assert.equal(outcome.status, "failed");
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.files]), [
+    ["", ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]],
+    ["apps/api", ["lib/c.spec.ts", "smoke.spec.ts"]],
+    ["apps/api", ["lib/c.spec.ts"]],
+    ["apps/web", ["smoke/web.smoke.ts", "src/a.test.ts", "src/alias.test.ts"]],
+    ["apps/web", ["src/a.test.ts"]],
+  ]);
+  // A results path of its own for every run: no partition reads another's results.
+  assert.equal(new Set(junits).size, junits.length);
+  assert.equal(new Set(junits.map((path) => dirname(path))).size, 3);
+
+  // Results map back to tree paths, whichever subdirectory reported them.
+  assert.deepEqual(outcome.affected?.flakes, [{ file: "apps/api/lib/c.spec.ts", name: "c timing" }]);
+  assert.deepEqual(outcome.affected?.failures, [{
+    file: "apps/web/src/a.test.ts",
+    name: "adds",
+    message: "1 !== 2\n\nstack for adds",
+  }]);
+  assert.deepEqual(outcome.affected?.partitions?.map((partition) => [partition.subpath, partition.status, partition.exitCode]), [
+    ["", "passed", 0],
+    ["apps/api", "passed", 0],
+    ["apps/web", "failed", 1],
+  ]);
+  assert.match(outcome.note, /Ran 7 selected test files in 3 partitions; 1 partition failed \(apps\/web\); 1 test failed twice; 1 test flaked and passed on rerun\.$/);
+  // The gate's exit code is the failed partition's.
+  assert.equal(outcome.exitCode, 1);
+  const verdict = checkVerdict(outcome, "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+  if (verdict?.verdict === "fail") {
+    assert.equal(verdict.requestedChanges[0]!.title, "Fix the failing test \"adds\" in apps/web/src/a.test.ts");
+  }
+});
+
+test("partitions run one after another, every one of them even after one fails, inside one test lease", async () => {
+  let active = 0;
+  let most = 0;
+  const h = monorepoHarness({
+    delayMs: 15,
+    onSpawn: (entering) => {
+      active += entering ? 1 : -1;
+      most = Math.max(most, active);
+    },
+    // The first partition fails twice; the two after it still run.
+    answer: (run) => run.workingSubpath === ""
+      ? { exitCode: 1 }
+      : { exitCode: 0 },
+  });
+  const outcome = await h.check();
+  assert.equal(most, 1, "never two invocations at once");
+  assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["", "apps/api", "apps/web"]);
+  assert.equal(outcome.status, "failed");
+  assert.deepEqual(outcome.affected?.partitions?.map((partition) => partition.status), ["failed", "passed", "passed"]);
+  assert.match(outcome.affected!.partitions![0]!.note, /JUnit results could not be read/);
+  // One worktree lease and one test lease for the whole gate: the tree went back once.
+  assert.equal(h.released(), 1);
+});
+
+test("a selected test no Command can run is listed as unrun, and the gate decides on the partitions that ran", async () => {
+  // No global default and no root override: the package's and the root tooling's tests have
+  // nowhere to run.
+  const h = monorepoHarness({ defaultCommand: null, budget: { released: 0 } });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed", outcome.note);
+  assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["apps/api", "apps/web"]);
+  assert.deepEqual(outcome.affected?.unrun, ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]);
+  assert.equal(outcome.affected?.selectedCount, 7, "unrun tests are still selected");
+  assert.match(outcome.note, /Ran 5 selected test files in 2 partitions; all passed\. 2 selected test files were not run: no affected-tests Command covers them\.$/);
+  // The outcome names the first partition's command when the root has none.
+  assert.deepEqual(outcome.command, TEMPLATE);
+  assert.equal(h.reserved(), 1);
+  assert.equal(h.budget!.released, 0);
+
+  // A failing partition still fails the gate with tests unrun.
+  const failing = monorepoHarness({ defaultCommand: null, answer: (run) => ({ exitCode: run.workingSubpath === "apps/api" ? 1 : 0 }) });
+  assert.equal((await failing.check()).status, "failed");
+});
+
+test("a selection no Command can run at all runs nothing, lists every test as unrun, and hands its run back", async () => {
+  const root = realpathSync(monorepoTree());
+  const budget = { released: 0 };
+  // Only an override for a docs folder the selection never reaches, and no default.
+  const h = harness({
+    root,
+    changed: ["packages/ui/src/button.ts"],
+    tracked: MONOREPO_TRACKED,
+    stored: MONOREPO_ROOT_SETTINGS,
+    subdirectories: MONOREPO_SUBDIRECTORY_LAYERS,
+    overrides: [{ repoRoot: join(root, "apps/docs"), command: TEMPLATE }],
+    defaultCommand: null,
+    budget,
+    answer: () => assert.fail("must not run"),
+  });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "skipped");
+  assert.equal(outcome.exitCode, null);
+  assert.match(outcome.note, /4 selected test files were not run: no affected-tests Command covers them\./);
+  assert.deepEqual(outcome.affected?.unrun, [
+    "apps/api/smoke.spec.ts",
+    "apps/web/smoke/web.smoke.ts",
+    "packages/ui/src/button.test.ts",
+    "tools/root-smoke.test.ts",
+  ]);
+  assert.equal(outcome.affected?.partitions, undefined);
+  assert.equal(h.runs.length, 0);
+  assert.equal(budget.released, 1);
+});
+
+test("partitions do not depend on where the session stands", async () => {
+  const seen: string[] = [];
+  for (const sessionSubpath of ["", "apps/web", "apps/api/lib", "packages/ui"]) {
+    const h = monorepoHarness({ sessionSubpath });
+    const outcome = await h.check();
+    assert.equal(outcome.status, "passed", outcome.note);
+    seen.push(JSON.stringify(h.runs.map((run) => [run.workingSubpath, run.files])));
+    // The outcome names the root's command wherever the session stands.
+    assert.deepEqual(outcome.command, TEMPLATE);
+  }
+  assert.equal(new Set(seen).size, 1, seen.join("\n"));
+
+  // A root override beats the global default for the root partition, from any session.
+  const rootTemplate = [...TEMPLATE.slice(0, -1), "--root", "{files}"];
+  const withRoot = monorepoHarness((root) => ({
+    sessionSubpath: "apps/web",
+    overrides: [...appOverrides(root), { repoRoot: root, command: rootTemplate }],
+  }));
+  const outcome = await withRoot.check();
+  assert.equal(withRoot.runs[0]!.workingSubpath, "");
+  assert.ok(withRoot.runs[0]!.argv.includes("--root"));
+  assert.ok(!withRoot.runs[1]!.argv.includes("--root"));
+  assert.equal(outcome.affected?.partitions?.[0]?.source, "override");
+  assert.deepEqual(outcome.command, rootTemplate);
+});
+
+test("the deepest override holding a test wins it", async () => {
+  const nested = monorepoHarness((root) => ({
+    overrides: [...appOverrides(root), { repoRoot: join(root, "apps/web/src"), command: TEMPLATE }],
+  }));
+  await nested.check();
+  assert.deepEqual(nested.runs.map((run) => [run.workingSubpath, run.files]), [
+    ["", ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]],
+    ["apps/api", ["lib/c.spec.ts", "smoke.spec.ts"]],
+    ["apps/web", ["smoke/web.smoke.ts"]],
+    ["apps/web/src", ["a.test.ts", "alias.test.ts"]],
+  ]);
+});
+
+test("a broken template on any partition fails the gate before it runs, naming the subdirectory", async () => {
+  const broken = monorepoHarness((root) => ({
+    overrides: [{ repoRoot: join(root, "apps/web"), command: ["npm", "test"] }, appOverrides(root)[1]!],
+    budget: { released: 0 },
+    answer: () => assert.fail("must not run"),
+  }));
+  const outcome = await broken.check();
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.note, /The affected-tests Command for apps\/web: .*must contain/);
+  assert.equal(broken.runs.length, 0);
+  assert.equal(broken.budget!.released, 1);
+});
+
+test("one gate attempt spends one run of a capped budget however many partitions it has", async () => {
+  // A budget of one run, shared by every attempt of the gate: the first attempt's three
+  // partitions spend it once, and the next attempt is refused rather than spending more.
+  let spent = 0;
+  const reserve = () => {
+    const granted = spent < 1;
+    if (granted) spent++;
+    return { granted, spent: granted ? spent - 1 : spent };
+  };
+  const first = monorepoHarness({ reserve });
+  assert.equal((await first.check()).status, "passed");
+  assert.equal(first.runs.length, 3);
+  assert.equal(spent, 1);
+
+  const second = monorepoHarness({ reserve, answer: () => assert.fail("must not run") });
+  const outcome = await second.check();
+  assert.equal(outcome.status, "budget_spent");
+  assert.equal(spent, 1);
+});
+
+test("a partition that times out ends the gate there, unrun partitions after it, with the supervisor's answer kept", async () => {
+  const budget = { released: 0 };
+  const timedOut = "the affected-tests command timed out after 600000 ms";
+  const h = monorepoHarness({
+    budget,
+    // The second partition, apps/api, times out. Its group was torn down and proven empty.
+    answer: (run) => run.workingSubpath === "apps/api"
+      ? { exitCode: 0, abnormal: { result: { kind: "infrastructure", reason: timedOut }, emptiness: "empty" } }
+      : { exitCode: 0 },
+  });
+  const result = await h.run();
+  // apps/web, which would have run third, was never spawned.
+  assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["", "apps/api"]);
+  // The supervisor's own outcome, not a verdict built from the partitions that did finish.
+  assert.deepEqual(result, { kind: "infrastructure", reason: timedOut });
+  // A proven-empty group hands the tree back; a command did run, so the budget stays spent.
+  assert.equal(h.released(), 1);
+  assert.equal(h.handedOff(), 0);
+  assert.equal(h.reserved(), 1);
+  assert.equal(budget.released, 0);
+});
+
+test("a rerun that leaves its process group running ends the gate before the next partition", async () => {
+  let root = "";
+  const h = monorepoHarness({
+    answer: (run, index) => {
+      if (run.workingSubpath !== "apps/api") return { exitCode: 0 };
+      // The api app fails once, then its rerun exits 0 with a child still in the group.
+      if (index === 1) {
+        return { exitCode: 1, xml: junit(join(root, "apps/api"), [{ file: "lib/c.spec.ts", name: "c", failure: "boom" }]) };
+      }
+      return {
+        exitCode: 0,
+        abnormal: { result: { kind: "exited", exitCode: 0, output: "rerun\n", truncatedBytes: 0 }, emptiness: "not-empty" },
+      };
+    },
+  });
+  root = h.root;
+  const result = await h.run();
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.files]), [
+    ["", ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts"]],
+    ["apps/api", ["lib/c.spec.ts", "smoke.spec.ts"]],
+    ["apps/api", ["lib/c.spec.ts"]],
+  ]);
+  assert.equal(result.kind, "infrastructure");
+  if (result.kind !== "infrastructure") return;
+  // The rerun's own exit is what the reason carries, and the tree is kept for reclamation.
+  assert.match(result.reason, /ran and exited 0, but that result is not reported/);
+  assert.match(result.reason, /could not be proven empty \(not-empty\)/);
+  assert.equal(h.handedOff(), 1);
+  assert.equal(h.released(), 0);
+});
+
+/** The `index`th one-test folder of `capHarness`, in path order. */
+function folderOf(index: number): string {
+  return `pkg/p${String(index).padStart(3, "0")}`;
+}
+
+/**
+ * A repository of `count` one-test folders. `covered` gives each folder its own override; otherwise
+ * only `run/` has one, so every folder's test is selected but unrun. `withRoot` adds a test at the
+ * root and a global default to run it; otherwise there is no default.
+ */
+function capHarness(count: number, covered: boolean, withRoot = false) {
+  const root = tree({ tests: { patterns: ["**/*.test.ts"], includeImporters: false } });
+  const folders = Array.from({ length: count }, (_, index) => folderOf(index));
+  const files = [
+    ...(withRoot ? ["a.test.ts"] : []),
+    ...folders.map((folder) => `${folder}/a.test.ts`),
+    ...(covered ? [] : ["run/a.test.ts"]),
+  ];
+  for (const file of files) {
+    mkdirSync(join(root, dirname(file)), { recursive: true });
+    writeFileSync(join(root, file), "export {};\n");
+  }
+  const overrides = (covered ? folders : ["run"]).map((folder) => ({ repoRoot: join(root, folder), command: TEMPLATE }));
+  return harness({
+    root,
+    changed: files,
+    tracked: files,
+    overrides,
+    defaultCommand: withRoot ? TEMPLATE : null,
+    answer: () => ({ exitCode: 0 }),
+  });
+}
+
+/** One section of the rendered card: from its heading to the next of `ends`, or the end. */
+function section(html: string, heading: string, ends: string[]): string {
+  const start = html.indexOf(heading);
+  assert.ok(start >= 0, `${heading} is rendered`);
+  const stops = ends.map((end) => html.indexOf(end, start + heading.length)).filter((at) => at >= 0);
+  return html.slice(start, stops.length === 0 ? html.length : Math.min(...stops));
+}
+
+for (const [count, withRoot] of [[51, false], [WORKFLOW_LIMITS.commandOverrides, true]] as const) {
+  const total = count + (withRoot ? 1 : 0);
+  test(`${total} partitions are every one recorded and listed in run detail`, async () => {
+    const h = capHarness(count, true, withRoot);
+    // `check` parses the outcome through the durable schema, so the most a gate can have fits it.
+    const outcome = await h.check();
+    assert.equal(outcome.status, "passed", outcome.note);
+    assert.equal(h.runs.length, total);
+    const partitions = outcome.affected!.partitions!;
+    assert.deepEqual(partitions.map((partition) => partition.subpath), h.runs.map((run) => run.workingSubpath));
+    if (withRoot) assert.equal(total, AFFECTED_TESTS_LIMITS.partitions);
+
+    const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: outcome.affected! }));
+    const listed = section(html, `Partitions (${total})`, ["Selected but unrun", "Settings:"]);
+    assert.equal(listed.match(/aria-label="Partition /g)?.length, total);
+    assert.match(listed, new RegExp(`aria-label="Partition ${folderOf(count - 1)}"`));
+    assert.doesNotMatch(listed, /not listed here/);
+  });
+}
+
+for (const count of [51, 300]) {
+  test(`${count} selected-but-unrun tests are every one recorded and listed in run detail`, async () => {
+    const h = capHarness(count, false);
+    const outcome = await h.check();
+    // The one covered test ran and passed; the gate decided on it.
+    assert.equal(outcome.status, "passed", outcome.note);
+    assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["run"]);
+    const unrun = outcome.affected!.unrun!;
+    assert.equal(unrun.length, count);
+    assert.equal(unrun[0], `${folderOf(0)}/a.test.ts`);
+    assert.equal(unrun.at(-1), `${folderOf(count - 1)}/a.test.ts`);
+    assert.match(outcome.note, new RegExp(`${count} selected test files were not run`));
+
+    const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: outcome.affected! }));
+    const listed = section(html, `Selected but unrun (${count})`, ["Settings:"]);
+    // Five inline and the rest folded, every one of them a list item.
+    assert.equal(listed.match(/<li><code>/g)?.length, count);
+    assert.match(listed, new RegExp(`${count - 5} more unrun`));
+    assert.doesNotMatch(listed, /not listed here/);
+  });
+}
+
+test("the gate's combined output keeps the outcome's tail, counting every byte it drops, while each partition keeps its own", async () => {
+  const outputs: Record<string, string> = {
+    "": `root start ${"r".repeat(2_990)}root end\n`,
+    "apps/api": `api start ${"a".repeat(2_990)}api end\n`,
+    "apps/web": `web start ${"w".repeat(2_990)}web end\n`,
+  };
+  const h = monorepoHarness({ answer: (run) => ({ exitCode: 0, output: outputs[run.workingSubpath]! }) });
+  const outcome = await h.check();
+  assert.equal(outcome.status, "passed", outcome.note);
+
+  // Bounded by the executor itself, not only by `runCheck` afterwards.
+  const raw = h.raw();
+  assert.equal(raw?.kind, "decided");
+  if (raw?.kind !== "decided") return;
+  const kept = Buffer.byteLength(raw.output);
+  assert.ok(kept <= WORKFLOW_EXECUTION_LIMITS.checkOutput, `kept ${kept} bytes`);
+  const banners = ["the repository root: 2 files", "apps/api: 2 files", "apps/web: 3 files"]
+    .map((label) => `[Mission Control] ${label}, passed.\n\n`);
+  const whole = banners.map((banner, index) => banner + Object.values(outputs)[index]).join("\n\n");
+  assert.equal(raw.truncatedBytes, Buffer.byteLength(whole) - kept);
+  // The tail: the last partition's output ends it, and the first partition's start is gone.
+  assert.ok(raw.output.endsWith("web end\n"));
+  assert.ok(!raw.output.includes("root start"));
+  // The outcome records the same bound, and each partition its own 2,000-byte tail.
+  assert.equal(outcome.output, raw.output);
+  assert.equal(outcome.truncatedBytes, raw.truncatedBytes);
+  for (const partition of outcome.affected!.partitions!) {
+    assert.equal(Buffer.byteLength(partition.output), AFFECTED_TESTS_LIMITS.partitionOutput);
+    assert.equal(
+      partition.truncatedBytes,
+      Buffer.byteLength(outputs[partition.subpath]!) - AFFECTED_TESTS_LIMITS.partitionOutput,
+    );
+  }
+});
+
+test("a single partition reads exactly as the one invocation it always was", async () => {
+  const root = tree(CONFIG);
+  const h = harness({ root, changed: ["test/a.test.ts"], tracked: TRACKED, answer: () => ({ exitCode: 0 }) });
+  const outcome = await h.check();
+  assert.match(outcome.note, /: Ran 2 selected test files; all passed\.$/);
+  assert.equal(outcome.output, "run 1\n");
+  assert.deepEqual(outcome.affected?.partitions, [{
+    subpath: "",
+    command: TEMPLATE,
+    source: "default",
+    fileCount: 2,
+    status: "passed",
+    exitCode: 0,
+    note: "Ran 2 selected test files; all passed.",
+    output: "run 1\n",
+    truncatedBytes: 0,
+  }]);
 });
 
 test("a repository with no subdirectory scope records neither scopes nor diagnostics", async () => {

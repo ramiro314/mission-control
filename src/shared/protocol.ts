@@ -120,6 +120,7 @@ import {
   WORKFLOW_TEST_SELECTION_REASONS,
   commandTemplateProblem,
   AFFECTED_TESTS_LIMITS,
+  AFFECTED_TESTS_PARTITION_STATUSES,
   WORKFLOW_CHECK_STATUSES,
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
@@ -7068,6 +7069,20 @@ export const WorkflowAffectedTestsReportSchema = z.object({
   }),
   diagnostics: z.array(z.string().min(1).max(AFFECTED_TESTS_LIMITS.diagnostic))
     .max(AFFECTED_TESTS_LIMITS.diagnostics).optional(),
+  // Optional: absent before partitions existed, and on a gate that ran nothing.
+  partitions: z.array(z.object({
+    subpath: z.string().max(WORKFLOW_LIMITS.checkRepoRoot),
+    command: z.array(z.string()),
+    source: z.enum(["override", "default"]),
+    fileCount: z.number().int().min(0),
+    status: z.enum(AFFECTED_TESTS_PARTITION_STATUSES),
+    exitCode: z.number().int(),
+    note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+    output: z.string().max(AFFECTED_TESTS_LIMITS.partitionOutput),
+    truncatedBytes: z.number().int().min(0),
+  })).max(AFFECTED_TESTS_LIMITS.partitions).optional(),
+  // Every selected file no command ran: bounded by the selection, not by a display cap.
+  unrun: z.array(AffectedTestPathSchema).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */

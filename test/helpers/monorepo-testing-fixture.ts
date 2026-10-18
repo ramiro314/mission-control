@@ -11,9 +11,10 @@ import {
   type TestingScopes,
 } from "../../src/shared/testing-config.ts";
 
-// A fixture monorepo for affected-test selection with subdirectory testing scopes: two apps and
-// some root tooling, and deliberately NO root tsconfig.json. Shared by the scope tests and the
-// gate tests, and meant to be reused by per-app import resolution and partitioning.
+// A fixture monorepo for affected-test selection with subdirectory testing scopes: two apps, a
+// shared package with no testing scope of its own, and some root tooling, and deliberately NO root
+// tsconfig.json. Shared by the scope tests, the import resolution tests and the gate tests, which
+// partition it.
 
 /** A stored layer at a repository-relative scope, validated through the stored schema. */
 export function storedLayer(scope: string, settings: unknown): StoredTestingLayer {
@@ -28,7 +29,7 @@ export function rootLayers(committed: unknown | null, stored: unknown | null = n
 }
 
 export const MONOREPO_FILES: Record<string, string> = {
-  "package.json": JSON.stringify({ private: true, workspaces: ["apps/*"] }),
+  "package.json": JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
   "tools/root.test.ts": "export {};\n",
   "tools/root-smoke.test.ts": "export {};\n",
   "apps/web/package.json": JSON.stringify({ name: "web" }),
@@ -46,16 +47,21 @@ export const MONOREPO_FILES: Record<string, string> = {
   "apps/api/lib/c.spec.ts": "export {};\n",
   "apps/api/lib/old.test.ts": "export {};\n",
   "apps/api/smoke.spec.ts": "export {};\n",
+  // A shared package: no scope and no Command of its own, so its tests belong to the root.
+  "packages/ui/package.json": JSON.stringify({ name: "ui" }),
+  "packages/ui/src/button.ts": "export const button = 1;\n",
+  "packages/ui/src/button.test.ts": "import { button } from \"./button.ts\";\n",
 };
 
 export const MONOREPO_TRACKED = Object.keys(MONOREPO_FILES);
 
-/** The change: one source file in each app, and two test files in the api app. */
+/** The change: one source file in each app and in the package, and two test files in the api app. */
 export const MONOREPO_CHANGED = [
   "apps/web/src/util.ts",
   "apps/api/lib/b.ts",
   "apps/api/lib/c.spec.ts",
   "apps/api/lib/old.test.ts",
+  "packages/ui/src/button.ts",
 ];
 
 /** The root's stored settings, generic and repository-relative. */
@@ -97,5 +103,7 @@ export const MONOREPO_SELECTED = [
   { path: "apps/web/src/a.test.ts", reason: "imports", via: "apps/web/src/util.ts" },
   // Imports the same file through the web app's own `@web/*` alias.
   { path: "apps/web/src/alias.test.ts", reason: "imports", via: "apps/web/src/util.ts" },
+  // The package's test, under the root's patterns, importing the package's changed file.
+  { path: "packages/ui/src/button.test.ts", reason: "imports", via: "packages/ui/src/button.ts" },
   { path: "tools/root-smoke.test.ts", reason: "smoke" },
 ] as const;

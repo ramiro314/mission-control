@@ -189,7 +189,7 @@ test("each scope's own patterns and smoke set select its tests, and keys it does
   const scopes = monorepoScopes();
 
   assert.deepEqual(Object.fromEntries(testUniverse(scopes, MONOREPO_TRACKED)), {
-    "": ["tools/root-smoke.test.ts", "tools/root.test.ts"],
+    "": ["packages/ui/src/button.test.ts", "tools/root-smoke.test.ts", "tools/root.test.ts"],
     "apps/api": ["apps/api/lib/b.spec.ts", "apps/api/lib/c.spec.ts"],
     "apps/web": ["apps/web/src/a.test.ts", "apps/web/src/alias.test.ts", "apps/web/src/untouched.test.ts"],
   });
@@ -228,5 +228,6 @@ test("a repository with no subdirectory scope still resolves each app's own alia
     "apps/api/lib/old.test.ts",
     "apps/web/src/a.test.ts",
     "apps/web/src/alias.test.ts",
+    "packages/ui/src/button.test.ts",
   ]);
 });
