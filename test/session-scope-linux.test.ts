@@ -64,6 +64,11 @@ function systemctlUser(...args: string[]): Promise<string> {
   });
 }
 
+/** The user manager's systemd version, from `systemctl --version`'s first line. */
+async function systemdVersion(): Promise<number> {
+  return Number(/systemd (\d+)/.exec(await systemctlUser("--version"))?.[1] ?? 0);
+}
+
 async function loadState(unit: string): Promise<string> {
   return (await systemctlUser("show", unit, "-p", "LoadState")).trim().replace(/^LoadState=/, "");
 }
@@ -128,7 +133,10 @@ test("an OOM kill of a child stops that scope only, and outcome reads it before 
   assert.ok(sibling > 0 && !alive(sibling), "its sleeping sibling is gone");
   const verdict = await scope.outcome(wrapped.unit!);
   assert.equal(verdict?.oomKilled, true);
-  assert.ok((verdict?.peakBytes ?? 0) > 0);
+  // `MemoryPeak` arrived in systemd 256. An older one (Ubuntu 24.04's 255, which GitHub's
+  // runners carry) reports none, and `outcome` says so rather than inventing a number.
+  if ((await systemdVersion()) >= 256) assert.ok((verdict?.peakBytes ?? 0) > 0, `peak ${verdict?.peakBytes}`);
+  else assert.equal(verdict?.peakBytes, null);
   await waitFor("the unit to be reset", async () => (await loadState(wrapped.unit!)) === "not-found", 20_000);
   assert.ok(alive(process.pid));
 });
