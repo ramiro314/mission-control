@@ -646,7 +646,7 @@ function TestingSetupChoice({
   return (
     <fieldset className="settings-radios trust-setup-choice" aria-label={`Testing setup for ${repo}`}>
       <legend>Where should this repository's testing settings live?</legend>
-      {TESTING_SETUP_CHOICES.map((choice, index) => (
+      {TESTING_SETUP_CHOICES.map((choice) => (
         <div className="trust-setup-option" key={choice.mode}>
           <Tooltip label={choice.tooltip}>
             <label>
@@ -656,7 +656,6 @@ function TestingSetupChoice({
                 value={choice.mode}
                 checked={mode === choice.mode}
                 aria-describedby={`${id}-${choice.mode}`}
-                autoFocus={index === 0}
                 onChange={() => setMode(choice.mode)}
               />
               <span className="trust-setup-option-label">{choice.label}</span>
