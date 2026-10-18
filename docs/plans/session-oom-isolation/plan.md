@@ -97,6 +97,9 @@ agent. `src/server/discovery/processes.ts` already lists `systemd-run` among its
 - A scope started without `--collect` keeps `Result=oom-kill` and `MemoryPeak` after it fails.
   `systemctl --user show` reads them the moment the agent exits, even while a straggler keeps the
   scope `deactivating`. `reset-failed` then unloads it.
+- When the agent itself is the victim, the kernel SIGKILLs it directly (exit 137). In five runs a
+  read right after the exit already showed `failed` with `Result=oom-kill`. But systemd learns of
+  the kill from the cgroup's OOM event, not from the agent's exit, so nothing orders the two.
 
 ## Design
 
@@ -278,9 +281,17 @@ flowchart LR
 Steps 1 and 5 land in slice 1 with `outcome`. Steps 2 to 4 land in slice 3.
 
 1. The spawn seam (the Claude hook, `spawnAppServer`) hears its child exit and calls
-   `outcome(unit)`: `systemctl --user show <unit> -p Result -p MemoryPeak` with a 2 s timeout,
-   then `systemctl --user reset-failed <unit>`. systemd sets `Result=oom-kill` the moment it reacts
-   to the kill, before the agent exits, so it is there to read.
+   `outcome(unit)`. Within a 2 s budget, it reads
+   `systemctl --user show <unit> -p ActiveState -p Result -p MemoryPeak`, then runs
+   `systemctl --user reset-failed <unit>`:
+   - **`Result=oom-kill`:** returns at once. This is the case where the kernel killed a child and
+     systemd then stopped the agent, so `Result` was set before the agent exited.
+   - **`active` or `deactivating` with any other `Result`:** polls every 100 ms until the unit
+     reads `failed` or `inactive`, or reads `oom-kill`, or the budget runs out. This covers the agent
+     itself being the kernel's victim: SIGKILLed directly, its exit can reach the daemon before
+     systemd has handled the cgroup's OOM event.
+   - **Budget runs out:** the last read decides, so a unit still `active` because a straggler
+     outlived a clean exit reads as not OOM-killed. `reset-failed` runs in every case.
 2. The driver awaits that outcome before it emits `exited`. The event gains an optional cause:
    `{ kind: "exited"; reason; resumable; cause?: { kind: "out_of_memory"; peakBytes: number | null } }`.
 3. `registry.applyDriverEvent` passes the cause to `beginEviction`, still the one eviction path,
@@ -384,6 +395,9 @@ Run single files with the suite's loader, for example
     log line says it timed out, and `ready()` still settles.
   - **`outcome`:**
     - `oom-kill` with a peak gives `oomKilled: true`;
+    - the agent killed directly: a unit that reads `active` with `Result=success` first, then
+      `failed` with `oom-kill` on a later poll, gives `oomKilled: true`;
+    - a unit still `active` when the 2 s budget runs out gives `oomKilled: false`;
     - `success` gives `oomKilled: false`;
     - a `systemctl` failure or timeout gives `null`;
     - `reset-failed` follows every read.
@@ -433,6 +447,8 @@ scopes in the operator's user manager never collide with or reset the operator's
   machine even if the cap were not applied. The wrapped process then exits from systemd's SIGTERM, its
   sleeping sibling is gone, `outcome` returns `{ oomKilled: true, peakBytes > 0 }`, and after
   `reset-failed` the unit is gone. The test process, standing in for the daemon, is still alive.
+- A wrapped process that is itself the hog is SIGKILLed by the kernel (exit 137), and `outcome`
+  still returns `{ oomKilled: true }`.
 - `BindsTo`: a stand-in daemon in a scope of its own wraps a sleeper bound to it. Stopping the
   stand-in's scope stops the sleeper's.
 
@@ -658,3 +674,22 @@ choom* (minor). Revision 8 fixes it and changes nothing else.
   still steers the kernel toward agents in a container with no systemd. The goal and AC7 now say
   that such a machine makes no scope and changes only that. "Exactly as today" now covers macOS
   and Windows alone, and the fallback and test text stand as written.
+
+### GitHub Inspector finding 5 on PR #550 (2026-10-17)
+
+The finding was *outcome read races systemd when the agent itself is the OOM victim* (major).
+Revision 9 fixes it and changes nothing else.
+
+- **The problem.** The plan said `Result=oom-kill` is always set before the agent exits. That
+  holds only when the kernel kills a child and systemd then stops the agent. When the kernel kills
+  the agent itself, its exit can reach the daemon before systemd has handled the cgroup's OOM
+  event. A single read would then see `Result=success` on a still-`active` unit, and the task would
+  read "no outcome recorded".
+- **The fix.**
+  - `outcome` returns at once on `oom-kill`. On a unit still `active` or `deactivating`, it polls
+    `ActiveState` and `Result` every 100 ms within the existing 2 s budget before it decides, and
+    `reset-failed` runs in every case.
+  - A unit test covers an `active`-then-`failed` sequence and a unit that outlasts the budget.
+  - The Linux test covers a wrapped process that is itself the SIGKILLed hog.
+  - A probe on this machine (five runs of a self-OOMing scope) already read `failed oom-kill`
+    straight after the exit. It is recorded as observed, not as a guarantee.
