@@ -145,6 +145,9 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
   busctl: spec("busctl", "systemd D-Bus client", "busctl", "BUSCTL_BIN"),
   "systemd-run": spec("systemd-run", "systemd transient unit runner", "systemd-run", "SYSTEMD_RUN_BIN"),
   systemctl: spec("systemctl", "systemd manager control", "systemctl", "SYSTEMCTL_BIN"),
+  // util-linux. Puts an SDK agent session at a raised `oom_score_adj`, inside or without its
+  // session scope (`platform/session-scope.ts`). Not operator-facing, so it has no Setup row.
+  choom: spec("choom", "OOM score adjuster", "choom", "CHOOM_BIN"),
 };
 
 /** Truly fixed OS utilities. They are never searched and must be invoked by this path. */

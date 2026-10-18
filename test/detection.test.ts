@@ -176,6 +176,31 @@ test("a bare command name counts only under a known wrapper", () => {
   }
 });
 
+test("choom, the session scope's OOM-score wrapper, is seen through with its value argument", () => {
+  // `platform/session-scope.ts` launches an SDK agent as `choom -n 500 -- <agent>`, alone or
+  // after `systemd-run ... --`. Both exec in place, so the process table shows that command
+  // line only until the agent's own exec. `-n 500 --` must not read as the command.
+  for (const { h } of CASES) {
+    for (const name of h.detect.commands) {
+      const commands = [
+        `choom -n 500 -- ${name}`,
+        `/usr/bin/choom -n 500 -- ${name} --flag`,
+        `/usr/bin/choom -n 500 -- /home/op/.local/bin/${name} --flag`,
+        `/usr/bin/systemd-run --user --scope --unit=mission-control-1a2b3c4d-s-n0nce -- /usr/bin/choom -n 500 -- /home/op/.local/bin/${name} --flag`,
+      ];
+      for (const command of commands) {
+        assert.equal(classifyAgent(command), h.id, command);
+        assert.equal(nativeAgent(command), null, `launcher is not native: ${command}`);
+      }
+    }
+  }
+  assert.equal(classifyAgent("choom -n 500 -- vim notes.md"), null);
+  // Only the command handed off after `--` counts by path: a path elsewhere does not.
+  assert.equal(classifyAgent("choom -n 500 -- ls /home/op/.local/bin/claude"), null);
+  assert.equal(classifyAgent("sh -c 'cd /work/pi && ls'"), null);
+  assert.equal(classifyAgent("choom -p 1234"), null);
+});
+
 test("no two harnesses answer to the same command name", () => {
   // Detection walks the registry in order, so an overlap would silently resolve every
   // session of one harness to whichever was declared first.

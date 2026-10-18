@@ -167,6 +167,7 @@ async function launch(
 ): Promise<{ handle: SdkSessionHandle; events: SdkEvent[]; drained: Promise<void> }> {
   const spec = codexSdkSpec({ connect: async () => server });
   const handle = await spec.launch({
+    sessionId: "sdk:test-session",
     cwd: "/work/repo",
     stateHome: "/tmp/mission-sdk-state",
     prompt: "do the thing",
@@ -1629,6 +1630,7 @@ test("a launch whose handshake fails throws and leaves no subprocess behind", as
   await assert.rejects(
     () =>
       spec.launch({
+        sessionId: "sdk:test-session",
         cwd: "/work/repo",
         stateHome: "/tmp/mission-sdk-state",
         prompt: "go",
@@ -1673,6 +1675,7 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
     },
   });
   const handle = await spec.launch({
+    sessionId: "sdk:test-session",
     cwd: "/work/repo",
     stateHome: "/tmp/mission-sdk-state",
     prompt: "",
@@ -1814,6 +1817,7 @@ test("a subprocess spawn error rejects launch with its diagnostic", async () => 
   await assert.rejects(
     () =>
       spec.launch({
+        sessionId: "sdk:test-session",
         cwd: process.cwd(),
         stateHome: "/tmp/mission-sdk-state",
         prompt: "do the thing",

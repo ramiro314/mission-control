@@ -227,6 +227,37 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   await expect(card).toContainText("Claude e2e Mock");
 });
 
+test("on Linux the SDK session's agent runs through the session scope, and only the session does", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.skip(process.platform !== "linux", "the session scope wraps only on Linux");
+  await dispatch(dashboard, daemon);
+  // What the pass-through fakes were handed, one argument per line. See `passThrough` in
+  // fake-agents.ts: they record, then exec the agent in place.
+  const handed = (prefix: string): string[][] =>
+    existsSync(daemon.recordDir)
+      ? readdirSync(daemon.recordDir)
+          .filter((name) => name.startsWith(prefix) && name.endsWith(".argv"))
+          .map((name) => readFileSync(join(daemon.recordDir, name), "utf8").split("\n").filter(Boolean))
+      : [];
+  const isClaude = (argv: string[]) => argv.some((arg) => arg.endsWith("fake-claude"));
+  await expect
+    .poll(() => handed("choom-").filter(isClaude).length, { message: "the session never reached choom" })
+    .toBeGreaterThan(0);
+  // Exactly one: the session. The titler's one-shot query keeps the vendor's own spawner.
+  const chooms = handed("choom-").filter(isClaude);
+  expect(chooms).toHaveLength(1);
+  expect(chooms[0]!.slice(0, 3)).toEqual(["-n", "500", "--"]);
+  expect(chooms[0]).toContain("--input-format");
+  // A machine with a systemd user manager also puts it in a scope; one without (CI) gets
+  // choom alone. Either way no real scope is made: the systemd-run here is the fake.
+  for (const argv of handed("systemd-run-").filter(isClaude)) {
+    expect(argv).toContain("--slice=app-mission\\x2dcontrol\\x2dsessions.slice");
+    expect(argv).toContain("OOMPolicy=stop");
+  }
+});
+
 test("the dispatch shortcut works after focus leaves the task description", async ({
   dashboard,
   daemon,

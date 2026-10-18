@@ -245,6 +245,8 @@ export interface ClaudeSdkDeps {
   query(params: {
     prompt: AsyncIterable<ClaudeSdkUserMessage>;
     options: ClaudeSdkQueryOptions;
+    /** The dashboard session id, which names the session scope the CLI runs in. */
+    sessionLabel: string;
   }): Promise<ClaudeSdkQuery>;
   /** The absolute `claude` path to pin the subprocess to. Rejects when it cannot be found. */
   executable(): Promise<string>;

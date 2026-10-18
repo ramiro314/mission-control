@@ -489,6 +489,13 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // terminal would open a real window on every Focus a spec drives.
     MISSION_XDG_TERMINAL_EXEC_BIN: join(home, "missing-xdg-terminal-exec"),
     TERMINAL: "",
+    // The session scope's three executables, at pass-through fakes for every spec. The daemon
+    // is not under the test runner, so on a machine with a systemd user manager it would put
+    // each SDK session in a real scope of the operator's manager, and reset this instance's
+    // failed scopes there at startup. See `passThrough` in fake-agents.ts.
+    MISSION_SYSTEMD_RUN_BIN: bins.systemdRun,
+    MISSION_SYSTEMCTL_BIN: bins.systemctl,
+    MISSION_CHOOM_BIN: bins.choom,
     // The keep-awake provider, redirected at a fake that records its argv. With the
     // override present this daemon is "supported" on any platform - which is the point:
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a
