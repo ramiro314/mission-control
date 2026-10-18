@@ -936,6 +936,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
       } else {
         // The CLI's scope verdict, before `exited`: an OOM stop is the one ending this driver
         // cannot see from the stream, and the task's failure text is where it is told.
+        // Stopped first, as the Codex driver does: a turn accepted during that wait would be
+        // reported delivered and then lost. `finish` still runs, since `query` is still set.
+        if (query.exitCause) this.stopped = true;
         const cause = query.exitCause ? await query.exitCause() : null;
         this.finish(reason, cause);
       }
