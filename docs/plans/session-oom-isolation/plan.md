@@ -17,7 +17,8 @@ so the unit systemd stops is that session's and nothing else's.
 - A task whose session was stopped this way says so: "stopped: the session ran out of memory
   (peak 15.2 GB)".
 - Stopping or restarting the daemon still stops its SDK sessions, as it does today.
-- macOS, Windows, and Linux without a systemd user manager spawn exactly as today.
+- macOS and Windows spawn exactly as today. Linux without a systemd user manager makes no scope,
+  and its only change is `choom -n 500` in front of the agent, when `choom` resolves.
 
 ## Non-goals
 
@@ -476,8 +477,9 @@ changed), and `npm run test:e2e` for the new spec.
   memory (peak N GB)", visible in the dashboard, and the daemon logs one line. Nothing resumes
   automatically.
 - **AC6.** Stopping the daemon's unit stops its session scopes.
-- **AC7.** macOS, Windows, and Linux without `systemd-run` or a user manager spawn exactly as
-  today. On Linux, one log line says when isolation is off or partial. A hung or refused probe
+- **AC7.** macOS and Windows spawn exactly as today. Linux without `systemd-run` or a user
+  manager makes no scope, and its only change is `choom -n 500` in front of the agent, when
+  `choom` resolves. On Linux, one log line says when isolation is off or partial. A hung or refused probe
   never delays a session start by more than its 5 s timeout, and never fails one.
 - **AC8.** The docs listed above describe the behavior and the per-OS fallback.
 - **AC9.** A daemon's startup reset touches only its own instance's scopes. The following are
@@ -643,3 +645,16 @@ Revision 7 fixes it and changes nothing else.
     probe can delay a session start.
 - **Superseded.** Repair round 2's note that the probe runs `process.execPath -e ""` now reads
   `<runtime> -e ""` with the runtime above.
+
+### GitHub Inspector finding 4 on PR #550 (2026-10-17)
+
+The finding was *AC7 says no-systemd Linux spawns unchanged, but the fallback still wraps in
+choom* (minor). Revision 8 fixes it and changes nothing else.
+
+- **The problem.** The goal and AC7 said Linux without `systemd-run` or a user manager spawns
+  exactly as today. The fallback and its unit test still put `choom -n 500` in front of the agent
+  there.
+- **The fix.** It keeps `choom`, as the approved design already does: a raised `oom_score_adj`
+  still steers the kernel toward agents in a container with no systemd. The goal and AC7 now say
+  that such a machine makes no scope and changes only that. "Exactly as today" now covers macOS
+  and Windows alone, and the fallback and test text stand as written.
