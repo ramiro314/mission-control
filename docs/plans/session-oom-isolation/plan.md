@@ -294,10 +294,18 @@ Steps 1 and 5 land in slice 1 with `outcome`. Steps 2 to 4 land in slice 3.
      outlived a clean exit reads as not OOM-killed. `reset-failed` runs in every case.
 2. The driver awaits that outcome before it emits `exited`. The event gains an optional cause:
    `{ kind: "exited"; reason; resumable; cause?: { kind: "out_of_memory"; peakBytes: number | null } }`.
-3. `registry.applyDriverEvent` passes the cause to `beginEviction`, still the one eviction path,
-   which keeps it until `session_remove` has been handled. Nothing changes on the wire:
-   `session_exit` and `session_remove` keep their shapes.
-4. `settleAgentGone` reads the cause and writes `failed` with "stopped: the session ran out of
+3. `registry.applyDriverEvent` passes the cause to `beginEviction`, still the one eviction path.
+   - **Where it is kept.** `beginEviction` records the cause in a registry map keyed by session
+     id, and the cause outlives the session row. `remove()` still deletes the row and emits
+     `session_remove` as today, and leaves the map entry in place.
+   - **How it is read.** `registry.takeExitCause(sessionId)` returns the entry and deletes it.
+   - **When it is cleared.** An entry nobody takes, from a session with no task, is dropped 60 s
+     after `session_remove`.
+   - **On the wire, nothing changes:** `session_exit` and `session_remove` keep their shapes.
+4. `settleAgentGone` calls `registry.takeExitCause` for the task's session before it clears
+   `sessionId`. A scout's task reaches `settleAgentGone` a beat after `session_remove`, once its
+   archive refuses the completion, and it still finds the cause inside that window. With a cause,
+   it writes `failed` with "stopped: the session ran out of
    memory (peak 15.2 GB)", plus the existing retained-worktree suffix. The peak is `MemoryPeak` in
    base-1024 units with one decimal, as systemd's own summary prints it. Without `MemoryPeak`
    (older systemd), the parenthetical is dropped. The existing task-failed alert carries the text.
@@ -418,6 +426,9 @@ Run single files with the suite's loader, for example
   - the session factory awaits `ready()` before it builds the bash tool.
 - **Registry and tasks** (slice 3):
   - an `exited` event with an `out_of_memory` cause fails the task with the out-of-memory text;
+  - `takeExitCause` returns the cause once after `session_remove`, and an entry nobody takes is
+    gone 60 s later;
+  - a scout task that settles a beat after `session_remove` still gets the out-of-memory text;
   - without a cause the text is unchanged;
   - a merged pull request still settles `done`;
   - eviction still goes through `beginEviction` alone.
@@ -520,6 +531,9 @@ changed), and `npm run test:e2e` for the new spec.
 - **The Electron main crash** that followed (the core dump at 02:44:05) is not addressed.
 - **GitHub-hosted CI has no user manager**, so the real-systemd test skips there. The argv and
   flow tests run everywhere.
+- **A daemon restart inside the 8 s linger loses the exit cause**, which is held only in memory.
+  The startup reconcile then fails the task with the generic "no outcome recorded" text. The
+  per-OOM log line, written when `outcome` read the scope, still records the OOM.
 - **A session's scope survives a daemon that dies without its unit stopping**, as with a
   `tsx watch` restart. The agent exits on stdin EOF, as an unscoped child does today.
 
@@ -693,3 +707,22 @@ Revision 9 fixes it and changes nothing else.
   - The Linux test covers a wrapped process that is itself the SIGKILLed hog.
   - A probe on this machine (five runs of a self-OOMing scope) already read `failed oom-kill`
     straight after the exit. It is recorded as observed, not as a guarantee.
+
+### GitHub Inspector finding 6 on PR #550 (2026-10-17)
+
+The finding was *No named channel from the eviction cause to settleAgentGone* (minor). Revision
+10 fixes it and changes nothing else.
+
+- **The problem.** `remove()` deletes the session row before it emits `session_remove`, and the
+  event carries only `{ id }`. So `settleAgentGone`, reached through `reconcileTasksBoundTo`, had
+  nowhere named to read the cause from. A daemon restart in the 8 s window was also unaddressed.
+- **The fix.**
+  - `beginEviction` records the cause in a registry map, and `registry.takeExitCause(sessionId)`
+    returns it once and deletes it.
+  - An entry nobody takes is dropped 60 s after `session_remove`. That window also covers the
+    scout path, which settles a beat later.
+  - `settleAgentGone` takes the cause before it clears `sessionId`, and the wire shapes do not
+    change.
+  - The restart case is stated as a known gap rather than made durable: the cause is in memory
+    only, and the per-OOM log line still records the OOM.
+  - Tests cover the take-once read, the 60 s drop, and the late scout settlement.
