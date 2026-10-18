@@ -130,7 +130,11 @@ test("an OOM kill of a child stops that scope only, and outcome reads it before 
   const exit = await exited(child);
   assert.ok(exit.signal === "SIGTERM" || exit.code === 143, `the wrapped process exited from systemd's SIGTERM, not ${JSON.stringify(exit)}`);
   const sibling = Number(out.trim().split("\n")[0]);
-  assert.ok(sibling > 0 && !alive(sibling), "its sleeping sibling is gone");
+  assert.ok(sibling > 0);
+  // Stopped by the same SIGTERM, but it can outlive the shell by a beat: orphaned when the
+  // shell exits, it is reaped by whoever adopts it, and `kill(pid, 0)` still answers for an
+  // unreaped zombie. Gone well inside the scope's own stop timeout either way.
+  await waitFor("its sleeping sibling to be gone", () => !alive(sibling), 5_000);
   const verdict = await scope.outcome(wrapped.unit!);
   assert.equal(verdict?.oomKilled, true);
   // `MemoryPeak` arrived in systemd 256. An older one (Ubuntu 24.04's 255, which GitHub's
