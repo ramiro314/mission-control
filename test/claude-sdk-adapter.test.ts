@@ -171,6 +171,7 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
 
 function launchOpts(over: Record<string, unknown> = {}) {
   return {
+    sessionId: "sdk:test-session",
     cwd: "/wt/one",
     stateHome: "/tmp/mission-sdk-state",
     prompt: "do the thing",

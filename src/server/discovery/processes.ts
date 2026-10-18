@@ -49,9 +49,9 @@ const WRAPPERS = new Set([
   "yarn", "bun", "sudo", "ssh", "script", "timeout", "gtimeout", "nice",
   "stdbuf", "caffeinate", "uv", "poetry", "direnv",
   "watchexec", "entr", "mise", "asdf",
-  // Linux launchers: a scope or inhibitor around the agent, a new session, or a Flatpak
-  // sandbox reaching out to the host.
-  "systemd-run", "systemd-inhibit", "setsid", "flatpak-spawn",
+  // Linux launchers: a scope or inhibitor around the agent, its raised OOM score, a new
+  // session, or a Flatpak sandbox reaching out to the host.
+  "systemd-run", "choom", "systemd-inhibit", "setsid", "flatpak-spawn",
 ]);
 
 /**

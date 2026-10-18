@@ -735,6 +735,12 @@ export interface ResumeSpec {
 }
 
 export interface SdkLaunchOptions {
+  /**
+   * The dashboard session id this launch is for. A driver names the session scope its agent
+   * process runs in after it (`platform/session-scope.ts`), so an operator can tell which
+   * session a scope belongs to.
+   */
+  sessionId: string;
   cwd: string;
   /** Disposable Mission Control state home shared by this session's agent and MCP children. */
   stateHome: string;

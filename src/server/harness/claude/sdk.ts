@@ -1350,9 +1350,9 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       };
       session.configureRelaunch((prompt, resume) => {
         const { resume: _previousResume, ...base } = options;
-        return deps.query({ prompt, options: { ...base, resume } });
+        return deps.query({ prompt, options: { ...base, resume }, sessionLabel: opts.sessionId });
       });
-      const query = await deps.query({ prompt: session.input(), options });
+      const query = await deps.query({ prompt: session.input(), options, sessionLabel: opts.sessionId });
       session.attach(query);
       return session;
     },

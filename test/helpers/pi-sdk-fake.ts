@@ -330,6 +330,7 @@ export function launchOptions(
   over: Partial<import("../../src/server/harness/types.ts").SdkLaunchOptions> = {},
 ): import("../../src/server/harness/types.ts").SdkLaunchOptions {
   return {
+    sessionId: "sdk:test-session",
     cwd: "/repo",
     stateHome: "/tmp/disposable-state",
     prompt: "do the thing",

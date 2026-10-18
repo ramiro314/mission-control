@@ -335,6 +335,64 @@ does not refuse without a display: the WezTerm GUI that answered its socket is t
 daemon reaching it from outside a desktop session (over SSH, for example) runs the call exactly
 as before. The endpoint lookup, focus and every other WezTerm call run as before. macOS spawns are unchanged.
 
+<a id="agent-session-scopes"></a>**Agent session scopes.** A Claude SDK session's agent, and every
+process it starts, runs in a transient scope of its own, so an out-of-memory kill inside one
+session stops that session only. Without one the agent shares the daemon's unit, and when the
+kernel kills any process there, systemd's `OOMPolicy=stop` stops the whole unit: the daemon, the
+dashboard and every other session. The `spawnClaudeCodeProcess` hook in
+`src/server/harness/claude/sdk-deps.ts` wraps the CLI through `src/server/platform/session-scope.ts`:
+
+```
+systemd-run --user --scope --quiet
+  --unit=mission-control-<instance>-<session>-<nonce>
+  --slice=app-mission\x2dcontrol\x2dsessions.slice
+  -p OOMPolicy=stop -p TimeoutStopSec=10s
+  -p BindsTo=<daemon unit> -p After=<daemon unit>
+  -- choom -n 500 -- <claude> <args...>
+```
+
+- `<instance>` is the first 8 hex characters of the SHA-256 of the daemon's resolved state
+  home, so every daemon sharing the user manager (worktree daemons, the installed unit, test
+  daemons) names its scopes apart. `<session>` is the session id without its `sdk:` prefix, and
+  the nonce keeps a resumed session's scope apart from its predecessor's.
+- The slice lists every session and their total memory:
+  `systemctl --user status 'app-mission\x2dcontrol\x2dsessions.slice'`.
+- `OOMPolicy=stop` is explicit, so a `DefaultOOMPolicy=continue` cannot change it, and
+  `TimeoutStopSec=10s` bounds how long a stopping session can take.
+- `BindsTo` and `After` name the daemon's own unit, the leaf of its `/proc/self/cgroup` when that
+  is a `.service` or `.scope` of this user's manager, so stopping or restarting the daemon's unit
+  still stops its sessions. Otherwise both are left out, and a session ends on stdin EOF and the
+  daemon's own shutdown, as an unscoped one does.
+- `choom -n 500` (util-linux) puts the agent and its children above the dashboard renderer
+  (Chromium sets 300) and the daemon in a global out-of-memory, so the kernel picks a session
+  first.
+- The scope has no `--collect`. When the agent exits, the daemon reads the scope's `Result` and
+  `MemoryPeak` within 2 s, logs one `[session-scope] session <id> ran out of memory` line when
+  systemd stopped it for an OOM kill, and runs `systemctl --user reset-failed` on it once systemd
+  has finished stopping it. At startup the daemon resets this instance's failed
+  `mission-control-<instance>-*.scope` units and never another daemon's.
+
+Only interactive sessions are wrapped. Catalog probes and one-shot queries keep the vendor's
+own spawner and stay in the daemon's cgroup. Terminal-runtime agents are already outside it, in
+their tmux or Herdr server's scope or WezTerm's GUI.
+
+Once per daemon run, at startup, the daemon probes the property set by running its own runtime
+(`ELECTRON_RUN_AS_NODE=1` under Electron) with `-e ""` in a throwaway scope, for at most 5 s. A
+session start waits on that probe, never longer, and never fails because of it.
+
+| Machine | What a session gets |
+| --- | --- |
+| macOS, Windows | Spawned exactly as before |
+| Linux with `systemd-run` and a user manager | The scope above, under `choom` when it resolves |
+| Linux, this systemd refuses `OOMPolicy` | The scope without `OOMPolicy`, so an OOM kill may not stop the whole session |
+| Linux, the probe is refused or times out | No scope; `choom` when it resolves |
+| Linux without `systemd-run` or a user manager | No scope; `choom` when it resolves |
+
+On Linux, one daemon log line says when isolation is off or partial and why, including a missing
+`choom`. Under the test runner the production scope wraps nothing, and the e2e daemon runs
+pass-through `systemd-run`, `systemctl` and `choom` fakes, so neither creates a scope in the
+operator's user manager.
+
 iTerm2, on macOS only,
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
 windows, tabs, and split sessions, addresses every action by the session's stable unique ID,

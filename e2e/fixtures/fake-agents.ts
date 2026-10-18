@@ -40,6 +40,9 @@ export interface FakeAgents {
     keepAwake: string;
     gh: string;
     jira: string;
+    systemdRun: string;
+    systemctl: string;
+    choom: string;
   };
 }
 
@@ -885,6 +888,48 @@ setInterval(() => {
 `;
 
 /**
+ * Pass-through stand-ins for `systemd-run` and `choom`, so no e2e daemon creates a scope in
+ * the operator's user manager or changes an `oom_score_adj` there. The e2e daemon is not under
+ * the test runner, so the session scope (`platform/session-scope.ts`) wraps for real on a
+ * machine with a user manager, and the tmux and Herdr servers go through `systemd-run` too.
+ *
+ * Each records its argv into the record directory and execs what follows its first `--`, which
+ * is exactly what the real ones do once their unit or score is set: the agent runs in place,
+ * with its own pid, stdio and exit. POSIX `sh` rather than Node, because only `exec` keeps the
+ * pid the daemon recorded.
+ */
+const passThrough = (name: string) => `#!/bin/sh
+dir="\${MC_E2E_RECORD_DIR:-}"
+if [ -n "$dir" ]; then
+  mkdir -p "$dir"
+  printf '%s\\n' "$@" > "$dir/${name}-$$.argv"
+fi
+while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "$#" -gt 0 ] && shift
+exec "$@"
+`;
+
+/**
+ * The stand-in `systemctl`. It answers the two verbs the session scope asks, `show` as a scope
+ * that ended cleanly and `reset-failed` as done, and refuses every other verb, as the
+ * no-graphical-session spec's own stand-in does, so `show-environment` reads as "no manager
+ * environment" and nothing reaches the operator's manager.
+ */
+const FAKE_SYSTEMCTL = `#!/bin/sh
+dir="\${MC_E2E_RECORD_DIR:-}"
+if [ -n "$dir" ]; then
+  mkdir -p "$dir"
+  printf '%s\\n' "$@" > "$dir/systemctl-$$.argv"
+fi
+[ "$1" = "--user" ] && shift
+case "$1" in
+  show) printf 'ActiveState=inactive\\nResult=success\\nMemoryPeak=[not set]\\n' ;;
+  reset-failed) ;;
+  *) exit 1 ;;
+esac
+`;
+
+/**
  * Write the three fakes into `home` and return their paths.
  *
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
@@ -942,5 +987,20 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(jira, FAKE_JIRA);
   chmodSync(jira, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
+  const systemdRun = join(binDir, "fake-systemd-run");
+  writeFileSync(systemdRun, passThrough("systemd-run"));
+  chmodSync(systemdRun, 0o755);
+
+  const systemctl = join(binDir, "fake-systemctl");
+  writeFileSync(systemctl, FAKE_SYSTEMCTL);
+  chmodSync(systemctl, 0o755);
+
+  const choom = join(binDir, "fake-choom");
+  writeFileSync(choom, passThrough("choom"));
+  chmodSync(choom, 0o755);
+
+  return {
+    recordDir,
+    bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira, systemdRun, systemctl, choom },
+  };
 }

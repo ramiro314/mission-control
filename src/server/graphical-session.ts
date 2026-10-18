@@ -79,7 +79,8 @@ async function readManagerEnvironment(): Promise<NodeJS.ProcessEnv | null> {
   return result.code === 0 ? parseManagerEnvironment(result.stdout) : null;
 }
 
-function socketExists(path: string): boolean {
+/** Whether a socket exists at `path`. Exported for `platform/session-scope.ts`. */
+export function socketExists(path: string): boolean {
   try {
     return statSync(path).isSocket();
   } catch {
@@ -180,8 +181,11 @@ export interface UserScopeDeps {
  * socket does: `systemd --user` listens on `$XDG_RUNTIME_DIR/systemd/private` for as long as
  * it runs, and another user's runtime directory is mode 0700, so it cannot be seen from here.
  * `--scope` then reaches the manager over the session bus, which has to be there too.
+ *
+ * Exported for `platform/session-scope.ts`, which asks the same question before it puts an
+ * agent session in a scope of its own.
  */
-function userManagerReachable(env: NodeJS.ProcessEnv, exists: (path: string) => boolean): boolean {
+export function userManagerReachable(env: NodeJS.ProcessEnv, exists: (path: string) => boolean): boolean {
   const runtimeDir = env.XDG_RUNTIME_DIR?.trim();
   if (!runtimeDir || !exists(join(runtimeDir, "systemd", "private"))) return false;
   return Boolean(env.DBUS_SESSION_BUS_ADDRESS?.trim()) || exists(join(runtimeDir, "bus"));

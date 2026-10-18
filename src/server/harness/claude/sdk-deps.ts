@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
+import { oomStopLine, sessionScope, type SessionScope } from "../../platform/session-scope.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkOneShotDeps,
@@ -69,7 +70,19 @@ type StartQueryParams =
   | Parameters<ClaudeSdkDeps["query"]>[0]
   | Parameters<ClaudeSdkOneShotDeps["query"]>[0];
 
-async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
+/**
+ * `startQuery` with the session scope its interactive sessions run in.
+ *
+ * Only an interactive session installs the spawn hook, so only it is wrapped: the agent and
+ * everything it starts go in a scope of their own on Linux (`platform/session-scope.ts`), and
+ * an OOM kill there stops that session rather than the daemon. Catalog probes and one-shot
+ * queries keep the vendor's own spawner and stay in the daemon's cgroup.
+ */
+export function createClaudeSdkQuery(scope: SessionScope): (params: StartQueryParams) => Promise<ClaudeSdkQuery> {
+  return (params) => startQuery(params, scope);
+}
+
+async function startQuery(params: StartQueryParams, scope: SessionScope): Promise<ClaudeSdkQuery> {
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
   type VendorParams = Parameters<typeof query>[0];
   type VendorOptions = NonNullable<VendorParams["options"]>;
@@ -105,12 +118,25 @@ async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
   }
   let recoveryProcessId: number | null = null;
   if ("canUseTool" in params.options) {
+    const label = "sessionLabel" in params ? params.sessionLabel : "session";
+    // The hook below must return its child synchronously, so the probe that decides what
+    // `wrap` may use is awaited here, before the vendor can call it.
+    await scope.ready();
     // The vendor query deliberately exposes no PID. Its supported local-spawn seam
     // lets the owning driver supply exact lifetime evidence without guessing by cwd
-    // or replacing the SDK's stdin, abort, or process-cleanup protocol.
-    options.spawnClaudeCodeProcess = ({ command: executable, args, cwd, env, signal }) => {
+    // or replacing the SDK's stdin, abort, or process-cleanup protocol. The session scope
+    // execs in place, so the child's pid, stdio, signals and exit are still the CLI's.
+    options.spawnClaudeCodeProcess = ({ command, args: commandArgs, cwd, env, signal }) => {
+      const { bin: executable, args, unit } = scope.wrap(command, commandArgs, env, label);
       const child = spawn(executable, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       recoveryProcessId = child.pid ?? null;
+      if (unit) {
+        child.once("exit", () => {
+          void scope.outcome(unit).then((outcome) => {
+            if (outcome?.oomKilled) console.warn(oomStopLine(label, unit, outcome.peakBytes));
+          });
+        });
+      }
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (data: string) => {
         options.stderr?.(data);
@@ -142,20 +168,20 @@ export async function startClaudeModelQuery(params: {
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
   type VendorQuery = ReturnType<typeof query>;
   type CatalogControl = Pick<VendorQuery, "supportedModels">;
-  const started = await startQuery(params);
+  const started = await startQuery(params, sessionScope);
   return started as ClaudeSdkQuery & CatalogControl;
 }
 
 /** What the shipped driver uses. Tests replace the whole object. */
 export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
-  query: startQuery,
+  query: createClaudeSdkQuery(sessionScope),
   executable: claudeExecutable,
   env: (cwd, stateHome) => sdkSubprocessEnv(process.env, cwd, stateHome),
 };
 
 /** The same lazy vendor import and binary/env answers, narrowed for one fresh query. */
 export const defaultClaudeSdkOneShotDeps: ClaudeSdkOneShotDeps = {
-  query: startQuery,
+  query: createClaudeSdkQuery(sessionScope),
   executable: claudeExecutable,
   env: (cwd) => sdkSubprocessEnv(process.env, cwd),
 };

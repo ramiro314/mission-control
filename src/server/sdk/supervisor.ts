@@ -404,6 +404,7 @@ export class SdkSupervisor {
     let handle: SdkSessionHandle;
     try {
       handle = await spec.launch({
+        sessionId: id,
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
@@ -1189,6 +1190,7 @@ export class SdkSupervisor {
     let adopted = false;
     try {
       const handle = await spec.launch({
+        sessionId: row.id,
         cwd: row.cwd,
         stateHome,
         // No prompt: this is a continuation, and re-sending the original intent would make the
