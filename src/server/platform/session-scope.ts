@@ -19,7 +19,8 @@ import { underTestRunner } from "../util/test-runner.ts";
 // exit status are the agent's exactly as an unwrapped spawn's would be.
 //
 // Each harness wraps at the spawn seam it already owns (the Claude `spawnClaudeCodeProcess`
-// hook today) through the one `SessionScope` below; nothing above a seam branches on it.
+// hook, and Pi's bash-tool `spawnHook` for each command) through the one `SessionScope` below;
+// nothing above a seam branches on it.
 
 /** The slice every session scope goes in, nested under `app.slice` by its name. */
 export const SESSIONS_SLICE = "app-mission\\x2dcontrol\\x2dsessions.slice";
@@ -46,18 +47,31 @@ export interface SessionScopeOutcome {
   peakBytes: number | null;
 }
 
+/** The argv to spawn in place of `[bin, ...args]`, and the scope's unit when one was made. */
+export interface ScopedCommand {
+  bin: string;
+  args: string[];
+  unit: string | null;
+}
+
+/** Wraps one short-lived command of a session launch. See `SessionScope.commands`. */
+export type CommandScopes = (bin: string, args: readonly string[], env: NodeJS.ProcessEnv) => ScopedCommand;
+
 export interface SessionScope {
   /** Settles once this daemon run's probe has decided what `wrap` may use. Never rejects. */
   ready(): Promise<void>;
   /** The argv to spawn in place of `[bin, ...args]`, and the scope's unit when one was made. */
-  wrap(
-    bin: string,
-    args: readonly string[],
-    env: NodeJS.ProcessEnv,
-    label: string,
-  ): { bin: string; args: string[]; unit: string | null };
+  wrap(bin: string, args: readonly string[], env: NodeJS.ProcessEnv, label: string): ScopedCommand;
   /** After the wrapped process exited: whether its scope was stopped for an OOM kill. Never throws. */
   outcome(unit: string): Promise<SessionScopeOutcome | null>;
+  /**
+   * One session launch's short-lived commands, each in a `--collect` scope of its own named
+   * `mission-control-<instance>-<label>-<nonce>-<n>`. The nonce is minted once per call of this,
+   * so a resumed session's commands never collide with a scope a previous run left active, and
+   * `<n>` counts that launch's commands. Nothing reads these scopes back: an OOM stops only
+   * that command, and systemd's journal records it under the unit.
+   */
+  commands(label: string): CommandScopes;
 }
 
 export interface SessionScopeRunResult {
@@ -307,6 +321,32 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
     await deps.run(systemctl, ["--user", "reset-failed", unit], { timeoutMs: SYSTEMCTL_TIMEOUT_MS, env: deps.env });
   }
 
+  /** `[bin, ...args]` under `choom` and in a scope named by `unit`, as far as this run's decision allows. */
+  function wrapIn(
+    bin: string,
+    args: readonly string[],
+    env: NodeJS.ProcessEnv,
+    unit: () => string,
+    collect: boolean,
+  ): ScopedCommand {
+    const unwrapped = { bin, args: [...args], unit: null };
+    if (options.inert || deps.platform !== "linux") return unwrapped;
+    const inner = decision.choom
+      ? { bin: decision.choom, args: ["-n", String(SESSION_OOM_SCORE_ADJ), "--", bin, ...args] }
+      : unwrapped;
+    // The manager is asked about the env the child gets, as `inUserScope` does: that is what
+    // `systemd-run` will reach it with.
+    if (!decision.systemdRun || !userManagerReachable(env, deps.socketExists)) {
+      return { bin: inner.bin, args: inner.args, unit: null };
+    }
+    const name = unit();
+    return {
+      bin: decision.systemdRun,
+      args: [...scopeArgs(name, decision.properties, collect), "--", inner.bin, ...inner.args],
+      unit: `${name}.scope`,
+    };
+  }
+
   return {
     ready() {
       if (options.inert) return Promise.resolve();
@@ -315,22 +355,13 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
     },
 
     wrap(bin, args, env, label) {
-      const unwrapped = { bin, args: [...args], unit: null };
-      if (options.inert || deps.platform !== "linux") return unwrapped;
-      const inner = decision.choom
-        ? { bin: decision.choom, args: ["-n", String(SESSION_OOM_SCORE_ADJ), "--", bin, ...args] }
-        : unwrapped;
-      // The manager is asked about the env the child gets, as `inUserScope` does: that is what
-      // `systemd-run` will reach it with.
-      if (!decision.systemdRun || !userManagerReachable(env, deps.socketExists)) {
-        return { bin: inner.bin, args: inner.args, unit: null };
-      }
-      const unit = unitName(label);
-      return {
-        bin: decision.systemdRun,
-        args: [...scopeArgs(unit, decision.properties, false), "--", inner.bin, ...inner.args],
-        unit: `${unit}.scope`,
-      };
+      return wrapIn(bin, args, env, () => unitName(label), false);
+    },
+
+    commands(label) {
+      let launch: string | null = null;
+      let count = 0;
+      return (bin, args, env) => wrapIn(bin, args, env, () => `${(launch ??= unitName(label))}-${++count}`, true);
     },
 
     async outcome(unit) {

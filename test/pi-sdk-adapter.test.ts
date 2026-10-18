@@ -775,3 +775,123 @@ test("a clear that succeeds does move the live session onto the replacement serv
   // `second` offers the model and `first` does not, so this resolving at all is the proof.
   await runtime.session.setModel({ provider: "amazon-bedrock", id: "deepseek.v3.2" });
 });
+
+// The bash tool's command scopes, against the same stand-in vendor.
+const { createSessionScope } = await import("../src/server/platform/session-scope.ts");
+const { bashSpawnHook } = await import("../src/server/harness/pi/sdk-deps.ts");
+const { linuxScopeDeps, MANAGER_ENV } = await import("./helpers/fake-session-scope.ts");
+const { shellWords } = await import("../src/server/terminal/shell.ts");
+
+type SpawnHook = (context: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => {
+  command: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+};
+
+/** The stand-in vendor, recording every bash tool it builds and every shell config it is asked for. */
+function bashVendor(onBuild: () => void = () => {}) {
+  const built: Array<{ shellPath: string | undefined; spawnHook: SpawnHook }> = [];
+  const shellPaths: Array<string | undefined> = [];
+  const vendor = {
+    ...standInVendor([modelRuntime("trusted", ["deepseek.v3.2"])]),
+    createBashToolDefinition: (_cwd: string, options: { shellPath?: string; spawnHook: SpawnHook }) => {
+      onBuild();
+      built.push({ shellPath: options.shellPath, spawnHook: options.spawnHook });
+      return { name: "bash" };
+    },
+    getShellConfig: (shellPath?: string) => {
+      shellPaths.push(shellPath);
+      return { shell: "/bin/bash", args: ["-c"] };
+    },
+  } as unknown as typeof import("@earendil-works/pi-coding-agent");
+  return { vendor, built, shellPaths };
+}
+
+const unitOf = (command: string) => shellWords(command).find((word) => word.startsWith("--unit="));
+
+test("the session factory awaits the session scope's ready() before it builds the bash tool", async () => {
+  let settled = false;
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  const real = createSessionScope(linuxScopeDeps());
+  const scope = { ...real, ready: () => gate.then(() => { settled = true; }) };
+  let builtBeforeReady = false;
+  const { vendor, built } = bashVendor(() => { builtBeforeReady ||= !settled; });
+  const creating = createRuntime(vendor, { ...runtimeOptions(), sessionLabel: "sdk:pi-1" }, scope);
+  await new Promise((done) => setTimeout(done, 20));
+  assert.equal(built.length, 0, "the bash tool was built before ready() settled");
+  release();
+  const runtime = await creating;
+  try {
+    assert.equal(built.length, 1);
+    assert.equal(builtBeforeReady, false);
+  } finally { await runtime.dispose(); }
+});
+
+test("each bash command is rewritten into a scope under the shell Pi resolves for the tool's shellPath", async () => {
+  const scope = createSessionScope(linuxScopeDeps());
+  await scope.ready();
+  const { vendor, built, shellPaths } = bashVendor();
+  const runtime = await createRuntime(vendor, { ...runtimeOptions(), toolEnv: { ...MANAGER_ENV }, sessionLabel: "sdk:pi-1" }, scope);
+  try {
+    const { shellPath, spawnHook } = built[0]!;
+    const out = spawnHook({ command: "echo \"$HOME\" 'a b'", cwd: "/w", env: { ...MANAGER_ENV, PI_SESSION_ID: "p1" } });
+    assert.deepEqual(shellPaths, [shellPath], "the hook asked Pi for the same shellPath the tool was built with");
+    const words = shellWords(out.command);
+    assert.equal(words[0], "exec");
+    assert.equal(words[1], "/usr/bin/systemd-run");
+    assert.ok(words.includes("--collect"));
+    assert.deepEqual(words.slice(words.indexOf("/usr/bin/choom")), [
+      "/usr/bin/choom", "-n", "500", "--", "/bin/bash", "-c", "echo \"$HOME\" 'a b'",
+    ]);
+    assert.equal(out.env.PI_SESSION_ID, "p1", "Pi's own session variables still cross");
+  } finally { await runtime.dispose(); }
+});
+
+test("two launches of the same session name their first command's scope differently, and a clear keeps counting", async () => {
+  const scope = createSessionScope(linuxScopeDeps());
+  await scope.ready();
+  const env = { ...MANAGER_ENV, PATH: "/usr/bin" };
+  const units: Array<string | undefined> = [];
+  for (let launch = 0; launch < 2; launch++) {
+    const { vendor, built } = bashVendor();
+    const runtime = await createRuntime(vendor, { ...runtimeOptions(), toolEnv: env, sessionLabel: "sdk:pi-1" }, scope);
+    try {
+      units.push(unitOf(built[0]!.spawnHook({ command: "true", cwd: "/w", env }).command));
+      if (launch === 0) {
+        await runtime.newSession();
+        const afterClear = unitOf(built[1]!.spawnHook({ command: "true", cwd: "/w", env }).command);
+        assert.match(afterClear ?? "", /-pi-1-n\d+-2$/, "a clear is the same launch, so its next command is <n>=2");
+      }
+    } finally { await runtime.dispose(); }
+  }
+  assert.match(units[0] ?? "", /^--unit=mission-control-[0-9a-f]{8}-pi-1-n\d+-1$/);
+  assert.match(units[1] ?? "", /^--unit=mission-control-[0-9a-f]{8}-pi-1-n\d+-1$/);
+  assert.notEqual(units[0], units[1]);
+});
+
+test("a stdin-transport shell config, or one Pi cannot resolve, leaves the command unwrapped", async () => {
+  const scope = createSessionScope(linuxScopeDeps());
+  await scope.ready();
+  const wraps: string[] = [];
+  const counting = (bin: string, args: readonly string[], env: NodeJS.ProcessEnv) => {
+    wraps.push(bin);
+    return scope.commands("sdk:pi-1")(bin, args, env);
+  };
+  const stdin = bashSpawnHook(
+    () => ({ shell: "C:\\Windows\\System32\\bash.exe", args: ["-s"], commandTransport: "stdin" }),
+    counting,
+    { ...MANAGER_ENV },
+  );
+  assert.equal(stdin({ command: "echo 'x'", cwd: "/w", env: {} }).command, "echo 'x'");
+  const missing = bashSpawnHook(() => { throw new Error("Custom shell path not found"); }, counting, { ...MANAGER_ENV });
+  assert.equal(missing({ command: "echo 'x'", cwd: "/w", env: {} }).command, "echo 'x'");
+  assert.deepEqual(wraps, [], "neither config reached the scope");
+});
+
+test("off Linux the bash command is left exactly as Pi composed it", async () => {
+  const scope = createSessionScope(linuxScopeDeps({ platform: "darwin" }));
+  await scope.ready();
+  const hook = bashSpawnHook(() => ({ shell: "/bin/bash", args: ["-c"] }), scope.commands("sdk:pi-1"), { ...MANAGER_ENV });
+  assert.equal(hook({ command: "echo hi", cwd: "/w", env: {} }).command, "echo hi");
+});

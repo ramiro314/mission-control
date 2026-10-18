@@ -194,3 +194,45 @@ test("BindsTo: stopping the daemon's unit stops the session scopes bound to it",
   assert.notEqual(exit.code, 0, "the sleeper was stopped, not finished");
   await daemonExit;
 });
+
+test("Pi bash commands: each in its own collected scope at 500, an OOM stops that command only", { skip, timeout: 60_000 }, async () => {
+  // Pi's real bash tool and shell, so the 143 is what Pi itself reports to the agent.
+  process.env.PI_CODING_AGENT_DIR = join(home, "pi-agent");
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const { bashSpawnHook } = await import("../src/server/harness/pi/sdk-deps.ts");
+  const scope = scopeFor();
+  await scope.ready();
+  const units: string[] = [];
+  const commands = scope.commands("sdk:pi-commands");
+  const hook = bashSpawnHook(() => pi.getShellConfig(undefined), (bin, args, env) => {
+    const wrapped = commands(bin, args, env);
+    if (wrapped.unit) units.push(wrapped.unit);
+    return wrapped;
+  }, {
+    PATH: process.env.PATH ?? "",
+    XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? "",
+    ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}),
+  });
+  const tool = pi.createBashToolDefinition(home, { spawnHook: hook });
+  const bash = async (command: string) => ((await (tool.execute as unknown as (
+    id: string, params: { command: string }) => Promise<unknown>)("call", { command })) as {
+    structuredContent: { output: string; exit_code: number };
+  }).structuredContent;
+
+  const placed = await bash("cat /proc/self/cgroup /proc/self/oom_score_adj");
+  assert.equal(placed.exit_code, 0, placed.output);
+  const [cgroup, adj] = placed.output.trim().split("\n");
+  const escaped = SESSIONS_SLICE.replace(/\\/g, "\\\\").replace(/\./g, "\\.");
+  assert.match(cgroup!, new RegExp(`${escaped}/mission-control-${instance}-pi-commands-[0-9a-f]{8}-1\\.scope$`));
+  assert.equal(adj, "500");
+
+  const oom = await bash(`sleep 60 & ${HOG}; wait`);
+  assert.equal(oom.exit_code, 143, `the command was stopped by systemd's SIGTERM: ${JSON.stringify(oom)}`);
+  // `--collect`: systemd unloads the failed scope itself, and the daemon never reads it back.
+  await waitFor("the OOM-stopped command scope to be collected", async () => (await loadState(units[1]!)) === "not-found", 20_000);
+
+  const after = await bash("echo still here");
+  assert.deepEqual(after, { ...after, exit_code: 0, output: "still here\n" }, "the session's next command runs");
+  assert.match(units[2]!, /-pi-commands-[0-9a-f]{8}-3\.scope$/);
+  assert.ok(alive(process.pid));
+});

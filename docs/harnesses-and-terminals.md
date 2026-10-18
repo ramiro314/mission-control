@@ -372,6 +372,22 @@ systemd-run --user --scope --quiet
   has finished stopping it. At startup the daemon resets this instance's failed
   `mission-control-<instance>-*.scope` units and never another daemon's.
 
+<a id="pi-command-scopes"></a>**Pi command scopes.** A managed Pi session's agent loop runs inside the daemon, so there
+is no agent process to wrap. Each command its bash tool runs gets a scope of its own instead.
+Pi spawns `<shell> <args> <command>` itself, so the bash tool's `spawnHook` in
+`src/server/harness/pi/sdk-deps.ts` rewrites only the command, to
+`exec systemd-run ... --collect --unit=mission-control-<instance>-<session>-<nonce>-<n> ... -- choom -n 500 -- <shell> <args> '<command>'`,
+with the same slice and properties as above. `<shell> <args>` is exactly what Pi's
+`getShellConfig` returns for the `shellPath` the tool is built with (none, so `/bin/bash -c`
+on a normal Linux machine), never a substituted `/bin/sh`, and the command is single-quoted
+whole, so its quotes, `$` and newlines reach that shell unchanged. The nonce is minted once per
+session launch and `<n>` counts that launch's commands, so a resumed session never collides
+with a command scope a previous run left active. An OOM kill stops that command only: Pi sees
+it exit 143, and the session carries on. Command scopes are `--collect`, and the daemon never
+reads them back, because Pi spawns the commands and the daemon never sees them exit; find an
+OOM with `journalctl --user -u 'mission-control-*'`. A shell config that hands the command over
+stdin (Pi uses one only for a legacy WSL bash on Windows) is left unwrapped.
+
 Only interactive sessions are wrapped. Catalog probes and one-shot queries keep the vendor's
 own spawner and stay in the daemon's cgroup. Terminal-runtime agents are already outside it, in
 their tmux or Herdr server's scope or WezTerm's GUI.

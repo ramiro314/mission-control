@@ -396,3 +396,55 @@ test("the production deps read the state home when asked, not when the module lo
     process.env.HARNESS_HOME = before;
   }
 });
+
+test("command scopes: each command a collected scope named <session>-<nonce>-<n>, one nonce per launch", async () => {
+  let nonces = 0;
+  const { deps } = fakes({ nonce: () => `launch${nonces++}` });
+  const scope = createSessionScope(deps);
+  await scope.ready();
+  nonces = 0; // the probe's own scope took one
+  const instance = scopeInstance(deps.stateHome);
+  const first = scope.commands("sdk:pi-1");
+  const one = first("/bin/bash", ["-c", "echo one"], MANAGER_ENV);
+  const two = first("/bin/bash", ["-c", "echo two"], MANAGER_ENV);
+  assert.deepEqual(one, {
+    bin: "/usr/bin/systemd-run",
+    args: [
+      "--user", "--scope", "--quiet", "--collect",
+      `--unit=mission-control-${instance}-pi-1-launch0-1`,
+      `--slice=${SESSIONS_SLICE}`,
+      "-p", "OOMPolicy=stop",
+      "-p", "TimeoutStopSec=10s",
+      "-p", "BindsTo=mission-control.service",
+      "-p", "After=mission-control.service",
+      "--", "/usr/bin/choom", "-n", "500", "--", "/bin/bash", "-c", "echo one",
+    ],
+    unit: `mission-control-${instance}-pi-1-launch0-1.scope`,
+  });
+  assert.equal(two.unit, `mission-control-${instance}-pi-1-launch0-2.scope`);
+  // A second launch of the same session, as a resume makes, mints its own nonce.
+  const relaunch = scope.commands("sdk:pi-1")("/bin/bash", ["-c", "echo one"], MANAGER_ENV);
+  assert.equal(relaunch.unit, `mission-control-${instance}-pi-1-launch1-1.scope`);
+  assert.notEqual(relaunch.unit, one.unit);
+});
+
+test("command scopes fall back exactly as session scopes do", async () => {
+  const { deps } = fakes({ systemdRun: () => null });
+  const scope = createSessionScope(deps);
+  await scope.ready();
+  assert.deepEqual(scope.commands("s1")("/bin/bash", ["-c", "true"], MANAGER_ENV), {
+    bin: "/usr/bin/choom",
+    args: ["-n", "500", "--", "/bin/bash", "-c", "true"],
+    unit: null,
+  });
+  for (const platform of ["darwin", "win32"] as const) {
+    const other = createSessionScope(fakes({ platform }).deps);
+    await other.ready();
+    assert.deepEqual(other.commands("s1")("/bin/bash", ["-c", "true"], MANAGER_ENV), {
+      bin: "/bin/bash", args: ["-c", "true"], unit: null,
+    });
+  }
+  const inert = createSessionScope(fakes().deps, { inert: true });
+  await inert.ready();
+  assert.equal(inert.commands("s1")("/bin/bash", ["-c", "true"], MANAGER_ENV).unit, null);
+});
