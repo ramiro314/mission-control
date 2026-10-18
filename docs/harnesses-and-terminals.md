@@ -335,12 +335,14 @@ does not refuse without a display: the WezTerm GUI that answered its socket is t
 daemon reaching it from outside a desktop session (over SSH, for example) runs the call exactly
 as before. The endpoint lookup, focus and every other WezTerm call run as before. macOS spawns are unchanged.
 
-<a id="agent-session-scopes"></a>**Agent session scopes.** A Claude SDK session's agent, and every
-process it starts, runs in a transient scope of its own, so an out-of-memory kill inside one
+<a id="agent-session-scopes"></a>**Agent session scopes.** A Claude SDK session's agent, or a Codex
+SDK session's `codex app-server`, and every process it starts, runs in a transient scope of its own, so an out-of-memory kill inside one
 session stops that session only. Without one the agent shares the daemon's unit, and when the
 kernel kills any process there, systemd's `OOMPolicy=stop` stops the whole unit: the daemon, the
-dashboard and every other session. The `spawnClaudeCodeProcess` hook in
-`src/server/harness/claude/sdk-deps.ts` wraps the CLI through `src/server/platform/session-scope.ts`:
+dashboard and every other session. Each harness wraps at its own spawn seam through
+`src/server/platform/session-scope.ts`: the `spawnClaudeCodeProcess` hook in
+`src/server/harness/claude/sdk-deps.ts` for Claude, and `spawnAppServer` in
+`src/server/harness/codex/sdk-deps.ts`, given the session's id by `connect`, for Codex:
 
 ```
 systemd-run --user --scope --quiet
@@ -348,7 +350,7 @@ systemd-run --user --scope --quiet
   --slice=app-mission\x2dcontrol\x2dsessions.slice
   -p OOMPolicy=stop -p TimeoutStopSec=10s
   -p BindsTo=<daemon unit> -p After=<daemon unit>
-  -- choom -n 500 -- <claude> <args...>
+  -- choom -n 500 -- <claude | codex app-server> <args...>
 ```
 
 - `<instance>` is the first 8 hex characters of the SHA-256 of the daemon's resolved state
@@ -366,7 +368,7 @@ systemd-run --user --scope --quiet
 - `choom -n 500` (util-linux) puts the agent and its children above the dashboard renderer
   (Chromium sets 300) and the daemon in a global out-of-memory, so the kernel picks a session
   first.
-- The scope has no `--collect`. When the agent exits, the daemon reads the scope's `Result` and
+- The scope has no `--collect`. When the agent or app-server exits, the daemon reads the scope's `Result` and
   `MemoryPeak` within 2 s, logs one `[session-scope] session <id> ran out of memory` line when
   systemd stopped it for an OOM kill, and runs `systemctl --user reset-failed` on it once systemd
   has finished stopping it. At startup the daemon resets this instance's failed
@@ -394,8 +396,9 @@ commands and the daemon never sees them exit. The journal is the reliable record
 `journalctl --user -u 'mission-control-*'`. A shell config that hands the command over
 stdin (Pi uses one only for a legacy WSL bash on Windows) is left unwrapped.
 
-Only interactive sessions are wrapped. Catalog probes and one-shot queries keep the vendor's
-own spawner and stay in the daemon's cgroup. Terminal-runtime agents are already outside it, in
+Only interactive sessions are wrapped. Claude's catalog probes and one-shot queries keep the
+vendor's own spawner, and Codex's model-catalog probe calls `spawnAppServer` with no session, so
+both stay in the daemon's cgroup. Terminal-runtime agents are already outside it, in
 their tmux or Herdr server's scope or WezTerm's GUI.
 
 Once per daemon run, at startup, the daemon probes the property set by running its own runtime

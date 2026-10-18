@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
+import { oomStopLine, sessionScope, type SessionScope } from "../../platform/session-scope.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
@@ -39,18 +40,39 @@ const CLOSE_GRACE_MS = 3000;
  * every other embedded Codex card with it, and it is what makes the `-c` overrides
  * session-scoped at all: they are process-wide for the server they are given to, so a
  * shared server would put one dispatch's MCP registration inside every other one.
+ *
+ * A session's server is wrapped in its session scope when `session` names it: on Linux the
+ * server and everything it starts go in a scope of their own (`platform/session-scope.ts`), so
+ * an OOM kill there stops that session rather than the daemon. The model-catalog probe passes
+ * no session and stays in the daemon's cgroup. The scope execs in place, so `pid`, stdio,
+ * signals and exit are still the server's. The caller awaits `scope.ready()` first, because
+ * `wrap` only applies what the probe has already decided.
  */
 export function spawnAppServer(
-  executable: string,
-  args: readonly string[],
+  codex: string,
+  codexArgs: readonly string[],
   cwd: string,
   env: Record<string, string | undefined>,
+  session: { label: string; scope: SessionScope } | null = null,
 ): AppServerTransport {
-  const child = spawn(executable, ["app-server", ...args], {
+  const command = ["app-server", ...codexArgs];
+  const { bin: executable, args, unit } = session
+    ? session.scope.wrap(codex, command, env, session.label)
+    : { bin: codex, args: command, unit: null };
+  const child = spawn(executable, args, {
     cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  if (session && unit) {
+    // Whatever the reason the server exited, its scope's verdict is read, so an OOM stop is
+    // logged and a failed scope is reset rather than left loaded until the next daemon start.
+    child.once("exit", () => {
+      void session.scope.outcome(unit).then((outcome) => {
+        if (outcome?.oomKilled) console.warn(oomStopLine(session.label, unit, outcome.peakBytes));
+      });
+    });
+  }
   const failure: { error: Error | null } = { error: null };
   const fail = (err: Error): void => {
     failure.error ??= err;
@@ -127,22 +149,32 @@ export async function* readFrames(child: {
 
 /** Everything the Codex driver reaches for outside itself. Tests replace the whole object. */
 export interface CodexSdkDeps {
-  /** Start one connection. `args` are the launch-scoped `-c` config overrides. */
-  connect(args: readonly string[], cwd: string, stateHome?: string): Promise<AppServerTransport>;
+  /**
+   * Start one connection. `args` are the launch-scoped `-c` config overrides, and
+   * `sessionLabel` is the dashboard session id, which names the session scope the server runs in.
+   */
+  connect(args: readonly string[], cwd: string, stateHome: string, sessionLabel: string): Promise<AppServerTransport>;
 }
 
-export const defaultCodexSdkDeps: CodexSdkDeps = {
-  async connect(args, cwd, stateHome) {
-    // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
-    // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
-    // machine-installed hooks firing inside them would all key to that one card. Shared
-    // with Claude's driver rather than restated, because it is a fact about the DAEMON's
-    // environment, not about either harness.
-    return spawnAppServer(
-      await codexExecutable(),
-      args,
-      cwd,
-      sdkSubprocessEnv(process.env, cwd, stateHome),
-    );
-  },
-};
+/** The Codex deps with the session scope its sessions' servers run in. */
+export function createCodexSdkDeps(scope: SessionScope): CodexSdkDeps {
+  return {
+    async connect(args, cwd, stateHome, sessionLabel) {
+      const executable = await codexExecutable();
+      // `spawnAppServer` wraps synchronously, so the probe that decides what `wrap` may use is
+      // awaited here, before the spawn.
+      await scope.ready();
+      // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
+      // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
+      // machine-installed hooks firing inside them would all key to that one card. Shared
+      // with Claude's driver rather than restated, because it is a fact about the DAEMON's
+      // environment, not about either harness.
+      return spawnAppServer(executable, args, cwd, sdkSubprocessEnv(process.env, cwd, stateHome), {
+        label: sessionLabel,
+        scope,
+      });
+    },
+  };
+}
+
+export const defaultCodexSdkDeps: CodexSdkDeps = createCodexSdkDeps(sessionScope);

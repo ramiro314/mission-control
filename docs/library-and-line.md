@@ -165,7 +165,9 @@ the preview is the operator's review step in the dashboard, not a boundary on wh
 #### Proposed documents
 
 An agent session can propose a document for its own task's repository with the
-`propose_command_document` Mission MCP tool. A proposal writes no live row. It waits for you:
+`propose_command_document` Mission MCP tool. A [stored testing setup](flaky-tests.md#stored-settings-instead-of-a-committed-file)
+uses it to hand you a monorepo's per-app `affected-tests` Commands and testing settings. A
+proposal writes no live row. It waits for you:
 
 - **One per repository.** A repository holds at most one pending proposal, and a newer one replaces
   the older. The tool answers the agent with the preview you will see, including any problem that

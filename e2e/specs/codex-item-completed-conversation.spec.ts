@@ -3,6 +3,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { scopeArgvs } from "../fixtures/records.ts";
 import { settled } from "../fixtures/settle.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -143,4 +144,27 @@ test("a Codex rollout that records prose as item_completed still reads as a conv
   await expect(record).toContainText("codex executed 3 commands");
 
   await shoot(dashboard, card, "conversation-reads-again");
+});
+
+test("on Linux a Codex SDK session's app-server runs through the session scope", async ({ dashboard, daemon }) => {
+  test.skip(process.platform !== "linux", "the session scope wraps only on Linux");
+  await dispatchCodex(dashboard, daemon, "exercise the session scope");
+  const isServer = (argv: string[]) =>
+    argv.some((arg) => arg.endsWith("fake-codex")) && argv.includes("app-server");
+  await expect
+    .poll(() => scopeArgvs(daemon.recordDir, "choom-").filter(isServer).length, {
+      message: "the session's app-server never reached choom",
+    })
+    .toBeGreaterThan(0);
+  // Exactly one: the session's. The model-catalog probe spawns `app-server` too, and stays
+  // unwrapped.
+  const chooms = scopeArgvs(daemon.recordDir, "choom-").filter(isServer);
+  expect(chooms).toHaveLength(1);
+  expect(chooms[0]!.slice(0, 3)).toEqual(["-n", "500", "--"]);
+  // A machine with a systemd user manager also puts it in a scope; one without (CI) gets
+  // choom alone. Either way no real scope is made: the systemd-run here is the fake.
+  for (const argv of scopeArgvs(daemon.recordDir, "systemd-run-").filter(isServer)) {
+    expect(argv).toContain("--slice=app-mission\\x2dcontrol\\x2dsessions.slice");
+    expect(argv).toContain("OOMPolicy=stop");
+  }
 });

@@ -19,8 +19,8 @@ import { underTestRunner } from "../util/test-runner.ts";
 // exit status are the agent's exactly as an unwrapped spawn's would be.
 //
 // Each harness wraps at the spawn seam it already owns (the Claude `spawnClaudeCodeProcess`
-// hook, and Pi's bash-tool `spawnHook` for each command) through the one `SessionScope` below;
-// nothing above a seam branches on it.
+// hook, Codex's `spawnAppServer`, and Pi's bash-tool `spawnHook` for each command) through the
+// one `SessionScope` below; nothing above a seam branches on it.
 
 /** The slice every session scope goes in, nested under `app.slice` by its name. */
 export const SESSIONS_SLICE = "app-mission\\x2dcontrol\\x2dsessions.slice";

@@ -6894,9 +6894,27 @@ export const ProposeCommandDocumentSchema = z.object({
 }).strict();
 export type ProposeCommandDocument = z.infer<typeof ProposeCommandDocumentSchema>;
 
-/** `POST /api/repositories/testing-setup`: start the testing-setup task for one repository. */
+/**
+ * Where a testing setup puts the repository's testing configuration, chosen by the operator
+ * before the task starts.
+ *
+ * - `committed`: the agent commits `.mission/testing.json` with its CI changes and sets the
+ *   `affected-tests` Command with `set_affected_tests_command`.
+ * - `stored`: for a repository that will not commit a testing file. The agent changes no file;
+ *   it proposes per-folder `affected-tests` overrides and stored testing settings as one Command
+ *   document (`propose_command_document`), which the operator applies from the preview.
+ */
+export const TESTING_SETUP_MODES = ["committed", "stored"] as const;
+export type TestingSetupMode = (typeof TESTING_SETUP_MODES)[number];
+
+/**
+ * `POST /api/repositories/testing-setup`: start the testing-setup task for one repository.
+ * `mode` is required, never defaulted: the operator chooses it, and a start that did not say is
+ * refused rather than guessed at.
+ */
 export const TestingSetupStartSchema = z.object({
   repoRoot: z.string().min(1).max(4096),
+  mode: z.enum(TESTING_SETUP_MODES),
 }).strict();
 export type TestingSetupStart = z.infer<typeof TestingSetupStartSchema>;
 

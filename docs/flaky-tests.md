@@ -18,17 +18,31 @@ and are never recorded here.
 
 Any repository on GitHub can be brought into this contract in one supervised task. In
 **Settings → Trust**, each repository row has a **Set up testing** action ("Set up flake-aware
-testing"). It calls `POST /api/repositories/testing-setup`, which starts a ship task whose intent
-invokes the **Testing setup** skill ([`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md)).
+testing"). It does not start anything on its first click. It opens a choice under the row:
+**Where should this repository's testing settings live?**
+
+- **Commit a testing file** (committed). The agent commits `.mission/testing.json` and the CI
+  changes, and sets the `affected-tests` Command. This is the path described below.
+- **Store settings in Mission Control** (stored). For a repository that will not commit a
+  testing file. The agent changes no file and proposes the gate's configuration as a Command
+  document instead. See [Stored settings instead of a committed file](#stored-settings-instead-of-a-committed-file).
+
+Neither is selected when the choice opens, and **Start testing setup** stays disabled until one
+is; **Cancel** closes it without sending anything. Start calls
+`POST /api/repositories/testing-setup` with the repository and the mode (`committed` or
+`stored`, required: a start that names neither is refused with 400). That starts a ship task
+whose intent invokes the **Testing setup** skill ([`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md))
+and names the mode in one line, `Testing setup mode: committed.` or `Testing setup mode: stored.`,
+which the skill branches on.
 The skill must be switched on in **Settings → Skills**; while it is off the action is refused on
 the row with the sentence naming the toggle, and no task is created. It is also refused while an
-earlier testing-setup task for the same repository is still open (in the backlog or live), so two
-agents never edit the same CI at once; once that task is done, failed or cancelled, the action
-starts a new one. The task has no review
-Workflow bound: the human approves every change in the skill's form, and the skill proves the
-result on its own pull request.
+earlier testing-setup task for the same repository is still open (in the backlog or live), in
+either mode, so two agents never edit the same CI or replace each other's proposal at once; once
+that task is done, failed or cancelled, the action starts a new one. The task has no review
+Workflow bound: in committed mode the human approves every change in the skill's form and the
+skill proves the result on its own pull request, and in stored mode there is no commit to review.
 
-The agent:
+In committed mode the agent:
 
 1. **Audits** the repository: the test runner and its JUnit XML flag, a rerun template with
    `{files}` and `{junit}`, whether CI runs the report action and at which version, the publish
@@ -46,8 +60,48 @@ The agent:
 4. **Verifies** twice: one local run of the `affected-tests` template on a few test files, and,
    once that pull request is open, the "Flaky tests" check on its own CI run.
 
+The committed launch pre-approves `request_plan_decisions` and `set_affected_tests_command`, the
+two Mission MCP tools its intent names, and not `propose_command_document`.
+
+### Stored settings instead of a committed file
+
+A repository that will not accept `.mission/testing.json`, such as a monorepo whose owners keep
+Mission Control's configuration out of it, still gets an `affected-tests` gate. The gate can be
+configured entirely in Mission Control: one `affected-tests` Command per app folder, run as its
+own [partition](workflows.md#partitions), and [stored testing settings](workflows.md#testing-settings)
+per [subdirectory scope](workflows.md#subdirectory-scopes). The stored mode has the agent work
+that configuration out:
+
+1. **Audits** the parts of the repository that decide the gate: each app's test runner and JUnit
+   XML flag, a rerun template per app folder with `{files}` (relative to that folder) and
+   `{junit}`, each folder's test-file patterns and smoke set, and the `affected-tests` Commands
+   already set for the repository root and its folders, which the intent lists. It skips the CI,
+   permissions and `.gitignore` items, because it commits nothing.
+2. **Changes no file and makes no commit.** No `.mission/testing.json`, no CI edit, no copied
+   report action, so there is no pull request.
+3. **Proposes** everything as one [Command document](library-and-line.md#proposed-documents) with
+   `propose_command_document`: `affected-tests` entries per folder and `testing` entries with
+   `tests.patterns`, `tests.smokeSet` and, where it differs from the default,
+   `tests.includeImporters`. It asks in no decision form. The proposal writes nothing live, and
+   its preview is where you approve every change. A refused or blocked document is corrected and
+   proposed again; the newer proposal replaces the pending one.
+4. **Verifies** each proposed template with one local run in its folder on a few test files.
+
+You then open the proposal from its banner in **Library › Commands** (or the attention inbox),
+review the preview, and apply or dismiss it. The gate runs once it is applied. The stored mode
+sets up no CI flake reporting: the report action and the `flakes` block have to be committed,
+so a repository that wants the "Flaky tests" check runs the committed mode later.
+
+The stored launch pre-approves only `propose_command_document`, and the task carries a second
+label, `testing-setup:stored`, on which the daemon refuses `set_affected_tests_command` with 403.
+A stored setup's Commands reach the catalog only through the preview you apply. Its title reads
+`Set up flake-aware testing (stored): <repository>`.
+
+### What the agent's Command tools can reach
+
 `set_affected_tests_command` takes only the argv. The daemon refuses it from any session that is
-not running a testing-setup task (the task carries the `testing-setup` label), checks the
+not running a testing-setup task (the task carries the `testing-setup` label) or is running a
+stored one (`testing-setup:stored`), checks the
 `{files}` / `{junit}` rule, and writes only that task repository's `affected-tests` override,
 keeping every other override, the default and the run budget.
 

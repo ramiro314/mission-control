@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { locateExecutableSync } from "../src/server/executables/locator.ts";
+import { spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
 import { socketExists, userManagerReachable } from "../src/server/graphical-session.ts";
 import {
   SESSIONS_SLICE,
   createSessionScope,
   productionSessionScopeDeps,
   scopeInstance,
+  type SessionScope,
   type SessionScopeDeps,
 } from "../src/server/platform/session-scope.ts";
 
@@ -243,5 +245,78 @@ test("Pi bash commands: each in its own collected scope at 500, an OOM stops tha
   const after = await bash("echo still here");
   assert.deepEqual(after, { ...after, exit_code: 0, output: "still here\n" }, "the session's next command runs");
   assert.match(units[2]!, /-pi-commands-[0-9a-f]{8}-3\.scope$/);
+  assert.ok(alive(process.pid));
+});
+
+/** A fake `codex` in this file's home: `body` runs as the app-server, and it serves until stdin closes. */
+function fakeCodex(name: string, body: string): string {
+  const path = join(home, name);
+  writeFileSync(path, `#!/bin/sh\n${body}\ncat > /dev/null\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+/** `scope`, recording the unit each wrap made. */
+function recordingScope(scope: SessionScope): { scope: SessionScope; units: string[] } {
+  const units: string[] = [];
+  return {
+    units,
+    scope: {
+      ready: () => scope.ready(),
+      wrap(...args) {
+        const wrapped = scope.wrap(...args);
+        if (wrapped.unit) units.push(wrapped.unit);
+        return wrapped;
+      },
+      outcome: (unit) => scope.outcome(unit),
+      commands: (label) => scope.commands(label),
+    },
+  };
+}
+
+test("a Codex session's app-server and its children run in its own scope at oom_score_adj 500", { skip, timeout: 30_000 }, async () => {
+  const { scope, units } = recordingScope(scopeFor());
+  await scope.ready();
+  const own = readFileSync("/proc/self/cgroup", "utf8");
+  const server = join(home, "codex-server");
+  const child = join(home, "codex-child");
+  const codex = fakeCodex("fake-codex-placement", [
+    `cat /proc/$$/cgroup /proc/$$/oom_score_adj > "${server}"`,
+    `sh -c 'cat /proc/$$/cgroup /proc/$$/oom_score_adj' > "${child}"`,
+  ].join("\n"));
+  const transport = spawnAppServer(codex, [], home, process.env, { label: "sdk:codex-placement", scope });
+  await waitFor("the fake app-server's report", () => existsSync(child) && readFileSync(child, "utf8").includes("\n"), 10_000);
+  await transport.close();
+  assert.equal(units.length, 1);
+  const escaped = SESSIONS_SLICE.replace(/\\/g, "\\\\").replace(/\./g, "\\.");
+  const inScope = new RegExp(`${escaped}/mission-control-${instance}-codex-placement-[0-9a-f]{8}\\.scope$`);
+  for (const report of [server, child]) {
+    const [cgroup, adj] = readFileSync(report, "utf8").trim().split("\n");
+    assert.match(cgroup!, inScope, report);
+    assert.ok(cgroup!.endsWith(`/${units[0]}`), report);
+    assert.equal(adj, "500", report);
+  }
+  assert.equal(readFileSync("/proc/self/cgroup", "utf8"), own, "the test process, standing in for the daemon, stayed put");
+  // A model-catalog probe passes no session, so it is spawned as given.
+  const probeReport = join(home, "codex-probe");
+  const probe = spawnAppServer(fakeCodex("fake-codex-probe", `cat /proc/$$/cgroup > "${probeReport}"`), [], home, process.env);
+  await waitFor("the probe's report", () => existsSync(probeReport) && readFileSync(probeReport, "utf8").includes("\n"), 10_000);
+  await probe.close();
+  assert.equal(readFileSync(probeReport, "utf8"), own, "the probe stayed in the test process's cgroup");
+});
+
+test("an OOM kill under a Codex app-server stops its scope, and the server's exit logs it and resets the unit", { skip, timeout: 40_000 }, async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const { scope, units } = recordingScope(scopeFor());
+  await scope.ready();
+  const transport = spawnAppServer(fakeCodex("fake-codex-oom", HOG), [], home, process.env, { label: "sdk:codex-oom", scope });
+  t.after(() => transport.close());
+  assert.equal(units.length, 1);
+  const logged = () => warn.mock.calls.map((call) => String(call.arguments[0])).filter((line) => line.startsWith("[session-scope]"));
+  // Nothing here calls `outcome`: the server's own exit listener does.
+  await waitFor("the OOM stop's log line", () => logged().length > 0, 20_000);
+  assert.equal(logged().length, 1);
+  assert.match(logged()[0]!, new RegExp(`^\\[session-scope\\] session sdk:codex-oom ran out of memory: systemd stopped ${units[0]!.replace(/\./g, "\\.")}`));
+  await waitFor("the unit to be reset", async () => (await loadState(units[0]!)) === "not-found", 20_000);
   assert.ok(alive(process.pid));
 });
