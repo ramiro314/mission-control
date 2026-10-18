@@ -230,8 +230,9 @@ test("Pi bash commands: each in its own collected scope at 500, an OOM stops tha
   // keeps charging memory. With `HOG`'s `head | tail`, `head` went on filling the pipe after
   // `tail` was killed. When the OOM reaper was slow to free `tail`, that second allocation
   // made the kernel pick the shell itself, a SIGKILL (137) that beat systemd's SIGTERM.
-  // That 137 is an accepted production outcome for a multi-process command (see "Pi command
-  // scopes" in docs/harnesses-and-terminals.md); this pins the usual path, systemd's 143.
+  // 137 is an accepted production outcome, as is a lone hog bash runs in its own place (see
+  // "Pi command scopes" in docs/harnesses-and-terminals.md). This pins the other path: the
+  // kernel kills a child, and systemd's SIGTERM stops the shell with 143.
   // The same 512 MB ceiling as `HOG`.
   const hog = `'${process.execPath}' -e 'const a = []; for (let i = 0; i < 64; i++) a.push(Buffer.alloc(8 << 20, 1));'`;
   const oom = await bash(`sleep 60 & ${hog}; wait`);

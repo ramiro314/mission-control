@@ -383,12 +383,15 @@ on a normal Linux machine), never a substituted `/bin/sh`, and the command is si
 whole, so its quotes, `$` and newlines reach that shell unchanged. The nonce is minted once per
 session launch and `<n>` counts that launch's commands, so a resumed session never collides
 with a command scope a previous run left active. An OOM kill stops that command only, and the session carries on.
-Pi usually sees the command exit 143, from systemd's SIGTERM as it stops the scope. It sees 137
-when the kernel's OOM killer picks the shell itself before that SIGTERM arrives. Every process
-in the scope runs at the same `oom_score_adj`, so a command running several processes (a
-pipeline, a build with workers) can lose its shell to a second kill. Command scopes are `--collect`, and the daemon never
-reads them back, because Pi spawns the commands and the daemon never sees them exit; find an
-OOM with `journalctl --user -u 'mission-control-*'`. A shell config that hands the command over
+The exit code Pi sees depends on which process the kernel killed. It is 143 when the kernel
+kills a child of the shell and systemd's SIGTERM then stops the shell with the rest of the
+scope. It is 137 when the process Pi watches is the one killed: a single simple command such as
+`python train.py`, which bash runs in its own place, or a shell lost to a second kill in a
+command running several processes, since every process in the scope runs at the same
+`oom_score_adj`. Neither code alone means the command ran out of memory.
+Command scopes are `--collect`, and the daemon never reads them back, because Pi spawns the
+commands and the daemon never sees them exit. The journal is the reliable record of an OOM:
+`journalctl --user -u 'mission-control-*'`. A shell config that hands the command over
 stdin (Pi uses one only for a legacy WSL bash on Windows) is left unwrapped.
 
 Only interactive sessions are wrapped. Catalog probes and one-shot queries keep the vendor's
