@@ -1130,7 +1130,9 @@ values above), and an unknown key is refused with its name so a typo cannot sile
 The `flakes` block is read by [CI flake reporting](flaky-tests.md), not by this check. The schema and merge live in
 `src/shared/testing-config.ts`.
 
-**Stored settings** are for a repository that will not commit the file. The affected-tests page
+**Stored settings** are for a repository that will not commit the file. A testing setup started
+in [stored mode](flaky-tests.md#stored-settings-instead-of-a-committed-file) works them out with
+the per-app Commands and proposes both as one document for you to apply. The affected-tests page
 in Library › Commands has a **Testing settings** section with one row per path that has stored
 settings or an `affected-tests` override: each repository root, and each folder inside a
 repository, such as one app of a monorepo. **Add a repository or folder** adds a row for a path that

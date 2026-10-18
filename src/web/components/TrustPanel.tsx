@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
+import type { TestingSetupMode } from "@shared/protocol.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { InspectorState } from "../useInspector.ts";
 import type { ShippingState } from "../useShipping.ts";
@@ -166,6 +167,10 @@ export function TrustPanel({
   }>>({});
   const setupsRef = useRef(setups);
   setupsRef.current = setups;
+  // The rows whose "where do the testing settings live?" choice is open. The action never starts
+  // a task on its first click: committed and stored lead to different agents doing different
+  // things to the repository, so the operator picks one before anything is filed.
+  const [choosing, setChoosing] = useState<ReadonlySet<string>>(new Set());
 
   // The workspace's git repos, for the add picker - same source the four panels used.
   useEffect(() => {
@@ -340,17 +345,35 @@ export function TrustPanel({
     await updateUiConfig({ trustStaged: [...stagedRef.current, root] });
   }
 
-  /**
-   * Start the testing-setup task for one repository. The daemon owns everything the task is -
-   * kind, intent, skill, tools - and refuses before creating anything when the skill is off, so
-   * the refusal is shown on the row that asked.
-   */
-  async function startTestingSetup(repo: string): Promise<void> {
+  /** Open or close one row's mode choice. Opening clears that row's previous answer. */
+  function toggleChoice(repo: string): void {
     if (setupsRef.current[repo]?.state === "busy") return;
+    const opening = !choosing.has(repo);
+    setChoosing((prev) => {
+      const next = new Set(prev);
+      if (opening) next.add(repo);
+      else next.delete(repo);
+      return next;
+    });
+    if (opening) setSetups(({ [repo]: _dropped, ...rest }) => rest);
+  }
+
+  /**
+   * Start the testing-setup task for one repository in the mode its operator chose. The daemon
+   * owns everything the task is - kind, intent, skill, tools - and refuses before creating
+   * anything when the skill is off, so the refusal is shown on the row that asked.
+   */
+  async function startTestingSetup(repo: string, mode: TestingSetupMode): Promise<void> {
+    if (setupsRef.current[repo]?.state === "busy") return;
+    setChoosing((prev) => {
+      const next = new Set(prev);
+      next.delete(repo);
+      return next;
+    });
     const answer = (next: (typeof setups)[string]) =>
       setSetups((prev) => ({ ...prev, [repo]: next }));
     answer({ state: "busy", text: "Starting…" });
-    const res = await api.startTestingSetup(repo);
+    const res = await api.startTestingSetup(repo, mode);
     if (!res.ok || !res.task) {
       answer({ state: "refused", text: res.error ?? "The testing setup task could not be started." });
       return;
@@ -358,8 +381,12 @@ export function TrustPanel({
     answer(res.launched
       ? {
         state: "started",
-        text: "Testing setup started. Its agent audits this repository and asks you to approve "
-          + "every change in one form before it changes anything.",
+        text: mode === "stored"
+          ? "Testing setup started with stored settings. Its agent audits this repository and "
+            + "proposes its testing settings as a Command document; nothing changes until you "
+            + "apply it from Library › Commands."
+          : "Testing setup started. Its agent audits this repository and asks you to approve "
+            + "every change in one form before it changes anything.",
       }
       : {
         state: "queued",
@@ -447,13 +474,14 @@ export function TrustPanel({
             <Fragment key={row.repo}>
               <div className="trust-c trust-repo">
                 <RepositoryName path={row.repo} className="trust-repo-path" />
-                <Tooltip label="An agent audits this repository for flake-aware testing and asks you to approve every change before it opens a pull request">
+                <Tooltip label="Choose whether this repository commits its testing settings or keeps them in Mission Control, then an agent audits it for flake-aware testing">
                   <button
                     type="button"
                     className="trust-setup"
                     aria-label={`Set up flake-aware testing for ${row.repo}`}
+                    aria-expanded={choosing.has(row.repo)}
                     disabled={setups[row.repo]?.state === "busy"}
-                    onClick={() => void startTestingSetup(row.repo)}
+                    onClick={() => toggleChoice(row.repo)}
                   >
                     Set up testing
                   </button>
@@ -472,6 +500,13 @@ export function TrustPanel({
                   </button>
                 </Tooltip>
               </div>
+              {choosing.has(row.repo) && (
+                <TestingSetupChoice
+                  repo={row.repo}
+                  onStart={(mode) => void startTestingSetup(row.repo, mode)}
+                  onCancel={() => toggleChoice(row.repo)}
+                />
+              )}
               {setups[row.repo] && (
                 <p
                   className={`trust-row-note${setups[row.repo]!.state === "refused" ? " settings-error" : " settings-hint"}`}
@@ -561,6 +596,87 @@ export function TrustPanel({
       </p>
       {addError && <p className="settings-error">{addError}</p>}
     </section>
+  );
+}
+
+/** Each mode as the operator reads it: what it is called, and what the agent will then do. */
+const TESTING_SETUP_CHOICES: ReadonlyArray<{
+  mode: TestingSetupMode;
+  label: string;
+  tooltip: string;
+  detail: string;
+}> = [
+  {
+    mode: "committed",
+    label: "Commit a testing file",
+    tooltip: "Keep the testing settings in the repository, reviewed with its pull request",
+    detail: "The agent asks you to approve every change in one form, then commits "
+      + ".mission/testing.json with CI flake reporting and sets the affected-tests Command.",
+  },
+  {
+    mode: "stored",
+    label: "Store settings in Mission Control",
+    tooltip: "Keep the testing settings on this machine, applied from a proposal you review",
+    detail: "For a repository that will not commit a testing file. The agent changes no file: it "
+      + "proposes per-app affected-tests Commands and testing settings, which you apply from the "
+      + "preview in Library › Commands.",
+  },
+];
+
+/**
+ * One row's committed-or-stored choice, drawn under the row it belongs to. Nothing is selected
+ * when it opens, so Start cannot file a task until the operator has picked a mode.
+ */
+function TestingSetupChoice({
+  repo,
+  onStart,
+  onCancel,
+}: {
+  repo: string;
+  onStart: (mode: TestingSetupMode) => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [mode, setMode] = useState<TestingSetupMode | null>(null);
+  const id = useId();
+  return (
+    <fieldset className="settings-radios trust-setup-choice" aria-label={`Testing setup for ${repo}`}>
+      <legend>Where should this repository's testing settings live?</legend>
+      {TESTING_SETUP_CHOICES.map((choice) => (
+        <div className="trust-setup-option" key={choice.mode}>
+          <Tooltip label={choice.tooltip}>
+            <label>
+              <input
+                type="radio"
+                name={`${id}-mode`}
+                value={choice.mode}
+                checked={mode === choice.mode}
+                aria-describedby={`${id}-${choice.mode}`}
+                onChange={() => setMode(choice.mode)}
+              />
+              <span className="trust-setup-option-label">{choice.label}</span>
+            </label>
+          </Tooltip>
+          <p id={`${id}-${choice.mode}`} className="settings-hint">{choice.detail}</p>
+        </div>
+      ))}
+      <div className="trust-setup-actions">
+        <Tooltip label="Close this choice without starting a testing setup">
+          <button type="button" className="btn btn-ghost" onClick={onCancel}>
+            Cancel
+          </button>
+        </Tooltip>
+        <Tooltip label={mode ? "File and launch the testing setup task" : "Choose where the settings live first"}>
+          <button
+            type="button"
+            className="btn"
+            disabled={mode === null}
+            onClick={() => mode && onStart(mode)}
+          >
+            Start testing setup
+          </button>
+        </Tooltip>
+      </div>
+    </fieldset>
   );
 }
 

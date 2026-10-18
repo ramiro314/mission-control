@@ -24263,6 +24263,43 @@ button.sc-row:focus-visible {
   color: var(--fg);
   border-color: var(--dim);
 }
+/* The setup action's committed-or-stored choice, spanning the row it belongs to, above its
+   answer. `.settings-radios` resets the fieldset; this places it in the grid and insets it
+   to the row's own padding. */
+.trust-setup-choice.settings-radios {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11.5px;
+}
+/* A legend is drawn ON its fieldset's border by default; floated, it sits inside the band. */
+.trust-setup-choice legend {
+  float: left;
+  width: 100%;
+  margin-top: 2px;
+}
+.trust-setup-option {
+  clear: both;
+}
+.trust-setup-option label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.trust-setup-option-label {
+  font-weight: 540;
+  color: var(--fg);
+}
+.trust-setup-option .settings-hint {
+  margin: 2px 0 8px 22px;
+}
+.trust-setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 /* The setup action's answer, spanning the row it belongs to. */
 .trust-row-note {
   grid-column: 1 / -1;

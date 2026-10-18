@@ -1,6 +1,6 @@
 ---
 name: testing-setup
-description: Bring a repository into Mission Control's flake-aware testing contract - audit its test runner, JUnit output, CI flake reporting, permissions and testing settings, propose every change in one approval form, apply only what the human approved (one commit with the CI and test-script changes, the copied report action and .mission/testing.json, which Mission Control publishes as a pull request, plus the repository's affected-tests Command), then prove it with a local affected-tests run and the "Flaky tests" check on the setup pull request's own CI. Use when a "Set up flake-aware testing" task arrives, or when asked to set up, audit or update flake-aware testing or the mission-flake-report action in a repository.
+description: Bring a repository into Mission Control's flake-aware testing contract, in the mode the task names. Committed - audit its test runner, JUnit output, CI flake reporting, permissions and testing settings, propose every change in one approval form, apply only what the human approved (one commit with the CI and test-script changes, the copied report action and .mission/testing.json, which Mission Control publishes as a pull request, plus the repository's affected-tests Command), then prove it with a local affected-tests run and the "Flaky tests" check on the setup pull request's own CI. Stored, for a repository that will not commit a testing file - change no file, work out per-app affected-tests Commands and testing settings, submit them as one Command document with propose_command_document for the human to apply from the preview, and prove each template with a local run. Use when a "Set up flake-aware testing" task arrives, or when asked to set up, audit or update flake-aware testing or the mission-flake-report action in a repository.
 metadata:
   mission:
     category: testing
@@ -22,7 +22,26 @@ once, and you change exactly what the human selected in that one form - nothing 
 an obvious fix you noticed on the way. If the audit finds nothing to change, you say so and stop:
 no commit, no pull request, no form.
 
+## Choose the mode
+
+The human chose where this repository's testing configuration lives before the task started,
+and the task intent says which in one line:
+
+- **`Testing setup mode: committed.`** Follow sections 1 to 4 below. The repository commits
+  `.mission/testing.json` and the CI changes, and you set the `affected-tests` Command with
+  `set_affected_tests_command`.
+- **`Testing setup mode: stored.`** Follow [Stored mode](#stored-mode) instead of sections 2 to
+  4. The repository will not commit a testing file, so you change no file in it. You propose the
+  per-app `affected-tests` Commands and testing settings as one Command document with
+  `propose_command_document`, and the human applies it from its preview.
+
+Never switch modes on your own. If the chosen mode cannot work (for example, stored mode on a
+repository whose tests cannot write JUnit XML), report why and stop; the human starts the other
+mode from the Trust row if they want it.
+
 ## What you are installing
+
+In committed mode (stored mode installs nothing in the repository):
 
 ```
 <repo>/
@@ -220,6 +239,101 @@ request, so it comes once Mission Control's publish instruction has opened it:
    repository whose CI does not publish this check makes the Wait for CI node block with
    `ci_flake_report_missing`; CI that never starts blocks with `ci_missing`, and one still
    running at its limit with `ci_timeout`.
+
+## Stored mode
+
+Use this section, not sections 2 to 4, when the intent says **`Testing setup mode: stored.`** The
+repository will not commit a testing file, so its affected-tests gate is configured entirely in
+Mission Control: one `affected-tests` Command per app folder, and stored testing settings for
+those folders. The rule here: **change no file in the repository and make no commit.** No
+`.mission/testing.json`, no `.gitignore` line, no CI edit, no copied report action. Anything you
+create while verifying goes in a temporary directory outside the repository.
+
+You do not ask in a decision form. The proposal writes nothing live, and its preview in Library ›
+Commands is where the human approves every change: one ask, as in committed mode.
+
+### Audit
+
+Read the repository and record a finding, with its evidence (file and line), for each of these
+items from section 1: the test runner and JUnit XML (1), the rerun command template (2),
+`.mission/testing.json` (6, only to note that a committed file exists; stored settings overlay it
+key by key), the test-file patterns (8), the proposed smoke set (9) and the current
+`affected-tests` Commands (10). The intent lists every current Command at the repository root
+and in its folders. Skip items 3, 4, 5 and 7: they concern files this mode does not commit.
+
+Then work out the layout, per app:
+
+- **The folders that need their own Command.** In a workspace monorepo (`workspaces` in the root
+  `package.json`, `pnpm-workspace.yaml`, a Turbo or Nx layout), each app or package whose tests
+  run with its own runner, config or import aliases gets an `affected-tests` Command at its own
+  folder. A repository with one runner at the root gets one Command at the root (`""`).
+- **Each Command's argv**, run from that folder, with `{files}` as a whole element (the selected
+  test files, relative to that folder) and `{junit}` inside one element (where the runner writes
+  JUnit XML). Prefer the folder's own test script, and check that it accepts a file list.
+- **Each folder's testing settings**: `tests.patterns` and `tests.smokeSet` relative to that
+  folder (`src/**/*.test.ts` at `apps/web` means `apps/web/src/**/*.test.ts`), and
+  `tests.includeImporters` only when it should differ from the default (on). Count the files each
+  pattern matches.
+
+### Propose one Command document
+
+Submit everything with **`propose_command_document`**, as one version 1 document:
+
+```json
+{
+  "version": 1,
+  "commands": {
+    "affected-tests": [
+      { "path": "apps/web", "argv": ["yarn", "vitest", "run", "--reporter=junit", "--outputFile={junit}", "{files}"] },
+      { "path": "apps/admin", "argv": ["env", "JEST_JUNIT_OUTPUT_FILE={junit}", "yarn", "jest", "--reporters=default", "--reporters=jest-junit", "{files}"] }
+    ]
+  },
+  "testing": [
+    { "path": "apps/web", "settings": { "tests": { "patterns": ["src/**/*.test.{ts,tsx}"], "smokeSet": ["src/routes.test.ts"] } } },
+    { "path": "apps/admin", "settings": { "tests": { "patterns": ["src/**/*.spec.ts"] } } }
+  ]
+}
+```
+
+- `path` is repository-relative, and `""` is the root. Name only folders the main checkout has.
+- Use only the `affected-tests` slot under `commands`. The other slots (`test`, `lint`,
+  `typecheck`, `build`, `documentation`) are not part of testing setup.
+- Under `testing`, set only `tests.patterns`, `tests.smokeSet` and `tests.includeImporters`.
+  Never `flakes`: it is refused, because only CI reads it.
+- Leave out a Command or setting that is already exactly as proposed. Add a `remove` entry
+  (`{ "path": "apps/old", "remove": true }`) only for a row whose folder no longer exists, and say
+  why in the report.
+
+A document that breaks a rule (a template without `{files}` or `{junit}`, a path listed twice,
+an unknown key) is refused with every problem listed, and nothing is stored. An accepted one is
+answered with the preview the human will see: its adds, changes and removals, and any problem
+that blocks applying it, such as a folder the main checkout does not have or a slot over its
+override cap. Fix every problem and submit again: a newer proposal replaces the pending one, so
+the human only ever sees your latest. Never call
+`set_affected_tests_command` in this mode (Mission Control refuses it for a stored setup), and
+never write a Command or setting any other way.
+
+### Verify
+
+Run each proposed `affected-tests` argv once, in its folder of your worktree, against two or
+three test files its patterns match (preferably including one smoke test), with `{files}`
+replaced by those paths relative to the folder and `{junit}` by a path in a temporary
+directory. Confirm the command exits and the JUnit file exists and names each test with its
+file. When the document has more than five Commands, run one per distinct argv shape and list
+the folders you did not run. Report each exact command, its exit code and its test count.
+
+There is no pull request and no "Flaky tests" check in this mode. CI flake reporting needs the
+report action committed to the repository, so say in the report that it is not set up.
+
+### Report
+
+End with a short report: what the audit found, the folders and their Commands and settings as
+proposed, the preview's change summary, the local verification results, and what the human does
+next: open the proposal from its banner in Library › Commands (or the attention inbox), review
+the preview, and apply or dismiss it. The gate starts running only once it is applied. Mention
+the laptop settings below, whether you recommend the **No-Mistakes Review (Affected tests)**
+workflow (`builtin-workflow:no-mistakes-review-affected-tests`), and that the committed mode is
+the way to get CI flake reporting later.
 
 ## Running again later
 
