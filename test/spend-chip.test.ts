@@ -224,6 +224,33 @@ test("an escalated chip trades its rate for the reading that escalated it", () =
   assert.equal(spendChipFigures(fleet()).alert, null);
 });
 
+test("the chip reads its tone against the instant it is given, either side of a reset", () => {
+  // Pinned to `NOW`, years behind the real clock: if the instant were not carried down to
+  // the window and runway checks, they would read every window here as long over, and every
+  // "high" below would come back "ok". The chip's own clock subscription keys on exactly
+  // these figures, so this is what turns it calm when a window resets on an idle screen.
+  const resetMs = NOW + 20 * 60_000;
+  const spent = fleet({ rateLimits: { fiveHour: win(100, 20 * 60_000), sevenDay: null, updatedAt: NOW } });
+  for (const at of [NOW, resetMs - 1]) {
+    const { tone, alert } = spendChipFigures(spent, at);
+    assert.equal(tone, "high", `a spent window is high until it resets (${at - resetMs}ms)`);
+    assert.equal(alert, "100%");
+  }
+  for (const at of [resetMs, resetMs + HOUR]) {
+    const { tone, alert } = spendChipFigures(spent, at);
+    assert.equal(tone, "ok", `a window whose reset has passed is skipped (${at - resetMs}ms)`);
+    assert.equal(alert, null);
+  }
+
+  // And the runway half of the tone, which is the same instant one call further down: 96%
+  // with twenty minutes left runs out first, while a millisecond before the reset it clears.
+  const running = fleet({ rateLimits: { fiveHour: win(96, 20 * 60_000), sevenDay: null, updatedAt: NOW } });
+  assert.equal(spendChipFigures(running, NOW).tone, "high");
+  assert.equal(spendChipFigures(running, NOW).alert, "96%");
+  assert.equal(spendChipFigures(running, resetMs - 1).tone, "ok");
+  assert.equal(spendChipFigures(running, resetMs - 1).alert, null);
+});
+
 test("a window the current pace does not exhaust leaves the chip calm", () => {
   // 74% gone - amber by percentage alone - but four fifths of the window has already run,
   // so the reset arrives before the wall does. `clears` outranks the percentage, exactly as
