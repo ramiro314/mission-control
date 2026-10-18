@@ -194,7 +194,7 @@ export interface MissionState {
    * How many times the per-harness dispatch defaults have changed since this stream opened,
    * plus one per (re)connect. A COUNTER, not the config: `harnesses_config_changed` carries
    * no body, so surfaces that name those defaults - the Harnesses panel and the dispatch
-   * modal's "Default - â¦" labels - watch this number and re-read the route when it moves.
+   * modal's "Default - …" labels - watch this number and re-read the route when it moves.
    *
    * Bumped on connect as well as on the event so a change that happened while the stream was
    * down is picked up at once: this config rides no snapshot, so a reconnect is otherwise
