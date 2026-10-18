@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CommandDocumentPreview } from "../src/shared/command-document.ts";
+import { COMMAND_DOCUMENT_BODY_MAX_BYTES, type CommandDocumentPreview } from "../src/shared/command-document.ts";
 import type { WorkflowCommandView } from "../src/shared/workflow.ts";
 
 
@@ -220,6 +220,81 @@ test("a write that loses its race inside the transaction rolls the whole documen
   assert.deepEqual(slot(commands, "lint").overrides, []);
   assert.equal(slot(commands, "lint").revision, 1);
   assert.deepEqual(testing.list(), []);
+});
+
+test("a Command slot that loses its compare-and-swap inside the transaction rolls back every slot and testing write", async () => {
+  const { commands, testing, emitted, post } = fixture();
+  const repo = repository();
+  // Slots are written in registry order, so `test` is written (and must be undone) before
+  // `lint` loses its race; the testing row would be written after both.
+  const document = {
+    version: 1,
+    commands: {
+      test: [{ path: "", argv: ["npm", "test"] }],
+      lint: [{ path: "apps/web", argv: ["web", "lint"] }],
+    },
+    testing: [{ path: "", settings: { tests: { patterns: ["t/*.ts"] } } }],
+  };
+  const preview = await (await post("/api/command-documents/preview", { repoRoot: repo, document })).json() as CommandDocumentPreview;
+  assert.deepEqual(preview.basis, { commands: { test: 1, lint: 1 }, testing: { "": 0 } });
+  const before = {
+    test: slot(commands, "test").revision,
+    lint: slot(commands, "lint").revision,
+  };
+  emitted.length = 0;
+
+  // After the basis check passes, another writer saves `lint` just before this apply's write
+  // reaches it, so the slot's own compare-and-swap refuses.
+  const replace = commands.store.replaceWorkflowCommandCas.bind(commands.store);
+  const written: string[] = [];
+  commands.store.replaceWorkflowCommandCas = (name, expected, next, now) => {
+    written.push(name);
+    if (name === "lint") replace(name, expected, { ...next, overrides: [{ repoRoot: `${repo}/apps/web`, command: ["theirs"] }] }, now);
+    return replace(name, expected, next, now);
+  };
+  let applied: Response;
+  try {
+    applied = await post("/api/command-documents/apply", { repoRoot: repo, document, basis: preview.basis });
+  } finally {
+    commands.store.replaceWorkflowCommandCas = replace;
+  }
+  assert.deepEqual(written, ["test", "lint"]);
+  assert.equal(applied.status, 409);
+  const refused = await applied.json() as { code: string; preview: CommandDocumentPreview };
+  assert.equal(refused.code, "command_document_stale");
+  // Everything inside the transaction is gone: the `test` slot written first, the racing
+  // `lint` write on the same connection, and the testing row that was never reached.
+  assert.deepEqual({ test: slot(commands, "test").revision, lint: slot(commands, "lint").revision }, before);
+  assert.deepEqual(slot(commands, "test").overrides, []);
+  assert.deepEqual(slot(commands, "lint").overrides, []);
+  assert.deepEqual(testing.list(), []);
+  // A rolled-back document announces nothing.
+  assert.deepEqual(emitted, []);
+  // The recomputed preview is what applying would do now, against the rolled-back state.
+  assert.deepEqual(refused.preview.basis, preview.basis);
+  assert.equal(refused.preview.commands.length, 2);
+});
+
+test("a request body exactly at the 8 MiB limit is read, and one byte more is refused with 413", async () => {
+  const { post, request } = fixture();
+  const repo = repository();
+  assert.equal(COMMAND_DOCUMENT_BODY_MAX_BYTES, 8 * 1024 * 1024);
+  // A valid preview request padded with JSON whitespace to an exact byte length.
+  const padded = (bytes: number): string => {
+    const body = JSON.stringify({ repoRoot: repo, document: { version: 1, commands: { lint: [{ path: "", argv: ["x"] }] } } });
+    return body + " ".repeat(bytes - Buffer.byteLength(body));
+  };
+  const atLimit = await request("/api/command-documents/preview", { method: "POST", body: padded(COMMAND_DOCUMENT_BODY_MAX_BYTES) });
+  assert.equal(atLimit.status, 200);
+  assert.equal((await atLimit.json() as CommandDocumentPreview).commands.length, 1);
+
+  for (const path of ["/api/command-documents/preview", "/api/command-documents/apply"]) {
+    const over = await request(path, { method: "POST", body: padded(COMMAND_DOCUMENT_BODY_MAX_BYTES + 1) });
+    assert.equal(over.status, 413, path);
+    assert.deepEqual(await over.json(), { error: "Command document is too large" });
+  }
+  // A small request still answers normally after the refusals.
+  assert.equal((await post("/api/command-documents/preview", { repoRoot: repo, document: { version: 1 } })).status, 200);
 });
 
 test("export then import round-trips: the preview changes nothing and apply writes nothing", async () => {

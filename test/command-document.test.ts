@@ -139,6 +139,19 @@ test("argv keeps the Command catalog's own limits, and an entry list is bounded"
   assert.match(problems({ version: 1, commands: { lint: [{ path: "", argv: [""] }] } })[0]!, /^commands\.lint\[0\]\.argv\[0\]: /);
   const many = Array.from({ length: COMMAND_DOCUMENT_LIMITS.commandEntries + 1 }, (_, i) => ({ path: `p${i}`, argv: ["x"] }));
   assert.match(problems({ version: 1, commands: { lint: many } })[0]!, /^commands\.lint: /);
+  // Exactly at the limit is a valid list.
+  assert.deepEqual(problems({ version: 1, commands: { lint: many.slice(1) } }), []);
+});
+
+test("testing entries are bounded at 400: the 400th is accepted and the 401st refused", () => {
+  assert.equal(COMMAND_DOCUMENT_LIMITS.testingEntries, 400);
+  const entries = (count: number) => Array.from({ length: count }, (_, i) => (
+    i % 2 === 0 ? { path: `apps/a${i}`, settings: { tests: { includeImporters: true } } } : { path: `apps/a${i}`, remove: true }
+  ));
+  assert.deepEqual(problems({ version: 1, testing: entries(400) }), []);
+  const refused = problems({ version: 1, testing: entries(401) });
+  assert.equal(refused.length, 1);
+  assert.match(refused[0]!, /^testing: Array must contain at most 400 element\(s\)$/);
 });
 
 test("text that is not JSON, or nothing at all, is refused before any rule", () => {
