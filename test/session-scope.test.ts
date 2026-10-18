@@ -370,3 +370,15 @@ test("the OOM log line names the session, the unit and the peak in base-1024 uni
   );
   assert.doesNotMatch(oomStopLine("s", "u.scope", null), /peak/);
 });
+
+test("the production deps read the state home when asked, not when the module loaded", () => {
+  // A test file sets its home after its static imports, and this module is in the harness
+  // registry's graph, so freezing the home at import refused every such file's database.
+  const before = process.env.HARNESS_HOME;
+  process.env.HARNESS_HOME = "/tmp/mission-session-scope-late-home";
+  try {
+    assert.equal(productionSessionScopeDeps.stateHome, "/tmp/mission-session-scope-late-home");
+  } finally {
+    process.env.HARNESS_HOME = before;
+  }
+});

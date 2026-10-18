@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { STATE_DIR } from "../config.ts";
 import { locateExecutableSync } from "../executables/locator.ts";
 import { socketExists, userManagerReachable } from "../graphical-session.ts";
-import { resolveMissionMcpRuntime } from "../mission-mcp.ts";
+import { stateDir } from "../../shared/harness-runtime.mjs";
+import { resolveCurrentOwnedRuntime } from "../../shared/owned-runtime.mjs";
 import { run } from "../util/exec.ts";
 import { underTestRunner } from "../util/test-runner.ts";
 
@@ -176,12 +176,15 @@ export function oomStopLine(label: string, unit: string, peakBytes: number | nul
 }
 
 export function createSessionScope(deps: SessionScopeDeps, options: { inert?: boolean } = {}): SessionScope {
-  const instance = scopeInstance(deps.stateHome);
+  // Resolved on first use, never at import: this module sits in the harness registry's graph,
+  // and a test file sets its home after its static imports have run.
+  let instanceValue: string | null = null;
+  const instance = () => (instanceValue ??= scopeInstance(deps.stateHome));
   let decision: Decision = UNWRAPPED;
   let readyPromise: Promise<void> | null = null;
 
   const unitName = (label: string) =>
-    `mission-control-${instance}-${scopeLabel(label)}-${deps.nonce()}`;
+    `mission-control-${instance()}-${scopeLabel(label)}-${deps.nonce()}`;
 
   const scopeArgs = (unit: string, properties: readonly string[], collect: boolean) => [
     "--user",
@@ -243,7 +246,7 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
   async function resetStale(): Promise<void> {
     const systemctl = deps.systemctl();
     if (!systemctl || !userManagerReachable(deps.env, deps.socketExists)) return;
-    await deps.run(systemctl, ["--user", "reset-failed", `mission-control-${instance}-*.scope`], {
+    await deps.run(systemctl, ["--user", "reset-failed", `mission-control-${instance()}-*.scope`], {
       timeoutMs: SYSTEMCTL_TIMEOUT_MS,
       env: deps.env,
     });
@@ -367,14 +370,18 @@ function readOwnCgroup(): string | null {
 export const productionSessionScopeDeps: SessionScopeDeps = {
   platform: process.platform,
   env: process.env,
-  stateHome: STATE_DIR,
+  // The same resolution as `config.ts`'s `STATE_DIR`, read when first asked rather than when
+  // this module loads, for the reason `createSessionScope` gives.
+  get stateHome() {
+    return stateDir();
+  },
   uid: process.getuid?.() ?? null,
   systemdRun: () => locateExecutableSync("systemd-run")?.path ?? null,
   systemctl: () => locateExecutableSync("systemctl")?.path ?? null,
   choom: () => locateExecutableSync("choom")?.path ?? null,
   socketExists,
   ownCgroup: readOwnCgroup,
-  probeRuntime: () => resolveMissionMcpRuntime(process.execPath),
+  probeRuntime: () => resolveCurrentOwnedRuntime(process.execPath),
   run: async (bin, args, opts) => {
     const result = await run(bin, args, opts);
     // A child that died rather than answered, our own timeout included, reports no code.
