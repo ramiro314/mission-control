@@ -194,6 +194,20 @@ test("Linux without systemd-run or a manager: no scope, choom applied, exactly o
   }
 });
 
+test("Linux without systemd-run and without choom: argv unchanged, and the one off line says choom was not found", async () => {
+  const { deps, calls, logs } = fakes({ systemdRun: () => null, choom: () => null });
+  const scope = createSessionScope(deps);
+  await scope.ready();
+  for (let i = 0; i < 2; i++) {
+    assert.deepEqual(scope.wrap("/bin/agent", ["a"], MANAGER_ENV, "s"), { bin: "/bin/agent", args: ["a"], unit: null });
+  }
+  assert.equal(calls.filter(isProbe).length, 0);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /session isolation is off: systemd-run was not found/);
+  assert.match(logs[0]!, /choom was not found, so oom_score_adj is unchanged/);
+  assert.doesNotMatch(logs[0]!, /through choom/);
+});
+
 test("choom missing: a scope without choom, and the log line says so", async () => {
   const { deps, logs } = fakes({ choom: () => null });
   const scope = createSessionScope(deps);
