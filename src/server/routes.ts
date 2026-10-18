@@ -8734,13 +8734,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   app.post("/api/tours/:tourId/dispatch", (c) => runTourRecipe(c, "dispatch"));
 
-  // "Set up flake-aware testing" on a Trust row. The body names only a repository; the task's
-  // kind, intent, label, Workflow posture and Mission MCP tools are fixed by `startTestingSetup`,
-  // which also refuses before creating anything when the testing-setup skill cannot be invoked.
+  // "Set up flake-aware testing" on a Trust row. The body names a repository and the mode the
+  // operator chose (committed or stored); the task's kind, intent, label, Workflow posture and
+  // Mission MCP tools follow from those in `startTestingSetup`, which also refuses before creating
+  // anything when the testing-setup skill cannot be invoked.
   app.post("/api/repositories/testing-setup", async (c) => {
     const parsed = await parseBody(c, TestingSetupStartSchema);
     if (!parsed.ok) return parsed.res;
-    const result = await startTestingSetup(parsed.data.repoRoot, { tasks, commands: workflowCommandManager() });
+    const result = await startTestingSetup(parsed.data.repoRoot, parsed.data.mode, {
+      tasks,
+      commands: workflowCommandManager(),
+    });
     if (result.kind === "refused") return c.json({ error: result.error }, result.status);
     const { kind: _kind, ...body } = result;
     return c.json(body);
