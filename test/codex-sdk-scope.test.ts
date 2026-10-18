@@ -168,3 +168,32 @@ test("connect awaits the session scope's ready() before it spawns, and wraps und
   await until(() => calls.outcomes.length > 0);
   assert.deepEqual(calls.outcomes, [UNIT]);
 });
+
+test("a session server's exitCause carries an OOM stop's peak, and is null otherwise", { timeout: 15_000 }, async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const cases = [
+    [UNIT, { oomKilled: true, peakBytes: 1610612736 }, { kind: "out_of_memory", peakBytes: 1610612736 }],
+    [UNIT, { oomKilled: true, peakBytes: null }, { kind: "out_of_memory", peakBytes: null }],
+    [UNIT, { oomKilled: false, peakBytes: 100 }, null],
+    [UNIT, null, null],
+    [null, { oomKilled: true, peakBytes: 1 }, null],
+  ] as const;
+  for (const [unit, verdict, cause] of cases) {
+    reset();
+    const { scope } = fakeScope(unit, verdict);
+    const transport = spawnAppServer(codex, [], root, { PATH: process.env.PATH }, { label: "sdk:cause", scope });
+    t.after(() => transport.close());
+    await waitForArgv();
+    await transport.close();
+    assert.deepEqual(await transport.exitCause!(), cause, JSON.stringify({ unit, verdict }));
+  }
+});
+
+test("an app-server spawned without a session has no exitCause to wait on", { timeout: 15_000 }, async (t) => {
+  reset();
+  const transport = spawnAppServer(codex, [], root, { PATH: process.env.PATH });
+  t.after(() => transport.close());
+  await waitForArgv();
+  assert.equal(transport.exitCause, undefined);
+  await transport.close();
+});

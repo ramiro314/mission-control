@@ -1,3 +1,4 @@
+import type { SdkExitCause } from "../../types.ts";
 import type { RequestId } from "./protocol.ts";
 
 // A JSON-RPC 2.0 client for one `codex app-server` connection.
@@ -41,6 +42,11 @@ export interface AppServerTransport {
   pid: number | null;
   /** End the connection. Must make `frames` finish. */
   close(): Promise<void>;
+  /**
+   * Once the subprocess exited: why it was stopped from outside, read from its session scope.
+   * Absent when there is no scoped process, and null when it was not stopped that way.
+   */
+  exitCause?(): Promise<SdkExitCause | null>;
 }
 
 /** What the adapter wants told to it, as the client pumps. */
@@ -80,6 +86,11 @@ export class AppServerClient {
 
   get pid(): number | null {
     return this.transport.pid;
+  }
+
+  /** The transport's `exitCause`, or null when it has no scoped process to read one from. */
+  exitCause(): Promise<SdkExitCause | null> | null {
+    return this.transport.exitCause?.() ?? null;
   }
 
   /**

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 
 import {
+  EXIT_CAUSE_WAIT_MS,
   OUTCOME_BUDGET_MS,
   PROBE_TIMEOUT_MS,
   RESET_BUDGET_MS,
@@ -10,11 +13,14 @@ import {
   daemonUnit,
   formatPeak,
   oomStopLine,
+  outOfMemoryText,
   productionSessionScopeDeps,
   scopeInstance,
   sessionScope,
+  type SessionScope,
   type SessionScopeDeps,
   type SessionScopeRunResult,
+  watchScopeExit,
 } from "../src/server/platform/session-scope.ts";
 
 const RUNTIME_DIR = "/run/user/1000";
@@ -395,4 +401,70 @@ test("the production deps read the state home when asked, not when the module lo
   } finally {
     process.env.HARNESS_HOME = before;
   }
+});
+
+/** A child that only emits, and a scope whose `outcome` answers when `answer` is called. */
+function watched(started = true) {
+  const child = Object.assign(new EventEmitter(), { pid: started ? 4242 : undefined }) as unknown as ChildProcess;
+  let answer!: (verdict: { oomKilled: boolean; peakBytes: number | null } | null) => void;
+  const reads: string[] = [];
+  const scope: SessionScope = {
+    ready: async () => {},
+    wrap: (bin, args) => ({ bin, args: [...args], unit: null }),
+    outcome: (unit) => {
+      reads.push(unit);
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    },
+  };
+  return { child, scope, reads, answer: (v: Parameters<typeof answer>[0]) => answer(v) };
+}
+
+test("watchScopeExit hands the driver an OOM stop as an out_of_memory cause and logs it once", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const w = watched();
+  const exitCause = watchScopeExit(w.child, w.scope, "mission-control-x.scope", "sdk:watched");
+  assert.deepEqual(w.reads, [], "nothing is read before the child exits");
+  w.child.emit("exit", null, "SIGKILL");
+  w.answer({ oomKilled: true, peakBytes: 1610612736 });
+  assert.deepEqual(await exitCause(), { kind: "out_of_memory", peakBytes: 1610612736 });
+  assert.deepEqual(await exitCause(), { kind: "out_of_memory", peakBytes: 1610612736 }, "a second ask gets the same answer");
+  assert.deepEqual(w.reads, ["mission-control-x.scope"], "one read per exit");
+  assert.equal(warn.mock.callCount(), 1);
+});
+
+test("watchScopeExit gives null for a clean stop, an unknown verdict, no unit, or a child that never started", async () => {
+  for (const verdict of [{ oomKilled: false, peakBytes: 5 }, null]) {
+    const w = watched();
+    const exitCause = watchScopeExit(w.child, w.scope, "mission-control-x.scope", "sdk:watched");
+    w.child.emit("exit", 0, null);
+    w.answer(verdict);
+    assert.equal(await exitCause(), null, JSON.stringify(verdict));
+  }
+  const unscoped = watched();
+  assert.equal(await watchScopeExit(unscoped.child, unscoped.scope, null, "sdk:watched")(), null);
+  unscoped.child.emit("exit", 0, null);
+  assert.deepEqual(unscoped.reads, [], "no unit, no read");
+
+  const neverStarted = watched(false);
+  const exitCause = watchScopeExit(neverStarted.child, neverStarted.scope, "mission-control-x.scope", "sdk:watched");
+  neverStarted.child.emit("error", new Error("spawn ENOENT"));
+  assert.equal(await exitCause(), null);
+});
+
+test("watchScopeExit stops waiting for a verdict after EXIT_CAUSE_WAIT_MS", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = watched();
+  const exitCause = watchScopeExit(w.child, w.scope, "mission-control-x.scope", "sdk:watched");
+  w.child.emit("exit", null, "SIGKILL");
+  const answer = exitCause();
+  t.mock.timers.tick(EXIT_CAUSE_WAIT_MS);
+  assert.equal(await answer, null, "a verdict that never arrives never holds the exit");
+});
+
+test("the task failure text prints the peak in base-1024 units, and drops it when unknown", () => {
+  assert.equal(outOfMemoryText(1610612736), "stopped: the session ran out of memory (peak 1.5 GB)");
+  assert.equal(outOfMemoryText(16320875724), "stopped: the session ran out of memory (peak 15.2 GB)");
+  assert.equal(outOfMemoryText(null), "stopped: the session ran out of memory");
 });

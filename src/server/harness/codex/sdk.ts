@@ -1182,7 +1182,11 @@ class CodexSdkSession implements SdkSessionHandle {
         this.forgetPending(key, held);
       }
       this.fileChanges.clear();
-      this.out.emit({ kind: "exited", reason, resumable: this.threadId !== null });
+      // The server's scope verdict, before `exited`: an OOM stop is the one ending this driver
+      // cannot see from the stream, and the task's failure text is where it is told.
+      const pendingCause = this.client.exitCause();
+      const cause = pendingCause ? await pendingCause : null;
+      this.out.emit({ kind: "exited", reason, resumable: this.threadId !== null, ...(cause ? { cause } : {}) });
       this.out.end();
     }
   }

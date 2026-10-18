@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
-import { oomStopLine, sessionScope, type SessionScope } from "../../platform/session-scope.ts";
+import { sessionScope, watchScopeExit, type SessionScope } from "../../platform/session-scope.ts";
+import type { SdkExitCause } from "../types.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkOneShotDeps,
@@ -117,6 +118,7 @@ async function startQuery(params: StartQueryParams, scope: SessionScope): Promis
     options = { ...params.options };
   }
   let recoveryProcessId: number | null = null;
+  let exitCause: () => Promise<SdkExitCause | null> = () => Promise.resolve(null);
   if ("canUseTool" in params.options) {
     const label = "sessionLabel" in params ? params.sessionLabel : "session";
     // The hook below must return its child synchronously, so the probe that decides what
@@ -130,13 +132,9 @@ async function startQuery(params: StartQueryParams, scope: SessionScope): Promis
       const { bin: executable, args, unit } = scope.wrap(command, commandArgs, env, label);
       const child = spawn(executable, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       recoveryProcessId = child.pid ?? null;
-      if (unit) {
-        child.once("exit", () => {
-          void scope.outcome(unit).then((outcome) => {
-            if (outcome?.oomKilled) console.warn(oomStopLine(label, unit, outcome.peakBytes));
-          });
-        });
-      }
+      // Whatever the reason the CLI exited, its scope's verdict is read, so an OOM stop is
+      // logged and a failed scope is reset, and the driver can say why the session ended.
+      exitCause = watchScopeExit(child, scope, unit, label);
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (data: string) => {
         options.stderr?.(data);
@@ -150,6 +148,7 @@ async function startQuery(params: StartQueryParams, scope: SessionScope): Promis
     options,
   });
   Object.defineProperty(started, "recoveryProcessId", { get: () => recoveryProcessId });
+  Object.defineProperty(started, "exitCause", { value: () => exitCause() });
   return started as unknown as ClaudeSdkQuery;
 }
 

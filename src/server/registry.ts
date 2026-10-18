@@ -133,6 +133,7 @@ import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
 import type {
   RuntimeMetaRead,
   SdkEvent,
+  SdkExitCause,
   SdkUsage,
   SessionActivityRead,
   WorkCycleSignal,
@@ -541,6 +542,11 @@ const DEFAULT_WORK_BRANCHES = new Set(["main", "master"]);
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
+/**
+ * How long an exit cause nobody took is kept after `session_remove`. Long enough for a scout's
+ * task, which settles a beat after the event once its archive refused the completion.
+ */
+export const EXIT_CAUSE_TTL_MS = 60_000;
 /**
  * How long a FINISHED, session-less queue is kept before it's pruned.
  *
@@ -1000,6 +1006,13 @@ export class Registry extends EventEmitter {
    */
   private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Why a session's driver was stopped from outside, as `beginEviction` was handed it. Kept past
+   * the row, because `session_remove` carries only the id and its task settles after the row
+   * is gone. `takeExitCause` reads one once; one nobody takes is dropped `EXIT_CAUSE_TTL_MS`
+   * after `session_remove`.
+   */
+  private exitCauses = new Map<string, { cause: SdkExitCause; drop: ReturnType<typeof setTimeout> | null }>();
   /** Cleanup targets only, never published or eligible for work. Bounded by owed closures. */
   private retiredMissionTargets = new Map<string, Session>();
   private driverDialogs = new Map<string, PaneDialog[]>();
@@ -2410,6 +2423,7 @@ export class Registry extends EventEmitter {
       if (timer) {
         clearTimeout(timer);
         this.exitTimers.delete(d.syntheticId);
+        this.forgetExitCause(d.syntheticId);
       }
       const prev = this.sessions.get(d.syntheticId);
       const next = this.mergeDiscovered(prev, d, now);
@@ -3004,8 +3018,9 @@ export class Registry extends EventEmitter {
       case "exited":
         // The same exited-then-linger-then-`session_remove` sequence a vanished pane gets.
         // `reason` and `resumable` are the supervisor's to act on (a resumable exit is what
-        // a restart relaunches from); the card only ever needed to know it is over.
-        this.beginEviction(s);
+        // a restart relaunches from); the card only ever needed to know it is over. `cause`
+        // rides the eviction to the task's failure text, and never onto the wire.
+        this.beginEviction(s, evt.cause);
         return;
     }
   }
@@ -6630,8 +6645,12 @@ export class Registry extends EventEmitter {
    *
    * Idempotent by way of the timer: a session already on its way out keeps its original
    * deadline instead of having it pushed back by a repeat signal.
+   *
+   * `cause` is kept in `exitCauses` past the row, for `takeExitCause`. The first one wins, and a
+   * repeat signal without one never clears it.
    */
-  private beginEviction(s: Session): void {
+  private beginEviction(s: Session, cause?: SdkExitCause): void {
+    if (cause && !this.exitCauses.has(s.id)) this.exitCauses.set(s.id, { cause, drop: null });
     if (this.exitTimers.has(s.id)) return;
     if (s.state !== "exited") {
       const exited: Session = { ...s, state: "exited" };
@@ -6648,8 +6667,33 @@ export class Registry extends EventEmitter {
     if (current) this.emit("session_exit", current);
   }
 
+  /**
+   * Why `sessionId`'s driver was stopped from outside, once: the entry is gone after this read.
+   * Null when its exit had no cause, when someone already took it, or when it was dropped
+   * `EXIT_CAUSE_TTL_MS` after `session_remove`.
+   */
+  takeExitCause(sessionId: string): SdkExitCause | null {
+    const kept = this.exitCauses.get(sessionId);
+    if (!kept) return null;
+    this.forgetExitCause(sessionId);
+    return kept.cause;
+  }
+
+  private forgetExitCause(sessionId: string): void {
+    const kept = this.exitCauses.get(sessionId);
+    if (kept?.drop) clearTimeout(kept.drop);
+    this.exitCauses.delete(sessionId);
+  }
+
   private remove(id: string): void {
     this.exitTimers.delete(id);
+    // Armed BEFORE `session_remove`, whose subscribers may take the cause synchronously.
+    const kept = this.exitCauses.get(id);
+    if (kept && !kept.drop) {
+      kept.drop = unref(setTimeout(() => {
+        if (this.exitCauses.get(id) === kept) this.exitCauses.delete(id);
+      }, EXIT_CAUSE_TTL_MS));
+    }
     this.prObservations.delete(id);
     // Per-repo observations are keyed `(session, repo)`, so one session leaves several. The
     // poller retracts them while the session lives; this is what stops a finished multi-repo

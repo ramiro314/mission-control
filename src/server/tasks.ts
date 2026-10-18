@@ -207,6 +207,7 @@ import {
   type PendingTurnResetBoundary,
 } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
+import { outOfMemoryText } from "./platform/session-scope.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -2571,10 +2572,15 @@ export class TaskManager {
     const kept = holdsResources
       ? " - use Clean up or re-dispatch for any retained worktrees"
       : "";
+    // Taken while the row still names its session, which the write below clears. A scout
+    // reaches here a beat after `session_remove`, inside the window the registry keeps it.
+    const cause = t.sessionId ? this.registry.takeExitCause(t.sessionId) : null;
     this.registry.upsertTask({
       ...t,
       status: "failed",
-      error: scoutProblems
+      error: cause?.kind === "out_of_memory"
+        ? `${outOfMemoryText(cause.peakBytes)}${kept}`
+        : scoutProblems
         ? `the agent's session ended and this scout's report was not archived: ${scoutProblems.join("; ")}${kept}`
         : `the agent's session ended with no outcome recorded${kept}`,
       // A synthetic id carries the pid and the process start time, so this one can never

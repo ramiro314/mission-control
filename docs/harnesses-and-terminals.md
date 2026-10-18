@@ -373,6 +373,10 @@ systemd-run --user --scope --quiet
   systemd stopped it for an OOM kill, and runs `systemctl --user reset-failed` on it once systemd
   has finished stopping it. At startup the daemon resets this instance's failed
   `mission-control-<instance>-*.scope` units and never another daemon's.
+- The driver awaits that verdict before it reports the session gone, so an OOM-stopped session's
+  task fails with "stopped: the session ran out of memory (peak N GB)" and the task-failed alert
+  carries it ([exit cause](session-lifecycle.md#exit-cause),
+  [troubleshooting](troubleshooting.md#a-task-failed-with-stopped-the-session-ran-out-of-memory)).
 
 Only interactive sessions are wrapped. Claude's catalog probes and one-shot queries keep the
 vendor's own spawner, and Codex's model-catalog probe calls `spawnAppServer` with no session, so

@@ -319,6 +319,29 @@ Wait for removal before treating the session as fully gone, then inspect the tas
 its recorded outcome and cleanup choice. See [session lifecycle](session-lifecycle.md#from-observation-to-removal)
 and [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
 
+## A task failed with "stopped: the session ran out of memory"
+
+On Linux, each Claude or Codex SDK session runs in a
+[systemd scope of its own](harnesses-and-terminals.md#agent-session-scopes). The kernel's
+out-of-memory killer killed a process inside that session, often a dev server or test run the
+agent started, and systemd then stopped the whole scope. Only that session ended: the daemon,
+the dashboard and every other session kept running. The peak is the scope's `MemoryPeak`, in
+base-1024 units; an older systemd that records none prints the text without it.
+
+Nothing resumes automatically. The task keeps its worktree, so re-dispatch it, or use Clean up.
+To see what used the memory, run:
+
+```sh
+systemctl --user status 'app-mission\x2dcontrol\x2dsessions.slice'
+journalctl --user -u 'mission-control-*'
+```
+
+The daemon also logs one `[session-scope] session <id> ran out of memory` line per stop. A daemon
+restart inside the eight-second linger loses the reason, and the task then reads "no outcome
+recorded"; the log line still records the stop. Pi bash-tool commands, terminal-runtime agents
+and one-shot runners are not reported this way. See the
+[known gaps](plans/session-oom-isolation/plan.md#known-gaps).
+
 ## Resource protected by organization SAML enforcement
 
 GitHub refused a call because the repository it named belongs to an organization that enforces

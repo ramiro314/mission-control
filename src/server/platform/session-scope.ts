@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
@@ -7,6 +8,7 @@ import { stateDir } from "../../shared/harness-runtime.mjs";
 import { resolveCurrentOwnedRuntime } from "../../shared/owned-runtime.mjs";
 import { run } from "../util/exec.ts";
 import { underTestRunner } from "../util/test-runner.ts";
+import type { SdkExitCause } from "../harness/types.ts";
 
 // Session scope: on Linux, a long-lived agent session process and everything it starts run in a
 // transient systemd scope of their own, so an OOM kill inside a session stops that session only.
@@ -36,6 +38,11 @@ const OUTCOME_POLL_MS = 100;
 export const RESET_BUDGET_MS = 15_000;
 const RESET_POLL_MS = 500;
 const SYSTEMCTL_TIMEOUT_MS = 1000;
+/**
+ * How long a driver waits for its scope's verdict once its stream has ended, before it reports
+ * the exit without one: the child's exit, plus `outcome`'s budget and one more `show`.
+ */
+export const EXIT_CAUSE_WAIT_MS = 5000;
 
 const LOG_PREFIX = "[session-scope]";
 
@@ -173,6 +180,52 @@ export function formatPeak(bytes: number): string {
 export function oomStopLine(label: string, unit: string, peakBytes: number | null): string {
   const peak = peakBytes === null ? "" : ` (peak ${formatPeak(peakBytes)})`;
   return `${LOG_PREFIX} session ${label} ran out of memory: systemd stopped ${unit}${peak}`;
+}
+
+/** The task failure text for a session whose scope systemd stopped for an OOM kill. */
+export function outOfMemoryText(peakBytes: number | null): string {
+  const peak = peakBytes === null ? "" : ` (peak ${formatPeak(peakBytes)})`;
+  return `stopped: the session ran out of memory${peak}`;
+}
+
+/**
+ * Read a wrapped child's scope verdict when it exits, whatever the reason, and hand its driver
+ * the cause to report.
+ *
+ * The read is what resets a failed scope rather than leaving it loaded until the next daemon
+ * start, so it runs on every exit whether or not a driver asks. An OOM stop is logged once,
+ * here. The returned function is what the driver awaits before it emits `exited`: the cause,
+ * or null when the scope was not stopped for an OOM kill, its verdict is unknown, no scope was
+ * made, or the verdict did not arrive within `EXIT_CAUSE_WAIT_MS`.
+ */
+export function watchScopeExit(
+  child: ChildProcess,
+  scope: SessionScope,
+  unit: string | null,
+  label: string,
+): () => Promise<SdkExitCause | null> {
+  if (!unit) return () => Promise.resolve(null);
+  const verdict = new Promise<SdkExitCause | null>((resolveVerdict) => {
+    child.once("exit", () => {
+      scope.outcome(unit).then((outcome) => {
+        if (!outcome?.oomKilled) return resolveVerdict(null);
+        console.warn(oomStopLine(label, unit, outcome.peakBytes));
+        resolveVerdict({ kind: "out_of_memory", peakBytes: outcome.peakBytes });
+      }, () => resolveVerdict(null));
+    });
+    // A child that never started never exits, and there is no scope to read.
+    child.once("error", () => {
+      if (child.pid === undefined) resolveVerdict(null);
+    });
+  });
+  return () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = new Promise<null>((resolveNull) => {
+      timer = setTimeout(() => resolveNull(null), EXIT_CAUSE_WAIT_MS);
+      timer.unref?.();
+    });
+    return Promise.race([verdict, gaveUp]).finally(() => clearTimeout(timer));
+  };
 }
 
 export function createSessionScope(deps: SessionScopeDeps, options: { inert?: boolean } = {}): SessionScope {

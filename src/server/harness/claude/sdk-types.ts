@@ -104,6 +104,11 @@ export interface ClaudeSdkInterruptReceipt {
 export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
   /** Exact local child launched by sdk-deps; absent on non-process test transports. */
   readonly recoveryProcessId?: number | null;
+  /**
+   * Once the local child exited: why it was stopped from outside, read from its session scope.
+   * Absent on non-process test transports, and null when the child was not stopped that way.
+   */
+  exitCause?(): Promise<import("../types.ts").SdkExitCause | null>;
   /** Close the streaming query and wait for its subprocess-backed transport to drain. */
   return(value: void | PromiseLike<void>): Promise<IteratorResult<ClaudeSdkMessage, void>>;
   interrupt(): Promise<ClaudeSdkInterruptReceipt | undefined>;
