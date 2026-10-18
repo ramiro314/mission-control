@@ -1216,6 +1216,12 @@ as the `testing-settings` domain. A restore makes the catalog exactly the snapsh
 snapshot does not carry is removed, so a snapshot taken before the domain existed restores the
 catalog empty.
 
+A repository's stored settings, at the root and every folder, can also be set together with its
+Command overrides from one [Command document](library-and-line.md#command-documents), imported in
+Library › Commands with a preview of every change and applied in one transaction, and exported
+back out. A document writes the same rows the Testing settings section does, under the same
+revisions, so a document and a row saved in another window never overwrite one another.
+
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
 **Duplicate my draft**. A conflicted draft cannot be replaced by selecting or creating

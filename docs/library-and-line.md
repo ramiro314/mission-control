@@ -96,6 +96,72 @@ revision, never with the Command. See
 [testing settings](workflows.md#testing-settings) for how the layers merge, and
 [subdirectory scopes](workflows.md#subdirectory-scopes) for folders.
 
+#### Command documents
+
+A **Command document** configures one repository's Command overrides, in every slot, and its
+stored testing settings from one versioned JSON file. **Import document** and **Export document**
+sit at the foot of the Commands rail, because a document spans every slot rather than the one that
+is open.
+
+```json
+{
+  "version": 1,
+  "commands": {
+    "lint": [{ "path": "", "argv": ["yarn", "lint"] },
+             { "path": "apps/my-account", "argv": ["yarn", "workspace", "my-account", "lint"] }],
+    "affected-tests": [{ "path": "apps/my-account", "argv": ["yarn", "test:affected", "--junit-file={junit}", "{files}"] }],
+    "test": [{ "path": "apps/legacy-app", "remove": true }]
+  },
+  "testing": [
+    { "path": "apps/my-account", "settings": { "tests": { "patterns": ["src/**/*.test.{ts,tsx}"] } } },
+    { "path": "apps/old-app", "remove": true }
+  ]
+}
+```
+
+- **Paths are repository-relative**, and `""` is the root. A path is a folder in the repository's
+  main checkout, named by its own path rather than through a symlink, and not inside a nested
+  repository or submodule, which keeps its own rows.
+- **Each entry sets or removes.** A Command entry has `argv` or `"remove": true`, and a testing
+  entry has `settings` or `"remove": true`. A testing entry's `settings` takes the same three
+  `tests.*` keys as a Testing settings row and must set at least one.
+- **A document describes rows, never the catalog around them.** It cannot name a slot's global
+  default, its run budget, `flakes`, or any worktree pool setting: an unknown key anywhere is
+  refused, not ignored.
+- **Each entry meets its catalog's own rules.** An `affected-tests` argv needs `{files}` as a whole
+  argument and `{junit}` somewhere, exactly as the editor requires. A path listed twice in one slot,
+  or twice under `testing`, is refused, and a slot that would end up with more than 200 overrides,
+  counted across every repository, cannot be applied.
+- **A document is bounded.** Each slot's list holds at most 400 entries, twice the override cap,
+  because a document may remove as many rows as it sets, and `testing` holds at most 400 entries.
+  A 401st entry in either is refused with the rest of the document's problems. A preview or apply
+  request larger than 8 MiB is refused with `413` and `Command document is too large` before the
+  document is read; a real repository's document is a few kilobytes.
+
+**Import** takes a pasted document, or a `.json` file through **Upload .json**, and the repository
+it configures. **Preview** lists every add, change and removal, slot by slot and then for testing
+settings, and writes nothing. Applying is a merge:
+
+- a row the document does not mention is untouched, in this repository and every other;
+- a listed row is added or replaced, and an entry that matches what is stored is left alone;
+- only a `"remove": true` entry removes a row. Removing a testing settings row empties it, the way
+  setting every key to Inherit does.
+
+**Apply** writes every change in one transaction, through each slot's compare-and-swap and the
+testing settings revisions, so a document lands whole or not at all. Each slot keeps its default
+and run budget. The preview records the revision of every slot and testing row the document names,
+and when another window has saved one of them since, apply writes nothing: the dialog shows the
+preview recomputed against what is stored now, and you apply again after reviewing it.
+
+**Export** reads one repository's overrides and testing settings back out as a document, to copy or
+download. A testing row that sets no key is not exported, because it is not a layer. Importing an
+export changes nothing.
+
+The routes are `POST /api/command-documents/preview`, `POST /api/command-documents/apply` and
+`GET /api/command-documents/export?repoRoot=`. Like every `/api/*` route they accept any loopback
+caller without a token, an agent's shell included ([security](security.md#what-the-loopback-boundary-does-not-cover)):
+the preview is the operator's review step in the dashboard, not a boundary on who can apply.
+
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
 machine-wide switch, and the repository has to be granted the Workflows cell in Trust. The
@@ -286,7 +352,9 @@ fact that tells the rows apart; it is the same sentence the Library card and the
 palette use, so the three cannot disagree. The slot's purpose has moved off the rows to the
 row's tooltip, and it opens the workspace's execution note - so it is read once for the slot
 you opened, rather than identically down every row. A note below the list says why the
-catalog is closed.
+catalog is closed, and **Import document** and **Export document** end the rail (see
+[Command documents](#command-documents)): a document spans every slot, so its controls belong
+to the rail rather than to the open slot's header.
 
 **The workspace header** carries the slot name and a `built-in slot` tag with the revision line
 beneath, and promotes exactly one verb: **Save Command**. There is no `⋯` menu, because a slot

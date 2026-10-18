@@ -618,7 +618,18 @@ import type {
 import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { TestingSettingsCatalog } from "./testing-settings.ts";
+import { CommandDocuments } from "./command-documents.ts";
 import { TESTING_CONFIG_LIMITS } from "@shared/testing-config.ts";
+import {
+  COMMAND_DOCUMENT_BODY_MAX_BYTES,
+  CommandDocumentApplyRequestSchema,
+  CommandDocumentPreviewRequestSchema,
+  CommandDocumentSchema,
+  commandDocumentIssueLines,
+  type CommandDocumentApplied,
+  type CommandDocumentExport,
+  type CommandDocumentPreview,
+} from "@shared/command-document.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import {
   getWorkflowPolicy,
@@ -2634,6 +2645,73 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       code: "testing_settings_revision_conflict",
       current: result.current,
     }, 409);
+  });
+  // --- Command documents: one repository's overrides and testing settings, as one file ---
+  //
+  // Preview, apply and export over the two catalogs above, for ONE repository: a document never
+  // names a global default, a run budget or a pool setting. Apply is one transaction through each
+  // slot's compare-and-swap and the testing catalog's revisions, checked against the revisions
+  // the preview was computed from, so a stale preview is refused with 409 and a fresh one. Like
+  // every `/api/*` route these accept any loopback caller without a token (docs/security.md).
+  const commandDocuments = workflowCommands && testingSettings && workflowCommands.store === testingSettings.store
+    ? new CommandDocuments(workflowCommands, testingSettings)
+    : null;
+  const commandDocumentRepository = async (repoRoot: string) => {
+    const resolved = await resolveTaskRepoRoot(repoRoot);
+    return resolved.ok
+      ? resolved
+      : { ok: false as const, error: resolved.error, code: "command_document_not_a_repository" };
+  };
+  const commandDocumentRefusal = (c: Context, problems: string[], extra: Record<string, unknown> = {}) =>
+    c.json({
+      error: `The document cannot be applied: ${problems.join("; ")}`,
+      code: "command_document_invalid",
+      problems,
+      ...extra,
+    }, 400);
+  const commandDocumentLimit = bodyLimit({
+    maxSize: COMMAND_DOCUMENT_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Command document is too large" }, 413),
+  });
+  app.post("/api/command-documents/preview", commandDocumentLimit, async (c) => {
+    if (!commandDocuments) return c.json({ error: "Command documents are unavailable" }, 503);
+    const parsed = await parseBody(c, CommandDocumentPreviewRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const repository = await commandDocumentRepository(parsed.data.repoRoot);
+    if (!repository.ok) return c.json({ error: repository.error, code: repository.code }, 400);
+    const document = CommandDocumentSchema.safeParse(parsed.data.document);
+    if (!document.success) return commandDocumentRefusal(c, commandDocumentIssueLines(document.error));
+    return c.json(commandDocuments.preview(repository.repoRoot, document.data) satisfies CommandDocumentPreview);
+  });
+  app.post("/api/command-documents/apply", commandDocumentLimit, async (c) => {
+    if (!commandDocuments) return c.json({ error: "Command documents are unavailable" }, 503);
+    const parsed = await parseBody(c, CommandDocumentApplyRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const repository = await commandDocumentRepository(parsed.data.repoRoot);
+    if (!repository.ok) return c.json({ error: repository.error, code: repository.code }, 400);
+    const document = CommandDocumentSchema.safeParse(parsed.data.document);
+    if (!document.success) return commandDocumentRefusal(c, commandDocumentIssueLines(document.error));
+    const result = commandDocuments.apply(repository.repoRoot, document.data, parsed.data.basis);
+    if (result.kind === "invalid") return commandDocumentRefusal(c, result.preview.problems, { preview: result.preview });
+    if (result.kind === "stale") {
+      return c.json({
+        error: "The Commands or testing settings changed since this preview. Review the new preview and apply again.",
+        code: "command_document_stale",
+        preview: result.preview,
+      }, 409);
+    }
+    return c.json({ repoRoot: repository.repoRoot, preview: result.preview } satisfies CommandDocumentApplied);
+  });
+  app.get("/api/command-documents/export", async (c) => {
+    if (!commandDocuments) return c.json({ error: "Command documents are unavailable" }, 503);
+    const repoRoot = c.req.query("repoRoot");
+    if (!repoRoot) return c.json({ error: "repoRoot is required" }, 400);
+    const repository = await commandDocumentRepository(repoRoot);
+    if (!repository.ok) return c.json({ error: repository.error, code: repository.code }, 400);
+    return c.json({
+      repoRoot: repository.repoRoot,
+      document: commandDocuments.export(repository.repoRoot),
+    } satisfies CommandDocumentExport);
   });
   app.post("/api/workflows", bodyLimit({
     maxSize: WORKFLOW_BODY_MAX_BYTES,

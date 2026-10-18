@@ -18290,6 +18290,58 @@ button.lib-chip:focus-visible {
   color: var(--dim);
   border-top: 1px solid var(--border-soft);
 }
+/* The Command document doors: catalog-wide, so they end the rail rather than the slot header. */
+.wf-command-rail-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 12px;
+}
+.wf-command-document-notice {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--fg);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+/* ---- Command document import and export ---- */
+.command-document-modal { width: min(760px, 100%); }
+.command-document-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+}
+.command-document-lead { margin: 0; font-size: 12px; line-height: 1.5; color: var(--dim); }
+.command-document-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.command-document-field > label { font-size: 11.5px; color: var(--dim); }
+.command-document-text { width: 100%; min-height: 160px; resize: vertical; font-size: 11.5px; line-height: 1.45; }
+.command-document-upload { display: flex; gap: 8px; }
+.command-document-file { display: none; }
+.command-document-export-row { display: flex; align-items: flex-end; gap: 8px; }
+.command-document-problems,
+.command-document-preview ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.5; }
+.command-document-stale {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--attention);
+  border: 1px solid color-mix(in oklab, var(--attention) 55%, var(--border));
+  border-radius: 8px;
+}
+.command-document-preview { display: flex; flex-direction: column; gap: 10px; }
+.command-document-summary,
+.command-document-empty { margin: 0; font-size: 12px; }
+.command-document-group h4 { margin: 0 0 4px; font-size: 12px; font-family: var(--mono); }
+.command-document-change { overflow-wrap: anywhere; }
+.command-document-kind { font-weight: 600; }
+.command-document-change.is-add .command-document-kind { color: var(--idle); }
+.command-document-change.is-remove .command-document-kind { color: var(--attention); }
+.command-document-path { font-family: var(--mono); }
+.command-document-value code { font-size: 11px; }
 /* The slot name is an identifier - `test`, `lint` - so it is set in the mono face, beside
    the tag that says the catalog it comes from. */
 .wf-command-editor-head .lib-work-name h3 {

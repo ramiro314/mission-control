@@ -1,6 +1,7 @@
 /** Audited operations owned by earlier phases or explicitly excluded from action counts. */
 export const ACTION_EXCLUSIONS = [
-  ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
+  ["POST", "/api/command-documents/preview", "Read-only Command document preview; nothing is written, and the apply that follows is the workflow.command action."],
+  ["POST", "/mcp/plan-publication","Read-only plan-publication ownership query; no plan is published by this operation."],
   ["POST", "/mcp/backlog", "Read-only backlog listing for a ticket breakdown; no task is created or edited by this operation."],
   ["POST", "/mcp/v2/backlog", "Read-only backlog listing of a named repository for a ticket breakdown; no task is created or edited by this operation."],
   ["POST", "/mcp/plans/context", "Read-only managed-plan policy and repository query; not a publication or action outcome."],

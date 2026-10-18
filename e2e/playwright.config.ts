@@ -2,6 +2,23 @@ import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 
 /**
+ * Desktop Chrome's viewport and scale, WITHOUT its user agent.
+ *
+ * The descriptor's user agent is a Windows one, and on a secure origin (the fixture daemon's
+ * loopback address is one) Chromium derives `navigator.userAgentData.platform` from it. The
+ * dashboard reads that first (`src/web/lib/platform.ts`), so every page believed it was on
+ * Windows: it drew Ctrl keycaps and listened for Ctrl+K. The specs speak the host's platform
+ * instead - `platformKeycap` reads `process.platform`, and `ControlOrMeta` presses Meta on
+ * macOS - so on a Mac the keyboard specs failed against a dashboard that was right about the
+ * platform it had been told. Linux CI never saw it, because Windows and Linux are both "not
+ * a Mac". Keeping the browser's own user agent makes the page and the spec agree everywhere.
+ */
+function chromiumOnThisHost() {
+  const { userAgent: _windows, ...desktop } = devices["Desktop Chrome"];
+  return desktop;
+}
+
+/**
  * Browser-level end-to-end tests, run separately from `npm test`.
  *
  * Separate on purpose. Everything under `test/` runs against `src/` and must pass on a
@@ -53,5 +70,5 @@ export default defineConfig({
     // to diagnose before.
     video: "off",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [{ name: "chromium", use: chromiumOnThisHost() }],
 });
