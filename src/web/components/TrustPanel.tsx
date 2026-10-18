@@ -599,11 +599,6 @@ export function TrustPanel({
   );
 }
 
-/**
- * The grant-count summary the three grant-consuming panels show where their repo editor used
- * to be, plus the deep-link into Trust. Colocated here because "how many repos hold this grant,
- * and where do you change it" is the matrix's vocabulary, not each panel's.
- */
 /** Each mode as the operator reads it: what it is called, and what the agent will then do. */
 const TESTING_SETUP_CHOICES: ReadonlyArray<{
   mode: TestingSetupMode;
@@ -685,6 +680,11 @@ function TestingSetupChoice({
   );
 }
 
+/**
+ * The grant-count summary the three grant-consuming panels show where their repo editor used
+ * to be, plus the deep-link into Trust. Colocated here because "how many repos hold this grant,
+ * and where do you change it" is the matrix's vocabulary, not each panel's.
+ */
 export function TrustGrantSummary({
   configured,
   count,
