@@ -137,6 +137,8 @@ through `locateExecutable`.
 
 ```ts
 interface SessionScope {
+  /** Settles once this daemon run's probe has decided what `wrap` may use. Never rejects. */
+  ready(): Promise<void>;
   /** The argv to spawn in place of `[bin, ...args]`, and the scope's unit when one was made. */
   wrap(bin: string, args: readonly string[], env: NodeJS.ProcessEnv, label: string):
     { bin: string; args: string[]; unit: string | null };
@@ -145,7 +147,10 @@ interface SessionScope {
 }
 ```
 
-Both methods land in slice 1 (see [Delivery order](#delivery-order)). Every seam that wraps a
+All three methods land in slice 1 (see [Delivery order](#delivery-order)). `wrap` is synchronous,
+because Claude's `spawnClaudeCodeProcess` hook must return its child synchronously. So each seam
+awaits `ready()` in the async step before its spawn: `startQuery` for Claude, `connect` for
+Codex, and the session factory in `createRuntime` for Pi. Every seam that wraps a
 long-lived process (the Claude hook, `spawnAppServer`) calls `outcome` when that process exits,
 whatever the reason, so a failed scope is read and reset at once, never left loaded until the next
 daemon start. Slice 3 adds no systemd read of its own: it only carries the result `outcome`
@@ -177,11 +182,20 @@ systemd-run --user --scope --quiet
 - **Not Linux:** nothing is wrapped and nothing is logged.
 - **Linux, `systemd-run` missing or the user manager unreachable:** no scope. `choom` still
   applies when it resolves. One log line.
-- **The full property set refused by this systemd:** the first `wrap` probes it once, running the
-  daemon's own Node (`process.execPath -e ""`), which exists wherever the daemon does. On refusal it probes again without `OOMPolicy`. The scope still keeps the daemon out
-  of the session's unit, but an older systemd may not stop the session whole. If that is refused
-  too, no scope. One log line names what was dropped. A wrapper that cannot start must never
-  become a session that cannot start, and the probe is what guarantees it.
+- **The full property set refused by this systemd:**
+  - **When and what.** Once per daemon run, starting at daemon startup, the probe runs
+    `<runtime> -e ""` in a throwaway `--collect` scope with the full property set.
+  - **Which runtime.** `<runtime>` comes from `resolveOwnedRuntime` (`src/shared/owned-runtime.mjs`),
+    chosen the way `resolveMissionMcpRuntime` in `src/server/mission-mcp.ts` already chooses it:
+    `process.execPath`, plus `ELECTRON_RUN_AS_NODE=1` when that is the Electron app binary. That
+    is the packaged app's case, where the daemon is an Electron `utilityProcess`.
+  - **Timeout.** The probe runs through `run()` with a 5 s timeout.
+  - **On refusal** it probes again without `OOMPolicy`. The scope still keeps the daemon out of
+    the session's unit, but an older systemd may not stop the session whole. If that is refused
+    too, or a probe times out, there is no scope, and one log line names what was dropped or that
+    the probe timed out.
+  - **Why.** A wrapper that cannot start must never become a session that cannot start, and the
+    probe is what guarantees it: no session start waits on it for longer than its timeout.
 - **`choom` missing:** no `oom_score_adj` change, mentioned in the same log line.
 
 **Startup hygiene.** On Linux with the manager reachable, the daemon resets failed
@@ -316,7 +330,8 @@ issue, following `docs/fork/README.md`. Every pull request of the feature carrie
     naming the shell its bash tool runs;
   - `beginEviction` being the one eviction path;
   - `settleAgentGone` writing the departure text;
-  - `underTestRunner()` marking every test worker and the daemons it spawns.
+  - `underTestRunner()` marking every test worker and the daemons it spawns;
+  - `resolveOwnedRuntime` choosing the runtime for Mission-owned scripts under Electron.
 - **Upstream surfaces touched:**
   - the three `sdk-deps.ts` files;
   - `harness/types.ts`, `registry.ts` and `tasks.ts`;
@@ -333,8 +348,8 @@ Three slices. Each lands green on its own, in this order.
 
 1. **Isolation.** `session-scope.ts` with both `wrap` and `outcome`, the `choom` registration, and
    the Claude and Codex seams with exit listeners that call `outcome`, so a failed scope is read
-   and reset as its process exits. Also the per-OOM log line, `BindsTo`, the probe and fallback
-   log line, the instance-scoped startup reset, the test-runner unwrap and the e2e pass-through
+   and reset as its process exits. Also the per-OOM log line, `BindsTo`, the startup probe (`ready()`,
+   the Electron-safe runtime, the 5 s timeout) and fallback log line, the instance-scoped startup reset, the test-runner unwrap and the e2e pass-through
    fakes, the slice 1 unit tests, the Linux real-systemd test, and the docs
    for these. This slice alone fixes the incident.
 2. **Pi tool commands.** The `spawnHook` rewrite, its tests and its docs line.
@@ -362,15 +377,20 @@ Run single files with the suite's loader, for example
     across two wraps.
   - **`choom` missing:** a scope without `choom`, and the log line says so.
   - **The probe refuses `OOMPolicy`:** it retries without it. If it refuses entirely, unwrapped.
+  - **Probe runtime:** with an Electron app binary as `execPath`, the probe runs it with
+    `ELECTRON_RUN_AS_NODE=1`. With `node` it adds nothing.
+  - **Probe timeout:** a probe that outlives its 5 s timeout leaves every session unwrapped, the
+    log line says it timed out, and `ready()` still settles.
   - **`outcome`:**
     - `oom-kill` with a peak gives `oomKilled: true`;
     - `success` gives `oomKilled: false`;
     - a `systemctl` failure or timeout gives `null`;
     - `reset-failed` follows every read.
 - **Claude seam** (slice 1): the hook spawns the wrapped argv and returns that child, and the
-  child's exit calls `outcome`. A catalog probe stays unwrapped.
+  child's exit calls `outcome`. `startQuery` awaits `ready()` first. A catalog probe stays
+  unwrapped.
 - **Codex seam** (slice 1): `spawnAppServer` wraps with a label and does not wrap without one. Its exit
-  listener calls `outcome`.
+  listener calls `outcome`, and `connect` awaits `ready()` first.
 - **Pi seam** (slice 2):
   - the inner shell and its args equal what Pi's `getShellConfig` returns for the same
     `shellPath`, by absolute path when Pi resolved one;
@@ -379,7 +399,8 @@ Run single files with the suite's loader, for example
     `[[ ]]`, an array, `set -o pipefail` and process substitution;
   - the unit name has the shape `mission-control-<instance>-<session>-<nonce>-<n>`, and two launches of the
     same session name their first command differently;
-  - a stdin-transport shell config leaves the command unwrapped.
+  - a stdin-transport shell config leaves the command unwrapped;
+  - the session factory awaits `ready()` before it builds the bash tool.
 - **Registry and tasks** (slice 3):
   - an `exited` event with an `out_of_memory` cause fails the task with the out-of-memory text;
   - without a cause the text is unchanged;
@@ -456,7 +477,8 @@ changed), and `npm run test:e2e` for the new spec.
   automatically.
 - **AC6.** Stopping the daemon's unit stops its session scopes.
 - **AC7.** macOS, Windows, and Linux without `systemd-run` or a user manager spawn exactly as
-  today. On Linux, one log line says when isolation is off or partial.
+  today. On Linux, one log line says when isolation is off or partial. A hung or refused probe
+  never delays a session start by more than its 5 s timeout, and never fails one.
 - **AC8.** The docs listed above describe the behavior and the per-OS fallback.
 - **AC9.** A daemon's startup reset touches only its own instance's scopes. The following are
   always named under their own `<instance>`, so they never collide with or reset the operator's:
@@ -598,3 +620,26 @@ Revision 6 fixes it and changes nothing else.
   - The test-runner bullet gains a "Where this stops" note on scrubbed spawns, in the shape
     AGENTS.md uses for `openDb`.
   - The heading over that list no longer claims more than the design gives.
+
+### GitHub Inspector finding 3 on PR #550 (2026-10-17)
+
+The finding was *Property probe runs process.execPath without Node mode under Electron* (major).
+Revision 7 fixes it and changes nothing else.
+
+- **The problem.**
+  - In the packaged app, the daemon is an Electron `utilityProcess`
+    (`src/main/utility-supervisor.ts`), so `process.execPath` is the app binary.
+    `process.execPath -e ""` would start a second app instead of exiting.
+  - The probe also ran on the first `wrap`, which cannot wait on anything: Claude's
+    `spawnClaudeCodeProcess` hook is synchronous.
+- **The fix.**
+  - The probe runtime comes from `resolveOwnedRuntime`, with `ELECTRON_RUN_AS_NODE=1` under
+    Electron, as `resolveMissionMcpRuntime` already does.
+  - The probe starts at daemon startup and runs through `run()` with a 5 s timeout. A timeout
+    leaves sessions unwrapped, with a log line.
+  - `SessionScope` gains `ready()`. Each seam awaits it in its async step (`startQuery`, `connect`,
+    the Pi session factory), and `wrap` stays synchronous.
+  - Tests cover the Electron `execPath`, the timeout and the awaits. AC7 now bounds how long the
+    probe can delay a session start.
+- **Superseded.** Repair round 2's note that the probe runs `process.execPath -e ""` now reads
+  `<runtime> -e ""` with the runtime above.
