@@ -6873,6 +6873,27 @@ export const SetAffectedTestsCommandSchema = z.object({
 }).strict();
 export type SetAffectedTestsCommand = z.infer<typeof SetAffectedTestsCommandSchema>;
 
+/**
+ * `propose_command_document`: an agent session proposes a Command document for one of its own
+ * task's repositories. It never writes a live row; the operator reviews and applies it.
+ *
+ * Like `set_affected_tests_command`, that bounds the Mission MCP tool surface only: the `/api/*`
+ * Command document routes accept any loopback caller without a token (see docs/security.md).
+ *
+ * `repository` names which task repository, as its path or its `repo-NN` slot, and may be left
+ * out when the task has only one. The daemon decides the session and task from the env, so a
+ * caller cannot name a repository its task does not own. The document is carried unvalidated
+ * here and checked by the route with `CommandDocumentSchema`, so a refusal lists every problem.
+ */
+export const ProposeCommandDocumentSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  repository: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot).optional(),
+  document: z.unknown(),
+}).strict();
+export type ProposeCommandDocument = z.infer<typeof ProposeCommandDocumentSchema>;
+
 /** `POST /api/repositories/testing-setup`: start the testing-setup task for one repository. */
 export const TestingSetupStartSchema = z.object({
   repoRoot: z.string().min(1).max(4096),

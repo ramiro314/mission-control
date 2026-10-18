@@ -277,10 +277,19 @@ export const CommandDocumentBasisSchema = z.object({
   testing: z.record(z.string().max(WORKFLOW_LIMITS.checkRepoRoot), RevisionSchema),
 }).strict();
 
+/** A proposal id: the daemon's own UUID, bounded so a hand-typed one cannot grow a request. */
+const ProposalIdSchema = z.string().min(1).max(64);
+
 export const CommandDocumentApplyRequestSchema = z.object({
   repoRoot: RepoRootSchema,
   document: z.unknown(),
   basis: CommandDocumentBasisSchema,
+  /**
+   * The pending proposal this preview was opened from, when it was. Applying clears exactly
+   * that proposal, and only while it is still the repository's pending one: a newer proposal
+   * that replaced it while the operator was reviewing stays pending.
+   */
+  proposalId: ProposalIdSchema.optional(),
 }).strict();
 export type CommandDocumentApplyRequest = z.infer<typeof CommandDocumentApplyRequestSchema>;
 
@@ -288,11 +297,25 @@ export interface CommandDocumentApplied {
   repoRoot: string;
   /** What was written: the preview the apply was checked against. */
   preview: CommandDocumentPreview;
+  /**
+   * Whether applying cleared the pending proposal the request named. False when it named none,
+   * or when a newer proposal had replaced it (which stays pending).
+   */
+  proposalCleared?: boolean;
 }
 
 export interface CommandDocumentExport {
   repoRoot: string;
   document: CommandDocument;
+}
+
+/**
+ * How many entries a document lists, every slot and testing settings together: what a proposal
+ * says it covers before anyone has previewed it against what is stored.
+ */
+export function commandDocumentEntryCount(document: CommandDocument): number {
+  const commands = WORKFLOW_CHECK_SLOTS.reduce((sum, slot) => sum + (document.commands?.[slot]?.length ?? 0), 0);
+  return commands + (document.testing?.length ?? 0);
 }
 
 /** How many rows a preview changes, all kinds and both catalogs together. */
@@ -308,4 +331,53 @@ export function commandDocumentChangeSummary(preview: Pick<CommandDocumentPrevie
     .filter((kind) => counts[kind] > 0)
     .map((kind) => `${counts[kind]} to ${kind}`);
   return parts.length > 0 ? parts.join(", ") : "No changes";
+}
+
+// ---- Proposals -------------------------------------------------------------------------------
+
+/**
+ * How large a proposed document may be, serialized, in bytes.
+ *
+ * Far below the import body limit on purpose. A pending proposal is held in the daemon and sent
+ * to every open window in the snapshot and on every change, while an imported document is read
+ * once. A real monorepo's document is a few kilobytes, so this bounds the wire, not real use.
+ */
+export const COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES = 256 * 1024;
+
+/**
+ * A Command document an agent session proposed for one of its task's repositories, waiting for
+ * the operator. Nothing in it is live: the operator opens it in the same preview an import
+ * gets, and applies or dismisses it there. A repository holds at most one, and a newer proposal
+ * replaces the older.
+ *
+ * Machine state, never configuration: it is not in a settings backup.
+ */
+export interface CommandDocumentProposal {
+  /** The daemon's id for this proposal. A replacement gets a new one. */
+  id: string;
+  /** The task repository's canonical main checkout, which the document applies to. */
+  repoRoot: string;
+  document: CommandDocument;
+  proposedAt: number;
+  /** The proposing task and session, as they were named when it proposed, for display. */
+  taskId: string | null;
+  taskTitle: string | null;
+  sessionId: string | null;
+  sessionName: string | null;
+}
+
+/** `POST /api/command-documents/proposals/dismiss`: drop one pending proposal unapplied. */
+export const CommandDocumentProposalDismissSchema = z.object({
+  repoRoot: RepoRootSchema,
+  proposalId: ProposalIdSchema,
+}).strict();
+export type CommandDocumentProposalDismiss = z.infer<typeof CommandDocumentProposalDismissSchema>;
+
+/** What `propose_command_document` answers the agent: what was stored, and what review will show. */
+export interface CommandDocumentProposed {
+  proposal: Pick<CommandDocumentProposal, "id" | "repoRoot" | "proposedAt">;
+  /** The id of the pending proposal this one replaced, or null. */
+  replaced: string | null;
+  /** The preview against what is stored now, exactly as the operator's review computes it. */
+  preview: CommandDocumentPreview;
 }

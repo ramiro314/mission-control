@@ -162,6 +162,39 @@ The routes are `POST /api/command-documents/preview`, `POST /api/command-documen
 caller without a token, an agent's shell included ([security](security.md#what-the-loopback-boundary-does-not-cover)):
 the preview is the operator's review step in the dashboard, not a boundary on who can apply.
 
+#### Proposed documents
+
+An agent session can propose a document for its own task's repository with the
+`propose_command_document` Mission MCP tool. A proposal writes no live row. It waits for you:
+
+- **One per repository.** A repository holds at most one pending proposal, and a newer one replaces
+  the older. The tool answers the agent with the preview you will see, including any problem that
+  would block applying it, such as a folder the main checkout does not have yet.
+- **Only the session's own repositories.** The daemon finds the calling session and the task it
+  runs the way `set_affected_tests_command` does, without that tool's testing-setup label
+  restriction. A task with several repositories names one as its `repo-NN` slot or its path, and
+  any other repository is refused.
+- **Two doors, one preview.** The proposal shows as a banner on that repository in Library ›
+  Commands, above whichever slot is open, and as an item under **Proposed Command documents** in
+  the [attention inbox](attention-and-alerts.md#attention-inbox-one-place-to-drain-what-needs-you).
+  **Review proposal** on either opens the import preview with the repository and the document
+  fixed, computed against what is stored now. **Apply** writes it exactly as an import would and
+  clears the proposal. **Dismiss proposal** clears it and writes nothing. **Later** closes the
+  preview and leaves it pending.
+- **A replaced proposal stays reviewable.** If a newer proposal arrives while you review the older
+  one, the preview says so. Applying the older one still writes what you reviewed, and the newer
+  one stays pending.
+- **Machine state, not configuration.** A pending proposal survives a restart, and it is not part
+  of a [settings snapshot](configuration.md#automatic-settings-snapshots); a restore leaves it alone.
+  Whole-database recovery points include it, as they include every table.
+
+The approval step bounds what an agent may do **through MCP** only. `POST
+/api/command-documents/apply` is an `/api/*` route, which accepts any loopback caller without a
+token, so a process on this machine, an agent's shell included, can apply a document without a
+proposal or a review ([security](security.md#what-the-loopback-boundary-does-not-cover)). The
+proposal routes are `POST /mcp/command-documents/proposals` (token-authenticated, the tool's own)
+and `POST /api/command-documents/proposals/dismiss`.
+
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
 machine-wide switch, and the repository has to be granted the Workflows cell in Trust. The

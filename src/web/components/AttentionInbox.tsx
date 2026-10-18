@@ -9,7 +9,9 @@ import { PipelineActions } from "../pipelines/PipelineActions.tsx";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { BLOCKED_PR_REASON_TEXT } from "@shared/types.ts";
 import { conflictingFor, type AttentionFold, type AttentionItem } from "../lib/attention.ts";
+import { commandDocumentEntryCount } from "@shared/command-document.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
 import { ReviewCard } from "./ReviewModal.tsx";
@@ -47,6 +49,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   pipeline_halt: "Pipeline halts",
   pipeline_commission: "Pipeline lifecycle",
   blocked_pr: "Blocked pull requests",
+  command_document_proposal: "Proposed Command documents",
   session_blocked: "Waiting on you",
   parked_finalization: "Stuck finalizations",
 };
@@ -57,6 +60,7 @@ export function AttentionInbox({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission = () => undefined,
+  onOpenCommandProposal = () => undefined,
 }: {
   fold: AttentionFold;
   onClose: () => void;
@@ -65,6 +69,8 @@ export function AttentionInbox({
   /** Focus a session on the fleet. */
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission?: (commissionId: string) => void;
+  /** Open Library › Commands on a repository's pending proposal, in its preview. */
+  onOpenCommandProposal?: (repoRoot: string) => void;
 }): React.JSX.Element {
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
@@ -98,7 +104,7 @@ export function AttentionInbox({
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
-          <span className="dim"> · answers, decisions, halts, blocked PRs and stuck finalizations</span>
+          <span className="dim"> · answers, decisions, halts, blocked PRs, proposed Commands and stuck finalizations</span>
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -124,6 +130,7 @@ export function AttentionInbox({
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
+                onOpenCommandProposal={(repoRoot) => leave(() => onOpenCommandProposal(repoRoot))()}
                 onLeave={onClose}
               />
             </div>
@@ -139,12 +146,14 @@ function InboxItem({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission,
+  onOpenCommandProposal,
   onLeave,
 }: {
   item: AttentionItem;
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission: (commissionId: string) => void;
+  onOpenCommandProposal: (repoRoot: string) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
@@ -324,6 +333,31 @@ function InboxItem({
           <p className="inbox-line">
             Merge conflicts nobody is resolving: {BLOCKED_PR_REASON_TEXT[pr.reason]}
             <span className="dim"> · {conflictingFor(pr.since, Date.now())}</span>
+          </p>
+        </section>
+      );
+    }
+    case "command_document_proposal": {
+      const { proposal } = item;
+      const changes = commandDocumentEntryCount(proposal.document);
+      return (
+        <section className="inbox-item inbox-command-proposal" aria-label={`Proposed Command document for ${proposal.repoRoot}`}>
+          <div className="inbox-head">
+            <span className="inbox-glyph" aria-hidden>
+              ⌘
+            </span>
+            <strong><RepositoryName path={proposal.repoRoot} /></strong>
+            <span className="inbox-meta">{proposal.taskTitle ?? proposal.sessionName ?? "an agent session"}</span>
+            <span className="inbox-spacer" />
+            <Tooltip label="Open this proposal's preview in Library › Commands, where you apply or dismiss it">
+              <button className="btn btn-ghost" onClick={() => onOpenCommandProposal(proposal.repoRoot)}>
+                Review proposal
+              </button>
+            </Tooltip>
+          </div>
+          <p className="inbox-line">
+            An agent proposed Commands and testing settings for this repository ({changes} {changes === 1 ? "entry" : "entries"}).
+            <span className="dim"> · Nothing is applied until you review it.</span>
           </p>
         </section>
       );

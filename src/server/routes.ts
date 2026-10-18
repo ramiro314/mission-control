@@ -38,6 +38,7 @@ import {
   CompleteRetroNoChangeSchema,
   CompleteShapeTicketsSchema,
   SetAffectedTestsCommandSchema,
+  ProposeCommandDocumentSchema,
   TestingSetupStartSchema,
   ComposerActivitySchema,
   CreatePersonaSchema,
@@ -619,16 +620,20 @@ import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { TestingSettingsCatalog } from "./testing-settings.ts";
 import { CommandDocuments } from "./command-documents.ts";
+import { proposalRepository, type CommandDocumentProposals } from "./command-document-proposals.ts";
 import { TESTING_CONFIG_LIMITS } from "@shared/testing-config.ts";
 import {
   COMMAND_DOCUMENT_BODY_MAX_BYTES,
+  COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES,
   CommandDocumentApplyRequestSchema,
+  CommandDocumentProposalDismissSchema,
   CommandDocumentPreviewRequestSchema,
   CommandDocumentSchema,
   commandDocumentIssueLines,
   type CommandDocumentApplied,
   type CommandDocumentExport,
   type CommandDocumentPreview,
+  type CommandDocumentProposed,
 } from "@shared/command-document.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import {
@@ -1237,6 +1242,11 @@ export interface RouteDeps {
    * the same instance the check runtime reads, so a save is what the next gate sees.
    */
   testingSettings?: TestingSettingsCatalog;
+  /**
+   * The pending Command document proposals' one owner. Absent means the proposal routes answer
+   * 503. A route-built twin would be a second writer of the table and a second publisher of the set.
+   */
+  commandDocumentProposals?: CommandDocumentProposals;
   /** The daemon's singleton native allocator. Manual-session routes return 503 without it. */
   worktrees?: WorktreeManager;
   /** Singleton projection/action owner for Settings > Worktrees. */
@@ -1307,6 +1317,7 @@ export const ROUTE_DEP_NAMES = [
   "archives",
   "workflowCommands",
   "testingSettings",
+  "commandDocumentProposals",
   "worktrees",
   "worktreeOperations",
   "modelCatalogs",
@@ -1599,6 +1610,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     archives,
     workflowCommands,
     testingSettings,
+    commandDocumentProposals,
     worktrees,
     worktreeOperations,
     modelCatalogs,
@@ -2700,7 +2712,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         preview: result.preview,
       }, 409);
     }
-    return c.json({ repoRoot: repository.repoRoot, preview: result.preview } satisfies CommandDocumentApplied);
+    // A preview opened from a pending proposal clears that proposal once it is applied, and only
+    // that one: a newer proposal that replaced it during the review stays pending.
+    const proposalCleared = parsed.data.proposalId !== undefined && commandDocumentProposals
+      ? commandDocumentProposals.clear(repository.repoRoot, parsed.data.proposalId)
+      : false;
+    return c.json({
+      repoRoot: repository.repoRoot,
+      preview: result.preview,
+      proposalCleared,
+    } satisfies CommandDocumentApplied);
+  });
+  // Drop a pending proposal unapplied. Keyed by the stored repository exactly as the proposal
+  // carries it, not re-resolved, so a proposal for a repository that has since moved or been
+  // deleted can still be dismissed.
+  app.post("/api/command-documents/proposals/dismiss", async (c) => {
+    if (!commandDocumentProposals) return c.json({ error: "Command document proposals are unavailable" }, 503);
+    const parsed = await parseBody(c, CommandDocumentProposalDismissSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!commandDocumentProposals.clear(parsed.data.repoRoot, parsed.data.proposalId)) {
+      return c.json({
+        error: "That proposal is no longer pending: it was applied, dismissed, or replaced by a newer one.",
+        code: "command_document_proposal_gone",
+      }, 404);
+    }
+    return c.json({ repoRoot: parsed.data.repoRoot, proposalId: parsed.data.proposalId, dismissed: true });
   });
   app.get("/api/command-documents/export", async (c) => {
     if (!commandDocuments) return c.json({ error: "Command documents are unavailable" }, 503);
@@ -5414,6 +5450,48 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(result.code ? { error: result.error, code: result.code } : { error: result.error }, result.status);
     }
     return c.json({ repoRoot: result.repoRoot, command, replayed: result.replayed });
+  });
+
+  /**
+   * `propose_command_document`: an agent session proposes a Command document for one of its own
+   * task's repositories. It writes no live row: the proposal waits for the operator, who applies
+   * or dismisses it in the same preview an import gets.
+   *
+   * The repository is decided the way `set_affected_tests_command` decides it - the session from
+   * its env, then the task it runs - without that tool's testing-setup label restriction, and the
+   * caller may only pick among that task's repositories. Like that tool, this bounds what an agent
+   * may do through MCP, not every route: `/api/command-documents/apply` sits behind
+   * `requireLoopback` alone, so any loopback caller, an agent's shell included, can apply a
+   * document there without a token (docs/security.md).
+   *
+   * Answers with the preview the operator will see, so the agent hears about a folder that does
+   * not exist in the main checkout or a slot over its cap before anyone reviews it.
+   */
+  app.post("/mcp/command-documents/proposals", bodyLimit({
+    maxSize: COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES * 2,
+    onError: (c) => c.json({ error: "Command document proposal is too large" }, 413),
+  }), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!commandDocuments || !commandDocumentProposals) {
+      return c.json({ error: "Command document proposals are unavailable" }, 503);
+    }
+    const parsed = await parseBody(c, ProposeCommandDocumentSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, repository, document } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching active session" }, 404);
+    const task = registry.taskForSession(session.id, session.cwd ?? cwd);
+    const target = proposalRepository(task, repository);
+    if (!target.ok) return c.json({ error: target.error, code: "command_document_proposal_refused" }, target.status);
+    const valid = CommandDocumentSchema.safeParse(document);
+    if (!valid.success) return commandDocumentRefusal(c, commandDocumentIssueLines(valid.error));
+    const result = commandDocumentProposals.propose(target.repoRoot, valid.data, { task: task ?? null, session });
+    if (!result.ok) return c.json({ error: result.error, code: "command_document_proposal_too_large" }, 413);
+    return c.json({
+      proposal: { id: result.proposal.id, repoRoot: result.proposal.repoRoot, proposedAt: result.proposal.proposedAt },
+      replaced: result.replaced,
+      preview: commandDocuments.preview(target.repoRoot, valid.data),
+    } satisfies CommandDocumentProposed);
   });
 
   app.get("/mcp/reviews/:id/wait", async (c) => {

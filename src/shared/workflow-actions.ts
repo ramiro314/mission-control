@@ -13,6 +13,10 @@ export const WORKFLOW_ACTION_ROUTES = [
   ["PUT", "/api/testing-settings", "workflow.command"],
   // A Command document: one repository's overrides and testing settings, applied together.
   ["POST", "/api/command-documents/apply", "workflow.command"],
+  // A Command document an agent session proposes for its own task repository, and the
+  // operator's dismissal of one. Neither writes a Command or testing settings row.
+  ["POST", "/mcp/command-documents/proposals", "workflow.command"],
+  ["POST", "/api/command-documents/proposals/dismiss", "workflow.command"],
   ["PATCH", "/api/workflows/:id", "workflow.edit"],
   ["DELETE", "/api/workflows/:id", "workflow.archive"],
   ["POST", "/api/workflows/:id/unarchive", "workflow.unarchive"],

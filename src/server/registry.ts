@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
+import type { CommandDocumentProposal } from "@shared/command-document.ts";
 import type {
   AgentType,
   ForemanEpisode,
@@ -661,6 +662,9 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // `blocked_prs` is DELIBERATELY absent, for `pipeline_halt`'s reason: a conflicting PR
   // nothing is handling is attention owed, which the inbox carries, and no stage figure
   // reads the set.
+  //
+  // `command_document_proposals` is DELIBERATELY absent for the same reason: a pending
+  // proposal is attention owed and configuration not yet written, and no stage figure reads it.
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -893,6 +897,8 @@ export class Registry extends EventEmitter {
   private workflowRuns = new Map<string, WorkflowRunSummary>();
   /** The conflict episodes' last published blocked set (`setBlockedPrs`). */
   private blockedPrs: BlockedPr[] = [];
+  /** The pending Command document proposals `CommandDocumentProposals` last published. */
+  private commandDocumentProposals: CommandDocumentProposal[] = [];
   /** The PR URLs whose open conflict episode Foreman escalated (`setEscalatedPrUrls`). */
   private escalatedPrUrls: ReadonlySet<string> = new Set();
   /**
@@ -1249,6 +1255,7 @@ export class Registry extends EventEmitter {
     pipelineRuns: PipelineRun[];
     pipelineCommissions: PipelineCommission[];
     blockedPrs: BlockedPr[];
+    commandDocumentProposals: CommandDocumentProposal[];
     fileCommentThreads: FileCommentThread[];
     fileCommentReviews: FileCommentReview[];
     fleetCost: FleetCost | null;
@@ -1281,6 +1288,9 @@ export class Registry extends EventEmitter {
       // The held set, not a recompute: the PR poller derives it each tick. Empty after a
       // restart until the first poll, which is the documented restart gap.
       blockedPrs: this.blockedPrs,
+      // The held set: `CommandDocumentProposals` seeds it from SQLite when the daemon starts, so a
+      // window connecting after a restart still sees a proposal made before it.
+      commandDocumentProposals: this.commandDocumentProposals,
       // Seeded from SQLite at boot for `pipelineRuns`' reason: a dashboard reconnecting
       // after a restart must be handed the queue it was looking at, not a blank gutter
       // until something happens to move a thread.
@@ -5675,6 +5685,16 @@ export class Registry extends EventEmitter {
     if (JSON.stringify(prs) === JSON.stringify(this.blockedPrs)) return;
     this.blockedPrs = prs;
     this.emitEvent({ type: "blocked_prs", prs });
+  }
+
+  /**
+   * Publish the pending Command document proposals, emitting `command_document_proposals` only
+   * when the set changed. `CommandDocumentProposals` is the only caller.
+   */
+  setCommandDocumentProposals(proposals: CommandDocumentProposal[]): void {
+    if (JSON.stringify(proposals) === JSON.stringify(this.commandDocumentProposals)) return;
+    this.commandDocumentProposals = proposals;
+    this.emitEvent({ type: "command_document_proposals", proposals });
   }
 
   /**

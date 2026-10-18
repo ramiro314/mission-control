@@ -95,6 +95,7 @@ import { PersonaManager } from "./workflows/personas.ts";
 import { SessionActionManager } from "./workflows/session-actions.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import { TestingSettingsCatalog } from "./testing-settings.ts";
+import { CommandDocumentProposals } from "./command-document-proposals.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
@@ -289,6 +290,13 @@ const workflowCommands = new WorkflowCommandManager(registry, personas.store);
 // settings backup captures and restores both in one transaction. The routes write through it and
 // the check runtime reads a repository root's row from it.
 const testingSettings = new TestingSettingsCatalog(personas.store);
+// Pending Command document proposals, on the same store handle as the catalogs a proposal is
+// applied to. Constructed once: it is the only writer of the table and the only publisher of the
+// set, and it seeds the registry with what is stored so a restart keeps a proposal visible.
+const commandDocumentProposals = new CommandDocumentProposals(
+  personas.store,
+  (proposals) => registry.setCommandDocumentProposals(proposals),
+);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
 // never reached for as a module global. Workflow Persona attempts and context compaction
 // share it today. The Foreman is a separate process and unrelated background jobs keep
@@ -730,6 +738,7 @@ const app = buildApp({
   archives,
   workflowCommands,
   testingSettings,
+  commandDocumentProposals,
   worktrees,
   worktreeOperations,
   modelCatalogs,

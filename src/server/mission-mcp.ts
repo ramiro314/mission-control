@@ -102,6 +102,9 @@ export const MISSION_MCP_TOOLS = [
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
   COMPLETE_RETRO_NO_CHANGE_TOOL,
   SET_AFFECTED_TESTS_COMMAND_TOOL,
+  // `PROPOSE_COMMAND_DOCUMENT_TOOL` in `command-document-proposals.ts`, spelled as a literal for
+  // the smoke script's reason above.
+  "propose_command_document",
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];

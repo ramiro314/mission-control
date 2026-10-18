@@ -208,6 +208,11 @@ import type {
   SettingsBackupWorkflowVersion,
 } from "../settings-backups/catalogs.ts";
 import {
+  COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES,
+  CommandDocumentSchema,
+  type CommandDocumentProposal,
+} from "@shared/command-document.ts";
+import {
   StoredTestingSettingsSchema,
   TESTING_CONFIG_LIMITS,
   type StoredTestingSettings,
@@ -433,6 +438,7 @@ export const WORKFLOW_TABLES = [
   "workflow_commands",
   "workflow_command_overrides",
   "testing_settings",
+  "command_document_proposals",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
@@ -1153,6 +1159,58 @@ function parseTestingSettingsRow(value: unknown): TestingSettingsView | null {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+const CommandDocumentProposalRowSchema = z.object({
+  repo_root: nonempty.max(WORKFLOW_LIMITS.checkRepoRoot),
+  id: nonempty,
+  document_json: z.string(),
+  task_id: nullableText,
+  task_title: nullableText,
+  session_id: nullableText,
+  session_name: nullableText,
+  proposed_at: integer,
+});
+
+/**
+ * One pending Command document proposal, or null when it cannot be read.
+ *
+ * Unlike a testing settings row, an unreadable document has nothing to degrade to: a proposal is
+ * only its document, and offering the operator a preview of something other than what was
+ * proposed would be worse than offering none. The row is skipped (and diagnosed), and the next
+ * proposal for that repository replaces it.
+ */
+function parseCommandDocumentProposalRow(value: unknown): CommandDocumentProposal | null {
+  const shape = CommandDocumentProposalRowSchema.safeParse(value);
+  if (!shape.success) {
+    const id = String((value as { repo_root?: unknown } | null)?.repo_root ?? "(unknown)");
+    diagnose(new WorkflowRowError("command_document_proposals", id, shape.error.message));
+    return null;
+  }
+  const row = shape.data;
+  try {
+    const document = parseJson(
+      "command_document_proposals",
+      row.repo_root,
+      "document_json",
+      row.document_json,
+      CommandDocumentSchema,
+      COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES,
+    );
+    return {
+      id: row.id,
+      repoRoot: row.repo_root,
+      document,
+      proposedAt: row.proposed_at,
+      taskId: row.task_id,
+      taskTitle: row.task_title,
+      sessionId: row.session_id,
+      sessionName: row.session_name,
+    };
+  } catch (error) {
+    diagnose(error);
+    return null;
+  }
 }
 
 const WorkflowDefinitionRowSchema = z.object({
@@ -3834,6 +3892,60 @@ export class WorkflowStore {
       }
       return { ok: true, view: this.getTestingSettings(repoRoot)! };
     });
+  }
+
+  /** Every pending Command document proposal, by repository. An unreadable row is skipped. */
+  listCommandDocumentProposals(): CommandDocumentProposal[] {
+    return (this.db.prepare(`SELECT * FROM command_document_proposals ORDER BY repo_root`).all() as unknown[])
+      .map(parseCommandDocumentProposalRow)
+      .filter((proposal): proposal is CommandDocumentProposal => proposal !== null);
+  }
+
+  /**
+   * Store a repository's pending proposal, replacing whatever was pending there. Returns the id
+   * of the proposal it replaced, or null. Validated here as well as at the route, because the
+   * store is the boundary a future caller reaches without the schema.
+   */
+  replaceCommandDocumentProposal(proposal: CommandDocumentProposal): { replaced: string | null } {
+    const document = CommandDocumentSchema.parse(proposal.document);
+    const json = JSON.stringify(document);
+    if (utf8.encode(json).byteLength > COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES) {
+      throw new RangeError(`a proposed Command document exceeds ${COMMAND_DOCUMENT_PROPOSAL_MAX_BYTES} UTF-8 bytes`);
+    }
+    return transaction(this.db, () => {
+      const previous = this.db.prepare(`SELECT id FROM command_document_proposals WHERE repo_root = ?`)
+        .get(proposal.repoRoot) as { id: string } | undefined;
+      this.db.prepare(
+        `INSERT INTO command_document_proposals
+           (repo_root, id, document_json, task_id, task_title, session_id, session_name, proposed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repo_root) DO UPDATE SET
+           id = excluded.id, document_json = excluded.document_json, task_id = excluded.task_id,
+           task_title = excluded.task_title, session_id = excluded.session_id,
+           session_name = excluded.session_name, proposed_at = excluded.proposed_at`,
+      ).run(
+        proposal.repoRoot,
+        proposal.id,
+        json,
+        proposal.taskId,
+        proposal.taskTitle,
+        proposal.sessionId,
+        proposal.sessionName,
+        proposal.proposedAt,
+      );
+      return { replaced: previous?.id ?? null };
+    });
+  }
+
+  /**
+   * Remove a repository's pending proposal, but only while it is still the one named: a newer
+   * proposal that replaced it is not cleared by an apply or dismissal of the older. Returns
+   * whether a row was removed.
+   */
+  deleteCommandDocumentProposal(repoRoot: string, id: string): boolean {
+    const result = this.db.prepare(`DELETE FROM command_document_proposals WHERE repo_root = ? AND id = ?`)
+      .run(repoRoot, id);
+    return Number(result.changes) === 1;
   }
 
   /**
