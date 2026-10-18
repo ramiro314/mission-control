@@ -156,8 +156,9 @@ because Claude's `spawnClaudeCodeProcess` hook must return its child synchronous
 awaits `ready()` in the async step before its spawn: `startQuery` for Claude, `connect` for
 Codex, and the session factory in `createRuntime` for Pi. Every seam that wraps a
 long-lived process (the Claude hook, `spawnAppServer`) calls `outcome` when that process exits,
-whatever the reason, so a failed scope is read and reset at once, never left loaded until the next
-daemon start. Slice 3 adds no systemd read of its own: it only carries the result `outcome`
+whatever the reason. `outcome` reads the scope's verdict at once, and it resets a failed unit as
+soon as systemd has finished stopping it. So a failed scope is not left loaded until the next
+daemon start, unless the daemon itself exits first. Slice 3 adds no systemd read of its own: it only carries the result `outcome`
 already returned into the `exited` event.
 
 On Linux, with `systemd-run` resolved and the user manager reachable, `wrap` returns:
@@ -173,7 +174,7 @@ systemd-run --user --scope --quiet
 
 | Part | Why |
 | --- | --- |
-| Own scope, no `--collect` | Bounds the OOM blast radius to the session. A failed scope keeps its `Result` until `outcome` reads and resets it. A scope that ends cleanly is collected by systemd as usual. |
+| Own scope, no `--collect` | Bounds the OOM blast radius to the session. A failed scope keeps its `Result` until `outcome` reads it, and `outcome` resets it once systemd has finished stopping it. A scope that ends cleanly is collected by systemd as usual. |
 | `--unit=mission-control-<instance>-<label>-<nonce>` | `<instance>` is the first 8 hex characters of the SHA-256 of this daemon's resolved state home. Every daemon sharing the user manager therefore names its scopes apart: worktree daemons under `make start`, the installed service, and test and e2e daemons. `<label>` is the session's id, `sdk:` prefix stripped. The nonce stops a resumed session's new scope from colliding with its predecessor's. An operator can tell which session a scope belongs to in `systemctl --user status`. |
 | Dedicated slice | One place that lists every session and their total memory, with room for a later aggregate cap that does not touch the scopes. |
 | `OOMPolicy=stop` | Explicit, so a user's `DefaultOOMPolicy=continue` cannot change it. An OOM kill anywhere in the session stops the whole session. |
@@ -282,8 +283,7 @@ Steps 1 and 5 land in slice 1 with `outcome`. Steps 2 to 4 land in slice 3.
 
 1. The spawn seam (the Claude hook, `spawnAppServer`) hears its child exit and calls
    `outcome(unit)`. Within a 2 s budget, it reads
-   `systemctl --user show <unit> -p ActiveState -p Result -p MemoryPeak`, then runs
-   `systemctl --user reset-failed <unit>`:
+   `systemctl --user show <unit> -p ActiveState -p Result -p MemoryPeak` to decide the verdict:
    - **`Result=oom-kill`:** returns at once. This is the case where the kernel killed a child and
      systemd then stopped the agent, so `Result` was set before the agent exited.
    - **`active` or `deactivating` with any other `Result`:** polls every 100 ms until the unit
@@ -291,7 +291,16 @@ Steps 1 and 5 land in slice 1 with `outcome`. Steps 2 to 4 land in slice 3.
      itself being the kernel's victim: SIGKILLed directly, its exit can reach the daemon before
      systemd has handled the cgroup's OOM event.
    - **Budget runs out:** the last read decides, so a unit still `active` because a straggler
-     outlived a clean exit reads as not OOM-killed. `reset-failed` runs in every case.
+     outlived a clean exit reads as not OOM-killed.
+   - **Reset, after the verdict.** `outcome` returns the verdict as soon as it is known and resets
+     the unit in the background.
+     - Why it waits: a straggler such as a dev server can keep an OOM-stopped scope
+       `deactivating` for up to `TimeoutStopSec` after the agent exits, and `reset-failed` does
+       nothing on a unit that is not yet `failed`.
+     - So the reset polls every 500 ms, for up to 15 s (`TimeoutStopSec=10s` plus a margin),
+       until the unit reads `failed` or `inactive`, then runs `systemctl --user reset-failed <unit>`.
+     - A unit not settled by then, or one whose daemon exited first, is cleared by the startup
+       reset.
 2. The driver awaits that outcome before it emits `exited`. The event gains an optional cause:
    `{ kind: "exited"; reason; resumable; cause?: { kind: "out_of_memory"; peakBytes: number | null } }`.
 3. `registry.applyDriverEvent` passes the cause to `beginEviction`, still the one eviction path.
@@ -408,7 +417,9 @@ Run single files with the suite's loader, for example
     - a unit still `active` when the 2 s budget runs out gives `oomKilled: false`;
     - `success` gives `oomKilled: false`;
     - a `systemctl` failure or timeout gives `null`;
-    - `reset-failed` follows every read.
+    - `reset-failed` runs only once the unit reads `failed` or `inactive`. A unit `deactivating`
+      with `Result=oom-kill` returns its verdict at once and is reset after it turns `failed`. One
+      that never settles within 15 s is left to the startup reset.
 - **Claude seam** (slice 1): the hook spawns the wrapped argv and returns that child, and the
   child's exit calls `outcome`. `startQuery` awaits `ready()` first. A catalog probe stays
   unwrapped.
@@ -460,6 +471,9 @@ scopes in the operator's user manager never collide with or reset the operator's
   `reset-failed` the unit is gone. The test process, standing in for the daemon, is still alive.
 - A wrapped process that is itself the hog is SIGKILLed by the kernel (exit 137), and `outcome`
   still returns `{ oomKilled: true }`.
+- A straggler that ignores SIGTERM keeps an OOM-stopped scope `deactivating`. `outcome` still
+  returns `{ oomKilled: true }` at once, and the unit is gone once the stop timeout has passed and
+  the background reset has run.
 - `BindsTo`: a stand-in daemon in a scope of its own wraps a sleeper bound to it. Stopping the
   stand-in's scope stops the sleeper's.
 
@@ -726,3 +740,23 @@ The finding was *No named channel from the eviction cause to settleAgentGone* (m
   - The restart case is stated as a known gap rather than made durable: the cause is in memory
     only, and the per-OOM log line still records the OOM.
   - Tests cover the take-once read, the 60 s drop, and the late scout settlement.
+
+### GitHub Inspector finding 7 on PR #550 (2026-10-17)
+
+The finding was *reset-failed can run before an oom-killed scope reaches failed* (minor). Revision
+11 fixes it and changes nothing else.
+
+- **The problem.** On `Result=oom-kill`, `outcome` returned at once and ran `reset-failed`. But a
+  straggler can keep the scope `deactivating` for up to `TimeoutStopSec`, and `reset-failed` does
+  nothing on a unit not yet `failed`. The scope would then stay loaded until the next daemon start,
+  which contradicted the plan's own claim.
+- **The fix.**
+  - `outcome` still returns the verdict at once.
+  - It now resets the unit in the background. The reset polls every 500 ms, for up to 15 s, until
+    the unit reads `failed` or `inactive`, then runs `reset-failed`. The startup reset clears any
+    unit left after that.
+  - The "never left loaded" claim now says "unless the daemon itself exits first".
+  - A unit test covers the deactivating-then-failed reset and the 15 s give-up. A Linux case
+    covers a straggler that ignores SIGTERM, the case probed earlier on this machine.
+- **Superseded.** Finding 5's note that `reset-failed` runs in every case now reads: the reset runs
+  in every case, once the unit has settled.
