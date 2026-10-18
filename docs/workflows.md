@@ -1053,8 +1053,8 @@ Selection runs once, across the whole repository. Each selected test then runs t
 - A test none of them can run, because there is no root override and no default, is listed in
   run detail as **selected but unrun**. The gate decides on the partitions that ran. If no
   partition ran at all, the gate is skipped and hands its run back.
-- Partitions run one after another, every one of them, even after one fails. The gate passes only
-  if every partition passes.
+- Partitions run one after another, every one of them, even after one fails, within the gate's
+  [deadline](#the-gates-deadline). The gate passes only if every partition passes.
 - One gate attempt spends **one run** of the Command's per-run budget, however many partitions it
   has.
 - Partitions do not depend on the session's folder. The change decides which apps run. The
@@ -1065,15 +1065,24 @@ A partition whose process group could not be shown to have exited (a timeout, or
 behind) ends the gate there, as a single run always did, because nothing else may run in that
 worktree until it is accounted for.
 
-**A partitioned gate holds the machine's test lease for every partition.** The command timeout
-applies to each run and each rerun on its own, not to the gate. A gate with *N* partitions can
-therefore hold the [test lease](#test-checks-share-the-machine) for up to 2*N* timeouts, where a
-single invocation held it for at most two: three slow apps under the 60-minute `affected-tests`
-default could hold it for six hours. A test check elsewhere on the machine that waits longer than
-its own wait ceiling ends as an infrastructure failure and retries, even though nothing is wrong
-with it. There is deliberately no deadline for the whole gate, because one would leave later
-partitions unrun, and the gate runs all of them. A monorepo whose apps have slow suites pays that
-wait on every other test check while the gate runs.
+###### The gate's deadline
+
+A partitioned gate holds the machine's [test lease](#test-checks-share-the-machine) while all of
+its partitions run, so it has a **deadline of twice the command timeout**, counted from when the
+lease is granted. That is the most a single invocation could already hold the lease for, its run
+and its rerun, so another worktree's test check never waits longer for a partitioned gate than it
+did for one Command. Under the 60-minute `affected-tests` default the deadline is two hours.
+
+- Each run, and each rerun, gets the command timeout or the time left before the deadline,
+  whichever is less.
+- The first partition always has its full run and rerun, so a repository with one Command behaves
+  exactly as before, and its own timeout is still an infrastructure failure that retries.
+- When the deadline passes, the partition it stopped and every partition after it **did not
+  finish**. Their tests reached no answer, so the gate **fails** rather than pass on part of the
+  change, with a note naming them. Run detail lists them under **Did not finish**, each marked
+  stopped at the deadline or not started.
+- The partitions that finished keep their results, so a test that failed twice in one of them is
+  still in the repair packet.
 
 Run detail lists every partition under **Partitions**: its folder, the Command it ran, its file
 count, its outcome and exit code, and the last 2,000 bytes of its output, folded. A gate has at

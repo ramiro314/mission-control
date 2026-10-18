@@ -3428,6 +3428,8 @@ button.wf-run-version:focus-visible {
 .wf-run-partition { margin: 0 0 6px; padding: 4px 0 4px 8px; border-left: 2px solid var(--border); }
 .wf-run-partition.is-passed { border-left-color: var(--idle); }
 .wf-run-partition.is-failed { border-left-color: var(--danger); }
+/* Amber: the deadline stopped it, which failed the gate without saying anything about its tests. */
+.wf-run-partition.is-unfinished { border-left-color: var(--attention); }
 .wf-run-partition-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 .wf-run-partition-command { display: block; overflow-wrap: anywhere; color: var(--muted); }
 .wf-run-partition .wf-run-meta { margin: 2px 0; }

@@ -9,6 +9,7 @@ import type {
   WorkflowHumanDecision,
   WorkflowAffectedTestsPartition,
   WorkflowAffectedTestsReport,
+  WorkflowAffectedTestsUnfinishedPartition,
   WorkflowCheckOutcome,
   WorkflowNamedTest,
   WorkflowSelectedTest,
@@ -28,6 +29,7 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 import {
+  affectedTestsDeadlineLabel,
   formatCheckCommand,
   isVerdictNode,
   sessionActionCompletionLabel,
@@ -353,7 +355,7 @@ function CheckCard({
         <strong>Command · {outcome.slot}</strong>
       </header>
       <p className="wf-run-summary">{outcome.note}</p>
-      <p className="wf-run-check-sentence">{view.sentence}</p>
+      <p className="wf-run-check-sentence">{checkSentence(outcome, view.sentence)}</p>
       {outcome.affected && <AffectedTestsDetails report={outcome.affected} />}
       {outcome.output && (
         <div className="wf-run-card-body">
@@ -372,6 +374,16 @@ function CheckCard({
       <p className="wf-run-meta">{parts.join(" · ")}</p>
     </article>
   );
+}
+
+/**
+ * The card's sentence under the note. A gate its deadline failed may have no command that exited
+ * non-zero at all, so the status's own sentence would claim one that did not happen.
+ */
+function checkSentence(outcome: WorkflowCheckOutcome, sentence: string): string {
+  return outcome.affected?.unfinished?.length
+    ? "The gate's deadline passed before every partition finished, so it failed. Its output is below."
+    : sentence;
 }
 
 /** How many selected test files an `affected-tests` card lists before folding the rest. */
@@ -453,6 +465,7 @@ export function AffectedTestsDetails({ report }: { report: WorkflowAffectedTests
         </>
       )}
       <AffectedTestsPartitions report={report} />
+      <UnfinishedPartitions report={report} />
       <UnrunTests report={report} />
       <TestingSettingsSourcesLine settings={report.settings} />
       <TestingScopesLines settings={report.settings} />
@@ -516,6 +529,45 @@ function PartitionItem({ partition }: { partition: WorkflowAffectedTestsPartitio
           )}
         </details>
       )}
+    </li>
+  );
+}
+
+/**
+ * The partitions the gate's deadline left unfinished: the one it stopped, then each it never
+ * reached. Listed apart from the partitions that ran, because their tests reached no answer, and
+ * that is why the gate failed.
+ */
+function UnfinishedPartitions({ report }: { report: WorkflowAffectedTestsReport }): React.JSX.Element | null {
+  const unfinished = report.unfinished ?? [];
+  if (unfinished.length === 0) return null;
+  const deadline = report.deadlineMs === undefined ? "" : `${affectedTestsDeadlineLabel(report.deadlineMs)} `;
+  return (
+    <>
+      <h5>Did not finish ({unfinished.length})</h5>
+      <p>
+        The gate's {deadline}deadline passed before these partitions finished, so it failed rather than pass on
+        part of the change.
+      </p>
+      <ul className="wf-run-partitions" aria-label="Partitions that did not finish">
+        {unfinished.map((partition) => <UnfinishedItem key={partition.subpath} partition={partition} />)}
+      </ul>
+    </>
+  );
+}
+
+function UnfinishedItem({ partition }: { partition: WorkflowAffectedTestsUnfinishedPartition }): React.JSX.Element {
+  const place = partition.subpath || "repository root";
+  const files = `${partition.fileCount} ${partition.fileCount === 1 ? "file" : "files"}`;
+  return (
+    <li className="wf-run-partition is-unfinished" aria-label={`Unfinished partition ${place}`}>
+      <div className="wf-run-partition-head">
+        <code>{place}</code>
+        <span className="wf-run-meta">
+          {files} · {partition.stopped ? "stopped at the deadline" : "not started"}
+        </span>
+      </div>
+      <code className="wf-run-partition-command">{formatCheckCommand(partition.command)}</code>
     </li>
   );
 }

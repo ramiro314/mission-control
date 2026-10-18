@@ -60,12 +60,17 @@ function junit(root: string, cases: { file: string; name: string; failure?: stri
   return `<?xml version="1.0"?><testsuites>${body.join("")}</testsuites>`;
 }
 
-type Run = { argv: string[]; files: string[]; workingSubpath: string; junit: string };
+type Run = { argv: string[]; files: string[]; workingSubpath: string; junit: string; timeoutMs: number | undefined };
 type Answer = {
   exitCode: number;
   xml?: string;
   /** What the run prints; `run N` by default. */
   output?: string;
+  /**
+   * How long the run takes on the harness `clock`. Longer than the timeout it was given, it is
+   * killed at that timeout, as the supervisor does.
+   */
+  durationMs?: number;
   /** What the supervisor reports instead of an ordinary exit: a timeout, or a group left running. */
   abnormal?: Pick<CheckSpawnOutcome, "result" | "emptiness">;
 };
@@ -85,6 +90,10 @@ function harness(options: {
   delayMs?: number;
   /** Called as each run starts (true) and ends (false). */
   onSpawn?: (entering: boolean) => void;
+  /** One command's timeout, as the runtime is configured with it. */
+  timeoutMs?: number;
+  /** A clock the runtime reads and each run advances by its `durationMs`. */
+  clock?: { at: number };
   /** The repository root's stored testing settings, as the daemon's catalog would answer. */
   stored?: StoredTestingSettings;
   /** Subdirectory rows, repository-relative, beside the root's. */
@@ -113,13 +122,28 @@ function harness(options: {
     const dest = argv.find((arg) => arg.startsWith("--test-reporter-destination="))!;
     const junitPath = dest.slice("--test-reporter-destination=".length);
     const files = argv.slice(TEMPLATE.length - 1);
-    const run = { argv, files, workingSubpath: request.workingSubpath, junit: junitPath };
+    const run = { argv, files, workingSubpath: request.workingSubpath, junit: junitPath, timeoutMs: request.timeoutMs };
     options.onSpawn?.(true);
     if (options.delayMs) await new Promise((done) => setTimeout(done, options.delayMs));
     const answer = options.answer(run, runs.length);
     runs.push(run);
     if (answer.xml !== undefined) writeFileSync(junitPath, answer.xml);
     options.onSpawn?.(false);
+    if (options.clock) {
+      const allowed = request.timeoutMs ?? Number.POSITIVE_INFINITY;
+      const took = answer.durationMs ?? 0;
+      options.clock.at += Math.min(took, allowed);
+      if (took > allowed) {
+        return {
+          result: {
+            kind: "infrastructure",
+            reason: `the check command did not finish within ${allowed}ms and its process group was terminated`,
+          },
+          emptiness: "empty",
+          supervisor: null,
+        };
+      }
+    }
     if (answer.abnormal) return { ...answer.abnormal, supervisor: null };
     return {
       result: { kind: "exited", exitCode: answer.exitCode, output: answer.output ?? `run ${runs.length}\n`, truncatedBytes: 0 },
@@ -131,6 +155,8 @@ function harness(options: {
     supervise: supervise as never,
     platform: () => ({ supported: true, note: "" }),
     resolveCommit: async (_repo, sha) => sha,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.clock ? { now: () => options.clock!.at } : {}),
     testSelection: {
       changedPaths: async () => ({ ok: true, repoRoot: options.root, paths: options.changed }),
       deletedPaths: async () => ({ ok: true, repoRoot: options.root, paths: [] }),
@@ -741,6 +767,112 @@ test("the gate's combined output keeps the outcome's tail, counting every byte i
       Buffer.byteLength(outputs[partition.subpath]!) - AFFECTED_TESTS_LIMITS.partitionOutput,
     );
   }
+});
+
+// ---- The gate's deadline: twice the command timeout, from when the partitions start ---------
+
+const TIMEOUT_MS = 1_000;
+
+test("the gate's deadline stops a later partition, which fails the gate naming it as unfinished", async () => {
+  const clock = { at: 0 };
+  const budget = { released: 0 };
+  // Each run takes 800 ms. The root and apps/api finish at 1,600 ms, so apps/web is allowed only
+  // the 400 ms left before the 2,000 ms deadline, and is stopped there.
+  const h = monorepoHarness({ clock, timeoutMs: TIMEOUT_MS, budget, answer: () => ({ exitCode: 0, durationMs: 800 }) });
+  const outcome = await h.check();
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.timeoutMs]), [
+    ["", TIMEOUT_MS],
+    ["apps/api", TIMEOUT_MS],
+    ["apps/web", 400],
+  ]);
+  assert.equal(clock.at, 2_000);
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.note, /Ran 4 selected test files in 2 partitions before the gate's 2 seconds deadline; 1 partition did not finish \(apps\/web\), so the gate fails rather than pass on part of the change\.$/);
+  assert.equal(outcome.affected?.deadlineMs, 2_000);
+  assert.deepEqual(outcome.affected?.unfinished, [
+    { subpath: "apps/web", command: TEMPLATE, source: "override", fileCount: 3, stopped: true },
+  ]);
+  assert.deepEqual(outcome.affected?.partitions?.map((partition) => partition.subpath), ["", "apps/api"]);
+  assert.match(outcome.output, /The gate's 2 seconds deadline passed; apps\/web did not finish\./);
+  // Partitions ran, so the run is spent, and the stopped group was proven empty: the tree went back.
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(h.reserved(), 1);
+  assert.equal(budget.released, 0);
+  assert.equal(h.released(), 1);
+  const verdict = checkVerdict(outcome, "attempt-1");
+  assert.equal(verdict?.verdict, "fail");
+});
+
+test("a partition the deadline left no time for is never started, and is listed as not started", async () => {
+  const clock = { at: 0 };
+  // The root and apps/api each take the full timeout, which spends the whole deadline.
+  const h = monorepoHarness({ clock, timeoutMs: TIMEOUT_MS, answer: () => ({ exitCode: 0, durationMs: TIMEOUT_MS }) });
+  const outcome = await h.check();
+  assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["", "apps/api"]);
+  assert.equal(outcome.status, "failed");
+  assert.deepEqual(outcome.affected?.unfinished?.map(({ subpath, stopped }) => ({ subpath, stopped })), [
+    { subpath: "apps/web", stopped: false },
+  ]);
+});
+
+test("a rerun the deadline stops leaves its partition unfinished, along with every partition after it", async () => {
+  let root = "";
+  const clock = { at: 0 };
+  // apps/api fails once at 1,500 ms, so its rerun is allowed 500 ms, takes 800 and is stopped.
+  const h = monorepoHarness({
+    clock,
+    timeoutMs: TIMEOUT_MS,
+    answer: (run, index) => index === 1
+      ? { exitCode: 1, durationMs: 700, xml: junit(join(root, "apps/api"), [{ file: "lib/c.spec.ts", name: "c", failure: "boom" }]) }
+      : { exitCode: 0, durationMs: 800 },
+  });
+  root = h.root;
+  const outcome = await h.check();
+  assert.deepEqual(h.runs.map((run) => [run.workingSubpath, run.timeoutMs]), [
+    ["", TIMEOUT_MS],
+    ["apps/api", TIMEOUT_MS],
+    ["apps/api", 500],
+  ]);
+  assert.equal(outcome.status, "failed");
+  assert.deepEqual(outcome.affected?.unfinished?.map(({ subpath, stopped }) => ({ subpath, stopped })), [
+    { subpath: "apps/api", stopped: true },
+    { subpath: "apps/web", stopped: false },
+  ]);
+  assert.match(outcome.note, /2 partitions did not finish \(apps\/api, apps\/web\)/);
+});
+
+test("a single invocation keeps its full run and rerun, and its own timeout stays infrastructure", async () => {
+  const root = tree(CONFIG);
+  const clock = { at: 0 };
+  const h = harness({
+    root,
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    clock,
+    timeoutMs: TIMEOUT_MS,
+    answer: (_run, index) => index === 0
+      ? { exitCode: 1, durationMs: 900, xml: junit(root, [{ file: "test/a.test.ts", name: "adds", failure: "1 !== 2" }]) }
+      : { exitCode: 0, durationMs: 900 },
+  });
+  const outcome = await h.check();
+  // The rerun starts at 900 ms with 1,100 ms left before the deadline: it still gets a full timeout.
+  assert.deepEqual(h.runs.map((run) => run.timeoutMs), [TIMEOUT_MS, TIMEOUT_MS]);
+  assert.equal(outcome.status, "passed");
+  assert.equal(outcome.affected?.unfinished, undefined);
+  assert.equal(outcome.affected?.deadlineMs, undefined);
+
+  // A run that outlasts a FULL timeout is the command's own timeout: infrastructure, as before.
+  const slow = harness({
+    root: tree(CONFIG),
+    changed: ["test/a.test.ts"],
+    tracked: TRACKED,
+    clock: { at: 0 },
+    timeoutMs: TIMEOUT_MS,
+    answer: () => ({ exitCode: 0, durationMs: 1_500 }),
+  });
+  const result = await slow.run();
+  assert.equal(result.kind, "infrastructure");
+  if (result.kind === "infrastructure") assert.match(result.reason, /did not finish within 1000ms/);
 });
 
 test("a single partition reads exactly as the one invocation it always was", async () => {

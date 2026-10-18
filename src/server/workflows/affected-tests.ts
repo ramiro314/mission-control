@@ -7,6 +7,7 @@ import {
   AFFECTED_TESTS_LIMITS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_LIMITS,
+  affectedTestsDeadlineLabel,
   affectedTestsTargetFor,
   commandTemplateProblem,
   type WorkflowAffectedTestsPartition,
@@ -219,13 +220,70 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-/** Runs one expanded argv under the executor's supervisor, in a subdirectory of the leased tree. */
-export type AffectedTestsSpawn = (argv: string[], workingSubpath: string) => Promise<CheckSpawnOutcome>;
+/**
+ * Runs one expanded argv under the executor's supervisor, in a subdirectory of the leased tree,
+ * killing it after `timeoutMs`.
+ */
+export type AffectedTestsSpawn = (
+  argv: string[],
+  workingSubpath: string,
+  timeoutMs: number,
+) => Promise<CheckSpawnOutcome>;
+
+/**
+ * How long one gate may run its partitions, in command timeouts: the most a single invocation
+ * could already hold the machine's test lease, its run and its rerun.
+ */
+export const AFFECTED_TESTS_DEADLINE_TIMEOUTS = 2;
+
+/** The clock a gate's partitions run against. */
+export interface AffectedTestsRunLimits {
+  /** One command's timeout. Every run gets this, or the time left before the gate's deadline. */
+  timeoutMs: number;
+  /** Defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * The gate's deadline, counted from when its partitions start - straight after the test lease is
+ * granted. Each spawn gets the command timeout or what is left, whichever is less.
+ */
+class GateDeadline {
+  readonly ms: number;
+  private readonly at: number;
+  private readonly now: () => number;
+
+  constructor(private readonly limits: AffectedTestsRunLimits) {
+    this.now = limits.now ?? Date.now;
+    this.ms = limits.timeoutMs * AFFECTED_TESTS_DEADLINE_TIMEOUTS;
+    this.at = this.now() + this.ms;
+  }
+
+  /** What the next spawn may take; zero or less means the deadline has passed. */
+  allowance(): number {
+    return Math.min(this.limits.timeoutMs, this.at - this.now());
+  }
+
+  /**
+   * Whether a spawn that did not exit normally was stopped by the gate's deadline rather than by
+   * anything about the command: it was given less than a full timeout, the supervisor reported
+   * infrastructure with its group proven empty, and the deadline has passed. Anything else is
+   * passed through as the infrastructure it is.
+   */
+  stopped(outcome: CheckSpawnOutcome, allowed: number): boolean {
+    return allowed < this.limits.timeoutMs
+      && outcome.result.kind === "infrastructure"
+      && outcome.emptiness === "empty"
+      && this.now() >= this.at;
+  }
+}
 
 /** One run of the template, read back. */
 type RunRead =
   /** It did not run to a proven-empty group, or was not a test run at all: pass it through. */
   | { kind: "aborted"; outcome: CheckSpawnOutcome }
+  /** The gate's deadline passed before it could start, or stopped it. */
+  | { kind: "deadline"; started: boolean }
   | { kind: "unreadable"; exitCode: number; output: string; truncatedBytes: number; error: string }
   | { kind: "read"; failed: Map<string, NamedCase>; exitCode: number; output: string; truncatedBytes: number };
 
@@ -254,33 +312,66 @@ function plural(n: number, one: string, many: string): string {
 
 /**
  * Run each partition's files, and its failed ones once more, one partition after another, and
- * decide: the gate passes only if every partition that ran passed.
+ * decide: the gate passes only if every partition passed.
  *
  * Returns a spawn outcome so the executor settles the lease exactly as it does for any other
  * slot. A run whose group could not be proven empty is passed straight through and never
  * followed by another spawn, neither its partition's rerun nor a later partition, so every
  * outcome built here follows a proven-empty last run.
+ *
+ * Every partition runs, within the gate's deadline (`AFFECTED_TESTS_DEADLINE_TIMEOUTS` command
+ * timeouts). The partition the deadline stops, and every one after it, did not finish; the gate
+ * then fails naming them, so it never passes on part of the change. The first partition always
+ * has its full run and rerun, so a gate of one invocation behaves exactly as before.
  */
 export async function runAffectedTests(
   ctx: AffectedTestsContext,
   plan: Extract<AffectedTestsPlan, { kind: "run" }>,
   spawn: AffectedTestsSpawn,
+  limits: AffectedTestsRunLimits,
 ): Promise<CheckSpawnOutcome> {
   const dir = mkdtempSync(join(tmpdir(), "mission-junit-"));
+  const deadline = new GateDeadline(limits);
   try {
     const runs: PartitionResult[] = [];
     for (const [index, partition] of plan.partitions.entries()) {
       // Each partition's own directory, so its results never meet another's.
       const junitDir = join(dir, `partition-${index + 1}`);
       mkdirSync(junitDir);
-      const run = await runPartition(ctx, partition, junitDir, spawn);
+      const run = await runPartition(ctx, partition, junitDir, spawn, deadline);
       if ("outcome" in run) return run.outcome;
+      if ("deadline" in run) {
+        const notReached = plan.partitions.slice(index).map((later, offset) => ({
+          partition: later,
+          stopped: offset === 0 && run.started,
+        }));
+        // Unreachable while the first partition always has its full time; kept as infrastructure
+        // rather than a verdict built from no partition at all.
+        if (runs.length === 0) {
+          return {
+            result: {
+              kind: "infrastructure",
+              reason: `the affected-tests gate reached its ${affectedTestsDeadlineLabel(deadline.ms)} deadline `
+                + "before any partition finished",
+            },
+            emptiness: "empty",
+            supervisor: null,
+          };
+        }
+        return { result: decideGate(plan, runs, { ms: deadline.ms, notReached }), emptiness: "empty", supervisor: null };
+      }
       runs.push({ partition, run });
     }
     return { result: decideGate(plan, runs), emptiness: "empty", supervisor: null };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** The partitions a gate's deadline left unfinished, the first possibly stopped part way. */
+interface DeadlineCut {
+  ms: number;
+  notReached: Array<{ partition: AffectedTestsPartitionPlan; stopped: boolean }>;
 }
 
 interface PartitionResult {
@@ -293,7 +384,8 @@ async function runPartition(
   partition: AffectedTestsPartitionPlan,
   junitDir: string,
   spawn: AffectedTestsSpawn,
-): Promise<PartitionRun | { outcome: CheckSpawnOutcome }> {
+  deadline: GateDeadline,
+): Promise<PartitionRun | { outcome: CheckSpawnOutcome } | { deadline: true; started: boolean }> {
   const { target, files } = partition;
   const cwd = join(ctx.treeRoot, target.workingSubpath);
   const roots = [realpathOr(ctx.treeRoot), ctx.treeRoot];
@@ -312,9 +404,13 @@ async function runPartition(
   };
 
   const runOnce = async (paths: readonly string[], junitPath: string): Promise<RunRead> => {
+    const allowed = deadline.allowance();
+    if (allowed <= 0) return { kind: "deadline", started: false };
     const argv = expandAffectedTestsTemplate(target.command, paths.map(argFor), junitPath);
-    const outcome = await spawn(argv, target.workingSubpath);
-    if (outcome.result.kind !== "exited" || outcome.emptiness !== "empty") return { kind: "aborted", outcome };
+    const outcome = await spawn(argv, target.workingSubpath, allowed);
+    if (outcome.result.kind !== "exited" || outcome.emptiness !== "empty") {
+      return deadline.stopped(outcome, allowed) ? { kind: "deadline", started: true } : { kind: "aborted", outcome };
+    }
     const { exitCode, output, truncatedBytes } = outcome.result;
     if (exitCode === 0) return { kind: "read", failed: new Map(), exitCode, output, truncatedBytes };
     const read = readJUnitFile(junitPath);
@@ -348,6 +444,8 @@ async function runPartition(
 
   const first = await runOnce(files.map((file) => file.path), join(junitDir, "junit-1.xml"));
   if (first.kind === "aborted") return { outcome: first.outcome };
+  // Not started when the deadline had already passed; stopped when it passed during the run.
+  if (first.kind === "deadline") return { deadline: true, started: first.started };
   if (first.kind === "unreadable") {
     return finish("failed", `${ranLabel}; it exited ${first.exitCode} and its JUnit results could not be read (${first.error}).`, first);
   }
@@ -365,6 +463,7 @@ async function runPartition(
     + `rerunning ${plural(rerunPaths.length, "file", "files")} once.\n\n`;
   const second = await runOnce(rerunPaths, join(junitDir, "junit-2.xml"));
   if (second.kind === "aborted") return { outcome: second.outcome };
+  if (second.kind === "deadline") return { deadline: true, started: true };
   const both = {
     exitCode: second.exitCode,
     output: first.output + banner + second.output,
@@ -405,38 +504,55 @@ const NOTE_PARTITIONS_NAMED = 3;
  */
 const NOTE_MAX = Math.floor(WORKFLOW_EXECUTION_LIMITS.verdictSummary / 2);
 
-/** Every partition that ran, decided as one gate: it passes only if each of them passed. */
+/** Partitions as a note names them: the first few, then how many more. */
+function namedPartitions(partitions: readonly AffectedTestsPartitionPlan[]): string {
+  const names = partitions
+    .slice(0, NOTE_PARTITIONS_NAMED)
+    .map((partition) => partitionLabel(partition.target.workingSubpath));
+  if (partitions.length > names.length) names.push(`${partitions.length - names.length} more`);
+  return names.join(", ");
+}
+
+/**
+ * Every partition that ran, decided as one gate: it passes only if each of them passed and the
+ * gate's deadline left none unfinished.
+ */
 function decideGate(
   plan: Extract<AffectedTestsPlan, { kind: "run" }>,
   runs: readonly PartitionResult[],
+  cut: DeadlineCut | null = null,
 ): CheckExecutionResult {
   const flakes = runs.flatMap(({ run }) => run.flakes);
   const failures = runs.flatMap(({ run }) => run.failures);
   const failed = runs.filter(({ run }) => run.status === "failed");
+  const unfinished = cut?.notReached.map(({ partition }) => partition) ?? [];
   const unrunNote = plan.unrun.length === 0 ? "" : ` ${unrunSentence(plan.unrun.length)}`;
 
   let note: string;
   let exitCode: number;
   let output: string;
   let truncatedBytes: number;
-  if (runs.length === 1) {
+  if (runs.length === 1 && !cut) {
     // One invocation reads exactly as the gate always did.
     const { run } = runs[0]!;
     ({ note, exitCode, output, truncatedBytes } = run);
   } else {
     const fileCount = runs.reduce((sum, { partition }) => sum + partition.files.length, 0);
-    const ranLabel = `Ran ${plural(fileCount, "selected test file", "selected test files")} in ${runs.length} partitions`;
+    const ranLabel = `Ran ${plural(fileCount, "selected test file", "selected test files")} `
+      + `in ${plural(runs.length, "partition", "partitions")}`;
     const flaked = flakes.length === 0 ? "" : `${plural(flakes.length, "test", "tests")} flaked and passed on rerun`;
-    if (failed.length === 0) {
+    const twice = failures.length === 0 ? "" : `; ${plural(failures.length, "test", "tests")} failed twice`;
+    const failedClause = failed.length === 0
+      ? ""
+      : `; ${plural(failed.length, "partition", "partitions")} failed (${namedPartitions(failed.map(({ partition }) => partition))})`;
+    if (cut) {
+      note = `${ranLabel} before the gate's ${affectedTestsDeadlineLabel(cut.ms)} deadline; `
+        + `${plural(unfinished.length, "partition", "partitions")} did not finish (${namedPartitions(unfinished)}), `
+        + `so the gate fails rather than pass on part of the change${failedClause}${twice}${flaked ? `; ${flaked}` : ""}.`;
+    } else if (failed.length === 0) {
       note = `${ranLabel}; ${flaked || "all passed"}.`;
     } else {
-      const names = failed
-        .slice(0, NOTE_PARTITIONS_NAMED)
-        .map(({ partition }) => partitionLabel(partition.target.workingSubpath));
-      if (failed.length > names.length) names.push(`${failed.length - names.length} more`);
-      const twice = failures.length === 0 ? "" : `; ${plural(failures.length, "test", "tests")} failed twice`;
-      note = `${ranLabel}; ${plural(failed.length, "partition", "partitions")} failed `
-        + `(${names.join(", ")})${twice}${flaked ? `; ${flaked}` : ""}.`;
+      note = `${ranLabel}${failedClause}${twice}${flaked ? `; ${flaked}` : ""}.`;
     }
     // The first failed partition's exit code, so the gate's names a run that failed it.
     exitCode = (failed[0] ?? runs[runs.length - 1]!).run.exitCode;
@@ -444,6 +560,10 @@ function decideGate(
       .map(({ partition, run }) => `[Mission Control] ${partitionLabel(partition.target.workingSubpath)}: `
         + `${plural(partition.files.length, "file", "files")}, ${run.status}.\n\n${run.output}`)
       .join("\n\n");
+    if (cut) {
+      output += `\n\n[Mission Control] The gate's ${affectedTestsDeadlineLabel(cut.ms)} deadline passed; `
+        + `${namedPartitions(unfinished)} did not finish.\n`;
+    }
     truncatedBytes = runs.reduce((sum, { run }) => sum + run.truncatedBytes, 0);
   }
   // Each run's output is bounded, but their sum grows with the partitions. The gate's own output
@@ -461,8 +581,18 @@ function decideGate(
     failures: failures.slice(0, AFFECTED_TESTS_LIMITS.failures),
     // Every partition: there are at most as many as the slot has Commands.
     partitions: runs.map(partitionOf),
+    ...(cut ? {
+      deadlineMs: cut.ms,
+      unfinished: cut.notReached.map(({ partition, stopped }) => ({
+        subpath: clip(partition.target.workingSubpath, WORKFLOW_LIMITS.checkRepoRoot),
+        command: [...partition.target.command],
+        source: partition.target.source,
+        fileCount: partition.files.length,
+        stopped,
+      })),
+    } : {}),
   };
-  return decided(failed.length === 0 ? "passed" : "failed", clip(`${note}${unrunNote}`, NOTE_MAX), {
+  return decided(failed.length === 0 && !cut ? "passed" : "failed", clip(`${note}${unrunNote}`, NOTE_MAX), {
     exitCode,
     output,
     truncatedBytes,

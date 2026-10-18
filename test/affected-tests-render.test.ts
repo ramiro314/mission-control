@@ -188,3 +188,24 @@ test("an outcome recorded before partitions existed shows neither section", () =
   const html = renderToStaticMarkup(createElement(AffectedTestsDetails, { report: report({ selectedCount: 1 }) }));
   assert.doesNotMatch(html, /Partitions|Selected but unrun/);
 });
+
+test("partitions the gate's deadline left unfinished are listed apart, stopped or not started", () => {
+  const html = renderToStaticMarkup(createElement(AffectedTestsDetails, {
+    report: report({
+      selectedCount: 5,
+      partitions: [partition({ subpath: "apps/api" })],
+      deadlineMs: 2 * 60 * 60_000,
+      unfinished: [
+        { subpath: "apps/web", command: ["npm", "test", "{junit}", "{files}"], source: "override", fileCount: 3, stopped: true },
+        { subpath: "", command: ["root", "{junit}", "{files}"], source: "default", fileCount: 1, stopped: false },
+      ],
+    }),
+  }));
+  assert.match(html, /Did not finish \(2\)/);
+  assert.match(html, /The gate&#x27;s 120 minutes deadline passed before these partitions finished, so it failed rather than pass on\s+part of the change\./);
+  assert.match(html, /<ul class="wf-run-partitions" aria-label="Partitions that did not finish">/);
+  assert.match(html, /class="wf-run-partition is-unfinished" aria-label="Unfinished partition apps\/web"[^]*?3 files · stopped at the deadline/);
+  assert.match(html, /aria-label="Unfinished partition repository root"[^]*?1 file · not started/);
+  // The partitions that ran are still listed above, under their own heading.
+  assert.match(html, /Partitions \(1\)[^]*?Did not finish \(2\)/);
+});

@@ -324,9 +324,15 @@ const checkLeases = new CheckLeaseManager(undefined, {
 });
 // The operator's test lease and concurrency settings reach the executor here and nowhere
 // else, so every test-running check in this daemon reads them per check.
+// `CHECK_TIMEOUT_MS` replaces every slot's command timeout, and with it an affected-tests gate's
+// deadline of twice that. The shipped timeouts are an hour for a test check, so a browser test
+// that drives a gate into its deadline otherwise waits two hours. Unset, or not a positive whole
+// number, the shipped defaults stand - this is not a setting an operator has any reason to touch.
+const checkTimeoutMs = Number(envVar("CHECK_TIMEOUT_MS"));
 const checkRuntime = new CheckRuntime(checkLeases, {
   testPolicy: getWorkflowPolicy,
   storedTestingLayers: (repoRoot) => testingSettings.forRepository(repoRoot),
+  ...(Number.isInteger(checkTimeoutMs) && checkTimeoutMs > 0 ? { timeoutMs: checkTimeoutMs } : {}),
 });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);

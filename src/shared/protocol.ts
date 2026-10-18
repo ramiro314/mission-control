@@ -7074,6 +7074,15 @@ export const WorkflowAffectedTestsReportSchema = z.object({
   })).max(AFFECTED_TESTS_LIMITS.partitions).optional(),
   // Every selected file no command ran: bounded by the selection, not by a display cap.
   unrun: z.array(AffectedTestPathSchema).optional(),
+  // Optional: present only when the gate's deadline passed before every partition finished.
+  deadlineMs: z.number().int().min(0).optional(),
+  unfinished: z.array(z.object({
+    subpath: z.string().max(WORKFLOW_LIMITS.checkRepoRoot),
+    command: z.array(z.string()),
+    source: z.enum(["override", "default"]),
+    fileCount: z.number().int().min(0),
+    stopped: z.boolean(),
+  })).max(AFFECTED_TESTS_LIMITS.partitions).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */

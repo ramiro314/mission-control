@@ -3896,6 +3896,26 @@ export interface WorkflowAffectedTestsPartition {
   truncatedBytes: number;
 }
 
+/** An affected-tests gate's deadline as a sentence names it: seconds under a minute, else minutes. */
+export function affectedTestsDeadlineLabel(ms: number): string {
+  const [n, one, many] = ms < 60_000
+    ? [Math.round(ms / 1000), "second", "seconds"]
+    : [Math.round(ms / 60_000), "minute", "minutes"];
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** A partition an affected-tests gate's deadline left unfinished. */
+export interface WorkflowAffectedTestsUnfinishedPartition {
+  /** Repository-relative; `""` is the repository root. */
+  subpath: string;
+  /** The template, never the argv expanded with the files. */
+  command: string[];
+  source: "override" | "default";
+  fileCount: number;
+  /** True when it had started and the deadline stopped it; false when it never started. */
+  stopped: boolean;
+}
+
 /** Why a test file was selected. APPEND-ONLY: durable in `output_json`. */
 export const WORKFLOW_TEST_SELECTION_REASONS = ["changed", "imports", "smoke"] as const;
 export type WorkflowTestSelectionReason = (typeof WORKFLOW_TEST_SELECTION_REASONS)[number];
@@ -3967,6 +3987,18 @@ export interface WorkflowAffectedTestsReport {
    * the partitions that ran. Absent when every selected file ran.
    */
   unrun?: string[];
+  /**
+   * The gate's deadline, in milliseconds, when it passed before every partition finished: twice
+   * the command timeout, counted from when the partitions started. Absent when every partition
+   * finished.
+   */
+  deadlineMs?: number;
+  /**
+   * Every partition the deadline left unfinished, in run order: the one it stopped, then each it
+   * never reached. Their tests did not run to an answer, so the gate failed. Absent when every
+   * partition finished.
+   */
+  unfinished?: WorkflowAffectedTestsUnfinishedPartition[];
 }
 
 /**

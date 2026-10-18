@@ -51,6 +51,10 @@ interface Fixture {
   /** Repository-relative test files, each written as an empty module. */
   files: string[];
   checkCommands: (repo: string) => Array<{ repoRoot: string; slot: "affected-tests"; command: string[] }>;
+  /** Further workflow policy for this spec, laid over the shared consent settings. */
+  policy?: Record<string, unknown>;
+  /** The check status the run settles on. `passed` unless set. */
+  expect?: "passed" | "failed";
 }
 
 /** The single-repository case: one smoke test, and one Command at the repository root. */
@@ -111,6 +115,7 @@ async function seedRun(page: Page, daemon: DaemonHandle, fixture: Fixture = SMOK
     checksEnabled: true,
     repoAllowlist: [daemon.repo],
     kindWorkflowDefaults: { ship: null },
+    ...fixture.policy,
     checkCommands: fixture.checkCommands(daemon.repo),
   }, "PUT");
 
@@ -155,8 +160,8 @@ async function seedRun(page: Page, daemon: DaemonHandle, fixture: Fixture = SMOK
         const output = run.attempts.find((attempt) => attempt.nodeId === "affected")?.output as
           { status?: string } | null | undefined;
         return output?.status ?? "";
-      }, { message: "the affected-tests check should run, rerun, and pass", timeout: 60_000 })
-      .toBe("passed");
+      }, { message: `the affected-tests check should settle as ${fixture.expect ?? "passed"}`, timeout: 60_000 })
+      .toBe(fixture.expect ?? "passed");
   } catch (caught) {
     // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
@@ -312,4 +317,96 @@ test("a monorepo affected-tests check lists each app's partition and the test no
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/affected-tests/run-detail-partitions.png");
   }
+});
+
+/** Each app's runner: it takes three of the four seconds a command may run, then passes. */
+const SLOW_RUNNER = [
+  "junit=\"$1\"; shift",
+  "echo \"slow partition ran: $*\"",
+  "sleep 3",
+  "exit 0",
+].join("\n");
+
+/**
+ * Three apps, each with an override running a three-second suite, under a four-second command
+ * timeout and so an eight-second gate deadline. The first two finish; the third has at most two
+ * seconds left and the deadline stops it.
+ */
+const DEADLINE_FIXTURE: Fixture = {
+  testing: {
+    tests: {
+      patterns: ["**/*.test.ts"],
+      smokeSet: ["apps/api/api.test.ts", "apps/docs/docs.test.ts", "apps/web/web.test.ts"],
+    },
+  },
+  files: ["apps/api/api.test.ts", "apps/docs/docs.test.ts", "apps/web/web.test.ts"],
+  checkCommands: (repo) => ["apps/api", "apps/docs", "apps/web"].map((app) => ({
+    repoRoot: `${repo}/${app}`,
+    slot: "affected-tests" as const,
+    command: ["sh", "-c", SLOW_RUNNER, "sh", "{junit}", "{files}"],
+  })),
+  // The machine-wide test lease is shared with every other worker's daemon, and a four-second
+  // wait for it would be a flake rather than a finding. Partitions still run one after another.
+  policy: { checkTestLease: false },
+  expect: "failed",
+};
+
+test.describe("a gate that reaches its deadline", () => {
+  test.use({ daemonEnv: { MISSION_CHECK_TIMEOUT_MS: "4000" } });
+
+  test("run detail lists the partitions that ran and the one the deadline stopped", async ({ dashboard, daemon }) => {
+    const runId = await seedRun(dashboard, daemon, DEADLINE_FIXTURE);
+
+    const run = await api<{ attempts: Array<{ nodeId: string; output: unknown }> }>(
+      daemon,
+      `/api/workflow-runs/${runId}`,
+    );
+    const outcome = run.attempts.find((attempt) => attempt.nodeId === "affected")!.output as {
+      status: string;
+      affected: {
+        deadlineMs: number;
+        partitions: Array<{ subpath: string; status: string }>;
+        unfinished: Array<{ subpath: string; fileCount: number }>;
+      };
+    };
+    expect(outcome.status).toBe("failed");
+    expect(outcome.affected.deadlineMs).toBe(8_000);
+    expect(outcome.affected.partitions.map(({ subpath, status }) => ({ subpath, status }))).toEqual([
+      { subpath: "apps/api", status: "passed" },
+      { subpath: "apps/docs", status: "passed" },
+    ]);
+    expect(outcome.affected.unfinished.map(({ subpath, fileCount }) => ({ subpath, fileCount }))).toEqual([
+      { subpath: "apps/web", fileCount: 1 },
+    ]);
+
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    const card = dashboard.locator("article.wf-run-check").filter({ hasText: "Command · affected-tests" });
+    if (!(await card.isVisible())) await dashboard.locator("button.wf-run-worklist-row.is-check").first().click();
+    await expect(card).toBeVisible({ timeout: 40_000 });
+    await expect(card).toContainText(
+      "Ran 2 selected test files in 2 partitions before the gate's 8 seconds deadline; "
+      + "1 partition did not finish (apps/web), so the gate fails rather than pass on part of the change.",
+    );
+    await expect(card.getByRole("heading", { name: "Partitions (2)" })).toBeVisible();
+    await expect(card.getByRole("heading", { name: "Did not finish (1)" })).toBeVisible();
+    const unfinished = card.getByRole("list", { name: "Partitions that did not finish" });
+    const web = unfinished.getByRole("listitem", { name: "Unfinished partition apps/web" });
+    await expect(web).toContainText("1 file");
+    await expect(web).toContainText(/stopped at the deadline|not started/);
+    await expect(web).toContainText("sh -c");
+    await expect(card).toContainText("The gate's 8 seconds deadline passed before these partitions finished");
+    // Not the failed status's usual "exited non-zero": no command did.
+    await expect(card).toContainText("The gate's deadline passed before every partition finished, so it failed.");
+    await expect(card).not.toContainText("exited non-zero");
+
+    if (process.env.MC_E2E_EVIDENCE) {
+      mkdirSync(EVIDENCE, { recursive: true });
+      await dashboard.setViewportSize({ width: 1280, height: 1400 });
+      await dashboard.mouse.move(0, 0);
+      await web.scrollIntoViewIfNeeded();
+      await dashboard.screenshot({ path: `${EVIDENCE}run-detail-deadline.png` });
+      // eslint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/affected-tests/run-detail-deadline.png");
+    }
+  });
 });

@@ -190,6 +190,8 @@ export interface CheckRuntimeDeps {
   platform?: () => CheckRuntimeSupport;
   /** How long one check command gets. Overrides the slot-specific production defaults. */
   timeoutMs?: number;
+  /** The clock an affected-tests gate's deadline reads. Defaults to `Date.now`. */
+  now?: () => number;
   /** Teardown timings, for both live cancellation and startup recovery. */
   teardown?: CheckGroupTeardownOptions;
   /**
@@ -241,6 +243,7 @@ export class CheckRuntime {
   private readonly supervise: typeof runSupervisedCheck;
   private readonly platform: () => CheckRuntimeSupport;
   private readonly timeoutMs: number | undefined;
+  private readonly now: (() => number) | undefined;
   private readonly teardown: CheckGroupTeardownOptions | undefined;
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
   private readonly testPolicy: () => CheckTestPolicy;
@@ -268,6 +271,7 @@ export class CheckRuntime {
     this.supervise = deps.supervise ?? runSupervisedCheck;
     this.platform = deps.platform ?? checkRuntimeSupport;
     this.timeoutMs = deps.timeoutMs;
+    this.now = deps.now;
     this.teardown = deps.teardown;
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
     this.testPolicy = deps.testPolicy ?? (() => NO_TEST_POLICY);
@@ -451,6 +455,7 @@ export class CheckRuntime {
     const spawn = (
       command: readonly string[],
       workingSubpath: string = request.workingSubpath,
+      spawnTimeoutMs: number = timeoutMs,
     ): Promise<CheckSpawnOutcome> =>
       this.supervise(
         {
@@ -462,7 +467,7 @@ export class CheckRuntime {
           // unrelated checkout and report the answer as if it were about this submission.
           leasePath,
           workingSubpath,
-          timeoutMs,
+          timeoutMs: spawnTimeoutMs,
           extraEnv,
         },
         {
@@ -474,9 +479,15 @@ export class CheckRuntime {
     try {
       // An affected-tests run spawns twice per partition at most - its files, then its failed files
       // once more - one partition after another, each in its own subdirectory, all under this one
-      // worktree lease and this one test lease.
+      // worktree lease and this one test lease. The lease is already held here, so the gate's
+      // deadline counts from its grant.
       outcome = affected
-        ? await runAffectedTests(affected.ctx, affected.plan, (argv, workingSubpath) => spawn(argv, workingSubpath))
+        ? await runAffectedTests(
+          affected.ctx,
+          affected.plan,
+          (argv, workingSubpath, spawnTimeoutMs) => spawn(argv, workingSubpath, spawnTimeoutMs),
+          { timeoutMs, ...(this.now ? { now: this.now } : {}) },
+        )
         : await spawn(request.command);
     } catch (err) {
       // The supervisor is written not to throw, and a lease outliving one that did would be a
