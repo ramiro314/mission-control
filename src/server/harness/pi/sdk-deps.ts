@@ -1,6 +1,7 @@
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   AgentSessionEvent,
+  BashSpawnHook,
   ExtensionUIContext,
   CreateAgentSessionFromServicesOptions,
   PromptOptions,
@@ -13,6 +14,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { sessionScope, type CommandScopes, type SessionScope } from "../../platform/session-scope.ts";
+import { shellCommand } from "../../terminal/shell.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import { PiSdkError, redact } from "./sdk-errors.ts";
 import type { PiHostUI } from "./sdk-ui.ts";
@@ -413,8 +416,12 @@ function projectRuntime(runtime: AgentSessionRuntime, models: () => ModelRuntime
 export async function createRuntime(
   pi: typeof import("@earendil-works/pi-coding-agent"),
   options: PiRuntimeOptions,
+  scope: SessionScope = sessionScope,
 ): Promise<PiRuntime> {
   const agentDir = pi.getAgentDir();
+  // Minted once per launch rather than per factory invocation, so a clear keeps counting this
+  // launch's commands and a resumed session's commands never reuse a previous run's names.
+  const commandScopes = scope.commands(options.sessionLabel ?? "session");
   // Held so the projection above can reach the CURRENT services' model runtime after a
   // clear replaces them, rather than closing over the one this launch happened to build.
   let services: AgentSessionServices | null = null;
@@ -443,6 +450,9 @@ export async function createRuntime(
     });
     options.signal?.throwIfAborted();
     const model = options.model ? await requireModel(created.modelRuntime, options.model) : undefined;
+    // The bash tool's hook wraps synchronously, so the probe deciding what it may use is
+    // awaited before the tool exists.
+    await scope.ready();
     const session = await pi.createAgentSessionFromServices({
       services: created,
       sessionManager: target.sessionManager,
@@ -461,10 +471,8 @@ export async function createRuntime(
         // contravariant in exactly that schema. Pi's own tool factory produces the value
         // this field is for; nothing here is asserting a shape we invented.
         pi.createBashToolDefinition(target.cwd, {
-          spawnHook: (context) => ({
-            ...context,
-            env: { ...options.toolEnv, ...piVariables(context.env) },
-          }),
+          shellPath: PI_SHELL_PATH,
+          spawnHook: bashSpawnHook(() => pi.getShellConfig(PI_SHELL_PATH), commandScopes, options.toolEnv),
         }) as unknown as NonNullable<CreateAgentSessionFromServicesOptions["customTools"]>[number],
       ],
     });
@@ -490,6 +498,51 @@ export async function createRuntime(
     if (!services) throw new PiSdkError("provider-error", "this Pi session has no model runtime");
     return services.modelRuntime;
   });
+}
+
+/** The `shellPath` Mission Control passes Pi's bash tool: none, so Pi resolves its own shell. */
+const PI_SHELL_PATH: string | undefined = undefined;
+
+/** Pi's `getShellConfig` result: the shell its bash tool spawns, and how it hands over the command. */
+type PiShellConfig = ReturnType<typeof import("@earendil-works/pi-coding-agent")["getShellConfig"]>;
+
+/**
+ * The bash tool's spawn hook: Mission Control's own environment, and each command in a session
+ * scope of its own.
+ *
+ * Pi spawns `<shell> <args> <command>` itself, so the hook cannot change the argv, only the
+ * command. It rewrites that to `exec <systemd-run ...> -- <choom -n 500> -- <shell> <args>
+ * '<command>'`: the outer shell Pi spawned execs straight into the scope, keeping its pid and
+ * process group for Pi's tree kill, and the command runs inside under exactly the shell Pi
+ * would have used. `shell` must be Pi's `getShellConfig` for the `shellPath` the tool was
+ * built with, read per command as Pi itself reads it.
+ *
+ * Left unwrapped: a shell config Pi cannot resolve (Pi refuses the command itself), one that
+ * hands the command over stdin rather than as an argument, and a command `wrap` would not
+ * change (no Linux, or the test runner).
+ */
+export function bashSpawnHook(
+  shell: () => PiShellConfig,
+  wrap: CommandScopes,
+  toolEnv: Record<string, string>,
+): BashSpawnHook {
+  return (context) => {
+    const env = { ...toolEnv, ...piVariables(context.env) };
+    return { ...context, command: scopedCommand(context.command, env, shell, wrap), env };
+  };
+}
+
+function scopedCommand(command: string, env: NodeJS.ProcessEnv, shell: () => PiShellConfig, wrap: CommandScopes): string {
+  let config: PiShellConfig;
+  try {
+    config = shell();
+  } catch {
+    return command;
+  }
+  if (config.commandTransport === "stdin") return command;
+  const wrapped = wrap(config.shell, [...config.args, command], env);
+  if (wrapped.bin === config.shell && wrapped.unit === null) return command;
+  return `exec ${shellCommand([wrapped.bin, ...wrapped.args])}`;
 }
 
 /**

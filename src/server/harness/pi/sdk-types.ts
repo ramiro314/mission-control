@@ -185,6 +185,11 @@ export interface PiRuntimeOptions {
    * is that isolation moved to the only place Pi offers one.
    */
   toolEnv: Record<string, string>;
+  /**
+   * The Mission Control session id, naming the systemd scope each bash-tool command runs in
+   * on Linux (`platform/session-scope.ts`). Absent, the scopes are named `session`.
+   */
+  sessionLabel?: string;
 }
 
 /** Everything the Pi driver reaches for outside itself. Tests replace the whole object. */

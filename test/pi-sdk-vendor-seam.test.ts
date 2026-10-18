@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The one file that touches the REAL `@earendil-works/pi-coding-agent`.
+// The one file that drives the REAL `@earendil-works/pi-coding-agent`'s projection.
+// (`session-scope-linux.test.ts` also runs its bash tool, against real systemd.)
 //
 // Every other Pi test replaces this module, which is the design - it is what lets the
 // adapter's event normalization and turn accounting be driven with no Pi installed. The
@@ -328,4 +329,70 @@ test("the bash tool's environment admits Pi's five session variables and nothing
     delete process.env[decoy];
     delete process.env.PI_SESSION_ID;
   }
+});
+
+test("a scoped bash command runs through Pi's own shell intact, bash-only constructs included", { skip: process.platform === "win32" }, async () => {
+  // Pi's real bash tool and real `getShellConfig`, with `systemd-run` and `choom` replaced by
+  // pass-through fakes that exec what follows their `--`, as both real ones do. The rewritten
+  // command therefore runs exactly as it would inside a scope.
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const { createSessionScope } = await import("../src/server/platform/session-scope.ts");
+  const { bashSpawnHook } = await import("../src/server/harness/pi/sdk-deps.ts");
+  const { shellWords } = await import("../src/server/terminal/shell.ts");
+  const { linuxScopeDeps, passThrough, MANAGER_ENV } = await import("./helpers/fake-session-scope.ts");
+  const { readFileSync } = await import("node:fs");
+  const cwd = checkout("bash-scope");
+  const fakes = join(home, "scope-fakes");
+  mkdirSync(fakes, { recursive: true });
+  const systemdRun = passThrough(fakes, "systemd-run");
+  const choom = passThrough(fakes, "choom");
+  const scope = createSessionScope(linuxScopeDeps({ systemdRun: () => systemdRun, choom: () => choom }));
+  await scope.ready();
+
+  const shell = pi.getShellConfig(undefined);
+  let rewritten = "";
+  const hook = bashSpawnHook(() => pi.getShellConfig(undefined), scope.commands("sdk:pi-vendor"), {
+    PATH: process.env.PATH ?? "",
+    ...MANAGER_ENV,
+  });
+  const tool = pi.createBashToolDefinition(cwd, {
+    spawnHook: (context) => {
+      const out = hook(context);
+      rewritten = out.command;
+      return out;
+    },
+  });
+  const command = [
+    "set -o pipefail",
+    "words=(one \"two words\" 'three $x')",
+    "[[ ${#words[@]} -eq 3 ]] && echo \"count=${#words[@]}\"",
+    "printf '%s|' \"${words[@]}\"; echo",
+    "echo 'single $HOME' \"double \\\"q\\\"\"",
+    "cat <(printf 'from process substitution\\n')",
+    "false | true; echo \"pipefail=$?\"",
+  ].join("\n");
+  const result = (await (tool.execute as unknown as BashExecute)("call-1", { command })) as {
+    structuredContent: { output: string; exit_code: number };
+  };
+
+  assert.equal(result.structuredContent.exit_code, 0, result.structuredContent.output);
+  assert.equal(
+    result.structuredContent.output,
+    [
+      "count=3",
+      "one|two words|three $x|",
+      "single $HOME double \"q\"",
+      "from process substitution",
+      "pipefail=1",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(readFileSync(join(fakes, "calls"), "utf8").trim().split("\n"), ["systemd-run", "choom"]);
+
+  // The inner shell is exactly Pi's, by the path Pi resolved, and the command crosses verbatim.
+  const words = shellWords(rewritten);
+  assert.deepEqual(words.slice(0, 2), ["exec", systemdRun]);
+  assert.ok(words.includes("--collect"));
+  assert.ok(words.some((word) => /^--unit=mission-control-[0-9a-f]{8}-pi-vendor-n\d+-1$/.test(word)), rewritten);
+  assert.deepEqual(words.slice(words.indexOf(choom)), [choom, "-n", "500", "--", shell.shell, ...shell.args, command]);
 });

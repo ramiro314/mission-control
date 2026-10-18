@@ -53,6 +53,7 @@ function fakeScope(unit: string | null, verdict: SessionScopeOutcome | null = { 
       calls.outcomes.push(read);
       return verdict;
     },
+    commands: () => (bin, args) => ({ bin, args: [...args], unit: null }),
   };
   return { scope, calls };
 }
