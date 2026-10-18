@@ -174,6 +174,12 @@ test("a launch hands Pi's in-process shell tools Mission Control's isolated envi
   assert.equal(sdk.created[0]!.toolEnv.MISSION_HOME, "/tmp/disposable-state");
 });
 
+test("a launch names its bash commands' scopes after the Mission Control session id", async () => {
+  // `createRuntime` names every command scope `<instance>-<session>-<nonce>-<n>` from this.
+  const { sdk } = await launch({ sessionId: "sdk:pi-labelled" });
+  assert.equal(sdk.created[0]!.sessionLabel, "sdk:pi-labelled");
+});
+
 test("a refused turn one fails the launch and disposes the runtime it created", async () => {
   const sdk = new FakePiSdk();
   sdk.runtime.session.refusal = new Error("ExpiredToken: the security token has expired");
@@ -887,6 +893,17 @@ test("a stdin-transport shell config, or one Pi cannot resolve, leaves the comma
   const missing = bashSpawnHook(() => { throw new Error("Custom shell path not found"); }, counting, { ...MANAGER_ENV });
   assert.equal(missing({ command: "echo 'x'", cwd: "/w", env: {} }).command, "echo 'x'");
   assert.deepEqual(wraps, [], "neither config reached the scope");
+});
+
+test("Linux without systemd-run still runs the bash command under choom, with no scope", async () => {
+  const scope = createSessionScope(linuxScopeDeps({ systemdRun: () => null }));
+  await scope.ready();
+  const hook = bashSpawnHook(() => ({ shell: "/bin/bash", args: ["-c"] }), scope.commands("sdk:pi-1"), { ...MANAGER_ENV });
+  const command = "echo \"$HOME\" 'a b'";
+  assert.equal(
+    hook({ command, cwd: "/w", env: {} }).command,
+    `exec '/usr/bin/choom' '-n' '500' '--' '/bin/bash' '-c' 'echo "$HOME" '"'"'a b'"'"''`,
+  );
 });
 
 test("off Linux the bash command is left exactly as Pi composed it", async () => {
