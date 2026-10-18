@@ -179,8 +179,9 @@ An agent session can propose a document for its own task's repository with the
   the [attention inbox](attention-and-alerts.md#attention-inbox-one-place-to-drain-what-needs-you).
   **Review proposal** on either opens the import preview with the repository and the document
   fixed, computed against what is stored now. **Apply** writes it exactly as an import would and
-  clears the proposal. **Dismiss proposal** clears it and writes nothing. **Later** closes the
-  preview and leaves it pending.
+  clears the proposal in the same transaction, so the rows and the clear land together or not at
+  all. **Dismiss proposal** clears it and writes nothing. **Later** closes the preview and leaves
+  it pending.
 - **A replaced proposal stays reviewable.** If a newer proposal arrives while you review the older
   one, the preview says so. Applying the older one still writes what you reviewed, and the newer
   one stays pending.

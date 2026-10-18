@@ -4,7 +4,8 @@ import {
   type CommandDocument,
   type CommandDocumentProposal,
 } from "@shared/command-document.ts";
-import { taskRepoRefs } from "@shared/task-repos.ts";
+import { archiveRepoSlot } from "@shared/archives.ts";
+import { taskRepoRefs, type TaskRepoRef } from "@shared/task-repos.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { realpathOr } from "./util/repo-doc.ts";
 import type { WorkflowStore } from "./workflows/store.ts";
@@ -25,11 +26,14 @@ import type { WorkflowStore } from "./workflows/store.ts";
 /** The Mission MCP tool an agent session proposes a Command document with. */
 export const PROPOSE_COMMAND_DOCUMENT_TOOL = "propose_command_document" as const;
 
-/** A repository slot as the task's repository manifest issues it: `repo-01` is the primary. */
-const REPOSITORY_SLOT = /^repo-(\d{2})$/;
-
-function repositorySlot(position: number): string {
-  return `repo-${String(position + 1).padStart(2, "0")}`;
+/**
+ * The slot the task's repository manifest issues for one of its repositories: `repo-01` for the
+ * primary. Formatted by `archiveRepoSlot`, the formatter `scoutRepoSlots` issues slots with, and
+ * used both to name slots and to resolve one, so the slot a refusal lists is always the slot that
+ * resolves to that repository.
+ */
+function repositorySlot(ref: TaskRepoRef): string {
+  return archiveRepoSlot(ref.position + 1);
 }
 
 export type ProposalRepositoryResult =
@@ -59,7 +63,7 @@ export function proposalRepository(
     };
   }
   const refs = taskRepoRefs(task);
-  const listed = refs.map((ref) => `${repositorySlot(ref.position)} (${ref.repoRoot})`).join(", ");
+  const listed = refs.map((ref) => `${repositorySlot(ref)} (${ref.repoRoot})`).join(", ");
   if (requested === undefined) {
     if (refs.length === 1) return { ok: true, repoRoot: refs[0]!.repoRoot };
     return {
@@ -68,17 +72,13 @@ export function proposalRepository(
       error: `This task has ${refs.length} repositories; name the one the document is for: ${listed}.`,
     };
   }
-  const slot = REPOSITORY_SLOT.exec(requested);
-  if (slot) {
-    const ref = refs[Number(slot[1]) - 1];
-    if (ref) return { ok: true, repoRoot: ref.repoRoot };
-  } else {
-    const wanted = realpath(requested);
-    for (const ref of refs) {
-      const spellings = [ref.repoRoot, ref.worktreePath].filter((path): path is string => path !== null);
-      if (spellings.some((path) => path === requested || realpath(path) === wanted)) {
-        return { ok: true, repoRoot: ref.repoRoot };
-      }
+  const bySlot = refs.find((ref) => repositorySlot(ref) === requested);
+  if (bySlot) return { ok: true, repoRoot: bySlot.repoRoot };
+  const wanted = realpath(requested);
+  for (const ref of refs) {
+    const spellings = [ref.repoRoot, ref.worktreePath].filter((path): path is string => path !== null);
+    if (spellings.some((path) => path === requested || realpath(path) === wanted)) {
+      return { ok: true, repoRoot: ref.repoRoot };
     }
   }
   return {
@@ -105,7 +105,11 @@ export type ProposeResult =
  */
 export class CommandDocumentProposals {
   constructor(
-    private readonly store: Pick<
+    /**
+     * The store connection proposals are written through. Public so a caller writing in a wider
+     * transaction (a Command document's apply) can check it is the connection that transaction is on.
+     */
+    readonly store: Pick<
       WorkflowStore,
       "listCommandDocumentProposals" | "replaceCommandDocumentProposal" | "deleteCommandDocumentProposal"
     >,
@@ -160,12 +164,23 @@ export class CommandDocumentProposals {
    * anything was cleared.
    */
   clear(repoRoot: string, id: string): boolean {
-    const cleared = this.store.deleteCommandDocumentProposal(repoRoot, id);
+    const cleared = this.clearInTransaction(repoRoot, id);
     if (cleared) this.publish();
     return cleared;
   }
 
-  private publish(): void {
+  /**
+   * `clear`'s write without its publish, for a caller that runs it inside a transaction it owns
+   * on this store's connection: applying a proposal's document clears the proposal in the
+   * document's own transaction. The set moved only if that transaction commits, so the caller
+   * calls `publish` after the commit, never before.
+   */
+  clearInTransaction(repoRoot: string, id: string): boolean {
+    return this.store.deleteCommandDocumentProposal(repoRoot, id);
+  }
+
+  /** Tell the registry what is stored now. */
+  publish(): void {
     this.publishSet(this.list());
   }
 }

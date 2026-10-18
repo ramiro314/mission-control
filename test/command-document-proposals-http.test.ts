@@ -68,7 +68,7 @@ function fixture() {
   });
   const post = (path: string, value: unknown, headers: Record<string, string> = {}) =>
     app.request(path, { method: "POST", headers: { ...HEADERS, ...headers }, body: JSON.stringify(value) });
-  return { registry, tasks, commands, testing, proposals, frames, post };
+  return { registry, store, tasks, commands, testing, proposals, frames, post };
 }
 
 let sessions = 0;
@@ -191,6 +191,104 @@ test("applying the reviewed proposal clears it; applying a replaced one leaves t
   assert.deepEqual(f.commands.get("test")!.overrides, [{ repoRoot: repo, command: ["yarn", "test"] }]);
   assert.equal(f.proposals.get(repo), null);
   assert.deepEqual(f.frames.at(-1), [], "the browser hears it is gone");
+});
+
+test("the proposal is cleared inside the document's transaction and published only after it commits", async () => {
+  const f = fixture();
+  const repo = repository();
+  const made = (await (await propose(f, { ...runningSession(f, repo), document: DOCUMENT })).json()) as CommandDocumentProposed;
+  const preview = (await (await f.post("/api/command-documents/preview", { repoRoot: repo, document: DOCUMENT })).json()) as CommandDocumentPreview;
+
+  const seen: Array<{ inTransaction: boolean; lintWritten: boolean; framesSoFar: number }> = [];
+  const remove = f.store.deleteCommandDocumentProposal.bind(f.store);
+  f.store.deleteCommandDocumentProposal = (repoRoot, id) => {
+    seen.push({
+      inTransaction: db.isTransaction,
+      // The document's own rows are already written, uncommitted, on the same connection.
+      lintWritten: f.store.getWorkflowCommand("lint")!.overrides.length === 1,
+      framesSoFar: f.frames.length,
+    });
+    return remove(repoRoot, id);
+  };
+  const framesBefore = f.frames.length;
+  const applied = await f.post("/api/command-documents/apply", {
+    repoRoot: repo,
+    document: DOCUMENT,
+    basis: preview.basis,
+    proposalId: made.proposal.id,
+  });
+  assert.equal(applied.status, 200);
+  assert.equal(((await applied.json()) as CommandDocumentApplied).proposalCleared, true);
+  assert.deepEqual(seen, [{ inTransaction: true, lintWritten: true, framesSoFar: framesBefore }],
+    "the clear runs once, in the transaction holding the document's rows, before anything is published");
+  assert.equal(f.frames.length, framesBefore + 1, "one frame, after the commit");
+  assert.deepEqual(f.frames.at(-1), []);
+});
+
+test("a document that changes nothing still clears its proposal in a transaction", async () => {
+  const f = fixture();
+  const repo = repository();
+  const session = runningSession(f, repo);
+  const first = (await (await propose(f, { ...session, document: DOCUMENT })).json()) as CommandDocumentProposed;
+  const preview = (await (await f.post("/api/command-documents/preview", { repoRoot: repo, document: DOCUMENT })).json()) as CommandDocumentPreview;
+  assert.equal((await f.post("/api/command-documents/apply", {
+    repoRoot: repo, document: DOCUMENT, basis: preview.basis, proposalId: first.proposal.id,
+  })).status, 200);
+
+  // The same document again, proposed after it was applied: nothing to write, but it still clears.
+  const again = (await (await propose(f, { ...session, document: DOCUMENT })).json()) as CommandDocumentProposed;
+  assert.equal(again.preview.commands.length + again.preview.testing.length, 0);
+  const inTransaction: boolean[] = [];
+  const remove = f.store.deleteCommandDocumentProposal.bind(f.store);
+  f.store.deleteCommandDocumentProposal = (repoRoot, id) => {
+    inTransaction.push(db.isTransaction);
+    return remove(repoRoot, id);
+  };
+  const noChange = await f.post("/api/command-documents/apply", {
+    repoRoot: repo, document: DOCUMENT, basis: again.preview.basis, proposalId: again.proposal.id,
+  });
+  assert.equal(noChange.status, 200);
+  assert.equal(((await noChange.json()) as CommandDocumentApplied).proposalCleared, true);
+  assert.deepEqual(inTransaction, [true]);
+  assert.equal(f.proposals.get(repo), null);
+});
+
+test("when clearing the proposal fails, the document's rows roll back and the proposal stays pending", async () => {
+  const f = fixture();
+  const repo = repository();
+  const made = (await (await propose(f, { ...runningSession(f, repo), document: DOCUMENT })).json()) as CommandDocumentProposed;
+  const preview = (await (await f.post("/api/command-documents/preview", { repoRoot: repo, document: DOCUMENT })).json()) as CommandDocumentPreview;
+  const lintBefore = f.commands.get("lint")!;
+  const framesBefore = f.frames.length;
+
+  f.store.deleteCommandDocumentProposal = () => {
+    throw new Error("disk I/O error");
+  };
+  const failed = await f.post("/api/command-documents/apply", {
+    repoRoot: repo,
+    document: DOCUMENT,
+    basis: preview.basis,
+    proposalId: made.proposal.id,
+  });
+  assert.equal(failed.status, 500, "the apply reports failure");
+  assert.equal(db.isTransaction, false, "the transaction was closed");
+  assert.deepEqual(f.store.getWorkflowCommand("lint")!.overrides, [], "the lint row was rolled back");
+  assert.equal(f.store.getWorkflowCommand("lint")!.revision, lintBefore.revision, "the slot did not move");
+  assert.deepEqual(f.testing.list(), [], "the testing row was rolled back");
+  assert.equal(f.proposals.get(repo)?.id, made.proposal.id, "the proposal is still pending");
+  assert.equal(f.frames.length, framesBefore, "nothing was published");
+
+  // The same preview applies cleanly once clearing works again: the failure left nothing stale.
+  delete (f.store as { deleteCommandDocumentProposal?: unknown }).deleteCommandDocumentProposal;
+  const retried = await f.post("/api/command-documents/apply", {
+    repoRoot: repo,
+    document: DOCUMENT,
+    basis: preview.basis,
+    proposalId: made.proposal.id,
+  });
+  assert.equal(retried.status, 200);
+  assert.equal(((await retried.json()) as CommandDocumentApplied).proposalCleared, true);
+  assert.equal(f.proposals.get(repo), null);
 });
 
 test("an apply that is refused leaves the proposal pending and writes nothing", async () => {

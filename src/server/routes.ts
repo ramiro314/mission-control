@@ -2668,6 +2668,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const commandDocuments = workflowCommands && testingSettings && workflowCommands.store === testingSettings.store
     ? new CommandDocuments(workflowCommands, testingSettings)
     : null;
+  // An apply clears the proposal it came from inside the document's transaction, which is only one
+  // transaction when the proposals are on the catalogs' connection; otherwise an apply leaves it.
+  const commandDocumentProposalsForApply = commandDocuments && commandDocumentProposals
+    && (commandDocumentProposals.store as unknown) === workflowCommands!.store
+    ? commandDocumentProposals
+    : null;
   const commandDocumentRepository = async (repoRoot: string) => {
     const resolved = await resolveTaskRepoRoot(repoRoot);
     return resolved.ok
@@ -2703,7 +2709,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!repository.ok) return c.json({ error: repository.error, code: repository.code }, 400);
     const document = CommandDocumentSchema.safeParse(parsed.data.document);
     if (!document.success) return commandDocumentRefusal(c, commandDocumentIssueLines(document.error));
-    const result = commandDocuments.apply(repository.repoRoot, document.data, parsed.data.basis);
+    // A preview opened from a pending proposal clears that proposal in the document's own
+    // transaction, and only that one: a newer proposal that replaced it during the review stays
+    // pending. The rows and the clear commit together or not at all, so a crash between them
+    // cannot leave an applied document pending for approval again; the set is published only
+    // once the transaction has committed.
+    const { proposalId } = parsed.data;
+    const proposals = proposalId !== undefined ? commandDocumentProposalsForApply : null;
+    let proposalCleared = false;
+    const result = commandDocuments.apply(
+      repository.repoRoot,
+      document.data,
+      parsed.data.basis,
+      Date.now(),
+      proposals ? () => { proposalCleared = proposals.clearInTransaction(repository.repoRoot, proposalId!); } : undefined,
+    );
     if (result.kind === "invalid") return commandDocumentRefusal(c, result.preview.problems, { preview: result.preview });
     if (result.kind === "stale") {
       return c.json({
@@ -2712,11 +2732,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         preview: result.preview,
       }, 409);
     }
-    // A preview opened from a pending proposal clears that proposal once it is applied, and only
-    // that one: a newer proposal that replaced it during the review stays pending.
-    const proposalCleared = parsed.data.proposalId !== undefined && commandDocumentProposals
-      ? commandDocumentProposals.clear(repository.repoRoot, parsed.data.proposalId)
-      : false;
+    if (proposalCleared) proposals!.publish();
     return c.json({
       repoRoot: repository.repoRoot,
       preview: result.preview,

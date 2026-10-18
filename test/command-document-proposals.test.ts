@@ -19,6 +19,7 @@ const { CommandDocumentProposals, proposalRepository, PROPOSE_COMMAND_DOCUMENT_T
 );
 const { captureSettingsCatalogs } = await import("../src/server/settings-backups/catalogs.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
+const { scoutRepoSlots } = await import("../src/server/scouts/repos.ts");
 
 type Task = import("../src/shared/types.ts").Task;
 type CommandDocument = import("../src/shared/command-document.ts").CommandDocument;
@@ -88,6 +89,25 @@ test("a task's own repositories are accepted by slot, main checkout, or the sess
   // A symlinked spelling of an owned repository is still that repository.
   const realpath = (path: string) => (path === "/link/lib" ? "/repos/lib" : path);
   assert.deepEqual(proposalRepository(owned, "/link/lib", realpath), { ok: true, repoRoot: "/repos/lib" });
+});
+
+test("every slot the task's repository manifest issues resolves to that slot's repository, and the refusal lists exactly those slots", () => {
+  const owned = task("/repos/app", [
+    { repoRoot: "/repos/lib", worktreePath: "/pool/lib-wt" },
+    { repoRoot: "/repos/docs", worktreePath: null },
+  ]);
+  // The issuer: the slots an agent is told about, in the order it is told them.
+  const issued = scoutRepoSlots(owned).map((entry) => entry.slot);
+  assert.deepEqual(issued, ["repo-01", "repo-02", "repo-03"]);
+  const roots = ["/repos/app", "/repos/lib", "/repos/docs"];
+  issued.forEach((slot, index) => {
+    assert.deepEqual(proposalRepository(owned, slot, identity), { ok: true, repoRoot: roots[index] }, `${slot} names ${roots[index]}`);
+  });
+  const refusal = proposalRepository(owned, "repo-04", identity);
+  assert.equal(refusal.ok, false);
+  const listed = [...(!refusal.ok ? refusal.error : "").matchAll(/(repo-\d+) \(([^)]+)\)/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(listed, issued.map((slot, index) => [slot, roots[index]]),
+    "the refusal names each issued slot with the repository that slot resolves to");
 });
 
 test("a multi-repository task must name which repository, rather than defaulting to the primary", () => {
