@@ -132,6 +132,11 @@ is open.
   argument and `{junit}` somewhere, exactly as the editor requires. A path listed twice in one slot,
   or twice under `testing`, is refused, and a slot that would end up with more than 200 overrides,
   counted across every repository, cannot be applied.
+- **A document is bounded.** Each slot's list holds at most 400 entries, twice the override cap,
+  because a document may remove as many rows as it sets, and `testing` holds at most 400 entries.
+  A 401st entry in either is refused with the rest of the document's problems. A preview or apply
+  request larger than 8 MiB is refused with `413` and `Command document is too large` before the
+  document is read; a real repository's document is a few kilobytes.
 
 **Import** takes a pasted document, or a `.json` file through **Upload .json**, and the repository
 it configures. **Preview** lists every add, change and removal, slot by slot and then for testing
