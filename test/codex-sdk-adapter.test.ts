@@ -1624,6 +1624,43 @@ test("the connection ending is an exit the supervisor can evict on", async () =>
   assert.equal(exited?.kind === "exited" && exited.resumable, true);
 });
 
+test("a connection whose server's scope was stopped for an OOM kill exits with that cause", async () => {
+  const server = new FakeServer(defaultReplies());
+  let asked = 0;
+  // The scope's verdict arrives after the frames end, as it does when the read polls systemd.
+  Object.assign(server, {
+    exitCause: async () => {
+      asked += 1;
+      await new Promise((r) => setTimeout(r, 20));
+      return { kind: "out_of_memory" as const, peakBytes: 1610612736 };
+    },
+  });
+  const { events, drained } = await launch(server);
+  await settle();
+  server.end();
+  await drained;
+  const exited = events.at(-1);
+  assert.equal(asked, 1);
+  assert.deepEqual(exited, {
+    kind: "exited",
+    reason: "the session ended",
+    resumable: true,
+    cause: { kind: "out_of_memory", peakBytes: 1610612736 },
+  });
+});
+
+test("a connection whose scope reports no cause exits without one", async () => {
+  const server = new FakeServer(defaultReplies());
+  Object.assign(server, { exitCause: async () => null });
+  const { events, drained } = await launch(server);
+  await settle();
+  server.end();
+  await drained;
+  const exited = events.at(-1);
+  assert.equal(exited?.kind, "exited");
+  assert.equal(exited && "cause" in exited, false);
+});
+
 test("a launch whose handshake fails throws and leaves no subprocess behind", async () => {
   const server = new FakeServer({});
   const spec = codexSdkSpec({ connect: async () => server });

@@ -923,8 +923,10 @@ Kill a session with <kbd>k</kbd>, close its terminal, or let the agent exit by i
 the task it was running **settles as soon as the session is evicted** - roughly eight
 seconds, the linger that stops one hiccuping `ps` sweep from burying a live agent. It reads
 according to the [merged-PR rule](inspector-and-shipping.md#when-a-tasks-pull-request-merges); without a recorded
-merge, it reads `failed`, with `the agent's session ended with no outcome recorded`. Either
-way, it drops out of every count that means "executing".
+merge, it reads `failed`, with `the agent's session ended with no outcome recorded`, or, when
+systemd stopped the session's scope for an OOM kill, with
+[`stopped: the session ran out of memory (peak N GB)`](troubleshooting.md#a-task-failed-with-stopped-the-session-ran-out-of-memory).
+Either way, it drops out of every count that means "executing".
 
 An unrequested exit retains the worktree, branch and terminal ownership. An accepted **Kill**
 also requests a conditional return: after the session has gone, every attached checkout must

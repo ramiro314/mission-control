@@ -17,6 +17,18 @@ then allows the linger window, and finally publishes `session_remove`. Consumers
 tasks, workflows, reviews, and drafts use that durable removal event to reconcile their
 own state. An exited process alone is not durable cleanup.
 
+<a id="exit-cause"></a>An SDK driver's `exited` event can carry a `cause`. Today the only one is
+`out_of_memory`, with the scope's peak, when systemd stopped the session's
+[scope](harnesses-and-terminals.md#agent-session-scopes) for an OOM kill. The driver awaits
+the scope's verdict, for at most 5 s, before it emits `exited`. `applyDriverEvent` hands the
+cause to `beginEviction`, which keeps it in a Registry map keyed by session id. It outlives the
+session row, because `session_remove` carries only the id and a task settles after the row is
+gone. `takeExitCause` returns it once. An entry nobody takes, from a session with no task, is
+dropped 60 s after `session_remove`. Neither `session_exit` nor `session_remove` changes shape,
+and the cause never reaches the browser except as the task's failure text. It is held in memory
+only, so a daemon restart inside the linger window loses it, and the task then reads "no outcome
+recorded".
+
 ## Ownership boundaries
 
 - The Registry owns live session state and the removal lifecycle.

@@ -1028,7 +1028,15 @@ export type SdkEvent =
    * decorates the card, which is the scalar this used to carry.
    */
   | { kind: "pr_created"; urls: string[] }
-  | { kind: "exited"; reason: string; resumable: boolean };
+  /**
+   * The driver is over. `cause` is set only when something outside the agent ended it: today,
+   * systemd stopping the session's scope for an OOM kill (`platform/session-scope.ts`). It
+   * rides `beginEviction` to the task's failure text and never reaches the wire.
+   */
+  | { kind: "exited"; reason: string; resumable: boolean; cause?: SdkExitCause };
+
+/** Why a driver's process was stopped from outside, when the spawn seam could tell. */
+export type SdkExitCause = { kind: "out_of_memory"; peakBytes: number | null };
 
 /**
  * Reading the agent's own permission-mode footer off a pane.

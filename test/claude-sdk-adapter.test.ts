@@ -1396,3 +1396,66 @@ test("the adapter refuses a duplicated question too, against its own request", a
     /answered twice/,
   );
 });
+
+test("once the stream has ended, a send waiting on the exit cause is refused rather than lost", async () => {
+  // The driver waits on its scope's verdict before `exited`, for up to 5 s. A turn accepted in
+  // that window would be reported delivered and then vanish with the session.
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  let release!: (cause: import("../src/server/harness/types.ts").SdkExitCause | null) => void;
+  let asked = false;
+  Object.assign(query, {
+    exitCause: () => {
+      asked = true;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  query.emit(INIT("agent-exit-window"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.end();
+  for (let i = 0; i < 20 && !asked; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(asked, "the driver is waiting on the exit cause");
+
+  await assert.rejects(handle.send({ text: "too late" }), /driver has stopped/);
+  await assert.rejects(handle.sendIfIdle({ text: "too late" }), /driver has stopped/);
+
+  release({ kind: "out_of_memory", peakBytes: 1610612736 });
+  const events = await collect(handle.events, (event) => event.kind === "exited");
+  assert.deepEqual(events.filter((event) => event.kind === "state"), [], "no turn was started");
+  assert.deepEqual(events.at(-1), {
+    kind: "exited",
+    reason: "the session ended",
+    resumable: true,
+    cause: { kind: "out_of_memory", peakBytes: 1610612736 },
+  });
+});
+
+test("a stop while the driver waits on the exit cause still ends with one exited, carrying the cause", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  let release!: (cause: import("../src/server/harness/types.ts").SdkExitCause | null) => void;
+  let asked = false;
+  Object.assign(query, {
+    exitCause: () => {
+      asked = true;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  query.emit(INIT("agent-exit-stop"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.end();
+  for (let i = 0; i < 20 && !asked; i++) await new Promise((resolve) => setImmediate(resolve));
+  await handle.stop();
+  release({ kind: "out_of_memory", peakBytes: null });
+  const events: SdkEvent[] = [];
+  for await (const event of handle.events) events.push(event);
+  assert.deepEqual(events.filter((event) => event.kind === "exited"), [
+    { kind: "exited", reason: "the session ended", resumable: true, cause: { kind: "out_of_memory", peakBytes: null } },
+  ]);
+});

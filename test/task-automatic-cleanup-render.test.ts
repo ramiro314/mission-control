@@ -173,3 +173,27 @@ test("an ordinary task says nothing about automatic cleanup", () => {
   ]);
   assert.ok(!html.includes("automatic cleanup"), "null is the ordinary case and it is silent");
 });
+
+test("a failed task's reason sits on its own full-width line, and a recorded outcome still wins", () => {
+  const html = panel([
+    mkTask({
+      id: "oom",
+      title: "Out of memory",
+      status: "failed",
+      error: "stopped: the session ran out of memory (peak 1.5 GB)",
+      completedAt: 5,
+    }),
+    mkTask({
+      id: "with-outcome",
+      title: "Failed with an outcome",
+      status: "failed",
+      outcome: "merged elsewhere",
+      error: "never shown beside an outcome",
+      completedAt: 6,
+    }),
+  ]);
+  assert.ok(html.includes(
+    '<div class="report-row-main report-row-failure"><span class="report-sub dim">stopped: the session ran out of memory (peak 1.5 GB)</span></div>',
+  ));
+  assert.ok(!html.includes("never shown beside an outcome"));
+});

@@ -13,6 +13,7 @@ import type {
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   SdkEvent,
+  SdkExitCause,
   SdkLaunchOptions,
   SdkSessionHandle,
   SdkSpec,
@@ -933,12 +934,18 @@ class ClaudeSdkSession implements SdkSessionHandle {
         // stop() recognizes queryEnded and still emits the terminal session event directly.
         this.queryEnded = true;
       } else {
-        this.finish(reason);
+        // The CLI's scope verdict, before `exited`: an OOM stop is the one ending this driver
+        // cannot see from the stream, and the task's failure text is where it is told.
+        // Stopped first, as the Codex driver does: a turn accepted during that wait would be
+        // reported delivered and then lost. `finish` still runs, since `query` is still set.
+        if (query.exitCause) this.stopped = true;
+        const cause = query.exitCause ? await query.exitCause() : null;
+        this.finish(reason, cause);
       }
     }
   }
 
-  private finish(reason: string): void {
+  private finish(reason: string, cause: SdkExitCause | null = null): void {
     if (this.stopped && this.query === null) return;
     this.stopped = true;
     this.query = null;
@@ -953,6 +960,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       kind: "exited",
       reason,
       resumable: this.agentSessionId !== null,
+      ...(cause ? { cause } : {}),
     });
     this.out.end();
   }

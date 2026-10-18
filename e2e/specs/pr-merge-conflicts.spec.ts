@@ -8,6 +8,11 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agents.ts";
+import {
+  recordNotifications,
+  recordedNotifications,
+  type RecordedNotification,
+} from "../fixtures/notifications.ts";
 
 /**
  * A pull request that conflicts with its base, as the PR chip shows it.
@@ -270,52 +275,8 @@ async function openForemanSettings(page: Page): Promise<Locator> {
   return popover;
 }
 
-const NOTIFICATIONS = "__e2eNotifications";
-
-interface RecordedNotification {
-  title: string;
-  body: string;
-  tag: string;
-}
-
-/**
- * Replace `window.Notification` with a recorder that reports permission granted.
- *
- * The log lives in `sessionStorage` so it outlasts the spec's reload: a recorder rebuilt
- * empty by every navigation could not tell "the reloaded page stayed quiet" from "it alerted
- * again". `alerts.notifications` ships off, so it is switched on here too.
- */
-async function recordNotifications(page: Page, daemon: DaemonHandle): Promise<void> {
-  await page.addInitScript((key) => {
-    class FakeNotification {
-      onclick: (() => void) | null = null;
-      static permission = "granted";
-      static requestPermission = async (): Promise<string> => "granted";
-      constructor(title: string, options?: { body?: string; tag?: string }) {
-        const log = JSON.parse(sessionStorage.getItem(key) ?? "[]") as RecordedNotification[];
-        log.push({ title, body: options?.body ?? "", tag: options?.tag ?? "" });
-        sessionStorage.setItem(key, JSON.stringify(log));
-      }
-      close(): void {}
-    }
-    (window as unknown as { Notification: unknown }).Notification = FakeNotification;
-  }, NOTIFICATIONS);
-  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ alerts: { notifications: true, sound: false } }),
-  });
-  expect(response.ok, "the daemon accepted the alert settings").toBe(true);
-  await page.reload();
-  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
-}
-
 async function prConflictNotifications(page: Page): Promise<RecordedNotification[]> {
-  const log = await page.evaluate(
-    (key) => JSON.parse(sessionStorage.getItem(key) ?? "[]") as RecordedNotification[],
-    NOTIFICATIONS,
-  );
-  return log.filter((n) => n.tag.startsWith("pr-conflict:"));
+  return (await recordedNotifications(page)).filter((n) => n.tag.startsWith("pr-conflict:"));
 }
 
 test("a conflict nothing is handling gets a Blocked pull requests row until it is mergeable", async ({

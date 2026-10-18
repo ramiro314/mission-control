@@ -373,6 +373,10 @@ systemd-run --user --scope --quiet
   systemd stopped it for an OOM kill, and runs `systemctl --user reset-failed` on it once systemd
   has finished stopping it. At startup the daemon resets this instance's failed
   `mission-control-<instance>-*.scope` units and never another daemon's.
+- The driver awaits that verdict before it reports the session gone, so an OOM-stopped session's
+  task fails with "stopped: the session ran out of memory (peak N GB)" and the task-failed alert
+  carries it ([exit cause](session-lifecycle.md#exit-cause),
+  [troubleshooting](troubleshooting.md#a-task-failed-with-stopped-the-session-ran-out-of-memory)).
 
 <a id="pi-command-scopes"></a>**Pi command scopes.** A managed Pi session's agent loop runs inside the daemon, so there
 is no agent process to wrap. Each command its bash tool runs gets a scope of its own instead.

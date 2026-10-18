@@ -131,6 +131,12 @@ const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2
  */
 const HOLD_FIRST_TURN = process.env.MC_E2E_HOLD_FIRST_TURN === "1";
 const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
+/**
+ * Ends the session the way an OOM kill does: the CLI is SIGKILLed mid-turn, with no result and
+ * no clean exit. What the session scope says about it comes from the fake `systemctl` a spec
+ * installs; this only has to die the way a killed process dies.
+ */
+const OOM_KILLED = "E2E_OOM_KILLED";
 const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
 const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
@@ -1317,6 +1323,7 @@ rl.on("line", (line) => {
       return;
     }
     appendTurn("user", prompt);
+    if (prompt.includes(OOM_KILLED)) process.kill(process.pid, "SIGKILL");
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;

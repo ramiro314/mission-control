@@ -229,3 +229,54 @@ test("a session that got no scope never reads an outcome on exit", { timeout: 15
   assert.deepEqual(outcomes, []);
   assert.deepEqual(lines, []);
 });
+
+/**
+ * Launch one fixture session through `scope`, SIGKILL its CLI the way the kernel's OOM killer
+ * would, and return the driver's `exited` event.
+ */
+async function exitAfterKill(t: import("node:test").TestContext, scope: SessionScope) {
+  const root = mkdtempSync(join(tmpdir(), "mission-sdk-oom-cause-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const executable = join(root, "fake-claude.mjs");
+  writeFileSync(executable, `
+import { createInterface } from "node:readline";
+const emit = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
+const lines = createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  const frame = JSON.parse(line);
+  if (frame.type === "control_request") emit({ type: "control_response", response: {
+    subtype: "success", request_id: frame.request_id, response: {}
+  } });
+  if (frame.type === "user") emit({ type: "system", subtype: "init", session_id: "oom-cause", model: "fake" });
+});
+`);
+  t.mock.method(console, "warn", () => {});
+  const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, query: createClaudeSdkQuery(scope),
+    executable: async () => executable, env: () => ({ PATH: process.env.PATH }) }).launch({
+    sessionId: "sdk:oom-cause", cwd: root, stateHome: root, prompt: "fixture only", model: null,
+    effort: null, permissionMode: null, mcp: null, extraDirs: [], standingInstructions: "",
+    standingInstructionsPrompt: "", resume: null });
+  for await (const event of handle.events) if (event.kind === "bound") break;
+  process.kill(handle.recoveryProcessId!, "SIGKILL");
+  for await (const event of handle.events) if (event.kind === "exited") return event;
+  throw new Error("the driver ended without an exited event");
+}
+
+test("a session whose scope was stopped for an OOM kill reports the cause on exited", { timeout: 15_000 }, async (t) => {
+  const { scope, outcomes } = verdictScope("mission-control-test-cause.scope", { oomKilled: true, peakBytes: 1610612736 });
+  const exited = await exitAfterKill(t, scope);
+  assert.deepEqual(outcomes, ["mission-control-test-cause.scope"], "the driver waited for the verdict");
+  assert.deepEqual(exited.cause, { kind: "out_of_memory", peakBytes: 1610612736 });
+});
+
+test("a killed session whose scope was not OOM-stopped, or that got no scope, reports no cause", { timeout: 15_000 }, async (t) => {
+  for (const [unit, verdict] of [
+    ["mission-control-test-clean.scope", { oomKilled: false, peakBytes: 100 }],
+    ["mission-control-test-unknown.scope", null],
+    [null, { oomKilled: true, peakBytes: 1 }],
+  ] as const) {
+    const { scope } = verdictScope(unit, verdict);
+    const exited = await exitAfterKill(t, scope);
+    assert.equal("cause" in exited, false, JSON.stringify({ unit, verdict }));
+  }
+});

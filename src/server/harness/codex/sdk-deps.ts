@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
-import { oomStopLine, sessionScope, type SessionScope } from "../../platform/session-scope.ts";
+import { sessionScope, watchScopeExit, type SessionScope } from "../../platform/session-scope.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
@@ -64,15 +64,10 @@ export function spawnAppServer(
     env,
     stdio: ["pipe", "pipe", "pipe"],
   });
-  if (session && unit) {
-    // Whatever the reason the server exited, its scope's verdict is read, so an OOM stop is
-    // logged and a failed scope is reset rather than left loaded until the next daemon start.
-    child.once("exit", () => {
-      void session.scope.outcome(unit).then((outcome) => {
-        if (outcome?.oomKilled) console.warn(oomStopLine(session.label, unit, outcome.peakBytes));
-      });
-    });
-  }
+  // Whatever the reason the server exited, its scope's verdict is read, so an OOM stop is
+  // logged and a failed scope is reset rather than left loaded until the next daemon start, and
+  // the driver can say why the session ended.
+  const exitCause = session ? watchScopeExit(child, session.scope, unit, session.label) : null;
   const failure: { error: Error | null } = { error: null };
   const fail = (err: Error): void => {
     failure.error ??= err;
@@ -87,6 +82,7 @@ export function spawnAppServer(
   child.stderr?.resume();
   return {
     pid: child.pid ?? null,
+    ...(exitCause ? { exitCause } : {}),
     send(frame) {
       if (!child.stdin || child.stdin.destroyed) {
         throw new Error("this session's app-server has closed its input");
