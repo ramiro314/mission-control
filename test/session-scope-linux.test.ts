@@ -226,7 +226,13 @@ test("Pi bash commands: each in its own collected scope at 500, an OOM stops tha
   assert.match(cgroup!, new RegExp(`${escaped}/mission-control-${instance}-pi-commands-[0-9a-f]{8}-1\\.scope$`));
   assert.equal(adj, "500");
 
-  const oom = await bash(`sleep 60 & ${HOG}; wait`);
+  // One process does all the allocating, so once the kernel kills it nothing else in the scope
+  // keeps charging memory. With `HOG`'s `head | tail`, `head` went on filling the pipe after
+  // `tail` was killed. When the OOM reaper was slow to free `tail`, that second allocation
+  // made the kernel pick the shell itself, a SIGKILL (137) that beat systemd's SIGTERM.
+  // The same 512 MB ceiling as `HOG`.
+  const hog = `'${process.execPath}' -e 'const a = []; for (let i = 0; i < 64; i++) a.push(Buffer.alloc(8 << 20, 1));'`;
+  const oom = await bash(`sleep 60 & ${hog}; wait`);
   assert.equal(oom.exit_code, 143, `the command was stopped by systemd's SIGTERM: ${JSON.stringify(oom)}`);
   // `--collect`: systemd unloads the failed scope itself, and the daemon never reads it back.
   await waitFor("the OOM-stopped command scope to be collected", async () => (await loadState(units[1]!)) === "not-found", 20_000);
