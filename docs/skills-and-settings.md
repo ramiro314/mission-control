@@ -120,13 +120,19 @@ has the task source recipe that feeds it. The procedure lives in
 The **Testing setup** row brings a repository into the flake-aware testing contract. It is what
 the **Set up testing** action on a Trust row starts, and that action **fails closed while it is
 switched off** - `POST /api/repositories/testing-setup` answers 409 with the sentence that names
-this toggle and creates no task. The agent audits the repository, proposes every change in one
+this toggle and creates no task. The action asks first whether the repository commits its
+testing settings or keeps them in Mission Control, and the task's intent names that mode. In
+**committed** mode the agent audits the repository, proposes every change in one
 `request_plan_decisions` form, applies only what was approved (one commit with the CI and
 test-script changes, the copied report action, `.mission/testing.json` and the `.gitignore`
 entry, plus the repository's `affected-tests` Command through `set_affected_tests_command`), and
 verifies with one local `affected-tests` run. The agent does not open the pull request: Foreman's
 wrap-up publishes the commit, and the "Flaky tests" check is then verified on that pull request's
-own CI. The [flaky tests guide](flaky-tests.md#setting-up-a-repository) has the details. The
+own CI. In **stored** mode, for a repository that will not commit a testing file, the agent
+changes no file: it proposes per-app `affected-tests` Commands and testing settings as one
+Command document with `propose_command_document`, which you apply from its preview in Library ›
+Commands, and verifies each template with a local run. The
+[flaky tests guide](flaky-tests.md#setting-up-a-repository) has the details. The
 procedure lives in [`skills/testing-setup/SKILL.md`](../skills/testing-setup/SKILL.md).
 
 The **Docs-only CI** row installs a docs-only gate in another GitHub Actions repository. It has
@@ -587,10 +593,13 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
   necessary for both and sufficient for neither.
-- **Set up testing** on a row starts the testing-setup task for that repository (see
+- **Set up testing** on a row opens a choice under it: **Commit a testing file** or **Store
+  settings in Mission Control**. Nothing is preselected, and **Start testing setup** starts the
+  testing-setup task in the mode you picked (see
   [Setting up a repository](flaky-tests.md#setting-up-a-repository)). Its answer, the refusal
   while the Testing setup skill is off or the task it started, appears under the row. It grants
-  nothing: the agent asks you to approve every change before making it.
+  nothing: a committed setup asks you to approve every change before making it, and a stored one
+  changes nothing until you apply its proposal.
 - **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
   first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
   off, one deliberate click each. A staged, ungranted repo is remembered per machine so it

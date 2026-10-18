@@ -90,6 +90,7 @@ lines.on("close", () => process.exit(0));
       outcomes.push(unit);
       return { oomKilled: false, peakBytes: null };
     },
+    commands: () => (bin, args) => ({ bin, args: [...args], unit: null }),
   };
   const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, query: createClaudeSdkQuery(scope),
     executable: async () => executable, env: () => ({ PATH: process.env.PATH }) }).launch({
@@ -129,6 +130,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     ready: async () => { used.push("ready"); },
     wrap: (bin, args) => { used.push("wrap"); return { bin, args: [...args], unit: null }; },
     outcome: async () => { used.push("outcome"); return null; },
+    commands: () => (bin, args) => ({ bin, args: [...args], unit: null }),
   };
   const abortController = new AbortController();
   const query = createClaudeSdkQuery(scope);
@@ -198,6 +200,7 @@ function verdictScope(unit: string | null, verdict: { oomKilled: boolean; peakBy
       outcomes.push(read);
       return verdict;
     },
+    commands: () => (bin, args) => ({ bin, args: [...args], unit: null }),
   };
   return { scope, outcomes };
 }

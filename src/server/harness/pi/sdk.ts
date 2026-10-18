@@ -653,6 +653,7 @@ export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
             signal,
             appendSystemPrompt: opts.standingInstructions ? [opts.standingInstructions] : [],
             toolEnv: deps.toolEnv(opts.cwd, opts.stateHome),
+            sessionLabel: opts.sessionId,
           });
         } catch (err) {
           throw classifyPiFailure(err, ref?.provider ?? null);
