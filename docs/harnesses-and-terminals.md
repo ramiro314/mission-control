@@ -382,8 +382,11 @@ with the same slice and properties as above. `<shell> <args>` is exactly what Pi
 on a normal Linux machine), never a substituted `/bin/sh`, and the command is single-quoted
 whole, so its quotes, `$` and newlines reach that shell unchanged. The nonce is minted once per
 session launch and `<n>` counts that launch's commands, so a resumed session never collides
-with a command scope a previous run left active. An OOM kill stops that command only: Pi sees
-it exit 143, and the session carries on. Command scopes are `--collect`, and the daemon never
+with a command scope a previous run left active. An OOM kill stops that command only, and the session carries on.
+Pi usually sees the command exit 143, from systemd's SIGTERM as it stops the scope. It sees 137
+when the kernel's OOM killer picks the shell itself before that SIGTERM arrives. Every process
+in the scope runs at the same `oom_score_adj`, so a command running several processes (a
+pipeline, a build with workers) can lose its shell to a second kill. Command scopes are `--collect`, and the daemon never
 reads them back, because Pi spawns the commands and the daemon never sees them exit; find an
 OOM with `journalctl --user -u 'mission-control-*'`. A shell config that hands the command over
 stdin (Pi uses one only for a legacy WSL bash on Windows) is left unwrapped.
