@@ -11,6 +11,7 @@ import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { fmtUsd } from "../lib/format.ts";
 import { RepositoryName } from "../components/RepositoryName.tsx";
+import { ClockText } from "../components/ClockText.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
 import {
@@ -281,7 +282,7 @@ export function EnsembleDetail({
         </div>
         <div>
           <dt>Elapsed</dt>
-          <dd>{fmtElapsed(run.createdAt, run.completedAt)}</dd>
+          <dd><ClockText read={(now) => fmtElapsed(run.createdAt, run.completedAt ?? now)} /></dd>
         </div>
         {budget && (
           <div>

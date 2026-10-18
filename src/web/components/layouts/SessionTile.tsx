@@ -4,7 +4,8 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
-import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
+import { repoLeaf, sessionTitleDetail } from "../../lib/format.ts";
+import { LastSeen } from "../ClockText.tsx";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
 import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
@@ -555,7 +556,7 @@ export function SessionTile({
           )}
           {shown("lastSeen") && (
             <span className="tile-seen">
-              {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+              <LastSeen lastActivity={session.lastActivity} startedAt={session.startedAt} />
             </span>
           )}
         </span>

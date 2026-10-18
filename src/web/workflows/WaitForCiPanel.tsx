@@ -1,6 +1,7 @@
 import type { WorkflowNodeAttempt } from "@shared/workflow.ts";
 import type { CiCheckRun } from "@shared/wait-for-ci.ts";
 import { FLAKY_TESTS_CHECK_NAME } from "@shared/flake-report.ts";
+import { ClockText } from "../components/ClockText.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { waitForCiHeadline, waitForCiStateOf } from "./run-model.ts";
 
@@ -18,7 +19,7 @@ const CHECK_STATE_WORDS: Record<CiCheckRun["state"], string> = {
  */
 export function WaitForCiPanel({
   attempt,
-  now = Date.now(),
+  now,
 }: {
   attempt: Pick<WorkflowNodeAttempt, "output">;
   now?: number;
@@ -31,7 +32,11 @@ export function WaitForCiPanel({
   const issues = new Map((state.flakeReport?.issues ?? []).map((issue) => [issue.key, issue]));
   return (
     <section className="wf-run-ci" aria-label="Wait for CI">
-      <p className="wf-run-ci-headline">{waitForCiHeadline(state, now)}</p>
+      <p className="wf-run-ci-headline">
+        {now === undefined
+          ? <ClockText read={(at) => waitForCiHeadline(state, at)} />
+          : waitForCiHeadline(state, now)}
+      </p>
       {state.pullRequestUrl && (
         <p className="wf-run-meta">
           <Tooltip label="Open the pull request on GitHub">

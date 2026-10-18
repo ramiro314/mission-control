@@ -3,6 +3,7 @@ import { wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupTrigger } from "@shared/queue.ts";
 import type { ForemanState } from "../useForeman.ts";
 import { api } from "../lib/api.ts";
+import { ClockText } from "./ClockText.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
 import { ForemanErrors } from "./ForemanErrors.tsx";
@@ -533,7 +534,7 @@ export function ForemanPopover({
             )}
             {planner.state === "degraded" && (
               <div className="foreman-planner-recovery">
-                <span>{plannerRetryCopy(planner.nextRetryAt)}</span>
+                <span><ClockText read={(now) => plannerRetryCopy(planner.nextRetryAt, now)} /></span>
                 <Tooltip label="Ask the dependency planner to try again immediately">
                   <button
                     type="button"

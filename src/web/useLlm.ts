@@ -3,6 +3,7 @@ import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
 import type { LlmStatus } from "@shared/types.ts";
 import type { PersonaDefaultsView } from "@shared/workflow.ts";
 import { api, fetchLlmConfig, fetchLlmStatus, fetchPersonaDefaults } from "./lib/api.ts";
+import { keepIfUnchanged } from "./lib/unchanged.ts";
 
 // The LLM config plus what the daemon resolved from it. Polled rather than streamed for
 // the same reason the Inspector's and Foreman's are: coarse, low-frequency control-panel
@@ -67,9 +68,9 @@ export function useLlm(): LlmState {
       // The status is raced by a write exactly as the config is - it is DERIVED from the
       // config a `PUT` may have just changed - so it takes the same guard rather than being
       // applied unconditionally like a read-only list would be.
-      if (s) setStatus(s);
-      if (defaults) setPersonaDefaults(defaults);
-      if (c) setConfig(c);
+      if (s) setStatus((prev) => keepIfUnchanged(prev, s));
+      if (defaults) setPersonaDefaults((prev) => keepIfUnchanged(prev, defaults));
+      if (c) setConfig(keepIfUnchanged(configRef.current, c));
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);

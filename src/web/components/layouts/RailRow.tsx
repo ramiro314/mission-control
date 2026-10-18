@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
-import { relativeTime, uptime } from "../../lib/format.ts";
+import { LastSeen } from "../ClockText.tsx";
 import { ariaKeyshortcuts } from "../../lib/keybindings.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
@@ -222,7 +222,7 @@ export function RailRow({
               }
             />
             <span className="rail-seen">
-              {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+              <LastSeen lastActivity={session.lastActivity} startedAt={session.startedAt} />
             </span>
           </span>
         </span>

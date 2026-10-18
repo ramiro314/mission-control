@@ -2,7 +2,7 @@ import { Markdown } from "./Markdown.tsx";
 import type { ForemanEpisode, NoteDisposition } from "@shared/types.ts";
 import { episodeOutcome } from "@shared/foreman.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
-import { relativeTime } from "../lib/format.ts";
+import { RelativeTime } from "./ClockText.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 
 // One recorded Foreman decision, rendered whole: what it concluded, and - on the
@@ -75,7 +75,7 @@ export function ForemanEpisodeCard({
         {absoluteTime ? (
           <ConversationTimestamp at={e.createdAt} className="fe-time dim" />
         ) : (
-          e.createdAt > 0 && <span className="fe-time dim">{relativeTime(e.createdAt)}</span>
+          e.createdAt > 0 && <span className="fe-time dim"><RelativeTime at={e.createdAt} /></span>
         )}
       </header>
 
@@ -212,7 +212,7 @@ function EpisodeResolution({ episode }: { episode: ForemanEpisode }): React.JSX.
       <div className="fe-resolution">
         <span className="fe-res-who">
           {who}
-          {resolvedAt ? ` · ${relativeTime(resolvedAt)}` : ""}
+          {resolvedAt ? <> · <RelativeTime at={resolvedAt} /></> : ""}
         </span>
         {sentOption && (
           <p className="fe-res-option">

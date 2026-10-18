@@ -24,7 +24,8 @@ import {
   type BacklogTrustView,
 } from "../../lib/backlog-copy.ts";
 import type { ColumnWidth } from "../../lib/column-width.ts";
-import { relativeTime, stateDisplay } from "../../lib/format.ts";
+import { stateDisplay } from "../../lib/format.ts";
+import { RelativeTime } from "../ClockText.tsx";
 import { boxFrom, boxesOverlap, rangeBetween, toggled } from "../../lib/backlog-selection.ts";
 import { BacklogBulkEditModal } from "../BacklogBulkEditModal.tsx";
 import {
@@ -1059,7 +1060,7 @@ function BacklogCard({
             <span className="bl-base">base {task.baseBranch}</span>
           </Tooltip>
         )}
-        <span className="bl-added">{relativeTime(task.createdAt)}</span>
+        <span className="bl-added"><RelativeTime at={task.createdAt} /></span>
       </span>
       {/* One notification slot beneath metadata. A persisted launch error is the strongest
           explanation; otherwise live autopilot can name a missing repository grant here. */}

@@ -6,7 +6,7 @@ import { askPreview } from "@shared/foreman-ask.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
-import { relativeTime } from "../lib/format.ts";
+import { RelativeTime } from "./ClockText.tsx";
 
 // Everything Foreman has decided on this session, with the context that produced it.
 //
@@ -255,7 +255,7 @@ function EpisodeRow({
       <span className="fd-row-top">
         <span className="fd-row-state">{answeredBy}</span>
         {episode.createdAt > 0 && (
-          <span className="fd-row-when dim">{relativeTime(episode.createdAt)}</span>
+          <span className="fd-row-when dim"><RelativeTime at={episode.createdAt} /></span>
         )}
       </span>
       <span className="fd-row-q">{askPreview(episode)}</span>

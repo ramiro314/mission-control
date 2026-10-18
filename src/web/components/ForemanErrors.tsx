@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FOREMAN_HEALTH_LABELS } from "@shared/foreman-health.ts";
 import type { ForemanHealthIssue, ForemanHealthStatus } from "@shared/foreman-health.ts";
-import { relativeTime } from "../lib/format.ts";
+import { RelativeTime } from "./ClockText.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 export function ForemanErrors({ health, running, enabled, onOpenModels }: {
@@ -65,11 +65,11 @@ function Issue({ issue, onOpenModels }: { issue: ForemanHealthIssue; onOpenModel
       </div>
       <p className="foreman-errors-hint">
         <Tooltip label={`First seen at ${new Date(issue.firstSeenAt).toLocaleString()}`}>
-          <span>First seen {relativeTime(issue.firstSeenAt)}</span>
+          <span>First seen <RelativeTime at={issue.firstSeenAt} /></span>
         </Tooltip>
         {" · "}
         <Tooltip label={`Last seen at ${new Date(issue.lastSeenAt).toLocaleString()}`}>
-          <span>Last seen {relativeTime(issue.lastSeenAt)}</span>
+          <span>Last seen <RelativeTime at={issue.lastSeenAt} /></span>
         </Tooltip>
       </p>
       {issue.sessions.length > 0 && (

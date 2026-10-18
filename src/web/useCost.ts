@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
 import { api, fetchCostConfig } from "./lib/api.ts";
+import { keepIfUnchanged } from "./lib/unchanged.ts";
 
 // Cost telemetry config for the Cost settings panel and the topbar strip.
 //
@@ -50,7 +51,7 @@ export function useCost(): CostState {
     let alive = true;
     const tick = async (): Promise<void> => {
       const s = await fetchCostConfig();
-      if (alive && s) setStatus(s);
+      if (alive && s) setStatus(keepIfUnchanged(statusRef.current, s));
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
