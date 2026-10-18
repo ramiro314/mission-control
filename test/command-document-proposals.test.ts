@@ -156,6 +156,38 @@ test("a stored proposal survives a restart: a new owner publishes what is stored
   assert.deepEqual(published, [[proposals.get("/repos/app")]]);
 });
 
+test("an unreadable stored proposal is skipped and diagnosed, the readable ones still listed, and a new proposal repairs it", (t) => {
+  const { proposals } = owner();
+  const good = proposals.propose("/repos/good", LINT, ORIGIN);
+  assert.ok(good.ok);
+  const insert = db.prepare(
+    `INSERT INTO command_document_proposals
+       (repo_root, id, document_json, task_id, task_title, session_id, session_name, proposed_at)
+     VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+  );
+  // Each way a row can stop being a proposal: not JSON, JSON that is not a Command document,
+  // a document past the proposal bound, and a row whose own columns have the wrong shape.
+  insert.run("/repos/not-json", "bad-1", "{not json", 1);
+  insert.run("/repos/not-a-document", "bad-2", JSON.stringify({ version: 1, maxRuns: 3 }), 1);
+  insert.run("/repos/oversized", "bad-3", JSON.stringify({ version: 1, padding: "x".repeat(300 * 1024) }), 1);
+  insert.run("/repos/bad-shape", "bad-4", JSON.stringify(LINT), "yesterday");
+
+  const errors = t.mock.method(console, "error", () => undefined);
+  const listed = proposals.list();
+  const lines = errors.mock.calls.map((call) => String(call.arguments[0]));
+  const malformed = lines.filter((line) => /malformed_durable_row/.test(line) && /command_document_proposals/.test(line));
+  assert.equal(malformed.length, 4, `one read diagnoses each unreadable row once: ${lines.join(" | ")}`);
+  assert.deepEqual(listed.map((entry) => entry.repoRoot), ["/repos/good"], "only the readable proposal is listed");
+  assert.equal(proposals.get("/repos/not-json"), null, "an unreadable row offers no preview at all");
+  errors.mock.restore();
+
+  // The next proposal for that repository replaces the unreadable row.
+  const repaired = proposals.propose("/repos/not-json", TEST, ORIGIN);
+  assert.ok(repaired.ok);
+  assert.equal(repaired.replaced, "bad-1");
+  assert.deepEqual(proposals.get("/repos/not-json")?.document, TEST);
+});
+
 test("a document over the proposal bound is refused and nothing is stored", () => {
   const { proposals } = owner();
   const huge: CommandDocument = {

@@ -193,6 +193,47 @@ test("applying the reviewed proposal clears it; applying a replaced one leaves t
   assert.deepEqual(f.frames.at(-1), [], "the browser hears it is gone");
 });
 
+test("an apply that is refused leaves the proposal pending and writes nothing", async () => {
+  const f = fixture();
+  const repo = repository();
+  const made = (await (await propose(f, { ...runningSession(f, repo), document: DOCUMENT })).json()) as CommandDocumentProposed;
+  const preview = (await (await f.post("/api/command-documents/preview", { repoRoot: repo, document: DOCUMENT })).json()) as CommandDocumentPreview;
+
+  // Another window saves the lint slot after the preview was computed, so its basis is stale.
+  const lint = f.commands.get("lint")!;
+  const other = { repoRoot: `${repo}/apps/web`, command: ["pnpm", "lint"] };
+  assert.equal(f.commands.replace("lint", {
+    expectedRevision: lint.revision,
+    defaultCommand: lint.defaultCommand,
+    maxRuns: lint.maxRuns,
+    overrides: [other],
+  }).ok, true);
+  const framesBefore = f.frames.length;
+
+  const stale = await f.post("/api/command-documents/apply", {
+    repoRoot: repo,
+    document: DOCUMENT,
+    basis: preview.basis,
+    proposalId: made.proposal.id,
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(((await stale.json()) as { code: string }).code, "command_document_stale");
+  assert.equal(f.proposals.get(repo)?.id, made.proposal.id, "a stale apply keeps the proposal pending");
+  assert.deepEqual(f.commands.get("lint")!.overrides, [other], "only the other window's save is stored");
+  assert.deepEqual(f.testing.list(), [], "no testing settings row was written");
+
+  // An invalid document, refused before anything is read, keeps it pending too.
+  const invalid = await f.post("/api/command-documents/apply", {
+    repoRoot: repo,
+    document: { version: 1, commands: { lint: [{ path: "/absolute", argv: ["x"] }] } },
+    basis: preview.basis,
+    proposalId: made.proposal.id,
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(f.proposals.get(repo)?.id, made.proposal.id, "a refused apply keeps the proposal pending");
+  assert.equal(f.frames.length, framesBefore, "no proposals frame: the set did not move");
+});
+
 test("dismissing clears the proposal and writes nothing; a second dismissal is a 404", async () => {
   const f = fixture();
   const repo = repository();

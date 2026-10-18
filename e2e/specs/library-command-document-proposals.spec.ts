@@ -170,3 +170,48 @@ test("a proposed Command document reaches the inbox and Library › Commands, an
     await expect(inbox.getByRole("heading", { name: "Proposed Command documents" })).toHaveCount(0);
   }
 });
+
+test("a proposal replaced while its preview is open says so, still applies what was reviewed, and leaves the newer one pending", async ({
+  dashboard,
+  daemon,
+}) => {
+  mkdirSync(join(daemon.repo, "apps", "web"), { recursive: true });
+  await dispatch(dashboard, daemon);
+  const reviewed = await propose(daemon, DOCUMENT);
+  const repoRoot = reviewed.proposal.repoRoot;
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/lint`);
+  const banner = dashboard.getByRole("listitem", { name: `Proposed Command document for ${repoRoot}` });
+  await banner.getByRole("button", { name: "Review proposal" }).click();
+  const review = dashboard.getByRole("dialog", { name: "Review a proposed Command document" });
+  await expect(review.getByRole("region", { name: "Preview" })).toContainText("2 to add");
+  const notice = review.getByRole("status").filter({ hasText: "no longer the repository's pending one" });
+  await expect(notice).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Dismiss proposal" })).toBeEnabled();
+
+  // The agent proposes again while the operator is reviewing the first document.
+  const newer = await propose(daemon, { version: 1, commands: { test: [{ path: "", argv: ["yarn", "test"] }] } });
+  expect(newer.replaced).toBe(reviewed.proposal.id);
+
+  // The open preview stays on what the operator was reading, and says it has been replaced.
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Applying it still writes exactly what this preview lists.");
+  await expect(review.getByRole("button", { name: "Dismiss proposal" })).toBeDisabled();
+  await expect(review.getByRole("list", { name: "lint changes" })).toContainText("Add apps/web yarn workspace web lint");
+  await shoot(dashboard, "replaced-while-reviewing");
+
+  // Applying writes the reviewed document, not the newer one, and the newer one stays pending.
+  await review.getByRole("button", { name: "Apply 2 changes" }).click();
+  await expect(review).toBeHidden();
+  await expect(dashboard.getByRole("status").filter({ hasText: `Applied 2 changes to ${repoRoot}.` })).toBeVisible();
+  expect(await lintOverrides(daemon)).toEqual([{ repoRoot: `${repoRoot}/apps/web`, command: ["yarn", "workspace", "web", "lint"] }]);
+  const testSlot = (await (await fetch(`${daemon.baseURL}/api/workflow-commands/test`)).json()) as CommandView;
+  expect(testSlot.overrides, "the newer proposal was not applied").toEqual([]);
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("proposed 1 entry for this repository's Commands and testing settings");
+
+  // The banner now opens the newer proposal.
+  await banner.getByRole("button", { name: "Review proposal" }).click();
+  await expect(review.getByRole("list", { name: "test changes" })).toContainText("Add the repository root yarn test");
+  await expect(notice).toHaveCount(0);
+});
