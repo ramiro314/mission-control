@@ -575,7 +575,6 @@ export function ReportPanel({
                   ) : (
                     <span className="report-sub">{t.outcome}</span>
                   ))}
-                {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
                 {/* A finished scheduled task keeps its provenance so its run history is
                     still one click away after it has left the backlog. */}
                 <ScheduleOriginChip
@@ -587,6 +586,15 @@ export function ReportPanel({
                     session, and with it the board card, is gone once the plan merges. */}
                 <ShapeTicketsMarker task={t} onOpenTask={onOpenTask} variant="chip" />
               </div>
+              {/* Why it failed, on its own full-width line like the cleanup note below. It is
+                  a sentence - "stopped: the session ran out of memory (peak 1.5 GB)" plus the
+                  retained-worktree suffix - and squeezed beside the title and the actions it
+                  was cut off before the part that says anything. */}
+              {!t.outcome && t.error && (
+                <div className="report-row-main report-row-failure">
+                  <span className="report-sub dim">{t.error}</span>
+                </div>
+              )}
               {/* Automatic cleanup is retrying. Its own line, deliberately not folded into
                   `outcome` or `error` above: those are the task's own record of what it
                   produced and why it failed, and a maintenance note overwriting either would

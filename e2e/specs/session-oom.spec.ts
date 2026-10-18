@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { recordNotifications, recordedNotifications } from "../fixtures/notifications.ts";
 import { scopeArgvs } from "../fixtures/records.ts";
 
 /**
@@ -25,6 +26,7 @@ import { scopeArgvs } from "../fixtures/records.ts";
 
 const TASK = "E2E_OOM_KILLED build the thing";
 const OOM_TEXT = "stopped: the session ran out of memory (peak 1.5 GB)";
+const KEPT = " - use Clean up or re-dispatch for any retained worktrees";
 const EVIDENCE = artifactsDir("session-oom");
 
 // Short, because a Unix socket path is capped near 108 bytes.
@@ -72,6 +74,8 @@ async function taskFor(daemon: DaemonHandle, intent: string): Promise<TaskSnapsh
 
 test("a session stopped for an OOM kill fails its task with the out-of-memory text", async ({ dashboard, daemon }) => {
   test.skip(process.platform !== "linux", "the session scope exists only on Linux");
+  // The existing task-failed alert is a desktop notification; this records what it carries.
+  await recordNotifications(dashboard, daemon);
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
@@ -97,7 +101,12 @@ test("a session stopped for an OOM kill fails its task with the out-of-memory te
 
   await expect.poll(async () => (await taskFor(daemon, TASK))?.status, { timeout: 30_000 }).toBe("failed");
   const task = (await taskFor(daemon, TASK))!;
-  expect(task.error).toContain(OOM_TEXT);
+  expect(task.error).toBe(`${OOM_TEXT}${KEPT}`);
+
+  // The existing task-failed alert carries the same text.
+  const failedAlert = { title: `Task failed: ${task.title}`, body: `${OOM_TEXT}${KEPT}`, tag: `failed:${task.id}` };
+  await expect.poll(async () => (await recordedNotifications(dashboard)).filter((n) => n.tag === failedAlert.tag))
+    .toEqual([failedAlert]);
 
   // What a person reads: the Sitrep's recent outcome for the task.
   await expect(async () => {
@@ -106,10 +115,17 @@ test("a session stopped for an OOM kill fails its task with the out-of-memory te
   }).toPass({ timeout: 30_000 });
   const row = dashboard.getByRole("dialog", { name: "Sitrep" }).locator(".report-row", { hasText: task.title });
   await expect(row).toContainText("failed");
-  await expect(row).toContainText(OOM_TEXT);
+  // Readable, not merely present: the reason has a full-width line of its own that wraps, so
+  // the peak is on screen rather than behind an ellipsis.
+  const reason = row.locator(".report-row-failure");
+  await expect(reason).toHaveText(`${OOM_TEXT}${KEPT}`);
+  await expect(reason).toBeVisible();
+  const clipped = await reason.locator(".report-sub").evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(clipped, "the failure reason is not cut off").toBe(false);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
     await row.screenshot({ path: join(EVIDENCE, "sitrep-oom-row.png") });
+    writeFileSync(join(EVIDENCE, "task-failed-alert.json"), `${JSON.stringify(failedAlert, null, 2)}\n`);
   }
 
   // And the daemon logged the stop once, where the seam read the scope.
