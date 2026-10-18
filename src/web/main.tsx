@@ -1,9 +1,11 @@
+/// <reference types="vite/client" />
 import { installExperienceReporting } from "./lib/experience.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { ManagedPlanReader } from "./components/ManagedPlanReader.tsx";
 import { hydrateUiConfig } from "./lib/uiConfig.ts";
+import { boundPerformanceTimeline } from "./lib/performanceTimeline.ts";
 import { desktopPlatformClass } from "./lib/platform.ts";
 import { ModelCatalogProvider } from "./model-catalog.tsx";
 import "@xyflow/react/dist/style.css";
@@ -28,6 +30,9 @@ if (window.missionDesktop?.isDesktop) {
 void hydrateUiConfig();
 
 installExperienceReporting();
+
+// React's development build fills the performance timeline without limit; see the helper.
+if (import.meta.env.DEV) boundPerformanceTimeline();
 
 const root = document.getElementById("root");
 const planQuery = new URLSearchParams(window.location.search);
