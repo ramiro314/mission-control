@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { boundPerformanceTimeline, PERFORMANCE_TIMELINE_CLEAR_INTERVAL_MS } from "../src/web/lib/performanceTimeline.ts";
 
-function fakeHost(performance?: { clearMeasures(): void }) {
+type TimelineHost = NonNullable<Parameters<typeof boundPerformanceTimeline>[0]>;
+
+// `performance` is loosely typed so a test can hand over an object without a callable
+// `clearMeasures`, which is what the helper's guard exists for.
+function fakeHost(performance?: object) {
   const timers: { handler: () => void; ms: number }[] = [];
-  return {
-    timers,
-    host: { performance, setInterval: (handler: () => void, ms: number) => timers.push({ handler, ms }) },
-  };
+  const host = { performance, setInterval: (handler: () => void, ms: number) => timers.push({ handler, ms }) };
+  return { timers, host: host as TimelineHost };
 }
 
 test("clears performance measures on every interval tick", () => {
@@ -31,8 +33,16 @@ test("honors a custom interval", () => {
   assert.equal(timers[0]?.ms, 5);
 });
 
-test("schedules nothing when the host has no clearMeasures", () => {
+test("schedules nothing when the host has no performance object", () => {
   const { host, timers } = fakeHost(undefined);
   assert.equal(boundPerformanceTimeline(host), false);
   assert.equal(timers.length, 0);
+});
+
+test("schedules nothing when performance has no callable clearMeasures", () => {
+  for (const performance of [{}, { clearMeasures: "not a function" }]) {
+    const { host, timers } = fakeHost(performance);
+    assert.equal(boundPerformanceTimeline(host), false);
+    assert.equal(timers.length, 0);
+  }
 });
