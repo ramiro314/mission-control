@@ -6,6 +6,7 @@ import {
 } from "@shared/ensemble.ts";
 import type { PanelAggregate, PanelVerdict } from "@shared/ensemble-strategies/panel-vote.ts";
 import { fmtUsd } from "../../lib/format.ts";
+import { ClockText } from "../../components/ClockText.tsx";
 import { Tooltip } from "../../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "../types.ts";
 import { detectPathTokens } from "../../lib/workspaceLinks.ts";
@@ -85,7 +86,7 @@ export function AtStake({ detail }: { detail: EnsembleRunDetailResponse }): Reac
         </div>
         <div>
           <dt>Elapsed</dt>
-          <dd>{fmtElapsed(run.createdAt, run.completedAt)}</dd>
+          <dd><ClockText read={(now) => fmtElapsed(run.createdAt, run.completedAt ?? now)} /></dd>
         </div>
         <div>
           <dt>Candidate spend</dt>

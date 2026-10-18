@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import type { TaskSourcesView } from "@shared/task-source.ts";
 import { relativeTime, untilTime } from "../../lib/format.ts";
 import { fetchTaskSources } from "../../lib/api.ts";
+import { ClockText } from "../ClockText.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 
@@ -38,7 +39,7 @@ function IntakeRow({
   name: string;
   /** The mono eyebrow: which machinery this row is. */
   kind: string;
-  fact: string;
+  fact: ReactNode;
   tone: "ok" | "off" | "warn";
   openLabel: string;
   onOpen: () => void;
@@ -70,8 +71,8 @@ export function IntakeDrawer({
   onOpenTaskSources,
 }: {
   schedules: readonly MissionSchedule[];
-  /** Injected so "swept 4m ago" is a pure function of props - see the render tests. */
-  now: number;
+  /** Pins "swept 4m ago", for the render tests; omitted, each row's age keeps its own clock. */
+  now?: number;
   onClose: () => void;
   onOpenMissions: () => void;
   onOpenTaskSources: () => void;
@@ -196,7 +197,7 @@ export function IntakeDrawer({
                     : status?.sweeping
                       ? "sweeping now"
                       : status?.lastSweepAt
-                        ? `swept ${relativeTime(status.lastSweepAt, now)} · ${status.lastFiled} filed`
+                        ? <ClockText read={(at) => `swept ${relativeTime(status.lastSweepAt, at)} · ${status.lastFiled} filed`} now={now} />
                         : "never swept"}
                 tone={failing ? "warn" : source.enabled ? "ok" : "off"}
                 openLabel="Settings"
@@ -215,7 +216,7 @@ export function IntakeDrawer({
                 : mission.health === "attention"
                   ? `${mission.expression} · needs attention`
                   : mission.nextRunAt
-                    ? `${mission.expression} · next ${untilTime(mission.nextRunAt, now)}`
+                    ? <ClockText read={(at) => `${mission.expression} · next ${untilTime(mission.nextRunAt, at)}`} now={now} />
                     : `${mission.expression} · not scheduled`}
               tone={mission.health === "attention"
                 ? "warn"

@@ -6,7 +6,8 @@ import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { taskPillParts } from "@shared/task.ts";
-import { shortenCwd, uptime, relativeTime } from "../../lib/format.ts";
+import { shortenCwd } from "../../lib/format.ts";
+import { LastSeen } from "../ClockText.tsx";
 import {
   newestSessionRun,
   sessionCanBindWorkflow,
@@ -977,7 +978,7 @@ export function ConsoleDetail({
           </Tooltip>
         )}
         <span className="detail-seen dim">
-          {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+          <LastSeen lastActivity={session.lastActivity} startedAt={session.startedAt} />
         </span>
         <span className="detail-foot-spacer" />
         {live && (

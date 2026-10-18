@@ -111,9 +111,9 @@ export function formatConversationTimestampLong(
 }
 
 /** Compact elapsed-since duration, e.g. "up 2h", "up 3m", "up 12s". */
-export function uptime(startedAt: number | null): string {
+export function uptime(startedAt: number | null, now = Date.now()): string {
   if (!startedAt) return "";
-  const s = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  const s = Math.max(0, Math.round((now - startedAt) / 1000));
   if (s < 60) return `up ${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `up ${m}m`;
@@ -208,8 +208,8 @@ export { fmtUsd } from "@shared/cost.ts";
  * different an hour before the window turns over than five minutes before - so the meter
  * says both. Epoch SECONDS in, because that is the unit Claude sends.
  */
-export function untilReset(resetsAtSeconds: number): string {
-  const ms = resetsAtSeconds * 1000 - Date.now();
+export function untilReset(resetsAtSeconds: number, now = Date.now()): string {
+  const ms = resetsAtSeconds * 1000 - now;
   if (!Number.isFinite(ms) || ms <= 0) return "now";
   const mins = Math.round(ms / 60_000);
   if (mins < 60) return `in ${mins}m`;

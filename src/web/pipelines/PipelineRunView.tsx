@@ -8,7 +8,8 @@ import {
   type PipelineRun,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { compactTokens, relativeTime, repoLeaf } from "../lib/format.ts";
+import { compactTokens, repoLeaf } from "../lib/format.ts";
+import { RelativeTime } from "../components/ClockText.tsx";
 import {
   PipelineFrame,
   PipelineStatusChip,
@@ -131,7 +132,7 @@ function Attempts({
                 : "the run's first pass"}
             </span>
             {attempt.kickback?.at != null && (
-              <small>{relativeTime(attempt.kickback.at)}</small>
+              <small><RelativeTime at={attempt.kickback.at} /></small>
             )}
           </article>
         ))}
@@ -197,7 +198,7 @@ function GateVerdicts({
               <small>
                 {verdict.checkedAt === null
                   ? "no time recorded"
-                  : `answered ${relativeTime(verdict.checkedAt)}`}
+                  : <>answered <RelativeTime at={verdict.checkedAt} /></>}
               </small>
             </li>
           ))}
@@ -251,7 +252,7 @@ export function PipelineRunHeader({
           )}
         </p>
         <small>
-          {engine.label} · {repoLeaf(run.repoRoot)} · updated {relativeTime(run.updatedAt)}
+          {engine.label} · {repoLeaf(run.repoRoot)} · updated <RelativeTime at={run.updatedAt} />
         </small>
       </div>
       {actions}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AwayConfig } from "@shared/protocol.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import { api, fetchAwayBuffer, fetchAwayConfig, fetchAwayDigest } from "./api.ts";
+import { keepIfUnchanged } from "./unchanged.ts";
 
 /** How often to re-read away state, so a toggle from another window/tray lands here too. */
 const POLL_MS = 5000;
@@ -104,7 +105,7 @@ export function useAwayMode(): {
     const read = async (): Promise<void> => {
       const cfg = await fetchAwayConfig();
       if (!alive || !cfg) return;
-      setAwayState(cfg);
+      setAwayState((prev) => keepIfUnchanged(prev, cfg));
       claimIfReturned(cfg);
       // Only asked for while the window is open, which is the only time it says
       // anything: the buffer is null at the desk, so a read then costs a request to be
@@ -121,7 +122,7 @@ export function useAwayMode(): {
       // we are in would render a previous window's count and preview lines as if they
       // belonged to this one.
       if (!bufferReadIsCurrent({ buf, cfg, epochAtStart, epochNow: awayEpoch.current })) return;
-      setBuffered(buf);
+      setBuffered((prev) => keepIfUnchanged(prev, buf));
     };
     void read();
     const id = setInterval(() => void read(), POLL_MS);

@@ -9,7 +9,8 @@ import {
   type PipelineRun,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { relativeTime, repoLeaf } from "../lib/format.ts";
+import { repoLeaf } from "../lib/format.ts";
+import { RelativeTime } from "../components/ClockText.tsx";
 import { PipelinePhaseMeter } from "./PipelinePhaseMeter.tsx";
 import { PipelineRunHeader, PipelineRunView } from "./PipelineRunView.tsx";
 import { pipelineCommissionLine } from "./pipeline-run-model.ts";
@@ -30,7 +31,7 @@ function CommissionHeader({ commission }: { commission: PipelineCommission }): R
         </p>
         <small>
           {PIPELINE_PROVIDER_INFO[commission.provider].label} · {repoLeaf(commission.repoRoot)} ·
-          updated {relativeTime(commission.updatedAt)}
+          updated <RelativeTime at={commission.updatedAt} />
         </small>
       </div>
     </header>

@@ -8,7 +8,8 @@ import type {
 } from "@shared/ensemble.ts";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { duration, fmtUsd, relativeTime } from "../lib/format.ts";
+import { duration, fmtUsd } from "../lib/format.ts";
+import { RelativeTime } from "../components/ClockText.tsx";
 import { fmtBytes, shortSha, titleCaseEnum } from "./format.ts";
 
 /**
@@ -133,7 +134,7 @@ export function EnsembleTimeline({
             {events.map((event) => (
               <li key={event.id}>
                 <span className="ensemble-event-kind">{event.kind}</span>
-                <span className="ensemble-muted">{relativeTime(event.ts)}</span>
+                <span className="ensemble-muted"><RelativeTime at={event.ts} /></span>
               </li>
             ))}
           </ul>

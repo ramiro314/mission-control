@@ -3,6 +3,7 @@ import type { Task } from "@shared/types.ts";
 import type { PlannerFact } from "../../lib/backlog-copy.ts";
 import { PriorityChip } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { useClockValue } from "../../useNow.ts";
 
 /**
  * THE AUTOPILOT PLANNER - the drawer's "next up" mark, saying why it is next up.
@@ -212,7 +213,7 @@ export function NextUpPlanner({
   task,
   planned,
   reason,
-  facts,
+  factsAt,
   readyCount,
   busy,
   onLaunch,
@@ -220,13 +221,17 @@ export function NextUpPlanner({
   task: Task;
   planned: boolean;
   reason: string | null;
-  facts: PlannerFact[];
+  /** The facts as of an instant, since the head's "filed …" age is one of them. */
+  factsAt: (now: number) => PlannerFact[];
   readyCount: number;
   /** A write on this row is in flight; the launch is inert until it lands. */
   busy: boolean;
   onLaunch: () => void;
 }): React.JSX.Element {
   const [place, setPlace] = useState<Placement | null>(null);
+  // The facts move with the clock only through the head's "filed …" age, so this re-renders
+  // when their text changes, and only while the popover is open to show it.
+  useClockValue((now) => (place ? factsAt(now).map((fact) => fact.text).join("\n") : ""));
   const anchor = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -335,7 +340,7 @@ export function NextUpPlanner({
           task={task}
           planned={planned}
           reason={reason}
-          facts={facts}
+          facts={factsAt(Date.now())}
           readyCount={readyCount}
           busy={busy}
           style={{

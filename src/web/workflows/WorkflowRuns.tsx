@@ -55,7 +55,8 @@ import { captureFocusBookmark, restoreFocusBookmark } from "../tour/focus-contai
 import type { FocusBookmark } from "../tour/focus-containment.ts";
 import { workflowRunTone } from "../components/session-bits.tsx";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { formatBytes, relativeTime, repoLeaf } from "../lib/format.ts";
+import { formatBytes, repoLeaf } from "../lib/format.ts";
+import { ClockText, RelativeTime } from "../components/ClockText.tsx";
 import type { RunRecordPane, WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 import {
@@ -3918,9 +3919,13 @@ export function WorkflowRunView({
           {refusedSentence && <p className="wf-run-refused">{refusedSentence}</p>}
           {/* Under the refusal: that one says what to fix, this one says the session has
               already done its half. */}
-          {refusedClaimSentence && <p className="wf-run-refused-claim">{refusedClaimSentence}</p>}
+          {refusedClaimSentence && (
+            <p className="wf-run-refused-claim">
+              <ClockText read={(now) => runRefusedCompletionSentence(detail, now) ?? ""} />
+            </p>
+          )}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
-          <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
+          <small>Started {when(detail.run.startedAt)} · updated <RelativeTime at={detail.run.updatedAt} /></small>
         </div>
 
         <div className="wf-run-actions">
@@ -5365,7 +5370,7 @@ export function WorkflowRuns({
                       {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
                     </span>
                   )}
-                  <small>{relativeTime(run.updatedAt)}</small>
+                  <small><RelativeTime at={run.updatedAt} /></small>
                 </button>
               </Tooltip>
             </div>

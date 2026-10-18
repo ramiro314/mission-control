@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import { ENSEMBLE_STATUSES, type EnsembleSummary } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
-import { relativeTime } from "../lib/format.ts";
+import { RelativeTime } from "../components/ClockText.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { EnsembleProgressDots } from "../components/session-bits.tsx";
 import {
@@ -311,7 +311,7 @@ export function EnsembleRuns({
                     <span className={`ensemble-tone-${ensembleStatusTone(summary.status, summary.unreadable)}`}>
                       {ensembleStatusLabel(summary)}
                     </span>{" "}
-                    · {relativeTime(summary.updatedAt)}
+                    · <RelativeTime at={summary.updatedAt} />
                   </small>
                   {/* The counts the SSE summary has always carried and no surface rendered.
                       `membersReady` (members that submitted and are neither out nor blocked)

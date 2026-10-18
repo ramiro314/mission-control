@@ -4266,7 +4266,7 @@ export function App(): React.JSX.Element {
             // and lifting that state up here would park a page's filter in App for the
             // lifetime of the session. Still only CONSTRUCTED here, so the ledger fetch
             // inside it happens the first time `#/shipped` is the route and never before.
-            <ShipLogPage fleetCost={fleetCost} now={Date.now()} />
+            <ShipLogPage fleetCost={fleetCost} />
           }
           settings={(
             <SettingsPage
@@ -4349,7 +4349,6 @@ export function App(): React.JSX.Element {
           <DecideDrawer
             summaries={ensembleSummaries}
             attentionCount={ensembleAttentionCount}
-            now={Date.now()}
             onClose={closeLineDrawer}
             onOpenEnsemble={openEnsembleRun}
             onOpenAllEnsembles={() => navigate({ page: "ensembles" })}
@@ -4358,7 +4357,6 @@ export function App(): React.JSX.Element {
         {lineDrawer === "intake" && (
           <IntakeDrawer
             schedules={schedules}
-            now={Date.now()}
             onClose={closeLineDrawer}
             onOpenMissions={openMissions}
             onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
@@ -4372,7 +4370,6 @@ export function App(): React.JSX.Element {
             // point at tasks that have already left the backlog.
             tasks={tasks}
             backlogPlan={foreman.backlogPlan}
-            now={Date.now()}
             // The same three values the Foreman popover reads, from the same hook: the
             // config the switch writes, the derived readout, and the gate that decides
             // whether an armed autopilot actually launches anything (`worker.ts` takes
@@ -4398,7 +4395,6 @@ export function App(): React.JSX.Element {
         )}
         {lineDrawer === "shipped" && (
           <ShippedDrawer
-            now={Date.now()}
             onClose={closeLineDrawer}
             // No `closeLineDrawer()` beside it: leaving the fleet already drops the drawer
             // through the route effect above, and calling both would move the keyboard back

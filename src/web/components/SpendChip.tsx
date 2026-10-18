@@ -4,6 +4,7 @@ import { FIVE_HOUR_MS, SEVEN_DAY_MS, costPerPrToday, projectRunway } from "@shar
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { spendRoleLabel } from "@shared/llm-spend.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { useClockValue, useNow } from "../useNow.ts";
 import {
   compactTokens,
   contextTone,
@@ -97,7 +98,7 @@ function automationHasContent(fleet: FleetCost): boolean {
  * An unpriced HOUR prints no rate rather than a second `partial`: two of them on a chip
  * this size is noise, and the popover states which window is incomplete in words.
  */
-export function spendChipFigures(fleet: FleetCost): SpendChipFigures {
+export function spendChipFigures(fleet: FleetCost, now = Date.now()): SpendChipFigures {
   const estimated = fleet.estimatedCostToday;
   const burn = fleet.estimatedBurnPerHour;
   const lead = estimated === null
@@ -115,7 +116,7 @@ export function spendChipFigures(fleet: FleetCost): SpendChipFigures {
       : fleet.tokensToday > 0
         ? `${compactTokens(fleet.tokensToday)} tokens today`
         : "no spend recorded today";
-  const worst = worstWindow(fleet);
+  const worst = worstWindow(fleet, now);
   const alert = worst && worst.tone !== "ok"
     ? `${Math.round(Math.min(100, Math.max(0, worst.window.usedPercentage)))}%`
     : null;
@@ -162,21 +163,22 @@ export function spendChipTone(fleet: FleetCost): ContextTone {
  */
 function worstWindow(
   fleet: FleetCost,
+  now = Date.now(),
 ): { label: string; window: RateLimitWindow; tone: ContextTone } | null {
   const ranked = { ok: 0, warn: 1, high: 2 } as const;
   let worst: { label: string; window: RateLimitWindow; tone: ContextTone } | null = null;
   for (const { label, window, windowMs } of rateLimitWindows(fleet)) {
-    if (window.resetsAt * 1000 <= Date.now()) continue;
-    const tone = runwayTone(window, windowMs);
+    if (window.resetsAt * 1000 <= now) continue;
+    const tone = runwayTone(window, windowMs, now);
     if (!worst || ranked[tone] > ranked[worst.tone]) worst = { label, window, tone };
   }
   return worst;
 }
 
 /** One meter's tone. A window the current pace does not exhaust is calm at any percentage. */
-function runwayTone(window: RateLimitWindow, windowMs: number): ContextTone {
-  if (window.resetsAt * 1000 <= Date.now()) return "ok";
-  const runway = projectRunway(window, windowMs, Date.now());
+function runwayTone(window: RateLimitWindow, windowMs: number, now = Date.now()): ContextTone {
+  if (window.resetsAt * 1000 <= now) return "ok";
+  const runway = projectRunway(window, windowMs, now);
   // `contextTone` rather than a private set of rate-limit thresholds: the amber/red
   // escalation is already defined for the card's context meter, and a second copy of
   // 70/90 would drift the first time one of them was tuned.
@@ -253,6 +255,14 @@ export function SpendChip({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  // What the chip says moves with the clock only when a window resets or a runway crosses a
+  // tone, so it re-renders on those and not on every second in between.
+  useClockValue((now) => {
+    if (!fleet || !fleetCostHasContent(fleet)) return "";
+    const figures = spendChipFigures(fleet, now);
+    return `${figures.tone}|${figures.label}`;
+  });
 
   // No telemetry at all draws no chip, rather than a `$0.00` claiming a measured zero.
   // Cost is configured in Settings, which is where an operator who wants it goes.
@@ -524,7 +534,7 @@ function Runway({
   label: string;
 }): React.JSX.Element {
   const pct = Math.min(100, Math.max(0, window.usedPercentage));
-  const now = Date.now();
+  const now = useNow(true);
   const expired = window.resetsAt * 1000 <= now;
   const runway = projectRunway(window, windowMs, now);
   const headline = expired
@@ -533,7 +543,7 @@ function Runway({
   const recorded = window.recordedAt === undefined ? null : new Date(window.recordedAt).toLocaleString();
   const tip = expired
     ? "This saved reading is from a window whose reset time has passed. Current utilization is unknown until Claude reports again."
-    : `${Math.round(window.usedPercentage)}% used, resets ${untilReset(window.resetsAt)}.\n` +
+    : `${Math.round(window.usedPercentage)}% used, resets ${untilReset(window.resetsAt, now)}.\n` +
     (!runway
       ? `Not enough of the window has been spent to project a runway.`
       : runway.clears
@@ -541,7 +551,7 @@ function Runway({
         : `At this rate it is exhausted in ${fmtRunway(runway.ms).replace("~", "about ")}.`);
   return (
     <Tooltip label={tip}>
-      <div className="spend-runway" data-tone={runwayTone(window, windowMs)} data-expired={expired || undefined}>
+      <div className="spend-runway" data-tone={runwayTone(window, windowMs, now)} data-expired={expired || undefined}>
         <div className="runway-head">
           <span>{label}</span>
           <b>{headline}</b>
@@ -557,7 +567,7 @@ function Runway({
         </div>
         {(recorded || expired) && (
           <div className="runway-note">
-            {expired ? "Reset passed · awaiting update" : `Resets ${untilReset(window.resetsAt)}`}
+            {expired ? "Reset passed · awaiting update" : `Resets ${untilReset(window.resetsAt, now)}`}
             {recorded && <span>Recorded {recorded}</span>}
           </div>
         )}

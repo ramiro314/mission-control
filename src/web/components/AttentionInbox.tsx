@@ -12,6 +12,7 @@ import { conflictingFor, type AttentionFold, type AttentionItem } from "../lib/a
 import { commandDocumentEntryCount } from "@shared/command-document.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
+import { ClockText } from "./ClockText.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
 import { ReviewCard } from "./ReviewModal.tsx";
@@ -332,7 +333,7 @@ function InboxItem({
           </div>
           <p className="inbox-line">
             Merge conflicts nobody is resolving: {BLOCKED_PR_REASON_TEXT[pr.reason]}
-            <span className="dim"> · {conflictingFor(pr.since, Date.now())}</span>
+            <span className="dim"> · <ClockText read={(now) => conflictingFor(pr.since, now)} /></span>
           </p>
         </section>
       );

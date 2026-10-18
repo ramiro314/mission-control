@@ -8,7 +8,7 @@ import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
 import { api, fetchQueue } from "../lib/api.ts";
 import { useSessionDraft } from "../lib/drafts.ts";
-import { relativeTime } from "../lib/format.ts";
+import { RelativeTime } from "./ClockText.tsx";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -827,7 +827,7 @@ function ItemStatus({ item }: { item: WorkItem }): React.JSX.Element | null {
       {item.state === "verified" && item.lastVerdict && (
         <p className="wq-verdict">✓ {item.lastVerdict}</p>
       )}
-      {item.completedAt && <span className="dim">{relativeTime(item.completedAt)}</span>}
+      {item.completedAt && <span className="dim"><RelativeTime at={item.completedAt} /></span>}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   fetchForemanStatus,
 } from "./lib/api.ts";
 import { createSequencer } from "./lib/latest.ts";
+import { keepIfUnchanged } from "./lib/unchanged.ts";
 
 // Foreman config + live status for the topbar control and the per-card notes.
 // Config is edited rarely (a control-panel poll is plenty); status carries the
@@ -123,20 +124,20 @@ export function useForeman(): ForemanState {
       // letting half of an old snapshot through is how a strip comes to disagree with the
       // rows beneath it.
       if (!readSeq.current.isCurrent(token)) return;
-      if (c) setConfig(c);
-      if (s) setStatus(s);
+      if (c) setConfig(keepIfUnchanged(configRef.current, c));
+      if (s) setStatus((prev) => keepIfUnchanged(prev, s));
       // Held on a failed read, like the config and status above and unlike the plan
       // below: an empty ledger is a claim ("Foreman has decided nothing"), and blanking a
       // table of fifty rows because one poll missed would say that falsely once every
       // time the daemon is busy. The rows are append-only, so a stale copy is merely old,
       // never wrong.
-      if (e) setEpisodes(e);
+      if (e) setEpisodes((prev) => keepIfUnchanged(prev, e));
       // Written unconditionally, unlike the two above: null is a MEANING here ("Foreman
       // has no reading of the backlog"), not merely a failed read, and a plan that stuck
       // on screen after the backlog was cleared would keep blaming a dependency that no
       // longer exists. The cost of a transient failure is one poll of an unannotated
       // column, which is the pre-autopilot rendering.
-      setBacklogPlan(p);
+      setBacklogPlan((prev) => keepIfUnchanged(prev, p));
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);

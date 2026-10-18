@@ -23,8 +23,8 @@ import {
   type BacklogTrustView,
   type PlannerFact,
 } from "../../lib/backlog-copy.ts";
-import { relativeTime } from "../../lib/format.ts";
 import { BacklogTaskNotice, DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
+import { RelativeTime } from "../ClockText.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
@@ -139,7 +139,8 @@ function bandCount(rows: Row[]): string {
 interface PlannerRead {
   planned: boolean;
   reason: string | null;
-  facts: PlannerFact[];
+  /** The facts as of an instant: one of them is the head's age, so the popover keeps the clock. */
+  factsAt: (now: number) => PlannerFact[];
   readyCount: number;
 }
 
@@ -167,7 +168,7 @@ function BacklogRow({
    * claim, so the row would have had to be handed the plan to derive one of them anyway.
    */
   planner: PlannerRead | null;
-  now: number;
+  now?: number;
   busy: boolean;
   onEdit: () => void;
   onLaunch: () => void;
@@ -210,7 +211,8 @@ function BacklogRow({
           </button>
         </Tooltip>
         <span className="line-bl-meta">
-          {[task.kind, task.agent, relativeTime(task.createdAt, now)].filter(Boolean).join(" · ")}
+          {[task.kind, task.agent].filter(Boolean).map((part) => `${part} · `).join("")}
+          <RelativeTime at={task.createdAt} now={now} />
         </span>
         {/* The drawer completes the same task-status position Board and Sitrep already had.
             It stays one clipped identity line so the fixed row and three-row cap do not move. */}
@@ -230,7 +232,7 @@ function BacklogRow({
             task={task}
             planned={planner.planned}
             reason={planner.reason}
-            facts={planner.facts}
+            factsAt={planner.factsAt}
             readyCount={planner.readyCount}
             busy={busy}
             onLaunch={onLaunch}
@@ -326,7 +328,7 @@ export function BacklogDrawer({
   tasks,
   /** Foreman's reading of the backlog, or null when it has none. */
   backlogPlan,
-  /** Injected so every relative age is a pure function of props, as on the other drawers. */
+  /** Pins every relative age, for the render tests; omitted, each age keeps its own clock. */
   now,
   /**
    * `ForemanConfig.autoBacklog`, or null until the config poll answers.
@@ -350,7 +352,7 @@ export function BacklogDrawer({
 }: {
   tasks: Task[];
   backlogPlan: BacklogPlan | null;
-  now: number;
+  now?: number;
   autoBacklog: boolean | null;
   autopilot: ForemanStatus["autopilot"] | null;
   autopilotLaunches: boolean;
@@ -390,15 +392,11 @@ export function BacklogDrawer({
     const head = band[0];
     if (!head) return null;
     const entry = index.entries.get(head.id) ?? null;
+    const unblocks = dependentsIn(head, tasks, index);
     return {
       planned: entry !== null,
       reason: entry?.reason ?? null,
-      facts: plannerFacts({
-        task: head,
-        ready: band,
-        unblocks: dependentsIn(head, tasks, index),
-        now,
-      }),
+      factsAt: (at) => plannerFacts({ task: head, ready: band, unblocks, now: now ?? at }),
       readyCount: band.length,
     };
   }, [index, now, rows, tasks]);
