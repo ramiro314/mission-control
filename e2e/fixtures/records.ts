@@ -43,3 +43,16 @@ export function recordsIn<T>(
   }
   return records;
 }
+
+/**
+ * What the pass-through `systemd-run` or `choom` fakes were handed, one argv per launch, when
+ * `prefix` is `"systemd-run-"` or `"choom-"`. See `passThrough` in fake-agents.ts: they record,
+ * then exec what follows `--` in place, so a spec can see a launch went through the session
+ * scope without a real scope ever being made.
+ */
+export function scopeArgvs(recordDir: string, prefix: "systemd-run-" | "choom-"): string[][] {
+  if (!existsSync(recordDir)) return [];
+  return readdirSync(recordDir)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".argv"))
+    .map((name) => readFileSync(join(recordDir, name), "utf8").split("\n").filter(Boolean));
+}

@@ -1433,7 +1433,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
           ? multiRepo.launchArgs(opts.extraDirs)
           : [];
-      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd, opts.stateHome);
+      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd, opts.stateHome, opts.sessionId);
       const config: LaunchConfig = {
         cwd: opts.cwd,
         model: opts.model,
