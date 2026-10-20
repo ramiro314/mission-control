@@ -128,3 +128,34 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   expect(promptOffset, "the terminal prompt should stay beside the first input line").toBeLessThanOrEqual(6);
   await captureEvidence(dashboard, detail, "terminal-composer-five-lines.png");
 });
+
+test("dragging a text box's resize handle enlarges it past the five-line cap", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dialog = await prepareDispatch(dashboard, daemon);
+  const task = dialog.getByPlaceholder("What should this agent do?");
+  await task.fill(`${SIX_LINES}\nline seven\nline eight`);
+  const capped = await geometry(task);
+  expect(capped.overflow, "eight lines should scroll inside the capped brief").toBeGreaterThan(1);
+
+  // The resize handle is the bottom-right corner of the box.
+  const box = await task.boundingBox();
+  if (!box) throw new Error("the dispatch brief has no layout box");
+  const enlargeBy = capped.lineHeight * 4;
+  await dashboard.mouse.move(box.x + box.width - 3, box.y + box.height - 3);
+  await dashboard.mouse.down();
+  await dashboard.mouse.move(box.x + box.width - 3, box.y + box.height - 3 + enlargeBy, { steps: 8 });
+  await dashboard.mouse.up();
+
+  const enlarged = await geometry(task);
+  expect(enlarged.height, "the drag should enlarge the brief beyond its cap").toBeGreaterThan(
+    capped.height + capped.lineHeight * 3,
+  );
+  expect(enlarged.overflow, "all eight lines should fit once the brief is enlarged").toBeLessThanOrEqual(1);
+  await captureEvidence(dashboard, dialog, "dispatch-brief-enlarged.png");
+
+  // Typing keeps the size the person chose instead of snapping back to the cap.
+  await task.fill(FIVE_LINES);
+  expect((await geometry(task)).height).toBeCloseTo(enlarged.height, 0);
+});

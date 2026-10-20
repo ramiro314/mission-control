@@ -3900,6 +3900,13 @@ textarea[rows="5"] { --textarea-min-content-height: 5lh; }
 textarea[rows] {
   min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
 }
+/* The five-line cap bounds automatic growth, not a person's choice. Dragging a resize
+   handle writes an inline height, and from then on that height is the size: without this
+   the cap clamps the drag, and a field whose rows floor already equals the cap (the
+   dispatch brief) cannot be enlarged at all. */
+textarea[style*="height"] {
+  max-height: none;
+}
 
 .sr-only {
   position: absolute !important;
