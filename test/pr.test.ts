@@ -10,7 +10,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
 const { Registry, prNumberFromUrl } = await import("../src/server/registry.ts");
-const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { pollAndReconcilePrs, queryPr } = await import("../src/server/pr.ts");
 const { currentMergeability } = await import("../src/shared/pr-mergeable.ts");
 
 function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
@@ -356,5 +356,43 @@ test("reconcilePrs retains closed PRs and follows reopening", () => {
     reg.reconcilePrs(new Map([["feat", match({ state })]]), new Set());
     assert.equal(reg.getSession("feat")!.prUrl, PR);
     assert.equal(reg.getSession("feat")!.prState, state);
+  }
+});
+
+test("queryPr prefers an open PR, then a merged one, and falls back to a closed one", async () => {
+  const home = process.env.HARNESS_HOME!;
+  const bin = join(home, "fake-gh-select");
+  mkdirSync(bin, { recursive: true });
+  const listOut = join(home, "gh-select.json");
+  writeFileSync(join(bin, "gh"), `#!/bin/sh\ncat "${listOut}"\n`);
+  chmodSync(join(bin, "gh"), 0o755);
+  const repo = mkdtempSync(join(tmpdir(), "harness-pr-select-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  git("remote", "add", "origin", "https://github.com/acme/demo.git");
+  const row = (number: number, state: string) => ({
+    url: `https://github.com/acme/demo/pull/${number}`,
+    number,
+    state,
+    statusCheckRollup: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    mergedAt: state === "MERGED" ? "2026-01-02T00:00:00Z" : null,
+    headRefOid: "A",
+  });
+  // `gh` lists newest-first, so the closed PR comes first each time.
+  const pick = async (rows: object[]) => {
+    writeFileSync(listOut, JSON.stringify(rows));
+    const r = await queryPr(repo, "feat/x");
+    assert.ok(r && r !== "error", `expected a match, got ${String(r)}`);
+    return { number: r.number, state: r.state };
+  };
+  process.env.HARNESS_GH_BIN = join(bin, "gh");
+  try {
+    assert.deepEqual(await pick([row(3, "CLOSED"), row(2, "OPEN")]), { number: 2, state: "open" });
+    assert.deepEqual(await pick([row(3, "CLOSED"), row(1, "MERGED")]), { number: 1, state: "merged" });
+    assert.deepEqual(await pick([row(3, "CLOSED")]), { number: 3, state: "closed" });
+  } finally {
+    delete process.env.HARNESS_GH_BIN;
   }
 });

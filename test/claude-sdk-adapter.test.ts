@@ -253,6 +253,15 @@ test("an embedded session opts in to the Artifact tool, unless the operator set 
   off.deps.env = () => ({ PATH: "/usr/bin", CLAUDE_CODE_ARTIFACT: "0" });
   await claudeSdkSpec(off.deps).launch(launchOpts());
   assert.equal((await off.started).options.env.CLAUDE_CODE_ARTIFACT, "0");
+
+  // An explicit empty value is still the operator's: only an absent variable is filled in,
+  // and the env the deps handed over is not mutated.
+  const emptyEnv = { CLAUDE_CODE_ARTIFACT: "" };
+  const empty = fakeDeps();
+  empty.deps.env = () => emptyEnv;
+  await claudeSdkSpec(empty.deps).launch(launchOpts());
+  assert.equal((await empty.started).options.env.CLAUDE_CODE_ARTIFACT, "");
+  assert.deepEqual(emptyEnv, { CLAUDE_CODE_ARTIFACT: "" });
 });
 
 test("secondary worktrees reach the driver as additionalDirectories, and only when there are any", async () => {
